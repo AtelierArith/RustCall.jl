@@ -229,13 +229,18 @@ const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
 
 ### Internal Registries
 
+The following registries are used internally by LastCall.jl:
+
 ```@docs
 GENERIC_FUNCTION_REGISTRY
 MONOMORPHIZED_FUNCTIONS
-RUST_LIBRARIES
-RUST_MODULE_REGISTRY
-FUNCTION_REGISTRY
-IRUST_FUNCTIONS
+```
+
+The following registries are not exported but are available for advanced usage:
+
+```@autodocs
+Modules = [LastCall]
+Filter = t -> t in [RUST_LIBRARIES, RUST_MODULE_REGISTRY, FUNCTION_REGISTRY, IRUST_FUNCTIONS]
 ```
 
 ## Utility Functions
@@ -262,6 +267,8 @@ Filter = t -> begin
         :RustCompiler, :OptimizationConfig, :RustFunctionInfo,
         :DependencySpec, :CargoProject,
         :GENERIC_FUNCTION_REGISTRY, :MONOMORPHIZED_FUNCTIONS,
+        # Exclude registries documented separately
+        :RUST_LIBRARIES, :RUST_MODULE_REGISTRY, :FUNCTION_REGISTRY, :IRUST_FUNCTIONS,
         # Exclude public functions already documented
         :unwrap, :unwrap_or, :is_ok, :is_err, :is_some, :is_none,
         :result_to_exception, :unwrap_or_throw,
