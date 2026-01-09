@@ -30,14 +30,19 @@ function load_llvm_ir(ir_file::String; source_code::String = "")
     # Read the IR file
     ir_content = read(ir_file, String)
 
-    # Create a new LLVM context for this module
+    # Get or create the LLVM context
+    # Note: LLVM.jl 9.x uses module-level contexts
     ctx = LLVM.Context()
 
-    # Parse the IR
+    # Parse the IR using LLVM.jl's API
+    # In LLVM.jl 9.x, parse doesn't take a ctx argument for string parsing
     mod = try
-        parse(LLVM.Module, ir_content; ctx=ctx)
+        parse(LLVM.Module, ir_content)
     catch e
-        dispose(ctx)
+        try
+            dispose(ctx)
+        catch
+        end
         error("Failed to parse LLVM IR: $e")
     end
 
@@ -103,13 +108,13 @@ end
     llvm_type_to_julia(llvm_type::LLVM.LLVMType) -> Type
 
 Convert an LLVM type to the corresponding Julia type.
+Uses LLVM.jl 9.x API which uses concrete types for different LLVM types.
 """
 function llvm_type_to_julia(llvm_type::LLVM.LLVMType)
-    kind = LLVM.kind(llvm_type)
-
-    if kind == LLVM.API.LLVMVoidTypeKind
+    # Check type using isa (LLVM.jl 9.x uses concrete types)
+    if llvm_type isa LLVM.VoidType
         return Cvoid
-    elseif kind == LLVM.API.LLVMIntegerTypeKind
+    elseif llvm_type isa LLVM.IntegerType
         width = LLVM.width(llvm_type)
         if width == 1
             return Bool
@@ -126,52 +131,58 @@ function llvm_type_to_julia(llvm_type::LLVM.LLVMType)
         else
             error("Unsupported integer width: $width")
         end
-    elseif kind == LLVM.API.LLVMFloatTypeKind
+    elseif llvm_type isa LLVM.LLVMFloat
         return Float32
-    elseif kind == LLVM.API.LLVMDoubleTypeKind
+    elseif llvm_type isa LLVM.LLVMDouble
         return Float64
-    elseif kind == LLVM.API.LLVMPointerTypeKind
+    elseif llvm_type isa LLVM.PointerType
         return Ptr{Cvoid}
-    elseif kind == LLVM.API.LLVMStructTypeKind
+    elseif llvm_type isa LLVM.StructType
         # For structs, return a generic pointer for now
         return Ptr{Cvoid}
-    elseif kind == LLVM.API.LLVMArrayTypeKind
+    elseif llvm_type isa LLVM.ArrayType
         return Ptr{Cvoid}
     else
-        error("Unsupported LLVM type kind: $kind")
+        # Fallback: try to determine from type name
+        type_str = string(typeof(llvm_type))
+        error("Unsupported LLVM type: $type_str")
     end
 end
 
 """
-    julia_type_to_llvm(ctx::LLVM.Context, julia_type::Type) -> LLVM.LLVMType
+    julia_type_to_llvm(julia_type::Type) -> LLVM.LLVMType
 
 Convert a Julia type to the corresponding LLVM type.
+Note: Must be called within an active LLVM context (use LLVM.Context() do ... end).
 """
-function julia_type_to_llvm(ctx::LLVM.Context, julia_type::Type)
+function julia_type_to_llvm(julia_type::Type)
     if julia_type == Cvoid || julia_type == Nothing
-        return LLVM.VoidType(ctx)
+        return LLVM.VoidType()
     elseif julia_type == Bool
-        return LLVM.IntType(1; ctx=ctx)
+        return LLVM.IntType(1)
     elseif julia_type == Int8 || julia_type == UInt8
-        return LLVM.IntType(8; ctx=ctx)
+        return LLVM.IntType(8)
     elseif julia_type == Int16 || julia_type == UInt16
-        return LLVM.IntType(16; ctx=ctx)
+        return LLVM.IntType(16)
     elseif julia_type == Int32 || julia_type == UInt32
-        return LLVM.IntType(32; ctx=ctx)
+        return LLVM.IntType(32)
     elseif julia_type == Int64 || julia_type == UInt64
-        return LLVM.IntType(64; ctx=ctx)
+        return LLVM.IntType(64)
     elseif julia_type == Int128 || julia_type == UInt128
-        return LLVM.IntType(128; ctx=ctx)
+        return LLVM.IntType(128)
     elseif julia_type == Float32
-        return LLVM.FloatType(ctx)
+        return LLVM.FloatType()
     elseif julia_type == Float64
-        return LLVM.DoubleType(ctx)
+        return LLVM.DoubleType()
     elseif julia_type <: Ptr
-        return LLVM.PointerType(LLVM.IntType(8; ctx=ctx))
+        return LLVM.PointerType(LLVM.IntType(8))
     else
         error("Unsupported Julia type for LLVM: $julia_type")
     end
 end
+
+# Keep the old signature for backward compatibility (ignore ctx)
+julia_type_to_llvm(ctx::LLVM.Context, julia_type::Type) = julia_type_to_llvm(julia_type)
 
 """
     dispose_module(mod::RustModule)

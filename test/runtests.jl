@@ -51,6 +51,47 @@ using Test
         @test unwrap_or(err_result, Int32(0)) == 0
     end
 
+    @testset "Error Handling" begin
+        # Test RustError creation
+        err1 = RustError("test error")
+        @test err1.message == "test error"
+        @test err1.code == 0
+
+        err2 = RustError("test error", Int32(42))
+        @test err2.message == "test error"
+        @test err2.code == 42
+
+        # Test result_to_exception with Ok result
+        ok_result = RustResult{Int32, String}(true, Int32(42))
+        @test result_to_exception(ok_result) == 42
+
+        # Test result_to_exception with Err result
+        err_result = RustResult{Int32, String}(false, "division by zero")
+        @test_throws RustError result_to_exception(err_result)
+        try
+            result_to_exception(err_result)
+        catch e
+            @test e isa RustError
+            @test e.message == "division by zero"
+            @test e.code == 0
+        end
+
+        # Test result_to_exception with error code
+        err_result2 = RustResult{Int32, String}(false, "not found")
+        @test_throws RustError result_to_exception(err_result2, Int32(404))
+        try
+            result_to_exception(err_result2, Int32(404))
+        catch e
+            @test e isa RustError
+            @test e.message == "not found"
+            @test e.code == 404
+        end
+
+        # Test unwrap_or_throw alias
+        @test unwrap_or_throw(ok_result) == 42
+        @test_throws RustError unwrap_or_throw(err_result)
+    end
+
     @testset "RustOption" begin
         some_opt = RustOption{Int32}(true, Int32(42))
         none_opt = RustOption{Int32}(false, nothing)
@@ -200,6 +241,155 @@ using Test
             # Test with empty string
             result = @rust string_length("")::UInt32
             @test result == 0
+        end
+        # ============================================================
+        # Phase 2 Tests: LLVM IR Integration
+        # ============================================================
+
+        @testset "Phase 2: LLVM Integration" begin
+            @testset "Optimization Configuration" begin
+                # Test default config
+                config = OptimizationConfig()
+                @test config.level == 2
+                @test config.enable_vectorization == true
+
+                # Test custom config
+                custom_config = OptimizationConfig(
+                    level=3,
+                    enable_vectorization=false,
+                    inline_threshold=100
+                )
+                @test custom_config.level == 3
+                @test custom_config.enable_vectorization == false
+                @test custom_config.inline_threshold == 100
+            end
+
+            @testset "LLVM Type Conversion" begin
+                # Test Julia to LLVM IR string conversion
+                @test LastCall.julia_type_to_llvm_ir_string(Int32) == "i32"
+                @test LastCall.julia_type_to_llvm_ir_string(Int64) == "i64"
+                @test LastCall.julia_type_to_llvm_ir_string(Float32) == "float"
+                @test LastCall.julia_type_to_llvm_ir_string(Float64) == "double"
+                @test LastCall.julia_type_to_llvm_ir_string(Bool) == "i1"
+                @test LastCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
+            end
+
+            @testset "LLVM Module Loading" begin
+                # Compile Rust code to LLVM IR
+                rust_code = """
+                #[no_mangle]
+                pub extern "C" fn llvm_test_add(a: i32, b: i32) -> i32 {
+                    a + b
+                }
+                """
+
+                wrapped_code = LastCall.wrap_rust_code(rust_code)
+                compiler = LastCall.get_default_compiler()
+                ir_path = LastCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
+
+                @test isfile(ir_path)
+                @test endswith(ir_path, ".ll")
+
+                # Load the LLVM IR
+                rust_mod = LastCall.load_llvm_ir(ir_path; source_code=wrapped_code)
+                @test rust_mod !== nothing
+                @test rust_mod isa LastCall.RustModule
+
+                # List functions
+                funcs = LastCall.list_functions(rust_mod)
+                @test "llvm_test_add" in funcs
+
+                # Get function signature
+                fn = LastCall.get_function(rust_mod, "llvm_test_add")
+                @test fn !== nothing
+
+                ret_type, arg_types = LastCall.get_function_signature(fn)
+                @test ret_type == Int32
+                @test arg_types == [Int32, Int32]
+            end
+
+            @testset "LLVM Code Generator" begin
+                # Test code generator configuration
+                codegen = LastCall.LLVMCodeGenerator()
+                @test codegen.optimization_level == 2
+                @test codegen.enable_vectorization == true
+
+                # Test custom code generator
+                custom_codegen = LastCall.LLVMCodeGenerator(
+                    optimization_level=3,
+                    inline_threshold=300,
+                    enable_vectorization=false
+                )
+                @test custom_codegen.optimization_level == 3
+                @test custom_codegen.inline_threshold == 300
+            end
+
+            @testset "Function Registration" begin
+                # Define and compile a function
+                rust"""
+                #[no_mangle]
+                pub extern "C" fn registered_add(a: i32, b: i32) -> i32 {
+                    a + b
+                }
+                """
+
+                # The function should be callable via @rust
+                result = @rust registered_add(Int32(5), Int32(7))::Int32
+                @test result == 12
+            end
+
+            @testset "Extended Ownership Types" begin
+                # Use UInt to construct pointers (required on 64-bit systems)
+                addr1 = UInt(0x1000)
+                addr2 = UInt(0x2000)
+                addr3 = UInt(0x3000)
+                addr4 = UInt(0x4000)
+                addr5 = UInt(0x5000)
+
+                # Test RustBox
+                box = RustBox{Int32}(Ptr{Cvoid}(addr1))
+                @test box.ptr == Ptr{Cvoid}(addr1)
+                @test !box.dropped
+                @test is_valid(box)
+
+                drop!(box)
+                @test box.dropped
+                @test !is_valid(box)
+
+                # Test RustRc
+                rc = RustRc{Float64}(Ptr{Cvoid}(addr2))
+                @test rc.ptr == Ptr{Cvoid}(addr2)
+                @test !rc.dropped
+
+                drop!(rc)
+                @test rc.dropped
+                @test is_dropped(rc)
+
+                # Test RustArc
+                arc = RustArc{String}(Ptr{Cvoid}(addr3))
+                @test arc.ptr == Ptr{Cvoid}(addr3)
+                @test !arc.dropped
+
+                drop!(arc)
+                @test arc.dropped
+
+                # Test RustVec
+                vec = RustVec{Int32}(Ptr{Cvoid}(addr4), UInt(10), UInt(20))
+                @test vec.ptr == Ptr{Cvoid}(addr4)
+                @test vec.len == 10
+                @test vec.cap == 20
+                @test length(vec) == 10
+                @test !vec.dropped
+
+                drop!(vec)
+                @test vec.dropped
+
+                # Test RustSlice
+                slice = RustSlice{Int32}(Ptr{Int32}(addr5), UInt(5))
+                @test slice.ptr == Ptr{Int32}(addr5)
+                @test slice.len == 5
+                @test length(slice) == 5
+            end
         end
     else
         @warn "rustc not found, skipping compilation tests"
