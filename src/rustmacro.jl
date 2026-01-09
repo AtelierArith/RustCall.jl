@@ -129,8 +129,16 @@ end
     _rust_call_dynamic(lib_name::String, func_name::String, args...)
 
 Call a Rust function with dynamic type dispatch.
+Automatically handles generic functions by monomorphizing them.
 """
 function _rust_call_dynamic(lib_name::String, func_name::String, args...)
+    # Check if this is a generic function
+    if is_generic_function(func_name)
+        # Handle as generic function - monomorphize and call
+        return call_generic_function(func_name, args...)
+    end
+    
+    # Regular function - use existing logic
     # Get function pointer
     func_ptr = get_function_pointer(lib_name, func_name)
 

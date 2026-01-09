@@ -204,7 +204,108 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         @debug "Failed to load LLVM IR for analysis: $e"
     end
 
+    # Detect and register generic functions
+    try
+        _detect_and_register_generic_functions(code, lib_name)
+    catch e
+        @debug "Failed to detect generic functions: $e"
+    end
+
     return nothing
+end
+
+"""
+    _detect_and_register_generic_functions(code::String, lib_name::String)
+
+Detect generic functions in Rust code and register them for monomorphization.
+"""
+function _detect_and_register_generic_functions(code::String, lib_name::String)
+    # Simple pattern matching for generic functions
+    # Pattern: pub fn func_name<T, U, ...>(args...) -> ret_type { ... }
+    # or: #[no_mangle] pub extern "C" fn func_name<T>(args...) -> ret_type { ... }
+    
+    # Find all function definitions
+    func_pattern = r"(?:#\[no_mangle\])?\s*(?:pub\s+)?(?:extern\s+\"C\"\s+)?fn\s+(\w+)\s*(?:<([^>]+)>)?\s*\("
+    
+    for m in eachmatch(func_pattern, code)
+        func_name = m.captures[1]
+        type_params_str = m.captures[2]
+        
+        # Check if this is a generic function
+        if type_params_str !== nothing && !isempty(type_params_str)
+            # Extract type parameters
+            type_params = Symbol[]
+            for param in split(type_params_str, ',', keepempty=false)
+                param = strip(param)
+                # Handle trait bounds: T: Copy + Clone -> just T
+                if occursin(':', param)
+                    param = split(param, ':')[1]
+                end
+                push!(type_params, Symbol(strip(param)))
+            end
+            
+            # Extract the full function code (simplified - just get the function signature for now)
+            # In a more sophisticated implementation, we'd parse the full function body
+            func_code = extract_function_code(code, func_name)
+            
+            if func_code !== nothing
+                # Register as generic function
+                register_generic_function(func_name, func_code, type_params)
+                @debug "Registered generic function: $func_name with type parameters: $type_params"
+            end
+        end
+    end
+end
+
+"""
+    extract_function_code(code::String, func_name::String) -> Union{String, Nothing}
+
+Extract the full code for a function from Rust source code.
+This is a simplified implementation - a more robust parser would be needed for complex cases.
+"""
+function extract_function_code(code::String, func_name::String)
+    # Simple extraction: find function start and end
+    # This is a basic implementation - more sophisticated parsing needed for nested functions
+    
+    # Find function start
+    func_start_pattern = Regex("fn\\s+$func_name[^\\{]*\\{")
+    m = match(func_start_pattern, code)
+    
+    if m === nothing
+        return nothing
+    end
+    
+    start_idx = m.offset
+    code_after_start = code[start_idx:end]
+    
+    # Find matching closing brace
+    brace_count = 0
+    in_string = false
+    string_char = nothing
+    
+    for (i, char) in enumerate(code_after_start)
+        if char == '"' || char == '\''
+            if !in_string
+                in_string = true
+                string_char = char
+            elseif char == string_char
+                in_string = false
+                string_char = nothing
+            end
+        elseif !in_string
+            if char == '{'
+                brace_count += 1
+            elseif char == '}'
+                brace_count -= 1
+                if brace_count == 0
+                    # Found the end
+                    return code_after_start[1:i]
+                end
+            end
+        end
+    end
+    
+    return nothing  # Couldn't find matching brace
 end
 
 """
@@ -286,34 +387,66 @@ const IRUST_FUNCTIONS = Dict{UInt64, Tuple{String, String}}()
 
 """
     @irust(code, args...)
+    @irust(code)
 
 Execute Rust code at function scope.
 
 This macro compiles Rust code into a temporary function and calls it.
-Julia variables should be passed as arguments.
+Julia variables can be referenced using `\$var` syntax or passed as arguments.
 
-# Limitations (Phase 1)
-- Single expression only
-- Return type must be a basic type
-- Compiled as a separate function
-- Variables must be passed explicitly as arguments
+# Features
+- Automatic variable binding with `\$var` syntax
+- Improved type inference from code
+- Better error messages
 
-# Example
+# Examples
 ```julia
+# Using \$var syntax (recommended)
+function myfunc(x)
+    @irust("\$x * 2")
+end
+
+# Using explicit arguments (legacy, still supported)
 function myfunc(x)
     @irust("arg1 * 2", x)
 end
+
+# Multiple variables
+function add_and_multiply(a, b, c)
+    @irust("\$a + \$b * \$c")
+end
 ```
 
-For more complex cases, use `rust""` to define functions explicitly.
+For more complex cases, use `rust\"\"\"` to define functions explicitly.
 """
 macro irust(code, args...)
-    # Extract the code string
-    code_str = isa(code, AbstractString) ? code : string(code)
-
-    # Build the call expression
-    return quote
-        _compile_and_call_irust($code_str, $(map(esc, args)...))
+    # Handle different input types
+    if isa(code, AbstractString)
+        # String literal: parse $var syntax
+        code_str = code
+        vars_from_code, processed_code = _parse_irust_variables(code_str)
+        
+        # Combine variables from $var syntax and explicit arguments
+        # Note: args is a tuple from varargs, so we need to collect it
+        all_vars = vcat(vars_from_code, collect(args))
+        
+        # Build the call expression
+        if isempty(all_vars)
+            return quote
+                _compile_and_call_irust($processed_code)
+            end
+        else
+            # Create escaped variable expressions
+            # Each variable needs to be escaped to be evaluated in the calling scope
+            var_exprs = [esc(var) for var in all_vars]
+            
+            # Build the call expression with proper argument splatting
+            # We need to call LastCall._compile_and_call_irust with the escaped variables
+            return Expr(:call, GlobalRef(LastCall, :_compile_and_call_irust), processed_code, var_exprs...)
+        end
+    else
+        # Non-string: treat as expression (for future expansion)
+        error("@irust expects a string literal as the first argument. Got: $(typeof(code))")
     end
 end
 
@@ -335,86 +468,189 @@ macro irust_str(code)
 end
 
 """
+    _parse_irust_variables(code::String) -> (Vector{Symbol}, String)
+
+Parse `\$var` syntax in irust code and extract variable names.
+Returns (list of variable symbols, processed code with \$var replaced by argN).
+
+# Example
+```julia
+vars, code = _parse_irust_variables("\$x + \$y * 2")
+# vars = [:x, :y]
+# code = "arg1 + arg2 * 2"
+```
+"""
+function _parse_irust_variables(code::String)
+    # Pattern to match $variable (but not $$ which is escaped)
+    # Match $ followed by identifier (letter, underscore, or digit after first char)
+    pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*)"
+    
+    # Find all matches (in order of appearance)
+    matches = collect(eachmatch(pattern, code))
+    
+    # Build ordered list of unique variables (in order of first appearance)
+    vars = Symbol[]
+    var_to_idx = Dict{Symbol, Int}()
+    for m in matches
+        var_name = Symbol(m.captures[1])
+        if !haskey(var_to_idx, var_name)
+            push!(vars, var_name)
+            var_to_idx[var_name] = length(vars)
+        end
+    end
+    
+    # Process from end to start to preserve positions
+    processed = code
+    for m in reverse(matches)
+        var_name = Symbol(m.captures[1])
+        var_idx = var_to_idx[var_name]
+        
+        # Replace $var with argN
+        arg_ref = "arg$(var_idx)"
+        processed = processed[1:prevind(processed, m.offset)] * arg_ref * processed[nextind(processed, m.offset + length(m.match) - 1):end]
+    end
+    
+    return (vars, processed)
+end
+
+"""
     _compile_and_call_irust(code::String, args...)
 
 Internal function to compile and execute Rust code at function scope.
+
+# Error Handling
+This function provides improved error messages for:
+- Type mismatches
+- Compilation failures
+- Missing variables
 """
 function _compile_and_call_irust(code::String, args...)
-    # Generate a unique function name based on code and argument types
-    arg_types = map(typeof, args)
-    code_hash = hash((code, arg_types))
-    func_name = "irust_func_$(string(code_hash, base=16))"
+    try
+        # Generate a unique function name based on code and argument types
+        arg_types = collect(map(typeof, args))  # Vector{Type}
+        code_hash = hash((code, Tuple(arg_types)))  # Use Tuple for hash consistency
+        func_name = "irust_func_$(string(code_hash, base=16))"
 
-    # Check if already compiled
-    if haskey(IRUST_FUNCTIONS, code_hash)
-        lib_name, cached_func_name = IRUST_FUNCTIONS[code_hash]
-        return _call_irust_function(lib_name, cached_func_name, args...)
+        # Infer Rust types from Julia types (needed for both cached and new functions)
+        rust_arg_types = collect(map(_julia_to_rust_type, arg_types))  # Ensure Vector
+
+        # Check if already compiled
+        if haskey(IRUST_FUNCTIONS, code_hash)
+            lib_name, cached_func_name = IRUST_FUNCTIONS[code_hash]
+            # Re-infer return type for cached function (should match original)
+            rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
+            julia_ret_type = _rust_to_julia_type(rust_ret_type)
+            return _call_irust_function(lib_name, cached_func_name, julia_ret_type, args...)
+        end
+        
+        # Check for unsupported types
+        unsupported = filter(t -> _julia_to_rust_type(t) == "i64" && t != Int64, arg_types)
+        if !isempty(unsupported)
+            @warn "Some argument types may not be correctly inferred: $unsupported. Consider using explicit types."
+        end
+
+        # Infer return type from code (improved)
+        rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
+
+        # Generate Rust function code
+        rust_func_code = _generate_irust_function(func_name, code, rust_arg_types, rust_ret_type)
+
+        # Compile and load
+        wrapped_code = wrap_rust_code(rust_func_code)
+        compiler = get_default_compiler()
+        
+        local lib_path
+        try
+            lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
+        catch e
+            error("""
+            Failed to compile Rust code for @irust.
+            
+            Code: $code
+            Generated Rust function:
+            $rust_func_code
+            
+            Original error: $e
+            
+            Tip: Check that your Rust code is valid and uses arg1, arg2, etc. correctly.
+            """)
+        end
+
+        # Load the library
+        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        if lib_handle == C_NULL
+            error("""
+            Failed to load compiled Rust library for @irust.
+            
+            Library path: $lib_path
+            Code: $code
+            
+            This may indicate a linking issue or missing dependencies.
+            """)
+        end
+
+        # Generate a unique library name
+        lib_name = "irust_$(string(code_hash, base=16))"
+        RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+        IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
+
+        # Convert Rust return type to Julia type
+        julia_ret_type = _rust_to_julia_type(rust_ret_type)
+
+        # Call the function with correct return type
+        return _call_irust_function(lib_name, func_name, julia_ret_type, args...)
+    catch e
+        # Improve error messages
+        if isa(e, MethodError)
+            error("""
+            Type error in @irust call.
+            
+            Code: $code
+            Arguments: $(map(x -> "$(typeof(x))", args))
+            
+            Original error: $e
+            
+            Tip: Ensure argument types match what the Rust code expects.
+            """)
+        else
+            rethrow(e)
+        end
     end
-
-    # Infer Rust types from Julia types
-    rust_arg_types = collect(map(_julia_to_rust_type, arg_types))  # Ensure Vector
-
-    # Infer return type from arguments (use first argument's type as default)
-    if isempty(arg_types)
-        rust_ret_type = "i64"
-    else
-        # Use the type of the first argument as return type (heuristic)
-        rust_ret_type = rust_arg_types[1]
-    end
-
-    # Generate Rust function code
-    rust_func_code = _generate_irust_function(func_name, code, rust_arg_types, rust_ret_type)
-
-    # Compile and load
-    wrapped_code = wrap_rust_code(rust_func_code)
-    compiler = get_default_compiler()
-    lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
-
-    # Load the library
-    lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-    if lib_handle == C_NULL
-        error("Failed to load compiled Rust library for irust: $lib_path")
-    end
-
-    # Generate a unique library name
-    lib_name = "irust_$(string(code_hash, base=16))"
-    RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-    IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
-
-    # Call the function
-    return _call_irust_function(lib_name, func_name, args...)
 end
 
 """
     _julia_to_rust_type(julia_type::Type) -> String
 
 Convert Julia type to Rust type string.
+
+# Supported Types
+- Integer types: Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64
+- Floating point: Float32, Float64
+- Boolean: Bool
+
+# Error Handling
+Unsupported types default to "i64" with a warning.
 """
 function _julia_to_rust_type(julia_type::Type)
-    if julia_type == Int32
-        return "i32"
-    elseif julia_type == Int64
-        return "i64"
-    elseif julia_type == Float32
-        return "f32"
-    elseif julia_type == Float64
-        return "f64"
-    elseif julia_type == Bool
-        return "bool"
-    elseif julia_type == Int8
-        return "i8"
-    elseif julia_type == Int16
-        return "i16"
-    elseif julia_type == UInt8
-        return "u8"
-    elseif julia_type == UInt16
-        return "u16"
-    elseif julia_type == UInt32
-        return "u32"
-    elseif julia_type == UInt64
-        return "u64"
+    type_map = Dict(
+        Int8 => "i8",
+        Int16 => "i16",
+        Int32 => "i32",
+        Int64 => "i64",
+        UInt8 => "u8",
+        UInt16 => "u16",
+        UInt32 => "u32",
+        UInt64 => "u64",
+        Float32 => "f32",
+        Float64 => "f64",
+        Bool => "bool",
+    )
+    
+    if haskey(type_map, julia_type)
+        return type_map[julia_type]
     else
-        return "i64"  # Default
+        # Default to i64, but this should be handled by caller
+        return "i64"
     end
 end
 
@@ -428,23 +664,68 @@ function _rust_to_julia_type(rust_type::String)
 end
 
 """
+    _infer_return_type_improved(code::String, arg_types::Vector{Type}, rust_arg_types::Vector{String}) -> String
+
+Infer return type from Rust code with improved heuristics.
+
+# Strategy
+1. Look for explicit return statements with literals
+2. Analyze arithmetic operations (int vs float)
+3. Use argument types as hints
+4. Fall back to first argument type if available
+"""
+function _infer_return_type_improved(code::String, arg_types::Vector{<:Type}, rust_arg_types::Vector{String})
+    code_lower = lowercase(strip(code))
+    
+    # 1. Check for explicit return statements with literals
+    if occursin(r"return\s+[0-9]+\s*;", code) || occursin(r"return\s+[0-9]+\s*$", code)
+        # Integer literal - check if it's a float by looking for decimal point
+        if occursin(r"return\s+[0-9]+\.[0-9]", code)
+            return "f64"
+        else
+            return "i32"
+        end
+    end
+    
+    # 2. Check for boolean literals
+    if occursin(r"return\s+(true|false)\s*;", code) || occursin(r"return\s+(true|false)\s*$", code)
+        return "bool"
+    end
+    
+    # 3. Analyze arithmetic operations
+    # If code contains division or multiplication with floats, likely returns float
+    if occursin(r"arg\d+\s*[*/]\s*[0-9]+\.[0-9]", code) || 
+       occursin(r"[0-9]+\.[0-9]\s*[*/]\s*arg\d+", code) ||
+       occursin(r"arg\d+\s*[*/]\s*arg\d+", code) && any(t -> t == Float32 || t == Float64, arg_types)
+        return "f64"
+    end
+    
+    # 4. Check if any argument is float
+    if any(t -> t == Float32 || t == Float64, arg_types)
+        return "f64"
+    end
+    
+    # 5. Check if any argument is bool (and operation is boolean)
+    if occursin(r"==|!=|<|>|<=|>=", code) || occursin(r"&&|\|\|", code)
+        return "bool"
+    end
+    
+    # 6. Use first argument type if available
+    if !isempty(rust_arg_types)
+        return rust_arg_types[1]
+    end
+    
+    # 7. Default fallback
+    return "i64"
+end
+
+"""
     _infer_return_type(code::String) -> String
 
-Infer return type from Rust code.
-This is a simplified heuristic for Phase 1.
+Infer return type from Rust code (legacy function, kept for compatibility).
 """
 function _infer_return_type(code::String)
-    # Look for return statements or final expressions
-    if occursin(r"return\s+[0-9]", code) || occursin(r"\b[0-9]+\s*$", code)
-        return "i32"
-    elseif occursin(r"return\s+[0-9]+\.[0-9]", code) || occursin(r"\b[0-9]+\.[0-9]+\s*$", code)
-        return "f64"
-    elseif occursin(r"return\s+(true|false)", code) || occursin(r"\b(true|false)\s*$", code)
-        return "bool"
-    else
-        # Default to i64
-        return "i64"
-    end
+    return _infer_return_type_improved(code, Type[], String[])
 end
 
 """
@@ -481,24 +762,47 @@ function _generate_irust_function(func_name::String, code::String, arg_types::Ve
 end
 
 """
+    _call_irust_function(lib_name::String, func_name::String, ret_type::Type, args...)
     _call_irust_function(lib_name::String, func_name::String, args...)
 
 Call an irust function with Julia arguments.
+
+# Error Handling
+Provides improved error messages for function call failures.
 """
-function _call_irust_function(lib_name::String, func_name::String, args...)
-    # Get function pointer
-    func_ptr = get_function_pointer(lib_name, func_name)
+function _call_irust_function(lib_name::String, func_name::String, ret_type::Type, args...)
+    try
+        # Get function pointer
+        func_ptr = get_function_pointer(lib_name, func_name)
 
-    # Infer return type from first argument (simplified heuristic)
-    # This should match the type used during compilation
-    if isempty(args)
-        ret_type = Cvoid
-    else
-        first_arg_type = typeof(first(args))
-        # Use the same type as first argument for return type (heuristic)
-        ret_type = first_arg_type
+        # Call using the codegen infrastructure with explicit return type
+        result = call_rust_function(func_ptr, ret_type, args...)
+        
+        # Convert C bool (i32) to Julia Bool if needed
+        # Rust bool is represented as i32 in C ABI (0 = false, non-zero = true)
+        if ret_type == Bool
+            if isa(result, Integer)
+                return Bool(result != 0)
+            elseif isa(result, Bool)
+                return result
+            end
+        end
+        
+        return result
+    catch e
+        if isa(e, ErrorException) && occursin("not found", e.msg)
+            error("""
+            Function '$func_name' not found in library '$lib_name'.
+            
+            This may indicate:
+            1. The function was not properly compiled
+            2. A name mangling issue
+            3. The library was not loaded correctly
+            
+            Original error: $e
+            """)
+        else
+            rethrow(e)
+        end
     end
-
-    # Call using the codegen infrastructure
-    return call_rust_function(func_ptr, ret_type, args...)
 end

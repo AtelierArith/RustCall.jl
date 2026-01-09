@@ -45,6 +45,9 @@ include("rustmacro.jl")
 include("llvmoptimization.jl")
 include("llvmcodegen.jl")
 
+# Phase 2: Generics support
+include("generics.jl")
+
 # Export public API
 export @rust, @rust_str, @irust, @irust_str
 export RustPtr, RustRef, RustResult, RustOption
@@ -53,26 +56,60 @@ export rusttype_to_julia, juliatype_to_rust
 export unwrap, unwrap_or, is_ok, is_err, is_some, is_none
 export rust_string_to_julia, rust_str_to_julia
 export julia_string_to_rust, julia_string_to_cstring, cstring_to_julia_string
-export RustError, result_to_exception, unwrap_or_throw
+export RustError, CompilationError, RuntimeError, result_to_exception, unwrap_or_throw
+export format_rustc_error, suggest_fix_for_error
+# Export internal functions for testing
+export _extract_error_line_numbers, _extract_suggestions
 
 # Phase 2 exports
 export @rust_llvm
 export OptimizationConfig, optimize_module!, optimize_for_speed!, optimize_for_size!
 export RustFunctionInfo, compile_and_register_rust_function
 
+# Compiler configuration and error recovery
+export RustCompiler, compile_with_recovery
+export check_rustc_available, get_rustc_version, get_default_compiler, set_default_compiler, compile_rust_to_shared_lib
+export check_rustc_available, get_rustc_version, get_default_compiler, set_default_compiler
+
 # Extended ownership types (Phase 2)
 export RustBox, RustRc, RustArc, RustVec, RustSlice
 export drop!, is_dropped, is_valid
 export clone  # For RustRc and RustArc
+export is_rust_helpers_available  # Check if Rust helpers library is loaded
 
 # Caching (Phase 2)
 export clear_cache, get_cache_size, list_cached_libraries, cleanup_old_cache
+
+# Generics support (Phase 2)
+export register_generic_function, call_generic_function, is_generic_function
+export monomorphize_function, specialize_generic_code, infer_type_parameters
+export GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS  # For testing
 
 # Module initialization
 function __init__()
     # Check for rustc availability
     if !check_rustc_available()
         @warn "rustc not found in PATH. LastCall.jl requires Rust to be installed."
+    end
+
+    # Try to load Rust helpers library
+    if !try_load_rust_helpers()
+        # Only show warning once, not on every test
+        if !haskey(ENV, "LASTCALL_SUPPRESS_HELPERS_WARNING")
+            @warn """
+            Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work until the library is built.
+            
+            To build the library, run:
+                using Pkg; Pkg.build("LastCall")
+            Or from command line:
+                julia --project -e 'using Pkg; Pkg.build("LastCall")'
+            
+            To suppress this warning, set:
+                ENV["LASTCALL_SUPPRESS_HELPERS_WARNING"] = "1"
+            """
+        end
+    else
+        @debug "Rust helpers library loaded successfully."
     end
 end
 

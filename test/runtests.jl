@@ -7,6 +7,15 @@ include("test_cache.jl")
 # Include ownership tests
 include("test_ownership.jl")
 
+# Include array/collection tests
+include("test_arrays.jl")
+
+# Include generics tests
+include("test_generics.jl")
+
+# Include error handling tests
+include("test_error_handling.jl")
+
 # Include llvmcall tests
 include("test_llvmcall.jl")
 
@@ -99,6 +108,39 @@ include("test_llvmcall.jl")
         # Test unwrap_or_throw alias
         @test unwrap_or_throw(ok_result) == 42
         @test_throws RustError unwrap_or_throw(err_result)
+
+        # Test CompilationError creation
+        comp_err = CompilationError(
+            "Compilation failed",
+            "error: expected `;`, found `}`",
+            "fn test() {",
+            "rustc --emit=llvm-ir test.rs"
+        )
+        @test comp_err.message == "Compilation failed"
+        @test comp_err.raw_stderr == "error: expected `;`, found `}`"
+        @test comp_err.source_code == "fn test() {"
+        @test comp_err.command == "rustc --emit=llvm-ir test.rs"
+
+        # Test RuntimeError creation
+        runtime_err = RuntimeError("Function failed", "test_func", "stack trace here")
+        @test runtime_err.message == "Function failed"
+        @test runtime_err.function_name == "test_func"
+        @test runtime_err.stack_trace == "stack trace here"
+
+        # Test format_rustc_error
+        test_stderr = """
+        error: expected `;`, found `}`
+          --> test.rs:2:5
+           |
+        1  | fn test() {
+        2  | }
+           |  ^ expected `;`
+        
+        error: aborting due to previous error
+        """
+        formatted = format_rustc_error(test_stderr)
+        @test occursin("error:", formatted)
+        @test occursin("expected", formatted)
     end
 
     @testset "RustOption" begin
@@ -205,7 +247,7 @@ include("test_llvmcall.jl")
         end
 
         @testset "irust String Literal" begin
-            # Simple multiplication
+            # Simple multiplication (legacy syntax with explicit args)
             function test_double(x)
                 @irust("arg1 * 2", x)
             end
@@ -213,7 +255,7 @@ include("test_llvmcall.jl")
             result = test_double(Int32(21))
             @test result == 42
 
-            # Addition
+            # Addition (legacy syntax)
             function test_add(a, b)
                 @irust("arg1 + arg2", a, b)
             end
@@ -221,13 +263,55 @@ include("test_llvmcall.jl")
             result = test_add(Int32(10), Int32(20))
             @test result == 30
 
-            # Float multiplication
+            # Float multiplication (legacy syntax)
             function test_float_mult(x, y)
                 @irust("arg1 * arg2", x, y)
             end
 
             result = test_float_mult(3.0, 4.0)
             @test result ≈ 12.0
+
+            # New: $var syntax for automatic variable binding
+            function test_double_new(x)
+                @irust("\$x * 2")
+            end
+
+            result = test_double_new(Int32(21))
+            @test result == 42
+
+            # New: Multiple variables with $var syntax
+            function test_add_new(a, b)
+                @irust("\$a + \$b")
+            end
+
+            result = test_add_new(Int32(10), Int32(20))
+            @test result == 30
+
+            # New: Float with $var syntax
+            function test_float_mult_new(x, y)
+                @irust("\$x * \$y")
+            end
+
+            result = test_float_mult_new(3.0, 4.0)
+            @test result ≈ 12.0
+
+            # New: Complex expression with $var syntax
+            function test_complex(a, b, c)
+                @irust("\$a + \$b * \$c")
+            end
+
+            result = test_complex(Int32(1), Int32(2), Int32(3))
+            @test result == 7
+
+            # New: Boolean operations
+            function test_compare(a, b)
+                @irust("\$a > \$b")
+            end
+
+            result = test_compare(Int32(10), Int32(5))
+            @test result == true
+            result = test_compare(Int32(5), Int32(10))
+            @test result == false
         end
 
         @testset "String Support" begin
@@ -348,59 +432,139 @@ include("test_llvmcall.jl")
             end
 
             @testset "Extended Ownership Types" begin
-                # Use UInt to construct pointers (required on 64-bit systems)
-                addr1 = UInt(0x1000)
-                addr2 = UInt(0x2000)
-                addr3 = UInt(0x3000)
-                addr4 = UInt(0x4000)
-                addr5 = UInt(0x5000)
+                # Only test with dummy pointers if Rust helpers library is NOT available
+                # (to avoid crash when drop! tries to free invalid pointer)
+                if !is_rust_helpers_available()
+                    # Use UInt to construct pointers (required on 64-bit systems)
+                    addr1 = UInt(0x1000)
+                    addr2 = UInt(0x2000)
+                    addr3 = UInt(0x3000)
+                    addr4 = UInt(0x4000)
+                    addr5 = UInt(0x5000)
 
-                # Test RustBox
-                box = RustBox{Int32}(Ptr{Cvoid}(addr1))
-                @test box.ptr == Ptr{Cvoid}(addr1)
-                @test !box.dropped
-                @test is_valid(box)
+                    # Test RustBox
+                    box = RustBox{Int32}(Ptr{Cvoid}(addr1))
+                    @test box.ptr == Ptr{Cvoid}(addr1)
+                    @test !box.dropped
+                    @test is_valid(box)
 
-                drop!(box)
-                @test box.dropped
-                @test !is_valid(box)
+                    drop!(box)
+                    @test box.dropped
+                    @test !is_valid(box)
 
-                # Test RustRc
-                rc = RustRc{Float64}(Ptr{Cvoid}(addr2))
-                @test rc.ptr == Ptr{Cvoid}(addr2)
-                @test !rc.dropped
+                    # Test RustRc
+                    rc = RustRc{Float64}(Ptr{Cvoid}(addr2))
+                    @test rc.ptr == Ptr{Cvoid}(addr2)
+                    @test !rc.dropped
 
-                drop!(rc)
-                @test rc.dropped
-                @test is_dropped(rc)
+                    drop!(rc)
+                    @test rc.dropped
+                    @test is_dropped(rc)
 
-                # Test RustArc
-                arc = RustArc{String}(Ptr{Cvoid}(addr3))
-                @test arc.ptr == Ptr{Cvoid}(addr3)
-                @test !arc.dropped
+                    # Test RustArc
+                    arc = RustArc{String}(Ptr{Cvoid}(addr3))
+                    @test arc.ptr == Ptr{Cvoid}(addr3)
+                    @test !arc.dropped
 
-                drop!(arc)
-                @test arc.dropped
+                    drop!(arc)
+                    @test arc.dropped
 
-                # Test RustVec
-                vec = RustVec{Int32}(Ptr{Cvoid}(addr4), UInt(10), UInt(20))
-                @test vec.ptr == Ptr{Cvoid}(addr4)
-                @test vec.len == 10
-                @test vec.cap == 20
-                @test length(vec) == 10
-                @test !vec.dropped
+                    # Test RustVec
+                    vec = RustVec{Int32}(Ptr{Cvoid}(addr4), UInt(10), UInt(20))
+                    @test vec.ptr == Ptr{Cvoid}(addr4)
+                    @test vec.len == 10
+                    @test vec.cap == 20
+                    @test length(vec) == 10
+                    @test !vec.dropped
 
-                drop!(vec)
-                @test vec.dropped
+                    drop!(vec)
+                    @test vec.dropped
 
-                # Test RustSlice
-                slice = RustSlice{Int32}(Ptr{Int32}(addr5), UInt(5))
-                @test slice.ptr == Ptr{Int32}(addr5)
-                @test slice.len == 5
-                @test length(slice) == 5
+                    # Test RustSlice
+                    slice = RustSlice{Int32}(Ptr{Int32}(addr5), UInt(5))
+                    @test slice.ptr == Ptr{Int32}(addr5)
+                    @test slice.len == 5
+                    @test length(slice) == 5
+                else
+                    # When Rust helpers library is available, test with real allocations
+                    # These tests are covered in test_ownership.jl
+                    @test is_rust_helpers_available()
+                end
             end
         end
     else
         @warn "rustc not found, skipping compilation tests"
+    end
+
+    @testset "Error Handling Enhancement" begin
+        if check_rustc_available()
+            @testset "CompilationError formatting" begin
+                # Test that CompilationError displays formatted output
+                # Use actually invalid Rust syntax (mismatched braces)
+                invalid_code = """
+                #[no_mangle]
+                pub extern "C" fn test() -> i32 {
+                    let x = {
+                        42
+                    // Missing closing brace for let block
+                }
+                """
+                
+                # This should throw a CompilationError
+                compiler = RustCompiler(debug_mode=false)
+                @test_throws CompilationError compile_rust_to_shared_lib(invalid_code; compiler=compiler)
+            end
+
+            @testset "Debug mode" begin
+                # Test debug mode configuration
+                debug_compiler = RustCompiler(debug_mode=true)
+                @test debug_compiler.debug_mode == true
+                @test debug_compiler.debug_dir === nothing
+
+                # Test debug mode with custom directory
+                debug_dir = mktempdir()
+                debug_compiler2 = RustCompiler(debug_mode=true, debug_dir=debug_dir)
+                @test debug_compiler2.debug_mode == true
+                @test debug_compiler2.debug_dir == debug_dir
+
+                # Clean up
+                rm(debug_dir, recursive=true, force=true)
+            end
+
+            @testset "Error recovery" begin
+                # Test compile_with_recovery with invalid code
+                # Use actually invalid Rust syntax (mismatched braces)
+                invalid_code = """
+                #[no_mangle]
+                pub extern "C" fn test() -> i32 {
+                    let x = {
+                        42
+                    // Missing closing brace for let block
+                }
+                """
+                
+                compiler = RustCompiler(optimization_level=3, debug_mode=false)
+                @test_throws CompilationError compile_with_recovery(invalid_code, compiler; retry_count=1)
+            end
+
+            @testset "Valid code compilation" begin
+                # Test that valid code compiles successfully
+                valid_code = """
+                #[no_mangle]
+                pub extern "C" fn test() -> i32 {
+                    return 42;
+                }
+                """
+                
+                compiler = RustCompiler(debug_mode=false)
+                lib_path = compile_rust_to_shared_lib(valid_code; compiler=compiler)
+                @test isfile(lib_path)
+                
+                # Clean up
+                rm(dirname(lib_path), recursive=true, force=true)
+            end
+        else
+            @warn "rustc not found, skipping error handling enhancement tests"
+        end
     end
 end

@@ -117,6 +117,31 @@ pub unsafe extern "C" fn rust_rc_clone(ptr: *mut c_void) -> *mut c_void {
     ptr
 }
 
+/// Clone an Rc<i32> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_rc_clone_i32(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Reconstruct Rc from raw pointer, clone it, then return new raw pointer
+    let rc = Rc::from_raw(ptr as *const i32);
+    let cloned = Rc::clone(&rc);
+    std::mem::forget(rc);  // Keep original reference alive
+    Rc::into_raw(cloned) as *mut c_void
+}
+
+/// Clone an Rc<i64> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_rc_clone_i64(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let rc = Rc::from_raw(ptr as *const i64);
+    let cloned = Rc::clone(&rc);
+    std::mem::forget(rc);  // Keep original reference alive
+    Rc::into_raw(cloned) as *mut c_void
+}
+
 /// Drop an Rc<i32> (decrement reference count)
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_drop_i32(ptr: *mut c_void) {
@@ -165,6 +190,43 @@ pub unsafe extern "C" fn rust_arc_clone(ptr: *mut c_void) -> *mut c_void {
     // This is unsafe - we assume the pointer is valid Arc
     // In practice, type-specific clone functions should be used
     ptr
+}
+
+/// Clone an Arc<i32> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_arc_clone_i32(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // Reconstruct Arc from raw pointer, clone it, then return new raw pointer
+    let arc = Arc::from_raw(ptr as *const i32);
+    let cloned = Arc::clone(&arc);
+    std::mem::forget(arc);  // Keep original reference alive
+    Arc::into_raw(cloned) as *mut c_void
+}
+
+/// Clone an Arc<i64> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_arc_clone_i64(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let arc = Arc::from_raw(ptr as *const i64);
+    let cloned = Arc::clone(&arc);
+    std::mem::forget(arc);  // Keep original reference alive
+    Arc::into_raw(cloned) as *mut c_void
+}
+
+/// Clone an Arc<f64> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_arc_clone_f64(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let arc = Arc::from_raw(ptr as *const f64);
+    let cloned = Arc::clone(&arc);
+    std::mem::forget(arc);  // Keep original reference alive
+    Arc::into_raw(cloned) as *mut c_void
 }
 
 /// Drop an Arc<i32> (decrement reference count)
@@ -221,4 +283,101 @@ pub unsafe extern "C" fn rust_vec_drop_i32(vec: CVec) {
     if !vec.ptr.is_null() && vec.len > 0 {
         let _ = Vec::from_raw_parts(vec.ptr as *mut i32, vec.len, vec.cap);
     }
+}
+
+/// Create a Vec<i32> from a C array
+/// # Safety
+/// The caller must ensure that `data` points to a valid array of at least `len` elements
+#[no_mangle]
+pub unsafe extern "C" fn rust_vec_new_from_array_i32(data: *const i32, len: usize) -> CVec {
+    if data.is_null() || len == 0 {
+        return CVec {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        };
+    }
+    
+    // Create a Vec from the slice
+    let slice = std::slice::from_raw_parts(data, len);
+    let vec: Vec<i32> = slice.to_vec();
+    
+    let len = vec.len();
+    let cap = vec.capacity();
+    let ptr = vec.as_ptr() as *mut c_void;
+    std::mem::forget(vec);  // Transfer ownership to caller
+    
+    CVec { ptr, len, cap }
+}
+
+/// Create a Vec<i64> from a C array
+/// # Safety
+/// The caller must ensure that `data` points to a valid array of at least `len` elements
+#[no_mangle]
+pub unsafe extern "C" fn rust_vec_new_from_array_i64(data: *const i64, len: usize) -> CVec {
+    if data.is_null() || len == 0 {
+        return CVec {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        };
+    }
+    
+    let slice = std::slice::from_raw_parts(data, len);
+    let vec: Vec<i64> = slice.to_vec();
+    
+    let len = vec.len();
+    let cap = vec.capacity();
+    let ptr = vec.as_ptr() as *mut c_void;
+    std::mem::forget(vec);
+    
+    CVec { ptr, len, cap }
+}
+
+/// Create a Vec<f32> from a C array
+/// # Safety
+/// The caller must ensure that `data` points to a valid array of at least `len` elements
+#[no_mangle]
+pub unsafe extern "C" fn rust_vec_new_from_array_f32(data: *const f32, len: usize) -> CVec {
+    if data.is_null() || len == 0 {
+        return CVec {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        };
+    }
+    
+    let slice = std::slice::from_raw_parts(data, len);
+    let vec: Vec<f32> = slice.to_vec();
+    
+    let len = vec.len();
+    let cap = vec.capacity();
+    let ptr = vec.as_ptr() as *mut c_void;
+    std::mem::forget(vec);
+    
+    CVec { ptr, len, cap }
+}
+
+/// Create a Vec<f64> from a C array
+/// # Safety
+/// The caller must ensure that `data` points to a valid array of at least `len` elements
+#[no_mangle]
+pub unsafe extern "C" fn rust_vec_new_from_array_f64(data: *const f64, len: usize) -> CVec {
+    if data.is_null() || len == 0 {
+        return CVec {
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        };
+    }
+    
+    let slice = std::slice::from_raw_parts(data, len);
+    let vec: Vec<f64> = slice.to_vec();
+    
+    let len = vec.len();
+    let cap = vec.capacity();
+    let ptr = vec.as_ptr() as *mut c_void;
+    std::mem::forget(vec);
+    
+    CVec { ptr, len, cap }
 }

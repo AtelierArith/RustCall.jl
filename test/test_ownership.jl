@@ -17,47 +17,6 @@ using Test
         @test RustBox{Bool} <: Any
     end
 
-    @testset "RustBox State Management" begin
-        # Create a RustBox with a dummy pointer (for testing without Rust library)
-        box = RustBox{Int32}(Ptr{Cvoid}(UInt(0x1000)))
-
-        @test !box.dropped
-        @test box.ptr != C_NULL
-        @test is_valid(box)
-
-        # Test drop!
-        drop!(box)
-        @test box.dropped
-        @test !is_valid(box)
-
-        # Test is_dropped
-        @test is_dropped(box)
-    end
-
-    @testset "RustRc State Management" begin
-        rc = RustRc{Int32}(Ptr{Cvoid}(UInt(0x1000)))
-
-        @test !rc.dropped
-        @test rc.ptr != C_NULL
-        @test is_valid(rc)
-
-        drop!(rc)
-        @test rc.dropped
-        @test !is_valid(rc)
-    end
-
-    @testset "RustArc State Management" begin
-        arc = RustArc{Int32}(Ptr{Cvoid}(UInt(0x1000)))
-
-        @test !arc.dropped
-        @test arc.ptr != C_NULL
-        @test is_valid(arc)
-
-        drop!(arc)
-        @test arc.dropped
-        @test !is_valid(arc)
-    end
-
     @testset "RustBox Constructors" begin
         # Test that constructors exist (they may fail without Rust library)
         # We'll just check that the functions are defined
@@ -79,9 +38,54 @@ using Test
         @test hasmethod(RustArc, Tuple{Float64})
     end
 
-    # Only run full integration tests if Rust helpers library is available
-    # For now, we'll skip these until the library is compiled
-    if false  # Set to true when Rust helpers library is compiled
+    # Only run dummy pointer tests if Rust helpers library is NOT available
+    # (to avoid crash when drop! tries to free invalid pointer)
+    if !is_rust_helpers_available()
+        @testset "RustBox State Management (No Library)" begin
+            # Create a RustBox with a dummy pointer (for testing without Rust library)
+            box = RustBox{Int32}(Ptr{Cvoid}(UInt(0x1000)))
+
+            @test !box.dropped
+            @test box.ptr != C_NULL
+            @test is_valid(box)
+
+            # Test drop! (will only mark as dropped, no actual Rust call)
+            drop!(box)
+            @test box.dropped
+            @test !is_valid(box)
+
+            # Test is_dropped
+            @test is_dropped(box)
+        end
+
+        @testset "RustRc State Management (No Library)" begin
+            rc = RustRc{Int32}(Ptr{Cvoid}(UInt(0x1000)))
+
+            @test !rc.dropped
+            @test rc.ptr != C_NULL
+            @test is_valid(rc)
+
+            drop!(rc)
+            @test rc.dropped
+            @test !is_valid(rc)
+        end
+
+        @testset "RustArc State Management (No Library)" begin
+            arc = RustArc{Int32}(Ptr{Cvoid}(UInt(0x1000)))
+
+            @test !arc.dropped
+            @test arc.ptr != C_NULL
+            @test is_valid(arc)
+
+            drop!(arc)
+            @test arc.dropped
+            @test !is_valid(arc)
+        end
+
+        @warn "Rust helpers library not available, skipping full integration tests"
+        @warn "To enable these tests, build the library with: using Pkg; Pkg.build(\"LastCall\")"
+    else
+        # Full integration tests with actual Rust library
         @testset "RustBox Full Integration" begin
             box = RustBox(Int32(42))
             @test is_valid(box)
@@ -123,7 +127,5 @@ using Test
             drop!(arc2)
             @test is_dropped(arc2)
         end
-    else
-        @warn "Rust helpers library not compiled, skipping full integration tests"
     end
 end

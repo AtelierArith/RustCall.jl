@@ -4,11 +4,31 @@
     RustCompiler
 
 Configuration for the Rust compiler.
+
+# Fields
+- `target_triple::String`: Target triple for compilation
+- `optimization_level::Int`: Optimization level 0-3
+- `emit_debug_info::Bool`: Whether to emit debug info
+- `debug_mode::Bool`: Enable debug mode (keep intermediate files, verbose output)
+- `debug_dir::Union{String, Nothing}`: Directory to keep debug files (default: nothing = use temp dir)
 """
 struct RustCompiler
     target_triple::String
     optimization_level::Int  # 0-3
     emit_debug_info::Bool
+    debug_mode::Bool
+    debug_dir::Union{String, Nothing}
+
+    function RustCompiler(
+        target_triple::String,
+        optimization_level::Int,
+        emit_debug_info::Bool,
+        debug_mode::Bool,
+        debug_dir::Union{String, Nothing}
+    )
+        @assert 0 <= optimization_level <= 3 "Optimization level must be 0-3"
+        new(target_triple, optimization_level, emit_debug_info, debug_mode, debug_dir)
+    end
 end
 
 """
@@ -20,14 +40,17 @@ Create a RustCompiler with the specified settings.
 - `target_triple::String`: Target triple for compilation (default: auto-detect)
 - `optimization_level::Int`: Optimization level 0-3 (default: 2)
 - `emit_debug_info::Bool`: Whether to emit debug info (default: false)
+- `debug_mode::Bool`: Enable debug mode (default: false)
+- `debug_dir::Union{String, Nothing}`: Directory to keep debug files (default: nothing)
 """
 function RustCompiler(;
     target_triple::String = get_default_target(),
     optimization_level::Int = 2,
-    emit_debug_info::Bool = false
+    emit_debug_info::Bool = false,
+    debug_mode::Bool = false,
+    debug_dir::Union{String, Nothing} = nothing
 )
-    @assert 0 <= optimization_level <= 3 "Optimization level must be 0-3"
-    RustCompiler(target_triple, optimization_level, emit_debug_info)
+    RustCompiler(target_triple, optimization_level, emit_debug_info, debug_mode, debug_dir)
 end
 
 """
@@ -132,10 +155,19 @@ Compile Rust code to LLVM IR and return the path to the generated .ll file.
 
 # Returns
 - Path to the generated LLVM IR file (.ll)
+
+# Throws
+- `CompilationError` if compilation fails
 """
 function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_default_compiler())
     # Create a unique temporary directory for this compilation
-    tmp_dir = mktempdir()
+    if compiler.debug_mode && compiler.debug_dir !== nothing
+        tmp_dir = compiler.debug_dir
+        mkpath(tmp_dir)
+    else
+        tmp_dir = mktempdir()
+    end
+    
     rs_file = joinpath(tmp_dir, "rust_code.rs")
     ll_file = joinpath(tmp_dir, "rust_code.ll")
 
@@ -158,20 +190,80 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
         push!(cmd_args, "-g")
     end
 
-    # Run rustc
+    # Run rustc and capture stderr
     cmd = Cmd(cmd_args)
+    cmd_str = join(cmd_args, " ")
+    
     try
-        run(cmd)
+        # Capture stderr for better error messages
+        stderr_io = IOBuffer()
+        proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
+        wait(proc)
+        
+        if !success(proc)
+            stderr_str = String(take!(stderr_io))
+            close(stderr_io)
+            
+            # Clean up on error (unless debug mode)
+            if !compiler.debug_mode
+                rm(tmp_dir, recursive=true, force=true)
+            else
+                @warn "Debug mode: keeping intermediate files in $tmp_dir"
+                @info "Debug mode: You can inspect the files to debug the compilation error"
+                @info "Debug mode: Source file" file=rs_file
+                @info "Debug mode: Command" cmd=cmd_str
+            end
+            
+            # Format and throw compilation error
+            throw(CompilationError(
+                "Failed to compile Rust code to LLVM IR",
+                stderr_str,
+                code,
+                cmd_str
+            ))
+        end
+        close(stderr_io)
     catch e
-        # Clean up on error
-        rm(tmp_dir, recursive=true, force=true)
-        error("Failed to compile Rust code:\n$e\n\nSource code:\n$code")
+        if isa(e, CompilationError)
+            rethrow(e)
+        end
+        
+        # Clean up on error (unless debug mode)
+        if !compiler.debug_mode
+            rm(tmp_dir, recursive=true, force=true)
+        else
+            @warn "Debug mode: keeping intermediate files in $tmp_dir"
+        end
+        
+        # Fallback error
+        throw(CompilationError(
+            "Unexpected error during compilation: $e",
+            "",
+            code,
+            cmd_str
+        ))
     end
 
     # Verify the output file exists
     if !isfile(ll_file)
-        rm(tmp_dir, recursive=true, force=true)
-        error("LLVM IR file was not generated. Check rustc output.")
+        if !compiler.debug_mode
+            rm(tmp_dir, recursive=true, force=true)
+        end
+        throw(CompilationError(
+            "LLVM IR file was not generated",
+            "Output file does not exist: $ll_file",
+            code,
+            cmd_str
+        ))
+    end
+
+    # Debug mode: print file locations and additional info
+    if compiler.debug_mode
+        @info "Debug mode: LLVM IR generated" file=ll_file source=rs_file
+        @info "Debug mode: Temporary directory" dir=tmp_dir
+        if compiler.emit_debug_info
+            @info "Debug mode: Debug info enabled"
+        end
     end
 
     return ll_file
@@ -190,10 +282,19 @@ Compile Rust code to a shared library and return the path.
 
 # Returns
 - Path to the generated shared library
+
+# Throws
+- `CompilationError` if compilation fails
 """
 function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_default_compiler())
     # Create a unique temporary directory for this compilation
-    tmp_dir = mktempdir()
+    if compiler.debug_mode && compiler.debug_dir !== nothing
+        tmp_dir = compiler.debug_dir
+        mkpath(tmp_dir)
+    else
+        tmp_dir = mktempdir()
+    end
+    
     rs_file = joinpath(tmp_dir, "rust_code.rs")
     lib_ext = get_library_extension()
     lib_file = joinpath(tmp_dir, "librust_code$lib_ext")
@@ -216,19 +317,81 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
         push!(cmd_args, "-g")
     end
 
-    # Run rustc
+    # Run rustc and capture stderr
     cmd = Cmd(cmd_args)
+    cmd_str = join(cmd_args, " ")
+    
     try
-        run(cmd)
+        # Capture stderr for better error messages
+        stderr_io = IOBuffer()
+        proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
+        wait(proc)
+        
+        if !success(proc)
+            stderr_str = String(take!(stderr_io))
+            close(stderr_io)
+            
+            # Clean up on error (unless debug mode)
+            if !compiler.debug_mode
+                rm(tmp_dir, recursive=true, force=true)
+            else
+                @warn "Debug mode: keeping intermediate files in $tmp_dir"
+                @info "Debug mode: You can inspect the files to debug the compilation error"
+                @info "Debug mode: Source file" file=rs_file
+                @info "Debug mode: Command" cmd=cmd_str
+            end
+            
+            # Format and throw compilation error
+            throw(CompilationError(
+                "Failed to compile Rust code to shared library",
+                stderr_str,
+                code,
+                cmd_str
+            ))
+        end
+        close(stderr_io)
     catch e
-        rm(tmp_dir, recursive=true, force=true)
-        error("Failed to compile Rust code to shared library:\n$e\n\nSource code:\n$code")
+        if isa(e, CompilationError)
+            rethrow(e)
+        end
+        
+        # Clean up on error (unless debug mode)
+        if !compiler.debug_mode
+            rm(tmp_dir, recursive=true, force=true)
+        else
+            @warn "Debug mode: keeping intermediate files in $tmp_dir"
+        end
+        
+        # Fallback error
+        throw(CompilationError(
+            "Unexpected error during compilation: $e",
+            "",
+            code,
+            cmd_str
+        ))
     end
 
     # Verify the output file exists
     if !isfile(lib_file)
-        rm(tmp_dir, recursive=true, force=true)
-        error("Shared library was not generated. Check rustc output.")
+        if !compiler.debug_mode
+            rm(tmp_dir, recursive=true, force=true)
+        end
+        throw(CompilationError(
+            "Shared library was not generated",
+            "Output file does not exist: $lib_file",
+            code,
+            cmd_str
+        ))
+    end
+
+    # Debug mode: print file locations and additional info
+    if compiler.debug_mode
+        @info "Debug mode: Shared library generated" file=lib_file source=rs_file
+        @info "Debug mode: Temporary directory" dir=tmp_dir
+        if compiler.emit_debug_info
+            @info "Debug mode: Debug info enabled"
+        end
+        @info "Debug mode: Optimization level" level=compiler.optimization_level
     end
 
     return lib_file
@@ -253,4 +416,86 @@ function wrap_rust_code(code::String)
     end
 
     return code
+end
+
+"""
+    compile_with_recovery(code::String, compiler::RustCompiler; 
+                          retry_count::Int=1) -> String
+
+Compile Rust code with error recovery support.
+If compilation fails, attempts to retry with different compiler settings.
+
+# Arguments
+- `code::String`: Rust source code
+- `compiler::RustCompiler`: Compiler configuration
+
+# Keyword Arguments
+- `retry_count::Int`: Number of retry attempts (default: 1)
+
+# Returns
+- Path to the generated shared library
+
+# Throws
+- `CompilationError` if all recovery attempts fail
+
+# Note
+Cache recovery should be handled by the caller (e.g., in `ruststr.jl`).
+This function only handles retry with different compiler settings.
+"""
+function compile_with_recovery(
+    code::String, 
+    compiler::RustCompiler;
+    retry_count::Int = 1
+)
+    wrapped_code = wrap_rust_code(code)
+    
+    # Try normal compilation first
+    try
+        return compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
+    catch e
+        if !isa(e, CompilationError)
+            rethrow(e)
+        end
+        
+        # Attempt recovery
+        @warn "Compilation failed, attempting recovery..."
+        
+        # Recovery attempt 1: Retry with lower optimization level
+        if retry_count > 0 && compiler.optimization_level > 0
+            @info "Recovery: Retrying with lower optimization level"
+            retry_compiler = RustCompiler(
+                compiler.target_triple,
+                compiler.optimization_level - 1,
+                compiler.emit_debug_info,
+                compiler.debug_mode,
+                compiler.debug_dir
+            )
+            try
+                return compile_rust_to_shared_lib(wrapped_code; compiler=retry_compiler)
+            catch retry_e
+                @debug "Retry with lower optimization failed: $retry_e"
+            end
+        end
+        
+        # Recovery attempt 2: Retry with debug info enabled
+        if retry_count > 0 && !compiler.emit_debug_info
+            @info "Recovery: Retrying with debug info enabled"
+            retry_compiler = RustCompiler(
+                compiler.target_triple,
+                compiler.optimization_level,
+                true,  # Enable debug info
+                compiler.debug_mode,
+                compiler.debug_dir
+            )
+            try
+                return compile_rust_to_shared_lib(wrapped_code; compiler=retry_compiler)
+            catch retry_e
+                @debug "Retry with debug info failed: $retry_e"
+            end
+        end
+        
+        # All recovery attempts failed, rethrow original error
+        @error "All recovery attempts failed"
+        rethrow(e)
+    end
 end

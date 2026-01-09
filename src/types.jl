@@ -514,6 +514,300 @@ struct CRustSlice
 end
 
 # ============================================================================
+# Indexing and array operations for RustVec
+# ============================================================================
+
+"""
+    getindex(vec::RustVec{T}, i::Int) -> T
+
+Get the element at index `i` in a RustVec.
+
+# Arguments
+- `vec`: The RustVec to index into
+- `i`: The index (1-based, like Julia arrays)
+
+# Example
+```julia
+vec = RustVec{Int32}(ptr, 10, 20)
+value = vec[1]  # Get first element
+```
+
+# Note
+This performs bounds checking. The index must be between 1 and `length(vec)`.
+"""
+function Base.getindex(vec::RustVec{T}, i::Int) where {T}
+    if vec.dropped || vec.ptr == C_NULL
+        error("Cannot index into a dropped RustVec")
+    end
+    
+    if i < 1 || i > length(vec)
+        throw(BoundsError(vec, i))
+    end
+    
+    # Convert to 0-based index for pointer arithmetic
+    idx = i - 1
+    # Get pointer to the element
+    elem_ptr = vec.ptr + idx * sizeof(T)
+    # Read the value
+    unsafe_load(Ptr{T}(elem_ptr))
+end
+
+"""
+    setindex!(vec::RustVec{T}, value, i::Int) -> value
+
+Set the element at index `i` in a RustVec to `value`.
+
+# Arguments
+- `vec`: The RustVec to modify
+- `value`: The value to set (must be convertible to type T)
+- `i`: The index (1-based, like Julia arrays)
+
+# Example
+```julia
+vec = RustVec{Int32}(ptr, 10, 20)
+vec[1] = 42  # Set first element to 42
+```
+
+# Note
+This performs bounds checking. The index must be between 1 and `length(vec)`.
+"""
+function Base.setindex!(vec::RustVec{T}, value, i::Int) where {T}
+    if vec.dropped || vec.ptr == C_NULL
+        error("Cannot set index in a dropped RustVec")
+    end
+    
+    if i < 1 || i > length(vec)
+        throw(BoundsError(vec, i))
+    end
+    
+    # Convert value to type T
+    typed_value = convert(T, value)
+    
+    # Convert to 0-based index for pointer arithmetic
+    idx = i - 1
+    # Get pointer to the element
+    elem_ptr = vec.ptr + idx * sizeof(T)
+    # Write the value
+    unsafe_store!(Ptr{T}(elem_ptr), typed_value)
+    return value
+end
+
+"""
+    getindex(slice::RustSlice{T}, i::Int) -> T
+
+Get the element at index `i` in a RustSlice.
+
+# Arguments
+- `slice`: The RustSlice to index into
+- `i`: The index (1-based, like Julia arrays)
+
+# Example
+```julia
+slice = RustSlice{Int32}(ptr, 10)
+value = slice[1]  # Get first element
+```
+
+# Note
+This performs bounds checking. The index must be between 1 and `length(slice)`.
+"""
+function Base.getindex(slice::RustSlice{T}, i::Int) where {T}
+    if i < 1 || i > length(slice)
+        throw(BoundsError(slice, i))
+    end
+    
+    # Convert to 0-based index for pointer arithmetic
+    idx = i - 1
+    # Get pointer to the element
+    elem_ptr = slice.ptr + idx * sizeof(T)
+    # Read the value
+    unsafe_load(elem_ptr)
+end
+
+# ============================================================================
+# Iterator support for RustVec and RustSlice
+# ============================================================================
+
+"""
+    iterate(vec::RustVec{T}, state=1) -> Union{Tuple{T, Int}, Nothing}
+
+Iterate over elements in a RustVec.
+
+# Example
+```julia
+vec = RustVec{Int32}(ptr, 10, 20)
+for x in vec
+    println(x)
+end
+```
+"""
+function Base.iterate(vec::RustVec{T}, state::Int=1) where {T}
+    if vec.dropped || vec.ptr == C_NULL || state > length(vec)
+        return nothing
+    end
+    
+    value = vec[state]
+    return (value, state + 1)
+end
+
+"""
+    iterate(slice::RustSlice{T}, state=1) -> Union{Tuple{T, Int}, Nothing}
+
+Iterate over elements in a RustSlice.
+
+# Example
+```julia
+slice = RustSlice{Int32}(ptr, 10)
+for x in slice
+    println(x)
+end
+```
+"""
+function Base.iterate(slice::RustSlice{T}, state::Int=1) where {T}
+    if state > length(slice)
+        return nothing
+    end
+    
+    value = slice[state]
+    return (value, state + 1)
+end
+
+# Iterator traits
+Base.IteratorSize(::Type{<:RustVec}) = Base.HasLength()
+Base.IteratorSize(::Type{<:RustSlice}) = Base.HasLength()
+Base.IteratorEltype(::Type{RustVec{T}}) where {T} = Base.HasEltype()
+Base.IteratorEltype(::Type{RustSlice{T}}) where {T} = Base.HasEltype()
+Base.eltype(::Type{RustVec{T}}) where {T} = T
+Base.eltype(::Type{RustSlice{T}}) where {T} = T
+
+# ============================================================================
+# Conversion between Julia arrays and RustVec
+# ============================================================================
+
+"""
+    Vector(vec::RustVec{T}) -> Vector{T}
+
+Convert a RustVec to a Julia Vector by copying the data.
+
+# Example
+```julia
+vec = RustVec{Int32}(ptr, 10, 20)
+julia_vec = Vector(vec)  # Creates a new Julia array
+```
+
+# Note
+This creates a copy of the data. Modifications to the returned Vector
+will not affect the original RustVec.
+"""
+function Base.Vector(vec::RustVec{T}) where {T}
+    if vec.dropped || vec.ptr == C_NULL
+        error("Cannot convert a dropped RustVec to a Vector")
+    end
+    
+    len = length(vec)
+    result = Vector{T}(undef, len)
+    
+    # Copy elements
+    for i in 1:len
+        result[i] = vec[i]
+    end
+    
+    return result
+end
+
+"""
+    collect(vec::RustVec{T}) -> Vector{T}
+
+Alias for `Vector(vec::RustVec{T})`. Convert a RustVec to a Julia Vector.
+
+# Example
+```julia
+vec = RustVec{Int32}(ptr, 10, 20)
+julia_vec = collect(vec)  # Creates a new Julia array
+```
+"""
+Base.collect(vec::RustVec{T}) where {T} = Vector(vec)
+
+"""
+    RustVec(v::Vector{T}) -> RustVec{T}
+
+Create a RustVec from a Julia Vector by copying the data to Rust memory.
+
+# Arguments
+- `v`: A Julia Vector to convert
+
+# Example
+```julia
+julia_vec = [1, 2, 3, 4, 5]
+rust_vec = RustVec(julia_vec)  # Creates a RustVec{Int32}
+```
+
+# Note
+This function requires the Rust helpers library to be built.
+The data is copied to Rust-managed memory.
+"""
+function RustVec(v::Vector{T}) where T
+    # Check if Rust helpers library is available
+    if !is_rust_helpers_available()
+        error("""
+        RustVec creation from Julia Vector requires the Rust helpers library.
+        Build it with: using Pkg; Pkg.build("LastCall")
+        """)
+    end
+    
+    lib = get_rust_helpers_lib()
+    if lib === nothing
+        error("Rust helpers library not loaded")
+    end
+    
+    # Get pointer to data and length
+    data_ptr = pointer(v)
+    len = length(v)
+    
+    # Call appropriate FFI function based on type
+    if T == Int32
+        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_i32)
+        cvec = ccall(fn_ptr, CRustVec, (Ptr{Int32}, UInt), data_ptr, len)
+    elseif T == Int64
+        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_i64)
+        cvec = ccall(fn_ptr, CRustVec, (Ptr{Int64}, UInt), data_ptr, len)
+    elseif T == Float32
+        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_f32)
+        cvec = ccall(fn_ptr, CRustVec, (Ptr{Float32}, UInt), data_ptr, len)
+    elseif T == Float64
+        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_f64)
+        cvec = ccall(fn_ptr, CRustVec, (Ptr{Float64}, UInt), data_ptr, len)
+    else
+        error("Unsupported type for RustVec creation: $T. Supported types: Int32, Int64, Float32, Float64")
+    end
+    
+    # Create RustVec from CVec
+    vec = RustVec{T}(cvec.ptr, UInt(cvec.len), UInt(cvec.cap))
+    
+    # Set up finalizer to call Rust drop function
+    # drop_rust_vec is defined in memory.jl, which is loaded after types.jl
+    # We use Base.invokelatest to resolve the function at runtime
+    finalizer(vec) do v
+        if !v.dropped && v.ptr != C_NULL
+            try
+                # Use Base.invokelatest to call drop_rust_vec at runtime
+                # This ensures memory.jl is loaded when this runs
+                Base.invokelatest(drop_rust_vec, v)
+            catch e
+                # If drop_rust_vec is not available or fails, just mark as dropped
+                @warn "Error dropping RustVec in finalizer: $e"
+                v.dropped = true
+                v.ptr = C_NULL
+            end
+        end
+    end
+    
+    return vec
+end
+
+# Note: Type-specific constructors are not needed because 
+# the generic RustVec(v::Vector{T}) handles type inference automatically
+
+# ============================================================================
 # Utility functions for ownership types
 # ============================================================================
 

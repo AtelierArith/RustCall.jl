@@ -6,6 +6,9 @@ using Libdl
 # Registry for Rust helper library
 const RUST_HELPERS_LIB = Ref{Union{Ptr{Cvoid}, Nothing}}(nothing)
 
+# Flag to track if we've already warned about missing library
+const DROP_WARNING_SHOWN = Ref{Bool}(false)
+
 """
     get_rust_helpers_lib() -> Union{Ptr{Cvoid}, Nothing}
 
@@ -32,12 +35,92 @@ end
 Load the Rust helpers library from a file path.
 """
 function load_rust_helpers_lib(lib_path::String)
-    lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-    if lib_handle == C_NULL
-        error("Failed to load Rust helpers library: $lib_path")
+    if !isfile(lib_path)
+        error("Rust helpers library not found at: $lib_path")
     end
-    RUST_HELPERS_LIB[] = lib_handle
-    return lib_handle
+    
+    try
+        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        if lib_handle == C_NULL
+            error("Failed to load Rust helpers library: $lib_path (dlopen returned NULL)")
+        end
+        RUST_HELPERS_LIB[] = lib_handle
+        return lib_handle
+    catch e
+        error("Failed to load Rust helpers library from $lib_path: $e")
+    end
+end
+
+"""
+    get_rust_helpers_lib_path() -> Union{String, Nothing}
+
+Get the path to the Rust helpers library if it exists (either built or in a standard location).
+Returns nothing if the library is not found.
+"""
+function get_rust_helpers_lib_path()
+    # Try to find the library relative to the package directory
+    # @__DIR__ points to src/, so dirname(@__DIR__) gives package root
+    pkg_dir = dirname(@__DIR__)  # Go up from src/ to package root
+    deps_dir = joinpath(pkg_dir, "deps")
+    helpers_dir = joinpath(deps_dir, "rust_helpers")
+    lib_ext = get_library_extension()
+    target_dir = joinpath(helpers_dir, "target", "release")
+
+    # Library name
+    if Sys.iswindows()
+        lib_name = "rust_helpers.dll"
+    else
+        lib_name = "librust_helpers$(lib_ext)"
+    end
+
+    lib_path = joinpath(target_dir, lib_name)
+
+    if isfile(lib_path)
+        return lib_path
+    end
+
+    # Also try in the deps directory directly (for development)
+    alt_path = joinpath(deps_dir, lib_name)
+    if isfile(alt_path)
+        return alt_path
+    end
+
+    return nothing
+end
+
+"""
+    try_load_rust_helpers() -> Bool
+
+Try to load the Rust helpers library. Returns true if successful, false otherwise.
+This function will not throw errors, making it safe to call during module initialization.
+"""
+function try_load_rust_helpers()
+    if is_rust_helpers_available()
+        return true  # Already loaded
+    end
+
+    lib_path = get_rust_helpers_lib_path()
+    if lib_path === nothing
+        return false  # Library not found
+    end
+
+    if !isfile(lib_path)
+        return false  # Library file doesn't exist
+    end
+
+    try
+        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        if lib_handle == C_NULL
+            @debug "Failed to load Rust helpers library: dlopen returned NULL"
+            return false
+        end
+        RUST_HELPERS_LIB[] = lib_handle
+        DROP_WARNING_SHOWN[] = false  # Reset warning flag when library is loaded
+        return true
+    catch e
+        @debug "Failed to load Rust helpers library: $e"
+        return false
+    end
 end
 
 # ============================================================================
@@ -95,7 +178,11 @@ function drop_rust_box(box::RustBox{T}) where T
 
     lib = get_rust_helpers_lib()
     if lib === nothing
-        @warn "Rust helpers library not loaded. Cannot properly drop RustBox."
+        # Only warn once per session to avoid spam
+        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
+            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            DROP_WARNING_SHOWN[] = true
+        end
         box.dropped = true
         return nothing
     end
@@ -178,11 +265,18 @@ function clone(rc::RustRc{T}) where T
 
     lib = get_rust_helpers_lib()
 
-    # For now, we'll use a simple approach
-    # In production, type-specific clone functions should be used
-    fn_ptr = Libdl.dlsym(lib, :rust_rc_clone)
-    new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
-    return RustRc{T}(new_ptr)
+    # Use type-specific clone functions
+    if T == Int32
+        fn_ptr = Libdl.dlsym(lib, :rust_rc_clone_i32)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
+        return RustRc{Int32}(new_ptr)
+    elseif T == Int64
+        fn_ptr = Libdl.dlsym(lib, :rust_rc_clone_i64)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
+        return RustRc{Int64}(new_ptr)
+    else
+        error("Unsupported type for RustRc clone: $T")
+    end
 end
 
 """
@@ -197,7 +291,11 @@ function drop_rust_rc(rc::RustRc{T}) where T
 
     lib = get_rust_helpers_lib()
     if lib === nothing
-        @warn "Rust helpers library not loaded. Cannot properly drop RustRc."
+        # Only warn once per session to avoid spam
+        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
+            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            DROP_WARNING_SHOWN[] = true
+        end
         rc.dropped = true
         return nothing
     end
@@ -272,10 +370,22 @@ function clone(arc::RustArc{T}) where T
 
     lib = get_rust_helpers_lib()
 
-    # Clone the Arc (increments reference count)
-    fn_ptr = Libdl.dlsym(lib, :rust_arc_clone)
-    new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
-    return RustArc{T}(new_ptr)
+    # Use type-specific clone functions
+    if T == Int32
+        fn_ptr = Libdl.dlsym(lib, :rust_arc_clone_i32)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
+        return RustArc{Int32}(new_ptr)
+    elseif T == Int64
+        fn_ptr = Libdl.dlsym(lib, :rust_arc_clone_i64)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
+        return RustArc{Int64}(new_ptr)
+    elseif T == Float64
+        fn_ptr = Libdl.dlsym(lib, :rust_arc_clone_f64)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
+        return RustArc{Float64}(new_ptr)
+    else
+        error("Unsupported type for RustArc clone: $T")
+    end
 end
 
 """
@@ -290,7 +400,11 @@ function drop_rust_arc(arc::RustArc{T}) where T
 
     lib = get_rust_helpers_lib()
     if lib === nothing
-        @warn "Rust helpers library not loaded. Cannot properly drop RustArc."
+        # Only warn once per session to avoid spam
+        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
+            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            DROP_WARNING_SHOWN[] = true
+        end
         arc.dropped = true
         return nothing
     end
@@ -379,4 +493,60 @@ function update_arc_finalizer(arc::RustArc{T}) where T
             end
         end
     end
+end
+
+# ============================================================================
+# RustVec drop functions
+# ============================================================================
+
+"""
+    drop_rust_vec(vec::RustVec{T}) -> Nothing
+
+Drop a RustVec by calling the Rust-side drop function.
+"""
+function drop_rust_vec(vec::RustVec{T}) where {T}
+    if vec.dropped || vec.ptr == C_NULL
+        return nothing
+    end
+
+    lib = get_rust_helpers_lib()
+    if lib === nothing
+        # Only warn once per session to avoid spam
+        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
+            @warn "Rust helpers library not loaded. Cannot properly drop RustVec. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            DROP_WARNING_SHOWN[] = true
+        end
+        vec.dropped = true
+        return nothing
+    end
+
+    # Convert RustVec to CVec for FFI
+    # CRustVec is defined in types.jl, which is loaded before memory.jl
+    cvec = CRustVec(vec.ptr, vec.len, vec.cap)
+
+    if T == Int32
+        fn_ptr = Libdl.dlsym(lib, :rust_vec_drop_i32)
+        ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
+    elseif T == Int64
+        # Note: rust_vec_drop_i64 is not yet implemented in Rust helpers
+        # For now, we'll just mark as dropped
+        @warn "rust_vec_drop_i64 not yet implemented, just marking as dropped"
+    elseif T == Float32
+        # Note: rust_vec_drop_f32 is not yet implemented in Rust helpers
+        @warn "rust_vec_drop_f32 not yet implemented, just marking as dropped"
+    elseif T == Float64
+        # Note: rust_vec_drop_f64 is not yet implemented in Rust helpers
+        @warn "rust_vec_drop_f64 not yet implemented, just marking as dropped"
+    else
+        error("Unsupported type for RustVec drop: $T. Supported types: Int32, Int64, Float32, Float64")
+    end
+
+    vec.dropped = true
+    vec.ptr = C_NULL
+    return nothing
+end
+
+# Override drop! for RustVec
+function drop!(vec::RustVec{T}) where {T}
+    drop_rust_vec(vec)
 end
