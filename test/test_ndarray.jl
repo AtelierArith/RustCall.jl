@@ -4,8 +4,8 @@
 using LastCall
 using Test
 
-# Only run heavy ndarray tests if explicitly enabled (they take more time)
-const RUN_HEAVY_INTEGRATION_TESTS = get(ENV, "LASTCALL_RUN_HEAVY_INTEGRATION_TESTS", "false") == "true"
+# Heavy ndarray tests (they take more time) - run by default unless disabled
+const RUN_HEAVY_INTEGRATION_TESTS = get(ENV, "LASTCALL_RUN_HEAVY_INTEGRATION_TESTS", "true") == "true"
 
 # Lightweight integration tests with small crates (libc, etc.) - run by default
 @testset "External Crate Integration" begin

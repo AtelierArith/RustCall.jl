@@ -266,12 +266,21 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     # Ensure #[no_mangle] and extern "C" are present (required for FFI)
     # Correct order is #[no_mangle] pub extern "C" fn ...
 
-    # 1. Normalize signature
-    specialized_code = replace(specialized_code, "pub fn $specialized_name" => "fn $specialized_name")
-    specialized_code = replace(specialized_code, "extern \"C\" fn $specialized_name" => "fn $specialized_name")
+    # Normalize function signature for FFI
+    # We need to ensure the function is exported, uses C ABI, and is not mangled.
+    # The previous simple replacements were causing duplication of attributes.
 
-    # 2. Add required parts
-    specialized_code = replace(specialized_code, "fn $specialized_name" => "#[no_mangle]\npub extern \"C\" fn $specialized_name")
+    # Regex matches: (optional attributes) (optional pub) (optional extern "C") fn name (
+    # We use a robust regex to replace the entire declaration line
+    decl_regex = Regex("(?:#\\[[^\\]]+\\]\\s*)?(?:pub\\s+)?(?:extern\\s+\"C\"\\s+)?fn\\s+$specialized_name\\s*\\(")
+
+    if occursin(decl_regex, specialized_code)
+        specialized_code = replace(specialized_code, decl_regex => "#[no_mangle]\npub extern \"C\" fn $specialized_name(")
+    else
+        # Fallback if the strict regex fails (though it shouldn't if step 264 worked)
+        # Just prepend to the simplest case
+        specialized_code = replace(specialized_code, "fn $specialized_name(" => "#[no_mangle]\npub extern \"C\" fn $specialized_name(")
+    end
 
     # Compile the specialized function
     # Note: compile_rust_to_shared_lib and get_default_compiler are in compiler.jl
@@ -377,7 +386,7 @@ register_generic_function(
 ```
 """
 function register_generic_function(func_name::String, code::String, type_params::Vector{Symbol}, constraints::Dict{Symbol, String}=Dict{Symbol, String}())
-    println("DEBUG: Registering generic function in GENERIC_FUNCTION_REGISTRY: $func_name")
+    # println("DEBUG: Registering generic function in GENERIC_FUNCTION_REGISTRY: $func_name")
     info = GenericFunctionInfo(func_name, code, type_params, constraints)
     GENERIC_FUNCTION_REGISTRY[func_name] = info
     return info
@@ -421,7 +430,7 @@ end
 Check if a function is registered as a generic function.
 """
 function is_generic_function(func_name::String)
-    println("DEBUG: Checking if $func_name is generic. Registry keys: ", keys(GENERIC_FUNCTION_REGISTRY))
+    # println("DEBUG: Checking if $func_name is generic. Registry keys: ", keys(GENERIC_FUNCTION_REGISTRY))
     return haskey(GENERIC_FUNCTION_REGISTRY, func_name)
 end
 

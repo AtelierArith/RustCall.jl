@@ -192,10 +192,10 @@ function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, a
     catch e
         # If not found, check if it's a generic function that needs monomorphization
         if is_generic_function(func_name)
-            println("DEBUG: Function $func_name not found, but is generic. Calling call_generic_function...")
+            # println("DEBUG: Function $func_name not found, but is generic. Calling call_generic_function...")
             return call_generic_function(func_name, args...)
         else
-            println("DEBUG: Function $func_name not found and is NOT generic. (is_generic_function returned false)")
+            # println("DEBUG: Function $func_name not found and is NOT generic. (is_generic_function returned false)")
             rethrow(e)
         end
     end
