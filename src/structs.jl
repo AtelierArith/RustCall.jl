@@ -700,16 +700,26 @@ function emit_julia_definitions(info::RustStructInfo)
             field_setters[field_sym] = setter_name
         end
         
-        # Single Base.getproperty for all fields
+        # Single Base.getproperty for all fields and methods
+        method_names = Set([Symbol(m.name) for m in info.methods])
         push!(exprs, quote
             function Base.getproperty(self::$esc_struct, field::Symbol)
                 field_info = $(QuoteNode(field_getters))
+                method_names_set = $(QuoteNode(method_names))
+                
+                # Check if it's a field
                 if haskey(field_info, field)
                     getter_name, jl_field_type_sym = field_info[field]
                     lib = self.lib_name
                     func_ptr = get_function_pointer(lib, getter_name)
                     field_type = julia_sym_to_type(jl_field_type_sym)
                     return call_rust_function(func_ptr, field_type, self.ptr)
+                # Check if it's a method
+                elseif field in method_names_set
+                    # Return a function that calls the method
+                    return function(args...)
+                        return getfield(self, field)(self, args...)
+                    end
                 else
                     return getfield(self, field)
                 end
