@@ -85,8 +85,13 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
 ```
 """
 macro rust_str(code)
+    # Phase 4: Detect structs and generate Julia-side wrappers at macro expansion time
+    struct_infos = parse_structs_and_impls(code)
+    julia_defs = [emit_julia_definitions(info) for info in struct_infos]
+
     return quote
         _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line))
+        $(julia_defs...)
     end
 end
 
@@ -95,10 +100,26 @@ end
 
 Internal function to compile Rust code and load the resulting shared library.
 Uses caching to avoid recompilation when possible.
+
+Phase 3: Automatically detects dependencies in the code and uses Cargo for building
+when external crates are required.
 """
 function _compile_and_load_rust(code::String, source_file::String, source_line::Int)
+    # Phase 3: Check for dependencies in the code
+    if has_dependencies(code)
+        return _compile_and_load_rust_with_cargo(code, source_file, source_line)
+    end
+
+    # Phase 4: Detect structs and generate wrappers
+    struct_infos = parse_structs_and_impls(code)
+    augmented_code = code
+    for info in struct_infos
+        augmented_code *= generate_struct_wrappers(info)
+    end
+
+    # Original implementation for dependency-free code
     # Wrap the code if needed
-    wrapped_code = wrap_rust_code(code)
+    wrapped_code = wrap_rust_code(augmented_code)
 
     # Generate cache key
     compiler = get_default_compiler()
@@ -215,6 +236,141 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 end
 
 """
+    _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int)
+
+Internal function to compile Rust code that has external dependencies using Cargo.
+Phase 3: Supports rustscript-style dependency specifications.
+
+# Dependency Specification Formats
+1. Document comment format:
+   ```rust
+   //! ```cargo
+   //! [dependencies]
+   //! ndarray = "0.15"
+   //! ```
+   ```
+
+2. Single-line comment format:
+   ```rust
+   // cargo-deps: ndarray="0.15", serde="1.0"
+   ```
+"""
+function _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int)
+    # Parse dependencies from the code
+    dependencies = parse_dependencies_from_code(code)
+
+    if isempty(dependencies)
+        @warn "has_dependencies returned true but no dependencies were parsed. Falling back to regular compilation."
+        # Clean the code anyway and compile normally
+        clean_code = remove_dependency_comments(code)
+        wrapped_code = wrap_rust_code(clean_code)
+        # Fall back to the regular path by calling the base implementation logic
+        # But since we already checked has_dependencies, let's just continue here
+    end
+
+    # Validate dependencies
+    try
+        validate_dependencies(dependencies)
+    catch e
+        if e isa DependencyResolutionError
+            rethrow(e)
+        end
+        throw(DependencyResolutionError("unknown", "Dependency validation failed: $e"))
+    end
+
+    # Phase 4: Detect structs and generate wrappers
+    struct_infos = parse_structs_and_impls(code)
+    augmented_code = code
+    for info in struct_infos
+        augmented_code *= generate_struct_wrappers(info)
+    end
+
+    # Generate hashes for caching based on the code to be compiled
+    code_hash = hash(augmented_code)
+    deps_hash = hash_dependencies(dependencies)
+
+    # Project and library names
+    project_name = "lastcall_$(string(code_hash, base=16)[1:12])"
+    lib_name = "rust_cargo_$(string(code_hash, base=16))"
+
+    # Check if already compiled and loaded in memory
+    if haskey(RUST_LIBRARIES, lib_name)
+        CURRENT_LIB[] = lib_name
+        @debug "Using cached Cargo library from memory" lib_name=lib_name
+        return nothing
+    end
+
+    cache_key_data = "$(code_hash)_$(deps_hash)_release"
+    cache_key = bytes2hex(sha256(cache_key_data))[1:32]
+
+    cached_lib = get_cargo_cached_library(cache_key)
+    if !isnothing(cached_lib) && isfile(cached_lib)
+        # Load from cache
+        lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        if lib_handle != C_NULL
+            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+            CURRENT_LIB[] = lib_name
+            @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
+            return nothing
+        end
+    end
+
+    # Build necessary if not in cache or cache load failed
+    @info "Building Rust code with external dependencies..." dependencies=length(dependencies) project=project_name
+
+    project = create_cargo_project(project_name, dependencies)
+
+    try
+        # Ensure the code with wrappers is written to the project
+        write_rust_code_to_project(project, augmented_code)
+
+        lib_path = build_cargo_project_cached(project, code_hash, release=true)
+
+        # Cache the built library (if it wasn't already in cache)
+        try
+            save_cargo_cached_library(cache_key, lib_path)
+        catch e
+            @debug "Failed to cache Cargo library: $e"
+        end
+
+        # Load the library
+        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        if lib_handle == C_NULL
+            error("Failed to load compiled Cargo library: $lib_path")
+        end
+
+        # Register the library
+        RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+        CURRENT_LIB[] = lib_name
+
+        @info "Successfully built Rust code with Cargo" lib_name=lib_name
+
+        # Try to detect and register generic functions
+        clean_code = remove_dependency_comments(code)
+        try
+            _detect_and_register_generic_functions(clean_code, lib_name)
+        catch e
+            @debug "Failed to detect generic functions: $e"
+        end
+    finally
+        # Clean up temporary project (keep for debugging if debug mode is enabled)
+        compiler = get_default_compiler()
+        if !compiler.debug_mode
+            try
+                cleanup_cargo_project(project)
+            catch e
+                @debug "Failed to cleanup Cargo project: $e"
+            end
+        else
+            @info "Debug mode: keeping Cargo project at $(project.path)"
+        end
+    end
+
+    return nothing
+end
+
+
+"""
     _detect_and_register_generic_functions(code::String, lib_name::String)
 
 Detect generic functions in Rust code and register them for monomorphization.
@@ -223,14 +379,14 @@ function _detect_and_register_generic_functions(code::String, lib_name::String)
     # Simple pattern matching for generic functions
     # Pattern: pub fn func_name<T, U, ...>(args...) -> ret_type { ... }
     # or: #[no_mangle] pub extern "C" fn func_name<T>(args...) -> ret_type { ... }
-    
+
     # Find all function definitions
     func_pattern = r"(?:#\[no_mangle\])?\s*(?:pub\s+)?(?:extern\s+\"C\"\s+)?fn\s+(\w+)\s*(?:<([^>]+)>)?\s*\("
-    
+
     for m in eachmatch(func_pattern, code)
         func_name = m.captures[1]
         type_params_str = m.captures[2]
-        
+
         # Check if this is a generic function
         if type_params_str !== nothing && !isempty(type_params_str)
             # Extract type parameters
@@ -243,11 +399,11 @@ function _detect_and_register_generic_functions(code::String, lib_name::String)
                 end
                 push!(type_params, Symbol(strip(param)))
             end
-            
+
             # Extract the full function code (simplified - just get the function signature for now)
             # In a more sophisticated implementation, we'd parse the full function body
             func_code = extract_function_code(code, func_name)
-            
+
             if func_code !== nothing
                 # Register as generic function
                 register_generic_function(func_name, func_code, type_params)
@@ -266,23 +422,23 @@ This is a simplified implementation - a more robust parser would be needed for c
 function extract_function_code(code::String, func_name::String)
     # Simple extraction: find function start and end
     # This is a basic implementation - more sophisticated parsing needed for nested functions
-    
+
     # Find function start
     func_start_pattern = Regex("fn\\s+$func_name[^\\{]*\\{")
     m = match(func_start_pattern, code)
-    
+
     if m === nothing
         return nothing
     end
-    
+
     start_idx = m.offset
     code_after_start = code[start_idx:end]
-    
+
     # Find matching closing brace
     brace_count = 0
     in_string = false
     string_char = nothing
-    
+
     for (i, char) in enumerate(code_after_start)
         if char == '"' || char == '\''
             if !in_string
@@ -304,7 +460,7 @@ function extract_function_code(code::String, func_name::String)
             end
         end
     end
-    
+
     return nothing  # Couldn't find matching brace
 end
 
@@ -425,11 +581,11 @@ macro irust(code, args...)
         # String literal: parse $var syntax
         code_str = code
         vars_from_code, processed_code = _parse_irust_variables(code_str)
-        
+
         # Combine variables from $var syntax and explicit arguments
         # Note: args is a tuple from varargs, so we need to collect it
         all_vars = vcat(vars_from_code, collect(args))
-        
+
         # Build the call expression
         if isempty(all_vars)
             return quote
@@ -439,7 +595,7 @@ macro irust(code, args...)
             # Create escaped variable expressions
             # Each variable needs to be escaped to be evaluated in the calling scope
             var_exprs = [esc(var) for var in all_vars]
-            
+
             # Build the call expression with proper argument splatting
             # We need to call LastCall._compile_and_call_irust with the escaped variables
             return Expr(:call, GlobalRef(LastCall, :_compile_and_call_irust), processed_code, var_exprs...)
@@ -484,10 +640,10 @@ function _parse_irust_variables(code::String)
     # Pattern to match $variable (but not $$ which is escaped)
     # Match $ followed by identifier (letter, underscore, or digit after first char)
     pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*)"
-    
+
     # Find all matches (in order of appearance)
     matches = collect(eachmatch(pattern, code))
-    
+
     # Build ordered list of unique variables (in order of first appearance)
     vars = Symbol[]
     var_to_idx = Dict{Symbol, Int}()
@@ -498,18 +654,18 @@ function _parse_irust_variables(code::String)
             var_to_idx[var_name] = length(vars)
         end
     end
-    
+
     # Process from end to start to preserve positions
     processed = code
     for m in reverse(matches)
         var_name = Symbol(m.captures[1])
         var_idx = var_to_idx[var_name]
-        
+
         # Replace $var with argN
         arg_ref = "arg$(var_idx)"
         processed = processed[1:prevind(processed, m.offset)] * arg_ref * processed[nextind(processed, m.offset + length(m.match) - 1):end]
     end
-    
+
     return (vars, processed)
 end
 
@@ -542,7 +698,7 @@ function _compile_and_call_irust(code::String, args...)
             julia_ret_type = _rust_to_julia_type(rust_ret_type)
             return _call_irust_function(lib_name, cached_func_name, julia_ret_type, args...)
         end
-        
+
         # Check for unsupported types
         unsupported = filter(t -> _julia_to_rust_type(t) == "i64" && t != Int64, arg_types)
         if !isempty(unsupported)
@@ -558,20 +714,20 @@ function _compile_and_call_irust(code::String, args...)
         # Compile and load
         wrapped_code = wrap_rust_code(rust_func_code)
         compiler = get_default_compiler()
-        
+
         local lib_path
         try
             lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
         catch e
             error("""
             Failed to compile Rust code for @irust.
-            
+
             Code: $code
             Generated Rust function:
             $rust_func_code
-            
+
             Original error: $e
-            
+
             Tip: Check that your Rust code is valid and uses arg1, arg2, etc. correctly.
             """)
         end
@@ -581,10 +737,10 @@ function _compile_and_call_irust(code::String, args...)
         if lib_handle == C_NULL
             error("""
             Failed to load compiled Rust library for @irust.
-            
+
             Library path: $lib_path
             Code: $code
-            
+
             This may indicate a linking issue or missing dependencies.
             """)
         end
@@ -604,12 +760,12 @@ function _compile_and_call_irust(code::String, args...)
         if isa(e, MethodError)
             error("""
             Type error in @irust call.
-            
+
             Code: $code
             Arguments: $(map(x -> "$(typeof(x))", args))
-            
+
             Original error: $e
-            
+
             Tip: Ensure argument types match what the Rust code expects.
             """)
         else
@@ -645,7 +801,7 @@ function _julia_to_rust_type(julia_type::Type)
         Float64 => "f64",
         Bool => "bool",
     )
-    
+
     if haskey(type_map, julia_type)
         return type_map[julia_type]
     else
@@ -676,7 +832,7 @@ Infer return type from Rust code with improved heuristics.
 """
 function _infer_return_type_improved(code::String, arg_types::Vector{<:Type}, rust_arg_types::Vector{String})
     code_lower = lowercase(strip(code))
-    
+
     # 1. Check for explicit return statements with literals
     if occursin(r"return\s+[0-9]+\s*;", code) || occursin(r"return\s+[0-9]+\s*$", code)
         # Integer literal - check if it's a float by looking for decimal point
@@ -686,35 +842,35 @@ function _infer_return_type_improved(code::String, arg_types::Vector{<:Type}, ru
             return "i32"
         end
     end
-    
+
     # 2. Check for boolean literals
     if occursin(r"return\s+(true|false)\s*;", code) || occursin(r"return\s+(true|false)\s*$", code)
         return "bool"
     end
-    
+
     # 3. Analyze arithmetic operations
     # If code contains division or multiplication with floats, likely returns float
-    if occursin(r"arg\d+\s*[*/]\s*[0-9]+\.[0-9]", code) || 
+    if occursin(r"arg\d+\s*[*/]\s*[0-9]+\.[0-9]", code) ||
        occursin(r"[0-9]+\.[0-9]\s*[*/]\s*arg\d+", code) ||
        occursin(r"arg\d+\s*[*/]\s*arg\d+", code) && any(t -> t == Float32 || t == Float64, arg_types)
         return "f64"
     end
-    
+
     # 4. Check if any argument is float
     if any(t -> t == Float32 || t == Float64, arg_types)
         return "f64"
     end
-    
+
     # 5. Check if any argument is bool (and operation is boolean)
     if occursin(r"==|!=|<|>|<=|>=", code) || occursin(r"&&|\|\|", code)
         return "bool"
     end
-    
+
     # 6. Use first argument type if available
     if !isempty(rust_arg_types)
         return rust_arg_types[1]
     end
-    
+
     # 7. Default fallback
     return "i64"
 end
@@ -777,7 +933,7 @@ function _call_irust_function(lib_name::String, func_name::String, ret_type::Typ
 
         # Call using the codegen infrastructure with explicit return type
         result = call_rust_function(func_ptr, ret_type, args...)
-        
+
         # Convert C bool (i32) to Julia Bool if needed
         # Rust bool is represented as i32 in C ABI (0 = false, non-zero = true)
         if ret_type == Bool
@@ -787,18 +943,18 @@ function _call_irust_function(lib_name::String, func_name::String, ret_type::Typ
                 return result
             end
         end
-        
+
         return result
     catch e
         if isa(e, ErrorException) && occursin("not found", e.msg)
             error("""
             Function '$func_name' not found in library '$lib_name'.
-            
+
             This may indicate:
             1. The function was not properly compiled
             2. A name mangling issue
             3. The library was not loaded correctly
-            
+
             Original error: $e
             """)
         else

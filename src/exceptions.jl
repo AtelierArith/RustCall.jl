@@ -60,6 +60,46 @@ struct RuntimeError <: Exception
     end
 end
 
+# Phase 3: Cargo build and dependency errors
+
+"""
+    CargoBuildError <: Exception
+
+Exception type for Cargo build failures.
+
+# Fields
+- `message::String`: Error message
+- `stderr::String`: Raw stderr output from cargo
+- `project_path::String`: Path to the Cargo project that failed to build
+"""
+struct CargoBuildError <: Exception
+    message::String
+    stderr::String
+    project_path::String
+
+    function CargoBuildError(message::String, stderr::String, project_path::String)
+        new(message, stderr, project_path)
+    end
+end
+
+"""
+    DependencyResolutionError <: Exception
+
+Exception type for dependency resolution failures.
+
+# Fields
+- `dependency::String`: Name of the problematic dependency
+- `message::String`: Error message describing the resolution failure
+"""
+struct DependencyResolutionError <: Exception
+    dependency::String
+    message::String
+
+    function DependencyResolutionError(dependency::String, message::String)
+        new(dependency, message)
+    end
+end
+
 """
     Base.showerror(io::IO, e::RustError)
 
@@ -81,13 +121,13 @@ Display a CompilationError in a user-friendly format with formatted rustc output
 function Base.showerror(io::IO, e::CompilationError)
     println(io, "CompilationError: Failed to compile Rust code")
     println(io, "")
-    
+
     # Show command (can be helpful for debugging)
     if !isempty(e.command)
         println(io, "Command: $(e.command)")
         println(io, "")
     end
-    
+
     # Format and display error output
     println(io, "Error output:")
     println(io, "─" ^ 80)
@@ -95,20 +135,20 @@ function Base.showerror(io::IO, e::CompilationError)
     println(io, formatted)
     println(io, "─" ^ 80)
     println(io, "")
-    
+
     # Show source code with line numbers for context
     println(io, "Source code:")
     println(io, "─" ^ 80)
-    
+
     # Try to extract error line numbers from stderr
     error_lines = _extract_error_line_numbers_impl(e.raw_stderr)
-    
+
     if !isempty(error_lines)
         # Show source with line numbers, highlighting error lines
         source_lines = split(e.source_code, '\n')
         max_line_num = length(source_lines)
         max_digits = length(string(max_line_num))
-        
+
         for (line_num, line) in enumerate(source_lines)
             line_prefix = lpad(string(line_num), max_digits) * " | "
             if line_num in error_lines
@@ -116,7 +156,7 @@ function Base.showerror(io::IO, e::CompilationError)
             else
                 println(io, "    " * line_prefix * line)
             end
-            
+
             # Limit output to reasonable size
             if line_num > 50 && line_num < max_line_num - 10
                 if line_num == 51
@@ -130,13 +170,13 @@ function Base.showerror(io::IO, e::CompilationError)
         source_preview = length(e.source_code) > 500 ? e.source_code[1:500] * "..." : e.source_code
         println(io, source_preview)
     end
-    
+
     println(io, "─" ^ 80)
-    
+
     # Show suggestions if available
     suggestions = _extract_suggestions_impl(e.raw_stderr)
     auto_suggestions = suggest_fix_for_error(e.raw_stderr, e.source_code)
-    
+
     all_suggestions = unique(vcat(suggestions, auto_suggestions))
     if !isempty(all_suggestions)
         println(io, "")
@@ -165,12 +205,12 @@ function _extract_error_line_numbers_impl(stderr::String)
     line_numbers = Int[]
     # Pattern: --> file.rs:42:5 or file.rs:42:5
     line_pattern = r":(\d+):\d+"
-    
+
     for m in eachmatch(line_pattern, stderr)
         line_num = parse(Int, m.captures[1])
         push!(line_numbers, line_num)
     end
-    
+
     return unique(sort(line_numbers))
 end
 
@@ -182,11 +222,11 @@ Extract helpful suggestions from rustc error output.
 function _extract_suggestions_impl(stderr::String)
     suggestions = String[]
     lines = split(stderr, '\n')
-    
+
     i = 1
     while i <= length(lines)
         line = lines[i]
-        
+
         # Look for help: messages
         if startswith(lowercase(strip(line)), "help:")
             suggestion = strip(replace(line, r"^help:\s*"i => ""))
@@ -194,7 +234,7 @@ function _extract_suggestions_impl(stderr::String)
                 push!(suggestions, suggestion)
             end
         end
-        
+
         # Look for common error patterns and provide suggestions
         if occursin(r"expected.*found", lowercase(line))
             if occursin("semicolon", lowercase(line))
@@ -205,10 +245,10 @@ function _extract_suggestions_impl(stderr::String)
                 push!(suggestions, "Mismatched parentheses. Check that all `(` have matching `)`.")
             end
         end
-        
+
         i += 1
     end
-    
+
     return unique(suggestions)
 end
 
@@ -219,12 +259,12 @@ Display a RuntimeError in a user-friendly format with enhanced stack trace.
 """
 function Base.showerror(io::IO, e::RuntimeError)
     println(io, "RuntimeError in function '$(e.function_name)': $(e.message)")
-    
+
     if !isempty(e.stack_trace)
         println(io, "")
         println(io, "Stack trace:")
         println(io, "─" ^ 80)
-        
+
         # Format stack trace for better readability
         stack_lines = split(e.stack_trace, '\n')
         for line in stack_lines
@@ -235,13 +275,46 @@ function Base.showerror(io::IO, e::RuntimeError)
                 println(io, line)
             end
         end
-        
+
         println(io, "─" ^ 80)
     else
         println(io, "")
         println(io, "Tip: Enable debug mode for more detailed error information.")
     end
 end
+
+"""
+    Base.showerror(io::IO, e::CargoBuildError)
+
+Display a CargoBuildError in a user-friendly format.
+"""
+function Base.showerror(io::IO, e::CargoBuildError)
+    println(io, "CargoBuildError: $(e.message)")
+    println(io, "")
+    println(io, "Project: $(e.project_path)")
+
+    if !isempty(e.stderr)
+        println(io, "")
+        println(io, "Cargo output:")
+        println(io, "─" ^ 80)
+        # Reuse format_rustc_error since Cargo output is similar
+        formatted = format_rustc_error(e.stderr)
+        println(io, formatted)
+        println(io, "─" ^ 80)
+    end
+end
+
+"""
+    Base.showerror(io::IO, e::DependencyResolutionError)
+
+Display a DependencyResolutionError in a user-friendly format.
+"""
+function Base.showerror(io::IO, e::DependencyResolutionError)
+    println(io, "DependencyResolutionError: $(e.dependency)")
+    println(io, "")
+    println(io, e.message)
+end
+
 
 """
     format_rustc_error(stderr::String) -> String
@@ -257,20 +330,20 @@ Removes redundant information and highlights important parts.
 function format_rustc_error(stderr::String)
     lines = split(stderr, '\n')
     formatted_lines = String[]
-    
+
     i = 1
     error_count = 0
     warning_count = 0
-    
+
     while i <= length(lines)
         line = lines[i]
-        
+
         # Skip empty lines at the beginning
         if isempty(strip(line)) && isempty(formatted_lines)
             i += 1
             continue
         end
-        
+
         # Highlight error messages (lines starting with "error:")
         if startswith(lowercase(strip(line)), "error:")
             error_count += 1
@@ -283,7 +356,7 @@ function format_rustc_error(stderr::String)
             end
             continue
         end
-        
+
         # Highlight warning messages
         if startswith(lowercase(strip(line)), "warning:")
             warning_count += 1
@@ -291,7 +364,7 @@ function format_rustc_error(stderr::String)
             i += 1
             continue
         end
-        
+
         # Highlight help messages with better formatting
         if startswith(lowercase(strip(line)), "help:")
             push!(formatted_lines, "💡 " * line)
@@ -303,29 +376,29 @@ function format_rustc_error(stderr::String)
             end
             continue
         end
-        
+
         # Include file location lines (lines with --> or ^) with better formatting
         if occursin("-->", line)
             # Extract line number if possible
             push!(formatted_lines, "   " * line)
             i += 1
             # Include code context lines (lines with |)
-            while i <= length(lines) && (occursin("|", lines[i]) || occursin("^", lines[i]) || 
-                                         startswith(strip(lines[i]), "=") || 
+            while i <= length(lines) && (occursin("|", lines[i]) || occursin("^", lines[i]) ||
+                                         startswith(strip(lines[i]), "=") ||
                                          (startswith(lines[i], " ") && !isempty(strip(lines[i]))))
                 push!(formatted_lines, "   " * lines[i])
                 i += 1
             end
             continue
         end
-        
+
         # Highlight error location markers (^)
         if occursin("^", line)
             push!(formatted_lines, "   " * line)
             i += 1
             continue
         end
-        
+
         # Include note messages
         if startswith(lowercase(strip(line)), "note:")
             push!(formatted_lines, "ℹ️  " * line)
@@ -337,19 +410,19 @@ function format_rustc_error(stderr::String)
             end
             continue
         end
-        
+
         # Skip verbose compiler output
         if occursin("Compiling", line) || occursin("Finished", line) || occursin("Running", line) ||
            occursin("Checking", line) || occursin("Documenting", line)
             i += 1
             continue
         end
-        
+
         # Include other lines (might be important)
         push!(formatted_lines, line)
         i += 1
     end
-    
+
     # Add summary if multiple errors/warnings
     if error_count > 1 || warning_count > 0
         summary = String[]
@@ -364,7 +437,7 @@ function format_rustc_error(stderr::String)
             push!(formatted_lines, "Summary: " * join(summary, ", "))
         end
     end
-    
+
     return join(formatted_lines, '\n')
 end
 
@@ -378,15 +451,15 @@ Analyze compilation error and suggest potential fixes.
 """
 function suggest_fix_for_error(stderr::String, source_code::String)
     suggestions = String[]
-    
+
     stderr_lower = lowercase(stderr)
     source_lower = lowercase(source_code)
-    
+
     # Common error patterns and fixes
     if occursin("expected `;`, found", stderr_lower)
         push!(suggestions, "Missing semicolon. Add `;` at the end of the statement.")
     end
-    
+
     if occursin("expected `}`, found", stderr_lower) || occursin("unclosed delimiter", stderr_lower)
         push!(suggestions, "Mismatched braces. Check that all opening `{` have matching closing `}`.")
         # Count braces
@@ -398,40 +471,40 @@ function suggest_fix_for_error(stderr::String, source_code::String)
             push!(suggestions, "Found $(close_braces - open_braces) more closing brace(s) than opening brace(s).")
         end
     end
-    
+
     if occursin("expected `)`, found", stderr_lower)
         push!(suggestions, "Mismatched parentheses. Check that all opening `(` have matching closing `)`.")
     end
-    
+
     if occursin("cannot find", stderr_lower) && occursin("in this scope", stderr_lower)
         push!(suggestions, "Undefined variable or function. Check spelling and ensure it's defined before use.")
     end
-    
+
     if occursin("mismatched types", stderr_lower)
         push!(suggestions, "Type mismatch. Check that argument types match the function signature.")
     end
-    
+
     if occursin("expected one of", stderr_lower)
         push!(suggestions, "Syntax error. Check the Rust syntax for the construct you're using.")
     end
-    
+
     if occursin("unused variable", stderr_lower)
         push!(suggestions, "Unused variable. Either use it or prefix with `_` to indicate it's intentionally unused.")
     end
-    
+
     if occursin("cannot borrow", stderr_lower)
         push!(suggestions, "Borrow checker error. This is a Rust ownership issue. Consider using references or cloning.")
     end
-    
+
     # Check for common FFI issues
     if occursin("extern", source_lower) && !occursin("#[no_mangle]", source_lower)
         push!(suggestions, "Missing `#[no_mangle]` attribute. Add it before `pub extern \"C\"` for FFI functions.")
     end
-    
+
     if occursin("pub extern \"c\"", source_lower) && !occursin("pub extern \"C\"", source_code)
         push!(suggestions, "Use `extern \"C\"` (capital C) for C-compatible FFI functions.")
     end
-    
+
     return unique(suggestions)
 end
 

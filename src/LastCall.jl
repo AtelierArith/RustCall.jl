@@ -38,6 +38,13 @@ include("codegen.jl")
 include("exceptions.jl")
 include("cache.jl")
 include("memory.jl")
+
+# Phase 3: External library integration
+include("dependencies.jl")
+include("dependency_resolution.jl")
+include("cargoproject.jl")
+include("cargobuild.jl")
+
 include("ruststr.jl")
 include("rustmacro.jl")
 
@@ -48,6 +55,9 @@ include("llvmcodegen.jl")
 # Phase 2: Generics support
 include("generics.jl")
 
+# Phase 4: Object mapping support
+include("structs.jl")
+
 # Export public API
 export @rust, @rust_str, @irust, @irust_str
 export RustPtr, RustRef, RustResult, RustOption
@@ -57,6 +67,7 @@ export unwrap, unwrap_or, is_ok, is_err, is_some, is_none
 export rust_string_to_julia, rust_str_to_julia
 export julia_string_to_rust, julia_string_to_cstring, cstring_to_julia_string
 export RustError, CompilationError, RuntimeError, result_to_exception, unwrap_or_throw
+export CargoBuildError, DependencyResolutionError  # Phase 3
 export format_rustc_error, suggest_fix_for_error
 # Export internal functions for testing
 export _extract_error_line_numbers, _extract_suggestions
@@ -89,6 +100,11 @@ export clear_cache, get_cache_size, list_cached_libraries, cleanup_old_cache
 export register_generic_function, call_generic_function, is_generic_function
 export monomorphize_function, specialize_generic_code, infer_type_parameters
 export GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS  # For testing
+
+# Phase 3: External library integration
+export DependencySpec, parse_dependencies_from_code, has_dependencies
+export CargoProject, create_cargo_project, build_cargo_project
+export clear_cargo_cache, get_cargo_cache_size
 
 # Module initialization
 function __init__()
