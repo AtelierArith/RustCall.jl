@@ -1,0 +1,3 @@
+[submodule "Cxx.jl"]
+	path = Cxx.jl
+	url = https://github.com/JuliaInterop/Cxx.jl.git
