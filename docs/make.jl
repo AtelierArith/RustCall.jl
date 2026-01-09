@@ -17,6 +17,7 @@ makedocs(
             "Examples" => "examples.md",
         ],
         "User Guide" => [
+            "Struct Mapping" => "struct_mapping.md",
             "Generics" => "generics.md",
             "Troubleshooting" => "troubleshooting.md",
         ],
