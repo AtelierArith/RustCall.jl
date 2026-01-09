@@ -51,6 +51,8 @@ RustStr
 RustError
 CompilationError
 RuntimeError
+CargoBuildError
+DependencyResolutionError
 ```
 
 ## Type Conversion Functions
@@ -87,6 +89,9 @@ cstring_to_julia_string
 
 ```@docs
 format_rustc_error
+suggest_fix_for_error
+result_to_exception
+unwrap_or_throw
 ```
 
 ## Compiler Functions
@@ -99,6 +104,9 @@ get_rustc_version
 get_default_compiler
 set_default_compiler
 compile_rust_to_shared_lib
+compile_rust_to_llvm_ir
+load_llvm_ir
+wrap_rust_code
 ```
 
 ## Ownership Type Operations
@@ -109,6 +117,8 @@ is_dropped
 is_valid
 clone
 is_rust_helpers_available
+get_rust_helpers_lib
+get_rust_helpers_lib_path
 ```
 
 ## RustVec Operations
@@ -157,36 +167,83 @@ specialize_generic_code
 infer_type_parameters
 ```
 
-## Internal Constants
+## External Library Integration (Phase 3)
 
-### Type Mapping
+### Dependency Management
 
-The following constant defines the mapping between Rust types and Julia types:
+```@docs
+DependencySpec
+parse_dependencies_from_code
+has_dependencies
+```
+
+### Cargo Project Management
+
+```@docs
+CargoProject
+create_cargo_project
+build_cargo_project
+clear_cargo_cache
+get_cargo_cache_size
+```
+
+## Type System
+
+### Type Mapping Constants
+
+The following constants define the mapping between Rust types and Julia types:
 
 ```julia
-const RUST_JULIA_TYPE_MAP = Dict(
-    "i8" => Int8,
-    "i16" => Int16,
-    "i32" => Int32,
-    "i64" => Int64,
-    "u8" => UInt8,
-    "u16" => UInt16,
-    "u32" => UInt32,
-    "u64" => UInt64,
-    "f32" => Float32,
-    "f64" => Float64,
-    "bool" => Bool,
-    "usize" => Csize_t,
-    "isize" => Cssize_t,
-    "()" => Cvoid,
+# Rust to Julia type mapping
+const RUST_TO_JULIA_TYPE_MAP = Dict{Symbol, Type}(
+    :i8 => Int8,
+    :i16 => Int16,
+    :i32 => Int32,
+    :i64 => Int64,
+    :u8 => UInt8,
+    :u16 => UInt16,
+    :u32 => UInt32,
+    :u64 => UInt64,
+    :f32 => Float32,
+    :f64 => Float64,
+    :bool => Bool,
+    :usize => UInt,
+    :isize => Int,
+    Symbol("()") => Cvoid,
+)
+
+# Julia to Rust type mapping
+const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
+    Int8 => "i8",
+    Int16 => "i16",
+    Int32 => "i32",
+    Int64 => "i64",
+    UInt8 => "u8",
+    UInt16 => "u16",
+    UInt32 => "u32",
+    UInt64 => "u64",
+    Float32 => "f32",
+    Float64 => "f64",
+    Bool => "bool",
+    Cvoid => "()",
 )
 ```
 
-### Registries
+### Internal Registries
 
 ```@docs
 GENERIC_FUNCTION_REGISTRY
 MONOMORPHIZED_FUNCTIONS
+```
+
+## Utility Functions
+
+### Testing and Debugging
+
+```@docs
+_extract_error_line_numbers
+_extract_suggestions
+_extract_error_line_numbers_impl
 ```
 
 ## Internal Functions
