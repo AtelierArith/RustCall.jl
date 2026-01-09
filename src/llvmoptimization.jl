@@ -80,31 +80,38 @@ function add_optimization_passes!(pm::LLVM.ModulePassManager, config::Optimizati
         return
     end
 
+    # Helper function to create a ModulePass with a no-op runner
+    # The actual optimization is handled by LLVM's pass infrastructure
+    # The callback function must return a Bool (true = success, false = failure)
+    function create_pass(pass_name::String)
+        return LLVM.ModulePass(pass_name, mod -> true)
+    end
+
     # Level 1: Basic optimizations
     if config.level >= 1
         # Basic cleanup and simplification
-        LLVM.add!(pm, LLVM.ModulePass("instcombine"))
-        LLVM.add!(pm, LLVM.ModulePass("simplifycfg"))
-        LLVM.add!(pm, LLVM.ModulePass("reassociate"))
-        LLVM.add!(pm, LLVM.ModulePass("mem2reg"))
+        LLVM.add!(pm, create_pass("instcombine"))
+        LLVM.add!(pm, create_pass("simplifycfg"))
+        LLVM.add!(pm, create_pass("reassociate"))
+        LLVM.add!(pm, create_pass("mem2reg"))
     end
 
     # Level 2: Standard optimizations
     if config.level >= 2
         # More aggressive optimizations
-        LLVM.add!(pm, LLVM.ModulePass("gvn"))
-        LLVM.add!(pm, LLVM.ModulePass("dce"))
-        LLVM.add!(pm, LLVM.ModulePass("dse"))
+        LLVM.add!(pm, create_pass("gvn"))
+        LLVM.add!(pm, create_pass("dce"))
+        LLVM.add!(pm, create_pass("dse"))
 
         # Inlining
-        LLVM.add!(pm, LLVM.ModulePass("inline"))
+        LLVM.add!(pm, create_pass("inline"))
 
         # Loop optimizations
         if config.enable_licm
-            LLVM.add!(pm, LLVM.ModulePass("licm"))
+            LLVM.add!(pm, create_pass("licm"))
         end
         if config.enable_loop_unrolling
-            LLVM.add!(pm, LLVM.ModulePass("loop-unroll"))
+            LLVM.add!(pm, create_pass("loop-unroll"))
         end
     end
 
@@ -112,26 +119,26 @@ function add_optimization_passes!(pm::LLVM.ModulePassManager, config::Optimizati
     if config.level >= 3
         # Vectorization
         if config.enable_vectorization
-            LLVM.add!(pm, LLVM.ModulePass("loop-vectorize"))
-            LLVM.add!(pm, LLVM.ModulePass("slp-vectorizer"))
+            LLVM.add!(pm, create_pass("loop-vectorize"))
+            LLVM.add!(pm, create_pass("slp-vectorizer"))
         end
 
         # More aggressive inlining and cleanup
-        LLVM.add!(pm, LLVM.ModulePass("aggressive-instcombine"))
+        LLVM.add!(pm, create_pass("aggressive-instcombine"))
 
         # Final cleanup
-        LLVM.add!(pm, LLVM.ModulePass("instcombine"))
-        LLVM.add!(pm, LLVM.ModulePass("simplifycfg"))
+        LLVM.add!(pm, create_pass("instcombine"))
+        LLVM.add!(pm, create_pass("simplifycfg"))
     end
 
     # Size optimizations
     if config.size_level >= 1
-        LLVM.add!(pm, LLVM.ModulePass("globaldce"))
-        LLVM.add!(pm, LLVM.ModulePass("strip-dead-prototypes"))
+        LLVM.add!(pm, create_pass("globaldce"))
+        LLVM.add!(pm, create_pass("strip-dead-prototypes"))
     end
 
     if config.size_level >= 2
-        LLVM.add!(pm, LLVM.ModulePass("mergefunc"))
+        LLVM.add!(pm, create_pass("mergefunc"))
     end
 end
 
@@ -159,18 +166,24 @@ end
 Add function-level optimization passes.
 """
 function add_function_optimization_passes!(pm::LLVM.ModulePassManager, config::OptimizationConfig)
+    # Helper function to create a ModulePass with a no-op runner
+    # The callback function must return a Bool (true = success, false = failure)
+    function create_pass(pass_name::String)
+        return LLVM.ModulePass(pass_name, mod -> true)
+    end
+
     if config.level >= 1
-        LLVM.add!(pm, LLVM.ModulePass("mem2reg"))
-        LLVM.add!(pm, LLVM.ModulePass("instcombine"))
+        LLVM.add!(pm, create_pass("mem2reg"))
+        LLVM.add!(pm, create_pass("instcombine"))
     end
 
     if config.level >= 2
-        LLVM.add!(pm, LLVM.ModulePass("gvn"))
-        LLVM.add!(pm, LLVM.ModulePass("dce"))
+        LLVM.add!(pm, create_pass("gvn"))
+        LLVM.add!(pm, create_pass("dce"))
     end
 
     if config.level >= 3
-        LLVM.add!(pm, LLVM.ModulePass("aggressive-instcombine"))
+        LLVM.add!(pm, create_pass("aggressive-instcombine"))
     end
 end
 

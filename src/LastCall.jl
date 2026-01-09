@@ -70,7 +70,7 @@ export julia_type_to_llvm_ir_string
 # Compiler configuration and error recovery
 export RustCompiler, compile_with_recovery
 export check_rustc_available, get_rustc_version, get_default_compiler, set_default_compiler, compile_rust_to_shared_lib
-export check_rustc_available, get_rustc_version, get_default_compiler, set_default_compiler
+export wrap_rust_code, compile_rust_to_llvm_ir, load_llvm_ir
 
 # Extended ownership types (Phase 2)
 export RustBox, RustRc, RustArc, RustVec, RustSlice
