@@ -1,6 +1,8 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 LastCall = "84591b13-8127-4a16-8156-1f71d7525150"
+RustToolChain = "e9dc52e2-edb8-4742-9783-5e542d30dbb5"
 
 [compat]
 Documenter = "1"
+RustToolChain = "0.1.1"
