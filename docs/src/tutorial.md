@@ -1,6 +1,17 @@
-# Tutorial
+# LastCall.jl Tutorial
 
 This tutorial walks you through using LastCall.jl to call Rust code from Julia step by step.
+
+## Table of Contents
+
+1. [Getting Started](#getting-started)
+2. [Basic Usage](#basic-usage)
+3. [Understanding the Type System](#understanding-the-type-system)
+4. [String Handling](#string-handling)
+5. [Error Handling](#error-handling)
+6. [Using Ownership Types](#using-ownership-types)
+7. [LLVM IR Integration (Advanced)](#llvm-ir-integration-advanced)
+8. [Performance Optimization](#performance-optimization)
 
 ## Getting Started
 
@@ -14,13 +25,13 @@ Pkg.add("LastCall")
 ### Requirements
 
 - Julia 1.10 or later
-- Rust toolchain (`rustc` and `cargo`) in PATH
+- Rust toolchain (`rustc` and `cargo`) installed and available in PATH
 
 To install Rust, visit [rustup.rs](https://rustup.rs/).
 
 ### Building Rust Helpers Library (Optional)
 
-For ownership types (Box, Rc, Arc), build the Rust helpers library:
+To use ownership types (Box, Rc, Arc), you need to build the Rust helpers library:
 
 ```julia
 using Pkg
@@ -59,9 +70,9 @@ println(result)  # => 30
 result = @rust add(10i32, 20i32)::Int32
 ```
 
-### Step 3: Multiple Functions
+### Step 3: Define Multiple Functions
 
-Define multiple functions in the same `rust""` block:
+You can define multiple functions in the same `rust""` block:
 
 ```julia
 rust"""
@@ -76,12 +87,12 @@ pub extern "C" fn subtract(a: i64, b: i64) -> i64 {
 }
 """
 
-# Use them
+# Usage
 product = @rust multiply(3.0, 4.0)::Float64  # => 12.0
 difference = @rust subtract(100i64, 30i64)::Int64  # => 70
 ```
 
-## Type System
+## Understanding the Type System
 
 ### Basic Type Mapping
 
@@ -108,11 +119,11 @@ LastCall.jl automatically maps Rust types to Julia types:
 LastCall.jl tries to infer return types from argument types, but explicit specification is recommended:
 
 ```julia
+# Not recommended - relies on inference (works but not recommended)
+result = @rust add(10i32, 20i32)
+
 # Recommended - explicit type specification
 result = @rust add(10i32, 20i32)::Int32
-
-# Not recommended - relies on inference
-result = @rust add(10i32, 20i32)
 ```
 
 ### Boolean Values
@@ -131,7 +142,7 @@ pub extern "C" fn is_positive(x: i32) -> bool {
 
 ## String Handling
 
-### Passing C Strings
+### Passing as C Strings
 
 When Rust functions expect `*const u8` (C strings), you can pass Julia `String` directly:
 
@@ -149,7 +160,7 @@ len = @rust string_length("hello")::UInt32  # => 5
 len = @rust string_length("世界")::UInt32   # => 6 (UTF-8 bytes)
 ```
 
-### UTF-8 Strings
+### UTF-8 String Handling
 
 ```julia
 rust"""
@@ -171,6 +182,28 @@ count = @rust count_chars("世界")::UInt32     # => 2 (characters, not bytes)
 ### Using Result Type
 
 Rust's `Result<T, E>` type is represented as `RustResult{T, E}` in Julia:
+
+```julia
+rust"""
+#[no_mangle]
+pub extern "C" fn divide(a: i32, b: i32) -> i32 {
+    if b == 0 {
+        return -1;  // Return -1 as error code
+    }
+    a / b
+}
+"""
+
+# Error checking
+result = @rust divide(Int32(10), Int32(2))::Int32
+if result == -1
+    println("Division by zero!")
+end
+```
+
+### Explicit Use of RustResult
+
+For a more Rust-like approach, you can define functions that return `Result` types:
 
 ```julia
 # Create RustResult manually
@@ -198,15 +231,18 @@ catch e
 end
 ```
 
-## Ownership Types
+## Using Ownership Types
 
 ### RustBox (Single Ownership)
 
 `RustBox<T>` is a heap-allocated value with single ownership:
 
 ```julia
+# Rust helpers library required
 if is_rust_helpers_available()
-    box = RustBox{Int32}(ptr)  # ptr from Rust function
+    # Create Box (usually returned from Rust functions)
+    # Here as an example, actual usage is from Rust function return values
+    box = RustBox{Int32}(ptr)  # ptr obtained from Rust function
 
     # Explicitly drop after use
     drop!(box)
@@ -217,6 +253,7 @@ end
 
 ```julia
 if is_rust_helpers_available()
+    # Create Rc
     rc1 = RustRc{Int32}(ptr)
 
     # Clone to increment reference count
@@ -235,6 +272,7 @@ end
 
 ```julia
 if is_rust_helpers_available()
+    # Create Arc
     arc1 = RustArc{Int32}(ptr)
 
     # Thread-safe clone
@@ -272,7 +310,7 @@ info = compile_and_register_rust_function("""
 pub extern "C" fn fast_add(a: i32, b: i32) -> i32 { a + b }
 """, "fast_add")
 
-# Call with @rust_llvm
+# Call with @rust_llvm (potentially optimized)
 result = @rust_llvm fast_add(Int32(10), Int32(20))  # => 30
 ```
 
@@ -281,7 +319,7 @@ result = @rust_llvm fast_add(Int32(10), Int32(20))  # => 30
 ```julia
 using LastCall
 
-# Create optimization config
+# Create optimization configuration
 config = OptimizationConfig(
     level=3,  # Optimization level 0-3
     enable_vectorization=true,
@@ -311,7 +349,7 @@ pub extern "C" fn compute(x: i32) -> i32 {
 }
 """
 
-# Same code again (fast from cache)
+# Same code again (fast load from cache)
 rust"""
 #[no_mangle]
 pub extern "C" fn compute(x: i32) -> i32 {
@@ -346,7 +384,7 @@ To measure performance:
 julia --project benchmark/benchmarks.jl
 ```
 
-This compares Julia native, `@rust`, and `@rust_llvm` performance.
+This compares performance of Julia native, `@rust`, and `@rust_llvm`.
 
 ## Best Practices
 
@@ -356,13 +394,14 @@ This compares Julia native, `@rust`, and `@rust_llvm` performance.
 # Recommended
 result = @rust add(10i32, 20i32)::Int32
 
-# Not recommended
+# Not recommended (relies on type inference)
 result = @rust add(10i32, 20i32)
 ```
 
 ### 2. Proper Error Handling
 
 ```julia
+# Use Result type
 result = some_rust_function()
 if is_err(result)
     # Handle error
@@ -371,9 +410,9 @@ end
 value = unwrap(result)
 ```
 
-### 3. Memory Management
+### 3. Be Careful with Memory Management
 
-For ownership types, always call `drop!`:
+When using ownership types, always call `drop!` appropriately:
 
 ```julia
 box = RustBox{Int32}(ptr)
@@ -384,13 +423,13 @@ finally
 end
 ```
 
-### 4. Use Caching
+### 4. Leverage Caching
 
-Same Rust code automatically benefits from caching.
+When using the same Rust code multiple times, caching is automatically leveraged.
 
 ### 5. Clear Cache When Debugging
 
-If issues occur, clear cache and recompile:
+If issues occur, try clearing the cache and recompiling:
 
 ```julia
 clear_cache()
@@ -398,6 +437,6 @@ clear_cache()
 
 ## Next Steps
 
-- See [Examples](@ref) for advanced usage patterns
-- Check [Troubleshooting](@ref) for problem solving
-- Review [API Reference](@ref) for all features
+- See [Examples](@ref) for more advanced usage examples
+- Check [Troubleshooting](@ref) to solve problems
+- Review [API Reference](@ref api.md) for all features

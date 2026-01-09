@@ -4,17 +4,21 @@ version = "0.1.0"
 authors = ["Satoshi Terasaki <terasakisatoshi.math@gmail.com>"]
 
 [deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
-Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 
 [compat]
+BenchmarkTools = "1.6.3"
 LLVM = "9"
 julia = "1.10"
 
 [extras]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
+benchmark = ["BenchmarkTools"]
 test = ["Test"]
