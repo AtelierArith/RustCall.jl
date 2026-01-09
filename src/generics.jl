@@ -217,7 +217,9 @@ info = monomorphize_function("identity", Dict{Symbol, Type}(:T => Int32))
 """
 function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type})
     # Check if already monomorphized
-    type_params_tuple = tuple(sort(collect(values(type_params)))...)
+    # Sort by type name (string representation) to ensure consistent ordering
+    sorted_types = sort(collect(values(type_params)), by=string)
+    type_params_tuple = tuple(sorted_types...)
     cache_key = (func_name, type_params_tuple)
 
     if haskey(MONOMORPHIZED_FUNCTIONS, cache_key)
@@ -233,7 +235,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     # Generate a unique name for the monomorphized function
     # Create a type suffix from the type parameters
     type_suffix_parts = String[]
-    for t in sort(collect(values(type_params)))
+    for t in sort(collect(values(type_params)), by=string)
         type_str = string(t)
         # Convert Julia type names to short identifiers
         type_map = Dict(
@@ -444,7 +446,8 @@ end
 Get a monomorphized function instance if it exists.
 """
 function get_monomorphized_function(func_name::String, type_params::Dict{Symbol, <:Type})
-    type_params_tuple = tuple(sort(collect(values(type_params)))...)
+    sorted_types = sort(collect(values(type_params)), by=string)
+    type_params_tuple = tuple(sorted_types...)
     cache_key = (func_name, type_params_tuple)
     return get(MONOMORPHIZED_FUNCTIONS, cache_key, nothing)
 end

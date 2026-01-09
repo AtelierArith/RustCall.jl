@@ -87,13 +87,13 @@ The specialized function is compiled and cached. Subsequent calls with the same 
 ```@example generics
 rust"""
 #[no_mangle]
-pub extern "C" fn pair<T, U>(a: T, b: U) -> T {
+pub extern "C" fn first<T, U>(a: T, b: U) -> T {
     a
 }
 """
 
 # Type parameters are inferred from arguments
-result = @rust pair(Int32(10), Float64(3.14))::Int32  # => 10
+result = @rust first(Int32(10), Float64(3.14))::Int32  # => 10
 ```
 
 ### Explicit Type Parameters
@@ -101,7 +101,13 @@ result = @rust pair(Int32(10), Float64(3.14))::Int32  # => 10
 You can also explicitly specify type parameters:
 
 ```@example generics
-using LastCall
+# Define the code
+code = """
+#[no_mangle]
+pub extern "C" fn identity<T>(x: T) -> T {
+    x
+}
+"""
 
 # Register generic function
 register_generic_function("identity", code, [:T])
@@ -110,8 +116,9 @@ register_generic_function("identity", code, [:T])
 type_params = Dict(:T => Int32)
 info = monomorphize_function("identity", type_params)
 
-# Call the monomorphized function
-result = call_rust_function(info.func_ptr, info.return_type, Int32(42))
+# Call using @rust macro (recommended way)
+# Note: After monomorphization, you can call it directly
+result = @rust identity(Int32(42))::Int32  # => 42
 ```
 
 ## Limitations
