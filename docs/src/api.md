@@ -90,8 +90,6 @@ cstring_to_julia_string
 ```@docs
 format_rustc_error
 suggest_fix_for_error
-result_to_exception
-unwrap_or_throw
 ```
 
 ## Compiler Functions
@@ -240,17 +238,26 @@ MONOMORPHIZED_FUNCTIONS
 
 ### Testing and Debugging
 
+These functions are exported for testing purposes but are considered internal:
+
 ```@docs
-_extract_error_line_numbers
-_extract_suggestions
 _extract_error_line_numbers_impl
 ```
 
 ## Internal Functions
 
-The following functions are internal implementation details and are not part of the public API:
+The following functions are internal implementation details and are not part of the public API.
+They are documented here for completeness but should not be used directly by users.
 
 ```@autodocs
 Modules = [LastCall]
-Filter = t -> true
+Filter = t -> !(t in [
+    # Exclude items already documented above
+    RustResult, RustOption, RustBox, RustRc, RustArc, RustVec, RustSlice,
+    RustPtr, RustRef, RustString, RustStr,
+    RustError, CompilationError, RuntimeError, CargoBuildError, DependencyResolutionError,
+    RustCompiler, OptimizationConfig, RustFunctionInfo,
+    DependencySpec, CargoProject,
+    GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS,
+])
 ```
