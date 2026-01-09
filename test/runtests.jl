@@ -30,6 +30,18 @@ include("test_dependencies.jl")
 include("test_cargo.jl")
 include("test_ndarray.jl")
 
+# Examples converted to tests
+include("test_basic_examples.jl")
+include("test_advanced_examples.jl")
+include("test_ownership_examples.jl")
+include("test_struct_examples.jl")
+include("test_phase4_ndarray.jl")
+include("test_phase4_pi.jl")
+include("test_generic_struct.jl")
+include("test_julia_to_rust_simple.jl")
+include("test_julia_to_rust_struct.jl")
+include("test_julia_to_rust_generic.jl")
+
 @testset "LastCall.jl" begin
 
     @testset "Type Mappings" begin
