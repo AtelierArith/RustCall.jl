@@ -26,12 +26,37 @@ macro rust(expr)
     return rust_impl(__module__, expr, __source__)
 end
 
+const RUST_COMPARISON_OPS = Set{Symbol}([
+    Symbol("=="),
+    Symbol("==="),
+    Symbol("!="),
+    Symbol("!=="),
+    Symbol("<"),
+    Symbol("<="),
+    Symbol(">"),
+    Symbol(">="),
+    Symbol("\u2248"),
+])
+
 """
     rust_impl(mod, expr, source)
 
 Implementation of the @rust macro.
 """
 function rust_impl(mod, expr, source)
+    if isexpr(expr, :call)
+        op = expr.args[1]
+        if op isa Symbol && op in RUST_COMPARISON_OPS
+            if length(expr.args) != 3
+                error("Invalid @rust syntax: $expr")
+            end
+            lhs = expr.args[2]
+            rhs = expr.args[3]
+            rust_expr = rust_impl(mod, lhs, source)
+            return Expr(:call, op, rust_expr, esc(rhs))
+        end
+    end
+
     # Handle return type annotation: @rust func(args...)::Type
     if isexpr(expr, :(::))
         call_expr = expr.args[1]
