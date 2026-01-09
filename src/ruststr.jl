@@ -256,39 +256,8 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         CURRENT_LIB[] = lib_name
     end
 
-    # Also try to load LLVM IR for analysis (optional)
-    try
-        ir_path = compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
-
-        # Cache the LLVM IR
-        try
-            save_cached_llvm_ir(cache_key, ir_path)
-        catch e
-            @debug "Failed to cache LLVM IR: $e"
-        end
-
-        rust_mod = load_llvm_ir(ir_path; source_code=wrapped_code)
-        RUST_MODULE_REGISTRY[code_hash] = rust_mod
-
-        # Update metadata with function list
-        try
-            functions = list_functions(rust_mod)
-            metadata = CacheMetadata(
-                cache_key,
-                code_hash,
-                "$(compiler.optimization_level)_$(compiler.emit_debug_info)",
-                compiler.target_triple,
-                now(),
-                functions
-            )
-            save_cache_metadata(cache_key, metadata)
-        catch e
-            @debug "Failed to update cache metadata: $e"
-        end
-    catch e
-        # LLVM IR loading is optional, don't fail if it doesn't work
-        @debug "Failed to load LLVM IR for analysis: $e"
-    end
+    # Temporarily disabled LLVM IR loading for stability
+    # (LLVM IR is used for type inference and @rust_llvm)
 
     # Detect and register generic functions
     try
