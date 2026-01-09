@@ -54,8 +54,8 @@ function remove_derive_julia_struct_attributes(code::String)
                 modified = replace(modified, r",\s*\)" => ")")
                 modified = replace(modified, r"\(\)" => "")
                 
-                # If the entire attribute becomes empty, skip the line
-                if occursin(r"#\[derive\(\)\]", modified) || occursin(r"#\[derive\(\s*\)\]", modified)
+                # If the entire attribute becomes empty, skip the line entirely
+                if occursin(r"#\[derive\(\)\]", modified) || occursin(r"#\[derive\(\s*\)\]", modified) || strip(modified) == "#[derive]"
                     # Skip this line entirely
                     i += 1
                     continue
@@ -74,7 +74,10 @@ function remove_derive_julia_struct_attributes(code::String)
                         # Found closing, process it
                         modified = replace(next_line, r"JuliaStruct\s*,?\s*" => "")
                         modified = replace(modified, r",\s*\)" => ")")
-                        if !isempty(strip(modified))
+                        # Check if it becomes empty derive
+                        if occursin(r"#\[derive\(\)\]", modified) || occursin(r"#\[derive\(\s*\)\]", modified) || strip(modified) == "#[derive]"
+                            # Skip this line
+                        elseif !isempty(strip(modified))
                             push!(result_lines, modified)
                         end
                         i += 1

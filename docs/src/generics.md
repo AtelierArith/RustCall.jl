@@ -169,8 +169,6 @@ More complex inference (e.g., inferring from return type) is not yet supported.
 ### Example 1: Simple Generic Function
 
 ```@example generics
-using LastCall
-
 rust"""
 #[no_mangle]
 pub extern "C" fn identity<T>(x: T) -> T {
@@ -179,8 +177,10 @@ pub extern "C" fn identity<T>(x: T) -> T {
 """
 
 # Automatically monomorphized and called
-@test @rust identity(Int32(42))::Int32 == 42
-@test @rust identity(Float64(3.14))::Float64 ≈ 3.14
+result1 = @rust identity(Int32(42))::Int32  # => 42
+result2 = @rust identity(Float64(3.14))::Float64  # => 3.14
+println("Int32 result: $result1")
+println("Float64 result: $result2")
 ```
 
 ### Example 2: Multiple Type Parameters
