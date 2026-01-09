@@ -28,15 +28,22 @@ Exception type for Rust compilation errors.
 - `raw_stderr::String`: Raw stderr output from rustc
 - `source_code::String`: The Rust source code that failed to compile
 - `command::String`: The rustc command that was executed
+- `file_path::String`: Source file path (if available)
+- `line_number::Int`: Line number where error occurred (if available)
+- `context::Dict{String, Any}`: Additional debugging context
 """
 struct CompilationError <: Exception
     message::String
     raw_stderr::String
     source_code::String
     command::String
+    file_path::String
+    line_number::Int
+    context::Dict{String, Any}
 
-    function CompilationError(message::String, raw_stderr::String, source_code::String, command::String)
-        new(message, raw_stderr, source_code, command)
+    function CompilationError(message::String, raw_stderr::String, source_code::String, command::String;
+                              file_path::String="", line_number::Int=0, context::Dict{String, Any}=Dict{String, Any}())
+        new(message, raw_stderr, source_code, command, file_path, line_number, context)
     end
 end
 
@@ -49,14 +56,21 @@ Exception type for Rust runtime errors.
 - `message::String`: Error message
 - `function_name::String`: Name of the function that failed
 - `stack_trace::String`: Optional stack trace (default: "")
+- `arguments::Vector{Any}`: Function arguments that caused the error
+- `library_name::String`: Name of the library containing the function
+- `context::Dict{String, Any}`: Additional debugging context
 """
 struct RuntimeError <: Exception
     message::String
     function_name::String
     stack_trace::String
+    arguments::Vector{Any}
+    library_name::String
+    context::Dict{String, Any}
 
-    function RuntimeError(message::String, function_name::String, stack_trace::String="")
-        new(message, function_name, stack_trace)
+    function RuntimeError(message::String, function_name::String, stack_trace::String="";
+                          arguments::Vector{Any}=Any[], library_name::String="", context::Dict{String, Any}=Dict{String, Any}())
+        new(message, function_name, stack_trace, arguments, library_name, context)
     end
 end
 
@@ -117,10 +131,20 @@ end
     Base.showerror(io::IO, e::CompilationError)
 
 Display a CompilationError in a user-friendly format with formatted rustc output.
+Enhanced with more context and debugging information.
 """
 function Base.showerror(io::IO, e::CompilationError)
     println(io, "CompilationError: Failed to compile Rust code")
     println(io, "")
+
+    # Show file and line information if available
+    if !isempty(e.file_path)
+        println(io, "File: $(e.file_path)")
+        if e.line_number > 0
+            println(io, "Line: $(e.line_number)")
+        end
+        println(io, "")
+    end
 
     # Show command (can be helpful for debugging)
     if !isempty(e.command)
@@ -185,6 +209,21 @@ function Base.showerror(io::IO, e::CompilationError)
             println(io, "  $i. $suggestion")
         end
     end
+
+    # Show additional context if available
+    if !isempty(e.context)
+        println(io, "")
+        println(io, "Debug Information:")
+        println(io, "─" ^ 80)
+        for (key, value) in e.context
+            println(io, "  $key: $value")
+        end
+        println(io, "─" ^ 80)
+    end
+
+    # Show hint for enabling debug mode
+    println(io, "")
+    println(io, "💡 Tip: Set JULIA_DEBUG=LastCall or enable debug mode for more detailed information.")
 end
 
 # Export internal functions for testing (wrappers)
@@ -195,6 +234,7 @@ end
 function _extract_suggestions(stderr::String)
     return _extract_suggestions_impl(stderr)
 end
+
 
 """
     _extract_error_line_numbers_impl(stderr::String) -> Vector{Int}
@@ -256,9 +296,35 @@ end
     Base.showerror(io::IO, e::RuntimeError)
 
 Display a RuntimeError in a user-friendly format with enhanced stack trace.
+Enhanced with argument information and debugging context.
 """
 function Base.showerror(io::IO, e::RuntimeError)
     println(io, "RuntimeError in function '$(e.function_name)': $(e.message)")
+
+    # Show library name if available
+    if !isempty(e.library_name)
+        println(io, "Library: $(e.library_name)")
+    end
+
+    # Show function arguments if available
+    if !isempty(e.arguments)
+        println(io, "")
+        println(io, "Function arguments:")
+        println(io, "─" ^ 40)
+        for (i, arg) in enumerate(e.arguments)
+            arg_str = try
+                string(arg)
+            catch
+                "<unprintable>"
+            end
+            # Truncate long arguments
+            if length(arg_str) > 100
+                arg_str = arg_str[1:97] * "..."
+            end
+            println(io, "  arg[$i]: $arg_str ($(typeof(arg)))")
+        end
+        println(io, "─" ^ 40)
+    end
 
     if !isempty(e.stack_trace)
         println(io, "")
@@ -277,9 +343,31 @@ function Base.showerror(io::IO, e::RuntimeError)
         end
 
         println(io, "─" ^ 80)
-    else
+    end
+
+    # Show additional context if available
+    if !isempty(e.context)
         println(io, "")
-        println(io, "Tip: Enable debug mode for more detailed error information.")
+        println(io, "Debug Information:")
+        println(io, "─" ^ 80)
+        for (key, value) in e.context
+            value_str = try
+                string(value)
+            catch
+                "<unprintable>"
+            end
+            # Truncate long values
+            if length(value_str) > 200
+                value_str = value_str[1:197] * "..."
+            end
+            println(io, "  $key: $value_str")
+        end
+        println(io, "─" ^ 80)
+    end
+
+    if isempty(e.stack_trace) && isempty(e.context)
+        println(io, "")
+        println(io, "💡 Tip: Enable debug mode for more detailed error information.")
     end
 end
 
