@@ -33,7 +33,7 @@ makedocs(
             "LLVM Call" => "design/LLVMCALL.md",
         ],
     ],
-    warnonly = [:missing_docs, :cross_references],
+    warnonly = [:cross_references],
 )
 
 deploydocs(

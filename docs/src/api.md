@@ -188,3 +188,12 @@ const RUST_JULIA_TYPE_MAP = Dict(
 GENERIC_FUNCTION_REGISTRY
 MONOMORPHIZED_FUNCTIONS
 ```
+
+## Internal Functions
+
+The following functions are internal implementation details and are not part of the public API:
+
+```@autodocs
+Modules = [LastCall]
+Private = true
+```
