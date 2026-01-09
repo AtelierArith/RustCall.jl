@@ -76,6 +76,8 @@ function julia_to_c_type(t::Type)
         return Bool
     elseif t <: Ptr
         return Ptr{Cvoid}
+    elseif t == String || t == Cstring || t == RustString || t == RustStr
+        return Cstring
     elseif t <: AbstractString
         return Cstring
     else
@@ -115,10 +117,24 @@ _call_rust_bool_0(ptr::Ptr{Cvoid}) = ccall(ptr, Bool, ())
 _call_rust_bool_1(ptr::Ptr{Cvoid}, a1::Int32) = ccall(ptr, Bool, (Int32,), a1)
 _call_rust_bool_2(ptr::Ptr{Cvoid}, a1::Int32, a2::Int32) = ccall(ptr, Bool, (Int32, Int32), a1, a2)
 
+# UInt32 functions
+_call_rust_u32_0(ptr::Ptr{Cvoid}) = ccall(ptr, UInt32, ())
+_call_rust_u32_1_str(ptr::Ptr{Cvoid}, a1::String) = ccall(ptr, UInt32, (Cstring,), a1)
+_call_rust_u32_1_i32(ptr::Ptr{Cvoid}, a1::Int32) = ccall(ptr, UInt32, (Int32,), a1)
+_call_rust_u32_2_str(ptr::Ptr{Cvoid}, a1::String, a2::String) = ccall(ptr, UInt32, (Cstring, Cstring), a1, a2)
+
 # Void functions
 _call_rust_void_0(ptr::Ptr{Cvoid}) = ccall(ptr, Cvoid, ())
 _call_rust_void_1(ptr::Ptr{Cvoid}, a1::Int64) = ccall(ptr, Cvoid, (Int64,), a1)
 _call_rust_void_2(ptr::Ptr{Cvoid}, a1::Int64, a2::Int64) = ccall(ptr, Cvoid, (Int64, Int64), a1, a2)
+
+# Cstring (string) functions - use String and let ccall handle conversion
+_call_rust_cstring_0(ptr::Ptr{Cvoid}) = ccall(ptr, Cstring, ())
+_call_rust_cstring_1_str(ptr::Ptr{Cvoid}, a1::String) = ccall(ptr, Cstring, (Cstring,), a1)
+_call_rust_cstring_2_str(ptr::Ptr{Cvoid}, a1::String, a2::String) = ccall(ptr, Cstring, (Cstring, Cstring), a1, a2)
+_call_rust_cstring_1_i32(ptr::Ptr{Cvoid}, a1::Int32) = ccall(ptr, Cstring, (Int32,), a1)
+_call_rust_cstring_2_str_i32(ptr::Ptr{Cvoid}, a1::String, a2::Int32) = ccall(ptr, Cstring, (Cstring, Int32), a1, a2)
+_call_rust_cstring_2_i32_str(ptr::Ptr{Cvoid}, a1::Int32, a2::String) = ccall(ptr, Cstring, (Int32, Cstring), a1, a2)
 
 """
     call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
@@ -178,6 +194,24 @@ function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
         elseif n == 2
             return _call_rust_bool_2(func_ptr, Int32(args[1]), Int32(args[2]))
         end
+    elseif ret_type == UInt32
+        if n == 0
+            return _call_rust_u32_0(func_ptr)
+        elseif n == 1
+            arg1 = args[1]
+            arg1_type = typeof(arg1)
+            if arg1_type == String
+                return _call_rust_u32_1_str(func_ptr, arg1)
+            else
+                return _call_rust_u32_1_i32(func_ptr, Int32(arg1))
+            end
+        elseif n == 2
+            arg1 = args[1]
+            arg2 = args[2]
+            if typeof(arg1) == String && typeof(arg2) == String
+                return _call_rust_u32_2_str(func_ptr, arg1, arg2)
+            end
+        end
     elseif ret_type == Cvoid || ret_type == Nothing
         if n == 0
             return _call_rust_void_0(func_ptr)
@@ -185,6 +219,39 @@ function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
             return _call_rust_void_1(func_ptr, Int64(args[1]))
         elseif n == 2
             return _call_rust_void_2(func_ptr, Int64(args[1]), Int64(args[2]))
+        end
+    elseif ret_type == Cstring || ret_type == String
+        # Handle string return types
+        result = if n == 0
+            _call_rust_cstring_0(func_ptr)
+        elseif n == 1
+            arg1 = args[1]
+            if typeof(arg1) == String
+                _call_rust_cstring_1_str(func_ptr, arg1)
+            else
+                _call_rust_cstring_1_i32(func_ptr, Int32(arg1))
+            end
+        elseif n == 2
+            arg1, arg2 = args[1], args[2]
+            t1, t2 = typeof(arg1), typeof(arg2)
+            if t1 == String && t2 == String
+                _call_rust_cstring_2_str(func_ptr, arg1, arg2)
+            elseif t1 == String
+                _call_rust_cstring_2_str_i32(func_ptr, arg1, Int32(arg2))
+            elseif t2 == String
+                _call_rust_cstring_2_i32_str(func_ptr, Int32(arg1), arg2)
+            else
+                error("Unsupported argument types for Cstring return")
+            end
+        else
+            error("Unsupported argument count for Cstring return: $n")
+        end
+
+        # Convert Cstring to Julia String
+        if result == C_NULL || convert(Ptr{Cvoid}, result) == C_NULL
+            return ""
+        else
+            return unsafe_string(result)
         end
     end
 
@@ -212,6 +279,8 @@ function call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
         return call_rust_function(func_ptr, Float64, args...)
     elseif first_type == Bool
         return call_rust_function(func_ptr, Bool, args...)
+    elseif first_type == String || first_type == Cstring
+        return call_rust_function(func_ptr, Cstring, args...)
     else
         return call_rust_function(func_ptr, Int64, args...)
     end

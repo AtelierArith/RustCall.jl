@@ -8,7 +8,7 @@
 
 - **`@rust` macro**: Call Rust functions directly from Julia
 - **`rust""` string literal**: Compile and load Rust code as shared libraries
-- **`irust""` string literal**: Execute Rust code at function scope (coming soon)
+- **`@irust` macro**: Execute Rust code at function scope
 - **Type mapping**: Automatic conversion between Rust and Julia types
 - **Result/Option support**: Handle Rust's `Result<T, E>` and `Option<T>` types
 
@@ -74,6 +74,23 @@ pub extern "C" fn is_positive(x: i32) -> bool {
 @rust is_positive(Int32(-5))::Bool # => false
 ```
 
+### Function Scope Execution (`@irust`)
+
+The `@irust` macro allows you to execute Rust code at function scope:
+
+```julia
+function double(x)
+    @irust("arg1 * 2", x)
+end
+
+result = double(21)  # => 42
+```
+
+**Note**: In Phase 1, `@irust` has limitations:
+- Arguments must be passed explicitly
+- Code should use `arg1`, `arg2`, etc. to reference arguments
+- Return type is inferred from the code
+
 ## Type Mapping
 
 LastCall.jl automatically maps Rust types to Julia types:
@@ -94,6 +111,28 @@ LastCall.jl automatically maps Rust types to Julia types:
 | `usize`   | `UInt`     |
 | `isize`   | `Int`      |
 | `()`      | `Cvoid`    |
+| `*const u8` | `Cstring` / `String` |
+| `*mut u8` | `Ptr{UInt8}` |
+
+## String Support
+
+LastCall.jl supports passing Julia strings to Rust functions expecting C strings:
+
+```julia
+rust"""
+#[no_mangle]
+pub extern "C" fn string_length(s: *const u8) -> u32 {
+    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    c_str.to_bytes().len() as u32
+}
+"""
+
+# Julia String is automatically converted to Cstring
+result = @rust string_length("hello")::UInt32  # => 5
+
+# UTF-8 strings are supported
+result = @rust string_length("世界")::UInt32   # => 6 (UTF-8 bytes)
+```
 
 ## Result and Option Types
 
@@ -154,11 +193,12 @@ LastCall.jl is currently in **early development**. The basic functionality is wo
 - ✅ Basic type mapping
 - ✅ `rust""` string literal
 - ✅ `@rust` macro
+- ✅ `@irust` macro (basic, Phase 1)
 - ✅ Result/Option types
 - ✅ Basic error handling
 
 **Planned:**
-- ⏳ `irust""` string literal (function scope)
+- ⏳ Enhanced `@irust` with better variable binding
 - ⏳ String type support
 - ⏳ Array/vector support
 - ⏳ LLVM IR integration

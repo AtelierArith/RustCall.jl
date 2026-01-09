@@ -40,6 +40,9 @@ const RUST_TO_JULIA_TYPE_MAP = Dict{Symbol, Type}(
     :c_ulonglong => Culonglong,
     :c_float => Cfloat,
     :c_double => Cdouble,
+
+    # String types (basic support)
+    :str => Cstring,  # &str is passed as *const u8 (Cstring)
 )
 
 """
@@ -96,6 +99,7 @@ end
 
 Convert a Rust type name string to the corresponding Julia type.
 Handles pointer types like `*const i32` and `*mut i32`.
+Also handles string types like `String` and `&str`.
 """
 function rusttype_to_julia(rust_type::String)
     rust_type = strip(rust_type)
@@ -103,12 +107,33 @@ function rusttype_to_julia(rust_type::String)
     # Handle pointer types
     if startswith(rust_type, "*const ")
         inner_type = rust_type[8:end]
-        inner_julia_type = rusttype_to_julia(String(strip(inner_type)))
+        inner_type_stripped = strip(inner_type)
+
+        # Special handling for string pointers
+        if inner_type_stripped == "u8" || inner_type_stripped == "c_char"
+            return Cstring
+        end
+
+        inner_julia_type = rusttype_to_julia(String(inner_type_stripped))
         return Ptr{inner_julia_type}
     elseif startswith(rust_type, "*mut ")
         inner_type = rust_type[6:end]
-        inner_julia_type = rusttype_to_julia(String(strip(inner_type)))
+        inner_type_stripped = strip(inner_type)
+
+        # Special handling for string pointers
+        if inner_type_stripped == "u8" || inner_type_stripped == "c_char"
+            return Ptr{UInt8}
+        end
+
+        inner_julia_type = rusttype_to_julia(String(inner_type_stripped))
         return Ptr{inner_julia_type}
+    end
+
+    # Handle string types
+    if rust_type == "String"
+        return RustString
+    elseif rust_type == "&str" || rust_type == "str"
+        return Cstring  # &str is passed as Cstring in FFI
     end
 
     # Handle unit type
@@ -130,14 +155,29 @@ Convert a Julia type to the corresponding Rust type name.
 juliatype_to_rust(Int32)   # => "i32"
 juliatype_to_rust(Float64) # => "f64"
 juliatype_to_rust(Bool)    # => "bool"
+juliatype_to_rust(String)  # => "*const u8" (for FFI)
+juliatype_to_rust(Cstring) # => "*const u8"
 ```
 """
 function juliatype_to_rust(julia_type::Type)
+    # Handle string types
+    if julia_type == String
+        return "*const u8"  # String is passed as *const u8 in FFI
+    elseif julia_type == Cstring
+        return "*const u8"
+    elseif julia_type == RustString
+        return "String"
+    elseif julia_type == RustStr
+        return "*const u8"  # &str is passed as *const u8
+    end
+
     # Handle pointer types
     if julia_type <: Ptr
         inner_type = eltype(julia_type)
         if inner_type == Cvoid
             return "*mut c_void"
+        elseif inner_type == UInt8
+            return "*mut u8"
         end
         inner_rust_type = juliatype_to_rust(inner_type)
         return "*mut $inner_rust_type"

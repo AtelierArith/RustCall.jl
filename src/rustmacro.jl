@@ -115,6 +115,17 @@ function rust_impl_qualified(mod, expr, source)
 end
 
 """
+    _convert_args_for_rust(args...)
+
+Convert Julia arguments to Rust-compatible types.
+String arguments are passed directly and converted by ccall.
+"""
+function _convert_args_for_rust(args...)
+    # No conversion needed - ccall handles String -> Cstring
+    return args
+end
+
+"""
     _rust_call_dynamic(lib_name::String, func_name::String, args...)
 
 Call a Rust function with dynamic type dispatch.
@@ -123,16 +134,19 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     # Get function pointer
     func_ptr = get_function_pointer(lib_name, func_name)
 
+    # Convert arguments (String -> Cstring)
+    converted_args = _convert_args_for_rust(args...)
+
     # Try to get type info from LLVM analysis
     try
         ret_type, expected_arg_types = infer_function_types(lib_name, func_name)
-        return call_rust_function(func_ptr, ret_type, args...)
+        return call_rust_function(func_ptr, ret_type, converted_args...)
     catch
         # Fall back to inference from arguments
     end
 
     # Use inference from argument types
-    return call_rust_function_infer(func_ptr, args...)
+    return call_rust_function_infer(func_ptr, converted_args...)
 end
 
 """
@@ -142,7 +156,9 @@ Call a Rust function with explicit return type.
 """
 function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, args...)
     func_ptr = get_function_pointer(lib_name, func_name)
-    return call_rust_function(func_ptr, ret_type, args...)
+    # Convert arguments (String -> Cstring)
+    converted_args = _convert_args_for_rust(args...)
+    return call_rust_function(func_ptr, ret_type, converted_args...)
 end
 
 """

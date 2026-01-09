@@ -39,10 +39,13 @@ include("ruststr.jl")
 include("rustmacro.jl")
 
 # Export public API
-export @rust, @rust_str
+export @rust, @rust_str, @irust, @irust_str
 export RustPtr, RustRef, RustResult, RustOption
+export RustString, RustStr
 export rusttype_to_julia, juliatype_to_rust
 export unwrap, unwrap_or, is_ok, is_err, is_some, is_none
+export rust_string_to_julia, rust_str_to_julia
+export julia_string_to_rust, julia_string_to_cstring, cstring_to_julia_string
 
 # Module initialization
 function __init__()
