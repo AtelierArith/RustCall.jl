@@ -93,6 +93,7 @@ LastCall.jl automatically maps Rust types to Julia types:
 Pages = [
     "tutorial.md",
     "examples.md",
+    "struct_mapping.md",
     "generics.md",
     "performance.md",
     "troubleshooting.md",
