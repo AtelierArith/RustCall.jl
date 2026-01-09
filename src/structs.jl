@@ -707,10 +707,12 @@ function emit_julia_definitions(info::RustStructInfo)
         for m in info.methods
             method_sym = Symbol(m.name)
             method_func = esc(Symbol(m.name))
+            # Use gensym to create unique variable names for each method's closure
+            args_var = gensym("args")
             push!(method_accessors, quote
                 if field === $(QuoteNode(method_sym))
-                    return function(inner_args...)
-                        return $method_func(self, inner_args...)
+                    return function($(args_var)...)
+                        return $method_func(self, $(args_var)...)
                     end
                 end
             end)
