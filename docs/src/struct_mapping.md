@@ -20,17 +20,16 @@ When you add `#[derive(JuliaStruct)]` to a Rust struct, LastCall.jl automaticall
 ### Simple Struct
 
 ```@example struct_mapping
-
 rust"""
 #[derive(JuliaStruct)]
-pub struct Point {
+pub struct Point2D {
     x: f64,
     y: f64,
 }
 
-impl Point {
+impl Point2D {
     pub fn new(x: f64, y: f64) -> Self {
-        Point { x, y }
+        Point2D { x, y }
     }
     
     pub fn distance(&self) -> f64 {
@@ -39,8 +38,8 @@ impl Point {
 }
 """
 
-# Create a Point instance
-p = Point(3.0, 4.0)
+# Create a Point2D instance
+p = Point2D(3.0, 4.0)
 
 # Access fields directly
 println(p.x)  # => 3.0
@@ -58,17 +57,16 @@ println(dist)  # => 5.830951894845301
 ### With Clone Support
 
 ```@example struct_mapping
-
 rust"""
 #[derive(JuliaStruct, Clone)]
-pub struct Person {
+pub struct PersonInfo {
     name: String,
     age: i32,
 }
 
-impl Person {
+impl PersonInfo {
     pub fn new(name: String, age: i32) -> Self {
-        Person { name, age }
+        PersonInfo { name, age }
     }
     
     pub fn get_name(&self) -> String {
@@ -78,7 +76,7 @@ impl Person {
 """
 
 # Create a person
-person = Person("Alice", 30)
+person = PersonInfo("Alice", 30)
 
 # Clone the person
 person2 = copy(person)  # Uses Rust's Clone trait
@@ -414,26 +412,24 @@ pub struct Inner {
 ### Complete Example: 2D Vector
 
 ```@example struct_mapping
-using LastCall
-
 rust"""
 #[derive(JuliaStruct, Clone)]
-pub struct Vec2 {
+pub struct Vec2DD {
     x: f64,
     y: f64,
 }
 
-impl Vec2 {
+impl Vec2D {
     pub fn new(x: f64, y: f64) -> Self {
-        Vec2 { x, y }
+        Vec2D { x, y }
     }
     
     pub fn zero() -> Self {
-        Vec2 { x: 0.0, y: 0.0 }
+        Vec2D { x: 0.0, y: 0.0 }
     }
     
-    pub fn add(&self, other: &Vec2) -> Vec2 {
-        Vec2 {
+    pub fn add(&self, other: &Vec2D) -> Vec2D {
+        Vec2D {
             x: self.x + other.x,
             y: self.y + other.y,
         }
@@ -458,8 +454,8 @@ impl Vec2 {
 """
 
 # Create vectors
-v1 = Vec2(3.0, 4.0)
-v2 = Vec2(1.0, 2.0)
+v1 = Vec2D(3.0, 4.0)
+v2 = Vec2D(1.0, 2.0)
 
 # Access fields
 println("v1: ($(v1.x), $(v1.y))")  # => v1: (3.0, 4.0)
@@ -473,7 +469,7 @@ v3 = v1.add(v2)
 println("v3: ($(v3.x), $(v3.y))")  # => v3: (6.0, 6.0)
 
 # Static method
-zero = Vec2.zero()
+zero = Vec2D.zero()
 println("zero: ($(zero.x), $(zero.y))")  # => zero: (0.0, 0.0)
 
 # Clone
