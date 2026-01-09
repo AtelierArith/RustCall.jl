@@ -241,7 +241,7 @@ julia --project benchmark/benchmarks.jl
 
 2. **`@irust` Macro**
    - Arguments must be passed explicitly
-   - No automatic Julia variable binding (`$var` syntax)
+   - No automatic Julia variable binding (``\$var`` syntax)
 
 ### Phase 2 Limitations
 
