@@ -1,6 +1,9 @@
 # Rust compiler (rustc) wrapper for LLVM IR generation
 
 using RustToolChain: rustc, cargo
+using SHA
+
+const RECOVERY_FINGERPRINT_LEN = 12
 
 """
     RustCompiler
@@ -466,11 +469,20 @@ function compile_with_recovery(
         end
         
         # Attempt recovery
-        @warn "Compilation failed, attempting recovery..."
+        code_fingerprint = bytes2hex(sha256(wrapped_code))[1:RECOVERY_FINGERPRINT_LEN]
+        if compiler.debug_mode
+            @warn "Compilation failed, attempting recovery..." code_id=code_fingerprint code_len=ncodeunits(wrapped_code) opt_level=compiler.optimization_level emit_debug_info=compiler.emit_debug_info target=compiler.target_triple
+        else
+            @debug "Compilation failed, attempting recovery..." code_id=code_fingerprint code_len=ncodeunits(wrapped_code) opt_level=compiler.optimization_level emit_debug_info=compiler.emit_debug_info target=compiler.target_triple
+        end
         
         # Recovery attempt 1: Retry with lower optimization level
         if retry_count > 0 && compiler.optimization_level > 0
-            @info "Recovery: Retrying with lower optimization level"
+            if compiler.debug_mode
+                @info "Recovery: Retrying with lower optimization level" code_id=code_fingerprint
+            else
+                @debug "Recovery: Retrying with lower optimization level" code_id=code_fingerprint
+            end
             retry_compiler = RustCompiler(
                 compiler.target_triple,
                 compiler.optimization_level - 1,
@@ -487,7 +499,11 @@ function compile_with_recovery(
         
         # Recovery attempt 2: Retry with debug info enabled
         if retry_count > 0 && !compiler.emit_debug_info
-            @info "Recovery: Retrying with debug info enabled"
+            if compiler.debug_mode
+                @info "Recovery: Retrying with debug info enabled" code_id=code_fingerprint
+            else
+                @debug "Recovery: Retrying with debug info enabled" code_id=code_fingerprint
+            end
             retry_compiler = RustCompiler(
                 compiler.target_triple,
                 compiler.optimization_level,
@@ -503,7 +519,11 @@ function compile_with_recovery(
         end
         
         # All recovery attempts failed, rethrow original error
-        @error "All recovery attempts failed"
+        if compiler.debug_mode
+            @error "All recovery attempts failed" code_id=code_fingerprint
+        else
+            @debug "All recovery attempts failed" code_id=code_fingerprint
+        end
         rethrow(e)
     end
 end
