@@ -104,8 +104,8 @@ default_numeric_arg_type(::Type{T}) where {T} = T
 normalize_arg_type(::Type{R}, ::Type{T}) where {R,T} = T
 normalize_arg_type(::Type{R}, ::Type{T}) where {R,T<:AbstractString} = String
 normalize_arg_type(::Type{R}, ::Type{Cstring}) where {R} = Cstring
-normalize_arg_type(::Type{R}, ::Type{T}) where {R,T<:Integer} = default_numeric_arg_type(R)
-normalize_arg_type(::Type{R}, ::Type{T}) where {R,T<:AbstractFloat} = default_numeric_arg_type(R)
+normalize_arg_type(::Type{R}, ::Type{T}) where {R,T<:Integer} = T  # Preserve integer types
+normalize_arg_type(::Type{R}, ::Type{T}) where {R,T<:AbstractFloat} = T  # Preserve float types
 normalize_arg_type(::Type{R}, ::Type{Ptr{T}}) where {R,T} = Ptr{T}  # Preserve pointer types
 normalize_arg_type(::Type{R}, ::Type{Ref{T}}) where {R,T} = Ref{T}  # Preserve Ref types
 
