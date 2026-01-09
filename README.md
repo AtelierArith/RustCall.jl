@@ -435,12 +435,31 @@ LastCall.jl has completed **Phase 1** and **Phase 2 major features**. The packag
 
 ## Examples
 
+### Example Scripts
+
+Run the example scripts to see LastCall.jl in action:
+
+```bash
+# Basic examples
+julia --project examples/basic_examples.jl
+
+# Advanced examples (generics, arrays, LLVM optimization)
+julia --project examples/advanced_examples.jl
+
+# Ownership types examples (requires Rust helpers library)
+julia --project examples/ownership_examples.jl
+```
+
+### Test Suite
+
 See the `test/` directory for comprehensive examples:
 - `test/runtests.jl` - Main test suite
 - `test/test_cache.jl` - Caching tests
 - `test/test_ownership.jl` - Ownership types tests
 - `test/test_arrays.jl` - Array and collection operations tests
 - `test/test_llvmcall.jl` - LLVM integration tests
+- `test/test_generics.jl` - Generics support tests
+- `test/test_error_handling.jl` - Error handling tests
 
 ## Performance
 
@@ -485,6 +504,14 @@ MIT License (see LICENSE file)
   - Data structures
   - Performance comparisons
   - Real-world examples
+
+- **[Performance Guide](docs/src/performance.md)** - Performance optimization guide (日本語)
+  - Compilation caching
+  - LLVM optimization
+  - Function call optimization
+  - Memory management
+  - Benchmark results
+  - Performance tuning tips
 
 - **[Troubleshooting Guide](docs/troubleshooting.md)** - Common issues and solutions (日本語)
   - Installation and setup problems

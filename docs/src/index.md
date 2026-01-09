@@ -94,6 +94,7 @@ Pages = [
     "tutorial.md",
     "examples.md",
     "generics.md",
+    "performance.md",
     "troubleshooting.md",
     "api.md",
     "status.md",

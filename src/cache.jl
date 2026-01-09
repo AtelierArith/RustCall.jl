@@ -155,6 +155,23 @@ end
     save_cache_metadata(cache_key::String, metadata::CacheMetadata)
 
 Save cache metadata to a JSON file.
+
+# Arguments
+- `cache_key::String`: The cache key identifying the cached library
+- `metadata::CacheMetadata`: Metadata to save
+
+# Example
+```julia
+metadata = CacheMetadata(
+    cache_key="abc123...",
+    code_hash=0x1234...,
+    compiler_config="2_false_x86_64-unknown-linux-gnu",
+    target_triple="x86_64-unknown-linux-gnu",
+    created_at=now(),
+    functions=["add", "multiply"]
+)
+save_cache_metadata("abc123...", metadata)
+```
 """
 function save_cache_metadata(cache_key::String, metadata::CacheMetadata)
     metadata_dir = get_metadata_dir()
@@ -187,6 +204,24 @@ end
     load_cache_metadata(cache_key::String) -> Union{CacheMetadata, Nothing}
 
 Load cache metadata from a JSON file.
+
+# Arguments
+- `cache_key::String`: The cache key identifying the cached library
+
+# Returns
+- `Union{CacheMetadata, Nothing}`: The loaded metadata, or `nothing` if not found
+
+# Note
+This function currently returns `nothing` as a placeholder. Full JSON parsing
+will be implemented in a future version.
+
+# Example
+```julia
+metadata = load_cache_metadata("abc123...")
+if metadata !== nothing
+    println("Cache created at: $(metadata.created_at)")
+end
+```
 """
 function load_cache_metadata(cache_key::String)
     metadata_dir = get_metadata_dir()
@@ -276,6 +311,19 @@ end
     cleanup_old_cache(max_age_days::Int = 30)
 
 Remove cache entries older than max_age_days.
+
+# Arguments
+- `max_age_days::Int`: Maximum age in days (default: 30)
+
+# Returns
+- `Int`: Number of removed cache entries
+
+# Example
+```julia
+# Remove cache entries older than 7 days
+removed = cleanup_old_cache(7)
+println("Removed $removed old cache entries")
+```
 """
 function cleanup_old_cache(max_age_days::Int = 30)
     cache_dir = get_cache_dir()

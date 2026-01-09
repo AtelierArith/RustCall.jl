@@ -215,6 +215,25 @@ end
     get_or_compile_function(mod::RustModule, name::String) -> Ptr{Cvoid}
 
 Get a compiled function pointer, compiling if necessary using Julia's JIT.
+
+# Arguments
+- `mod::RustModule`: The Rust module containing the function
+- `name::String`: Name of the function to compile
+
+# Returns
+- `Ptr{Cvoid}`: Function pointer to the compiled function
+
+# Note
+This function is a placeholder for future LLVM JIT compilation support.
+Currently, it raises an error indicating that direct LLVM JIT compilation
+is not yet implemented. Use the shared library approach instead.
+
+# Example
+```julia
+mod = load_llvm_ir("path/to/file.ll")
+# Note: This will raise an error until JIT compilation is implemented
+# func_ptr = get_or_compile_function(mod, "my_function")
+```
 """
 function get_or_compile_function(mod::RustModule, name::String)
     cache_key = "$(objectid(mod))_$name"
