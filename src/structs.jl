@@ -192,6 +192,50 @@ function parse_structs_and_impls(code::String)
 end
 
 """
+    parse_struct_fields(struct_def::String) -> Vector{Tuple{String, String}}
+
+Parse field names and types from a Rust struct definition.
+Returns a vector of (field_name, field_type) tuples.
+"""
+function parse_struct_fields(struct_def::String)
+    fields = Tuple{String, String}[]
+    
+    if isempty(struct_def)
+        return fields
+    end
+    
+    # Find the struct body (content between { and })
+    brace_start = findfirst('{', struct_def)
+    brace_end = findlast('}', struct_def)
+    
+    if brace_start === nothing || brace_end === nothing
+        return fields
+    end
+    
+    # Extract the body content
+    body = struct_def[brace_start+1:brace_end-1]
+    
+    # Pattern to match field definitions: field_name: field_type,
+    # Handles cases like:
+    #   x: f64,
+    #   name: String,
+    #   data: Vec<u8>,
+    field_pattern = r"(\w+)\s*:\s*([^,;]+?)(?:[,;]|$)"
+    
+    for m in eachmatch(field_pattern, body)
+        field_name = strip(String(m.captures[1]))
+        field_type = strip(String(m.captures[2]))
+        
+        # Skip if empty or if it's a comment
+        if !isempty(field_name) && !isempty(field_type) && !startswith(field_name, "//")
+            push!(fields, (field_name, field_type))
+        end
+    end
+    
+    return fields
+end
+
+"""
     extract_block_at(code::String, start_idx::Int) -> Union{String, Nothing}
 
 Extract a balanced brace block starting near start_idx.
