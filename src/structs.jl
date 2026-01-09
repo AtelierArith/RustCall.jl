@@ -25,6 +25,9 @@ struct RustStructInfo
     type_params::Vector{String}
     methods::Vector{RustMethod}
     context_code::String   # Full source code of struct and impls
+    fields::Vector{Tuple{String, String}}  # Field name and type pairs
+    has_derive_julia_struct::Bool  # Whether #[derive(JuliaStruct)] is present
+    derive_options::Dict{String, Bool}  # Options from derive attributes (Clone, Debug, etc.)
 end
 
 """
@@ -32,12 +35,13 @@ end
 
 Heuristic parser to find pub structs and their impl blocks.
 Supports generics (e.g. `struct Point<T>`) and captures full source context.
+Now supports #[derive(JuliaStruct)] attribute for automatic mapping.
 """
 function parse_structs_and_impls(code::String)
     structs = Dict{String, RustStructInfo}()
 
     # 1. Find all pub structs
-    # Pattern: pub struct Name<T> { ... }
+    # Pattern: pub struct Name<T> { ... } or #[derive(JuliaStruct)] pub struct Name { ... }
     # Capture 1: Name, Capture 2: Generics (optional)
     struct_head_pattern = r"pub\s+struct\s+([A-Z]\w*)\s*(?:<(.+?)>)?\s*(?:\{|\()"
 
@@ -56,8 +60,35 @@ function parse_structs_and_impls(code::String)
         struct_def = extract_block_at(code, m.offset)
         context = struct_def !== nothing ? struct_def : ""
 
+        # Check for #[derive(JuliaStruct)] attribute before the struct
+        # Look backwards from the match to find attributes
+        start_pos = max(1, m.offset - 200)  # Look back up to 200 chars
+        preceding_code = code[start_pos:m.offset-1]
+        has_derive_julia_struct = occursin(r"#\[derive\(JuliaStruct[^\]]*\)\]", preceding_code)
+        
+        # Parse derive options
+        derive_options = Dict{String, Bool}()
+        if has_derive_julia_struct
+            # Extract derive attributes: #[derive(JuliaStruct, Clone, Debug)]
+            derive_match = match(r"#\[derive\(([^\]]+)\)\]", preceding_code)
+            if derive_match !== nothing
+                derive_list = derive_match.captures[1]
+                for item in split(derive_list, ',')
+                    item = strip(item)
+                    if item == "JuliaStruct"
+                        derive_options["JuliaStruct"] = true
+                    elseif item in ["Clone", "Debug", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash", "Default"]
+                        derive_options[item] = true
+                    end
+                end
+            end
+        end
+
+        # Parse struct fields
+        fields = parse_struct_fields(struct_def !== nothing ? struct_def : "")
+
         if !haskey(structs, name)
-            structs[name] = RustStructInfo(name, type_params, RustMethod[], context)
+            structs[name] = RustStructInfo(name, type_params, RustMethod[], context, fields, has_derive_julia_struct, derive_options)
         end
     end
 
@@ -86,7 +117,7 @@ function parse_structs_and_impls(code::String)
                 append!(info.methods, methods)
             end
 
-            structs[struct_name] = RustStructInfo(info.name, info.type_params, info.methods, new_context)
+            structs[struct_name] = RustStructInfo(info.name, info.type_params, info.methods, new_context, info.fields, info.has_derive_julia_struct, info.derive_options)
         end
     end
 
@@ -211,6 +242,28 @@ function _process_arg!(names, types, arg)
 end
 
 """
+    parse_struct_fields(struct_def::String) -> Vector{Tuple{String, String}}
+
+Parse field names and types from a struct definition.
+Returns a vector of (field_name, field_type) tuples.
+"""
+function parse_struct_fields(struct_def::String)
+    fields = Tuple{String, String}[]
+    
+    # Pattern for struct fields: field_name: field_type,
+    # Handle both named fields { x: i32, y: i32 } and tuple structs (i32, i32)
+    field_pattern = r"(\w+)\s*:\s*([^,}]+?)(?:,|\s*\})"
+    
+    for m in eachmatch(field_pattern, struct_def)
+        field_name = String(m.captures[1])
+        field_type = strip(String(m.captures[2]))
+        push!(fields, (field_name, field_type))
+    end
+    
+    return fields
+end
+
+"""
     generate_struct_wrappers(info::RustStructInfo) -> String
 
 Generate "extern C" C-FFI wrappers for a given struct.
@@ -310,6 +363,33 @@ function generate_struct_wrappers(info::RustStructInfo)
     println(io, "        unsafe { Box::from_raw(ptr); }")
     println(io, "    }")
     println(io, "}\n")
+
+    # Generate field accessors if struct has fields and derive(JuliaStruct)
+    if info.has_derive_julia_struct && !isempty(info.fields)
+        for (field_name, field_type) in info.fields
+            # Getter
+            println(io, "#[no_mangle]")
+            println(io, "pub extern \"C\" fn $(struct_name)_get_$(field_name)(ptr: *const $struct_name) -> $field_type {")
+            println(io, "    unsafe { (*ptr).$(field_name) }")
+            println(io, "}\n")
+            
+            # Setter (only if mutable)
+            println(io, "#[no_mangle]")
+            println(io, "pub extern \"C\" fn $(struct_name)_set_$(field_name)(ptr: *mut $struct_name, value: $field_type) {")
+            println(io, "    unsafe { (*ptr).$(field_name) = value; }")
+            println(io, "}\n")
+        end
+    end
+
+    # Generate trait implementations if requested
+    if info.has_derive_julia_struct
+        if get(info.derive_options, "Clone", false)
+            println(io, "#[no_mangle]")
+            println(io, "pub extern \"C\" fn $(struct_name)_clone(ptr: *const $struct_name) -> *mut $struct_name {")
+            println(io, "    unsafe { Box::into_raw(Box::new((*ptr).clone())) }")
+            println(io, "}\n")
+        end
+    end
 
     for m in info.methods
         wrapper_name = "$(struct_name)_$(m.name)"
@@ -496,6 +576,55 @@ function emit_julia_definitions(info::RustStructInfo)
             push!(exprs, quote
                 function $fname(self::$esc_struct, $(esc_args...))
                     return _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(esc_args...), $(QuoteNode(jl_ret_type)))
+                end
+            end)
+        end
+    end
+
+    # 3. Add field accessors if derive(JuliaStruct) is present
+    if info.has_derive_julia_struct && !isempty(info.fields)
+        for (field_name, field_type) in info.fields
+            field_sym = esc(Symbol(field_name))
+            jl_field_type = rust_to_julia_type_sym(field_type)
+            getter_name = struct_name_str * "_get_" * field_name
+            setter_name = struct_name_str * "_set_" * field_name
+
+            # Getter
+            push!(exprs, quote
+                function Base.getproperty(self::$esc_struct, field::Symbol)
+                    if field === $(QuoteNode(Symbol(field_name)))
+                        lib = self.lib_name
+                        return _call_rust_method(lib, $getter_name, self.ptr, $(QuoteNode(jl_field_type)))
+                    else
+                        return getfield(self, field)
+                    end
+                end
+            end)
+
+            # Setter
+            push!(exprs, quote
+                function Base.setproperty!(self::$esc_struct, field::Symbol, value)
+                    if field === $(QuoteNode(Symbol(field_name)))
+                        lib = self.lib_name
+                        _call_rust_method(lib, $setter_name, self.ptr, value, $(QuoteNode(Cvoid)))
+                        return value
+                    else
+                        return setfield!(self, field, value)
+                    end
+                end
+            end)
+        end
+    end
+
+    # 4. Add trait implementations if requested
+    if info.has_derive_julia_struct
+        if get(info.derive_options, "Clone", false)
+            clone_name = struct_name_str * "_clone"
+            push!(exprs, quote
+                function Base.copy(self::$esc_struct)
+                    lib = self.lib_name
+                    ptr = _call_rust_constructor(lib, $clone_name, self.ptr)
+                    return $esc_struct(ptr, lib)
                 end
             end)
         end

@@ -222,12 +222,28 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
                 @info "Debug mode: Command" cmd=cmd_str
             end
             
+            # Extract error line numbers and file path
+            error_lines = LastCall._extract_error_line_numbers_impl(stderr_str)
+            line_num = isempty(error_lines) ? 0 : error_lines[1]
+            
+            # Build context dictionary
+            context = Dict{String, Any}(
+                "tmp_dir" => tmp_dir,
+                "rs_file" => rs_file,
+                "ll_file" => ll_file,
+                "error_count" => length(error_lines),
+                "debug_mode" => compiler.debug_mode
+            )
+            
             # Format and throw compilation error
             throw(CompilationError(
                 "Failed to compile Rust code to LLVM IR",
                 stderr_str,
                 code,
-                cmd_str
+                cmd_str;
+                file_path=rs_file,
+                line_number=line_num,
+                context=context
             ))
         end
         close(stderr_io)
@@ -257,11 +273,19 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
         if !compiler.debug_mode
             rm(tmp_dir, recursive=true, force=true)
         end
+        context = Dict{String, Any}(
+            "expected_file" => ll_file,
+            "tmp_dir" => tmp_dir,
+            "debug_mode" => compiler.debug_mode
+        )
+        
         throw(CompilationError(
             "LLVM IR file was not generated",
             "Output file does not exist: $ll_file",
             code,
-            cmd_str
+            cmd_str;
+            file_path=rs_file,
+            context=context
         ))
     end
 
@@ -352,12 +376,28 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
                 @info "Debug mode: Command" cmd=cmd_str
             end
             
+            # Extract error line numbers and file path
+            error_lines = LastCall._extract_error_line_numbers_impl(stderr_str)
+            line_num = isempty(error_lines) ? 0 : error_lines[1]
+            
+            # Build context dictionary
+            context = Dict{String, Any}(
+                "tmp_dir" => tmp_dir,
+                "rs_file" => rs_file,
+                "lib_file" => lib_file,
+                "error_count" => length(error_lines),
+                "debug_mode" => compiler.debug_mode
+            )
+            
             # Format and throw compilation error
             throw(CompilationError(
                 "Failed to compile Rust code to shared library",
                 stderr_str,
                 code,
-                cmd_str
+                cmd_str;
+                file_path=rs_file,
+                line_number=line_num,
+                context=context
             ))
         end
         close(stderr_io)
@@ -387,11 +427,19 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
         if !compiler.debug_mode
             rm(tmp_dir, recursive=true, force=true)
         end
+        context = Dict{String, Any}(
+            "expected_file" => lib_file,
+            "tmp_dir" => tmp_dir,
+            "debug_mode" => compiler.debug_mode
+        )
+        
         throw(CompilationError(
             "Shared library was not generated",
             "Output file does not exist: $lib_file",
             code,
-            cmd_str
+            cmd_str;
+            file_path=rs_file,
+            context=context
         ))
     end
 

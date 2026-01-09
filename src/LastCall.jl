@@ -70,7 +70,7 @@ export RustError, CompilationError, RuntimeError, result_to_exception, unwrap_or
 export CargoBuildError, DependencyResolutionError  # Phase 3
 export format_rustc_error, suggest_fix_for_error
 # Export internal functions for testing
-export _extract_error_line_numbers, _extract_suggestions
+export _extract_error_line_numbers, _extract_suggestions, _extract_error_line_numbers_impl
 
 # Phase 2 exports
 export @rust_llvm
