@@ -40,10 +40,10 @@ function remove_derive_julia_struct_attributes(code::String)
     lines = split(code, '\n')
     result_lines = String[]
     i = 1
-    
+
     while i <= length(lines)
         line = lines[i]
-        
+
         # Check if this line contains #[derive(JuliaStruct)]
         if occursin(r"#\[derive\(.*JuliaStruct", line)
             # Check if it's a single-line attribute
@@ -53,7 +53,7 @@ function remove_derive_julia_struct_attributes(code::String)
                 modified = replace(line, r"JuliaStruct\s*,?\s*" => "")
                 modified = replace(modified, r",\s*\)" => ")")
                 modified = replace(modified, r"\(\)" => "")
-                
+
                 # If the entire attribute becomes empty, skip the line entirely
                 if occursin(r"#\[derive\(\)\]", modified) || occursin(r"#\[derive\(\s*\)\]", modified) || strip(modified) == "#[derive]"
                     # Skip this line entirely
@@ -93,10 +93,10 @@ function remove_derive_julia_struct_attributes(code::String)
         else
             push!(result_lines, line)
         end
-        
+
         i += 1
     end
-    
+
     return join(result_lines, '\n')
 end
 
@@ -135,7 +135,7 @@ function parse_structs_and_impls(code::String)
         start_pos = max(1, m.offset - 200)  # Look back up to 200 chars
         preceding_code = code[start_pos:m.offset-1]
         has_derive_julia_struct = occursin(r"#\[derive\(JuliaStruct[^\]]*\)\]", preceding_code)
-        
+
         # Parse derive options
         derive_options = Dict{String, Bool}()
         if has_derive_julia_struct
@@ -202,39 +202,39 @@ Returns a vector of (field_name, field_type) tuples.
 """
 function parse_struct_fields(struct_def::String)
     fields = Tuple{String, String}[]
-    
+
     if isempty(struct_def)
         return fields
     end
-    
+
     # Find the struct body (content between { and })
     brace_start = findfirst('{', struct_def)
     brace_end = findlast('}', struct_def)
-    
+
     if brace_start === nothing || brace_end === nothing
         return fields
     end
-    
+
     # Extract the body content
     body = struct_def[brace_start+1:brace_end-1]
-    
+
     # Pattern to match field definitions: field_name: field_type,
     # Handles cases like:
     #   x: f64,
     #   name: String,
     #   data: Vec<u8>,
     field_pattern = r"(\w+)\s*:\s*([^,;]+?)(?:[,;]|$)"
-    
+
     for m in eachmatch(field_pattern, body)
         field_name = strip(String(m.captures[1]))
         field_type = strip(String(m.captures[2]))
-        
+
         # Skip if empty or if it's a comment
         if !isempty(field_name) && !isempty(field_type) && !startswith(field_name, "//")
             push!(fields, (field_name, field_type))
         end
     end
-    
+
     return fields
 end
 
@@ -433,6 +433,35 @@ function generate_struct_wrappers(info::RustStructInfo)
              reg(wrapper_name, code)
         end
 
+        # Generic Field Accessors
+        if info.has_derive_julia_struct && !isempty(info.fields)
+            method_wrapper_names = Set(["$(struct_name)_$(m.name)" for m in info.methods])
+            for (field_name, field_type) in info.fields
+                getter_name = "$(struct_name)_get_$(field_name)"
+                if getter_name in method_wrapper_names
+                    continue
+                end
+
+                # Getter
+                g_io = IOBuffer()
+                println(g_io, "pub fn $(getter_name)$(type_params_decl)(ptr: *const $(struct_name)$(type_params_decl)) -> $field_type {")
+                if occursin(r"String|Vec", field_type)
+                    println(g_io, "    unsafe { (*ptr).$(field_name).clone() }")
+                else
+                    println(g_io, "    unsafe { (*ptr).$(field_name) }")
+                end
+                println(g_io, "}")
+                reg(getter_name, String(take!(g_io)))
+
+                # Setter
+                s_io = IOBuffer()
+                println(s_io, "pub fn $(struct_name)_set_$(field_name)$(type_params_decl)(ptr: *mut $(struct_name)$(type_params_decl), value: $field_type) {")
+                println(s_io, "    unsafe { (*ptr).$(field_name) = value; }")
+                println(s_io, "}")
+                reg("$(struct_name)_set_$(field_name)", String(take!(s_io)))
+            end
+        end
+
         # Free function
         free_name = "$(struct_name)_free"
         f_io = IOBuffer()
@@ -458,14 +487,14 @@ function generate_struct_wrappers(info::RustStructInfo)
         # Get set of method wrapper names to avoid conflicts
         # Method wrappers are named: struct_name_method_name
         method_wrapper_names = Set(["$(struct_name)_$(m.name)" for m in info.methods])
-        
+
         for (field_name, field_type) in info.fields
             # Skip if there's a method wrapper with the same name as the field getter
             getter_name = "$(struct_name)_get_$(field_name)"
             if getter_name in method_wrapper_names
                 continue  # Skip field accessor if method wrapper with same name exists
             end
-            
+
             # Getter - need to clone String and Vec types
             println(io, "#[no_mangle]")
             println(io, "pub extern \"C\" fn $(struct_name)_get_$(field_name)(ptr: *const $struct_name) -> $field_type {")
@@ -476,7 +505,7 @@ function generate_struct_wrappers(info::RustStructInfo)
                 println(io, "    unsafe { (*ptr).$(field_name) }")
             end
             println(io, "}\n")
-            
+
             # Setter (only if mutable)
             println(io, "#[no_mangle]")
             println(io, "pub extern \"C\" fn $(struct_name)_set_$(field_name)(ptr: *mut $struct_name, value: $field_type) {")
@@ -622,6 +651,58 @@ function emit_julia_definitions(info::RustStructInfo)
             end
         end
 
+        # 3. Field and Method Accessors
+        field_getters = Dict{Symbol, Tuple{String, Symbol}}()
+        field_setters = Dict{Symbol, String}()
+        if info.has_derive_julia_struct && !isempty(info.fields)
+            for (field_name, field_type) in info.fields
+                field_sym = Symbol(field_name)
+                jl_field_type = rust_to_julia_type_sym(field_type)
+                field_getters[field_sym] = ("$(struct_name_str)_get_$(field_name)", jl_field_type)
+                field_setters[field_sym] = "$(struct_name_str)_set_$(field_name)"
+            end
+        end
+
+        method_accessors = Expr[]
+        for m in info.methods
+            method_sym = Symbol(m.name)
+            method_func = esc(Symbol(m.name))
+            push!(method_accessors, quote
+                if field === $(QuoteNode(method_sym))
+                    return (args...) -> $method_func(self, args...)
+                end
+            end)
+        end
+
+        push!(exprs, quote
+            function Base.getproperty(self::$where_clause, field::Symbol) where {$(esc_T_params...)}
+                field_info = $(QuoteNode(field_getters))
+                method_names_set = $(QuoteNode(method_names))
+
+                if haskey(field_info, field)
+                    getter_name, jl_field_type_sym = field_info[field]
+                    field_type = julia_sym_to_type(jl_field_type_sym)
+                    return _call_generic_field(self.lib_name, getter_name, self.ptr, field_type, ($(esc_T_params...),))
+                elseif field in method_names_set
+                    $(method_accessors...)
+                    return getfield(self, field)
+                else
+                    return getfield(self, field)
+                end
+            end
+
+            function Base.setproperty!(self::$where_clause, field::Symbol, value) where {$(esc_T_params...)}
+                field_setters_map = $(QuoteNode(field_setters))
+                if haskey(field_setters_map, field)
+                    setter_name = field_setters_map[field]
+                    _call_generic_method(self.lib_name, setter_name, self.ptr, (value,), ($(esc_T_params...),))
+                    return value
+                else
+                    return setfield!(self, field, value)
+                end
+            end
+        end)
+
         return Expr(:block, exprs...)
     end
 
@@ -690,7 +771,7 @@ function emit_julia_definitions(info::RustStructInfo)
         # Build field accessor mappings
         field_getters = Dict{Symbol, Tuple{String, Symbol}}()
         field_setters = Dict{Symbol, String}()
-        
+
         for (field_name, field_type) in info.fields
             field_sym = Symbol(field_name)
             jl_field_type = rust_to_julia_type_sym(field_type)
@@ -699,7 +780,7 @@ function emit_julia_definitions(info::RustStructInfo)
             field_getters[field_sym] = (getter_name, jl_field_type)
             field_setters[field_sym] = setter_name
         end
-        
+
         # Single Base.getproperty for all fields and methods
         method_names = Set([Symbol(m.name) for m in info.methods])
         # Build method accessor expressions
@@ -707,22 +788,20 @@ function emit_julia_definitions(info::RustStructInfo)
         for m in info.methods
             method_sym = Symbol(m.name)
             method_func = esc(Symbol(m.name))
-            # Use gensym to create unique variable names for each method's closure
-            args_var = gensym("args")
+            # Use a fixed name 'args' – it's safe within the anonymous function scope
+            # and avoids 'Module.##gensym' qualification issues
             push!(method_accessors, quote
                 if field === $(QuoteNode(method_sym))
-                    return function($(args_var)...)
-                        return $method_func(self, $(args_var)...)
-                    end
+                    return (args...) -> $method_func(self, args...)
                 end
             end)
         end
-        
+
         push!(exprs, quote
             function Base.getproperty(self::$esc_struct, field::Symbol)
                 field_info = $(QuoteNode(field_getters))
                 method_names_set = $(QuoteNode(method_names))
-                
+
                 # Check if it's a field
                 if haskey(field_info, field)
                     getter_name, jl_field_type_sym = field_info[field]
@@ -739,7 +818,7 @@ function emit_julia_definitions(info::RustStructInfo)
                 end
             end
         end)
-        
+
         # Single Base.setproperty! for all fields
         push!(exprs, quote
             function Base.setproperty!(self::$esc_struct, field::Symbol, value)
@@ -835,6 +914,19 @@ function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoi
 
     # Method call: pass ptr (self) then args
     return call_rust_function(info.func_ptr, info.return_type, ptr, args...)
+end
+
+function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple)
+    generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
+    param_names = generic_info.type_params
+
+    type_params = Dict{Symbol, Type}()
+    for (i, p) in enumerate(param_names)
+        type_params[p] = types[i]
+    end
+
+    info = monomorphize_function(func_name, type_params)
+    return call_rust_function(info.func_ptr, ret_type, ptr)
 end
 
 function _precompile_generic_free(func_name::String, types::Tuple)

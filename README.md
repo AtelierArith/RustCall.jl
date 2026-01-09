@@ -753,6 +753,7 @@ MIT License (see LICENSE file)
 
 - Inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl)
 - Built with [LLVM.jl](https://github.com/maleadt/LLVM.jl)
+- Developed with AI assistance from Claude Code, Codex, Cursor, and Antigravity
 
 ## Related Projects
 
