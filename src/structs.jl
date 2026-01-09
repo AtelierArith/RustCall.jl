@@ -33,9 +33,10 @@ Heuristic parser to find pub structs and their impl blocks.
 function parse_structs_and_impls(code::String)
     structs = Dict{String, RustStructInfo}()
 
-    # 1. Find all pub structs
-    # Pattern: pub struct Name { ... } or pub struct Name( ... );
-    struct_pattern = r"pub\s+struct\s+([A-Z]\w*)"
+    # 1. Find all pub structs (only simple ones without generics for Phase 4)
+    # Pattern: pub struct Name { ... } but NOT pub struct Name<T> { ... }
+    # We look for name followed by { or ( to avoid generics <...>
+    struct_pattern = r"pub\s+struct\s+([A-Z]\w*)\s*(?:\{|\()"
     for m in eachmatch(struct_pattern, code)
         name = String(m.captures[1])
         if !haskey(structs, name)

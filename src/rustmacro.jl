@@ -186,7 +186,20 @@ end
 Call a Rust function with explicit return type.
 """
 function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, args...)
-    func_ptr = get_function_pointer(lib_name, func_name)
+    local func_ptr
+    try
+        func_ptr = get_function_pointer(lib_name, func_name)
+    catch e
+        # If not found, check if it's a generic function that needs monomorphization
+        if is_generic_function(func_name)
+            println("DEBUG: Function $func_name not found, but is generic. Calling call_generic_function...")
+            return call_generic_function(func_name, args...)
+        else
+            println("DEBUG: Function $func_name not found and is NOT generic. (is_generic_function returned false)")
+            rethrow(e)
+        end
+    end
+
     # Convert arguments (String -> Cstring)
     converted_args = _convert_args_for_rust(args...)
     return call_rust_function(func_ptr, ret_type, converted_args...)

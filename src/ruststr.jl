@@ -132,6 +132,14 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Check if already compiled and loaded in memory
     if haskey(RUST_LIBRARIES, lib_name)
         CURRENT_LIB[] = lib_name
+
+        # Ensure generic functions are registered (dictionary is volatile)
+        try
+            _detect_and_register_generic_functions(wrapped_code, lib_name)
+        catch e
+            @debug "Failed to register generic functions from memory: $e"
+        end
+
         return nothing
     end
 
@@ -154,6 +162,13 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
             catch e
                 @debug "Failed to load cached LLVM IR: $e"
             end
+        end
+
+        # Try to detect and register generic functions from the cached code
+        try
+            _detect_and_register_generic_functions(wrapped_code, cached_lib_name)
+        catch e
+            @debug "Failed to detect generic functions from cache: $e"
         end
 
         return nothing
@@ -297,6 +312,15 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     if haskey(RUST_LIBRARIES, lib_name)
         CURRENT_LIB[] = lib_name
         @debug "Using cached Cargo library from memory" lib_name=lib_name
+
+        # Ensure generic functions are registered
+        try
+            clean_code = remove_dependency_comments(code)
+            _detect_and_register_generic_functions(clean_code, lib_name)
+        catch e
+            @debug "Failed to register generic functions from memory cache: $e"
+        end
+
         return nothing
     end
 
@@ -311,6 +335,15 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
             CURRENT_LIB[] = lib_name
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
+
+            # Ensure generic functions are registered
+            try
+                clean_code = remove_dependency_comments(code)
+                _detect_and_register_generic_functions(clean_code, lib_name)
+            catch e
+                @debug "Failed to register generic functions from disk cache: $e"
+            end
+
             return nothing
         end
     end
@@ -371,60 +404,13 @@ end
 
 
 """
-    _detect_and_register_generic_functions(code::String, lib_name::String)
-
-Detect generic functions in Rust code and register them for monomorphization.
-"""
-function _detect_and_register_generic_functions(code::String, lib_name::String)
-    # Simple pattern matching for generic functions
-    # Pattern: pub fn func_name<T, U, ...>(args...) -> ret_type { ... }
-    # or: #[no_mangle] pub extern "C" fn func_name<T>(args...) -> ret_type { ... }
-
-    # Find all function definitions
-    func_pattern = r"(?:#\[no_mangle\])?\s*(?:pub\s+)?(?:extern\s+\"C\"\s+)?fn\s+(\w+)\s*(?:<([^>]+)>)?\s*\("
-
-    for m in eachmatch(func_pattern, code)
-        func_name = m.captures[1]
-        type_params_str = m.captures[2]
-
-        # Check if this is a generic function
-        if type_params_str !== nothing && !isempty(type_params_str)
-            # Extract type parameters
-            type_params = Symbol[]
-            for param in split(type_params_str, ',', keepempty=false)
-                param = strip(param)
-                # Handle trait bounds: T: Copy + Clone -> just T
-                if occursin(':', param)
-                    param = split(param, ':')[1]
-                end
-                push!(type_params, Symbol(strip(param)))
-            end
-
-            # Extract the full function code (simplified - just get the function signature for now)
-            # In a more sophisticated implementation, we'd parse the full function body
-            func_code = extract_function_code(code, func_name)
-
-            if func_code !== nothing
-                # Register as generic function
-                register_generic_function(func_name, func_code, type_params)
-                @debug "Registered generic function: $func_name with type parameters: $type_params"
-            end
-        end
-    end
-end
-
-"""
     extract_function_code(code::String, func_name::String) -> Union{String, Nothing}
 
 Extract the full code for a function from Rust source code.
-This is a simplified implementation - a more robust parser would be needed for complex cases.
 """
 function extract_function_code(code::String, func_name::String)
-    # Simple extraction: find function start and end
-    # This is a basic implementation - more sophisticated parsing needed for nested functions
-
-    # Find function start
-    func_start_pattern = Regex("fn\\s+$func_name[^\\{]*\\{")
+    # Find function start - improved to handle nested brackets
+    func_start_pattern = Regex("fn\\\\s+\$func_name.*?\\\\{", "s")
     m = match(func_start_pattern, code)
 
     if m === nothing
@@ -454,15 +440,54 @@ function extract_function_code(code::String, func_name::String)
             elseif char == '}'
                 brace_count -= 1
                 if brace_count == 0
-                    # Found the end
-                    return code_after_start[1:i]
+                    return String(code_after_start[1:i])
                 end
             end
         end
     end
 
-    return nothing  # Couldn't find matching brace
+    return nothing
 end
+
+"""
+    _detect_and_register_generic_functions(code::String, lib_name::String)
+
+Detect generic functions in Rust code and register them for monomorphization.
+"""
+function _detect_and_register_generic_functions(code::String, lib_name::String)
+    func_pattern = r"(?:#\[no_mangle\])?\s*(?:pub\s+)?(?:extern\s+\"C\"\s+)?fn\s+(\w+)\s*<(.+?)>\s*\("
+
+    for m in eachmatch(func_pattern, code)
+        func_name = String(m.captures[1])
+        type_params_str = m.captures[2]
+
+        # Check if this is a generic function
+        if type_params_str !== nothing && !isempty(type_params_str)
+            # Extract type parameters
+            type_params = Symbol[]
+            for param in split(type_params_str, ',', keepempty=false)
+                param = strip(param)
+                # Handle trait bounds: T: Copy + Clone -> just T
+                if occursin(':', param)
+                    param = split(param, ':')[1]
+                end
+                push!(type_params, Symbol(strip(param)))
+            end
+
+            # Extract the full function code
+            func_code = extract_function_code(code, func_name)
+
+            if func_code === nothing
+                func_code = code
+            end
+
+            # Register as generic function
+            register_generic_function(func_name, func_code, type_params)
+            @info "Registered generic function: $func_name" type_params=type_params
+        end
+    end
+end
+
 
 """
     get_rust_module(code::String) -> Union{RustModule, Nothing}

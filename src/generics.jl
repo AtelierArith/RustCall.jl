@@ -45,15 +45,15 @@ This would be parsed as:
 function parse_generic_function(code::String, func_name::String)
     # Simple regex-based parser for generic functions
     # Pattern: fn func_name<T, U, ...>(args...) -> ret_type { ... }
-    
+
     # Check if function has type parameters
     generic_pattern = Regex("fn\\s+$func_name\\s*<([^>]+)>\\s*\\(")
     m = match(generic_pattern, code)
-    
+
     if m === nothing
         return nothing  # Not a generic function
     end
-    
+
     # Extract type parameters
     type_params_str = m.captures[1]
     type_params = Symbol[]
@@ -65,11 +65,11 @@ function parse_generic_function(code::String, func_name::String)
         end
         push!(type_params, Symbol(strip(param)))
     end
-    
+
     # Extract constraints (trait bounds) - simplified for now
     constraints = Dict{Symbol, String}()
     # TODO: Parse trait bounds more thoroughly
-    
+
     return GenericFunctionInfo(func_name, code, type_params, constraints)
 end
 
@@ -92,7 +92,11 @@ specialize_generic_code(code, type_params)
 """
 function specialize_generic_code(code::String, type_params::Dict{Symbol, <:Type})
     specialized = code
-    
+
+    # 1. First, remove the generic parameter list from function signature(s)
+    # Pattern: fn name<T, U>( -> fn name(
+    specialized = replace(specialized, Regex("(fn\\s+\\w+)\\s*<.+?>\\s*\\(", "s") => s"\1(")
+
     # Convert Julia types to Rust types
     julia_to_rust_map = Dict(
         Int32 => "i32",
@@ -105,27 +109,37 @@ function specialize_generic_code(code::String, type_params::Dict{Symbol, <:Type}
         String => "*const u8",
         Cstring => "*const u8",
     )
-    
-    # Replace type parameters with concrete types
-    for (param, julia_type) in type_params
-        rust_type = get(julia_to_rust_map, julia_type) do
-            error("Unsupported type for generic specialization: $julia_type")
+
+    # Helper to convert Julia type to Rust type string
+    function to_rust_type_str(jt::Type)
+        if haskey(julia_to_rust_map, jt)
+            return julia_to_rust_map[jt]
         end
-        
-        param_str = string(param)
-        
-        # Replace in function signature: <T> -> remove, T -> rust_type
-        # Pattern: <T, U> -> remove, T -> i32, U -> i64
-        specialized = replace(specialized, Regex("\\b$param_str\\b") => rust_type)
-        
-        # Remove generic parameter list if all parameters are replaced
-        # This is a simplified approach - more sophisticated parsing needed for complex cases
+
+        # Handle parametric types: Point{Float64} -> Point<f64>
+        type_str = string(jt)
+        if occursin('{', type_str)
+            m = match(r"^([^{]+)", type_str)
+            if m !== nothing
+                base_name = m.captures[1]
+                params = jt.parameters
+                rust_params = join([to_rust_type_str(p) for p in params], ", ")
+                return "$base_name<$rust_params>"
+            end
+        end
+
+        error("Unsupported type for generic specialization: $jt")
     end
-    
-    # Remove generic parameter list from function signature
-    # Pattern: fn name<T>( -> fn name(
-    specialized = replace(specialized, Regex("fn\\s+(\\w+)\\s*<[^>]+>\\s*\\(") => s"fn \1(")
-    
+
+    # 2. Replace type parameters in the rest of the code
+    for (param, julia_type) in type_params
+        rust_type = to_rust_type_str(julia_type)
+        param_str = string(param)
+
+        # Replace whole words only: T -> f64
+        specialized = replace(specialized, Regex("\\b$param_str\\b") => rust_type)
+    end
+
     return specialized
 end
 
@@ -154,27 +168,24 @@ function infer_type_parameters(func_name::String, arg_types::Vector{<:Type})
     if generic_info === nothing
         error("Function '$func_name' is not registered as a generic function")
     end
-    
+
     # Parse function signature to map parameters to type params
     # This is a simplified implementation
     # In practice, we'd need to parse the Rust function signature more carefully
-    
+
     type_params = Dict{Symbol, Type}()
-    
-    # For now, use a simple heuristic:
-    # If there's one type parameter and one argument, map them
-    if length(generic_info.type_params) == 1 && length(arg_types) == 1
+
+    # Simple inference: match by position if possible
+    if length(generic_info.type_params) == 1 && !isempty(arg_types)
         type_params[generic_info.type_params[1]] = arg_types[1]
     elseif length(generic_info.type_params) == length(arg_types)
-        # Map each type parameter to corresponding argument type
-        for (i, param) in enumerate(generic_info.type_params)
-            type_params[param] = arg_types[i]
+        for i in 1:length(arg_types)
+            type_params[generic_info.type_params[i]] = arg_types[i]
         end
     else
-        # More complex inference needed
         error("Cannot infer type parameters for '$func_name' with $(length(arg_types)) arguments and $(length(generic_info.type_params)) type parameters")
     end
-    
+
     return type_params
 end
 
@@ -204,17 +215,17 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     # Check if already monomorphized
     type_params_tuple = tuple(sort(collect(values(type_params)))...)
     cache_key = (func_name, type_params_tuple)
-    
+
     if haskey(MONOMORPHIZED_FUNCTIONS, cache_key)
         return MONOMORPHIZED_FUNCTIONS[cache_key]
     end
-    
+
     # Get generic function info
     generic_info = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
     if generic_info === nothing
         error("Function '$func_name' is not registered as a generic function")
     end
-    
+
     # Generate a unique name for the monomorphized function
     # Create a type suffix from the type parameters
     type_suffix_parts = String[]
@@ -235,64 +246,54 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     end
     type_suffix = join(type_suffix_parts, "_")
     specialized_name = "$(func_name)_$(type_suffix)"
-    
+
     # Specialize the code (this replaces type parameters with concrete types)
     specialized_code = specialize_generic_code(generic_info.code, type_params)
-    
+
     # Extract the actual function name from the code (might differ from registered name)
     # Pattern: fn actual_name(
     actual_name_match = match(r"fn\s+(\w+)\s*\(", specialized_code)
     if actual_name_match === nothing
+        println("DEBUG: Failed to find function name in specialized code:\n$specialized_code")
         error("Could not find function name in specialized code")
     end
     actual_func_name = actual_name_match.captures[1]
-    
+
     # Replace function name in code with the specialized name
-    specialized_code = replace(specialized_code, Regex("fn\\s+$(actual_func_name)\\s*\\(") => "fn $specialized_name(")
-    
+    # We use a literal replacement here to ensure $specialized_name is correctly interpolated
+    specialized_code = replace(specialized_code, "fn $actual_func_name(" => "fn $specialized_name(")
+
     # Ensure #[no_mangle] and extern "C" are present (required for FFI)
-    # Check if already has #[no_mangle] and extern "C"
-    has_no_mangle = occursin("#[no_mangle]", specialized_code)
-    has_extern_c = occursin(r"extern\s+\"C\"", specialized_code)
-    
-    # Simple approach: ensure #[no_mangle] is at the start, and extern "C" is before fn
-    if !has_no_mangle
-        # Add #[no_mangle] at the beginning
-        specialized_code = "#[no_mangle]\n" * specialized_code
-    end
-    
-    if !has_extern_c
-        # Add extern "C" before fn (handle both pub fn and just fn)
-        # Match the function name we just replaced
-        specialized_code = replace(specialized_code, Regex("(pub\\s+)?fn\\s+$specialized_name") => s"pub extern \"C\" fn $specialized_name")
-    else
-        # Ensure pub is present if extern "C" exists but pub is missing
-        if !occursin(r"pub\s+extern", specialized_code)
-            specialized_code = replace(specialized_code, Regex("extern\\s+\"C\"\\s+fn\\s+$specialized_name") => s"pub extern \"C\" fn $specialized_name")
-        end
-    end
-    
+    # Correct order is #[no_mangle] pub extern "C" fn ...
+
+    # 1. Normalize signature
+    specialized_code = replace(specialized_code, "pub fn $specialized_name" => "fn $specialized_name")
+    specialized_code = replace(specialized_code, "extern \"C\" fn $specialized_name" => "fn $specialized_name")
+
+    # 2. Add required parts
+    specialized_code = replace(specialized_code, "fn $specialized_name" => "#[no_mangle]\npub extern \"C\" fn $specialized_name")
+
     # Compile the specialized function
     # Note: compile_rust_to_shared_lib and get_default_compiler are in compiler.jl
     # We need to ensure they're available when this runs
     compiler = get_default_compiler()
-    
+
     # Wrap the code for compilation
     wrapped_code = wrap_rust_code(specialized_code)
     lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
-    
+
     # Load the library
     lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
     if lib_handle == C_NULL
         error("Failed to load monomorphized function library: $lib_path")
     end
-    
+
     # Register the library (so it can be managed)
     lib_name = basename(lib_path)
     if !haskey(RUST_LIBRARIES, lib_name)
         RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
     end
-    
+
     # Get function pointer
     # Try with throw_error=false first to get better error message
     func_ptr = Libdl.dlsym(lib_handle, specialized_name; throw_error=false)
@@ -300,27 +301,27 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         # Try to get available symbols for debugging
         error("""
         Function '$specialized_name' not found in library '$lib_path'.
-        
+
         This might be because:
         1. The function name was not correctly replaced in the specialized code
         2. The #[no_mangle] attribute was not properly added
         3. The library was compiled with name mangling enabled
-        
+
         Specialized code was:
         $specialized_code
         """)
     end
-    
+
     # Cache the function pointer in the library's function cache
     _, func_cache = RUST_LIBRARIES[lib_name]
     func_cache[specialized_name] = func_ptr
-    
+
     # Infer return type from specialized code
     # For now, use a simple heuristic: if return type is a type parameter, use the corresponding argument type
     # In a more sophisticated implementation, we'd parse the return type from the specialized code
     ret_type = length(type_params) > 0 ? first(values(type_params)) : Any
     arg_types = collect(values(type_params))
-    
+
     # Try to infer return type from code (simplified)
     # Pattern: -> T or -> i32
     ret_type_match = match(r"->\s*(\w+)", specialized_code)
@@ -337,13 +338,13 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             ret_type = rust_to_julia[ret_type_str]
         end
     end
-    
+
     # Create FunctionInfo
     info = FunctionInfo(specialized_name, lib_name, ret_type, arg_types, func_ptr)
-    
+
     # Cache the monomorphized function
     MONOMORPHIZED_FUNCTIONS[cache_key] = info
-    
+
     return info
 end
 
@@ -376,6 +377,7 @@ register_generic_function(
 ```
 """
 function register_generic_function(func_name::String, code::String, type_params::Vector{Symbol}, constraints::Dict{Symbol, String}=Dict{Symbol, String}())
+    println("DEBUG: Registering generic function in GENERIC_FUNCTION_REGISTRY: $func_name")
     info = GenericFunctionInfo(func_name, code, type_params, constraints)
     GENERIC_FUNCTION_REGISTRY[func_name] = info
     return info
@@ -401,14 +403,14 @@ function call_generic_function(func_name::String, args...)
     # Infer type parameters from arguments
     arg_types = map(typeof, args)
     type_params = infer_type_parameters(func_name, collect(arg_types))
-    
+
     # Monomorphize (or get cached version)
     info = monomorphize_function(func_name, type_params)
-    
+
     # Call the monomorphized function using the specialized name
     # The specialized function is in a new library, so we need to get its pointer
     func_ptr = info.func_ptr
-    
+
     # Call using the standard call_rust_function
     return call_rust_function(func_ptr, info.return_type, args...)
 end
@@ -419,6 +421,7 @@ end
 Check if a function is registered as a generic function.
 """
 function is_generic_function(func_name::String)
+    println("DEBUG: Checking if $func_name is generic. Registry keys: ", keys(GENERIC_FUNCTION_REGISTRY))
     return haskey(GENERIC_FUNCTION_REGISTRY, func_name)
 end
 

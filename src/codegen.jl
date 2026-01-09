@@ -69,7 +69,7 @@ Convert a Julia type to its C-compatible equivalent for ccall.
 Uses multiple dispatch for efficient type-specific conversions.
 """
 # Default fallback for unknown types
-julia_to_c_type(::Type{T}) where {T} = Ptr{Cvoid}
+julia_to_c_type(::Type{T}) where {T} = isbitstype(T) ? T : Ptr{Cvoid}
 
 # Specific type conversions using multiple dispatch
 julia_to_c_type(::Type{T}) where {T<:Integer} = T
@@ -121,7 +121,7 @@ is_supported_arg_type(::Type{T}) where {T<:Ptr} = true
 is_supported_arg_type(::Type{T}) where {T<:Ref} = true
 is_supported_arg_type(::Type{T}) where {T<:AbstractString} = true
 is_supported_arg_type(::Type{Cstring}) = true
-is_supported_arg_type(::Type) = false
+is_supported_arg_type(::Type{T}) where {T} = isbitstype(T)
 
 is_supported_return_type(::Type{T}) where {T<:Integer} = true
 is_supported_return_type(::Type{T}) where {T<:AbstractFloat} = true
@@ -130,7 +130,7 @@ is_supported_return_type(::Type{Cvoid}) = true  # Note: Cvoid === Nothing
 is_supported_return_type(::Type{String}) = true
 is_supported_return_type(::Type{Cstring}) = true
 is_supported_return_type(::Type{T}) where {T<:Ptr} = true
-is_supported_return_type(::Type) = false
+is_supported_return_type(::Type{T}) where {T} = isbitstype(T)
 
 ccall_arg_type(::Type{T}) where {T<:AbstractString} = Cstring
 ccall_arg_type(::Type{Cstring}) = Cstring
@@ -139,6 +139,7 @@ ccall_arg_type(::Type{T}) where {T<:AbstractFloat} = T
 ccall_arg_type(::Type{Bool}) = Bool
 ccall_arg_type(::Type{Ptr{T}}) where {T} = Ptr{T}
 ccall_arg_type(::Type{Ref{T}}) where {T} = Ref{T}
+ccall_arg_type(::Type{T}) where {T} = T # Pass structs by value
 
 convert_arg(::Type{T}, x) where {T<:AbstractString} = julia_string_to_cstring(String(x))
 convert_arg(::Type{Cstring}, x) = x
@@ -147,6 +148,7 @@ convert_arg(::Type{T}, x) where {T<:AbstractFloat} = convert(T, x)
 convert_arg(::Type{Bool}, x) = Bool(x)
 convert_arg(::Type{Ptr{T}}, x) where {T} = convert(Ptr{T}, x)
 convert_arg(::Type{Ref{T}}, x) where {T} = convert(Ref{T}, x)
+convert_arg(::Type{T}, x) where {T} = x
 
 @generated function _call_rust_function(func_ptr::Ptr{Cvoid}, ::Type{R}, ::Type{A}, args...) where {R,A<:Tuple}
     if !is_supported_return_type(R)
