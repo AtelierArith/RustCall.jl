@@ -176,7 +176,7 @@ end
 @generated function call_cpp_function(args...)
     # LLVM関数を生成（実際の実装は省略）
     f = generate_llvm_function(args)
-    
+
     # ポインタ形式でllvmcallを生成
     Expr(:call, Core.Intrinsics.llvmcall,
         convert(Ptr{Cvoid}, f),
@@ -233,7 +233,7 @@ Cxx.jlは、`llvmcall`のポインタ形式を使用して、Clangで生成し�
 # Cxx.jlの内部実装（簡略化）
 function createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, state)
     # ... LLVM IRの生成 ...
-    
+
     # llvmcall式を生成
     Expr(:call, Core.Intrinsics.llvmcall,
         convert(Ptr{Cvoid}, f),  # Clangで生成したLLVM関数へのポインタ
@@ -245,19 +245,19 @@ end
 
 このアプローチにより、C++コードをClangでコンパイルし、生成されたLLVM IRを直接Juliaに埋め込むことができます。
 
-## Rust.jlでの使用予定
+## LastCall.jlでの使用予定
 
-Rust.jl（Phase 2）でも、同様のアプローチを使用します：
+LastCall.jl（Phase 2）でも、同様のアプローチを使用します：
 
 ```julia
-# Rust.jlの内部実装（予定）
+# LastCall.jlの内部実装（予定）
 @generated function rustcall(CT::RustInstance, expr, args...)
     # 1. RustコードをLLVM IRにコンパイル
     llvm_mod = compile_rust_to_llvm(rust_code)
-    
+
     # 2. 関数を取得
     fn = functions(llvm_mod)[func_name]
-    
+
     # 3. llvmcallに埋め込む
     Expr(:call, Core.Intrinsics.llvmcall,
         convert(Ptr{Cvoid}, fn),
@@ -308,6 +308,6 @@ end
 `llvmcall`は、Juliaで低レベルな最適化を行うための強力なツールです。特に：
 
 - **文字列形式**: 簡単なLLVM IRコードを直接埋め込む場合に便利
-- **ポインタ形式**: 既に生成されたLLVM関数を使用する場合に効率的（Cxx.jl、Rust.jlで使用）
+- **ポインタ形式**: 既に生成されたLLVM関数を使用する場合に効率的（Cxx.jl、LastCall.jlで使用）
 
-Cxx.jlやRust.jlのようなパッケージでは、外部言語（C++、Rust）のコードをLLVM IRにコンパイルし、`llvmcall`のポインタ形式を使用してJuliaに統合することで、高性能な相互運用を実現しています。
+Cxx.jlやLastCall.jlのようなパッケージでは、外部言語（C++、Rust）のコードをLLVM IRにコンパイルし、`llvmcall`のポインタ形式を使用してJuliaに統合することで、高性能な相互運用を実現しています。

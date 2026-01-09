@@ -47,7 +47,7 @@ Cxx.jl/
 | `DESCRIPTION.md` | プロジェクト概要 |
 | `INTERNAL.md` | 内部実装の詳細（C++コードの処理フロー） |
 | `LLVMCALL.md` | Juliaの`llvmcall`についての詳細 |
-| `PLAN.md` | Rust.jl実装計画書 |
+| `PLAN.md` | LastCall.jl実装計画書 |
 | `Phase1.md` | Phase 1（C互換ABI）の詳細実装プラン |
 | `Phase2.md` | Phase 2（LLVM IR統合）の詳細実装プラン |
 
@@ -101,9 +101,9 @@ julia --project -e 'using Pkg; Pkg.test()'
 julia --project -e 'using Pkg; Pkg.build()'
 ```
 
-## Rust.jl 計画
+## LastCall.jl 計画
 
-Cxx.jlをベースに、Rust実装を呼び出す版（Rust.jl）を計画中：
+Cxx.jlをベースに、Rust実装を呼び出す版（LastCall.jl）を計画中：
 
 ### Phase 1: C互換ABI（2-3ヶ月）
 - `@rust` マクロ: `ccall`のラッパー
@@ -125,7 +125,7 @@ Cxx.jlをベースに、Rust実装を呼び出す版（Rust.jl）を計画中：
 
 A: Cxx.jlは内部的にClangのAPIと密接に統合されており、JuliaのLLVMバージョンとの互換性が必要です。新しいJuliaバージョンではLLVMのバージョンが変わっており、対応が追いついていません。
 
-### Q: Rust.jlのPhase 1とPhase 2の違いは？
+### Q: LastCall.jlのPhase 1とPhase 2の違いは？
 
 A: Phase 1はC互換ABI（`extern "C"`）を使用し、シンプルだがRustの高度な機能は使えません。Phase 2はLLVM IRを直接操作し、より柔軟な統合を実現しますが、実装が複雑です。
 
@@ -144,4 +144,4 @@ A: 文字列形式はLLVM IRを文字列で渡し、Juliaがラップします�
 
 - このプロジェクトは学習・研究目的で使用してください
 - 本番環境では CxxWrap.jl を推奨します
-- Rust.jlは計画段階であり、まだ実装されていません
+- LastCall.jlは計画段階であり、まだ実装されていません

@@ -630,7 +630,7 @@ Phase 2では、LLVM IRを直接操作して、より柔軟で高性能なRust-J
 
 ```
 src/
-├── Rust.jl              # メインモジュール
+├── LastCall.jl              # メインモジュール
 ├── rustmacro.jl         # @rust マクロ（拡張）
 ├── ruststr.jl           # rust"" と irust""（拡張）
 ├── rusttypes.jl         # Rust型の定義（拡張）

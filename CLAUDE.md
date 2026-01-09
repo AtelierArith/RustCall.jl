@@ -1,12 +1,12 @@
 Read also AGENTS.md
 
-# CLAUDE.md - Rust.jl 開発ガイド
+# CLAUDE.md - LastCall.jl 開発ガイド
 
-このドキュメントは、Cxx.jlをベースにした**Rust.jl**の開発を進めるためのガイドです。
+このドキュメントは、Cxx.jlをベースにした**LastCall.jl**の開発を進めるためのガイドです。
 
 ## プロジェクト目標
 
-JuliaからRustコードを直接呼び出せるFFI（Foreign Function Interface）パッケージ「**Rust.jl**」を開発する。
+JuliaからRustコードを直接呼び出せるFFI（Foreign Function Interface）パッケージ「**LastCall.jl**」を開発する。
 
 ### 提供する機能
 
@@ -95,7 +95,7 @@ Julia JIT実行
 
 ### Cxx.jlから学ぶべきパターン
 
-Cxx.jlの以下のコードは、Rust.jlでも同様のパターンで実装する：
+Cxx.jlの以下のコードは、LastCall.jlでも同様のパターンで実装する：
 
 1. **`llvmcall`のポインタ形式**（`src/codegen.jl`）
 ```julia
@@ -113,7 +113,7 @@ Expr(:call, Core.Intrinsics.llvmcall,
 
 ### Rust固有の課題
 
-| 課題 | Cxx.jl | Rust.jl |
+| 課題 | Cxx.jl | LastCall.jl |
 |------|--------|---------|
 | コンパイラAPI | Clang（安定） | rustc（不安定） |
 | 型システム | C++型 | 所有権・lifetime |
@@ -144,9 +144,9 @@ const RUST_JULIA_TYPE_MAP = Dict(
 
 ## Cxx.jlソースコード参照
 
-Rust.jl実装時に参考にすべきファイル：
+LastCall.jl実装時に参考にすべきファイル：
 
-| Cxx.jlファイル | 役割 | Rust.jlでの対応 |
+| Cxx.jlファイル | 役割 | LastCall.jlでの対応 |
 |----------------|------|-----------------|
 | `src/cxxmacro.jl` | `@cxx`マクロ | `@rust`マクロ |
 | `src/cxxstr.jl` | `cxx""`リテラル | `rust""`リテラル |

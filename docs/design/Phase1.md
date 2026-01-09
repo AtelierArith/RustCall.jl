@@ -20,11 +20,11 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
 
 1. **プロジェクトディレクトリの作成**
    ```
-   Rust.jl/
+   LastCall.jl/
    ├── Project.toml
    ├── README.md
    ├── src/
-   │   ├── Rust.jl
+   │   ├── LastCall.jl
    │   ├── rustmacro.jl
    │   ├── ruststr.jl
    │   ├── rusttypes.jl
@@ -63,7 +63,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
 
 3. **基本的なモジュール構造**
    ```julia
-   # src/Rust.jl
+   # src/LastCall.jl
    __precompile__(true)
    module Rust
 
@@ -572,7 +572,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
 
 ```
 src/
-├── Rust.jl              # メインモジュール
+├── LastCall.jl              # メインモジュール
 ├── rustmacro.jl         # @rust マクロ
 ├── ruststr.jl           # rust"" と irust""
 ├── rusttypes.jl         # Rust型の定義
