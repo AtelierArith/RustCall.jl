@@ -11,6 +11,7 @@ makedocs(
         assets = String[],
         edit_link = :commit,
     ),
+    warnonly = [:missing_docs],
     pages = [
         "Home" => "index.md",
         "Getting Started" => [
@@ -33,7 +34,6 @@ makedocs(
             "LLVM Call" => "design/LLVMCALL.md",
         ],
     ],
-    warnonly = [:cross_references],
 )
 
 deploydocs(

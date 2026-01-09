@@ -236,7 +236,9 @@ GENERIC_FUNCTION_REGISTRY
 MONOMORPHIZED_FUNCTIONS
 ```
 
-The following registries and constants are not exported but are available for advanced usage:
+The following registries and constants are not exported but are available for advanced usage.
+
+Note: These constants are internal implementation details. They are documented here for completeness but should not be accessed directly by users.
 
 ```@autodocs
 Modules = [LastCall]
@@ -247,10 +249,11 @@ Filter = t -> begin
     catch
         return false
     end
-    return name in [
+    target_names = [
         :RUST_LIBRARIES, :RUST_MODULE_REGISTRY, :FUNCTION_REGISTRY, :IRUST_FUNCTIONS,
         :CURRENT_LIB, :RUST_TO_JULIA_TYPE_MAP, :JULIA_TO_RUST_TYPE_MAP
     ]
+    return name in target_names
 end
 ```
 
