@@ -65,6 +65,7 @@ export _extract_error_line_numbers, _extract_suggestions
 export @rust_llvm
 export OptimizationConfig, optimize_module!, optimize_for_speed!, optimize_for_size!
 export RustFunctionInfo, compile_and_register_rust_function
+export julia_type_to_llvm_ir_string
 
 # Compiler configuration and error recovery
 export RustCompiler, compile_with_recovery
@@ -76,6 +77,7 @@ export RustBox, RustRc, RustArc, RustVec, RustSlice
 export drop!, is_dropped, is_valid
 export clone  # For RustRc and RustArc
 export is_rust_helpers_available  # Check if Rust helpers library is loaded
+export get_rust_helpers_lib, get_rust_helpers_lib_path  # For testing and advanced usage
 
 # Caching (Phase 2)
 export clear_cache, get_cache_size, list_cached_libraries, cleanup_old_cache
@@ -98,12 +100,12 @@ function __init__()
         if !haskey(ENV, "LASTCALL_SUPPRESS_HELPERS_WARNING")
             @warn """
             Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work until the library is built.
-            
+
             To build the library, run:
                 using Pkg; Pkg.build("LastCall")
             Or from command line:
                 julia --project -e 'using Pkg; Pkg.build("LastCall")'
-            
+
             To suppress this warning, set:
                 ENV["LASTCALL_SUPPRESS_HELPERS_WARNING"] = "1"
             """

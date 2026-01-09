@@ -176,12 +176,46 @@ end
 
 Call a Rust function with the given return type.
 Uses a generated ccall based on normalized argument types.
+
+# Arguments
+- `func_ptr::Ptr{Cvoid}`: Function pointer to the Rust function
+- `ret_type::Type`: Expected return type of the function
+- `args...`: Arguments to pass to the function
+
+# Returns
+- The return value of the Rust function, converted to the specified `ret_type`
+
+# Example
+```julia
+func_ptr = get_function_pointer("mylib", "add")
+result = call_rust_function(func_ptr, Int32, 10, 20)  # Returns Int32
+```
 """
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
     argt = normalize_arg_types(ret_type, typeof(args))
     return _call_rust_function(func_ptr, ret_type, argt, args...)
 end
 
+"""
+    call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, arg_types::Vector{Type}, args...)
+
+Call a Rust function with explicit argument types.
+
+# Arguments
+- `func_ptr::Ptr{Cvoid}`: Function pointer to the Rust function
+- `ret_type::Type`: Expected return type
+- `arg_types::Vector{Type}`: Vector of argument types
+- `args...`: Arguments to pass to the function
+
+# Returns
+- The return value of the Rust function
+
+# Example
+```julia
+func_ptr = get_function_pointer("mylib", "multiply")
+result = call_rust_function(func_ptr, Float64, [Float64, Float64], 3.14, 2.0)
+```
+"""
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, arg_types::Vector{Type}, args...)
     if length(arg_types) != length(args)
         error("Argument count mismatch: expected $(length(arg_types)), got $(length(args))")
@@ -190,6 +224,20 @@ function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, arg_types::Vec
     return _call_rust_function(func_ptr, ret_type, argt, args...)
 end
 
+"""
+    call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, argt::Type{<:Tuple}, args...)
+
+Call a Rust function with a tuple type for arguments.
+
+# Arguments
+- `func_ptr::Ptr{Cvoid}`: Function pointer to the Rust function
+- `ret_type::Type`: Expected return type
+- `argt::Type{<:Tuple}`: Tuple type containing argument types
+- `args...`: Arguments to pass to the function
+
+# Returns
+- The return value of the Rust function
+"""
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, argt::Type{<:Tuple}, args...)
     if length(argt.parameters) != length(args)
         error("Argument count mismatch: expected $(length(argt.parameters)), got $(length(args))")

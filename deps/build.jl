@@ -1,22 +1,36 @@
 # Build script for LastCall.jl
 # This script verifies that the required tools are available and builds Rust helpers
 
+"""
+    check_rust_toolchain() -> Bool
+
+Check if Rust toolchain (rustc and cargo) is available.
+Returns true if both are available, false otherwise.
+"""
 function check_rust_toolchain()
     # Check for rustc
+    rustc_available = false
     try
         rustc_version = read(`rustc --version`, String)
-        println("Found rustc: ", strip(rustc_version))
+        println("✓ Found rustc: ", strip(rustc_version))
+        rustc_available = true
     catch e
-        error("rustc not found. Please install Rust from https://rustup.rs/")
+        println("✗ rustc not found. Please install Rust from https://rustup.rs/")
+        return false
     end
 
     # Check for cargo (required for building Rust helpers)
+    cargo_available = false
     try
         cargo_version = read(`cargo --version`, String)
-        println("Found cargo: ", strip(cargo_version))
+        println("✓ Found cargo: ", strip(cargo_version))
+        cargo_available = true
     catch
-        error("cargo not found. Please install Rust from https://rustup.rs/")
+        println("✗ cargo not found. Please install Rust from https://rustup.rs/")
+        return false
     end
+
+    return rustc_available && cargo_available
 end
 
 """
@@ -38,6 +52,7 @@ end
     build_rust_helpers() -> String
 
 Build the Rust helpers library and return the path to the compiled library.
+Throws an error if the build fails.
 """
 function build_rust_helpers()
     deps_dir = @__DIR__
@@ -48,14 +63,33 @@ function build_rust_helpers()
         error("Cargo.toml not found at: $cargo_toml")
     end
 
+    if !isdir(helpers_dir)
+        error("Rust helpers directory not found at: $helpers_dir")
+    end
+
     println("Building Rust helpers library...")
     println("  Directory: $helpers_dir")
+    println("  Cargo.toml: $cargo_toml")
 
     # Build with cargo
     try
+        println("  Running: cargo build --release --manifest-path $cargo_toml")
         run(`cargo build --release --manifest-path $cargo_toml`)
+        println("  ✓ Cargo build completed successfully")
     catch e
-        error("Failed to build Rust helpers library: $e")
+        error("""
+        Failed to build Rust helpers library: $e
+        
+        Common issues:
+        1. Rust toolchain not installed - install from https://rustup.rs/
+        2. Cargo.toml has syntax errors
+        3. Missing dependencies in Cargo.toml
+        4. Insufficient permissions to write to target directory
+        
+        Try running manually:
+            cd $helpers_dir
+            cargo build --release
+        """)
     end
 
     # Find the compiled library
@@ -73,10 +107,26 @@ function build_rust_helpers()
     lib_path = joinpath(target_dir, lib_name)
 
     if !isfile(lib_path)
-        error("Built library not found at expected path: $lib_path")
+        error("""
+        Built library not found at expected path: $lib_path
+        
+        The build may have succeeded but the library was not created.
+        Check the cargo build output for errors.
+        
+        Expected location: $target_dir
+        Library name: $lib_name
+        """)
     end
 
-    println("  Built library: $lib_path")
+    # Verify library is readable
+    try
+        stat(lib_path)
+    catch e
+        error("Built library exists but cannot be accessed: $lib_path ($e)")
+    end
+
+    println("  ✓ Built library: $lib_path")
+    println("  ✓ Library size: $(filesize(lib_path)) bytes")
     return lib_path
 end
 
@@ -107,14 +157,40 @@ function get_rust_helpers_lib_path()
     return nothing
 end
 
-# Run checks
-check_rust_toolchain()
+# Main build process
+function main()
+    println("=" ^ 60)
+    println("LastCall.jl - Rust Helpers Library Build")
+    println("=" ^ 60)
+    println()
 
-# Build Rust helpers if not already built
-if get_rust_helpers_lib_path() === nothing
-    build_rust_helpers()
-else
-    println("Rust helpers library already built: $(get_rust_helpers_lib_path())")
+    # Check Rust toolchain
+    if !check_rust_toolchain()
+        error("Rust toolchain check failed. Please install Rust from https://rustup.rs/")
+    end
+    println()
+
+    # Check if library already exists
+    existing_lib = get_rust_helpers_lib_path()
+    if existing_lib !== nothing
+        println("✓ Rust helpers library already built: $existing_lib")
+        println("  To rebuild, delete the library and run this script again.")
+        println()
+        return existing_lib
+    end
+
+    # Build the library
+    println("Building Rust helpers library...")
+    println()
+    lib_path = build_rust_helpers()
+    println()
+    println("=" ^ 60)
+    println("✓ LastCall.jl build completed successfully!")
+    println("=" ^ 60)
+    return lib_path
 end
 
-println("LastCall.jl build completed successfully.")
+# Run the build process
+if abspath(PROGRAM_FILE) == @__FILE__ || abspath(PROGRAM_FILE) == abspath(@__FILE__)
+    main()
+end

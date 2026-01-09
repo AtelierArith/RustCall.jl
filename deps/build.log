@@ -1,4 +1,4 @@
-Found rustc: rustc 1.91.0 (f8297e351 2025-10-28)
-Found cargo: cargo 1.91.0 (ea2d97820 2025-10-10)
+Found rustc: rustc 1.92.0 (ded5c06cf 2025-12-08)
+Found cargo: cargo 1.92.0 (344c4567c 2025-10-21)
 Rust helpers library already built: /Users/terasaki/work/atelierarith/LastCall.jl/deps/rust_helpers/target/release/librust_helpers.dylib
 LastCall.jl build completed successfully.

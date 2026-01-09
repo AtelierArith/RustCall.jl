@@ -102,31 +102,79 @@ end
     julia_type_to_llvm_ir_string(t::Type) -> String
 
 Convert a Julia type to its LLVM IR string representation.
+Supports basic types, pointers, tuples, and structs.
 """
+function julia_type_to_llvm_ir_string end
+
+# Basic integer types
+julia_type_to_llvm_ir_string(::Type{Bool}) = "i1"
+julia_type_to_llvm_ir_string(::Type{Int8}) = "i8"
+julia_type_to_llvm_ir_string(::Type{UInt8}) = "i8"
+julia_type_to_llvm_ir_string(::Type{Int16}) = "i16"
+julia_type_to_llvm_ir_string(::Type{UInt16}) = "i16"
+julia_type_to_llvm_ir_string(::Type{Int32}) = "i32"
+julia_type_to_llvm_ir_string(::Type{UInt32}) = "i32"
+julia_type_to_llvm_ir_string(::Type{Int64}) = "i64"
+julia_type_to_llvm_ir_string(::Type{UInt64}) = "i64"
+julia_type_to_llvm_ir_string(::Type{Int128}) = "i128"
+julia_type_to_llvm_ir_string(::Type{UInt128}) = "i128"
+
+# Floating point types
+julia_type_to_llvm_ir_string(::Type{Float32}) = "float"
+julia_type_to_llvm_ir_string(::Type{Float64}) = "double"
+
+# Void type (Cvoid is an alias for Nothing in Julia)
+julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
+
+# Pointer types (opaque pointer in modern LLVM)
+julia_type_to_llvm_ir_string(::Type{<:Ptr}) = "ptr"
+
+# Tuple types
+julia_type_to_llvm_ir_string(t::Type{<:Tuple}) = _tuple_type_to_llvm_ir(t)
+
+# Struct types fallback (immutable structs)
 function julia_type_to_llvm_ir_string(t::Type)
-    if t == Bool
-        return "i1"
-    elseif t == Int8 || t == UInt8
-        return "i8"
-    elseif t == Int16 || t == UInt16
-        return "i16"
-    elseif t == Int32 || t == UInt32
-        return "i32"
-    elseif t == Int64 || t == UInt64
-        return "i64"
-    elseif t == Int128 || t == UInt128
-        return "i128"
-    elseif t == Float32
-        return "float"
-    elseif t == Float64
-        return "double"
-    elseif t == Cvoid || t == Nothing
-        return "void"
-    elseif t <: Ptr
-        return "ptr"
+    if isstructtype(t) && !isabstracttype(t) && !isprimitivetype(t)
+        return _struct_type_to_llvm_ir(t)
     else
-        error("Unsupported Julia type for LLVM IR: $t")
+        error("Unsupported Julia type for LLVM IR: $t. Supported types: basic numeric types, Ptr, Tuple, and immutable structs.")
     end
+end
+
+"""
+    _tuple_type_to_llvm_ir(t::Type{<:Tuple}) -> String
+
+Convert a Julia Tuple type to LLVM IR struct representation.
+"""
+function _tuple_type_to_llvm_ir(t::Type{<:Tuple})
+    if t == Tuple{}
+        return "{}"
+    end
+
+    param_types = t.parameters
+    llvm_types = [julia_type_to_llvm_ir_string(param) for param in param_types]
+    return "{$(join(llvm_types, ", "))}"
+end
+
+"""
+    _struct_type_to_llvm_ir(t::Type) -> String
+
+Convert a Julia struct type to LLVM IR struct representation.
+Extracts field types from the struct definition.
+"""
+function _struct_type_to_llvm_ir(t::Type)
+    if !isstructtype(t) || isabstracttype(t) || isprimitivetype(t)
+        error("Type $t is not a concrete struct type")
+    end
+
+    # Get field types
+    field_types = fieldtypes(t)
+    if isempty(field_types)
+        return "{}"
+    end
+
+    llvm_types = [julia_type_to_llvm_ir_string(ft) for ft in field_types]
+    return "{$(join(llvm_types, ", "))}"
 end
 
 """
@@ -239,6 +287,10 @@ end
 
 Internal function to call a Rust function via LLVM integration.
 Falls back to ccall if llvmcall is not available.
+
+# Errors
+- `ArgumentError`: If function is not registered and cannot be found in current library
+- `TypeError`: If argument types don't match expected signature
 """
 function _rust_llvm_call(func_name::String, args...)
     # Get function info
@@ -246,23 +298,74 @@ function _rust_llvm_call(func_name::String, args...)
 
     if info === nothing
         # Try to find it in the current library
-        lib_name = get_current_library()
-        func_ptr = get_function_pointer(lib_name, func_name)
+        try
+            lib_name = get_current_library()
+            func_ptr = get_function_pointer(lib_name, func_name)
+            # Fall back to ccall-based approach
+            return call_rust_function_infer(func_ptr, args...)
+        catch e
+            # Provide detailed error message
+            error("""
+            Function '$func_name' is not registered for @rust_llvm and could not be found in the current library.
 
-        # Fall back to ccall-based approach
-        return call_rust_function_infer(func_ptr, args...)
+            To use @rust_llvm, you need to register the function first:
+            ```julia
+            compile_and_register_rust_function(\"\"\"
+            #[no_mangle]
+            pub extern "C" fn $func_name(...) -> ... {
+                ...
+            }
+            \"\"\", "$func_name")
+            ```
+
+            Alternatively, use @rust macro which doesn't require registration:
+            ```julia
+            @rust $func_name(args...)::ReturnType
+            ```
+
+            Original error: $e
+            """)
+        end
+    end
+
+    # Validate argument count
+    expected_arg_count = length(info.arg_types)
+    actual_arg_count = length(args)
+    if actual_arg_count != expected_arg_count
+        error("""
+        Argument count mismatch for function '$func_name':
+        Expected $expected_arg_count arguments (types: $(info.arg_types))
+        Got $actual_arg_count arguments (types: $(typeof.(args)))
+        """)
     end
 
     # Use the cached function pointer for now
     # Direct llvmcall integration requires more complex setup
     if info.func_ptr !== nothing
-        if !isempty(info.arg_types)
-            return call_rust_function(info.func_ptr, info.return_type, info.arg_types, args...)
+        try
+            if !isempty(info.arg_types)
+                return call_rust_function(info.func_ptr, info.return_type, info.arg_types, args...)
+            end
+            return call_rust_function(info.func_ptr, info.return_type, args...)
+        catch e
+            error("""
+            Error calling function '$func_name' via @rust_llvm:
+            Return type: $(info.return_type)
+            Expected argument types: $(info.arg_types)
+            Actual argument types: $(typeof.(args))
+
+            Original error: $e
+            """)
         end
-        return call_rust_function(info.func_ptr, info.return_type, args...)
     end
 
-    error("Function '$func_name' is registered but has no function pointer")
+    error("""
+    Function '$func_name' is registered but has no function pointer.
+    This indicates a registration error. Try re-registering the function:
+    ```julia
+    compile_and_register_rust_function(rust_code, "$func_name")
+    ```
+    """)
 end
 
 # ============================================================================

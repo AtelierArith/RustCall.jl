@@ -133,6 +133,67 @@ using Test
             result = LastCall.rust_call_generated(Val(:llvm_add), Int32(5), Int32(7))
             @test result == 12
         end
+
+        @testset "Tuple Type Support" begin
+            # Test tuple type conversion to LLVM IR
+            @test LastCall.julia_type_to_llvm_ir_string(Tuple{Int32, Int64}) == "{i32, i64}"
+            @test LastCall.julia_type_to_llvm_ir_string(Tuple{Float64, Float32}) == "{double, float}"
+            @test LastCall.julia_type_to_llvm_ir_string(Tuple{}) == "{}"
+            @test LastCall.julia_type_to_llvm_ir_string(Tuple{Int32, Int32, Int32}) == "{i32, i32, i32}"
+        end
+
+        @testset "Struct Type Support" begin
+            # Define a test struct
+            struct TestPoint
+                x::Float64
+                y::Float64
+            end
+
+            # Test struct type conversion to LLVM IR
+            ir_str = LastCall.julia_type_to_llvm_ir_string(TestPoint)
+            @test occursin("double", ir_str)
+            @test occursin("{", ir_str)
+            @test occursin("}", ir_str)
+
+            # Test empty struct
+            struct EmptyStruct end
+            @test LastCall.julia_type_to_llvm_ir_string(EmptyStruct) == "{}"
+        end
+
+        @testset "Error Handling" begin
+            # Test error for unregistered function
+            @test_throws ErrorException begin
+                @rust_llvm nonexistent_function(1, 2)
+            end
+
+            # Test error for argument count mismatch
+            compile_and_register_rust_function("""
+            #[no_mangle]
+            pub extern "C" fn test_two_args(a: i32, b: i32) -> i32 { a + b }
+            """, "test_two_args")
+
+            # Test missing argument
+            error_thrown = false
+            try
+                @rust_llvm test_two_args(Int32(1))
+            catch e
+                error_thrown = true
+                @test e isa ErrorException
+                @test occursin("Argument count mismatch", string(e))
+            end
+            @test error_thrown
+
+            # Test too many arguments
+            error_thrown = false
+            try
+                @rust_llvm test_two_args(Int32(1), Int32(2), Int32(3))
+            catch e
+                error_thrown = true
+                @test e isa ErrorException
+                @test occursin("Argument count mismatch", string(e))
+            end
+            @test error_thrown
+        end
     else
         @warn "rustc not found, skipping LLVM integration tests"
     end

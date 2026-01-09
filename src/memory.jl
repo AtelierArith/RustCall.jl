@@ -38,7 +38,7 @@ function load_rust_helpers_lib(lib_path::String)
     if !isfile(lib_path)
         error("Rust helpers library not found at: $lib_path")
     end
-    
+
     try
         lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         if lib_handle == C_NULL
@@ -89,6 +89,43 @@ function get_rust_helpers_lib_path()
 end
 
 """
+    verify_rust_helpers_functions(lib::Ptr{Cvoid}) -> Bool
+
+Verify that required functions are available in the loaded library.
+Returns true if all required functions are found, false otherwise.
+"""
+function verify_rust_helpers_functions(lib::Ptr{Cvoid})
+    # List of required functions (subset of most commonly used ones)
+    required_functions = [
+        :rust_box_new_i32,
+        :rust_box_drop_i32,
+        :rust_rc_new_i32,
+        :rust_rc_clone_i32,
+        :rust_rc_drop_i32,
+        :rust_arc_new_i32,
+        :rust_arc_clone_i32,
+        :rust_arc_drop_i32,
+        :rust_vec_new_from_array_i32,
+        :rust_vec_drop_i32,
+    ]
+
+    missing_functions = String[]
+    for func_name in required_functions
+        func_ptr = Libdl.dlsym(lib, func_name; throw_error=false)
+        if func_ptr === nothing || func_ptr == C_NULL
+            push!(missing_functions, string(func_name))
+        end
+    end
+
+    if !isempty(missing_functions)
+        @debug "Missing functions in Rust helpers library: $(join(missing_functions, ", "))"
+        return false
+    end
+
+    return true
+end
+
+"""
     try_load_rust_helpers() -> Bool
 
 Try to load the Rust helpers library. Returns true if successful, false otherwise.
@@ -111,14 +148,22 @@ function try_load_rust_helpers()
     try
         lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         if lib_handle == C_NULL
-            @debug "Failed to load Rust helpers library: dlopen returned NULL"
+            @debug "Failed to load Rust helpers library: dlopen returned NULL for $lib_path"
             return false
         end
+
+        # Verify that required functions are available
+        if !verify_rust_helpers_functions(lib_handle)
+            @debug "Rust helpers library loaded but required functions are missing"
+            # Don't fail completely - some functions might still work
+            # But log the issue for debugging
+        end
+
         RUST_HELPERS_LIB[] = lib_handle
         DROP_WARNING_SHOWN[] = false  # Reset warning flag when library is loaded
         return true
     catch e
-        @debug "Failed to load Rust helpers library: $e"
+        @debug "Failed to load Rust helpers library from $lib_path: $e"
         return false
     end
 end

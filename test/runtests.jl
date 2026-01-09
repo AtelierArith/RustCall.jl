@@ -19,6 +19,9 @@ include("test_error_handling.jl")
 # Include llvmcall tests
 include("test_llvmcall.jl")
 
+# Include Rust helpers integration tests
+include("test_rust_helpers_integration.jl")
+
 @testset "LastCall.jl" begin
 
     @testset "Type Mappings" begin
@@ -135,7 +138,7 @@ include("test_llvmcall.jl")
         1  | fn test() {
         2  | }
            |  ^ expected `;`
-        
+
         error: aborting due to previous error
         """
         formatted = format_rustc_error(test_stderr)
@@ -509,7 +512,7 @@ include("test_llvmcall.jl")
                     // Missing closing brace for let block
                 }
                 """
-                
+
                 # This should throw a CompilationError
                 compiler = RustCompiler(debug_mode=false)
                 @test_throws CompilationError compile_rust_to_shared_lib(invalid_code; compiler=compiler)
@@ -542,7 +545,7 @@ include("test_llvmcall.jl")
                     // Missing closing brace for let block
                 }
                 """
-                
+
                 compiler = RustCompiler(optimization_level=3, debug_mode=false)
                 @test_throws CompilationError compile_with_recovery(invalid_code, compiler; retry_count=1)
             end
@@ -555,11 +558,11 @@ include("test_llvmcall.jl")
                     return 42;
                 }
                 """
-                
+
                 compiler = RustCompiler(debug_mode=false)
                 lib_path = compile_rust_to_shared_lib(valid_code; compiler=compiler)
                 @test isfile(lib_path)
-                
+
                 # Clean up
                 rm(dirname(lib_path), recursive=true, force=true)
             end
