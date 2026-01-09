@@ -517,7 +517,7 @@ If `copy()` doesn't work:
 
 ## See Also
 
-- [Tutorial](@ref "Tutorial"): General tutorial on using LastCall.jl
-- [Examples](@ref "Examples"): More examples of LastCall.jl usage
-- [API Reference](@ref "API Reference"): Complete API documentation
-- [Generics](@ref "Generics"): Using generics with LastCall.jl
+- [Tutorial](@ref "Getting Started/Tutorial"): General tutorial on using LastCall.jl
+- [Examples](@ref "Getting Started/Examples"): More examples of LastCall.jl usage
+- [API Reference](@ref "Reference/API Reference"): Complete API documentation
+- [Generics](@ref "User Guide/Generics"): Using generics with LastCall.jl

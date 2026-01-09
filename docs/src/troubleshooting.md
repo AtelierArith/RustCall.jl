@@ -402,7 +402,7 @@ result2 = @rust func2()::Int32
 
 ### Q: Can I use Rust generics?
 
-A: Yes, with automatic monomorphization. See [Generics](@ref "Generics") for details.
+A: Yes, with automatic monomorphization. See [Generics](@ref "User Guide/Generics") for details.
 
 ### Q: Can I return Rust structs?
 
