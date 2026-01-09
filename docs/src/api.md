@@ -248,15 +248,23 @@ They are documented here for completeness but should not be used directly by use
 
 ```@autodocs
 Modules = [LastCall]
-Filter = t -> !(t in [
+Filter = t -> begin
     # Exclude items already documented in @docs blocks above
-    RustResult, RustOption, RustBox, RustRc, RustArc, RustVec, RustSlice,
-    RustPtr, RustRef, RustString, RustStr,
-    RustError, CompilationError, RuntimeError, CargoBuildError, DependencyResolutionError,
-    RustCompiler, OptimizationConfig, RustFunctionInfo,
-    DependencySpec, CargoProject,
-    GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS,
-    # Exclude functions without docstrings
-    _extract_error_line_numbers, _extract_suggestions,
-])
+    excluded = [
+        RustResult, RustOption, RustBox, RustRc, RustArc, RustVec, RustSlice,
+        RustPtr, RustRef, RustString, RustStr,
+        RustError, CompilationError, RuntimeError, CargoBuildError, DependencyResolutionError,
+        RustCompiler, OptimizationConfig, RustFunctionInfo,
+        DependencySpec, CargoProject,
+        GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS,
+    ]
+    # Get the binding name
+    name = try
+        nameof(t)
+    catch
+        return true
+    end
+    # Exclude if in excluded list or if name starts with underscore (internal)
+    return !(t in excluded) && !startswith(string(name), "_")
+end
 ```
