@@ -455,11 +455,25 @@ function generate_struct_wrappers(info::RustStructInfo)
 
     # Generate field accessors if struct has fields and derive(JuliaStruct)
     if info.has_derive_julia_struct && !isempty(info.fields)
+        # Get set of method names to avoid conflicts
+        method_names = Set([m.name for m in info.methods])
+        
         for (field_name, field_type) in info.fields
-            # Getter
+            # Skip if there's a method with the same name as the field getter
+            getter_name = "$(struct_name)_get_$(field_name)"
+            if getter_name in method_names
+                continue  # Skip field accessor if method with same name exists
+            end
+            
+            # Getter - need to clone String and Vec types
             println(io, "#[no_mangle]")
             println(io, "pub extern \"C\" fn $(struct_name)_get_$(field_name)(ptr: *const $struct_name) -> $field_type {")
-            println(io, "    unsafe { (*ptr).$(field_name) }")
+            # String and Vec types need clone(), Copy types can be returned directly
+            if occursin(r"String|Vec", field_type)
+                println(io, "    unsafe { (*ptr).$(field_name).clone() }")
+            else
+                println(io, "    unsafe { (*ptr).$(field_name) }")
+            end
             println(io, "}\n")
             
             # Setter (only if mutable)
@@ -683,7 +697,8 @@ function emit_julia_definitions(info::RustStructInfo)
                 function Base.getproperty(self::$esc_struct, field::Symbol)
                     if field === $(QuoteNode(Symbol(field_name)))
                         lib = self.lib_name
-                        return _call_rust_method(lib, $getter_name, self.ptr, $(QuoteNode(jl_field_type)))
+                        func_ptr = get_function_pointer(lib, $getter_name)
+                        return call_rust_function(func_ptr, $jl_field_type, self.ptr)
                     else
                         return getfield(self, field)
                     end
@@ -695,7 +710,8 @@ function emit_julia_definitions(info::RustStructInfo)
                 function Base.setproperty!(self::$esc_struct, field::Symbol, value)
                     if field === $(QuoteNode(Symbol(field_name)))
                         lib = self.lib_name
-                        _call_rust_method(lib, $setter_name, self.ptr, value, $(QuoteNode(Cvoid)))
+                        func_ptr = get_function_pointer(lib, $setter_name)
+                        call_rust_function(func_ptr, Cvoid, self.ptr, value)
                         return value
                     else
                         return setfield!(self, field, value)
