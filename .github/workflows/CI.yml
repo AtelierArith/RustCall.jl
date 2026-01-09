@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.10'
+          - '1.11'
+          - 'nightly'
+        os:
+          - ubuntu-latest
+          - macOS-latest
+          - windows-latest
+        arch:
+          - x64
+        exclude:
+          # Exclude nightly on Windows for now (can be enabled later)
+          - os: windows-latest
+            version: nightly
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v1
+        with:
+          version: ${{ matrix.version }}
+          arch: ${{ matrix.arch }}
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      
+      - name: Cache Julia packages
+        uses: actions/cache@v4
+        env:
+          cache-name: cache-julia-packages
+        with:
+          path: ~/.julia
+          key: ${{ runner.os }}-${{ matrix.version }}-${{ matrix.arch }}-${{ hashFiles('**/Project.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.version }}-${{ matrix.arch }}-
+            ${{ runner.os }}-${{ matrix.version }}-
+            ${{ runner.os }}-
+      
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps/rust_helpers/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-rust-${{ hashFiles('deps/rust_helpers/Cargo.toml', 'deps/rust_helpers/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-
+      
+      - name: Install dependencies
+        run: julia --project -e 'using Pkg; Pkg.instantiate()'
+      
+      - name: Build Rust helpers (if needed)
+        run: |
+          if [ -f deps/rust_helpers/Cargo.toml ]; then
+            cd deps/rust_helpers
+            cargo build --release || echo "Rust helpers build skipped (optional)"
+          fi
+        continue-on-error: true
+      
+      - name: Run tests
+        run: julia --project -e 'using Pkg; Pkg.test()'
+        env:
+          JULIA_NUM_THREADS: 4
+      
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-${{ matrix.version }}
+          path: test-results/
+          if-no-files-found: ignore
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v1
+        with:
+          version: '1.10'
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      
+      - name: Cache Julia packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.julia
+          key: ${{ runner.os }}-docs-${{ hashFiles('**/Project.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-docs-
+            ${{ runner.os }}-
+      
+      - name: Install dependencies
+        run: julia --project -e 'using Pkg; Pkg.instantiate()'
+      
+      - name: Build documentation
+        run: |
+          if [ -f docs/make.jl ]; then
+            julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+            julia --project=docs docs/make.jl || echo "Documentation build skipped"
+          fi
+        continue-on-error: true
+
+  format:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Julia
+        uses: julia-actions/setup-julia@v1
+        with:
+          version: '1.10'
+      
+      - name: Check code formatting
+        run: |
+          julia --project -e 'using Pkg; Pkg.add("JuliaFormatter"); using JuliaFormatter; format("."; verbose=true, overwrite=false)' || echo "Formatting check skipped (JuliaFormatter not required)"
+        continue-on-error: true

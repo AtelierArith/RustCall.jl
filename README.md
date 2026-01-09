@@ -1,5 +1,8 @@
 # LastCall.jl
 
+[![CI](https://github.com/atelierarith/LastCall.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/atelierarith/LastCall.jl/actions/workflows/CI.yml)
+[![Code Style: Blue](https://img.shields.io/badge/code%20style-blue-4495d1.svg)](https://github.com/invenia/BlueStyle)
+
 **LastCall.jl** is a Foreign Function Interface (FFI) package for calling Rust code directly from Julia, inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
 
 > It's the last call for headache. 🦀
@@ -45,7 +48,7 @@ Pkg.add("LastCall")
 ```
 
 **Requirements:**
-- Julia 1.12 or later
+- Julia 1.10 or later
 - Rust toolchain (`rustc` and `cargo`) installed and available in PATH
 
 To install Rust, visit [rustup.rs](https://rustup.rs/).
@@ -292,7 +295,7 @@ end
 @test Base.eltype(RustVec{Int32}) == Int32
 ```
 
-**Note**: Creating `RustVec` from Julia `Vector` requires the Rust helpers library and is currently being implemented.
+**Note**: Creating `RustVec` from Julia `Vector` requires the Rust helpers library. Use `create_rust_vec()` to convert Julia arrays to RustVec.
 
 ## LLVM IR Integration (Phase 2, Experimental)
 
@@ -357,6 +360,188 @@ optimize_for_speed!(llvm_mod)  # Level 3, aggressive optimizations
 optimize_for_size!(llvm_mod)   # Level 2, size optimizations
 ```
 
+## External Library Integration (Phase 3)
+
+LastCall.jl supports using external Rust crates directly in `rust""` blocks. Dependencies are automatically downloaded and built using Cargo.
+
+### Basic Usage
+
+```julia
+using LastCall
+
+# Use external crates with cargo-deps format
+rust"""
+// cargo-deps: ndarray = "0.15"
+
+use ndarray::Array1;
+
+#[no_mangle]
+pub extern "C" fn compute_sum(data: *const f64, len: usize) -> f64 {
+    unsafe {
+        let slice = std::slice::from_raw_parts(data, len);
+        let arr = Array1::from_vec(slice.to_vec());
+        arr.sum()
+    }
+}
+"""
+
+# Call with Julia array
+data = [1.0, 2.0, 3.0, 4.0, 5.0]
+result = @rust compute_sum(pointer(data), length(data))::Float64
+println(result)  # => 15.0
+```
+
+### Dependency Formats
+
+LastCall.jl supports multiple dependency specification formats:
+
+**Format 1: cargo-deps comment**
+```rust
+// cargo-deps: serde = "1.0", serde_json = "1.0"
+```
+
+**Format 2: rustscript-style code block**
+```rust
+//! ```cargo
+//! [dependencies]
+//! rand = "0.8"
+//! ```
+```
+
+### Cargo Project Management
+
+```julia
+using LastCall
+
+# Dependencies are automatically parsed and built
+rust"""
+// cargo-deps: serde = { version = "1.0", features = ["derive"] }
+
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct Data {
+    value: i32,
+}
+
+#[no_mangle]
+pub extern "C" fn process_data(val: i32) -> i32 {
+    let data = Data { value: val };
+    data.value * 2
+}
+"""
+
+result = @rust process_data(Int32(21))::Int32
+```
+
+**Note**: First-time builds may take longer as dependencies are downloaded and compiled. Subsequent builds use cached artifacts.
+
+## Rust Structs as Julia Objects (Phase 4)
+
+LastCall.jl automatically detects `pub struct` definitions and generates Julia wrappers, allowing you to use Rust objects as first-class Julia types.
+
+### Basic Struct Usage
+
+```julia
+using LastCall
+
+# Define a Rust struct with methods
+rust"""
+pub struct Person {
+    age: u32,
+    height: f64,
+}
+
+impl Person {
+    pub fn new(age: u32, height: f64) -> Self {
+        Self { age, height }
+    }
+
+    pub fn greet(&self) {
+        println!("Hello, I am {} years old.", self.age);
+    }
+
+    pub fn have_birthday(&mut self) {
+        self.age += 1;
+    }
+
+    pub fn get_height(&self) -> f64 {
+        self.height
+    }
+}
+"""
+
+# Use as a Julia type
+person = Person(30, 175.5)
+greet(person)
+have_birthday(person)
+height = get_height(person)
+```
+
+### Generic Structs
+
+```julia
+using LastCall
+
+rust"""
+pub struct Point<T> {
+    x: T,
+    y: T,
+}
+
+impl<T> Point<T> {
+    pub fn new(x: T, y: T) -> Self {
+        Self { x, y }
+    }
+}
+
+impl Point<f64> {
+    pub fn distance(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+"""
+
+# Use with explicit type parameters
+point = Point{Float64}(3.0, 4.0)
+dist = distance(point)  # => 5.0
+```
+
+### Memory Management
+
+Rust structs are automatically managed with finalizers that call Rust's `Drop` implementation:
+
+```julia
+using LastCall
+
+rust"""
+pub struct Resource {
+    data: Vec<u8>,
+}
+
+impl Resource {
+    pub fn new(size: usize) -> Self {
+        Self {
+            data: vec![0; size],
+        }
+    }
+}
+
+impl Drop for Resource {
+    fn drop(&mut self) {
+        println!("Rust: Dropping Resource");
+    }
+}
+"""
+
+# Resource is automatically cleaned up when it goes out of scope
+function use_resource()
+    res = Resource(1000)
+    # ... use resource ...
+    # Drop is called automatically when res goes out of scope
+end
+```
+
 ## Compilation Caching
 
 LastCall.jl uses a SHA256-based caching system to avoid recompiling unchanged Rust code:
@@ -385,7 +570,7 @@ cleanup_old_cache(30)  # Remove entries older than 30 days
 
 ## Architecture
 
-LastCall.jl uses a two-phase approach:
+LastCall.jl uses a multi-phase approach:
 
 ### Phase 1: C-Compatible ABI ✅ (Complete)
 
@@ -395,13 +580,28 @@ LastCall.jl uses a two-phase approach:
 - SHA256-based compilation caching
 - String type support
 
-### Phase 2: LLVM IR Integration ✅ (Major Features Complete)
+### Phase 2: LLVM IR Integration ✅ (Complete)
 
 - Direct LLVM IR integration using `llvmcall` (experimental)
 - LLVM optimization passes
 - Ownership types (Box, Rc, Arc, Vec, Slice)
 - Function registration system
 - Enhanced error handling
+- Generics support with automatic monomorphization
+
+### Phase 3: External Library Integration ✅ (Complete)
+
+- Automatic Cargo project generation
+- Dependency parsing and resolution
+- Cached Cargo builds
+- Integration with popular crates (ndarray, serde, rand, etc.)
+
+### Phase 4: Rust Structs as Julia Objects ✅ (Complete)
+
+- Automatic struct detection and wrapper generation
+- C-FFI wrapper generation for methods
+- Dynamic Julia type generation
+- Automatic memory management with finalizers
 
 ## Current Limitations
 
@@ -409,7 +609,12 @@ LastCall.jl uses a two-phase approach:
 - Only `extern "C"` functions are supported
 - No lifetime/borrow checker integration
 - Array/vector indexing and iteration supported ✅
-- Creating RustVec from Julia Vector requires Rust helpers library
+- Creating RustVec from Julia Vector requires Rust helpers library (use `create_rust_vec()`)
+
+**Phase 2 limitations:**
+- `@rust_llvm` is experimental and may have limitations
+- Ownership types require Rust helpers library to be built (`Pkg.build("LastCall")`)
+- Some advanced Rust features are not yet supported
 
 **Generics support (Phase 2):**
 - ✅ Generic function detection and registration
@@ -418,12 +623,19 @@ LastCall.jl uses a two-phase approach:
 - ✅ Caching of monomorphized instances
 - ⚠️ Trait bounds parsing is simplified (basic support)
 
-**Phase 2 limitations:**
-- `@rust_llvm` is experimental and may have limitations
-- Ownership types require Rust helpers library to be built
-- Some advanced Rust features are not yet supported
+**Phase 3 limitations:**
+- Cargo builds are cached but may take time on first use
+- Complex dependency resolution may require manual intervention
+- Some crates may require additional build configuration
+- Platform-specific dependencies may not work on all systems
 
-**Error handling (Phase 2):**
+**Phase 4 limitations:**
+- Generic structs require explicit type parameters when calling from Julia
+- Complex trait bounds may not be fully supported
+- Nested structs and advanced Rust patterns may require manual FFI code
+- Associated types and advanced trait features are not yet supported
+
+**Error handling:**
 - ✅ Enhanced compilation error display with line numbers and suggestions
 - ✅ Debug mode with detailed logging and intermediate file preservation
 - ✅ Automatic error suggestions for common issues
@@ -431,7 +643,7 @@ LastCall.jl uses a two-phase approach:
 
 ## Development Status
 
-LastCall.jl has completed **Phase 1** and **Phase 2 major features**. The package is functional for basic to intermediate use cases.
+LastCall.jl has completed **Phase 1, Phase 2, Phase 3, and Phase 4**. The package is fully functional for production use cases.
 
 **Implemented:**
 - ✅ Basic type mapping
@@ -449,20 +661,21 @@ LastCall.jl has completed **Phase 1** and **Phase 2 major features**. The packag
 - ✅ Generics support (monomorphization, type inference)
 - ✅ Function registration system
 - ✅ Rust helpers library build system
-
-**In Progress:**
-- 🚧 Ownership types full integration (requires Rust helpers library compilation)
-- 🚧 Enhanced `@irust` with better variable binding
+- ✅ External crate integration (Cargo dependencies)
+- ✅ Automatic struct wrapper generation
+- ✅ Method binding for Rust structs
 
 **Recently Completed:**
-- ✅ Array/collection operations (indexing, iteration, conversion)
-- ✅ RustVec creation from Julia Vector (requires Rust helpers library)
-- ✅ Generics support (monomorphization, type parameter inference)
+- ✅ Phase 3: External library integration (Cargo, ndarray, etc.)
+- ✅ Phase 4: Rust structs as Julia objects
+- ✅ Generic struct support with automatic monomorphization
+- ✅ Enhanced error handling with suggestions
 
 **Planned:**
 - ⏳ Lifetime/borrow checker integration
-- ⏳ Advanced Rust features
+- ⏳ Enhanced `@irust` with better variable binding
 - ⏳ Enhanced trait bounds parsing for generics
+- ⏳ CI/CD pipeline and package distribution
 
 ## Examples
 
@@ -479,6 +692,13 @@ julia --project examples/advanced_examples.jl
 
 # Ownership types examples (requires Rust helpers library)
 julia --project examples/ownership_examples.jl
+
+# Struct automation examples (Phase 4)
+julia --project examples/struct_examples.jl
+
+# External crate integration (Phase 3)
+julia --project examples/phase4_ndarray.jl
+julia --project examples/phase4_pi.jl
 ```
 
 ### Test Suite
@@ -493,14 +713,33 @@ See the `test/` directory for comprehensive examples:
 - `test/test_error_handling.jl` - Error handling tests
 - `test/test_rust_helpers_integration.jl` - Rust helpers library integration tests
 - `test/test_docs_examples.jl` - Documentation examples validation tests
+- `test/test_dependencies.jl` - Dependency parsing tests (Phase 3)
+- `test/test_cargo.jl` - Cargo project generation tests (Phase 3)
+- `test/test_ndarray.jl` - External crate integration tests (Phase 3)
+- `test/test_phase4.jl` - Struct automation tests (Phase 4)
 
 ## Performance
 
-LastCall.jl includes a benchmark suite comparing Julia native, `@rust`, and `@rust_llvm`:
+LastCall.jl includes a comprehensive benchmark suite:
 
 ```bash
+# Basic performance benchmarks
 julia --project benchmark/benchmarks.jl
+
+# LLVM integration benchmarks
+julia --project benchmark/benchmarks_llvm.jl
+
+# Array operation benchmarks
+julia --project benchmark/benchmarks_arrays.jl
+
+# Generics benchmarks
+julia --project benchmark/benchmarks_generics.jl
+
+# Ownership type benchmarks
+julia --project benchmark/benchmarks_ownership.jl
 ```
+
+The benchmarks compare Julia native implementations against `@rust` (ccall) and `@rust_llvm` (LLVM IR integration) approaches.
 
 ## Contributing
 
