@@ -205,7 +205,7 @@ Uses @generated function for compile-time optimization based on argument types.
     if length(args) == 0
         return :(call_rust_function(func_ptr, Cvoid))
     end
-    
+
     # Infer return type from first argument type at compile time
     ret_type = if args[1] <: Integer
         args[1]
@@ -218,7 +218,7 @@ Uses @generated function for compile-time optimization based on argument types.
     else
         Int64  # Default fallback
     end
-    
+
     return :(call_rust_function(func_ptr, $ret_type, args...))
 end
 
