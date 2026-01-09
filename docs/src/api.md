@@ -264,19 +264,19 @@ They are documented here for completeness but should not be used directly by use
 
 ```@autodocs
 Modules = [LastCall]
-Private = true
 Filter = t -> begin
     # Exclude items already documented in @docs blocks above
     excluded_names = [
+        # Types
         :RustResult, :RustOption, :RustBox, :RustRc, :RustArc, :RustVec, :RustSlice,
         :RustPtr, :RustRef, :RustString, :RustStr,
         :RustError, :CompilationError, :RuntimeError, :CargoBuildError, :DependencyResolutionError,
         :RustCompiler, :OptimizationConfig, :RustFunctionInfo,
         :DependencySpec, :CargoProject,
+        # Constants/Registries (documented in @docs blocks)
         :GENERIC_FUNCTION_REGISTRY, :MONOMORPHIZED_FUNCTIONS,
-        # Exclude registries documented separately
         :RUST_LIBRARIES, :RUST_MODULE_REGISTRY, :FUNCTION_REGISTRY, :IRUST_FUNCTIONS,
-        # Exclude public functions already documented
+        # Public functions already documented
         :unwrap, :unwrap_or, :is_ok, :is_err, :is_some, :is_none,
         :result_to_exception, :unwrap_or_throw,
         :rusttype_to_julia, :juliatype_to_rust,
@@ -297,14 +297,16 @@ Filter = t -> begin
         :parse_dependencies_from_code, :has_dependencies,
         :create_cargo_project, :build_cargo_project,
         :clear_cargo_cache, :get_cargo_cache_size,
+        # Macros (documented separately)
+        Symbol("@rust"), Symbol("@rust_str"), Symbol("@irust"), Symbol("@irust_str"), Symbol("@rust_llvm"),
     ]
     # Get the binding name
     name = try
         nameof(t)
     catch
-        return true
+        return false
     end
-    # Exclude if in excluded list
-    return !(name in excluded_names)
+    # Only include if not in excluded list and name starts with underscore (internal)
+    return !(name in excluded_names) && startswith(string(name), "_")
 end
 ```
