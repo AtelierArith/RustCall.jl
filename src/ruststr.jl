@@ -112,7 +112,12 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
     # Phase 4: Detect structs and generate wrappers
     struct_infos = parse_structs_and_impls(code)
-    augmented_code = code
+    
+    # Remove #[derive(JuliaStruct)] attributes from code before compilation
+    # (JuliaStruct is not a real Rust macro, so it would cause compilation errors)
+    cleaned_code = remove_derive_julia_struct_attributes(code)
+    
+    augmented_code = cleaned_code
     for info in struct_infos
         augmented_code *= generate_struct_wrappers(info)
     end
@@ -295,7 +300,11 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     # Phase 4: Detect structs and generate wrappers
     struct_infos = parse_structs_and_impls(code)
-    augmented_code = code
+    
+    # Remove #[derive(JuliaStruct)] attributes from code before compilation
+    cleaned_code = remove_derive_julia_struct_attributes(code)
+    
+    augmented_code = cleaned_code
     for info in struct_infos
         augmented_code *= generate_struct_wrappers(info)
     end

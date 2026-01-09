@@ -31,6 +31,73 @@ struct RustStructInfo
 end
 
 """
+    remove_derive_julia_struct_attributes(code::String) -> String
+
+Remove #[derive(JuliaStruct)] and related attributes from Rust code before compilation.
+This is necessary because JuliaStruct is not a real Rust macro.
+"""
+function remove_derive_julia_struct_attributes(code::String)
+    lines = split(code, '\n')
+    result_lines = String[]
+    i = 1
+    
+    while i <= length(lines)
+        line = lines[i]
+        
+        # Check if this line contains #[derive(JuliaStruct)]
+        if occursin(r"#\[derive\(.*JuliaStruct", line)
+            # Check if it's a single-line attribute
+            if occursin(r"#\[derive\([^)]*JuliaStruct[^)]*\)\]", line)
+                # Single line: #[derive(JuliaStruct)] or #[derive(JuliaStruct, Clone)]
+                # Remove JuliaStruct from the derive list
+                modified = replace(line, r"JuliaStruct\s*,?\s*" => "")
+                modified = replace(modified, r",\s*\)" => ")")
+                modified = replace(modified, r"\(\)" => "")
+                
+                # If the entire attribute becomes empty, skip the line
+                if occursin(r"#\[derive\(\)\]", modified) || occursin(r"#\[derive\(\s*\)\]", modified)
+                    # Skip this line entirely
+                    i += 1
+                    continue
+                elseif !isempty(strip(modified))
+                    push!(result_lines, modified)
+                end
+            else
+                # Multi-line attribute: #[derive(JuliaStruct,
+                #                                  Clone)]
+                # Skip until we find the closing )]
+                push!(result_lines, line)  # Keep the opening line for now
+                i += 1
+                while i <= length(lines)
+                    next_line = lines[i]
+                    if occursin(r"\)\]", next_line)
+                        # Found closing, process it
+                        modified = replace(next_line, r"JuliaStruct\s*,?\s*" => "")
+                        modified = replace(modified, r",\s*\)" => ")")
+                        if !isempty(strip(modified))
+                            push!(result_lines, modified)
+                        end
+                        i += 1
+                        break
+                    else
+                        # Keep intermediate lines
+                        push!(result_lines, next_line)
+                        i += 1
+                    end
+                end
+                continue
+            end
+        else
+            push!(result_lines, line)
+        end
+        
+        i += 1
+    end
+    
+    return join(result_lines, '\n')
+end
+
+"""
     parse_structs_and_impls(code::String) -> Vector{RustStructInfo}
 
 Heuristic parser to find pub structs and their impl blocks.
@@ -69,7 +136,7 @@ function parse_structs_and_impls(code::String)
         # Parse derive options
         derive_options = Dict{String, Bool}()
         if has_derive_julia_struct
-            # Extract derive attributes: #[derive(JuliaStruct, Clone, Debug)]
+            # Extract derive attributes: #[derive(JuliaStruct, Clone)]
             derive_match = match(r"#\[derive\(([^\]]+)\)\]", preceding_code)
             if derive_match !== nothing
                 derive_list = derive_match.captures[1]
@@ -242,28 +309,6 @@ function _process_arg!(names, types, arg)
 end
 
 """
-    parse_struct_fields(struct_def::String) -> Vector{Tuple{String, String}}
-
-Parse field names and types from a struct definition.
-Returns a vector of (field_name, field_type) tuples.
-"""
-function parse_struct_fields(struct_def::String)
-    fields = Tuple{String, String}[]
-    
-    # Pattern for struct fields: field_name: field_type,
-    # Handle both named fields { x: i32, y: i32 } and tuple structs (i32, i32)
-    field_pattern = r"(\w+)\s*:\s*([^,}]+?)(?:,|\s*\})"
-    
-    for m in eachmatch(field_pattern, struct_def)
-        field_name = String(m.captures[1])
-        field_type = strip(String(m.captures[2]))
-        push!(fields, (field_name, field_type))
-    end
-    
-    return fields
-end
-
-"""
     generate_struct_wrappers(info::RustStructInfo) -> String
 
 Generate "extern C" C-FFI wrappers for a given struct.
@@ -308,9 +353,6 @@ function generate_struct_wrappers(info::RustStructInfo)
 
              for (aname, atype) in zip(m.arg_names, m.arg_types)
                  push!(wrapper_args, "$aname: $atype")
-
-                 # if argument is self-like, handle passing?
-                 # For wrapper generation, arguments are usually simple or generic T
                  push!(call_args, aname)
              end
 
@@ -667,10 +709,6 @@ function _call_generic_constructor(func_name::String, args::Tuple, types::Tuple)
     # Helper to get parameter names from registry?
     generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
     param_names = generic_info.type_params
-
-    if length(types) != length(param_names)
-        error("Type parameter count mismatch for $func_name: expected $(length(param_names)), got $(length(types))")
-    end
 
     type_params = Dict{Symbol, Type}()
     for (i, p) in enumerate(param_names)
