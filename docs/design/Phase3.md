@@ -354,101 +354,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク5: ndarray統合の実装
-
-**優先度**: 高
-**見積もり**: 1週間
-
-#### 実装内容
-
-1. **ndarray型のJuliaラッパー**
-
-   ```julia
-   # src/ndarray.jl
-
-   """
-   Rustのndarray::ArrayBaseをJuliaから扱うためのラッパー
-   """
-   struct RustNdArray{T, D}
-       ptr::Ptr{Cvoid}
-       shape::NTuple{D, Int}
-       strides::NTuple{D, Int}
-   end
-
-   function RustNdArray(ptr::Ptr{Cvoid}, shape::NTuple{D, Int}, strides::NTuple{D, Int}) where {T, D}
-       RustNdArray{T, D}(ptr, shape, strides)
-   end
-
-   # Julia ArrayからRust NdArrayへの変換
-   function create_rust_ndarray(arr::Array{T, D}) where {T, D}
-       # Rust側でndarrayを作成する関数を呼び出す
-       # 実装: ccall経由でRust関数を呼び出し
-   end
-
-   # Rust NdArrayからJulia Arrayへの変換
-   function to_julia_array(ndarr::RustNdArray{T, D}) where {T, D}
-       # Rust側からデータを取得してJulia配列を作成
-       # 実装: ccall経由でデータを取得
-   end
-   ```
-
-2. **ndarray使用例のサポート**
-
-   ```julia
-   # 使用例
-   rust"""
-   //! ```cargo
-   //! [dependencies]
-   //! ndarray = "0.15"
-   //! ```
-
-   use ndarray::{Array, Array2};
-
-   #[no_mangle]
-   pub extern "C" fn matrix_multiply(
-       a_ptr: *const f64,
-       a_rows: usize,
-       a_cols: usize,
-       b_ptr: *const f64,
-       b_rows: usize,
-       b_cols: usize,
-       result_ptr: *mut f64
-   ) {
-       // ndarrayを使用した行列乗算
-       let a = unsafe {
-           Array2::from_shape_ptr((a_rows, a_cols).f(), a_ptr)
-       };
-       let b = unsafe {
-           Array2::from_shape_ptr((b_rows, b_cols).f(), b_ptr)
-       };
-       let result = a.dot(&b);
-
-       // 結果をコピー
-       unsafe {
-           std::ptr::copy_nonoverlapping(
-               result.as_ptr(),
-               result_ptr,
-               result.len()
-           );
-       }
-   }
-   """
-
-   # Juliaから呼び出し
-   function matrix_multiply_julia(a::Matrix{Float64}, b::Matrix{Float64})
-       result = Matrix{Float64}(undef, size(a, 1), size(b, 2))
-       @rust matrix_multiply(
-           pointer(a), size(a, 1), size(a, 2),
-           pointer(b), size(b, 1), size(b, 2),
-           pointer(result)
-       )
-       result
-   end
-   ```
-
----
-
-### タスク6: 依存関係のバージョン管理と解決
+### タスク5: 依存関係のバージョン管理と解決
 
 **優先度**: 高
 **見積もり**: 1週間
@@ -500,7 +406,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク7: エラーハンドリングの拡張
+### タスク6: エラーハンドリングの拡張
 
 **優先度**: 中
 **見積もり**: 3日
@@ -551,7 +457,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク8: テストスイートの拡張
+### タスク7: テストスイートの拡張
 
 **優先度**: 高
 **見積もり**: 1週間
