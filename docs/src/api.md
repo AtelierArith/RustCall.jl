@@ -195,5 +195,5 @@ The following functions are internal implementation details and are not part of 
 
 ```@autodocs
 Modules = [LastCall]
-Private = true
+Filter = t -> true
 ```
