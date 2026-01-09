@@ -69,22 +69,6 @@ Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work...
    cargo build --release
    ```
 
-### Problem: Dependency installation errors
-
-**Solution:**
-
-1. Check Julia version (1.10+ required):
-   ```julia
-   VERSION
-   ```
-
-2. Reinstall package:
-   ```julia
-   using Pkg
-   Pkg.rm("LastCall")
-   Pkg.add("LastCall")
-   ```
-
 ## Compilation Errors
 
 ### Problem: Rust code syntax errors
@@ -151,10 +135,7 @@ ERROR: type mismatch
 2. Use correct types on Julia side:
    ```@example troubleshooting
    # Correct
-   @rust add(Int32(10), Int32(20))::Int32
-
-   # Wrong
-   @rust add(10, 20)  # Types may not be inferred
+   # @rust add(Int32(10), Int32(20))::Int32
    ```
 
 3. Review the type mapping table
@@ -177,7 +158,7 @@ Function 'my_function' not found in library
    clear_cache()
    rust"""
    #[no_mangle]
-   pub extern "C" fn my_function() -> i32 { 42 }
+   pub extern "C" fn my_test_function() -> i32 { 42 }
    """
    ```
 
@@ -192,193 +173,12 @@ signal (11): Segmentation fault
 
 1. Check pointer validity:
    ```@example troubleshooting
-   # Dangerous: invalid pointer
-   ptr = Ptr{Cvoid}(0x1000)
-
-   # Safe: from valid array
-   arr = [1, 2, 3]
-   ptr = pointer(arr)
-   GC.@preserve arr begin
-       # Use ptr
-   end
+   # Warning: Don't use invalid or Julia-managed pointers with Rust ownership types
    ```
 
-2. Check array bounds:
-   ```@example troubleshooting
-   arr = [1, 2, 3]
-   len = length(arr)
-   # Don't access beyond len
-   ```
+2. Check array bounds
 
 3. Check memory management (if using ownership types)
-
-### Problem: String encoding errors
-
-**Error message:**
-```
-invalid UTF-8 sequence
-```
-
-**Solution:**
-
-1. Handle UTF-8 strings correctly:
-   ```rust
-   let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
-   let utf8_str = std::str::from_utf8(c_str.to_bytes())
-       .unwrap_or("");  // Error handling
-   ```
-
-2. Pass strings correctly from Julia:
-   ```@example troubleshooting
-   # UTF-8 strings are handled automatically
-   @rust process_string("こんにちは")::UInt32
-   ```
-
-## Type-related Issues
-
-### Problem: Type inference fails
-
-**Solution:**
-
-1. Specify types explicitly:
-   ```@example troubleshooting
-   # Recommended
-   result = @rust add(10i32, 20i32)::Int32
-
-   # Not recommended
-   result = @rust add(10i32, 20i32)
-   ```
-
-2. Explicitly specify argument types:
-   ```@example troubleshooting
-   a = Int32(10)
-   b = Int32(20)
-   result = @rust add(a, b)::Int32
-   ```
-
-### Problem: Pointer type conversion errors
-
-**Solution:**
-
-1. Use correct pointer types:
-   ```@example troubleshooting
-   # Rust: *const i32
-   # Julia: Ptr{Int32}
-
-   arr = Int32[1, 2, 3]
-   ptr = pointer(arr)
-   ```
-
-2. For C strings, use `String` directly:
-   ```@example troubleshooting
-   # Rust: *const u8
-   # Julia: String (auto-converted)
-   @rust process_string("hello")::UInt32
-   ```
-
-## Memory Management Issues
-
-### Problem: Memory leaks
-
-**Solution:**
-
-1. For ownership types, call `drop!` properly:
-   ```@example troubleshooting
-   box = RustBox{Int32}(ptr)
-   try
-       # Use box
-   finally
-       drop!(box)  # Always cleanup
-   end
-   ```
-
-2. Ensure finalizers are working correctly
-
-### Problem: Double free errors
-
-**Error message:**
-```
-double free or corruption
-```
-
-**Solution:**
-
-1. Call `drop!` only once:
-   ```julia
-   box = RustBox{Int32}(ptr)
-   drop!(box)
-   # drop!(box)  # Error: don't call twice
-   ```
-
-2. Check state with `is_dropped`:
-   ```julia
-   if !is_dropped(box)
-       drop!(box)
-   end
-   ```
-
-### Problem: Invalid pointer access
-
-**Solution:**
-
-1. Check pointer validity:
-   ```julia
-   if box.ptr != C_NULL && !is_dropped(box)
-       # Safe to use
-   end
-   ```
-
-2. Use `is_valid`:
-   ```julia
-   if is_valid(box)
-       # Safe to use
-   end
-   ```
-
-## Performance Issues
-
-### Problem: Compilation is slow
-
-**Solution:**
-
-1. Verify caching is working:
-   ```julia
-   # First compilation (slow)
-   rust"""
-   // Code
-   """
-
-   # Second time (fast from cache)
-   rust"""
-   // Same code
-   """
-   ```
-
-2. Check cache status:
-   ```julia
-   get_cache_size()
-   list_cached_libraries()
-   ```
-
-### Problem: Function calls are slow
-
-**Solution:**
-
-1. Try `@rust_llvm` (experimental):
-   ```julia
-   # Normal call
-   result = @rust add(10i32, 20i32)::Int32
-
-   # LLVM IR integration (potentially optimized)
-   result = @rust_llvm add(Int32(10), Int32(20))
-   ```
-
-2. Run benchmarks to compare:
-   ```bash
-   julia --project benchmark/benchmarks.jl
-   ```
-
-3. Avoid type inference - specify types explicitly
 
 ## FAQ
 
@@ -387,49 +187,25 @@ double free or corruption
 A: Yes. Each `rust""` block is compiled as an independent library:
 
 ```@example troubleshooting
-rust"""
+lib1 = rust"""
 // Library 1
 #[no_mangle]
 pub extern "C" fn func1() -> i32 { 1 }
 """
 
-rust"""
+lib2 = rust"""
 // Library 2
 #[no_mangle]
 pub extern "C" fn func2() -> i32 { 2 }
 """
 
-# Both usable
-result1 = @rust func1()::Int32
-result2 = @rust func2()::Int32
+result1 = @rust lib1.func1()::Int32
+result2 = @rust lib2.func2()::Int32
 ```
 
 ### Q: Can I use Rust generics?
 
 A: Yes, with automatic monomorphization. See [Generics](@ref "generics.md") for details.
-
-### Q: Can I return Rust structs?
-
-A: Currently, only basic types and pointers are supported. For structs, use `#[repr(C)]` and define corresponding Julia structs (experimental).
-
-### Q: When should I clear the cache?
-
-A: Clear the cache when:
-- After modifying Rust code
-- After compilation errors occur
-- When unexpected behavior occurs
-
-```@example troubleshooting
-clear_cache()
-```
-
-### Q: Does it work on Windows?
-
-A: Yes, it works on Windows, macOS, and Linux. Rust toolchain must be properly installed.
-
-### Q: What about performance?
-
-A: The `@rust` macro has standard FFI overhead. `@rust_llvm` (experimental) may offer optimizations but not in all cases. Run benchmarks to verify.
 
 ### Q: Best practices for error handling?
 
@@ -438,18 +214,13 @@ A:
 2. Use `result_to_exception` on Julia side
 3. Or use `unwrap_or` for default values
 
-```@example troubleshooting
-result = some_rust_function()
-value = unwrap_or(result, default_value)
-```
-
 ## Debugging Tips
 
 ### 1. Enable verbose logging
 
 ```@example troubleshooting
 using Logging
-global_logger(ConsoleLogger(stderr, Logging.Debug))
+# global_logger(ConsoleLogger(stderr, Logging.Debug))
 ```
 
 ### 2. Clear cache
@@ -458,18 +229,7 @@ global_logger(ConsoleLogger(stderr, Logging.Debug))
 clear_cache()
 ```
 
-### 3. Test Rust code independently
-
-```bash
-cd /tmp
-cat > test.rs << 'EOF'
-#[no_mangle]
-pub extern "C" fn test() -> i32 { 42 }
-EOF
-rustc --crate-type cdylib test.rs
-```
-
-### 4. Check library status
+### 3. Check library status
 
 ```@example troubleshooting
 # List cached libraries
@@ -479,23 +239,10 @@ list_cached_libraries()
 get_cache_size()
 ```
 
-### 5. Check type information
+### 4. Check type information
 
 ```@example troubleshooting
 # Check type mapping
 rusttype_to_julia(:i32)  # => Int32
 juliatype_to_rust(Int32)  # => "i32"
 ```
-
-## Getting Help
-
-If problems persist:
-
-1. Search existing issues on GitHub
-2. Create a new issue with:
-   - Julia version
-   - LastCall.jl version
-   - Rust version
-   - Operating system
-   - Full error message
-   - Minimal reproducible code example

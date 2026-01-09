@@ -152,12 +152,12 @@ convert_arg(::Type{T}, x) where {T} = x
 
 @generated function _call_rust_function(func_ptr::Ptr{Cvoid}, ::Type{R}, ::Type{A}, args...) where {R,A<:Tuple}
     if !is_supported_return_type(R)
-        return :(error("Unsupported return type ($R). Use @rust_ccall for custom types."))
+        return :(error("Unsupported return type ($($(QuoteNode(R)))). Use @rust_ccall for custom types."))
     end
     arg_types = A.parameters
     for T in arg_types
         if !is_supported_arg_type(T)
-            return :(error("Unsupported argument type ($T). Use @rust_ccall for custom types."))
+            return :(error("Unsupported argument type ($($(QuoteNode(T)))). Use @rust_ccall for custom types."))
         end
     end
     ret_ccall = ccall_return_type(R)

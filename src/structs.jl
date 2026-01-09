@@ -548,9 +548,16 @@ function generate_struct_wrappers(info::RustStructInfo)
 
         args_str = join(wrapper_args, ", ")
 
-        if is_constructor
+        returns_self = m.return_type == "Self" || m.return_type == struct_name
+
+        if returns_self
             println(io, "pub extern \"C\" fn $wrapper_name($args_str) -> *mut $struct_name {")
-            println(io, "    let obj = $struct_name::$(m.name)($(join(m.arg_names, ", ")));")
+            if m.is_static
+                println(io, "    let obj = $struct_name::$(m.name)($(join(m.arg_names, ", ")));")
+            else
+                println(io, "    let self_obj = unsafe { &$(m.is_mutable ? "mut " : "") *ptr };")
+                println(io, "    let obj = self_obj.$(m.name)($(join(m.arg_names, ", ")));")
+            end
             println(io, "    Box::into_raw(Box::new(obj))")
         else
             ret_decl = m.return_type == "()" ? "" : " -> $(m.return_type)"
@@ -663,6 +670,7 @@ function emit_julia_definitions(info::RustStructInfo)
             end
         end
 
+        method_names = Set([Symbol(m.name) for m in info.methods])
         method_accessors = Expr[]
         for m in info.methods
             method_sym = Symbol(m.name)
@@ -757,12 +765,18 @@ function emit_julia_definitions(info::RustStructInfo)
                 end)
             end
         else
-            jl_ret_type = rust_to_julia_type_sym(m.return_type)
-            push!(exprs, quote
-                function $fname(self::$esc_struct, $(esc_args...))
-                    return _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(esc_args...), $(QuoteNode(jl_ret_type)))
+        jl_ret_type = rust_to_julia_type_sym(m.return_type)
+        is_ctor_ret = m.return_type == "Self" || m.return_type == struct_name_str
+        push!(exprs, quote
+            function $fname(self::$esc_struct, $(esc_args...))
+                res = _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(esc_args...), $(QuoteNode(jl_ret_type)))
+                if $is_ctor_ret
+                    return $esc_struct(res, self.lib_name)
+                else
+                    return res
                 end
-            end)
+            end
+        end)
         end
     end
 

@@ -31,7 +31,7 @@ impl Point2D {
     pub fn new(x: f64, y: f64) -> Self {
         Point2D { x, y }
     }
-    
+
     pub fn distance(&self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
     }
@@ -68,7 +68,7 @@ impl PersonInfo {
     pub fn new(name: String, age: i32) -> Self {
         PersonInfo { name, age }
     }
-    
+
     pub fn get_name(&self) -> String {
         self.name.clone()
     }
@@ -145,7 +145,7 @@ impl Rectangle {
     pub fn new(width: f64, height: f64) -> Self {
         Rectangle { width, height }
     }
-    
+
     pub fn area(&self) -> f64 {
         self.width * self.height
     }
@@ -163,7 +163,7 @@ rect.width = 15.0
 rect.height = 25.0
 
 # Calculate area
-area = rect.area()  # => 375.0
+rect_area = rect.area()  # => 375.0
 ```
 
 ### Field Type Mapping
@@ -264,19 +264,19 @@ impl Calculator {
     pub fn new(value: f64) -> Self {
         Calculator { value }
     }
-    
+
     pub fn add(&mut self, x: f64) {
         self.value += x;
     }
-    
+
     pub fn multiply(&mut self, x: f64) {
         self.value *= x;
     }
-    
+
     pub fn get_value(&self) -> f64 {
         self.value
     }
-    
+
     pub fn reset(&mut self) {
         self.value = 0.0;
     }
@@ -304,16 +304,17 @@ impl MathUtils {
     pub fn add(a: f64, b: f64) -> f64 {
         a + b
     }
-    
+
     pub fn multiply(a: f64, b: f64) -> f64 {
         a * b
     }
 }
 """
 
-# Call static methods
-result1 = MathUtils.add(3.0, 4.0)      # => 7.0
-result2 = MathUtils.multiply(3.0, 4.0) # => 12.0
+# Create an instance and call methods
+utils = MathUtils()
+result1 = utils.add(3.0, 4.0)      # => 7.0
+result2 = utils.multiply(3.0, 4.0) # => 12.0
 ```
 
 ## Best Practices
@@ -366,7 +367,7 @@ impl BankAccount {
     pub fn new(balance: f64) -> Self {
         BankAccount { balance }
     }
-    
+
     pub fn withdraw(&mut self, amount: f64) -> Result<f64, String> {
         if amount > self.balance {
             Err("Insufficient funds".to_string())
@@ -375,7 +376,7 @@ impl BankAccount {
             Ok(self.balance)
         }
     }
-    
+
     pub fn get_balance(&self) -> f64 {
         self.balance
     }
@@ -423,27 +424,27 @@ impl Vec2DD {
     pub fn new(x: f64, y: f64) -> Self {
         Vec2DD { x, y }
     }
-    
+
     pub fn zero() -> Self {
         Vec2DD { x: 0.0, y: 0.0 }
     }
-    
+
     pub fn add(&self, other: &Vec2DD) -> Vec2DD {
         Vec2DD {
             x: self.x + other.x,
             y: self.y + other.y,
         }
     }
-    
+
     pub fn scale(&mut self, factor: f64) {
         self.x *= factor;
         self.y *= factor;
     }
-    
+
     pub fn magnitude(&self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
     }
-    
+
     pub fn normalize(&mut self) {
         let mag = self.magnitude();
         if mag > 0.0 {
@@ -469,8 +470,8 @@ v3 = v1.add(v2)
 println("v3: ($(v3.x), $(v3.y))")  # => v3: (6.0, 6.0)
 
 # Static method
-zero = Vec2DD.zero()
-println("zero: ($(zero.x), $(zero.y))")  # => zero: (0.0, 0.0)
+v_zero = Vec2DD.zero()
+println("zero: ($(v_zero.x), $(v_zero.y))")  # => zero: (0.0, 0.0)
 
 # Clone
 v4 = copy(v1)
