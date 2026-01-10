@@ -2,6 +2,9 @@
 
 LastCall.jl now supports calling generic Rust functions from Julia. This document explains how to use this feature.
 
+```@setup generics
+using LastCall
+```
 
 ## Overview
 
@@ -165,7 +168,7 @@ More complex inference (e.g., inferring from return type) is not yet supported.
 
 ### Example 1: Simple Generic Function
 
-```julia
+```@example generics
 rust"""
 #[no_mangle]
 pub extern "C" fn identity<T>(x: T) -> T {
@@ -182,7 +185,7 @@ println("Float64 result: $result2")
 
 ### Example 2: Multiple Type Parameters
 
-```julia
+```@example generics
 rust"""
 #[no_mangle]
 pub extern "C" fn first<T, U>(a: T, b: U) -> T {
@@ -191,13 +194,12 @@ pub extern "C" fn first<T, U>(a: T, b: U) -> T {
 """
 
 result = @rust first(Int32(10), Float64(20.0))::Int32  # => 10
+println("Result: $result")
 ```
 
 ### Example 3: Manual Registration and Monomorphization
 
-```julia
-using LastCall
-
+```@example generics
 code = """
 #[no_mangle]
 pub extern "C" fn multiply<T>(a: T, b: T) -> T {
@@ -209,6 +211,7 @@ register_generic_function("multiply", code, [:T])
 
 # Call with automatic monomorphization
 result = call_generic_function("multiply", Int32(5), Int32(6))  # => 30
+println("Result: $result")
 ```
 
 ## Implementation Details
