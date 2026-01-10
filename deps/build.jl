@@ -193,8 +193,6 @@ function main()
 end
 
 # Run the build process
-# When called as a build script, PROGRAM_FILE will match this file
-const BUILD_FILE = @__FILE__
-if abspath(PROGRAM_FILE) == abspath(BUILD_FILE)
-    main()
-end
+# Pkg.build includes this file, so we always run main() when included
+# This ensures the Rust helpers library is built when Pkg.build("LastCall") is called
+main()
