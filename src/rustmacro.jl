@@ -190,6 +190,7 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
 
     # Regular function - use existing logic
     # Get function pointer
+    @debug "Calling function '$func_name' from library '$lib_name'"
     func_ptr = get_function_pointer(lib_name, func_name)
 
     # Convert arguments (String -> Cstring)

@@ -638,8 +638,8 @@ function _register_function_signatures(code::String, lib_name::String)
         func_name = String(m.captures[1])
         ret_type_str = length(m.captures) >= 2 && m.captures[2] !== nothing ? String(m.captures[2]) : nothing
 
-        # Skip if already registered or is generic
-        if haskey(FUNCTION_REGISTRY, func_name) || haskey(FUNCTION_RETURN_TYPES, func_name) || is_generic_function(func_name)
+        # Skip if already registered in FUNCTION_REGISTRY or is generic
+        if haskey(FUNCTION_REGISTRY, func_name) || is_generic_function(func_name)
             continue
         end
 
@@ -647,8 +647,10 @@ function _register_function_signatures(code::String, lib_name::String)
         if ret_type_str !== nothing && !isempty(strip(ret_type_str))
             ret_type = _parse_function_return_type(code, func_name)
             if ret_type !== nothing
+                # Always update FUNCTION_RETURN_TYPES for the current library
+                # This allows the same function name in different rust"" blocks to have different return types
                 FUNCTION_RETURN_TYPES[func_name] = ret_type
-                @debug "Registered return type for function: $func_name => $ret_type"
+                @debug "Registered return type for function: $func_name => $ret_type (library: $lib_name)"
             end
         end
     end
