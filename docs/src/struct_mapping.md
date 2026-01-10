@@ -104,7 +104,7 @@ The `#[derive(JuliaStruct)]` attribute supports additional derive options:
 
 ### Example with Multiple Traits
 
-```@example struct_mapping
+```julia
 rust"""
 #[derive(JuliaStruct, Clone)]
 pub struct Config {
@@ -133,7 +133,7 @@ When `#[derive(JuliaStruct)]` is present, LastCall.jl automatically generates:
 - **Getters**: Access fields using `obj.field_name`
 - **Setters**: Modify fields using `obj.field_name = value`
 
-```@example struct_mapping
+```julia
 rust"""
 #[derive(JuliaStruct)]
 pub struct Rectangle {
@@ -184,7 +184,7 @@ Field types are automatically mapped from Rust to Julia:
 
 Generic structs are also supported:
 
-```@example struct_mapping
+```julia
 rust"""
 #[derive(JuliaStruct)]
 pub struct Pair<T> {
@@ -210,6 +210,9 @@ println(pair_float.first)   # => 3.14
 println(pair_float.second)  # => 2.71
 ```
 
+!!! note "Future Feature"
+    Generic struct support is planned for a future release.
+
 
 ## Memory Management
 
@@ -219,7 +222,7 @@ Structs created with `#[derive(JuliaStruct)]` are automatically managed by Julia
 
 All `pub fn` methods in `impl` blocks are automatically bound:
 
-```@example struct_mapping
+```julia
 rust"""
 #[derive(JuliaStruct)]
 pub struct Calculator {
@@ -261,7 +264,7 @@ println(calc.get_value())  # => 0.0
 
 Static methods (methods without `self`) are also supported:
 
-```@example struct_mapping
+```julia
 rust"""
 #[derive(JuliaStruct)]
 pub struct MathUtils;
@@ -282,6 +285,9 @@ utils = MathUtils()
 result1 = utils.add(3.0, 4.0)      # => 7.0
 result2 = utils.multiply(3.0, 4.0) # => 12.0
 ```
+
+!!! note "Future Feature"
+    Unit struct (struct without fields) support is planned for a future release.
 
 ## Best Practices
 
@@ -378,7 +384,7 @@ pub struct Inner {
 
 ### Complete Example: 2D Vector
 
-```@example struct_mapping
+```julia
 rust"""
 #[derive(JuliaStruct, Clone)]
 pub struct Vec2DD {
@@ -446,6 +452,9 @@ println("v1 magnitude: $(v1.magnitude())")  # => v1 magnitude: 6.403124237432848
 println("v4 magnitude: $(v4.magnitude())")  # => v4 magnitude: 12.806248474865697
 ```
 
+!!! note "Future Feature"
+    Methods returning custom struct types are planned for a future release.
+
 ## Troubleshooting
 
 ### Struct Not Found
@@ -482,7 +491,7 @@ If `copy()` doesn't work:
 
 ## See Also
 
-- [Tutorial](@ref "tutorial.md"): General tutorial on using LastCall.jl
-- [Examples](@ref "examples.md"): More examples of LastCall.jl usage
-- [API Reference](@ref "api.md"): Complete API documentation
-- [Generics](@ref "generics.md"): Using generics with LastCall.jl
+- [Tutorial](tutorial.md): General tutorial on using LastCall.jl
+- [Examples](examples.md): More examples of LastCall.jl usage
+- [API Reference](api.md): Complete API documentation
+- [Generics](generics.md): Using generics with LastCall.jl
