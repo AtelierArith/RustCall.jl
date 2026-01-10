@@ -329,7 +329,13 @@ println("Hash: $hash_value")
 
 ### Image Processing (Simplified)
 
-```julia
+This example demonstrates using Rust for image processing with visualization using Images.jl.
+
+```@example imageprocessing
+using LastCall
+using Images
+
+# Define Rust grayscale conversion function
 rust"""
 #[no_mangle]
 pub extern "C" fn grayscale_image(
@@ -345,6 +351,7 @@ pub extern "C" fn grayscale_image(
         let g = slice[i * 3 + 1] as f32;
         let b = slice[i * 3 + 2] as f32;
 
+        // Standard luminance formula (ITU-R BT.601)
         let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
 
         slice[i * 3] = gray;
@@ -354,22 +361,113 @@ pub extern "C" fn grayscale_image(
 }
 """
 
-# Julia wrapper
-function convert_to_grayscale(image::Array{UInt8, 3})
-    height, width, channels = size(image)
-    @assert channels == 3 "Expected RGB image"
-
-    # Convert image data to 1D array
-    pixels = vec(image)
+# Julia wrapper for grayscale conversion
+function convert_to_grayscale!(pixels::Vector{UInt8}, width::Int, height::Int)
     ptr = pointer(pixels)
-
-    # Call Rust function
-    @rust grayscale_image(ptr, width, height)::Cvoid
-
-    # Reshape back to original shape
-    return reshape(pixels, height, width, channels)
+    @rust grayscale_image(ptr, UInt(width), UInt(height))::Cvoid
+    return pixels
 end
+
+# Create a sample RGB image (gradient with colors)
+function create_sample_image(width, height)
+    img = zeros(RGB{N0f8}, height, width)
+    for y in 1:height, x in 1:width
+        r = (x - 1) / (width - 1)    # Red increases left to right
+        g = (y - 1) / (height - 1)   # Green increases top to bottom
+        b = 0.5                       # Constant blue
+        img[y, x] = RGB{N0f8}(r, g, b)
+    end
+    return img
+end
+
+# Convert Julia image to raw RGB bytes (row-major, interleaved RGB)
+function image_to_bytes(img)
+    h, w = size(img)
+    pixels = Vector{UInt8}(undef, h * w * 3)
+    idx = 1
+    for y in 1:h, x in 1:w
+        pixel = img[y, x]
+        pixels[idx] = reinterpret(UInt8, red(pixel))
+        pixels[idx + 1] = reinterpret(UInt8, green(pixel))
+        pixels[idx + 2] = reinterpret(UInt8, blue(pixel))
+        idx += 3
+    end
+    return pixels
+end
+
+# Convert raw RGB bytes back to Julia image
+function bytes_to_image(pixels, width, height)
+    img = zeros(RGB{N0f8}, height, width)
+    idx = 1
+    for y in 1:height, x in 1:width
+        r = reinterpret(N0f8, pixels[idx])
+        g = reinterpret(N0f8, pixels[idx + 1])
+        b = reinterpret(N0f8, pixels[idx + 2])
+        img[y, x] = RGB{N0f8}(r, g, b)
+        idx += 3
+    end
+    return img
+end
+
+# Create sample image
+width, height = 256, 256
+original_img = create_sample_image(width, height)
+nothing # hide
 ```
+
+**Original Image (Color Gradient):**
+
+```@example imageprocessing
+original_img
+```
+
+Now let's convert it to grayscale using Rust:
+
+```@example imageprocessing
+# Process the image with Rust
+pixels = image_to_bytes(original_img)
+convert_to_grayscale!(pixels, width, height)
+grayscale_img = bytes_to_image(pixels, width, height)
+nothing # hide
+```
+
+**Grayscale Image (Processed by Rust):**
+
+```@example imageprocessing
+grayscale_img
+```
+
+Let's verify the grayscale conversion worked correctly:
+
+```@example imageprocessing
+# Check that R, G, B are equal (grayscale property)
+sample_pixel = grayscale_img[128, 128]
+println("Sample pixel at (128, 128):")
+println("  R = $(red(sample_pixel))")
+println("  G = $(green(sample_pixel))")
+println("  B = $(blue(sample_pixel))")
+println("  Grayscale verified: ", red(sample_pixel) == green(sample_pixel) == blue(sample_pixel))
+```
+
+**Side-by-side comparison:**
+
+```@example imageprocessing
+# Create a side-by-side comparison image
+comparison = [original_img grayscale_img]
+```
+
+!!! note "Running this example"
+    To run this example locally, you need the Images package:
+    ```julia
+    using Pkg
+    Pkg.add("Images")
+    ```
+
+    For `servedocs()`, make sure to run it from the docs environment:
+    ```julia
+    julia --project=docs -e 'using Pkg; Pkg.instantiate()'
+    julia --project=docs -e 'using LiveServer; servedocs()'
+    ```
 
 ### Network Processing (Simplified)
 
@@ -471,68 +569,167 @@ println("Compressed: $(length(compressed)) bytes")
 
 ### 1. Memory Safety
 
-When working with pointers, ensure Julia memory remains valid:
+When working with pointers, ensure Julia memory remains valid using `GC.@preserve`:
 
 ```julia
-function safe_array_operation(arr::Vector{Int32})
+using LastCall
+
+# Define a Rust function that processes an array
+rust"""
+#[no_mangle]
+pub extern "C" fn sum_array(arr: *const i32, len: usize) -> i32 {
+    let slice = unsafe { std::slice::from_raw_parts(arr, len) };
+    slice.iter().sum()
+}
+"""
+
+function safe_array_sum(arr::Vector{Int32})
     if isempty(arr)
-        return 0
+        return Int32(0)
     end
 
     ptr = pointer(arr)
     len = length(arr)
 
-    # Call Rust function
-    result = @rust process_array(ptr, len)::Int32
+    # GC.@preserve ensures arr remains valid during Rust call
+    GC.@preserve arr begin
+        result = @rust sum_array(ptr, UInt(len))::Int32
+    end
 
-    # Ensure arr remains valid (prevent GC)
-    GC.@preserve arr result
+    return result
 end
+
+# Test the safe function
+arr = Int32[1, 2, 3, 4, 5]
+result = safe_array_sum(arr)
+println("Sum of $arr = $result")  # => Sum of [1, 2, 3, 4, 5] = 15
 ```
 
 ### 2. Error Handling
 
+Use error codes or Result types for safe error handling:
+
 ```julia
 rust"""
 #[no_mangle]
-pub extern "C" fn safe_divide(a: i32, b: i32) -> i32 {
+pub extern "C" fn safe_divide(a: i32, b: i32, result: *mut i32) -> bool {
     if b == 0 {
-        return -1;  // Error code
+        return false;  // Indicate error
     }
-    a / b
+    unsafe { *result = a / b; }
+    true  // Indicate success
 }
 """
 
 function divide_safely(a::Int32, b::Int32)
-    result = @rust safe_divide(a, b)::Int32
-    if result == -1
+    result = Ref{Int32}(0)
+    success = @rust safe_divide(a, b, result)::Bool
+    if !success
         throw(DomainError(b, "Division by zero"))
     end
-    return result
+    return result[]
+end
+
+# Test successful division
+divide_safely(Int32(10), Int32(2))  # => 5
+
+# Test error handling
+try
+    divide_safely(Int32(10), Int32(0))
+catch e
+    println("Caught error: $e")  # => DomainError
 end
 ```
 
 ### 3. Performance Optimization
 
-- Use `GC.@preserve` for large arrays to prevent garbage collection
-- Consider `@rust_llvm` for performance-critical code
-- Leverage caching to avoid recompilation
-- Always specify explicit types
+Benchmark to compare Julia and Rust performance:
+
+```julia
+using BenchmarkTools
+
+# Rust implementation for computing sum of squares
+rust"""
+#[no_mangle]
+pub extern "C" fn sum_of_squares_rust(arr: *const f64, len: usize) -> f64 {
+    let slice = unsafe { std::slice::from_raw_parts(arr, len) };
+    slice.iter().map(|x| x * x).sum()
+}
+"""
+
+# Julia implementation
+function sum_of_squares_julia(arr::Vector{Float64})
+    sum(x -> x * x, arr)
+end
+
+# Wrapper for Rust
+function sum_of_squares_rust_wrapper(arr::Vector{Float64})
+    GC.@preserve arr begin
+        @rust sum_of_squares_rust(pointer(arr), UInt(length(arr)))::Float64
+    end
+end
+
+# Benchmark
+data = rand(10000)
+@btime sum_of_squares_julia($data)
+@btime sum_of_squares_rust_wrapper($data)
+```
+
+**Performance tips:**
+- Use `GC.@preserve` for large arrays to prevent garbage collection during Rust calls
+- Consider `@rust_llvm` for performance-critical code with LLVM optimizations
+- Leverage caching to avoid recompilation (functions are cached automatically)
+- Always specify explicit types in `@rust` macro calls
 
 ### 4. Debugging
 
-When issues occur:
+When issues occur, use these debugging techniques:
 
 ```julia
-# Clear cache
-clear_cache()
+# Check cache status
+cache_size = get_cache_size()
+println("Current cache size: $cache_size libraries")
 
-# Recompile
-rust"""
-// Your code with fixes
+# List cached libraries
+cached = list_cached_libraries()
+println("Cached libraries: $(length(cached)) items")
+
+# Clear cache if needed
+clear_cache()
+println("Cache cleared")
+```
+
+### 5. Type Safety with Generics
+
+Use generics for type-safe, reusable code:
+
+```julia
+# Register a generic identity function
+code = """
+#[no_mangle]
+pub extern "C" fn identity<T>(x: T) -> T {
+    x
+}
 """
+
+register_generic_function("identity", code, [:T])
+
+# Call with different types - automatic monomorphization
+result_i32 = call_generic_function("identity", Int32(42))  # => 42
+result_f64 = call_generic_function("identity", 3.14)       # => 3.14
+
+println("identity(Int32(42)) = $result_i32")
+println("identity(3.14) = $result_f64")
 ```
 
 ## Summary
 
-These examples demonstrate practical usage of LastCall.jl. For more detailed information, see the [Tutorial](tutorial.md) and [API Reference](api.md).
+These examples demonstrate practical usage of LastCall.jl:
+
+- **Memory Safety**: Always use `GC.@preserve` when passing Julia arrays to Rust
+- **Error Handling**: Use error codes or Result types instead of panics
+- **Performance**: Benchmark and optimize with explicit types
+- **Debugging**: Use cache management functions to troubleshoot
+- **Generics**: Leverage automatic monomorphization for type-safe code
+
+For more detailed information, see the [Tutorial](tutorial.md) and [API Reference](api.md).

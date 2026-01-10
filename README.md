@@ -179,6 +179,36 @@ end
 quadratic(1.0, 2.0, 1.0, 3.0)  # => 16.0 (x² + 2x + 1 at x=3)
 ```
 
+### 5. Image Processing with Rust
+
+Process images using Rust for performance-critical operations:
+
+```julia
+using LastCall
+using Images
+
+# Define Rust grayscale conversion
+rust"""
+#[no_mangle]
+pub extern "C" fn grayscale_image(pixels: *mut u8, width: usize, height: usize) {
+    let slice = unsafe { std::slice::from_raw_parts_mut(pixels, width * height * 3) };
+    for i in 0..(width * height) {
+        let r = slice[i * 3] as f32;
+        let g = slice[i * 3 + 1] as f32;
+        let b = slice[i * 3 + 2] as f32;
+        let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+        slice[i * 3] = gray;
+        slice[i * 3 + 1] = gray;
+        slice[i * 3 + 2] = gray;
+    }
+}
+"""
+
+# Process image data
+pixels = vec(rand(UInt8, 256 * 256 * 3))
+@rust grayscale_image(pointer(pixels), UInt(256), UInt(256))::Cvoid
+```
+
 ## Type Mapping
 
 LastCall.jl automatically maps Rust types to Julia types:
