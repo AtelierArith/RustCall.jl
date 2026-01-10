@@ -54,29 +54,72 @@ end
     get_function_pointer(lib_name::String, func_name::String) -> Ptr{Cvoid}
 
 Get a function pointer from a loaded library.
+
+If the function is not found in the specified library, searches all other
+loaded libraries as a fallback. This enables using functions from multiple
+`rust\"\"\"` blocks.
 """
 function get_function_pointer(lib_name::String, func_name::String)
     lock(REGISTRY_LOCK) do
-        if !haskey(RUST_LIBRARIES, lib_name)
-            error("Library '$lib_name' not found")
+        # First, try the specified library
+        if haskey(RUST_LIBRARIES, lib_name)
+            lib_handle, func_cache = RUST_LIBRARIES[lib_name]
+
+            # Check cache first
+            if haskey(func_cache, func_name)
+                return func_cache[func_name]
+            end
+
+            # Look up the function
+            func_ptr = Libdl.dlsym(lib_handle, func_name; throw_error=false)
+            if func_ptr !== nothing && func_ptr != C_NULL
+                # Cache it
+                func_cache[func_name] = func_ptr
+                return func_ptr
+            end
         end
 
-        lib_handle, func_cache = RUST_LIBRARIES[lib_name]
+        # Fallback: search all other loaded libraries
+        found_libs = String[]
+        found_ptr = C_NULL
 
-        # Check cache first
-        if haskey(func_cache, func_name)
-            return func_cache[func_name]
+        for (other_lib_name, (other_lib_handle, other_func_cache)) in RUST_LIBRARIES
+            if other_lib_name == lib_name
+                continue  # Already checked
+            end
+
+            # Check cache first
+            if haskey(other_func_cache, func_name)
+                push!(found_libs, other_lib_name)
+                found_ptr = other_func_cache[func_name]
+                continue
+            end
+
+            # Look up the function
+            func_ptr = Libdl.dlsym(other_lib_handle, func_name; throw_error=false)
+            if func_ptr !== nothing && func_ptr != C_NULL
+                # Cache it
+                other_func_cache[func_name] = func_ptr
+                push!(found_libs, other_lib_name)
+                found_ptr = func_ptr
+            end
         end
 
-        # Look up the function
-        func_ptr = Libdl.dlsym(lib_handle, func_name; throw_error=false)
-        if func_ptr === nothing || func_ptr == C_NULL
-            error("Function '$func_name' not found in library '$lib_name'")
+        if length(found_libs) == 1
+            # Found in exactly one other library - use it
+            @debug "Function '$func_name' found in library '$(found_libs[1])' (fallback search)"
+            return found_ptr
+        elseif length(found_libs) > 1
+            # Ambiguous - found in multiple libraries
+            error("Function '$func_name' found in multiple libraries: $(join(found_libs, ", ")). Please use a unique function name.")
+        else
+            # Not found anywhere
+            if haskey(RUST_LIBRARIES, lib_name)
+                error("Function '$func_name' not found in library '$lib_name' or any other loaded library")
+            else
+                error("Library '$lib_name' not found and function '$func_name' not found in any loaded library")
+            end
         end
-
-        # Cache it
-        func_cache[func_name] = func_ptr
-        return func_ptr
     end
 end
 

@@ -184,42 +184,29 @@ signal (11): Segmentation fault
 
 ### Q: Can I use multiple Rust libraries simultaneously?
 
-A: The `@rust` macro uses the **most recently loaded** library (the "current" library). If you need multiple functions, define them in a single `rust""` block:
+A: Yes! Each `rust""` block is compiled as an independent library, and `@rust` automatically searches all loaded libraries:
 
 ```@example troubleshooting
-# Define multiple functions in one block
+# First library
 rust"""
 #[no_mangle]
-pub extern "C" fn calc_add(a: i32, b: i32) -> i32 { a + b }
-
-#[no_mangle]
-pub extern "C" fn calc_mul(a: i32, b: i32) -> i32 { a * b }
+pub extern "C" fn lib1_add(a: i32, b: i32) -> i32 { a + b }
 """
 
-result1 = @rust calc_add(Int32(10), Int32(20))::Int32
-result2 = @rust calc_mul(Int32(3), Int32(4))::Int32
-println("add result = $result1, mul result = $result2")
+# Second library
+rust"""
+#[no_mangle]
+pub extern "C" fn lib2_mul(a: i32, b: i32) -> i32 { a * b }
+"""
+
+# Both functions are accessible!
+result1 = @rust lib1_add(Int32(10), Int32(20))::Int32
+result2 = @rust lib2_mul(Int32(3), Int32(4))::Int32
+println("lib1_add(10, 20) = $result1, lib2_mul(3, 4) = $result2")
 ```
 
-!!! warning "Limitation"
-    When you define multiple `rust""` blocks, only functions from the **last** block are accessible via `@rust`. Earlier blocks are compiled but their functions cannot be called with `@rust`.
-
-    ```julia
-    rust"""
-    #[no_mangle]
-    pub extern "C" fn func1() -> i32 { 1 }
-    """
-
-    rust"""
-    #[no_mangle]
-    pub extern "C" fn func2() -> i32 { 2 }
-    """
-
-    # @rust func2()::Int32  # Works - func2 is in the current library
-    # @rust func1()::Int32  # ERROR - func1 is NOT in the current library
-    ```
-
-    **Solution**: Define all related functions in a single `rust""` block.
+!!! note "Function Name Uniqueness"
+    Use unique function names across all `rust""` blocks. If the same function name exists in multiple libraries, an ambiguity error will be raised.
 
 ### Q: Can I use Rust generics?
 
