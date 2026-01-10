@@ -2,9 +2,6 @@
 
 LastCall.jl now supports calling generic Rust functions from Julia. This document explains how to use this feature.
 
-```@setup generics
-using LastCall
-```
 
 ## Overview
 
@@ -20,7 +17,7 @@ Generic functions in Rust use type parameters (e.g., `fn identity<T>(x: T) -> T`
 
 When you define a generic function in a `rust""` block, LastCall.jl automatically detects and registers it:
 
-```@example generics
+```julia
 
 rust"""
 #[no_mangle]
@@ -39,7 +36,7 @@ result = @rust identity(Float64(3.14))::Float64  # => 3.14
 
 You can also manually register generic functions:
 
-```@example generics
+```julia
 using LastCall
 
 code = """
@@ -61,7 +58,7 @@ result = call_generic_function("add", Int32(10), Int32(20))  # => 30
 
 When you call a generic function, LastCall.jl infers type parameters from the argument types:
 
-```@example generics
+```julia
 # For function: fn identity<T>(x: T) -> T
 # Called with: identity(Int32(42))
 # Type parameter T is inferred as Int32
@@ -84,7 +81,7 @@ The specialized function is compiled and cached. Subsequent calls with the same 
 
 ### Multiple Type Parameters
 
-```@example generics
+```julia
 rust"""
 #[no_mangle]
 pub extern "C" fn first<T, U>(a: T, b: U) -> T {
@@ -100,7 +97,7 @@ result = @rust first(Int32(10), Float64(3.14))::Int32  # => 10
 
 You can also explicitly specify type parameters:
 
-```@example generics
+```julia
 # Define the code
 code = """
 #[no_mangle]
@@ -168,7 +165,7 @@ More complex inference (e.g., inferring from return type) is not yet supported.
 
 ### Example 1: Simple Generic Function
 
-```@example generics
+```julia
 rust"""
 #[no_mangle]
 pub extern "C" fn identity<T>(x: T) -> T {
@@ -185,7 +182,7 @@ println("Float64 result: $result2")
 
 ### Example 2: Multiple Type Parameters
 
-```@example generics
+```julia
 rust"""
 #[no_mangle]
 pub extern "C" fn first<T, U>(a: T, b: U) -> T {
@@ -198,7 +195,7 @@ result = @rust first(Int32(10), Float64(20.0))::Int32  # => 10
 
 ### Example 3: Manual Registration and Monomorphization
 
-```@example generics
+```julia
 using LastCall
 
 code = """
@@ -243,6 +240,6 @@ This ensures that calling the same generic function with the same types reuses t
 
 ## See Also
 
-- [Tutorial](@ref "tutorial.md") - General tutorial
-- [Examples](@ref "examples.md") - More examples
+- [Tutorial](tutorial.md) - General tutorial
+- [Examples](examples.md) - More examples
 - `test/test_generics.jl` - Test suite with examples

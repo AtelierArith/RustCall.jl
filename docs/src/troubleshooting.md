@@ -2,9 +2,6 @@
 
 This guide covers common issues and solutions when using LastCall.jl.
 
-```@setup troubleshooting
-using LastCall
-```
 
 ## Installation and Setup
 
@@ -94,7 +91,7 @@ error: expected one of ...
    ```
 
 3. Check error message in detail:
-   ```@example troubleshooting
+   ```julia
    # Clear cache and recompile
    clear_cache()
    rust"""
@@ -133,7 +130,7 @@ ERROR: type mismatch
    ```
 
 2. Use correct types on Julia side:
-   ```@example troubleshooting
+   ```julia
    # Correct
    # @rust add(Int32(10), Int32(20))::Int32
    ```
@@ -154,7 +151,7 @@ Function 'my_function' not found in library
 1. Check function name spelling
 2. Ensure `#[no_mangle]` attribute is present
 3. Verify library compiled correctly:
-   ```@example troubleshooting
+   ```julia
    clear_cache()
    rust"""
    #[no_mangle]
@@ -172,7 +169,7 @@ signal (11): Segmentation fault
 **Solution:**
 
 1. Check pointer validity:
-   ```@example troubleshooting
+   ```julia
    # Warning: Don't use invalid or Julia-managed pointers with Rust ownership types
    ```
 
@@ -186,26 +183,29 @@ signal (11): Segmentation fault
 
 A: Yes. Each `rust""` block is compiled as an independent library:
 
-```@example troubleshooting
-lib1 = rust"""
+```julia
+rust"""
 // Library 1
 #[no_mangle]
 pub extern "C" fn func1() -> i32 { 1 }
 """
 
-lib2 = rust"""
+rust"""
 // Library 2
 #[no_mangle]
 pub extern "C" fn func2() -> i32 { 2 }
 """
 
-result1 = @rust lib1.func1()::Int32
-result2 = @rust lib2.func2()::Int32
+result1 = @rust func1()::Int32
+result2 = @rust func2()::Int32
 ```
+
+!!! note
+    Each `rust""` block registers functions globally. Use unique function names to avoid conflicts.
 
 ### Q: Can I use Rust generics?
 
-A: Yes, with automatic monomorphization. See [Generics](@ref "generics.md") for details.
+A: Yes, with automatic monomorphization. See [Generics](generics.md) for details.
 
 ### Q: Best practices for error handling?
 
@@ -218,20 +218,20 @@ A:
 
 ### 1. Enable verbose logging
 
-```@example troubleshooting
+```julia
 using Logging
 # global_logger(ConsoleLogger(stderr, Logging.Debug))
 ```
 
 ### 2. Clear cache
 
-```@example troubleshooting
+```julia
 clear_cache()
 ```
 
 ### 3. Check library status
 
-```@example troubleshooting
+```julia
 # List cached libraries
 list_cached_libraries()
 
@@ -241,7 +241,7 @@ get_cache_size()
 
 ### 4. Check type information
 
-```@example troubleshooting
+```julia
 # Check type mapping
 rusttype_to_julia(:i32)  # => Int32
 juliatype_to_rust(Int32)  # => "i32"

@@ -117,12 +117,12 @@ LastCall.jl automatically maps Rust types to Julia types:
 
 LastCall.jl tries to infer return types from argument types, but explicit specification is recommended:
 
-```@example tutorial
+```julia
 # Not recommended - relies on inference (works but not recommended)
-result = @rust add(10i32, 20i32)
+result = @rust add(Int32(10), Int32(20))
 
 # Recommended - explicit type specification
-result = @rust add(10i32, 20i32)::Int32
+result = @rust add(Int32(10), Int32(20))::Int32
 ```
 
 ### Boolean Values
@@ -204,7 +204,7 @@ end
 
 For a more Rust-like approach, you can define functions that return `Result` types:
 
-```@example tutorial
+```julia
 # Create RustResult manually
 ok_result = RustResult{Int32, String}(true, Int32(42))
 is_ok(ok_result)  # => true
@@ -219,7 +219,7 @@ unwrap_or(err_result, Int32(0))  # => 0
 
 Use `result_to_exception` to convert `Result` to Julia exceptions:
 
-```@example tutorial
+```julia
 err_result = RustResult{Int32, String}(false, "division by zero")
 try
     value = result_to_exception(err_result)
@@ -359,7 +359,7 @@ pub extern "C" fn compute(x: i32) -> i32 {
 
 ### Cache Management
 
-```@example tutorial
+```julia
 # Check cache size
 size = get_cache_size()
 println("Cache size: $size bytes")
@@ -389,17 +389,17 @@ This compares performance of Julia native, `@rust`, and `@rust_llvm`.
 
 ### 1. Always Specify Types Explicitly
 
-```@example tutorial
+```julia
 # Recommended
-result = @rust add(10i32, 20i32)::Int32
+result = @rust add(Int32(10), Int32(20))::Int32
 
 # Not recommended (relies on type inference)
-result = @rust add(10i32, 20i32)
+result = @rust add(Int32(10), Int32(20))
 ```
 
 ### 2. Proper Error Handling
 
-```@example tutorial
+```julia
 # Use Result type
 result = some_rust_function()
 if is_err(result)
@@ -413,7 +413,7 @@ value = unwrap(result)
 
 When using ownership types, always call `drop!` appropriately:
 
-```@example tutorial
+```julia
 box = RustBox{Int32}(ptr)
 try
     # Use box
@@ -430,12 +430,12 @@ When using the same Rust code multiple times, caching is automatically leveraged
 
 If issues occur, try clearing the cache and recompiling:
 
-```@example tutorial
+```julia
 clear_cache()
 ```
 
 ## Next Steps
 
-- See [Examples](@ref "examples.md") for more advanced usage examples
-- Check [Troubleshooting](@ref "troubleshooting.md") to solve problems
-- Review [API Reference](@ref "api.md") for all features
+- See [Examples](examples.md) for more advanced usage examples
+- Check [Troubleshooting](troubleshooting.md) to solve problems
+- Review [API Reference](api.md) for all features

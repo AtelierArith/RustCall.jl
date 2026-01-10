@@ -102,8 +102,3 @@ Pages = [
 ]
 Depth = 2
 ```
-
-## Index
-
-```@index
-```
