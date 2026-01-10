@@ -184,10 +184,10 @@ signal (11): Segmentation fault
 
 ### Q: Can I use multiple Rust libraries simultaneously?
 
-A: Yes. You can define multiple functions in a single `rust""` block or use multiple blocks:
+A: The `@rust` macro uses the **most recently loaded** library (the "current" library). If you need multiple functions, define them in a single `rust""` block:
 
 ```@example troubleshooting
-# Multiple functions in one block
+# Define multiple functions in one block
 rust"""
 #[no_mangle]
 pub extern "C" fn calc_add(a: i32, b: i32) -> i32 { a + b }
@@ -201,8 +201,25 @@ result2 = @rust calc_mul(Int32(3), Int32(4))::Int32
 println("add result = $result1, mul result = $result2")
 ```
 
-!!! note
-    Each `rust""` block registers functions globally. Use unique function names to avoid conflicts.
+!!! warning "Limitation"
+    When you define multiple `rust""` blocks, only functions from the **last** block are accessible via `@rust`. Earlier blocks are compiled but their functions cannot be called with `@rust`.
+
+    ```julia
+    rust"""
+    #[no_mangle]
+    pub extern "C" fn func1() -> i32 { 1 }
+    """
+
+    rust"""
+    #[no_mangle]
+    pub extern "C" fn func2() -> i32 { 2 }
+    """
+
+    # @rust func2()::Int32  # Works - func2 is in the current library
+    # @rust func1()::Int32  # ERROR - func1 is NOT in the current library
+    ```
+
+    **Solution**: Define all related functions in a single `rust""` block.
 
 ### Q: Can I use Rust generics?
 

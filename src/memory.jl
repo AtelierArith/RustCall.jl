@@ -40,7 +40,7 @@ function load_rust_helpers_lib(lib_path::String)
     end
 
     try
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
         if lib_handle == C_NULL
             error("Failed to load Rust helpers library: $lib_path (dlopen returned NULL)")
         end
@@ -146,7 +146,7 @@ function try_load_rust_helpers()
     end
 
     try
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
         if lib_handle == C_NULL
             @debug "Failed to load Rust helpers library: dlopen returned NULL for $lib_path"
             return false

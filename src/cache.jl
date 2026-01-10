@@ -140,7 +140,7 @@ function load_cached_library(cache_key::String)
     end
 
     # Load the library
-    lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+    lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
     if lib_handle == C_NULL
         error("Failed to load cached library: $cached_lib")
     end

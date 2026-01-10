@@ -10,14 +10,13 @@
 | **Phase 2** | ✅ **完了** |
 | **Phase 3** | ✅ **完了** |
 | **Phase 4** | ✅ **完了** |
-| **総ソースコード** | 約6,200行（15ファイル） |
-| **総テストコード** | 約2,200行（8ファイル） |
+| **総ソースコード** | 約9,200行（19ファイル） |
+| **総テストコード** | 約4,200行（23ファイル） |
 | **ベンチマーク** | 約1,450行（5ファイル） |
-| **実用例** | 約850行（4ファイル） |
-| **Rustコード** | 約650行（rust_helpers） |
-| **テスト成功率** | ✅ 全750+テストパス |
-| **主要機能** | `@rust`, `rust""`, `@irust`, キャッシュ、所有権型、RustVec完全統合、ジェネリクス、外部クレート統合（ndarray等） |
-| **次のステップ** | パッケージ配布準備、CI/CD構築 |
+| **Rustヘルパー** | 約630行 |
+| **テスト成功率** | ✅ 全テストパス |
+| **主要機能** | `@rust`, `rust""`, `@irust`, キャッシュ、所有権型、RustVec、ジェネリクス、外部クレート、構造体マッピング |
+| **次のステップ** | パッケージ配布、Julia General Registry |
 
 ## プロジェクト概要
 
@@ -43,10 +42,10 @@ LastCall.jlは、JuliaからRustコードを直接呼び出すためのFFI（For
 - 実装アプローチ: Cargo依存関係の自動解決、rustscript風フォーマット
 - 進捗: **機能実装完了、統合テスト成功** ✅
 
-**Phase 4: ジェネリック構造体統合** ✅ **完了**
+**Phase 4: 構造体マッピング** ✅ **完了**
 
-- 目標: `rust""`内でのジェネリック構造体定義と自動ラッパー生成、Julia型システムへのマッピング
-- 実装アプローチ: 構造体定義の自動抽出、オンデマンド単相化、コンストラクタ/ファイナライザの自動生成
+- 目標: `#[derive(JuliaStruct)]`による自動構造体バインディング
+- 実装アプローチ: FFIラッパー自動生成、フィールドアクセサ、メソッドバインディング、Clone対応
 - 進捗: **機能実装完了、統合テスト成功** ✅
 
 
@@ -249,13 +248,14 @@ LastCall.jlは、JuliaからRustコードを直接呼び出すためのFFI（For
 
 ### ✅ Phase 4: 実装済み機能
 
-#### 1. ジェネリック構造体対応
-- [x] 構造体定義および `impl` ブロックのソースコード抽出ロジック
-- [x] ジェネリック構造体のJulia型マッピング（`struct Point{T}`）
-- [x] オンデマンド単相化（monomorphization）によるFFIラッパー生成
-- [x] コンストラクタおよびインスタンスメソッドの自動バインディング
-- [x] ファイナライザの安全性確保（デストラクタの事前コンパイル）
-- [x] 統合テスト（`examples/generic_struct_test.jl`）成功
+#### 1. `#[derive(JuliaStruct)]`による構造体マッピング
+- [x] 自動FFIラッパー生成
+- [x] フィールドアクセサ（ゲッター・セッター）
+- [x] コンストラクタバインディング
+- [x] メソッドバインディング（インスタンス・静的）
+- [x] Clone trait対応（`copy()`関数）
+- [x] FFI安全な文字列フィールド処理
+- [x] ファイナライザによるメモリライフサイクル管理
 
 ### ⏳ 今後の課題（Phase 4 / 配布準備）
 
@@ -278,46 +278,53 @@ LastCall.jl/
 ├── CLAUDE.md              # ✅ AI開発ガイド
 ├── AGENTS.md              # ✅ Agentリポジトリガイドライン
 ├── src/
-│   ├── LastCall.jl       # ✅ メインモジュール (116行)
-│   ├── types.jl          # ✅ Rust型のJulia表現（拡張所有権型含む、834行）
+│   ├── LastCall.jl       # ✅ メインモジュール (140行)
+│   ├── types.jl          # ✅ Rust型のJulia表現（837行）
 │   ├── typetranslation.jl # ✅ 型変換ロジック (273行)
-│   ├── compiler.jl       # ✅ rustcラッパー (501行)
-│   ├── llvmintegration.jl # ✅ LLVM.jl統合（Phase 2対応、235行）
-│   ├── llvmoptimization.jl # ✅ LLVM最適化パス (Phase 2, 283行)
-│   ├── llvmcodegen.jl   # ✅ LLVM IRコード生成 (Phase 2, 301行)
-│   ├── codegen.jl        # ✅ ccall生成ロジック (244行)
-│   ├── exceptions.jl    # ✅ エラーハンドリング (Phase 2, 512行)
-│   ├── cache.jl          # ✅ コンパイルキャッシュシステム (Phase 2, 343行)
-│   ├── memory.jl         # ✅ Rust所有権型メモリ管理 (Phase 2, 552行)
-│   ├── generics.jl        # ✅ ジェネリクス対応 (Phase 2, 434行)
-│   ├── rustmacro.jl      # ✅ @rustマクロ (202行)
-│   └── ruststr.jl        # ✅ rust""と@irust実装 (808行)
+│   ├── compiler.jl       # ✅ rustcラッパー (577行)
+│   ├── codegen.jl        # ✅ ccall生成ロジック (294行)
+│   ├── rustmacro.jl      # ✅ @rustマクロ (265行)
+│   ├── ruststr.jl        # ✅ rust""と@irust実装 (1,018行)
+│   ├── structs.jl        # ✅ 構造体マッピング (1,078行)
+│   ├── exceptions.jl     # ✅ エラーハンドリング (673行)
+│   ├── llvmintegration.jl # ✅ LLVM.jl統合 (254行)
+│   ├── llvmoptimization.jl # ✅ LLVM最適化パス (296行)
+│   ├── llvmcodegen.jl    # ✅ LLVM IRコード生成 (401行)
+│   ├── cache.jl          # ✅ コンパイルキャッシュ (391行)
+│   ├── memory.jl         # ✅ 所有権型メモリ管理 (928行)
+│   ├── generics.jl       # ✅ ジェネリクス対応 (459行)
+│   ├── dependencies.jl   # ✅ 依存関係解析 (462行)
+│   ├── dependency_resolution.jl # ✅ 依存関係解決 (275行)
+│   ├── cargoproject.jl   # ✅ Cargoプロジェクト管理 (270行)
+│   └── cargobuild.jl     # ✅ Cargoビルド (286行)
 ├── test/
-│   ├── runtests.jl       # ✅ メインテストスイート (570行)
+│   ├── runtests.jl       # ✅ メインテストスイート (593行)
 │   ├── test_cache.jl     # ✅ キャッシュ機能テスト (149行)
-│   ├── test_ownership.jl # ✅ 所有権型テスト (131行)
-│   ├── test_llvmcall.jl  # ✅ llvmcall統合テスト (139行)
-│   ├── test_arrays.jl    # ✅ 配列・コレクション型テスト (193行)
-│   ├── test_error_handling.jl # ✅ エラーハンドリング強化テスト (168行)
-│   └── test_generics.jl  # ✅ ジェネリクス対応テスト (156行)
+│   ├── test_ownership.jl # ✅ 所有権型テスト (359行)
+│   ├── test_arrays.jl    # ✅ 配列テスト (347行)
+│   ├── test_generics.jl  # ✅ ジェネリクステスト (156行)
+│   ├── test_llvmcall.jl  # ✅ llvmcall統合テスト (200行)
+│   ├── test_error_handling.jl # ✅ エラーハンドリングテスト (168行)
+│   ├── test_cargo.jl     # ✅ Cargo統合テスト (193行)
+│   ├── test_ndarray.jl   # ✅ ndarray統合テスト (200行)
+│   ├── test_dependencies.jl # ✅ 依存関係テスト (230行)
+│   ├── test_docs_examples.jl # ✅ ドキュメント例テスト (497行)
+│   └── ... (12以上のテストファイル)
 ├── benchmark/
-│   └── benchmarks.jl     # ✅ パフォーマンスベンチマーク (197行)
+│   ├── benchmarks.jl     # ✅ 基本ベンチマーク (196行)
+│   ├── benchmarks_llvm.jl # ✅ LLVMベンチマーク (297行)
+│   ├── benchmarks_arrays.jl # ✅ 配列ベンチマーク (348行)
+│   ├── benchmarks_generics.jl # ✅ ジェネリクスベンチマーク (257行)
+│   └── benchmarks_ownership.jl # ✅ 所有権型ベンチマーク (357行)
 ├── deps/
-│   ├── build.jl          # ✅ Rust helperライブラリのビルドスクリプト
-│   └── rust_helpers/     # ✅ Rust helpersライブラリ (Box, Rc, Arc, Vec等)
+│   ├── build.jl          # ✅ ビルドスクリプト
+│   └── rust_helpers/     # ✅ Rust helpersライブラリ
 │       ├── Cargo.toml    # ✅ 設定ファイル
-│       ├── Cargo.lock    # ✅ ロックファイル
-│       └── src/
-│           └── lib.rs    # ✅ 実装完了（型別FFI関数実装済み）
+│       └── src/lib.rs    # ✅ FFI関数 (626行)
 └── docs/
-    ├── design/           # ✅ 設計ドキュメント
-    │   ├── Phase1.md
-    │   ├── Phase2.md
-    │   ├── INTERNAL.md
-    │   ├── LLVMCALL.md
-    │   ├── DESCRIPTION.md
-    │   └── CXX.md
-    └── STATUS.md         # ✅ このファイル
+    ├── src/              # ✅ ドキュメントソース
+    ├── make.jl           # ✅ Documenter.jlビルドスクリプト
+    └── Project.toml      # ✅ ドキュメント依存関係
 ```
 
 ## テスト状況

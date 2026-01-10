@@ -28,10 +28,12 @@ const MODULE_ACTIVE_LIB = Dict{Module, String}()
 Get the name of the currently active Rust library.
 """
 function get_current_library()
-    if isempty(CURRENT_LIB[])
-        error("No Rust library loaded. Use rust\"\"\"...\"\"\" to compile and load Rust code first.")
+    lock(REGISTRY_LOCK) do
+        if isempty(CURRENT_LIB[])
+            error("No Rust library loaded. Use rust\"\"\"...\"\"\" to compile and load Rust code first.")
+        end
+        return CURRENT_LIB[]
     end
-    return CURRENT_LIB[]
 end
 
 """
@@ -40,10 +42,12 @@ end
 Get the library handle for a named library.
 """
 function get_library_handle(name::String)
-    if !haskey(RUST_LIBRARIES, name)
-        error("Library '$name' not found. Available: $(keys(RUST_LIBRARIES))")
+    lock(REGISTRY_LOCK) do
+        if !haskey(RUST_LIBRARIES, name)
+            error("Library '$name' not found. Available: $(keys(RUST_LIBRARIES))")
+        end
+        return RUST_LIBRARIES[name][1]
     end
-    return RUST_LIBRARIES[name][1]
 end
 
 """
@@ -114,7 +118,9 @@ macro rust_str(code)
         $__module__.__LASTCALL_ACTIVE_LIB = lib_name
 
         # Track active library for macro expansion in this session
-        MODULE_ACTIVE_LIB[$__module__] = lib_name
+        lock(REGISTRY_LOCK) do
+            MODULE_ACTIVE_LIB[$__module__] = lib_name
+        end
 
         $(julia_defs...)
         lib_name
@@ -200,16 +206,16 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
             RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
             CURRENT_LIB[] = lib_name
 
-            # Try to load cached LLVM IR if available
-            cached_ir = get_cached_llvm_ir(cache_key)
-            if cached_ir !== nothing
-                try
-                    rust_mod = load_llvm_ir(cached_ir; source_code=wrapped_code)
-                    RUST_MODULE_REGISTRY[code_hash] = rust_mod
-                catch e
-                    @debug "Failed to load cached LLVM IR: $e"
-                end
-            end
+            # Temporarily disabled LLVM IR loading from cache
+            # cached_ir = get_cached_llvm_ir(cache_key)
+            # if cached_ir !== nothing
+            #     try
+            #         rust_mod = load_llvm_ir(cached_ir; source_code=wrapped_code)
+            #         RUST_MODULE_REGISTRY[code_hash] = rust_mod
+            #     catch e
+            #         @debug "Failed to load cached LLVM IR: $e"
+            #     end
+            # end
         end
 
         # Try to detect and register generic functions from the cached code
@@ -245,7 +251,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     end
 
     # Load the library
-    lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+    lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
     if lib_handle == C_NULL
         error("Failed to load compiled Rust library: $lib_path")
     end
