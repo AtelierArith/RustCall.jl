@@ -71,6 +71,21 @@ function build_cargo_project(project::CargoProject; release::Bool = true)
     lib_path = get_built_library_path(project, release)
 
     if !isfile(lib_path)
+        # On Windows, Cargo may generate library files without the "lib" prefix
+        # Try alternative path without "lib" prefix
+        if Sys.iswindows()
+            lib_name = get_project_lib_name(project)
+            # Remove "lib" prefix if present
+            if startswith(lib_name, "lib")
+                alt_lib_name = lib_name[4:end]  # Remove "lib" prefix
+                target_dir = release ? "release" : "debug"
+                alt_lib_path = joinpath(project.path, "target", target_dir, alt_lib_name)
+                if isfile(alt_lib_path)
+                    return alt_lib_path
+                end
+            end
+        end
+
         throw(CargoBuildError(
             "Library not found after build",
             "Expected library at: $lib_path",
