@@ -72,12 +72,12 @@ This will compile the Rust helpers library that provides FFI functions for owner
 
 ## Quick Start
 
-### Basic Usage
+### 1. Define and Call Rust Functions
 
 ```julia
 using LastCall
 
-# Define and compile Rust code
+# Define a Rust function
 rust"""
 #[no_mangle]
 pub extern "C" fn add(a: i32, b: i32) -> i32 {
@@ -85,72 +85,99 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
 }
 """
 
-# Call the Rust function
-result = @rust add(Int32(10), Int32(20))::Int32
-println(result)  # => 30
+# Call it from Julia
+@rust add(Int32(10), Int32(20))::Int32  # => 30
 ```
 
-### With Explicit Return Type
+### 2. Inline Rust with `@irust`
+
+Execute Rust code directly with automatic variable binding:
+
+```julia
+function compute(x, y)
+    @irust("\$x * \$y + 10")
+end
+
+compute(Int32(3), Int32(4))  # => 22
+```
+
+### 3. Use External Crates
+
+Leverage the Rust ecosystem with automatic Cargo integration:
 
 ```julia
 rust"""
+// cargo-deps: rand = "0.8"
+
+use rand::Rng;
+
 #[no_mangle]
-pub extern "C" fn multiply(x: f64, y: f64) -> f64 {
-    x * y
+pub extern "C" fn random_number() -> i32 {
+    rand::thread_rng().gen_range(1..=100)
 }
 """
 
-# Specify return type explicitly
-result = @rust multiply(3.0, 4.0)::Float64
-println(result)  # => 12.0
+@rust random_number()::Int32  # => random number 1-100
 ```
 
-### Boolean Functions
+### 4. Rust Structs as Julia Objects
+
+Define Rust structs and use them as first-class Julia types:
 
 ```julia
 rust"""
-#[no_mangle]
-pub extern "C" fn is_positive(x: i32) -> bool {
-    x > 0
+pub struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    pub fn new(initial: i32) -> Self {
+        Self { value: initial }
+    }
+
+    pub fn increment(&mut self) {
+        self.value += 1;
+    }
+
+    pub fn get(&self) -> i32 {
+        self.value
+    }
 }
 """
 
-@rust is_positive(Int32(5))::Bool   # => true
-@rust is_positive(Int32(-5))::Bool # => false
+counter = Counter(0)
+increment(counter)
+increment(counter)
+get(counter)  # => 2
 ```
 
-### Function Scope Execution (`@irust`)
-
-The `@irust` macro allows you to execute Rust code at function scope:
+### More Examples
 
 ```julia
-# Using $var syntax (recommended)
-function double(x)
-    @irust("\$x * 2")
+# Float operations
+rust"""
+#[no_mangle]
+pub extern "C" fn circle_area(radius: f64) -> f64 {
+    std::f64::consts::PI * radius * radius
+}
+"""
+@rust circle_area(2.0)::Float64  # => 12.566370614359172
+
+# Boolean functions
+rust"""
+#[no_mangle]
+pub extern "C" fn is_even(n: i32) -> bool {
+    n % 2 == 0
+}
+"""
+@rust is_even(Int32(42))::Bool  # => true
+
+# Multiple variables with @irust
+function quadratic(a, b, c, x)
+    @irust("\$a * \$x * \$x + \$b * \$x + \$c")
 end
-
-result = double(21)  # => 42
-
-# Multiple variables
-function add_and_multiply(a, b, c)
-    @irust("\$a + \$b * \$c")
-end
-
-result = add_and_multiply(1, 2, 3)  # => 7
-
-# Legacy syntax (still supported)
-function double_legacy(x)
-    @irust("arg1 * 2", x)
-end
+quadratic(1.0, 2.0, 1.0, 3.0)  # => 16.0 (x² + 2x + 1 at x=3)
 ```
-
-**Features:**
-- Automatic variable binding with `$var` syntax
-- Multiple variables support
-- Type inference from Julia types (Int32, Int64, Float32, Float64, Bool)
-- Compilation caching for repeated calls
-
-**Note**: Return type is inferred from the code. For complex expressions, consider using `rust"""` with explicit type annotations.
 
 ## Type Mapping
 
