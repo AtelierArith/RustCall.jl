@@ -5,6 +5,260 @@ using Test
 
 # Import internal functions for testing
 import LastCall: GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS
+import LastCall: TraitBound, TypeConstraints, GenericFunctionInfo
+import LastCall: parse_trait_bounds, parse_single_trait, parse_where_clause
+import LastCall: parse_inline_constraints, parse_generic_function
+import LastCall: constraints_to_rust_string, merge_constraints
+
+# ============================================================================
+# Trait Bounds Parsing Tests
+# ============================================================================
+
+@testset "Trait Bounds Parsing" begin
+    @testset "parse_single_trait" begin
+        # Simple trait
+        tb = parse_single_trait("Copy")
+        @test tb.trait_name == "Copy"
+        @test isempty(tb.type_params)
+
+        # Trait with type parameter
+        tb = parse_single_trait("Into<String>")
+        @test tb.trait_name == "Into"
+        @test tb.type_params == ["String"]
+
+        # Trait with associated type
+        tb = parse_single_trait("Add<Output = T>")
+        @test tb.trait_name == "Add"
+        @test tb.type_params == ["Output = T"]
+
+        # Trait with multiple type parameters
+        tb = parse_single_trait("Fn<(A, B), Output = C>")
+        @test tb.trait_name == "Fn"
+        @test tb.type_params == ["(A, B)", "Output = C"]
+    end
+
+    @testset "parse_trait_bounds" begin
+        # Single trait
+        tc = parse_trait_bounds("Copy")
+        @test length(tc.bounds) == 1
+        @test tc.bounds[1].trait_name == "Copy"
+
+        # Multiple traits
+        tc = parse_trait_bounds("Copy + Clone")
+        @test length(tc.bounds) == 2
+        @test tc.bounds[1].trait_name == "Copy"
+        @test tc.bounds[2].trait_name == "Clone"
+
+        # Multiple traits with generics
+        tc = parse_trait_bounds("Copy + Add<Output = T> + Debug")
+        @test length(tc.bounds) == 3
+        @test tc.bounds[1].trait_name == "Copy"
+        @test tc.bounds[2].trait_name == "Add"
+        @test tc.bounds[2].type_params == ["Output = T"]
+        @test tc.bounds[3].trait_name == "Debug"
+
+        # Empty string
+        tc = parse_trait_bounds("")
+        @test isempty(tc)
+    end
+
+    @testset "parse_inline_constraints" begin
+        # Simple type parameters without bounds
+        type_params, constraints = parse_inline_constraints("T, U")
+        @test type_params == [:T, :U]
+        @test isempty(constraints)
+
+        # Type parameters with single bounds
+        type_params, constraints = parse_inline_constraints("T: Copy, U: Debug")
+        @test type_params == [:T, :U]
+        @test length(constraints) == 2
+        @test constraints[:T].bounds[1].trait_name == "Copy"
+        @test constraints[:U].bounds[1].trait_name == "Debug"
+
+        # Type parameters with multiple bounds
+        type_params, constraints = parse_inline_constraints("T: Copy + Clone + Debug")
+        @test type_params == [:T]
+        @test length(constraints[:T].bounds) == 3
+
+        # Mixed: some with bounds, some without
+        type_params, constraints = parse_inline_constraints("T: Copy, U")
+        @test type_params == [:T, :U]
+        @test haskey(constraints, :T)
+        @test !haskey(constraints, :U)
+
+        # With generic trait bounds
+        type_params, constraints = parse_inline_constraints("T: Add<Output = T> + Copy")
+        @test type_params == [:T]
+        @test length(constraints[:T].bounds) == 2
+        @test constraints[:T].bounds[1].trait_name == "Add"
+        @test constraints[:T].bounds[1].type_params == ["Output = T"]
+    end
+
+    @testset "parse_where_clause" begin
+        # Simple where clause
+        code = "fn foo<T>(x: T) -> T where T: Copy { x }"
+        constraints = parse_where_clause(code)
+        @test haskey(constraints, :T)
+        @test constraints[:T].bounds[1].trait_name == "Copy"
+
+        # Multiple constraints in where clause
+        code = "fn bar<T, U>(x: T, y: U) where T: Copy + Clone, U: Debug { x }"
+        constraints = parse_where_clause(code)
+        @test length(constraints) == 2
+        @test length(constraints[:T].bounds) == 2
+        @test constraints[:U].bounds[1].trait_name == "Debug"
+
+        # Where clause with generic traits
+        code = "fn transform<T, U>(x: T) -> U where T: Into<U>, U: From<T> { x.into() }"
+        constraints = parse_where_clause(code)
+        @test constraints[:T].bounds[1].trait_name == "Into"
+        @test constraints[:T].bounds[1].type_params == ["U"]
+        @test constraints[:U].bounds[1].trait_name == "From"
+        @test constraints[:U].bounds[1].type_params == ["T"]
+
+        # No where clause
+        code = "fn simple<T>(x: T) -> T { x }"
+        constraints = parse_where_clause(code)
+        @test isempty(constraints)
+    end
+
+    @testset "parse_generic_function with constraints" begin
+        # Inline constraints
+        code = """
+        pub fn identity<T: Copy + Clone>(x: T) -> T {
+            x
+        }
+        """
+        info = parse_generic_function(code, "identity")
+        @test info !== nothing
+        @test info.type_params == [:T]
+        @test haskey(info.constraints, :T)
+        @test length(info.constraints[:T].bounds) == 2
+
+        # Where clause
+        code = """
+        pub fn transform<T, U>(x: T) -> U where T: Copy, U: From<T> {
+            U::from(x)
+        }
+        """
+        info = parse_generic_function(code, "transform")
+        @test info !== nothing
+        @test info.type_params == [:T, :U]
+        @test haskey(info.constraints, :T)
+        @test haskey(info.constraints, :U)
+        @test info.constraints[:T].bounds[1].trait_name == "Copy"
+        @test info.constraints[:U].bounds[1].trait_name == "From"
+
+        # Mixed inline and where clause
+        code = """
+        pub fn mixed<T: Copy, U>(x: T, y: U) -> T where U: Debug {
+            x
+        }
+        """
+        info = parse_generic_function(code, "mixed")
+        @test info !== nothing
+        @test info.type_params == [:T, :U]
+        @test info.constraints[:T].bounds[1].trait_name == "Copy"
+        @test info.constraints[:U].bounds[1].trait_name == "Debug"
+
+        # No constraints
+        code = """
+        pub fn simple<T>(x: T) -> T {
+            x
+        }
+        """
+        info = parse_generic_function(code, "simple")
+        @test info !== nothing
+        @test info.type_params == [:T]
+        @test isempty(info.constraints)
+    end
+
+    @testset "constraints_to_rust_string" begin
+        # Empty constraints
+        @test constraints_to_rust_string(Dict{Symbol, TypeConstraints}()) == ""
+
+        # Single constraint with single bound
+        constraints = Dict(:T => TypeConstraints([TraitBound("Copy", String[])]))
+        @test constraints_to_rust_string(constraints) == "T: Copy"
+
+        # Single constraint with multiple bounds
+        constraints = Dict(:T => TypeConstraints([
+            TraitBound("Copy", String[]),
+            TraitBound("Clone", String[])
+        ]))
+        @test constraints_to_rust_string(constraints) == "T: Copy + Clone"
+
+        # Multiple constraints
+        constraints = Dict(
+            :T => TypeConstraints([TraitBound("Copy", String[])]),
+            :U => TypeConstraints([TraitBound("Debug", String[])])
+        )
+        result = constraints_to_rust_string(constraints)
+        @test occursin("T: Copy", result)
+        @test occursin("U: Debug", result)
+
+        # With generic trait
+        constraints = Dict(:T => TypeConstraints([
+            TraitBound("Add", ["Output = T"])
+        ]))
+        @test constraints_to_rust_string(constraints) == "T: Add<Output = T>"
+    end
+
+    @testset "merge_constraints" begin
+        c1 = Dict(:T => TypeConstraints([TraitBound("Copy", String[])]))
+        c2 = Dict(:U => TypeConstraints([TraitBound("Debug", String[])]))
+
+        merged = merge_constraints(c1, c2)
+        @test haskey(merged, :T)
+        @test haskey(merged, :U)
+
+        # Merging same type parameter
+        c1 = Dict(:T => TypeConstraints([TraitBound("Copy", String[])]))
+        c2 = Dict(:T => TypeConstraints([TraitBound("Clone", String[])]))
+
+        merged = merge_constraints(c1, c2)
+        @test length(merged[:T].bounds) == 2
+    end
+
+    @testset "TypeConstraints and TraitBound show methods" begin
+        tb = TraitBound("Copy", String[])
+        @test string(tb) == "Copy"
+
+        tb = TraitBound("Add", ["Output = T"])
+        @test string(tb) == "Add<Output = T>"
+
+        tc = TypeConstraints([
+            TraitBound("Copy", String[]),
+            TraitBound("Clone", String[])
+        ])
+        @test string(tc) == "Copy + Clone"
+    end
+
+    @testset "register_generic_function with constraints" begin
+        # Test with new TypeConstraints format
+        constraints = Dict(:T => TypeConstraints([
+            TraitBound("Copy", String[]),
+            TraitBound("Clone", String[])
+        ]))
+        code = "pub fn test_func<T: Copy + Clone>(x: T) -> T { x }"
+        info = register_generic_function("test_with_constraints", code, [:T], constraints)
+
+        @test info.name == "test_with_constraints"
+        @test length(info.constraints[:T].bounds) == 2
+
+        # Test backward compatibility with Dict{Symbol, String}
+        legacy_constraints = Dict(:T => "Copy + Clone")
+        info = register_generic_function("test_legacy", code, [:T], legacy_constraints)
+
+        @test info.name == "test_legacy"
+        @test length(info.constraints[:T].bounds) == 2
+        @test info.constraints[:T].bounds[1].trait_name == "Copy"
+    end
+end
+
+# ============================================================================
+# Original Generic Function Tests
+# ============================================================================
 
 @testset "Generic Function Support" begin
     @testset "Generic Function Registration" begin

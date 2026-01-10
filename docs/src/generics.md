@@ -121,24 +121,82 @@ info = monomorphize_function("identity", type_params)
 result = @rust identity(Int32(42))::Int32  # => 42
 ```
 
+## Trait Bounds Support
+
+LastCall.jl now supports parsing trait bounds in generic functions. This includes:
+
+1. **Inline bounds**: `fn foo<T: Copy + Clone, U: Debug>(x: T) -> U`
+2. **Where clauses**: `fn foo<T, U>(x: T) -> U where T: Copy, U: Debug`
+3. **Generic trait bounds**: `fn foo<T: Add<Output = T>>(x: T) -> T`
+4. **Mixed format**: Combining inline bounds and where clauses
+
+### Using Trait Bounds
+
+When registering a generic function, trait bounds are automatically parsed and stored:
+
+```julia
+using LastCall
+
+# Define a function with trait bounds
+code = """
+pub fn identity<T: Copy + Clone>(x: T) -> T {
+    x
+}
+"""
+
+# Parse the generic function (constraints are automatically extracted)
+info = parse_generic_function(code, "identity")
+println(info.constraints)  # Dict(:T => TypeConstraints([Copy, Clone]))
+```
+
+### Manually Specifying Constraints
+
+You can also manually specify constraints when registering a generic function:
+
+```julia
+using LastCall
+
+code = """
+pub fn add<T>(a: T, b: T) -> T {
+    a + b
+}
+"""
+
+# Using TypeConstraints (recommended)
+constraints = Dict(:T => TypeConstraints([
+    TraitBound("Copy", String[]),
+    TraitBound("Add", ["Output = T"])
+]))
+register_generic_function("add", code, [:T], constraints)
+
+# Or using the legacy string format (backward compatible)
+register_generic_function("add_legacy", code, [:T], Dict(:T => "Copy + Add<Output = T>"))
+```
+
+### Converting Constraints to Rust Syntax
+
+You can convert parsed constraints back to Rust syntax:
+
+```julia
+using LastCall
+
+constraints = Dict(:T => TypeConstraints([
+    TraitBound("Copy", String[]),
+    TraitBound("Clone", String[])
+]))
+rust_str = constraints_to_rust_string(constraints)
+println(rust_str)  # "T: Copy + Clone"
+```
+
 ## Limitations
 
-### Trait Bounds
+### Trait Bounds Validation
 
-Currently, trait bounds are not fully parsed. For functions requiring trait bounds, you may need to:
+While trait bounds are now properly parsed and stored, runtime validation (checking if a Julia type satisfies Rust trait bounds) is not yet implemented. The bounds are stored for:
 
-1. Use concrete types in the function signature
-2. Manually specify trait bounds in the Rust code
-
-Example:
-```rust
-// This might not work automatically:
-// fn add<T: Copy + Add<Output = T>>(a: T, b: T) -> T { a + b }
-
-// Instead, use concrete types or register manually:
-#[no_mangle]
-pub extern "C" fn add_i32(a: i32, b: i32) -> i32 { a + b }
-```
+1. Documentation and introspection
+2. Future code generation improvements
+3. Error reporting when trait bounds are not satisfied
 
 ### Complex Type Inference
 
@@ -150,14 +208,30 @@ More complex inference (e.g., inferring from return type) is not yet supported.
 
 ## API Reference
 
+### Types
+
+- `TraitBound(trait_name, type_params)` - Represents a single trait bound (e.g., `Copy`, `Add<Output = T>`)
+- `TypeConstraints(bounds)` - Represents all trait bounds for a type parameter
+- `GenericFunctionInfo` - Information about a generic Rust function
+
 ### Functions
 
+#### Generic Function Management
 - `register_generic_function(func_name, code, type_params, constraints=Dict())` - Register a generic function
 - `is_generic_function(func_name)` - Check if a function is generic
 - `call_generic_function(func_name, args...)` - Call a generic function (auto-monomorphizes)
 - `monomorphize_function(func_name, type_params)` - Explicitly monomorphize a function
 - `specialize_generic_code(code, type_params)` - Specialize generic code with type parameters
 - `infer_type_parameters(func_name, arg_types)` - Infer type parameters from argument types
+
+#### Trait Bounds Parsing
+- `parse_single_trait(trait_str)` - Parse a single trait bound string (e.g., `"Copy"`, `"Add<Output = T>"`)
+- `parse_trait_bounds(bounds_str)` - Parse multiple trait bounds (e.g., `"Copy + Clone"`)
+- `parse_inline_constraints(type_params_str)` - Parse inline type parameters with constraints
+- `parse_where_clause(code)` - Parse a where clause from Rust code
+- `parse_generic_function(code, func_name)` - Parse a generic function and extract type parameters with constraints
+- `merge_constraints(c1, c2)` - Merge two constraint dictionaries
+- `constraints_to_rust_string(constraints)` - Convert constraints back to Rust syntax
 
 ### Registries
 

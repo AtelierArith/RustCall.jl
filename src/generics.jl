@@ -5,6 +5,58 @@
 # These will be available when this file is included after ruststr.jl and codegen.jl
 
 """
+    TraitBound
+
+Represents a single trait bound with optional type parameters.
+
+# Fields
+- `trait_name::String`: Name of the trait (e.g., "Copy", "Add")
+- `type_params::Vector{String}`: Type parameters for the trait (e.g., ["Output = T"] for Add<Output = T>)
+"""
+struct TraitBound
+    trait_name::String
+    type_params::Vector{String}
+end
+
+function Base.show(io::IO, tb::TraitBound)
+    if isempty(tb.type_params)
+        print(io, tb.trait_name)
+    else
+        print(io, tb.trait_name, "<", join(tb.type_params, ", "), ">")
+    end
+end
+
+function Base.:(==)(a::TraitBound, b::TraitBound)
+    a.trait_name == b.trait_name && a.type_params == b.type_params
+end
+
+"""
+    TypeConstraints
+
+Represents all trait bounds for a type parameter.
+
+# Fields
+- `bounds::Vector{TraitBound}`: List of trait bounds (e.g., [Copy, Clone, Add<Output = T>])
+"""
+struct TypeConstraints
+    bounds::Vector{TraitBound}
+end
+
+TypeConstraints() = TypeConstraints(TraitBound[])
+
+function Base.show(io::IO, tc::TypeConstraints)
+    print(io, join(string.(tc.bounds), " + "))
+end
+
+function Base.isempty(tc::TypeConstraints)
+    isempty(tc.bounds)
+end
+
+function Base.:(==)(a::TypeConstraints, b::TypeConstraints)
+    a.bounds == b.bounds
+end
+
+"""
     GenericFunctionInfo
 
 Information about a generic Rust function that needs monomorphization.
@@ -13,7 +65,7 @@ struct GenericFunctionInfo
     name::String
     code::String
     type_params::Vector{Symbol}  # e.g., [:T, :U]
-    constraints::Dict{Symbol, String}  # e.g., :T => "Copy" (trait bounds)
+    constraints::Dict{Symbol, TypeConstraints}  # e.g., :T => TypeConstraints([Copy, Clone])
     context::String  # Additional code (e.g., struct definitions) needed for compilation
 end
 
@@ -29,49 +81,404 @@ Maps (function_name, type_params_tuple) to FunctionInfo.
 """
 const MONOMORPHIZED_FUNCTIONS = Dict{Tuple{String, Tuple}, FunctionInfo}()
 
-"""
-    parse_generic_function(code::String, func_name::String) -> Union{GenericFunctionInfo, Nothing}
+# ============================================================================
+# Trait Bounds Parsing Functions
+# ============================================================================
 
-Parse a Rust function to detect if it's generic and extract type parameters.
+"""
+    parse_single_trait(trait_str::String) -> TraitBound
+
+Parse a single trait bound string like "Copy", "Add<Output = T>", or "Into<String>".
+
+# Examples
+```julia
+parse_single_trait("Copy")
+# => TraitBound("Copy", [])
+
+parse_single_trait("Add<Output = T>")
+# => TraitBound("Add", ["Output = T"])
+
+parse_single_trait("Into<String>")
+# => TraitBound("Into", ["String"])
+```
+"""
+function parse_single_trait(trait_str::AbstractString)
+    trait_str = strip(trait_str)
+
+    # Check for generic trait: TraitName<...>
+    m = match(r"^(\w+)\s*<(.+)>$", trait_str)
+    if m !== nothing
+        trait_name = String(m.captures[1])
+        params_str = String(m.captures[2])
+        # Split by comma, but be careful with nested generics
+        type_params = parse_trait_type_params(params_str)
+        return TraitBound(trait_name, type_params)
+    end
+
+    # Simple trait without generics
+    return TraitBound(String(trait_str), String[])
+end
+
+"""
+    parse_trait_type_params(params_str::AbstractString) -> Vector{String}
+
+Parse type parameters inside trait angle brackets, handling nested generics.
+
+# Example
+```julia
+parse_trait_type_params("Output = T, Error = E")
+# => ["Output = T", "Error = E"]
+
+parse_trait_type_params("Vec<T>")
+# => ["Vec<T>"]
+```
+"""
+function parse_trait_type_params(params_str::AbstractString)
+    params = String[]
+    current = IOBuffer()
+    angle_depth = 0
+    paren_depth = 0
+
+    for c in params_str
+        if c == '<'
+            angle_depth += 1
+            write(current, c)
+        elseif c == '>'
+            angle_depth -= 1
+            write(current, c)
+        elseif c == '('
+            paren_depth += 1
+            write(current, c)
+        elseif c == ')'
+            paren_depth -= 1
+            write(current, c)
+        elseif c == ',' && angle_depth == 0 && paren_depth == 0
+            param = strip(String(take!(current)))
+            if !isempty(param)
+                push!(params, param)
+            end
+        else
+            write(current, c)
+        end
+    end
+
+    # Don't forget the last parameter
+    param = strip(String(take!(current)))
+    if !isempty(param)
+        push!(params, param)
+    end
+
+    return params
+end
+
+"""
+    parse_trait_bounds(bounds_str::AbstractString) -> TypeConstraints
+
+Parse a trait bounds string like "Copy + Clone + Add<Output = T>".
+
+# Examples
+```julia
+parse_trait_bounds("Copy + Clone")
+# => TypeConstraints([TraitBound("Copy", []), TraitBound("Clone", [])])
+
+parse_trait_bounds("Copy + Add<Output = T>")
+# => TypeConstraints([TraitBound("Copy", []), TraitBound("Add", ["Output = T"])])
+```
+"""
+function parse_trait_bounds(bounds_str::AbstractString)
+    bounds_str = strip(bounds_str)
+    if isempty(bounds_str)
+        return TypeConstraints()
+    end
+
+    bounds = TraitBound[]
+    current = IOBuffer()
+    depth = 0
+
+    for c in bounds_str
+        if c == '<'
+            depth += 1
+            write(current, c)
+        elseif c == '>'
+            depth -= 1
+            write(current, c)
+        elseif c == '+' && depth == 0
+            trait_str = strip(String(take!(current)))
+            if !isempty(trait_str)
+                push!(bounds, parse_single_trait(trait_str))
+            end
+        else
+            write(current, c)
+        end
+    end
+
+    # Don't forget the last trait
+    trait_str = strip(String(take!(current)))
+    if !isempty(trait_str)
+        push!(bounds, parse_single_trait(trait_str))
+    end
+
+    return TypeConstraints(bounds)
+end
+
+"""
+    parse_inline_constraints(type_params_str::AbstractString) -> Tuple{Vector{Symbol}, Dict{Symbol, TypeConstraints}}
+
+Parse inline type parameters with constraints like "T: Copy + Clone, U: Debug".
+
+# Returns
+- Tuple of (type_params, constraints)
+
+# Examples
+```julia
+parse_inline_constraints("T: Copy + Clone, U: Debug")
+# => ([:T, :U], Dict(:T => TypeConstraints([Copy, Clone]), :U => TypeConstraints([Debug])))
+
+parse_inline_constraints("T, U")
+# => ([:T, :U], Dict())
+```
+"""
+function parse_inline_constraints(type_params_str::AbstractString)
+    type_params = Symbol[]
+    constraints = Dict{Symbol, TypeConstraints}()
+
+    # Split by comma, but handle nested angle brackets
+    params = String[]
+    current = IOBuffer()
+    depth = 0
+
+    for c in type_params_str
+        if c == '<'
+            depth += 1
+            write(current, c)
+        elseif c == '>'
+            depth -= 1
+            write(current, c)
+        elseif c == ',' && depth == 0
+            param = strip(String(take!(current)))
+            if !isempty(param)
+                push!(params, param)
+            end
+        else
+            write(current, c)
+        end
+    end
+
+    # Last parameter
+    param = strip(String(take!(current)))
+    if !isempty(param)
+        push!(params, param)
+    end
+
+    # Parse each parameter
+    for param in params
+        param = strip(param)
+        if occursin(':', param)
+            # Has trait bounds: "T: Copy + Clone"
+            parts = split(param, ':', limit=2)
+            type_name = Symbol(strip(parts[1]))
+            bounds_str = strip(parts[2])
+            push!(type_params, type_name)
+            constraints[type_name] = parse_trait_bounds(bounds_str)
+        else
+            # No trait bounds: just "T"
+            push!(type_params, Symbol(param))
+        end
+    end
+
+    return (type_params, constraints)
+end
+
+"""
+    parse_where_clause(code::AbstractString) -> Dict{Symbol, TypeConstraints}
+
+Parse a where clause from Rust code.
+
+# Supported formats
+- `where T: Copy + Clone, U: Debug`
+- `where T: Copy + Clone`
+
+# Returns
+- Dictionary mapping type parameters to their constraints
+
+# Examples
+```julia
+code = "fn foo<T, U>(x: T) -> U where T: Copy + Clone, U: Debug { ... }"
+parse_where_clause(code)
+# => Dict(:T => TypeConstraints([Copy, Clone]), :U => TypeConstraints([Debug]))
+```
+"""
+function parse_where_clause(code::AbstractString)
+    constraints = Dict{Symbol, TypeConstraints}()
+
+    # Find where clause - it's between "where" and "{" (function body start)
+    # Pattern: where ... {
+    m = match(r"\bwhere\s+(.+?)\s*\{", code, 1)
+    if m === nothing
+        return constraints
+    end
+
+    where_content = m.captures[1]
+
+    # Split by comma, handling nested angle brackets
+    clauses = String[]
+    current = IOBuffer()
+    depth = 0
+
+    for c in where_content
+        if c == '<'
+            depth += 1
+            write(current, c)
+        elseif c == '>'
+            depth -= 1
+            write(current, c)
+        elseif c == ',' && depth == 0
+            clause = strip(String(take!(current)))
+            if !isempty(clause)
+                push!(clauses, clause)
+            end
+        else
+            write(current, c)
+        end
+    end
+
+    # Last clause
+    clause = strip(String(take!(current)))
+    if !isempty(clause)
+        push!(clauses, clause)
+    end
+
+    # Parse each clause: "T: Bound1 + Bound2"
+    for clause in clauses
+        if occursin(':', clause)
+            parts = split(clause, ':', limit=2)
+            type_name = Symbol(strip(parts[1]))
+            bounds_str = strip(parts[2])
+            constraints[type_name] = parse_trait_bounds(bounds_str)
+        end
+    end
+
+    return constraints
+end
+
+"""
+    merge_constraints(c1::Dict{Symbol, TypeConstraints}, c2::Dict{Symbol, TypeConstraints}) -> Dict{Symbol, TypeConstraints}
+
+Merge two constraint dictionaries. If a type parameter exists in both, merge their bounds.
+"""
+function merge_constraints(c1::Dict{Symbol, TypeConstraints}, c2::Dict{Symbol, TypeConstraints})
+    result = Dict{Symbol, TypeConstraints}()
+
+    # Add all from c1
+    for (k, v) in c1
+        result[k] = v
+    end
+
+    # Merge c2
+    for (k, v) in c2
+        if haskey(result, k)
+            # Merge bounds (avoiding duplicates)
+            existing_bounds = result[k].bounds
+            for bound in v.bounds
+                if !(bound in existing_bounds)
+                    push!(existing_bounds, bound)
+                end
+            end
+        else
+            result[k] = v
+        end
+    end
+
+    return result
+end
+
+"""
+    constraints_to_rust_string(constraints::Dict{Symbol, TypeConstraints}) -> String
+
+Convert constraints back to Rust syntax for code generation.
+
+# Example
+```julia
+constraints = Dict(:T => TypeConstraints([TraitBound("Copy", []), TraitBound("Clone", [])]))
+constraints_to_rust_string(constraints)
+# => "T: Copy + Clone"
+```
+"""
+function constraints_to_rust_string(constraints::Dict{Symbol, TypeConstraints})
+    if isempty(constraints)
+        return ""
+    end
+
+    parts = String[]
+    for (type_param, tc) in sort(collect(constraints), by=x->string(x[1]))
+        if !isempty(tc)
+            bound_strs = String[]
+            for bound in tc.bounds
+                if isempty(bound.type_params)
+                    push!(bound_strs, bound.trait_name)
+                else
+                    push!(bound_strs, "$(bound.trait_name)<$(join(bound.type_params, ", "))>")
+                end
+            end
+            push!(parts, "$(type_param): $(join(bound_strs, " + "))")
+        end
+    end
+
+    return join(parts, ", ")
+end
+
+# ============================================================================
+# Generic Function Parsing
+# ============================================================================
+
+"""
+    parse_generic_function(code::AbstractString, func_name::AbstractString) -> Union{GenericFunctionInfo, Nothing}
+
+Parse a Rust function to detect if it's generic and extract type parameters with trait bounds.
+
+# Supported formats
+1. Inline bounds: `fn foo<T: Copy + Clone, U: Debug>(x: T) -> U`
+2. Where clause: `fn foo<T, U>(x: T) -> U where T: Copy + Clone, U: Debug`
+3. Mixed: `fn foo<T: Copy, U>(x: T) -> U where U: Debug`
 
 # Example
 ```rust
-pub fn identity<T>(x: T) -> T { x }
+pub fn identity<T: Copy + Clone>(x: T) -> T { x }
 ```
 This would be parsed as:
 - name: "identity"
 - type_params: [:T]
-- constraints: Dict()
-"""
-function parse_generic_function(code::String, func_name::String)
-    # Simple regex-based parser for generic functions
-    # Pattern: fn func_name<T, U, ...>(args...) -> ret_type { ... }
+- constraints: Dict(:T => TypeConstraints([Copy, Clone]))
 
-    # Check if function has type parameters
-    generic_pattern = Regex("fn\\s+$func_name\\s*<([^>]+)>\\s*\\(")
+```rust
+pub fn transform<T, U>(x: T) -> U where T: Copy, U: From<T> { ... }
+```
+This would be parsed as:
+- name: "transform"
+- type_params: [:T, :U]
+- constraints: Dict(:T => TypeConstraints([Copy]), :U => TypeConstraints([From<T>]))
+"""
+function parse_generic_function(code::AbstractString, func_name::AbstractString)
+    # Pattern: fn func_name<...>(
+    # We need to handle nested angle brackets in trait bounds
+    generic_pattern = Regex("fn\\s+$func_name\\s*<([^>]+(?:<[^>]*>)*)>\\s*\\(")
     m = match(generic_pattern, code)
 
     if m === nothing
         return nothing  # Not a generic function
     end
 
-    # Extract type parameters
+    # Extract type parameters with inline constraints
     type_params_str = m.captures[1]
-    type_params = Symbol[]
-    for param in split(type_params_str, ',', keepempty=false)
-        param = strip(param)
-        # Handle trait bounds: T: Copy + Clone -> just T
-        if occursin(':', param)
-            param = split(param, ':')[1]
-        end
-        push!(type_params, Symbol(strip(param)))
-    end
+    type_params, inline_constraints = parse_inline_constraints(type_params_str)
 
-    # Extract constraints (trait bounds) - simplified for now
-    constraints = Dict{Symbol, String}()
-    # TODO: Parse trait bounds more thoroughly
+    # Parse where clause if present
+    where_constraints = parse_where_clause(code)
 
-    return GenericFunctionInfo(func_name, code, type_params, constraints, "")
+    # Merge constraints (inline + where clause)
+    constraints = merge_constraints(inline_constraints, where_constraints)
+
+    return GenericFunctionInfo(String(func_name), String(code), type_params, constraints, "")
 end
 
 """
@@ -390,16 +797,50 @@ Register a generic Rust function for later monomorphization.
 - `func_name`: Name of the function
 - `code`: Rust function code (with generics)
 - `type_params`: List of type parameter symbols
-- `constraints`: Trait bounds for type parameters
+- `constraints`: Trait bounds for type parameters (TypeConstraints or legacy Dict{Symbol, String})
 - `context`: Additional code (e.g. struct definitions) needed for compilation
+
+# Examples
+```julia
+# With TypeConstraints (recommended)
+constraints = Dict(:T => TypeConstraints([TraitBound("Copy", []), TraitBound("Clone", [])]))
+register_generic_function("identity", code, [:T], constraints)
+
+# Legacy format (still supported)
+register_generic_function("identity", code, [:T], Dict(:T => "Copy + Clone"))
+
+# No constraints
+register_generic_function("identity", code, [:T])
+```
 """
-function register_generic_function(func_name::String, code::String, type_params::Vector{Symbol}, constraints::Dict{Symbol, String}=Dict{Symbol, String}(), context::String="")
+function register_generic_function(
+    func_name::String,
+    code::String,
+    type_params::Vector{Symbol},
+    constraints::Dict{Symbol, TypeConstraints}=Dict{Symbol, TypeConstraints}(),
+    context::String=""
+)
     lock(REGISTRY_LOCK) do
-        # println("DEBUG: Registering generic function in GENERIC_FUNCTION_REGISTRY: $func_name")
         info = GenericFunctionInfo(func_name, code, type_params, constraints, context)
         GENERIC_FUNCTION_REGISTRY[func_name] = info
         return info
     end
+end
+
+# Backward compatibility: accept Dict{Symbol, String} and convert to TypeConstraints
+function register_generic_function(
+    func_name::String,
+    code::String,
+    type_params::Vector{Symbol},
+    constraints::Dict{Symbol, String},
+    context::String=""
+)
+    # Convert old format to new format
+    new_constraints = Dict{Symbol, TypeConstraints}()
+    for (k, v) in constraints
+        new_constraints[k] = parse_trait_bounds(v)
+    end
+    return register_generic_function(func_name, code, type_params, new_constraints, context)
 end
 
 """

@@ -104,6 +104,12 @@ export register_generic_function, call_generic_function, is_generic_function
 export monomorphize_function, specialize_generic_code, infer_type_parameters
 export GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS  # For testing
 
+# Trait bounds parsing (Phase 2 - Enhanced)
+export TraitBound, TypeConstraints, GenericFunctionInfo
+export parse_trait_bounds, parse_single_trait, parse_where_clause
+export parse_inline_constraints, parse_generic_function
+export constraints_to_rust_string, merge_constraints
+
 # Phase 3: External library integration
 export DependencySpec, parse_dependencies_from_code, has_dependencies
 export CargoProject, create_cargo_project, build_cargo_project

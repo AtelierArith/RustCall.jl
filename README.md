@@ -12,7 +12,7 @@
 ### Phase 1: C-Compatible ABI ✅
 - **`@rust` macro**: Call Rust functions directly from Julia
 - **`rust""` string literal**: Compile and load Rust code as shared libraries
-- **`@irust` macro**: Execute Rust code at function scope
+- **`@irust` macro**: Execute Rust code at function scope with `$var` variable binding
 - **Type mapping**: Automatic conversion between Rust and Julia types
 - **Result/Option support**: Handle Rust's `Result<T, E>` and `Option<T>` types
 - **String support**: Pass Julia strings to Rust functions expecting C strings
@@ -124,17 +124,33 @@ pub extern "C" fn is_positive(x: i32) -> bool {
 The `@irust` macro allows you to execute Rust code at function scope:
 
 ```julia
+# Using $var syntax (recommended)
 function double(x)
-    @irust("arg1 * 2", x)
+    @irust("\$x * 2")
 end
 
 result = double(21)  # => 42
+
+# Multiple variables
+function add_and_multiply(a, b, c)
+    @irust("\$a + \$b * \$c")
+end
+
+result = add_and_multiply(1, 2, 3)  # => 7
+
+# Legacy syntax (still supported)
+function double_legacy(x)
+    @irust("arg1 * 2", x)
+end
 ```
 
-**Note**: Current limitations:
-- Arguments must be passed explicitly
-- Code should use `arg1`, `arg2`, etc. to reference arguments
-- Return type is inferred from the code
+**Features:**
+- Automatic variable binding with `$var` syntax
+- Multiple variables support
+- Type inference from Julia types (Int32, Int64, Float32, Float64, Bool)
+- Compilation caching for repeated calls
+
+**Note**: Return type is inferred from the code. For complex expressions, consider using `rust"""` with explicit type annotations.
 
 ## Type Mapping
 
@@ -579,6 +595,7 @@ LastCall.jl uses a multi-phase approach:
 - Supports basic types and `extern "C"` functions
 - SHA256-based compilation caching
 - String type support
+- `@irust` macro with `$var` variable binding syntax
 
 ### Phase 2: LLVM IR Integration ✅ (Complete)
 
@@ -621,7 +638,7 @@ LastCall.jl uses a multi-phase approach:
 - ✅ Automatic monomorphization
 - ✅ Type parameter inference from arguments
 - ✅ Caching of monomorphized instances
-- ⚠️ Trait bounds parsing is simplified (basic support)
+- ✅ Enhanced trait bounds parsing (inline bounds, where clauses, generic traits)
 
 **Phase 3 limitations:**
 - Cargo builds are cached but may take time on first use
@@ -649,7 +666,7 @@ LastCall.jl has completed **Phase 1, Phase 2, Phase 3, and Phase 4**. The packag
 - ✅ Basic type mapping
 - ✅ `rust""` string literal
 - ✅ `@rust` macro
-- ✅ `@irust` macro
+- ✅ `@irust` macro with `$var` variable binding
 - ✅ Result/Option types
 - ✅ Error handling (`RustError`, `result_to_exception`)
 - ✅ String type support
@@ -670,11 +687,11 @@ LastCall.jl has completed **Phase 1, Phase 2, Phase 3, and Phase 4**. The packag
 - ✅ Phase 4: Rust structs as Julia objects
 - ✅ Generic struct support with automatic monomorphization
 - ✅ Enhanced error handling with suggestions
+- ✅ Enhanced `@irust` with `$var` variable binding syntax
+- ✅ Enhanced trait bounds parsing for generics (inline bounds, where clauses, generic traits)
 
 **Planned:**
 - ⏳ Lifetime/borrow checker integration
-- ⏳ Enhanced `@irust` with better variable binding
-- ⏳ Enhanced trait bounds parsing for generics
 - ⏳ CI/CD pipeline and package distribution
 
 ## Examples
