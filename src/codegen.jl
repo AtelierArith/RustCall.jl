@@ -20,6 +20,12 @@ Maps function name to FunctionInfo.
 const FUNCTION_REGISTRY = Dict{String, FunctionInfo}()
 
 """
+Registry for function return types (for functions without full signature registration).
+Maps function name to return type.
+"""
+const FUNCTION_RETURN_TYPES = Dict{String, Type}()
+
+"""
     register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
 
 Register a function with its type signature for later calling.
@@ -87,11 +93,16 @@ julia_to_c_type(::Type{T}) where {T<:AbstractString} = Cstring
 ccall_return_type(::Type{Cvoid}) = Cvoid
 ccall_return_type(::Type{Cstring}) = Cstring
 ccall_return_type(::Type{String}) = Cstring
+# Rust's bool type in C ABI is represented as UInt8 (1 byte)
+ccall_return_type(::Type{Bool}) = UInt8
 ccall_return_type(::Type{T}) where {T} = T
 
 convert_return(::Type{Cvoid}, _) = nothing
 convert_return(::Type{Cstring}, value) = cstring_to_julia_string(value)
 convert_return(::Type{String}, value) = cstring_to_julia_string(value)
+# Convert Rust bool (UInt8) to Julia Bool: 0 = false, non-zero = true
+convert_return(::Type{Bool}, value::UInt8) = value != 0x00
+convert_return(::Type{Bool}, value) = Bool(value != 0)
 convert_return(::Type{T}, value) where {T} = value
 
 default_numeric_arg_type(::Type{Bool}) = Int32
@@ -167,7 +178,7 @@ convert_arg(::Type{T}, x) where {T} = x
         push!(arg_exprs, :(convert_arg($T, args[$i])))
     end
     ccall_expr = Expr(:call, :ccall, :func_ptr, ret_ccall, Expr(:tuple, ccall_arg_types...), arg_exprs...)
-    if R == String || R == Cstring
+    if R == String || R == Cstring || R == Bool
         return :(convert_return($R, $ccall_expr))
     end
     return ccall_expr

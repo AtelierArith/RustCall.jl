@@ -234,6 +234,13 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
                 @debug "Failed to register generic functions from memory: $e"
             end
 
+            # Register function signatures from memory
+            try
+                _register_function_signatures(code, lib_name)
+            catch e
+                @debug "Failed to register function signatures from memory: $e"
+            end
+
             return lib_name
         end
     end
@@ -266,6 +273,13 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
             _detect_and_register_generic_functions(wrapped_code, lib_name)
         catch e
             @debug "Failed to detect generic functions from cache: $e"
+        end
+
+        # Register function signatures from cached code
+        try
+            _register_function_signatures(code, lib_name)
+        catch e
+            @debug "Failed to register function signatures from cache: $e"
         end
 
         return lib_name
@@ -313,6 +327,13 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         _detect_and_register_generic_functions(code, lib_name)
     catch e
         @debug "Failed to detect generic functions: $e"
+    end
+
+    # Register non-generic functions with their signatures
+    try
+        _register_function_signatures(code, lib_name)
+    catch e
+        @debug "Failed to register function signatures: $e"
     end
 
     return lib_name
@@ -560,6 +581,80 @@ function _detect_and_register_generic_functions(code::String, lib_name::String)
     end
 end
 
+
+"""
+    _parse_function_return_type(code::String, func_name::String) -> Union{Type, Nothing}
+
+Parse the return type of a function from Rust code.
+Returns the Julia type corresponding to the Rust return type, or nothing if not found.
+"""
+function _parse_function_return_type(code::String, func_name::String)
+    # Pattern to match: pub extern "C" fn func_name(...) -> return_type {
+    # or: #[no_mangle] pub extern "C" fn func_name(...) -> return_type {
+    pattern = Regex("(?:#\\[no_mangle\\]\\s*)?(?:pub\\s+)?(?:extern\\s+\"C\"\\s+)?fn\\s+$func_name\\s*\\([^)]*\\)\\s*->\\s*([\\w:<>,\\s\\[\\]]+)", "s")
+    m = match(pattern, code)
+
+    if m === nothing
+        return nothing
+    end
+
+    ret_type_str = strip(m.captures[1])
+
+    # Map Rust type to Julia type
+    rust_to_julia = Dict(
+        "i8" => Int8, "i16" => Int16, "i32" => Int32, "i64" => Int64,
+        "u8" => UInt8, "u16" => UInt16, "u32" => UInt32, "u64" => UInt64,
+        "f32" => Float32, "f64" => Float64,
+        "bool" => Bool,
+        "()" => Cvoid,
+    )
+
+    # Remove generic parameters if present (e.g., "Box<T>" -> "Box")
+    if occursin('<', ret_type_str)
+        ret_type_str = split(ret_type_str, '<')[1]
+    end
+
+    ret_type_str = strip(ret_type_str)
+
+    if haskey(rust_to_julia, ret_type_str)
+        return rust_to_julia[ret_type_str]
+    end
+
+    return nothing
+end
+
+"""
+    _register_function_signatures(code::String, lib_name::String)
+
+Register function return types from Rust code for type inference.
+"""
+function _register_function_signatures(code::String, lib_name::String)
+    # Pattern to match function definitions: pub extern "C" fn name(...) -> type {
+    # or: #[no_mangle] pub extern "C" fn name(...) -> type {
+    # Use a simpler pattern that matches the function signature more reliably
+    pattern = Regex("(?:#\\[no_mangle\\]\\s*)?(?:pub\\s+)?(?:extern\\s+\"C\"\\s+)?fn\\s+(\\w+)\\s*\\([^)]*\\)(?:\\s*->\\s*([\\w:<>,\\s\\[\\]]+))?", "s")
+
+    for m in eachmatch(pattern, code)
+        func_name = String(m.captures[1])
+        ret_type_str = length(m.captures) >= 2 && m.captures[2] !== nothing ? String(m.captures[2]) : nothing
+
+        # Skip if already registered in FUNCTION_REGISTRY or is generic
+        if haskey(FUNCTION_REGISTRY, func_name) || is_generic_function(func_name)
+            continue
+        end
+
+        # Parse return type
+        if ret_type_str !== nothing && !isempty(strip(ret_type_str))
+            ret_type = _parse_function_return_type(code, func_name)
+            if ret_type !== nothing
+                # Always update FUNCTION_RETURN_TYPES for the current library
+                # This allows the same function name in different rust"" blocks to have different return types
+                FUNCTION_RETURN_TYPES[func_name] = ret_type
+                @debug "Registered return type for function: $func_name => $ret_type (library: $lib_name)"
+            end
+        end
+    end
+end
 
 """
     get_rust_module(code::String) -> Union{RustModule, Nothing}
@@ -1031,8 +1126,8 @@ function _call_irust_function(lib_name::String, func_name::String, ret_type::Typ
         # Call using the codegen infrastructure with explicit return type
         result = call_rust_function(func_ptr, ret_type, args...)
 
-        # Convert C bool (i32) to Julia Bool if needed
-        # Rust bool is represented as i32 in C ABI (0 = false, non-zero = true)
+        # Safety check: Convert integer to Bool if needed (should already be handled by codegen.jl)
+        # Rust bool is represented as UInt8 in C ABI (0 = false, non-zero = true)
         if ret_type == Bool
             if isa(result, Integer)
                 return Bool(result != 0)

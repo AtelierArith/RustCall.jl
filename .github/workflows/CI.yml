@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - 'lts'
+          # - 'lts' Dropped 1.10 support
           - '1'
         os:
           - ubuntu-latest
@@ -24,10 +24,6 @@ jobs:
         arch:
           - x64
         include:
-          # macOS Apple Silicon (ARM64)
-          - os: macos-latest
-            arch: aarch64
-            version: 'lts'
           - os: macos-latest
             arch: aarch64
             version: '1'

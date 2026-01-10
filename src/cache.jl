@@ -249,11 +249,43 @@ end
     clear_cache()
 
 Clear all cached libraries and metadata.
+On Windows, some files may be locked and cannot be deleted immediately.
 """
 function clear_cache()
     cache_dir = get_cache_dir()
     if isdir(cache_dir)
-        rm(cache_dir, recursive=true, force=true)
+        try
+            # Try to remove the directory recursively
+            rm(cache_dir, recursive=true, force=true)
+        catch e
+            # On Windows, files may be locked (e.g., by Julia's compiled modules)
+            # Check if it's a directory not empty or busy error
+            if isa(e, Base.IOError)
+                error_msg = string(e)
+                if occursin("not empty", error_msg) || occursin("ENOTEMPTY", error_msg) ||
+                   occursin("busy", error_msg) || occursin("EBUSY", error_msg)
+                    # Try to remove files individually, ignoring errors for locked files
+                    for file in readdir(cache_dir)
+                        file_path = joinpath(cache_dir, file)
+                        try
+                            if isfile(file_path)
+                                rm(file_path, force=true)
+                            elseif isdir(file_path)
+                                rm(file_path, recursive=true, force=true)
+                            end
+                        catch
+                            # Ignore errors for individual files (may be locked)
+                        end
+                    end
+                else
+                    # Re-throw if it's a different error
+                    rethrow(e)
+                end
+            else
+                # Re-throw if it's not an IOError
+                rethrow(e)
+            end
+        end
     end
     return nothing
 end

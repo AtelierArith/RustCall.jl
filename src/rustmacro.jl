@@ -190,10 +190,24 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
 
     # Regular function - use existing logic
     # Get function pointer
+    @debug "Calling function '$func_name' from library '$lib_name'"
     func_ptr = get_function_pointer(lib_name, func_name)
 
     # Convert arguments (String -> Cstring)
     converted_args = _convert_args_for_rust(args...)
+
+    # Try to get type info from registered function info
+    func_info = get_function_info(func_name)
+    if func_info !== nothing && func_info.return_type !== Any
+        return call_rust_function(func_ptr, func_info.return_type, converted_args...)
+    end
+
+    # Try to get return type from FUNCTION_RETURN_TYPES registry
+    if haskey(FUNCTION_RETURN_TYPES, func_name)
+        ret_type = FUNCTION_RETURN_TYPES[func_name]
+        @debug "Using registered return type for $func_name: $ret_type"
+        return call_rust_function(func_ptr, ret_type, converted_args...)
+    end
 
     # Try to get type info from LLVM analysis
     try

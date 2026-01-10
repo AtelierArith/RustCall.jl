@@ -746,16 +746,20 @@ function rust_vec_set!(vec::RustVec{T}, index::Integer, value::T) where T
 
     if T == Int32
         fn_ptr = Libdl.dlsym(lib, :rust_vec_set_i32)
-        return ccall(fn_ptr, Bool, (CRustVec, UInt, Int32), cvec, index, value)
+        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Int32), cvec, index, value)
+        return Bool(result != 0x00)
     elseif T == Int64
         fn_ptr = Libdl.dlsym(lib, :rust_vec_set_i64)
-        return ccall(fn_ptr, Bool, (CRustVec, UInt, Int64), cvec, index, value)
+        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Int64), cvec, index, value)
+        return Bool(result != 0x00)
     elseif T == Float32
         fn_ptr = Libdl.dlsym(lib, :rust_vec_set_f32)
-        return ccall(fn_ptr, Bool, (CRustVec, UInt, Float32), cvec, index, value)
+        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Float32), cvec, index, value)
+        return Bool(result != 0x00)
     elseif T == Float64
         fn_ptr = Libdl.dlsym(lib, :rust_vec_set_f64)
-        return ccall(fn_ptr, Bool, (CRustVec, UInt, Float64), cvec, index, value)
+        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Float64), cvec, index, value)
+        return Bool(result != 0x00)
     else
         error("Unsupported type for RustVec set: $T")
     end
