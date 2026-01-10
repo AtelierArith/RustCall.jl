@@ -40,18 +40,9 @@
 - **Automatic memory management**: Integrated `finalizer` that calls Rust's `Drop` implementation
 - **Managed lifecycle**: Seamlessly use Rust objects as first-class citizens in Julia
 
-## Installation
+## Requirements:
 
-```julia
-using Pkg
-Pkg.add("LastCall")
-```
-
-**Requirements:**
 - Julia 1.12 or later
-- Rust toolchain (`rustc` and `cargo`) installed and available in PATH
-
-To install Rust, visit [rustup.rs](https://rustup.rs/).
 
 ### Building Rust Helpers Library
 
@@ -59,13 +50,13 @@ For full functionality including ownership types (Box, Rc, Arc), you need to bui
 
 ```julia
 using Pkg
-Pkg.build("LastCall")
+Pkg.build()
 ```
 
 Or from the command line:
 
 ```bash
-julia --project -e 'using Pkg; Pkg.build("LastCall")'
+julia --project -e 'using Pkg; Pkg.build()'
 ```
 
 This will compile the Rust helpers library that provides FFI functions for ownership types.
