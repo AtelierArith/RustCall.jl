@@ -2,6 +2,9 @@
 
 This guide covers common issues and solutions when using LastCall.jl.
 
+```@setup troubleshooting
+using LastCall
+```
 
 ## Installation and Setup
 
@@ -181,23 +184,21 @@ signal (11): Segmentation fault
 
 ### Q: Can I use multiple Rust libraries simultaneously?
 
-A: Yes. Each `rust""` block is compiled as an independent library:
+A: Yes. You can define multiple functions in a single `rust""` block or use multiple blocks:
 
-```julia
+```@example troubleshooting
+# Multiple functions in one block
 rust"""
-// Library 1
 #[no_mangle]
-pub extern "C" fn func1() -> i32 { 1 }
+pub extern "C" fn calc_add(a: i32, b: i32) -> i32 { a + b }
+
+#[no_mangle]
+pub extern "C" fn calc_mul(a: i32, b: i32) -> i32 { a * b }
 """
 
-rust"""
-// Library 2
-#[no_mangle]
-pub extern "C" fn func2() -> i32 { 2 }
-"""
-
-result1 = @rust func1()::Int32
-result2 = @rust func2()::Int32
+result1 = @rust calc_add(Int32(10), Int32(20))::Int32
+result2 = @rust calc_mul(Int32(3), Int32(4))::Int32
+println("add result = $result1, mul result = $result2")
 ```
 
 !!! note
