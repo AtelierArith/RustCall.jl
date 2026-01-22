@@ -6,6 +6,8 @@ This tutorial walks you through using LastCall.jl to call Rust code from Julia s
 
 1. [Getting Started](#getting-started)
 2. [Basic Usage](#basic-usage)
+   - [The Easy Way: `#[julia]` Attribute](#the-easy-way-julia-attribute)
+   - [The Traditional Way: Manual FFI](#the-traditional-way-manual-ffi)
 3. [Understanding the Type System](#understanding-the-type-system)
 4. [String Handling](#string-handling)
 5. [Error Handling](#error-handling)
@@ -44,6 +46,44 @@ Pkg.build("LastCall")
 using LastCall
 ```
 
+### The Easy Way: `#[julia]` Attribute
+
+The simplest way to define Rust functions is using the `#[julia]` attribute:
+
+```@example tutorial
+rust"""
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+
+# Call directly - no @rust macro needed!
+result = add(10, 20)
+println(result)  # => 30
+```
+
+The `#[julia]` attribute automatically:
+- Converts to `#[no_mangle] pub extern "C"`
+- Generates a Julia wrapper function with proper type conversions
+
+### The Traditional Way: Manual FFI
+
+For more control, you can use the traditional FFI approach:
+
+```@example tutorial
+rust"""
+#[no_mangle]
+pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
+    a * b
+}
+"""
+
+# Use @rust macro with explicit types
+result = @rust multiply(Int32(5), Int32(7))::Int32
+println(result)  # => 35
+```
+
 ### Step 1: Define and Compile Rust Code
 
 Use the `rust""` string literal to define and compile Rust code:
@@ -51,8 +91,8 @@ Use the `rust""` string literal to define and compile Rust code:
 ```@example tutorial
 rust"""
 #[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
-    a + b
+pub extern "C" fn subtract(a: i32, b: i32) -> i32 {
+    a - b
 }
 """
 ```
@@ -65,8 +105,8 @@ Use the `@rust` macro to call functions:
 
 ```@example tutorial
 # With type inference
-result = @rust add(Int32(10), Int32(20))::Int32
-println(result)  # => 30
+result = @rust subtract(Int32(100), Int32(30))::Int32
+println(result)  # => 70
 ```
 
 ### Step 3: Define Multiple Functions

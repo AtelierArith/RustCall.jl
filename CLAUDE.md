@@ -13,6 +13,7 @@ JuliaからRustコードを直接呼び出せるFFI（Foreign Function Interface
 - `@rust` マクロ: Rust関数をJuliaから直接呼び出し
 - `rust""` 文字列リテラル: Rustコードをグローバルスコープで評価
 - `irust""` 文字列リテラル: Rustコードを関数スコープで評価
+- `#[julia]` 属性: `#[no_mangle] pub extern "C"` の簡略記法
 - Rustの型システムとの統合
 - LLVM IR経由での最適化
 
@@ -81,7 +82,45 @@ Julia JIT実行
 
 **成果物**: LLVM IRレベルでの最適化された統合
 
-### Phase 3: rustc内部API統合（実験的）
+### Phase 3: 外部ライブラリ統合（完了）
+
+**目標**: Cargoを使った外部クレートの統合
+
+- `// cargo-deps:` 形式での依存関係指定
+- 自動的なCargoプロジェクト生成
+- ビルドキャッシュ
+
+### Phase 4: Rust構造体のJuliaオブジェクト化（完了）
+
+**目標**: Rust構造体をJuliaで直接使用
+
+- `pub struct` の自動検出
+- C-FFIラッパーの自動生成
+- Julia側のラッパー型自動生成
+- ファイナライザーによる自動メモリ管理
+
+### Phase 5: `#[julia]` 属性（完了）
+
+**目標**: FFI関数定義の簡略化
+
+```rust
+// Before: 冗長な記述が必要
+#[no_mangle]
+pub extern "C" fn add(a: i32, b: i32) -> i32 { a + b }
+
+// After: #[julia] 属性で簡潔に
+#[julia]
+fn add(a: i32, b: i32) -> i32 { a + b }
+```
+
+**実装ファイル**: `src/julia_functions.jl`
+
+**主要関数**:
+- `parse_julia_functions(code)`: `#[julia]` 付き関数を検出
+- `transform_julia_attribute(code)`: `#[julia]` → `#[no_mangle] pub extern "C"` に変換
+- `emit_julia_function_wrappers(sigs)`: Julia側のラッパー関数を自動生成
+
+### Phase 6: rustc内部API統合（実験的・未実装）
 
 **目標**: 完全なRust型システムサポート
 

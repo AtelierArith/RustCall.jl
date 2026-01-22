@@ -51,16 +51,16 @@ Pkg.build("LastCall")
 ```julia
 using LastCall
 
-# Define and compile Rust code
+# Define and compile Rust code with #[julia] attribute
 rust"""
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 """
 
-# Call the Rust function
-result = @rust add(Int32(10), Int32(20))::Int32
+# Call the Rust function directly (wrapper auto-generated)
+result = add(10, 20)
 println(result)  # => 30
 ```
 
