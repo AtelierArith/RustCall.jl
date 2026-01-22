@@ -61,6 +61,9 @@ include("generics.jl")
 # Phase 4: Object mapping support
 include("structs.jl")
 
+# Phase 5: #[julia] attribute support
+include("julia_functions.jl")
+
 # Export public API
 export @rust, @rust_str, @irust, @irust_str
 export RustPtr, RustRef, RustResult, RustOption

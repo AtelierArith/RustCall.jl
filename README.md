@@ -41,6 +41,12 @@
 - **Automatic memory management**: Integrated `finalizer` that calls Rust's `Drop` implementation
 - **Managed lifecycle**: Seamlessly use Rust objects as first-class citizens in Julia
 
+### Phase 5: `#[julia]` Attribute ✅
+- **Simplified FFI**: Use `#[julia]` instead of `#[no_mangle] pub extern "C"`
+- **Auto-wrapper generation**: Julia wrapper functions are automatically created
+- **Type inference**: Automatic Julia type conversion based on Rust types
+- **Zero boilerplate**: No need to manually define Julia wrapper functions
+
 ## Requirements:
 
 - Julia 1.12 or later
@@ -64,24 +70,41 @@ This will compile the Rust helpers library that provides FFI functions for owner
 
 ## Quick Start
 
-### 1. Define and Call Rust Functions
+### 1. Define and Call Rust Functions (Simple Way)
 
 ```julia
 using LastCall
 
-# Define a Rust function
+# Use #[julia] attribute - no boilerplate needed!
 rust"""
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
     a + b
 }
 """
 
-# Call it from Julia
-@rust add(Int32(10), Int32(20))::Int32  # => 30
+# Call directly - wrapper is auto-generated
+add(10, 20)  # => 30
 ```
 
-### 2. Inline Rust with `@irust`
+### 2. Traditional FFI (Full Control)
+
+```julia
+using LastCall
+
+# Traditional way with explicit FFI markers
+rust"""
+#[no_mangle]
+pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
+    a * b
+}
+"""
+
+# Call with @rust macro and explicit types
+@rust multiply(Int32(5), Int32(7))::Int32  # => 35
+```
+
+### 3. Inline Rust with `@irust`
 
 Execute Rust code directly with automatic variable binding:
 
@@ -93,7 +116,7 @@ end
 compute(Int32(3), Int32(4))  # => 22
 ```
 
-### 3. Use External Crates
+### 4. Use External Crates
 
 Leverage the Rust ecosystem with automatic Cargo integration:
 
@@ -112,12 +135,13 @@ pub extern "C" fn random_number() -> i32 {
 @rust random_number()::Int32  # => random number 1-100
 ```
 
-### 4. Rust Structs as Julia Objects
+### 5. Rust Structs as Julia Objects
 
 Define Rust structs and use them as first-class Julia types:
 
 ```julia
 rust"""
+#[julia]
 pub struct Counter {
     value: i32,
 }
@@ -171,7 +195,7 @@ end
 quadratic(1.0, 2.0, 1.0, 3.0)  # => 16.0 (x² + 2x + 1 at x=3)
 ```
 
-### 5. Image Processing with Rust
+### 6. Image Processing with Rust
 
 Process images using Rust for performance-critical operations:
 
@@ -669,6 +693,13 @@ LastCall.jl uses a multi-phase approach:
 - Dynamic Julia type generation
 - Automatic memory management with finalizers
 
+### Phase 5: `#[julia]` Attribute ✅ (Complete)
+
+- `#[julia]` attribute for simplified FFI function definition
+- Automatic transformation to `#[no_mangle] pub extern "C"`
+- Julia wrapper function auto-generation
+- Seamless type conversion
+
 ## Current Limitations
 
 **Phase 1 limitations:**
@@ -709,7 +740,7 @@ LastCall.jl uses a multi-phase approach:
 
 ## Development Status
 
-LastCall.jl has completed **Phase 1, Phase 2, Phase 3, and Phase 4**. The package is fully functional for production use cases.
+LastCall.jl has completed **Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5**. The package is fully functional for production use cases.
 
 **Implemented:**
 - ✅ Basic type mapping
@@ -734,6 +765,7 @@ LastCall.jl has completed **Phase 1, Phase 2, Phase 3, and Phase 4**. The packag
 **Recently Completed:**
 - ✅ Phase 3: External library integration (Cargo, ndarray, etc.)
 - ✅ Phase 4: Rust structs as Julia objects
+- ✅ Phase 5: `#[julia]` attribute for simplified FFI
 - ✅ Generic struct support with automatic monomorphization
 - ✅ Enhanced error handling with suggestions
 - ✅ Enhanced `@irust` with `$var` variable binding syntax
@@ -783,6 +815,7 @@ See the `test/` directory for comprehensive examples:
 - `test/test_cargo.jl` - Cargo project generation tests (Phase 3)
 - `test/test_ndarray.jl` - External crate integration tests (Phase 3)
 - `test/test_phase4.jl` - Struct automation tests (Phase 4)
+- `test/test_julia_attribute.jl` - `#[julia]` attribute tests (Phase 5)
 
 ## Performance
 

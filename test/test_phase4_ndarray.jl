@@ -17,6 +17,8 @@ using Test
 
         use ndarray::Array2;
 
+        // Array2 field accessor is skipped automatically (non-Copy type)
+        #[julia]
         pub struct MatrixTool {
             data: Array2<f64>,
         }

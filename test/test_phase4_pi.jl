@@ -17,6 +17,7 @@ using Test
 
         use rand::Rng;
 
+        #[julia]
         pub struct MonteCarloPi {
             total_samples: u64,
             inside_circle: u64,

@@ -10,6 +10,7 @@ using Test
 
     @testset "Generic Wrapper" begin
         rust"""
+        #[julia]
         pub struct Wrapper<T> {
             value: T,
         }

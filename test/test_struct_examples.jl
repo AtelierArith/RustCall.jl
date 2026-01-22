@@ -10,6 +10,7 @@ using Test
 
     @testset "Person Struct" begin
         rust"""
+        #[julia]
         pub struct Person {
             age: u32,
             height: f64,

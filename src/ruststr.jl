@@ -139,9 +139,18 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
 ```
 """
 macro rust_str(code)
+    # Phase 5: Transform #[julia] attributes FIRST for macro expansion
+    # This converts #[julia] pub struct -> #[derive(JuliaStruct)] pub struct
+    transformed_code = transform_julia_attribute(code)
+
     # Phase 4: Detect structs and generate Julia-side wrappers at macro expansion time
-    struct_infos = parse_structs_and_impls(code)
+    # (after #[julia] transformation so #[julia] pub struct is detected)
+    struct_infos = parse_structs_and_impls(transformed_code)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
+
+    # Phase 5: Detect #[julia] attributed functions and generate wrappers
+    julia_func_signatures = parse_julia_functions(code)
+    julia_func_wrappers = emit_julia_function_wrappers(julia_func_signatures)
 
     return quote
         lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line))
@@ -166,6 +175,7 @@ macro rust_str(code)
         end
 
         $(julia_defs...)
+        $(julia_func_wrappers)
         lib_name
     end
 end
@@ -198,12 +208,17 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         return _compile_and_load_rust_with_cargo(code, source_file, source_line)
     end
 
-    # Phase 4: Detect structs and generate wrappers
-    struct_infos = parse_structs_and_impls(code)
+    # Phase 5: Transform #[julia] attributes FIRST
+    # - #[julia] fn -> #[no_mangle] pub extern "C" fn
+    # - #[julia] pub struct -> #[derive(JuliaStruct)] pub struct
+    transformed_code = transform_julia_attribute(code)
+
+    # Phase 4: Detect structs and generate wrappers (after #[julia] transformation)
+    struct_infos = parse_structs_and_impls(transformed_code)
 
     # Remove #[derive(JuliaStruct)] attributes from code before compilation
     # (JuliaStruct is not a real Rust macro, so it would cause compilation errors)
-    cleaned_code = remove_derive_julia_struct_attributes(code)
+    cleaned_code = remove_derive_julia_struct_attributes(transformed_code)
 
     augmented_code = cleaned_code
     for info in struct_infos
@@ -382,11 +397,14 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         throw(DependencyResolutionError("unknown", "Dependency validation failed: $e"))
     end
 
-    # Phase 4: Detect structs and generate wrappers
-    struct_infos = parse_structs_and_impls(code)
+    # Phase 5: Transform #[julia] attributes FIRST
+    transformed_code = transform_julia_attribute(code)
+
+    # Phase 4: Detect structs and generate wrappers (after #[julia] transformation)
+    struct_infos = parse_structs_and_impls(transformed_code)
 
     # Remove #[derive(JuliaStruct)] attributes from code before compilation
-    cleaned_code = remove_derive_julia_struct_attributes(code)
+    cleaned_code = remove_derive_julia_struct_attributes(transformed_code)
 
     augmented_code = cleaned_code
     for info in struct_infos

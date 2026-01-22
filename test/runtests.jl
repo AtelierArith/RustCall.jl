@@ -42,6 +42,9 @@ include("test_julia_to_rust_simple.jl")
 include("test_julia_to_rust_struct.jl")
 include("test_julia_to_rust_generic.jl")
 
+# Phase 5: #[julia] attribute tests
+include("test_julia_attribute.jl")
+
 @testset "LastCall.jl" begin
 
     @testset "Type Mappings" begin

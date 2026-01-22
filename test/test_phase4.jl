@@ -8,6 +8,7 @@ using Test
     # 1. Generate C-wrappers for new, area, scale, and free.
     # 2. Define Julia type 'Rect' and methods area(r), scale(r, f).
     rust"""
+    #[julia]
     pub struct Rect {
         w: f64,
         h: f64,

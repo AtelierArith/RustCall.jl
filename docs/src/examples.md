@@ -17,10 +17,9 @@ This document provides practical examples of using LastCall.jl.
 ### Basic Math Functions
 
 ```julia
-
 rust"""
-#[no_mangle]
-pub extern "C" fn power(x: f64, n: i32) -> f64 {
+#[julia]
+fn power(x: f64, n: i32) -> f64 {
     let mut result = 1.0;
     for _ in 0..n {
         result *= x;
@@ -29,16 +28,16 @@ pub extern "C" fn power(x: f64, n: i32) -> f64 {
 }
 """
 
-# Usage
-result = @rust power(2.0, 10)::Float64  # => 1024.0
+# Usage - wrapper auto-generated
+result = power(2.0, 10)  # => 1024.0
 ```
 
 ### Fibonacci Sequence
 
 ```julia
 rust"""
-#[no_mangle]
-pub extern "C" fn fibonacci(n: u32) -> u64 {
+#[julia]
+fn fibonacci(n: u32) -> u64 {
     if n <= 1 {
         return n as u64;
     }
@@ -56,9 +55,9 @@ pub extern "C" fn fibonacci(n: u32) -> u64 {
 }
 """
 
-# Usage
-fib_10 = @rust fibonacci(UInt32(10))::UInt64  # => 55
-fib_20 = @rust fibonacci(UInt32(20))::UInt64  # => 6765
+# Usage - wrapper auto-generated
+fib_10 = fibonacci(UInt32(10))  # => 55
+fib_20 = fibonacci(UInt32(20))  # => 6765
 ```
 
 ### Statistical Calculations
