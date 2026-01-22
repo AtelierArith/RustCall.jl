@@ -112,7 +112,7 @@ function _resolve_lib(mod::Module, lib_name::String)
     # try to use the module's active library.
     if isempty(lib_name)
         if isdefined(mod, :__LASTCALL_ACTIVE_LIB)
-            lib_name = getfield(mod, :__LASTCALL_ACTIVE_LIB)
+            lib_name = getfield(mod, :__LASTCALL_ACTIVE_LIB)[]
         else
             return get_current_library()
         end
