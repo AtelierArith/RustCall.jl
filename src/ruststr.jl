@@ -164,10 +164,12 @@ macro rust_str(code)
         $__module__.__LASTCALL_LIBS[lib_name] = $(esc(code))
 
         # Track the "current" library for this module
+        # Use Ref{String} so the binding is const but the value can be mutated
+        # This avoids Pluto's "cannot assign to imported variable" error
         if !isdefined($__module__, :__LASTCALL_ACTIVE_LIB)
-            @eval $__module__ __LASTCALL_ACTIVE_LIB = ""
+            @eval $__module__ const __LASTCALL_ACTIVE_LIB = Ref("")
         end
-        $__module__.__LASTCALL_ACTIVE_LIB = lib_name
+        $__module__.__LASTCALL_ACTIVE_LIB[] = lib_name
 
         # Track active library for macro expansion in this session
         lock(REGISTRY_LOCK) do
