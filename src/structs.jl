@@ -200,6 +200,73 @@ end
 Parse field names and types from a Rust struct definition.
 Returns a vector of (field_name, field_type) tuples.
 """
+# Check if a Rust type is FFI-compatible (implements Copy or can be cloned for FFI).
+# Returns true for primitive types, String, Vec, and pointer types.
+# Returns false for complex types like Array2, ThreadRng, etc.
+function _is_ffi_compatible_field_type(rust_type::String)
+    rust_type = strip(rust_type)
+
+    # Primitive types (implement Copy)
+    primitive_types = Set([
+        "i8", "i16", "i32", "i64", "i128",
+        "u8", "u16", "u32", "u64", "u128",
+        "f32", "f64",
+        "bool", "char",
+        "usize", "isize",
+        "()"
+    ])
+
+    if rust_type in primitive_types
+        return true
+    end
+
+    # String and Vec (can use .clone())
+    if occursin(r"^String$|^Vec<", rust_type)
+        return true
+    end
+
+    # Pointer types (Copy)
+    if occursin(r"^\*(?:const|mut)\s+", rust_type)
+        return true
+    end
+
+    # References are tricky for FFI, skip them
+    if startswith(rust_type, "&")
+        return false
+    end
+
+    # Known non-Copy types to exclude
+    non_copy_patterns = [
+        r"Array\d*<",           # ndarray types
+        r"ThreadRng",           # RNG types
+        r"HashMap<",            # Collections
+        r"HashSet<",
+        r"BTreeMap<",
+        r"BTreeSet<",
+        r"Mutex<",              # Sync primitives
+        r"RwLock<",
+        r"Arc<",
+        r"Rc<",
+        r"Box<",
+        r"RefCell<",
+        r"Cell<",
+    ]
+
+    for pattern in non_copy_patterns
+        if occursin(pattern, rust_type)
+            return false
+        end
+    end
+
+    # Generic types with type parameters are likely not Copy
+    if occursin(r"<.*>", rust_type)
+        return false
+    end
+
+    # Default: assume it might work (primitive-like user types)
+    return true
+end
+
 function parse_struct_fields(struct_def::String)
     fields = Tuple{String, String}[]
 
@@ -360,8 +427,14 @@ end
 
 Generate "extern C" C-FFI wrappers for a given struct.
 For generic structs, registers them as generic functions instead of returning static wrappers.
+Only generates wrappers for structs marked with #[derive(JuliaStruct)] or #[julia].
 """
 function generate_struct_wrappers(info::RustStructInfo)
+    # Only generate FFI wrappers for structs with #[derive(JuliaStruct)]
+    if !info.has_derive_julia_struct
+        return ""  # Return empty string - no FFI wrappers generated
+    end
+
     io = IOBuffer()
     struct_name = info.name
 
@@ -495,6 +568,13 @@ function generate_struct_wrappers(info::RustStructInfo)
                 continue  # Skip field accessor if method wrapper with same name exists
             end
 
+            # Skip non-Copy types that would cause compilation errors
+            # Only generate accessors for primitive types and String/Vec (which use clone)
+            if !_is_ffi_compatible_field_type(field_type)
+                @debug "Skipping field accessor for non-FFI-compatible type: $field_name: $field_type"
+                continue
+            end
+
             # Getter - need to clone String and Vec types
             println(io, "#[no_mangle]")
             println(io, "pub extern \"C\" fn $(struct_name)_get_$(field_name)(ptr: *const $struct_name) -> $field_type {")
@@ -611,8 +691,15 @@ end
     emit_julia_definitions(info::RustStructInfo)
 
 Generate Julia code to define a corresponding mutable struct and its methods.
+Only generates definitions for structs marked with #[derive(JuliaStruct)] or #[julia].
 """
 function emit_julia_definitions(info::RustStructInfo)
+    # Only generate Julia definitions for structs with #[derive(JuliaStruct)]
+    # This is set when #[julia] attribute is used (transformed to #[derive(JuliaStruct)])
+    if !info.has_derive_julia_struct
+        return :()  # Return empty expression - no Julia wrapper generated
+    end
+
     struct_name_str = info.name
     esc_struct = esc(Symbol(struct_name_str))
 
@@ -693,6 +780,10 @@ function emit_julia_definitions(info::RustStructInfo)
         field_setters = Dict{Symbol, String}()
         if info.has_derive_julia_struct && !isempty(info.fields)
             for (field_name, field_type) in info.fields
+                # Skip non-FFI-compatible types
+                if !_is_ffi_compatible_field_type(field_type)
+                    continue
+                end
                 field_sym = Symbol(field_name)
                 jl_field_type = rust_to_julia_type_sym(field_type)
                 field_getters[field_sym] = ("$(struct_name_str)_get_$(field_name)", jl_field_type)
@@ -832,6 +923,10 @@ function emit_julia_definitions(info::RustStructInfo)
         field_setters = Dict{Symbol, String}()
 
         for (field_name, field_type) in info.fields
+            # Skip non-FFI-compatible types
+            if !_is_ffi_compatible_field_type(field_type)
+                continue
+            end
             field_sym = Symbol(field_name)
             jl_field_type = rust_to_julia_type_sym(field_type)
             getter_name = struct_name_str * "_get_" * field_name
