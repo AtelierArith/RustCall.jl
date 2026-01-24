@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use lastcall_macros::julia;
 
 // Test that #[julia] on functions compiles correctly
@@ -54,20 +56,16 @@ fn main() {
     let mut point = TestPoint { x: 1.0, y: 2.0 };
     let ptr = &mut point as *mut TestPoint;
 
-    unsafe {
-        assert!((TestPoint_get_x(ptr) - 1.0).abs() < 1e-10);
-        TestPoint_set_x(ptr, 5.0);
-        assert!((TestPoint_get_x(ptr) - 5.0).abs() < 1e-10);
-    }
+    assert!((TestPoint_get_x(ptr) - 1.0).abs() < 1e-10);
+    TestPoint_set_x(ptr, 5.0);
+    assert!((TestPoint_get_x(ptr) - 5.0).abs() < 1e-10);
 
     // Verify Counter FFI functions exist
     let counter_ptr = Counter_new(10);
-    unsafe {
-        assert_eq!(Counter_get_value(counter_ptr), 10);
-        Counter_increment(counter_ptr);
-        assert_eq!(Counter_get_value(counter_ptr), 11);
-        Counter_free(counter_ptr);
-    }
+    assert_eq!(Counter_get_value(counter_ptr), 10);
+    Counter_increment(counter_ptr);
+    assert_eq!(Counter_get_value(counter_ptr), 11);
+    Counter_free(counter_ptr);
 
     println!("All tests passed!");
 }
@@ -77,6 +75,8 @@ fn main() {
 #[no_mangle]
 pub extern "C" fn Counter_free(ptr: *mut Counter) {
     if !ptr.is_null() {
-        unsafe { drop(Box::from_raw(ptr)); }
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
     }
 }
