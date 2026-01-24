@@ -253,9 +253,7 @@ fn transform_impl(mut item_impl: ItemImpl) -> TokenStream2 {
 
     // Extract the struct name from the type
     let struct_name = match self_ty.as_ref() {
-        Type::Path(type_path) => {
-            type_path.path.segments.last().map(|s| s.ident.clone())
-        }
+        Type::Path(type_path) => type_path.path.segments.last().map(|s| s.ident.clone()),
         _ => None,
     };
 
@@ -304,7 +302,11 @@ fn generate_method_wrapper(struct_name: &Ident, method: &syn::ImplItemFn) -> Tok
     let wrapper_name = format_ident!("{}_{}", struct_name, method_name);
 
     // Analyze the method signature
-    let is_static = !method.sig.inputs.iter().any(|arg| matches!(arg, FnArg::Receiver(_)));
+    let is_static = !method
+        .sig
+        .inputs
+        .iter()
+        .any(|arg| matches!(arg, FnArg::Receiver(_)));
 
     let is_constructor = method_name_str == "new"
         || matches!(
@@ -312,9 +314,11 @@ fn generate_method_wrapper(struct_name: &Ident, method: &syn::ImplItemFn) -> Tok
             ReturnType::Type(_, ty) if is_self_type(ty, struct_name)
         );
 
-    let _is_mutable = method.sig.inputs.iter().any(|arg| {
-        matches!(arg, FnArg::Receiver(r) if r.mutability.is_some())
-    });
+    let _is_mutable = method
+        .sig
+        .inputs
+        .iter()
+        .any(|arg| matches!(arg, FnArg::Receiver(r) if r.mutability.is_some()));
 
     // Build wrapper arguments
     let mut wrapper_args = Vec::new();
