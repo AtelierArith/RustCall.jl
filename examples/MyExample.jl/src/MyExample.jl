@@ -22,18 +22,18 @@ export sum_array, max_in_array
 # ============================================================================
 
 rust"""
-#[no_mangle]
-pub extern "C" fn add_numbers(a: i32, b: i32) -> i32 {
+#[julia]
+fn add_numbers(a: i32, b: i32) -> i32 {
     a + b
 }
 
-#[no_mangle]
-pub extern "C" fn multiply_numbers(a: f64, b: f64) -> f64 {
+#[julia]
+fn multiply_numbers(a: f64, b: f64) -> f64 {
     a * b
 }
 
-#[no_mangle]
-pub extern "C" fn fibonacci(n: u32) -> u64 {
+#[julia]
+fn fibonacci(n: u32) -> u64 {
     if n <= 1 {
         return n as u64;
     }
@@ -83,8 +83,8 @@ end
 # ============================================================================
 
 rust"""
-#[no_mangle]
-pub extern "C" fn count_words(text: *const u8) -> u32 {
+#[julia]
+fn count_words(text: *const u8) -> u32 {
     let text_str = unsafe {
         std::ffi::CStr::from_ptr(text as *const i8)
             .to_str()
@@ -93,8 +93,8 @@ pub extern "C" fn count_words(text: *const u8) -> u32 {
     text_str.split_whitespace().count() as u32
 }
 
-#[no_mangle]
-pub extern "C" fn reverse_string(input: *const u8, output: *mut u8, len: usize) {
+#[julia]
+fn reverse_string(input: *const u8, output: *mut u8, len: usize) {
     let input_str = unsafe {
         std::ffi::CStr::from_ptr(input as *const i8)
             .to_str()
@@ -145,14 +145,14 @@ end
 # ============================================================================
 
 rust"""
-#[no_mangle]
-pub extern "C" fn sum_array(data: *const i32, len: usize) -> i64 {
+#[julia]
+fn sum_array(data: *const i32, len: usize) -> i64 {
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
     slice.iter().map(|&x| x as i64).sum()
 }
 
-#[no_mangle]
-pub extern "C" fn max_in_array(data: *const i32, len: usize) -> i32 {
+#[julia]
+fn max_in_array(data: *const i32, len: usize) -> i32 {
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
     *slice.iter().max().unwrap_or(&0)
 }
