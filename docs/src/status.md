@@ -10,13 +10,16 @@ Last updated: January 2026
 | **Phase 2** | ✅ **Complete** |
 | **Phase 3** | ✅ **Complete** |
 | **Phase 4** | ✅ **Complete** |
-| **Total Source Code** | ~9,200 lines (19 files) |
-| **Total Test Code** | ~4,200 lines (23 files) |
+| **Phase 5** | ✅ **Complete** |
+| **Phase 6** | ✅ **Complete** |
+| **Total Source Code** | ~10,000 lines (20 files) |
+| **Total Test Code** | ~4,500 lines (24 files) |
 | **Benchmarks** | ~1,450 lines (5 files) |
 | **Rust Helpers** | ~630 lines |
+| **Proc-macro Crate** | ~420 lines |
 | **Test Success Rate** | ✅ All tests passing |
-| **Key Features** | `@rust`, `rust""`, `@irust`, cache, ownership types, RustVec, generics, external crates, struct mapping |
-| **Next Steps** | Package distribution, Julia General Registry |
+| **Key Features** | `@rust`, `rust""`, `@irust`, `#[julia]`, `@rust_crate`, cache, ownership types, RustVec, generics, external crates, struct mapping |
+| **Next Steps** | Package distribution, Julia General Registry, crates.io publication |
 
 ## Project Overview
 
@@ -46,6 +49,18 @@ LastCall.jl is an FFI (Foreign Function Interface) package for calling Rust code
 
 - Goal: Automatic struct bindings with `#[derive(JuliaStruct)]`
 - Approach: Auto-generated FFI wrappers, field accessors, Clone support
+- Status: **Complete** ✅
+
+### Phase 5: `#[julia]` Attribute ✅ Complete
+
+- Goal: Simplified FFI function definition with `#[julia]` attribute
+- Approach: Julia-side transformation to `#[no_mangle] pub extern "C"`
+- Status: **Complete** ✅
+
+### Phase 6: External Crate Bindings (Maturin-like) ✅ Complete
+
+- Goal: Generate Julia bindings for external Rust crates using `#[julia]` attribute
+- Approach: `lastcall_macros` proc-macro crate + `@rust_crate` macro
 - Status: **Complete** ✅
 
 ## Implementation Status
@@ -202,6 +217,29 @@ LastCall.jl is an FFI (Foreign Function Interface) package for calling Rust code
 - [x] FFI-safe String field handling
 - [x] Memory lifecycle with finalizers
 
+### Phase 5: Implemented Features ✅
+
+#### 1. `#[julia]` Attribute Support
+- [x] Transformation to `#[no_mangle] pub extern "C"`
+- [x] Automatic Julia wrapper generation
+- [x] Type inference from Rust signatures
+- [x] Works with functions and structs
+
+### Phase 6: Implemented Features ✅
+
+#### 1. Proc-macro Crate (`lastcall_macros`)
+- [x] `#[julia]` attribute for functions
+- [x] `#[julia]` attribute for structs (generates FFI accessors)
+- [x] `#[julia]` on impl blocks (generates method wrappers)
+- [x] Ready for crates.io publication
+
+#### 2. Julia Crate Bindings
+- [x] `scan_crate()` - Scan external crates for `#[julia]` items
+- [x] `generate_bindings()` - Generate Julia module with bindings
+- [x] `@rust_crate` macro - One-line binding generation
+- [x] Automatic Cargo build integration
+- [x] Library caching
+
 ### Future Tasks (Distribution)
 
 #### 1. Package Distribution
@@ -263,9 +301,12 @@ LastCall.jl/
 │   └── benchmarks_ownership.jl # Ownership benchmarks (357 lines)
 ├── deps/
 │   ├── build.jl          # Build script
-│   └── rust_helpers/     # Rust helpers library
-│       ├── Cargo.toml    # Cargo config
-│       └── src/lib.rs    # FFI functions (626 lines)
+│   ├── rust_helpers/     # Rust helpers library
+│   │   ├── Cargo.toml    # Cargo config
+│   │   └── src/lib.rs    # FFI functions (626 lines)
+│   └── lastcall_macros/  # Proc-macro crate (Phase 6)
+│       ├── Cargo.toml    # Proc-macro config
+│       └── src/lib.rs    # #[julia] attribute (420 lines)
 └── docs/
     ├── src/              # Documentation sources
     ├── make.jl           # Documenter.jl build script

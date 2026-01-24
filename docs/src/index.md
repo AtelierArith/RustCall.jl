@@ -24,6 +24,12 @@
 - **Error handling**: `RustError` exception type with `result_to_exception`
 - **Function registration**: Register and cache compiled Rust functions
 
+### Phase 6: External Crate Bindings (Maturin-like) ✅
+- **`lastcall_macros` crate**: Proc-macro crate for `#[julia]` attribute
+- **`@rust_crate` macro**: Generate Julia bindings for external Rust crates
+- **Crate scanning**: Detect `#[julia]` marked functions and structs
+- **Automatic building**: Build crates and generate Julia modules
+
 ## Installation
 
 ```julia
@@ -94,6 +100,7 @@ Pages = [
     "tutorial.md",
     "examples.md",
     "struct_mapping.md",
+    "crate_bindings.md",
     "generics.md",
     "performance.md",
     "troubleshooting.md",
