@@ -273,16 +273,6 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
             RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
             CURRENT_LIB[] = lib_name
 
-            # Temporarily disabled LLVM IR loading from cache
-            # cached_ir = get_cached_llvm_ir(cache_key)
-            # if cached_ir !== nothing
-            #     try
-            #         rust_mod = load_llvm_ir(cached_ir; source_code=wrapped_code)
-            #         RUST_MODULE_REGISTRY[code_hash] = rust_mod
-            #     catch e
-            #         @debug "Failed to load cached LLVM IR: $e"
-            #     end
-            # end
         end
 
         # Try to detect and register generic functions from the cached code
