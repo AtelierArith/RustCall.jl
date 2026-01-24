@@ -62,6 +62,56 @@ fn is_prime(n: u32) -> bool {
 }
 
 // ============================================================================
+// Result<T, E> Functions
+// ============================================================================
+
+/// Safe division - returns Err(-1) if dividing by zero
+#[julia]
+fn safe_divide(a: f64, b: f64) -> Result<f64, i32> {
+    if b == 0.0 {
+        Err(-1)
+    } else {
+        Ok(a / b)
+    }
+}
+
+/// Parse a positive integer - returns Err with the original number if negative
+#[julia]
+fn parse_positive(n: i32) -> Result<u32, i32> {
+    if n >= 0 {
+        Ok(n as u32)
+    } else {
+        Err(n)
+    }
+}
+
+// ============================================================================
+// Option<T> Functions
+// ============================================================================
+
+/// Find the square root only for non-negative numbers
+#[julia]
+fn safe_sqrt(n: f64) -> Option<f64> {
+    if n < 0.0 {
+        None
+    } else {
+        Some(n.sqrt())
+    }
+}
+
+/// Find the first positive number in two inputs
+#[julia]
+fn find_positive(a: i32, b: i32) -> Option<i32> {
+    if a > 0 {
+        Some(a)
+    } else if b > 0 {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+// ============================================================================
 // Simple Struct
 // ============================================================================
 
@@ -248,5 +298,60 @@ mod tests {
         assert!((r.area() - 12.0).abs() < 1e-10);
         assert!((r.perimeter() - 14.0).abs() < 1e-10);
         assert!(!r.is_square());
+    }
+
+    #[test]
+    fn test_safe_divide() {
+        // Success case
+        let result = safe_divide(10.0, 2.0);
+        assert_eq!(result.is_ok, 1);
+        assert!((result.ok_value - 5.0).abs() < 1e-10);
+
+        // Error case
+        let err_result = safe_divide(10.0, 0.0);
+        assert_eq!(err_result.is_ok, 0);
+        assert_eq!(err_result.err_value, -1);
+    }
+
+    #[test]
+    fn test_parse_positive() {
+        // Success case
+        let result = parse_positive(42);
+        assert_eq!(result.is_ok, 1);
+        assert_eq!(result.ok_value, 42);
+
+        // Error case
+        let err_result = parse_positive(-5);
+        assert_eq!(err_result.is_ok, 0);
+        assert_eq!(err_result.err_value, -5);
+    }
+
+    #[test]
+    fn test_safe_sqrt() {
+        // Some case
+        let result = safe_sqrt(4.0);
+        assert_eq!(result.is_some, 1);
+        assert!((result.value - 2.0).abs() < 1e-10);
+
+        // None case
+        let none_result = safe_sqrt(-1.0);
+        assert_eq!(none_result.is_some, 0);
+    }
+
+    #[test]
+    fn test_find_positive() {
+        // First positive
+        let result = find_positive(5, -3);
+        assert_eq!(result.is_some, 1);
+        assert_eq!(result.value, 5);
+
+        // Second positive
+        let result2 = find_positive(-1, 10);
+        assert_eq!(result2.is_some, 1);
+        assert_eq!(result2.value, 10);
+
+        // None case
+        let none_result = find_positive(-1, -2);
+        assert_eq!(none_result.is_some, 0);
     }
 }
