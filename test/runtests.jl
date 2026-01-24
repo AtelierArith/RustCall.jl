@@ -48,6 +48,9 @@ include("test_julia_attribute.jl")
 # Phase 6: Crate bindings tests (Maturin-like feature)
 include("test_crate_bindings.jl")
 
+# Hot reload tests
+include("test_hot_reload.jl")
+
 @testset "LastCall.jl" begin
 
     @testset "Type Mappings" begin

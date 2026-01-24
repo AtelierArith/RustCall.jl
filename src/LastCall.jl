@@ -67,6 +67,9 @@ include("julia_functions.jl")
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 
+# Hot reload support
+include("hot_reload.jl")
+
 # Export public API
 export @rust, @rust_str, @irust, @irust_str
 export RustPtr, RustRef, RustResult, RustOption
@@ -125,6 +128,13 @@ export clear_cargo_cache, get_cargo_cache_size
 export CrateInfo, CrateBindingOptions
 export scan_crate, generate_bindings, @rust_crate
 export write_bindings_to_file
+
+# Hot reload support
+export enable_hot_reload, disable_hot_reload, disable_all_hot_reload
+export is_hot_reload_enabled, list_hot_reload_crates
+export trigger_reload, set_hot_reload_global
+export enable_hot_reload_for_crate
+export HotReloadState
 
 # Module initialization
 function __init__()
