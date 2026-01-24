@@ -318,3 +318,135 @@ end
         @test_skip "Property access tests require successful binding generation"
     end
 end
+
+@testset "Precompilation Support" begin
+    if !isdir(SAMPLE_CRATE_PATH)
+        @warn "Sample crate not found, skipping precompilation tests"
+        return
+    end
+
+    # Check if cargo is available
+    try
+        run(pipeline(`cargo --version`, devnull))
+    catch
+        @warn "Cargo not available, skipping precompilation tests"
+        return
+    end
+
+    @testset "emit_crate_module_code" begin
+        # Test generating module code as a string
+        info = scan_crate(SAMPLE_CRATE_PATH)
+
+        # Test with absolute path
+        code = LastCall.emit_crate_module_code(info, "/tmp/test_lib.so")
+        @test occursin("module Samplecrate", code)
+        @test occursin("const _LIB_PATH = \"/tmp/test_lib.so\"", code)
+        @test occursin("function __init__()", code)
+        @test occursin("Libdl.dlopen", code)
+
+        # Test with relative path
+        code_rel = LastCall.emit_crate_module_code(info, "lib/libtest.so", use_relative_path=true)
+        @test occursin("const _LIB_PATH = joinpath(@__DIR__, \"lib/libtest.so\")", code_rel)
+
+        # Test with custom module name
+        code_named = LastCall.emit_crate_module_code(info, "/tmp/lib.so", module_name="CustomModule")
+        @test occursin("module CustomModule", code_named)
+    end
+
+    @testset "_emit_function_code" begin
+        # Create a simple function signature
+        func = LastCall.RustFunctionSignature(
+            "add",
+            ["a", "b"],
+            ["i32", "i32"],
+            "i32",
+            false,
+            String[]
+        )
+
+        code = LastCall._emit_function_code(func)
+        @test occursin("function add(a, b)", code)
+        @test occursin("export add", code)
+        @test occursin("_get_func_ptr(\"add\")", code)
+    end
+
+    @testset "_emit_struct_code" begin
+        # Create a simple struct info
+        struct_info = LastCall.RustStructInfo(
+            "Point",
+            String[],
+            [LastCall.RustMethod("new", true, false, ["x", "y"], ["f64", "f64"], "Self")],
+            "",
+            [("x", "f64"), ("y", "f64")],
+            true,
+            Dict{String, Bool}()
+        )
+
+        code = LastCall._emit_struct_code(struct_info)
+        @test occursin("mutable struct Point", code)
+        @test occursin("ptr::Ptr{Cvoid}", code)
+        @test occursin("finalizer", code)
+        @test occursin("Point_free", code)
+        @test occursin("export Point", code)
+        @test occursin("Base.getproperty", code)
+        @test occursin("Base.setproperty!", code)
+    end
+
+    @testset "write_bindings_to_file" begin
+        # Test writing bindings to a file
+        output_dir = mktempdir()
+        output_path = joinpath(output_dir, "TestBindings.jl")
+
+        try
+            result_path = write_bindings_to_file(
+                SAMPLE_CRATE_PATH,
+                output_path,
+                output_module_name = "TestBindings"
+            )
+
+            @test result_path == output_path
+            @test isfile(output_path)
+
+            # Read and verify content
+            content = read(output_path, String)
+            @test occursin("module TestBindings", content)
+            @test occursin("# Auto-generated bindings", content)
+            @test occursin("function __init__()", content)
+            @test occursin("export", content)
+        finally
+            rm(output_dir, recursive=true, force=true)
+        end
+    end
+
+    @testset "write_bindings_to_file with relative path" begin
+        # Test writing bindings with relative library path
+        output_dir = mktempdir()
+        output_path = joinpath(output_dir, "src", "Bindings.jl")
+        lib_rel_path = "../deps/lib"
+
+        try
+            result_path = write_bindings_to_file(
+                SAMPLE_CRATE_PATH,
+                output_path,
+                output_module_name = "RelativeBindings",
+                relative_lib_path = lib_rel_path
+            )
+
+            @test result_path == output_path
+            @test isfile(output_path)
+
+            # Verify library was copied
+            lib_dir = joinpath(output_dir, "src", lib_rel_path)
+            @test isdir(lib_dir)
+            libs = readdir(lib_dir)
+            @test !isempty(libs)
+
+            # Verify content uses relative path
+            content = read(output_path, String)
+            @test occursin("joinpath(@__DIR__", content)
+            @test occursin(lib_rel_path, content)
+        finally
+            rm(output_dir, recursive=true, force=true)
+        end
+    end
+end
