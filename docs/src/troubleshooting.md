@@ -217,12 +217,39 @@ A:
 
 ## Debugging Tips
 
-### 1. Enable verbose logging
+### 1. Enable debug logging
+
+LastCall.jl uses Julia's built-in Logging module with `@debug`, `@info`, `@warn`, and `@error` macros.
+
+**Option A: Environment variable (recommended)**
+
+Run Julia with the `JULIA_DEBUG` environment variable:
+
+```bash
+JULIA_DEBUG=LastCall julia -e 'using LastCall; ...'
+```
+
+Or set it within Julia before loading LastCall:
+
+```julia
+ENV["JULIA_DEBUG"] = "LastCall"
+using LastCall
+```
+
+**Option B: Global logger**
 
 ```julia
 using Logging
-# global_logger(ConsoleLogger(stderr, Logging.Debug))
+global_logger(ConsoleLogger(stderr, Logging.Debug))
+using LastCall
 ```
+
+Debug logging shows detailed information about:
+- Rust code compilation
+- Library loading and caching
+- Generic function registration and monomorphization
+- Function pointer resolution
+- Error recovery attempts
 
 ### 2. Clear cache
 

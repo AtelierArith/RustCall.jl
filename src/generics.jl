@@ -668,7 +668,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         # Pattern: fn actual_name(
         actual_name_match = match(r"fn\s+(\w+)\s*\(", specialized_code)
         if actual_name_match === nothing
-            println("DEBUG: Failed to find function name in specialized code:\n$specialized_code")
+            @debug "Failed to find function name in specialized code" specialized_code
             error("Could not find function name in specialized code")
         end
         actual_func_name = actual_name_match.captures[1]
@@ -881,7 +881,7 @@ end
 Check if a function is registered as a generic function.
 """
 function is_generic_function(func_name::String)
-    # println("DEBUG: Checking if $func_name is generic. Registry keys: ", keys(GENERIC_FUNCTION_REGISTRY))
+    @debug "Checking if function is generic" func_name registry_keys=collect(keys(GENERIC_FUNCTION_REGISTRY))
     return haskey(GENERIC_FUNCTION_REGISTRY, func_name)
 end
 
