@@ -27,6 +27,24 @@
 //! }
 //! ```
 //!
+//! ## Functions with Result/Option
+//!
+//! Functions returning `Result<T, E>` or `Option<T>` are automatically wrapped:
+//!
+//! ```rust,ignore
+//! use lastcall_macros::julia;
+//!
+//! #[julia]
+//! fn safe_divide(a: f64, b: f64) -> Option<f64> {
+//!     if b == 0.0 { None } else { Some(a / b) }
+//! }
+//!
+//! #[julia]
+//! fn parse_number(s: i32) -> Result<i32, i32> {
+//!     if s >= 0 { Ok(s * 2) } else { Err(-1) }
+//! }
+//! ```
+//!
 //! ## Structs
 //!
 //! The `#[julia]` attribute on structs adds `#[repr(C)]` and generates FFI functions:
@@ -47,7 +65,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, FnArg, Ident, ItemFn, ItemImpl, ItemStruct, Pat, ReturnType, Type, Visibility,
+    Attribute, FnArg, GenericArgument, Ident, ItemFn, ItemImpl, ItemStruct, Pat, PathArguments,
+    ReturnType, Type, Visibility,
 };
 
 /// Check if a type is FFI-compatible (primitive types that can be passed through C ABI)
@@ -96,6 +115,91 @@ fn needs_clone_for_getter(ty: &Type) -> bool {
             }
         }
         _ => false,
+    }
+}
+
+/// Information about a Result<T, E> type
+struct ResultTypeInfo {
+    ok_type: Type,
+    err_type: Type,
+}
+
+/// Information about an Option<T> type
+struct OptionTypeInfo {
+    inner_type: Type,
+}
+
+/// Check if a type is Result<T, E> and extract the type parameters
+fn extract_result_type(ty: &Type) -> Option<ResultTypeInfo> {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                if segment.ident == "Result" {
+                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                        let mut types = args.args.iter().filter_map(|arg| {
+                            if let GenericArgument::Type(t) = arg {
+                                Some(t.clone())
+                            } else {
+                                None
+                            }
+                        });
+                        if let (Some(ok_type), Some(err_type)) = (types.next(), types.next()) {
+                            return Some(ResultTypeInfo { ok_type, err_type });
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Check if a type is Option<T> and extract the inner type
+fn extract_option_type(ty: &Type) -> Option<OptionTypeInfo> {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                if segment.ident == "Option" {
+                    if let PathArguments::AngleBracketed(args) = &segment.arguments {
+                        if let Some(GenericArgument::Type(inner_type)) = args.args.first() {
+                            return Some(OptionTypeInfo {
+                                inner_type: inner_type.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Generate C-compatible Result type definition for a specific T, E
+fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) -> TokenStream2 {
+    let result_type_name = format_ident!("CResult_{}", func_name);
+
+    quote! {
+        #[repr(C)]
+        pub struct #result_type_name {
+            pub is_ok: u8,
+            pub ok_value: #ok_type,
+            pub err_value: #err_type,
+        }
+    }
+}
+
+/// Generate C-compatible Option type definition for a specific T
+fn generate_c_option_type(func_name: &Ident, inner_type: &Type) -> TokenStream2 {
+    let option_type_name = format_ident!("COption_{}", func_name);
+
+    quote! {
+        #[repr(C)]
+        pub struct #option_type_name {
+            pub is_some: u8,
+            pub value: #inner_type,
+        }
     }
 }
 
@@ -155,7 +259,7 @@ pub fn julia(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Transform a function with #[julia] attribute to FFI-compatible form
-fn transform_function(mut func: ItemFn) -> TokenStream2 {
+fn transform_function(func: ItemFn) -> TokenStream2 {
     // Check for unsafe functions
     if func.sig.unsafety.is_some() {
         return quote! {
@@ -163,6 +267,22 @@ fn transform_function(mut func: ItemFn) -> TokenStream2 {
         };
     }
 
+    // Check if the return type is Result<T, E> or Option<T>
+    if let ReturnType::Type(_, ref ret_type) = func.sig.output {
+        if let Some(result_info) = extract_result_type(ret_type) {
+            return transform_result_function(func, result_info);
+        }
+        if let Some(option_info) = extract_option_type(ret_type) {
+            return transform_option_function(func, option_info);
+        }
+    }
+
+    // Standard function transformation
+    transform_simple_function(func)
+}
+
+/// Transform a simple function (no Result/Option) to FFI-compatible form
+fn transform_simple_function(mut func: ItemFn) -> TokenStream2 {
     // Add #[no_mangle]
     let no_mangle: Attribute = syn::parse_quote!(#[no_mangle]);
     func.attrs.insert(0, no_mangle);
@@ -172,6 +292,115 @@ fn transform_function(mut func: ItemFn) -> TokenStream2 {
     func.sig.abi = Some(syn::parse_quote!(extern "C"));
 
     quote! { #func }
+}
+
+/// Transform a function returning Result<T, E> to FFI-compatible form
+fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> TokenStream2 {
+    let func_name = &func.sig.ident;
+    let ok_type = &result_info.ok_type;
+    let err_type = &result_info.err_type;
+
+    // Generate C-compatible result type
+    let c_result_type = generate_c_result_type(func_name, ok_type, err_type);
+    let result_type_name = format_ident!("CResult_{}", func_name);
+
+    // Collect function arguments
+    let args: Vec<_> = func.sig.inputs.iter().collect();
+    let arg_names: Vec<_> = func
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                    return Some(pat_ident.ident.clone());
+                }
+            }
+            None
+        })
+        .collect();
+
+    // Get the original function body
+    let body = &func.block;
+
+    // Create the inner function that returns Result
+    let inner_fn_name = format_ident!("{}_inner", func_name);
+    let inner_fn_args = &func.sig.inputs;
+
+    quote! {
+        #c_result_type
+
+        fn #inner_fn_name(#inner_fn_args) -> Result<#ok_type, #err_type> #body
+
+        #[no_mangle]
+        pub extern "C" fn #func_name(#(#args),*) -> #result_type_name {
+            match #inner_fn_name(#(#arg_names),*) {
+                Ok(value) => #result_type_name {
+                    is_ok: 1,
+                    ok_value: value,
+                    err_value: unsafe { std::mem::zeroed() },
+                },
+                Err(err) => #result_type_name {
+                    is_ok: 0,
+                    ok_value: unsafe { std::mem::zeroed() },
+                    err_value: err,
+                },
+            }
+        }
+    }
+}
+
+/// Transform a function returning Option<T> to FFI-compatible form
+fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> TokenStream2 {
+    let func_name = &func.sig.ident;
+    let inner_type = &option_info.inner_type;
+
+    // Generate C-compatible option type
+    let c_option_type = generate_c_option_type(func_name, inner_type);
+    let option_type_name = format_ident!("COption_{}", func_name);
+
+    // Collect function arguments
+    let args: Vec<_> = func.sig.inputs.iter().collect();
+    let arg_names: Vec<_> = func
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| {
+            if let FnArg::Typed(pat_type) = arg {
+                if let Pat::Ident(pat_ident) = pat_type.pat.as_ref() {
+                    return Some(pat_ident.ident.clone());
+                }
+            }
+            None
+        })
+        .collect();
+
+    // Get the original function body
+    let body = &func.block;
+
+    // Create the inner function that returns Option
+    let inner_fn_name = format_ident!("{}_inner", func_name);
+    let inner_fn_args = &func.sig.inputs;
+
+    quote! {
+        #c_option_type
+
+        fn #inner_fn_name(#inner_fn_args) -> Option<#inner_type> #body
+
+        #[no_mangle]
+        pub extern "C" fn #func_name(#(#args),*) -> #option_type_name {
+            match #inner_fn_name(#(#arg_names),*) {
+                Some(value) => #option_type_name {
+                    is_some: 1,
+                    value,
+                },
+                None => #option_type_name {
+                    is_some: 0,
+                    value: unsafe { std::mem::zeroed() },
+                },
+            }
+        }
+    }
 }
 
 /// Transform a struct with #[julia] attribute

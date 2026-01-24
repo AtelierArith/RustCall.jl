@@ -14,6 +14,56 @@ pub fn public_multiply(a: f64, b: f64) -> f64 {
     a * b
 }
 
+// ============================================================================
+// Result<T, E> tests
+// ============================================================================
+
+// Test Result<T, E> returning function
+#[julia]
+fn divide(a: f64, b: f64) -> Result<f64, i32> {
+    if b == 0.0 {
+        Err(-1)
+    } else {
+        Ok(a / b)
+    }
+}
+
+// Test Result with different types
+#[julia]
+fn parse_positive(n: i32) -> Result<u32, i32> {
+    if n >= 0 {
+        Ok(n as u32)
+    } else {
+        Err(n)
+    }
+}
+
+// ============================================================================
+// Option<T> tests
+// ============================================================================
+
+// Test Option<T> returning function
+#[julia]
+fn safe_divide(a: f64, b: f64) -> Option<f64> {
+    if b == 0.0 {
+        None
+    } else {
+        Some(a / b)
+    }
+}
+
+// Test Option with integer type
+#[julia]
+fn find_first_positive(a: i32, b: i32) -> Option<i32> {
+    if a > 0 {
+        Some(a)
+    } else if b > 0 {
+        Some(b)
+    } else {
+        None
+    }
+}
+
 // Test that #[julia] on structs compiles correctly
 #[julia]
 pub struct TestPoint {
@@ -66,6 +116,55 @@ fn main() {
     Counter_increment(counter_ptr);
     assert_eq!(Counter_get_value(counter_ptr), 11);
     Counter_free(counter_ptr);
+
+    // Test Result<T, E> functions
+    println!("Testing Result<T, E> functions...");
+
+    // Test divide (success case)
+    let div_result = divide(10.0, 2.0);
+    assert_eq!(div_result.is_ok, 1);
+    assert!((div_result.ok_value - 5.0).abs() < 1e-10);
+
+    // Test divide (error case - division by zero)
+    let div_err = divide(10.0, 0.0);
+    assert_eq!(div_err.is_ok, 0);
+    assert_eq!(div_err.err_value, -1);
+
+    // Test parse_positive (success case)
+    let parse_result = parse_positive(42);
+    assert_eq!(parse_result.is_ok, 1);
+    assert_eq!(parse_result.ok_value, 42);
+
+    // Test parse_positive (error case)
+    let parse_err = parse_positive(-5);
+    assert_eq!(parse_err.is_ok, 0);
+    assert_eq!(parse_err.err_value, -5);
+
+    // Test Option<T> functions
+    println!("Testing Option<T> functions...");
+
+    // Test safe_divide (Some case)
+    let opt_result = safe_divide(10.0, 2.0);
+    assert_eq!(opt_result.is_some, 1);
+    assert!((opt_result.value - 5.0).abs() < 1e-10);
+
+    // Test safe_divide (None case)
+    let opt_none = safe_divide(10.0, 0.0);
+    assert_eq!(opt_none.is_some, 0);
+
+    // Test find_first_positive (Some case - first arg)
+    let find_result = find_first_positive(5, -3);
+    assert_eq!(find_result.is_some, 1);
+    assert_eq!(find_result.value, 5);
+
+    // Test find_first_positive (Some case - second arg)
+    let find_result2 = find_first_positive(-1, 10);
+    assert_eq!(find_result2.is_some, 1);
+    assert_eq!(find_result2.value, 10);
+
+    // Test find_first_positive (None case)
+    let find_none = find_first_positive(-1, -2);
+    assert_eq!(find_none.is_some, 0);
 
     println!("All tests passed!");
 }
