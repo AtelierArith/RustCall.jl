@@ -349,6 +349,102 @@ factorial(UInt64(10))  # => 3628800
 fibonacci(UInt32(20))  # => 6765
 ```
 
+## Precompilation Support
+
+For package development, you can generate bindings to a file that will be precompiled with your package, improving startup time.
+
+### Generating Bindings to a File
+
+```julia
+using LastCall
+
+# Generate bindings and write to a file
+write_bindings_to_file(
+    "deps/my_rust_crate",              # Path to Rust crate
+    "src/generated/MyRustBindings.jl", # Output file
+    output_module_name = "MyRust",
+    relative_lib_path = "../deps/lib"  # Path relative to the output file
+)
+```
+
+### Package Development Workflow
+
+1. **Set up your package structure**:
+   ```
+   MyPackage/
+   ├── Project.toml
+   ├── src/
+   │   ├── MyPackage.jl
+   │   └── generated/
+   │       └── MyRustBindings.jl  # Generated bindings
+   ├── deps/
+   │   ├── my_rust_crate/         # Your Rust crate
+   │   └── lib/                   # Compiled library
+   └── test/
+   ```
+
+2. **Generate bindings during development**:
+   ```julia
+   using LastCall
+   write_bindings_to_file(
+       "deps/my_rust_crate",
+       "src/generated/MyRustBindings.jl",
+       output_module_name = "MyRust",
+       relative_lib_path = "../deps/lib"
+   )
+   ```
+
+3. **Include in your package**:
+   ```julia
+   # In src/MyPackage.jl
+   module MyPackage
+
+   include("generated/MyRustBindings.jl")
+   using .MyRust
+
+   # Re-export functions if desired
+   export add, multiply
+
+   end
+   ```
+
+4. **The generated file uses `@__DIR__`** for library paths, ensuring it works when the package is installed elsewhere.
+
+### API Reference
+
+#### `write_bindings_to_file`
+
+```julia
+write_bindings_to_file(
+    crate_path::String,
+    output_path::String;
+    output_module_name = nothing,
+    build_release = true,
+    relative_lib_path = nothing
+) -> String
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `crate_path` | `String` | Path to the Rust crate |
+| `output_path` | `String` | Path for the generated Julia file |
+| `output_module_name` | `String` | Name for the generated module |
+| `build_release` | `Bool` | Build in release mode |
+| `relative_lib_path` | `String` | Path for library relative to output file |
+
+#### `emit_crate_module_code`
+
+```julia
+emit_crate_module_code(
+    info::CrateInfo,
+    lib_path::String;
+    module_name = nothing,
+    use_relative_path = false
+) -> String
+```
+
+Returns the generated Julia module code as a string.
+
 ## Troubleshooting
 
 ### Crate not building
@@ -368,3 +464,10 @@ Check that:
 ### Type errors
 
 Ensure you're using the correct Julia types that match the Rust function signatures.
+
+### Precompilation issues
+
+If you encounter precompilation issues:
+- Ensure the library path is correct (use `relative_lib_path` for portable packages)
+- Check that the library was copied to the correct location
+- Verify the generated code compiles without errors
