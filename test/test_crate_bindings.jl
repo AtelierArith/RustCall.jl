@@ -339,7 +339,7 @@ end
 
         # Test with absolute path
         code = LastCall.emit_crate_module_code(info, "/tmp/test_lib.so")
-        @test occursin("module Samplecrate", code)
+        @test occursin("module SampleCrate", code)
         @test occursin("const _LIB_PATH = \"/tmp/test_lib.so\"", code)
         @test occursin("function __init__()", code)
         @test occursin("Libdl.dlopen", code)

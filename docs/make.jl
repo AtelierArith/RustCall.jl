@@ -36,6 +36,9 @@ makedocs(
             "Internal" => "design/INTERNAL.md",
             "LLVM Call" => "design/LLVMCALL.md",
         ],
+        "Platforms" => [
+            "Windows" => "platforms/windows.md",
+        ],
     ],
 )
 
