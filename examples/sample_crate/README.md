@@ -87,35 +87,54 @@ cargo build --release
 ```julia
 using LastCall
 
-# クレートをバインド
-@rust_crate "examples/sample_crate"
+# クレートをバインド (絶対パスを推奨)
+# プロジェクトルートから実行する場合:
+sample_crate_path = joinpath(dirname(dirname(pathof(LastCall))), "examples", "sample_crate")
+@rust_crate sample_crate_path
 
-# 関数の呼び出し
-add(2, 3)           # => 5
-multiply(2.0, 3.0)  # => 6.0
-fibonacci(10)       # => 55
-is_prime(7)         # => true
+# または直接パスを指定:
+# @rust_crate "/full/path/to/LastCall.jl/examples/sample_crate"
+
+# カスタムモジュール名を使用する場合:
+# @rust_crate sample_crate_path name="SC"
+
+# 生成されたモジュール (Samplecrate) を通じて関数を呼び出す
+Samplecrate.add(Int32(2), Int32(3))           # => 5
+Samplecrate.multiply(2.0, 3.0)                # => 6.0
+Samplecrate.fibonacci(UInt32(10))             # => 55
+Samplecrate.is_prime(UInt32(7))               # => true
 
 # Result型を返す関数
-safe_divide(10.0, 2.0)  # => 5.0 (成功時)
-safe_divide(10.0, 0.0)  # => エラー
+Samplecrate.safe_divide(10.0, 2.0)  # => 5.0 (成功時)
+Samplecrate.safe_divide(10.0, 0.0)  # => エラー (DivisionByZero)
 
 # Option型を返す関数
-safe_sqrt(4.0)   # => 2.0 (Some)
-safe_sqrt(-1.0)  # => nothing (None)
+Samplecrate.safe_sqrt(4.0)   # => 2.0 (Some)
+Samplecrate.safe_sqrt(-1.0)  # => nothing (None)
 
 # 構造体の使用
-p = Point_new(3.0, 4.0)
-Point_distance_from_origin(p)  # => 5.0
+p = Samplecrate.Point(3.0, 4.0)
+Samplecrate.distance_from_origin(p)  # => 5.0
 
-c = Counter_new(0)
-Counter_increment(c)
-Counter_get(c)  # => 1
+# プロパティアクセス構文でフィールドにアクセス
+p.x  # => 3.0
+p.y  # => 4.0
 
-r = Rectangle_new(3.0, 4.0)
-Rectangle_area(r)       # => 12.0
-Rectangle_is_square(r)  # => false
+c = Samplecrate.Counter(Int32(0))
+Samplecrate.increment(c)
+Samplecrate.get(c)  # => 1
+c.value             # => 1 (プロパティアクセス)
+
+r = Samplecrate.Rectangle(3.0, 4.0)
+Samplecrate.area(r)       # => 12.0
+Samplecrate.is_square(r)  # => false
 ```
+
+**注意事項:**
+- `@rust_crate` は絶対パスまたは `joinpath` を使用したパス指定を推奨します
+- 生成されるモジュール名はクレート名のアンダースコアを除いた `titlecase` 形式です（例: `sample_crate` → `Samplecrate`）
+- `name="CustomName"` オプションでカスタムモジュール名を指定できます
+- 整数型は `Int32` や `UInt32` などの具体的な型を使用してください
 
 ## テスト
 
