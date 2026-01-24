@@ -193,6 +193,51 @@ end
 
 end
 
+@testset "Result and Option Type Parsing" begin
+    # Test Result<T, E> parsing
+    @testset "parse_result_type" begin
+        result_info = LastCall.parse_result_type("Result<f64, i32>")
+        @test result_info !== nothing
+        @test result_info.ok_type == "f64"
+        @test result_info.err_type == "i32"
+
+        result_info2 = LastCall.parse_result_type("Result<u32, i32>")
+        @test result_info2 !== nothing
+        @test result_info2.ok_type == "u32"
+        @test result_info2.err_type == "i32"
+
+        # Non-Result types should return nothing
+        @test LastCall.parse_result_type("i32") === nothing
+        @test LastCall.parse_result_type("Option<i32>") === nothing
+    end
+
+    # Test Option<T> parsing
+    @testset "parse_option_type" begin
+        option_info = LastCall.parse_option_type("Option<f64>")
+        @test option_info !== nothing
+        @test option_info.inner_type == "f64"
+
+        option_info2 = LastCall.parse_option_type("Option<i32>")
+        @test option_info2 !== nothing
+        @test option_info2.inner_type == "i32"
+
+        # Non-Option types should return nothing
+        @test LastCall.parse_option_type("i32") === nothing
+        @test LastCall.parse_option_type("Result<i32, i32>") === nothing
+    end
+
+    # Test is_result_type and is_option_type
+    @testset "type detection" begin
+        @test LastCall.is_result_type("Result<f64, i32>")
+        @test !LastCall.is_result_type("Option<f64>")
+        @test !LastCall.is_result_type("i32")
+
+        @test LastCall.is_option_type("Option<f64>")
+        @test !LastCall.is_option_type("Result<f64, i32>")
+        @test !LastCall.is_option_type("i32")
+    end
+end
+
 # Property access tests - run in a separate Julia process for top-level module evaluation
 const _PROPERTY_TEST_MODULE_AVAILABLE = Ref(false)
 
