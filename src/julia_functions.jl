@@ -34,13 +34,14 @@ Returns a vector of `RustFunctionSignature` for each `#[julia]` marked function.
 function parse_julia_functions(code::String)
     signatures = RustFunctionSignature[]
 
-    # Pattern to match #[julia] followed by fn definition
+    # Pattern to match #[julia] or #[julia_pyo3] followed by fn definition
     # Handles:
     # - #[julia] fn name(...)
+    # - #[julia_pyo3] fn name(...)
     # - #[julia] pub fn name(...)
     # - #[julia]\npub fn name(...)
     # - #[julia] fn name<T>(...)
-    pattern = r"#\[julia\]\s*(?:pub\s+)?fn\s+(\w+)\s*(?:<([^>]+)>)?\s*\(([^)]*)\)(?:\s*->\s*([^\{]+))?\s*\{"
+    pattern = r"#\[julia(?:_pyo3)?\]\s*(?:pub\s+)?fn\s+(\w+)\s*(?:<([^>]+)>)?\s*\(([^)]*)\)(?:\s*->\s*([^\{]+))?\s*\{"
 
     for m in eachmatch(pattern, code)
         func_name = String(m.captures[1])
@@ -487,8 +488,8 @@ end
 """
     has_julia_attribute(code::String) -> Bool
 
-Check if the code contains any `#[julia]` attributes.
+Check if the code contains any `#[julia]` or `#[julia_pyo3]` attributes.
 """
 function has_julia_attribute(code::String)
-    return occursin(r"#\[julia\]", code)
+    return occursin(r"#\[julia(?:_pyo3)?\]", code)
 end

@@ -175,13 +175,13 @@ end
 """
     parse_julia_structs_from_source(code::String) -> Vector{RustStructInfo}
 
-Parse Rust source code and extract structs marked with #[julia].
+Parse Rust source code and extract structs marked with #[julia] or #[julia_pyo3].
 """
 function parse_julia_structs_from_source(code::String)
     structs = RustStructInfo[]
 
-    # Pattern to match #[julia] pub struct or #[julia] struct
-    pattern = r"#\[julia\]\s*(?:pub\s+)?struct\s+([A-Z]\w*)\s*(?:<([^>]+)>)?\s*\{"
+    # Pattern to match #[julia] or #[julia_pyo3] pub struct or struct
+    pattern = r"#\[julia(?:_pyo3)?\]\s*(?:pub\s+)?struct\s+([A-Z]\w*)\s*(?:<([^>]+)>)?\s*\{"
 
     for m in eachmatch(pattern, code)
         struct_name = String(m.captures[1])
@@ -226,22 +226,52 @@ end
 """
     parse_impl_methods_for_struct(code::String, struct_name::String) -> Vector{RustMethod}
 
-Parse impl blocks for a struct and extract methods marked with #[julia].
+Parse impl blocks for a struct and extract methods marked with #[julia] or #[julia_pyo3].
+If the impl block itself has #[julia_pyo3], all pub fn methods are captured.
 """
 function parse_impl_methods_for_struct(code::String, struct_name::String)
     methods = RustMethod[]
 
-    # Pattern to find impl blocks for the struct (with optional #[julia] attribute before)
-    impl_pattern = Regex("(?:#\\[julia\\]\\s*)?impl(?:\\s*<[^>]+>)?\\s+$struct_name(?:\\s*<[^>]+>)?\\s*\\{")
+    # Pattern to find impl blocks with #[julia_pyo3] attribute (captures ALL pub fn)
+    impl_pattern_pyo3 = Regex("#\\[julia_pyo3\\]\\s*impl(?:\\s*<[^>]+>)?\\s+$struct_name(?:\\s*<[^>]+>)?\\s*\\{")
 
-    for impl_match in eachmatch(impl_pattern, code)
-        # Extract the impl block
+    # Pattern to find regular impl blocks (only captures #[julia] methods)
+    impl_pattern_regular = Regex("(?<!#\\[julia_pyo3\\]\\s)impl(?:\\s*<[^>]+>)?\\s+$struct_name(?:\\s*<[^>]+>)?\\s*\\{")
+
+    # First, process #[julia_pyo3] impl blocks - capture ALL pub fn methods
+    for impl_match in eachmatch(impl_pattern_pyo3, code)
         impl_block = extract_block_at(code, impl_match.offset)
         if impl_block === nothing
             continue
         end
 
-        # Find #[julia] annotated methods within the impl block
+        # Match ALL pub fn methods in this impl block
+        method_pattern = r"pub\s+fn\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^\{]+))?\s*\{"
+
+        for method_match in eachmatch(method_pattern, impl_block)
+            method_name = String(method_match.captures[1])
+            args_str = method_match.captures[2] !== nothing ? String(method_match.captures[2]) : ""
+            return_type = method_match.captures[3] !== nothing ? strip(String(method_match.captures[3])) : "()"
+
+            is_static = !occursin("self", args_str)
+            is_mutable = occursin("&mut self", args_str)
+
+            arg_names = String[]
+            arg_types = String[]
+            _parse_method_args!(arg_names, arg_types, args_str)
+
+            push!(methods, RustMethod(method_name, is_static, is_mutable, arg_names, arg_types, return_type))
+        end
+    end
+
+    # Then, process regular impl blocks with #[julia] on individual methods
+    for impl_match in eachmatch(impl_pattern_regular, code)
+        impl_block = extract_block_at(code, impl_match.offset)
+        if impl_block === nothing
+            continue
+        end
+
+        # Only match methods with explicit #[julia] attribute
         method_pattern = r"#\[julia\]\s*pub\s+fn\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^\{]+))?\s*\{"
 
         for method_match in eachmatch(method_pattern, impl_block)
@@ -249,16 +279,17 @@ function parse_impl_methods_for_struct(code::String, struct_name::String)
             args_str = method_match.captures[2] !== nothing ? String(method_match.captures[2]) : ""
             return_type = method_match.captures[3] !== nothing ? strip(String(method_match.captures[3])) : "()"
 
-            # Determine if it's static/mutable based on self parameter
             is_static = !occursin("self", args_str)
             is_mutable = occursin("&mut self", args_str)
 
-            # Parse arguments (excluding self)
             arg_names = String[]
             arg_types = String[]
             _parse_method_args!(arg_names, arg_types, args_str)
 
-            push!(methods, RustMethod(method_name, is_static, is_mutable, arg_names, arg_types, return_type))
+            # Avoid duplicates
+            if !any(m -> m.name == method_name, methods)
+                push!(methods, RustMethod(method_name, is_static, is_mutable, arg_names, arg_types, return_type))
+            end
         end
     end
 
