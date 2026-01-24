@@ -45,6 +45,9 @@ include("test_julia_to_rust_generic.jl")
 # Phase 5: #[julia] attribute tests
 include("test_julia_attribute.jl")
 
+# Phase 6: Crate bindings tests (Maturin-like feature)
+include("test_crate_bindings.jl")
+
 @testset "LastCall.jl" begin
 
     @testset "Type Mappings" begin
