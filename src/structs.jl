@@ -330,20 +330,75 @@ function extract_block_at(code::String, start_idx::Int)
     count = 1
     idx = brace_idx + 1
     in_string = false
-    string_char = nothing
+    in_char = false
+    in_line_comment = false
+    in_block_comment = false
 
     while idx <= ncodeunits(code)
         char = code[idx]
+        prev_char = idx > 1 ? code[prevind(code, idx)] : '\0'
+        next_idx = nextind(code, idx)
+        next_char = next_idx <= ncodeunits(code) ? code[next_idx] : '\0'
 
-        if char == '"' || char == '\''
-            if !in_string
-                in_string = true
-                string_char = char
-            elseif char == string_char
-                in_string = false
-                string_char = nothing
+        # Handle line comments
+        if !in_string && !in_char && !in_block_comment && char == '/' && next_char == '/'
+            in_line_comment = true
+            idx = next_idx
+            idx = nextind(code, idx)
+            continue
+        end
+
+        # End of line comment
+        if in_line_comment && char == '\n'
+            in_line_comment = false
+            idx = nextind(code, idx)
+            continue
+        end
+
+        # Skip if in line comment
+        if in_line_comment
+            idx = nextind(code, idx)
+            continue
+        end
+
+        # Handle block comments
+        if !in_string && !in_char && !in_block_comment && char == '/' && next_char == '*'
+            in_block_comment = true
+            idx = next_idx
+            idx = nextind(code, idx)
+            continue
+        end
+
+        # End of block comment
+        if in_block_comment && char == '*' && next_char == '/'
+            in_block_comment = false
+            idx = next_idx
+            idx = nextind(code, idx)
+            continue
+        end
+
+        # Skip if in block comment
+        if in_block_comment
+            idx = nextind(code, idx)
+            continue
+        end
+
+        # Handle strings (double quotes)
+        if char == '"' && prev_char != '\\'
+            if !in_char
+                in_string = !in_string
             end
-        elseif !in_string
+        # Handle character literals (single quotes) - they are exactly 'c' or '\x'
+        elseif char == '\'' && !in_string
+            if !in_char
+                # Start of character literal - check if it looks valid
+                # Rust char literals are: 'a', '\n', '\x00', '\u{...}'
+                # For simplicity, just toggle in_char and expect closing ' within ~10 chars
+                in_char = true
+            else
+                in_char = false
+            end
+        elseif !in_string && !in_char
             if char == '{'
                 count += 1
             elseif char == '}'

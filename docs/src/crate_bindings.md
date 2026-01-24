@@ -78,6 +78,10 @@ result = MyLibrary.add(1, 2)  # => 3
 c = MyLibrary.Counter(0)
 MyLibrary.increment(c)
 MyLibrary.get(c)  # => 1
+
+# Struct fields support property access syntax
+c.value        # => 1 (calls get_value)
+c.value = 5    # calls set_value
 ```
 
 ## The `#[julia]` Attribute
@@ -120,6 +124,15 @@ This generates:
 - `Point_get_x(ptr)` / `Point_set_x(ptr, value)` - Field accessors
 - `Point_get_y(ptr)` / `Point_set_y(ptr, value)` - Field accessors
 
+On the Julia side, you can access struct fields naturally:
+
+```julia
+p = MyModule.Point(3.0, 4.0)
+p.x      # => 3.0 (uses Point_get_x)
+p.y      # => 4.0 (uses Point_get_y)
+p.x = 5.0  # (uses Point_set_x)
+```
+
 ### For Impl Blocks
 
 ```rust
@@ -140,6 +153,29 @@ impl Counter {
 This generates FFI wrappers:
 - `Counter_new(initial)` - Returns `*mut Counter`
 - `Counter_get(ptr)` - Takes `*const Counter`, returns `i32`
+
+## Property Access Syntax
+
+Generated struct wrappers support Julia's property access syntax for natural field access:
+
+```julia
+# Instead of calling accessor functions directly:
+get_x(p)
+set_x(p, 5.0)
+
+# You can use dot notation:
+p.x        # Get field value
+p.x = 5.0  # Set field value
+```
+
+This works for all FFI-compatible field types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `usize`, `isize`).
+
+You can also use `propertynames()` to list available fields:
+
+```julia
+p = MyModule.Point(1.0, 2.0)
+propertynames(p)  # => (:x, :y)
+```
 
 ## API Reference
 
