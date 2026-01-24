@@ -461,7 +461,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
     mod_name = if module_name !== nothing
         Symbol(module_name)
     else
-        Symbol(titlecase(replace(info.name, "_" => "")))
+        Symbol(snake_to_pascal(info.name))
     end
 
     # Generate function wrappers
@@ -1121,7 +1121,7 @@ macro rust_crate(path, options...)
             build_release = $release,
             cache_enabled = $cache
         )
-        eval(bindings)
+        Core.eval($__module__, bindings)
     end
 end
 
@@ -1276,7 +1276,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     mod_name = if module_name !== nothing
         module_name
     else
-        titlecase(replace(info.name, "_" => ""))
+        snake_to_pascal(info.name)
     end
 
     lines = String[]

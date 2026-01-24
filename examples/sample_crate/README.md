@@ -6,6 +6,58 @@
 
 このクレートは、LastCall.jl の `@rust_crate` マクロを使って外部Rustクレートをバインドする機能のテスト・デモンストレーション用に作成されています。
 
+## Juliaからの使用例
+
+### 基本的な使い方（REPL）
+
+```julia
+using LastCall
+
+sample_crate_path = joinpath(pkgdir(LastCall), "examples", "sample_crate")
+@rust_crate sample_crate_path
+
+# 生成されたモジュール (SampleCrate) を通じて関数を呼び出す
+SampleCrate.add(Int32(2), Int32(3))  # => 5
+
+# 構造体の使用
+p = SampleCrate.Point(3.0, 4.0)
+SampleCrate.distance_from_origin(p)  # => 5.0
+
+# プロパティアクセス
+p.x  # => 3.0
+p.y  # => 4.0
+```
+
+### テストでの使い方
+
+```julia
+using Test
+using Pkg
+
+Pkg.activate(joinpath(@__DIR__, "..", ".."))
+
+using LastCall
+
+sample_crate_path = joinpath(pkgdir(LastCall), "examples", "sample_crate")
+@rust_crate sample_crate_path
+
+@testset "SampleCrate" begin
+    @testset "Point" begin
+        p = SampleCrate.Point(3.0, 4.0)
+        @test SampleCrate.distance_from_origin(p) == 5.0
+        @test p.x == 3.0
+        @test p.y == 4.0
+    end
+
+    @testset "基本関数" begin
+        @test SampleCrate.add(Int32(2), Int32(3)) == Int32(5)
+        @test SampleCrate.multiply(2.0, 3.0) == 6.0
+        @test SampleCrate.fibonacci(UInt32(10)) == UInt64(55)
+        @test SampleCrate.is_prime(UInt32(7)) == true
+    end
+end
+```
+
 ## 含まれる機能
 
 ### 単純な関数
@@ -34,6 +86,7 @@
 ### 構造体
 
 #### Point
+
 2D座標を表す構造体。
 
 ```rust
@@ -47,6 +100,7 @@ pub struct Point { pub x: f64, pub y: f64 }
 - `translate(&mut self, dx, dy)` - 点を移動
 
 #### Counter
+
 可変状態を持つカウンター。
 
 ```rust
@@ -62,6 +116,7 @@ pub struct Counter { pub value: i32 }
 - `reset(&mut self)` - ゼロにリセット
 
 #### Rectangle
+
 長方形を表す構造体。
 
 ```rust
@@ -75,70 +130,23 @@ pub struct Rectangle { pub width: f64, pub height: f64 }
 - `is_square(&self)` - 正方形かどうか判定
 - `scale(&mut self, factor)` - スケーリング
 
-## ビルド方法
+## 注意事項
+
+- `@rust_crate` は絶対パスまたは `joinpath` を使用したパス指定を推奨
+- `pkgdir(LastCall)` でパッケージのルートディレクトリを取得可能
+- 生成されたモジュールは呼び出し元のスコープに直接定義される
+- モジュール名はクレート名をPascalCaseに変換（例: `sample_crate` → `SampleCrate`）
+- `name="CustomName"` オプションでカスタムモジュール名を指定可能
+- 整数型は `Int32` や `UInt32` などの具体的な型を使用
+
+## ビルド
 
 ```bash
 cd examples/sample_crate
 cargo build --release
 ```
 
-## Juliaからの使用例
-
-```julia
-using LastCall
-
-# クレートをバインド (絶対パスを推奨)
-# プロジェクトルートから実行する場合:
-sample_crate_path = joinpath(dirname(dirname(pathof(LastCall))), "examples", "sample_crate")
-@rust_crate sample_crate_path
-
-# または直接パスを指定:
-# @rust_crate "/full/path/to/LastCall.jl/examples/sample_crate"
-
-# カスタムモジュール名を使用する場合:
-# @rust_crate sample_crate_path name="SC"
-
-# 生成されたモジュール (Samplecrate) を通じて関数を呼び出す
-Samplecrate.add(Int32(2), Int32(3))           # => 5
-Samplecrate.multiply(2.0, 3.0)                # => 6.0
-Samplecrate.fibonacci(UInt32(10))             # => 55
-Samplecrate.is_prime(UInt32(7))               # => true
-
-# Result型を返す関数
-Samplecrate.safe_divide(10.0, 2.0)  # => 5.0 (成功時)
-Samplecrate.safe_divide(10.0, 0.0)  # => エラー (DivisionByZero)
-
-# Option型を返す関数
-Samplecrate.safe_sqrt(4.0)   # => 2.0 (Some)
-Samplecrate.safe_sqrt(-1.0)  # => nothing (None)
-
-# 構造体の使用
-p = Samplecrate.Point(3.0, 4.0)
-Samplecrate.distance_from_origin(p)  # => 5.0
-
-# プロパティアクセス構文でフィールドにアクセス
-p.x  # => 3.0
-p.y  # => 4.0
-
-c = Samplecrate.Counter(Int32(0))
-Samplecrate.increment(c)
-Samplecrate.get(c)  # => 1
-c.value             # => 1 (プロパティアクセス)
-
-r = Samplecrate.Rectangle(3.0, 4.0)
-Samplecrate.area(r)       # => 12.0
-Samplecrate.is_square(r)  # => false
-```
-
-**注意事項:**
-- `@rust_crate` は絶対パスまたは `joinpath` を使用したパス指定を推奨します
-- 生成されるモジュール名はクレート名のアンダースコアを除いた `titlecase` 形式です（例: `sample_crate` → `Samplecrate`）
-- `name="CustomName"` オプションでカスタムモジュール名を指定できます
-- 整数型は `Int32` や `UInt32` などの具体的な型を使用してください
-
-## テスト
-
-Rustテストの実行:
+## Rustテスト
 
 ```bash
 cargo test

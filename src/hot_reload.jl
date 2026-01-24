@@ -500,8 +500,8 @@ function enable_hot_reload_for_crate(crate_path::String; kwargs...)
     cargo_toml = TOML.parsefile(cargo_toml_path)
     crate_name = cargo_toml["package"]["name"]
 
-    # The module name is typically the crate name with first letter capitalized
-    lib_name = titlecase(replace(crate_name, "_" => ""))
+    # The module name is the crate name converted to PascalCase
+    lib_name = snake_to_pascal(crate_name)
 
     return enable_hot_reload(lib_name, crate_path; kwargs...)
 end

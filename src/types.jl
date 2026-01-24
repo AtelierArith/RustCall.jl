@@ -1,5 +1,34 @@
 # Rust type representations in Julia
 
+# Utility functions
+
+"""
+    snake_to_pascal(s::AbstractString) -> String
+
+Convert a snake_case or kebab-case string to PascalCase (CamelCase).
+Handles both underscore (`_`) and hyphen (`-`) as separators.
+
+# Examples
+```julia
+julia> snake_to_pascal("sample_crate")
+"SampleCrate"
+
+julia> snake_to_pascal("my_rust_lib")
+"MyRustLib"
+
+julia> snake_to_pascal("sample-rs")
+"SampleRs"
+
+julia> snake_to_pascal("my-rust-lib")
+"MyRustLib"
+```
+"""
+function snake_to_pascal(s::AbstractString)
+    return join(uppercasefirst.(split(s, r"[_-]")))
+end
+
+# Type definitions
+
 """
     RustPtr{T}
 
