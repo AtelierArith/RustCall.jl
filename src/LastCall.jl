@@ -124,6 +124,7 @@ export clear_cargo_cache, get_cargo_cache_size
 # Phase 6: External crate bindings (Maturin-like feature)
 export CrateInfo, CrateBindingOptions
 export scan_crate, generate_bindings, @rust_crate
+export write_bindings_to_file
 
 # Module initialization
 function __init__()

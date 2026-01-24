@@ -1124,3 +1124,500 @@ macro rust_crate(path, options...)
         eval(bindings)
     end
 end
+
+# ============================================================================
+# Precompilation Support
+# ============================================================================
+
+"""
+    write_bindings_to_file(crate_path::String, output_path::String; kwargs...) -> String
+
+Generate Julia bindings for a Rust crate and write them to a file.
+
+This function is designed for package development workflow where bindings should
+be generated once and then included in the package for precompilation.
+
+# Arguments
+- `crate_path::String`: Path to the Rust crate root directory
+- `output_path::String`: Path to write the generated Julia code
+
+# Keyword Arguments
+- `output_module_name::Union{String, Nothing}`: Name for the generated module
+- `build_release::Bool`: Build in release mode (default: true)
+- `relative_lib_path::Union{String, Nothing}`: Path to library relative to the generated file
+  If not provided, uses the absolute path to the compiled library.
+
+# Returns
+- `String`: Path to the generated Julia file
+
+# Workflow for Package Development
+
+1. During development, call `write_bindings_to_file` to generate bindings:
+   ```julia
+   using LastCall
+   write_bindings_to_file(
+       "deps/my_rust_crate",
+       "src/generated/MyRustBindings.jl",
+       relative_lib_path = "../deps/lib"
+   )
+   ```
+
+2. Include the generated file in your package:
+   ```julia
+   # In src/MyPackage.jl
+   include("generated/MyRustBindings.jl")
+   ```
+
+3. The generated module will be precompiled with your package.
+
+# Example
+```julia
+using LastCall
+
+# Generate bindings to a file
+write_bindings_to_file(
+    "/path/to/my_crate",
+    "src/MyCrateBindings.jl",
+    output_module_name = "MyCrate"
+)
+
+# The file can now be included in your package
+```
+"""
+function write_bindings_to_file(crate_path::String, output_path::String;
+    output_module_name::Union{String, Nothing} = nothing,
+    build_release::Bool = true,
+    relative_lib_path::Union{String, Nothing} = nothing
+)
+    # Scan and build the crate
+    @info "Scanning crate at $crate_path"
+    info = scan_crate(crate_path)
+    @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
+
+    # Build the crate
+    lib_path = if crate_has_cdylib(crate_path)
+        @info "Building crate directly (already has cdylib crate-type)..."
+        build_crate_directly(info, build_release)
+    else
+        # Create wrapper crate and build
+        opts = CrateBindingOptions(
+            output_module_name = output_module_name,
+            build_release = build_release
+        )
+        @info "Creating wrapper crate..."
+        wrapper_path = create_wrapper_crate(info, opts)
+
+        @info "Building wrapper crate..."
+        wrapper_project = CargoProject(
+            "$(info.name)_julia_wrapper",
+            "0.1.0",
+            DependencySpec[],
+            "2021",
+            wrapper_path
+        )
+
+        build_cargo_project(wrapper_project, release=build_release)
+    end
+
+    # Determine the library path to use in the generated code
+    if relative_lib_path !== nothing
+        # Copy the library to the relative path
+        output_dir = dirname(output_path)
+        lib_dest_dir = normpath(joinpath(output_dir, relative_lib_path))
+        mkpath(lib_dest_dir)
+
+        lib_filename = basename(lib_path)
+        lib_dest_path = joinpath(lib_dest_dir, lib_filename)
+
+        cp(lib_path, lib_dest_path, force=true)
+        @info "Copied library to $lib_dest_path"
+
+        # Use @__DIR__ based path in generated code
+        lib_path_for_code = joinpath(relative_lib_path, lib_filename)
+    else
+        lib_path_for_code = lib_path
+    end
+
+    # Generate the module code as a string
+    code = emit_crate_module_code(info, lib_path_for_code,
+        module_name = output_module_name,
+        use_relative_path = relative_lib_path !== nothing
+    )
+
+    # Write to file
+    mkpath(dirname(output_path))
+    write(output_path, code)
+
+    @info "Generated bindings written to $output_path"
+    return output_path
+end
+
+"""
+    emit_crate_module_code(info::CrateInfo, lib_path::String; kwargs...) -> String
+
+Generate Julia module code as a string, suitable for writing to a file.
+
+# Arguments
+- `info::CrateInfo`: Crate information from scan_crate
+- `lib_path::String`: Path to the compiled shared library (or relative path)
+
+# Keyword Arguments
+- `module_name::Union{String, Nothing}`: Name for the module
+- `use_relative_path::Bool`: If true, treat lib_path as relative to @__DIR__
+
+# Returns
+- `String`: Julia source code for the module
+"""
+function emit_crate_module_code(info::CrateInfo, lib_path::String;
+    module_name::Union{String, Nothing} = nothing,
+    use_relative_path::Bool = false
+)
+    # Determine module name
+    mod_name = if module_name !== nothing
+        module_name
+    else
+        titlecase(replace(info.name, "_" => ""))
+    end
+
+    lines = String[]
+
+    # Header comment
+    push!(lines, "# Auto-generated bindings for $(info.name)")
+    push!(lines, "# Generated by LastCall.jl - DO NOT EDIT")
+    push!(lines, "# Regenerate with: write_bindings_to_file(\"$(info.path)\", \"<output_path>\")")
+    push!(lines, "")
+
+    # Module start
+    push!(lines, "module $mod_name")
+    push!(lines, "")
+
+    # Imports
+    push!(lines, "import LastCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption")
+    push!(lines, "import Libdl")
+    push!(lines, "")
+
+    # Library path constant
+    if use_relative_path
+        push!(lines, "const _LIB_PATH = joinpath(@__DIR__, $(repr(lib_path)))")
+    else
+        push!(lines, "const _LIB_PATH = $(repr(lib_path))")
+    end
+    push!(lines, "const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)")
+    push!(lines, "")
+
+    # __init__ function for loading library
+    push!(lines, "function __init__()")
+    push!(lines, "    _LIB_HANDLE[] = Libdl.dlopen(_LIB_PATH, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)")
+    push!(lines, "end")
+    push!(lines, "")
+
+    # Helper function
+    push!(lines, "function _get_func_ptr(name::String)")
+    push!(lines, "    if _LIB_HANDLE[] == C_NULL")
+    push!(lines, "        error(\"Library not loaded. Call __init__() first.\")")
+    push!(lines, "    end")
+    push!(lines, "    Libdl.dlsym(_LIB_HANDLE[], name)")
+    push!(lines, "end")
+    push!(lines, "")
+
+    # Generate function wrappers
+    for func in info.julia_functions
+        if func.is_generic
+            continue
+        end
+        code = _emit_function_code(func)
+        push!(lines, code)
+        push!(lines, "")
+    end
+
+    # Generate struct wrappers
+    for s in info.julia_structs
+        code = _emit_struct_code(s)
+        push!(lines, code)
+        push!(lines, "")
+    end
+
+    # Module end
+    push!(lines, "end # module $mod_name")
+
+    return join(lines, "\n")
+end
+
+"""
+    _emit_function_code(func::RustFunctionSignature) -> String
+
+Generate Julia code for a function wrapper as a string.
+"""
+function _emit_function_code(func::RustFunctionSignature)
+    func_name = func.name
+    arg_names = func.arg_names
+    arg_types = func.arg_types
+
+    # Build argument conversions
+    arg_syms = join(arg_names, ", ")
+    converted_args = String[]
+    for (name, rust_type) in zip(arg_names, arg_types)
+        julia_type = _rust_type_to_julia_conversion_type(rust_type)
+        if julia_type !== nothing
+            push!(converted_args, "$julia_type($name)")
+        else
+            push!(converted_args, name)
+        end
+    end
+    converted_args_str = join(converted_args, ", ")
+
+    # Check for Result/Option return types
+    result_info = parse_result_type(func.return_type)
+    option_info = parse_option_type(func.return_type)
+
+    if result_info !== nothing
+        return _emit_result_function_code(func, result_info, arg_syms, converted_args_str)
+    elseif option_info !== nothing
+        return _emit_option_function_code(func, option_info, arg_syms, converted_args_str)
+    else
+        # Standard function
+        julia_ret_type = _rust_type_to_julia_type_symbol(func.return_type)
+        ret_type_str = julia_ret_type !== nothing ? string(julia_ret_type) : "Any"
+
+        return """
+function $func_name($arg_syms)
+    func_ptr = _get_func_ptr("$func_name")
+    call_rust_function(func_ptr, $ret_type_str, $converted_args_str)
+end
+export $func_name"""
+    end
+end
+
+function _emit_result_function_code(func::RustFunctionSignature, result_info::ResultTypeInfo, arg_syms::String, converted_args_str::String)
+    func_name = func.name
+    ok_julia_type = _rust_type_to_julia_type_symbol(result_info.ok_type)
+    err_julia_type = _rust_type_to_julia_type_symbol(result_info.err_type)
+    ok_type_str = ok_julia_type !== nothing ? string(ok_julia_type) : "Any"
+    err_type_str = err_julia_type !== nothing ? string(err_julia_type) : "Any"
+    c_result_struct_name = "CResult_$func_name"
+
+    return """
+struct $c_result_struct_name
+    is_ok::UInt8
+    ok_value::$ok_type_str
+    err_value::$err_type_str
+end
+
+function $func_name($arg_syms)
+    func_ptr = _get_func_ptr("$func_name")
+    c_result = call_rust_function(func_ptr, $c_result_struct_name, $converted_args_str)
+    if c_result.is_ok == 1
+        RustResult{$ok_type_str, $err_type_str}(true, c_result.ok_value)
+    else
+        RustResult{$ok_type_str, $err_type_str}(false, c_result.err_value)
+    end
+end
+export $func_name"""
+end
+
+function _emit_option_function_code(func::RustFunctionSignature, option_info::OptionTypeInfo, arg_syms::String, converted_args_str::String)
+    func_name = func.name
+    inner_julia_type = _rust_type_to_julia_type_symbol(option_info.inner_type)
+    inner_type_str = inner_julia_type !== nothing ? string(inner_julia_type) : "Any"
+    c_option_struct_name = "COption_$func_name"
+
+    return """
+struct $c_option_struct_name
+    is_some::UInt8
+    value::$inner_type_str
+end
+
+function $func_name($arg_syms)
+    func_ptr = _get_func_ptr("$func_name")
+    c_option = call_rust_function(func_ptr, $c_option_struct_name, $converted_args_str)
+    if c_option.is_some == 1
+        RustOption{$inner_type_str}(true, c_option.value)
+    else
+        RustOption{$inner_type_str}(false, nothing)
+    end
+end
+export $func_name"""
+end
+
+"""
+    _emit_struct_code(info::RustStructInfo) -> String
+
+Generate Julia code for a struct wrapper as a string.
+"""
+function _emit_struct_code(info::RustStructInfo)
+    struct_name = info.name
+
+    lines = String[]
+
+    # Struct definition
+    push!(lines, "mutable struct $struct_name")
+    push!(lines, "    ptr::Ptr{Cvoid}")
+    push!(lines, "")
+    push!(lines, "    function $struct_name(ptr::Ptr{Cvoid})")
+    push!(lines, "        obj = new(ptr)")
+    push!(lines, "        finalizer(obj) do x")
+    push!(lines, "            if getfield(x, :ptr) != C_NULL")
+    push!(lines, "                free_fn = \"$(struct_name)_free\"")
+    push!(lines, "                func_ptr = _get_func_ptr(free_fn)")
+    push!(lines, "                ccall(func_ptr, Cvoid, (Ptr{Cvoid},), getfield(x, :ptr))")
+    push!(lines, "                setfield!(x, :ptr, C_NULL)")
+    push!(lines, "            end")
+    push!(lines, "        end")
+    push!(lines, "        return obj")
+    push!(lines, "    end")
+    push!(lines, "end")
+    push!(lines, "export $struct_name")
+    push!(lines, "")
+
+    # Method wrappers
+    for m in info.methods
+        code = _emit_method_code(info, m)
+        push!(lines, code)
+        push!(lines, "")
+    end
+
+    # Property access
+    compatible_fields = [(name, type) for (name, type) in info.fields if _is_ffi_compatible_field_type(type)]
+
+    if !isempty(compatible_fields)
+        # getproperty
+        push!(lines, "function Base.getproperty(self::$struct_name, field::Symbol)")
+        push!(lines, "    if field === :ptr")
+        push!(lines, "        return getfield(self, :ptr)")
+        push!(lines, "    end")
+        for (field_name, field_type) in compatible_fields
+            julia_type = _rust_type_to_julia_type_symbol(field_type)
+            julia_type_str = julia_type !== nothing ? string(julia_type) : "Any"
+            getter_fn = "$(struct_name)_get_$(field_name)"
+            push!(lines, "    if field === :$field_name")
+            push!(lines, "        func_ptr = _get_func_ptr(\"$getter_fn\")")
+            push!(lines, "        return call_rust_function(func_ptr, $julia_type_str, getfield(self, :ptr))")
+            push!(lines, "    end")
+        end
+        push!(lines, "    error(\"type $struct_name has no field \$field\")")
+        push!(lines, "end")
+        push!(lines, "")
+
+        # setproperty!
+        push!(lines, "function Base.setproperty!(self::$struct_name, field::Symbol, value)")
+        push!(lines, "    if field === :ptr")
+        push!(lines, "        error(\"cannot set internal field :ptr\")")
+        push!(lines, "    end")
+        for (field_name, field_type) in compatible_fields
+            setter_fn = "$(struct_name)_set_$(field_name)"
+            push!(lines, "    if field === :$field_name")
+            push!(lines, "        func_ptr = _get_func_ptr(\"$setter_fn\")")
+            push!(lines, "        call_rust_function(func_ptr, Cvoid, getfield(self, :ptr), value)")
+            push!(lines, "        return value")
+            push!(lines, "    end")
+        end
+        push!(lines, "    error(\"type $struct_name has no field \$field\")")
+        push!(lines, "end")
+        push!(lines, "")
+
+        # propertynames
+        field_syms = join([":$name" for (name, _) in compatible_fields], ", ")
+        push!(lines, "function Base.propertynames(self::$struct_name)")
+        push!(lines, "    ($field_syms,)")
+        push!(lines, "end")
+    end
+
+    return join(lines, "\n")
+end
+
+"""
+    _emit_method_code(struct_info::RustStructInfo, method::RustMethod) -> String
+
+Generate Julia code for a method wrapper as a string.
+"""
+function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
+    struct_name = struct_info.name
+    method_name = method.name
+    wrapper_name = "$(struct_name)_$(method_name)"
+
+    arg_names = method.arg_names
+    arg_types = method.arg_types
+
+    # Convert argument types to Julia types
+    arg_julia_types = [_rust_type_to_julia_type_symbol(t) for t in arg_types]
+    arg_julia_types = [t === nothing ? :Any : t for t in arg_julia_types]
+    arg_types_str = join([string(t) for t in arg_julia_types], ", ")
+
+    arg_syms = join(arg_names, ", ")
+
+    is_constructor = method_name == "new" || method.return_type == "Self" || method.return_type == struct_name
+
+    if method.is_static
+        if is_constructor
+            # Static constructor
+            return """
+function $struct_name($arg_syms)
+    func_ptr = _get_func_ptr("$wrapper_name")
+    ptr = ccall(func_ptr, Ptr{Cvoid}, ($arg_types_str,), $arg_syms)
+    $struct_name(ptr)
+end"""
+        else
+            # Static method
+            julia_ret_type = _rust_type_to_julia_type_symbol(method.return_type)
+            ret_type_str = julia_ret_type !== nothing ? string(julia_ret_type) : "Any"
+            return """
+function $method_name($arg_syms)
+    func_ptr = _get_func_ptr("$wrapper_name")
+    call_rust_function(func_ptr, $ret_type_str, $arg_syms)
+end
+export $method_name"""
+        end
+    else
+        # Instance method
+        julia_ret_type = _rust_type_to_julia_type_symbol(method.return_type)
+        ret_type_str = julia_ret_type !== nothing ? string(julia_ret_type) : "Cvoid"
+
+        if is_constructor
+            # Method returning Self
+            self_args = isempty(arg_syms) ? "" : ", $arg_syms"
+            arg_types_with_ptr = isempty(arg_types_str) ? "Ptr{Cvoid}" : "Ptr{Cvoid}, $arg_types_str"
+            return """
+function $method_name(self::$struct_name$self_args)
+    func_ptr = _get_func_ptr("$wrapper_name")
+    ptr = ccall(func_ptr, Ptr{Cvoid}, ($arg_types_with_ptr,), getfield(self, :ptr)$self_args)
+    $struct_name(ptr)
+end
+export $method_name"""
+        else
+            self_args = isempty(arg_syms) ? "" : ", $arg_syms"
+            return """
+function $method_name(self::$struct_name$self_args)
+    func_ptr = _get_func_ptr("$wrapper_name")
+    call_rust_function(func_ptr, $ret_type_str, getfield(self, :ptr)$self_args)
+end
+export $method_name"""
+        end
+    end
+end
+
+"""
+    @rust_crate_static(lib_path, module_name)
+
+Load a pre-generated Rust crate binding with a specific library path.
+
+This macro is for loading bindings that were generated with `write_bindings_to_file`
+where the library was placed at a known location.
+
+# Arguments
+- `lib_path`: Path to the compiled shared library
+- `module_name`: Name of the module to create
+
+# Example
+```julia
+# In a precompiled package
+const _RUST_LIB = joinpath(@__DIR__, "..", "deps", "libmycrate.so")
+@rust_crate_static _RUST_LIB MyCrate
+```
+"""
+macro rust_crate_static(lib_path, module_name)
+    quote
+        # This is a simplified loader for precompiled bindings
+        # The full module should be included from a generated file
+        error("@rust_crate_static is deprecated. Use write_bindings_to_file and include the generated file instead.")
+    end
+end
