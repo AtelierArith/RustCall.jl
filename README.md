@@ -950,7 +950,7 @@ MIT License (see LICENSE file)
   - Type parameter inference
   - Caching of monomorphized instances
 
-- **[Performance Guide](docs/src/performance.md)** - Performance optimization guide (日本語)
+- **[Performance Guide](docs/src/performance.md)** - Performance optimization guide
   - Compilation caching
   - LLVM optimization
   - Function call optimization
@@ -958,7 +958,7 @@ MIT License (see LICENSE file)
   - Benchmark results
   - Performance tuning tips
 
-- **[Troubleshooting Guide](docs/src/troubleshooting.md)** - Common issues and solutions (日本語)
+- **[Troubleshooting Guide](docs/src/troubleshooting.md)** - Common issues and solutions
   - Installation and setup problems
   - Compilation errors
   - Runtime errors

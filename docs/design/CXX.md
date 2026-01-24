@@ -1,147 +1,147 @@
-# CLAUDE.md - プロジェクトガイド
+# CLAUDE.md - Project Guide
 
-このドキュメントは、Claudeがこのプロジェクトを理解し、効果的に支援するためのガイドです。
+This document is a guide for Claude to understand and effectively assist with this project.
 
-## プロジェクト概要
+## Project Overview
 
-**Cxx.jl** は、JuliaからC++コードを直接呼び出すためのFFI（Foreign Function Interface）パッケージです。
+**Cxx.jl** is an FFI (Foreign Function Interface) package for directly calling C++ code from Julia.
 
-### 主要な機能
+### Main Features
 
-- `@cxx` マクロ: C++関数をJuliaから直接呼び出し
-- `cxx""` 文字列リテラル: C++コードをグローバルスコープで評価
-- `icxx""` 文字列リテラル: C++コードを関数スコープで評価
-- C++ REPL: Julia REPLにC++ REPLパネルを追加
+- `@cxx` macro: Directly call C++ functions from Julia
+- `cxx""` string literal: Evaluate C++ code in global scope
+- `icxx""` string literal: Evaluate C++ code in function scope
+- C++ REPL: Add C++ REPL panel to Julia REPL
 
-### 現在の状態
+### Current Status
 
-- **対応バージョン**: Julia 1.1.x ～ 1.3.x（現在は非サポート）
-- 新しいJuliaバージョンでは [CxxWrap.jl](https://github.com/JuliaInterop/CxxWrap.jl) を推奨
+- **Supported Versions**: Julia 1.1.x to 1.3.x (currently unsupported)
+- For newer Julia versions, [CxxWrap.jl](https://github.com/JuliaInterop/CxxWrap.jl) is recommended
 
-## ディレクトリ構造
+## Directory Structure
 
 ```
 Cxx.jl/
-├── src/                    # メインソースコード
-│   ├── Cxx.jl              # メインモジュール
-│   ├── cxxmacro.jl         # @cxx マクロの実装
-│   ├── cxxstr.jl           # cxx"" と icxx"" の実装
-│   ├── cxxtypes.jl         # C++型のJulia表現
-│   ├── typetranslation.jl  # 型変換ロジック
-│   ├── codegen.jl          # LLVM IRコード生成
-│   ├── clangwrapper.jl     # Clang APIのラッパー
-│   ├── clanginstances.jl   # Clangインスタンス管理
-│   ├── initialization.jl   # 初期化処理
-│   ├── exceptions.jl       # C++例外の処理
-│   └── CxxREPL/            # C++ REPL機能
-├── deps/                   # ビルドスクリプトとLLVMパッチ
-├── docs/                   # ドキュメント
-├── test/                   # テストスイート
-└── ドキュメント（.md）
+├── src/                    # Main source code
+│   ├── Cxx.jl              # Main module
+│   ├── cxxmacro.jl         # @cxx macro implementation
+│   ├── cxxstr.jl           # cxx"" and icxx"" implementation
+│   ├── cxxtypes.jl         # C++ type Julia representation
+│   ├── typetranslation.jl  # Type conversion logic
+│   ├── codegen.jl          # LLVM IR code generation
+│   ├── clangwrapper.jl     # Clang API wrapper
+│   ├── clanginstances.jl   # Clang instance management
+│   ├── initialization.jl   # Initialization processing
+│   ├── exceptions.jl       # C++ exception handling
+│   └── CxxREPL/            # C++ REPL functionality
+├── deps/                   # Build scripts and LLVM patches
+├── docs/                   # Documentation
+├── test/                   # Test suite
+└── Documentation (.md)
 ```
 
-## 重要なドキュメント
+## Important Documents
 
-| ファイル | 内容 |
-|----------|------|
-| `DESCRIPTION.md` | プロジェクト概要 |
-| `INTERNAL.md` | 内部実装の詳細（C++コードの処理フロー） |
-| `LLVMCALL.md` | Juliaの`llvmcall`についての詳細 |
-| `PLAN.md` | LastCall.jl実装計画書 |
-| `Phase1.md` | Phase 1（C互換ABI）の詳細実装プラン |
-| `Phase2.md` | Phase 2（LLVM IR統合）の詳細実装プラン |
+| File | Content |
+|------|---------|
+| `DESCRIPTION.md` | Project overview |
+| `INTERNAL.md` | Internal implementation details (C++ code processing flow) |
+| `LLVMCALL.md` | Details about Julia's `llvmcall` |
+| `PLAN.md` | LastCall.jl implementation plan |
+| `Phase1.md` | Phase 1 (C-compatible ABI) detailed implementation plan |
+| `Phase2.md` | Phase 2 (LLVM IR integration) detailed implementation plan |
 
-## 技術的な仕組み
+## Technical Mechanisms
 
-### 処理フロー
+### Processing Flow
 
 ```
-Juliaコード (@cxx マクロ)
+Julia code (@cxx macro)
     ↓
-構文解析・型情報抽出 (cxxmacro.jl)
+Syntax parsing and type information extraction (cxxmacro.jl)
     ↓
-ステージド関数 (@generated)
+Staged function (@generated)
     ↓
-Clang AST生成 (codegen.jl)
+Clang AST generation (codegen.jl)
     ↓
-LLVM IR生成 (Clang CodeGen)
+LLVM IR generation (Clang CodeGen)
     ↓
-llvmcall埋め込み
+llvmcall embedding
     ↓
-Julia実行時
+Julia runtime execution
 ```
 
-### 重要な概念
+### Important Concepts
 
-1. **llvmcall**: LLVM IRを直接Juliaコードに埋め込む機能
-2. **ステージド関数（@generated）**: コンパイル時に型情報に基づいてコードを生成
-3. **Clang統合**: C++コードの解析とAST生成
-4. **型変換**: Julia型とC++型の双方向変換
+1. **llvmcall**: Feature to directly embed LLVM IR into Julia code
+2. **Staged functions (@generated)**: Generate code at compile time based on type information
+3. **Clang integration**: C++ code parsing and AST generation
+4. **Type conversion**: Bidirectional conversion between Julia types and C++ types
 
-## 開発ガイドライン
+## Development Guidelines
 
-### コードスタイル
+### Code Style
 
-- Juliaのコーディング規約に従う
-- 関数名はスネークケース（例: `build_cpp_call`）
-- 型名はパスカルケース（例: `CppValue`）
-- コメントは英語で記述（既存のスタイルに合わせる）
+- Follow Julia coding conventions
+- Function names in snake_case (e.g., `build_cpp_call`)
+- Type names in PascalCase (e.g., `CppValue`)
+- Comments written in English (matching existing style)
 
-### テスト
+### Testing
 
 ```bash
-# テストの実行
+# Run tests
 julia --project -e 'using Pkg; Pkg.test()'
 ```
 
-### ビルド
+### Building
 
 ```bash
-# ビルド
+# Build
 julia --project -e 'using Pkg; Pkg.build()'
 ```
 
-## LastCall.jl 計画
+## LastCall.jl Plan
 
-Cxx.jlをベースに、Rust実装を呼び出す版（LastCall.jl）を計画中：
+Planning a Rust implementation version (LastCall.jl) based on Cxx.jl:
 
-### Phase 1: C互換ABI（2-3ヶ月）
-- `@rust` マクロ: `ccall`のラッパー
-- 基本的な型マッピング
-- `rust""` 文字列リテラル
+### Phase 1: C-Compatible ABI (2-3 months)
+- `@rust` macro: `ccall` wrapper
+- Basic type mapping
+- `rust""` string literal
 
-### Phase 2: LLVM IR統合（4-6ヶ月）
-- RustコードをLLVM IRにコンパイル
-- `llvmcall`に埋め込む
-- 所有権型のサポート
+### Phase 2: LLVM IR Integration (4-6 months)
+- Compile Rust code to LLVM IR
+- Embed into `llvmcall`
+- Ownership type support
 
-### Phase 3: rustc内部API（実験的）
-- rustcの内部APIを使用
-- 完全な型システムサポート
+### Phase 3: rustc Internal API (Experimental)
+- Use rustc's internal API
+- Full type system support
 
-## よくある質問
+## Frequently Asked Questions
 
-### Q: Cxx.jlはなぜ最新のJuliaで動かないのか？
+### Q: Why doesn't Cxx.jl work with the latest Julia?
 
-A: Cxx.jlは内部的にClangのAPIと密接に統合されており、JuliaのLLVMバージョンとの互換性が必要です。新しいJuliaバージョンではLLVMのバージョンが変わっており、対応が追いついていません。
+A: Cxx.jl is internally tightly integrated with Clang's API and requires compatibility with Julia's LLVM version. In newer Julia versions, the LLVM version has changed and support hasn't caught up.
 
-### Q: LastCall.jlのPhase 1とPhase 2の違いは？
+### Q: What's the difference between Phase 1 and Phase 2 of LastCall.jl?
 
-A: Phase 1はC互換ABI（`extern "C"`）を使用し、シンプルだがRustの高度な機能は使えません。Phase 2はLLVM IRを直接操作し、より柔軟な統合を実現しますが、実装が複雑です。
+A: Phase 1 uses C-compatible ABI (`extern "C"`), which is simple but cannot use advanced Rust features. Phase 2 directly manipulates LLVM IR, enabling more flexible integration but with more complex implementation.
 
-### Q: llvmcallの2つの形式の違いは？
+### Q: What's the difference between the two forms of llvmcall?
 
-A: 文字列形式はLLVM IRを文字列で渡し、Juliaがラップします。ポインタ形式は既存のLLVM関数へのポインタを渡し、ラップをスキップします。Cxx.jlはポインタ形式を使用しています。
+A: The string form passes LLVM IR as a string, and Julia wraps it. The pointer form passes a pointer to an existing LLVM function and skips wrapping. Cxx.jl uses the pointer form.
 
-## 関連リソース
+## Related Resources
 
 - [Cxx.jl GitHub](https://github.com/JuliaInterop/Cxx.jl)
-- [CxxWrap.jl](https://github.com/JuliaInterop/CxxWrap.jl)（新しいJuliaバージョン向け）
+- [CxxWrap.jl](https://github.com/JuliaInterop/CxxWrap.jl) (for newer Julia versions)
 - [Julia Manual: llvmcall](https://docs.julialang.org/en/v1/manual/performance-tips/#man-llvm-call)
 - [LLVM Language Reference](https://llvm.org/docs/LangRef.html)
 
-## 注意事項
+## Notes
 
-- このプロジェクトは学習・研究目的で使用してください
-- 本番環境では CxxWrap.jl を推奨します
-- LastCall.jlは計画段階であり、まだ実装されていません
+- This project is for learning and research purposes
+- For production environments, CxxWrap.jl is recommended
+- LastCall.jl is in the planning stage and has not yet been implemented

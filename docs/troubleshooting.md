@@ -1,36 +1,36 @@
-# LastCall.jl トラブルシューティングガイド
+# LastCall.jl Troubleshooting Guide
 
-このガイドでは、LastCall.jlを使用する際によくある問題とその解決方法を説明します。
+This guide explains common problems and their solutions when using LastCall.jl.
 
-## 目次
+## Table of Contents
 
-1. [インストールとセットアップ](#インストールとセットアップ)
-2. [コンパイルエラー](#コンパイルエラー)
-3. [実行時エラー](#実行時エラー)
-4. [型関連の問題](#型関連の問題)
-5. [メモリ管理の問題](#メモリ管理の問題)
-6. [パフォーマンスの問題](#パフォーマンスの問題)
-7. [よくある質問](#よくある質問)
+1. [Installation and Setup](#installation-and-setup)
+2. [Compilation Errors](#compilation-errors)
+3. [Runtime Errors](#runtime-errors)
+4. [Type-Related Issues](#type-related-issues)
+5. [Memory Management Problems](#memory-management-problems)
+6. [Performance Issues](#performance-issues)
+7. [Frequently Asked Questions](#frequently-asked-questions)
 
-## インストールとセットアップ
+## Installation and Setup
 
-### 問題: rustcが見つからない
+### Problem: rustc Not Found
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 rustc not found in PATH. LastCall.jl requires Rust to be installed.
 ```
 
-**解決方法:**
+**Solution:**
 
-1. Rustがインストールされているか確認：
+1. Check if Rust is installed:
    ```bash
    rustc --version
    ```
 
-2. Rustがインストールされていない場合：
-   - [rustup.rs](https://rustup.rs/)からインストール
-   - または、パッケージマネージャーを使用：
+2. If Rust is not installed:
+   - Install from [rustup.rs](https://rustup.rs/)
+   - Or use a package manager:
      ```bash
      # macOS
      brew install rust
@@ -39,75 +39,75 @@ rustc not found in PATH. LastCall.jl requires Rust to be installed.
      sudo apt-get install rustc cargo
      ```
 
-3. PATHに追加されているか確認：
+3. Check if it's added to PATH:
    ```bash
    echo $PATH | grep rust
    ```
 
-### 問題: Rust helpersライブラリがビルドできない
+### Problem: Rust Helpers Library Cannot Be Built
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work...
 ```
 
-**解決方法:**
+**Solution:**
 
-1. ビルドを実行：
+1. Run build:
    ```julia
    using Pkg
    Pkg.build("LastCall")
    ```
 
-2. Cargoが利用可能か確認：
+2. Check if Cargo is available:
    ```bash
    cargo --version
    ```
 
-3. ビルドログを確認：
+3. Check build log:
    ```bash
    cat deps/build.log
    ```
 
-4. 手動でビルド：
+4. Build manually:
    ```bash
    cd deps/rust_helpers
    cargo build --release
    ```
 
-### 問題: 依存関係のインストールエラー
+### Problem: Dependency Installation Error
 
-**解決方法:**
+**Solution:**
 
-1. Juliaのバージョンを確認（1.10以上が必要）：
+1. Check Julia version (1.10+ required):
    ```julia
    VERSION
    ```
 
-2. パッケージを再インストール：
+2. Reinstall package:
    ```julia
    using Pkg
    Pkg.rm("LastCall")
    Pkg.add("LastCall")
    ```
 
-## コンパイルエラー
+## Compilation Errors
 
-### 問題: Rustコードのコンパイルエラー
+### Problem: Rust Code Compilation Error
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 error: expected one of ...
 ```
 
-**解決方法:**
+**Solution:**
 
-1. Rustコードの構文を確認：
-   - `#[no_mangle]`属性が付いているか
-   - `pub extern "C"`が正しく指定されているか
-   - 関数シグネチャが正しいか
+1. Check Rust code syntax:
+   - Is `#[no_mangle]` attribute present?
+   - Is `pub extern "C"` correctly specified?
+   - Is the function signature correct?
 
-2. 正しい例：
+2. Correct example:
    ```rust
    #[no_mangle]
    pub extern "C" fn my_function(x: i32) -> i32 {
@@ -115,75 +115,75 @@ error: expected one of ...
    }
    ```
 
-3. エラーメッセージを詳しく確認：
+3. Check error message in detail:
    ```julia
-   # キャッシュをクリアして再コンパイル
+   # Clear cache and recompile
    clear_cache()
    rust"""
-   // 修正したコード
+   // Fixed code
    """
    ```
 
-### 問題: リンクエラー
+### Problem: Link Error
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 undefined symbol: ...
 ```
 
-**解決方法:**
+**Solution:**
 
-1. 関数名が正しいか確認（`#[no_mangle]`が必要）
-2. ライブラリが正しくロードされているか確認：
+1. Check if function name is correct (`#[no_mangle]` is required)
+2. Check if library is correctly loaded:
    ```julia
    using LastCall
-   # ライブラリを再ロード
+   # Reload library
    ```
 
-3. プラットフォーム固有の問題を確認：
-   - macOS: `.dylib`ファイルが存在するか
-   - Linux: `.so`ファイルが存在するか
-   - Windows: `.dll`ファイルが存在するか
+3. Check platform-specific issues:
+   - macOS: Does `.dylib` file exist?
+   - Linux: Does `.so` file exist?
+   - Windows: Does `.dll` file exist?
 
-### 問題: 型の不一致エラー
+### Problem: Type Mismatch Error
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 ERROR: type mismatch
 ```
 
-**解決方法:**
+**Solution:**
 
-1. Rust関数のシグネチャを確認：
+1. Check Rust function signature:
    ```rust
    pub extern "C" fn add(a: i32, b: i32) -> i32
    ```
 
-2. Julia側で正しい型を使用：
+2. Use correct types on Julia side:
    ```julia
-   # 正しい
+   # Correct
    @rust add(Int32(10), Int32(20))::Int32
 
-   # 間違い
-   @rust add(10, 20)  # 型が推論されない可能性
+   # Wrong
+   @rust add(10, 20)  # Type may not be inferred
    ```
 
-3. 型マッピング表を確認（[README.md](../README.md)参照）
+3. Check type mapping table (see [README.md](../README.md))
 
-## 実行時エラー
+## Runtime Errors
 
-### 問題: 関数が見つからない
+### Problem: Function Not Found
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 Function 'my_function' not found in library
 ```
 
-**解決方法:**
+**Solution:**
 
-1. 関数名のスペルを確認
-2. `#[no_mangle]`属性が付いているか確認
-3. ライブラリが正しくコンパイルされているか確認：
+1. Check function name spelling
+2. Check if `#[no_mangle]` attribute is present
+3. Check if library is correctly compiled:
    ```julia
    clear_cache()
    rust"""
@@ -192,86 +192,86 @@ Function 'my_function' not found in library
    """
    ```
 
-### 問題: セグメンテーションフォルト
+### Problem: Segmentation Fault
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 signal (11): Segmentation fault
 ```
 
-**解決方法:**
+**Solution:**
 
-1. ポインタの有効性を確認：
+1. Check pointer validity:
    ```julia
-   # 危険: 無効なポインタ
+   # Dangerous: Invalid pointer
    ptr = Ptr{Cvoid}(0x1000)
 
-   # 安全: 有効な配列から取得
+   # Safe: Get from valid array
    arr = [1, 2, 3]
    ptr = pointer(arr)
    GC.@preserve arr begin
-       # ptrを使用
+       # Use ptr
    end
    ```
 
-2. 配列の境界を確認：
+2. Check array bounds:
    ```julia
    arr = [1, 2, 3]
    len = length(arr)
-   # lenを超えるインデックスにアクセスしない
+   # Don't access indices beyond len
    ```
 
-3. メモリ管理を確認（所有権型を使用している場合）
+3. Check memory management (if using ownership types)
 
-### 問題: 文字列のエンコーディングエラー
+### Problem: String Encoding Error
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 invalid UTF-8 sequence
 ```
 
-**解決方法:**
+**Solution:**
 
-1. UTF-8文字列を正しく処理：
+1. Handle UTF-8 strings correctly:
    ```rust
    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
    let utf8_str = std::str::from_utf8(c_str.to_bytes())
-       .unwrap_or("");  // エラーハンドリング
+       .unwrap_or("");  // Error handling
    ```
 
-2. Julia側で文字列を正しく渡す：
+2. Pass strings correctly from Julia side:
    ```julia
-   # UTF-8文字列は自動的に処理される
+   # UTF-8 strings are automatically handled
    @rust process_string("こんにちは")::UInt32
    ```
 
-## 型関連の問題
+## Type-Related Issues
 
-### 問題: 型推論が失敗する
+### Problem: Type Inference Fails
 
-**解決方法:**
+**Solution:**
 
-1. 明示的に型を指定：
+1. Specify types explicitly:
    ```julia
-   # 推奨
+   # Recommended
    result = @rust add(10i32, 20i32)::Int32
 
-   # 非推奨
+   # Not recommended
    result = @rust add(10i32, 20i32)
    ```
 
-2. 引数の型を明示的に指定：
+2. Specify argument types explicitly:
    ```julia
    a = Int32(10)
    b = Int32(20)
    result = @rust add(a, b)::Int32
    ```
 
-### 問題: ポインタ型の変換エラー
+### Problem: Pointer Type Conversion Error
 
-**解決方法:**
+**Solution:**
 
-1. 正しいポインタ型を使用：
+1. Use correct pointer types:
    ```julia
    # Rust: *const i32
    # Julia: Ptr{Int32}
@@ -280,209 +280,209 @@ invalid UTF-8 sequence
    ptr = pointer(arr)
    ```
 
-2. C文字列の場合は`String`を直接使用：
+2. For C strings, use `String` directly:
    ```julia
    # Rust: *const u8
-   # Julia: String（自動変換）
+   # Julia: String (automatic conversion)
    @rust process_string("hello")::UInt32
    ```
 
-## メモリ管理の問題
+## Memory Management Problems
 
-### 問題: メモリリーク
+### Problem: Memory Leak
 
-**解決方法:**
+**Solution:**
 
-1. 所有権型を使用している場合、適切に`drop!`を呼び出す：
+1. If using ownership types, call `drop!` appropriately:
    ```julia
    box = RustBox{Int32}(ptr)
    try
-       # boxを使用
+       # Use box
    finally
-       drop!(box)  # 必ずクリーンアップ
+       drop!(box)  # Always cleanup
    end
    ```
 
-2. ファイナライザーが正しく動作しているか確認
+2. Check if finalizers are working correctly
 
-### 問題: 二重解放エラー
+### Problem: Double Free Error
 
-**エラーメッセージ:**
+**Error Message:**
 ```
 double free or corruption
 ```
 
-**解決方法:**
+**Solution:**
 
-1. `drop!`を一度だけ呼び出す：
+1. Call `drop!` only once:
    ```julia
    box = RustBox{Int32}(ptr)
    drop!(box)
-   # drop!(box)  # エラー: 二度呼ばない
+   # drop!(box)  # Error: Don't call twice
    ```
 
-2. `is_dropped`で状態を確認：
+2. Check state with `is_dropped`:
    ```julia
    if !is_dropped(box)
        drop!(box)
    end
    ```
 
-### 問題: 無効なポインタアクセス
+### Problem: Invalid Pointer Access
 
-**解決方法:**
+**Solution:**
 
-1. ポインタの有効性を確認：
+1. Check pointer validity:
    ```julia
    if box.ptr != C_NULL && !is_dropped(box)
-       # 安全に使用
+       # Use safely
    end
    ```
 
-2. `is_valid`を使用：
+2. Use `is_valid`:
    ```julia
    if is_valid(box)
-       # 安全に使用
+       # Use safely
    end
    ```
 
-## パフォーマンスの問題
+## Performance Issues
 
-### 問題: コンパイルが遅い
+### Problem: Slow Compilation
 
-**解決方法:**
+**Solution:**
 
-1. キャッシュが機能しているか確認：
+1. Check if cache is working:
    ```julia
-   # 最初のコンパイル（遅い）
+   # First compilation (slow)
    rust"""
-   // コード
+   // code
    """
 
-   # 2回目以降（キャッシュから高速）
+   # Second time onwards (fast from cache)
    rust"""
-   // 同じコード
+   // same code
    """
    ```
 
-2. キャッシュの状態を確認：
+2. Check cache status:
    ```julia
    get_cache_size()
    list_cached_libraries()
    ```
 
-### 問題: 関数呼び出しが遅い
+### Problem: Slow Function Calls
 
-**解決方法:**
+**Solution:**
 
-1. `@rust_llvm`を試す（実験的）：
+1. Try `@rust_llvm` (experimental):
    ```julia
-   # 通常の呼び出し
+   # Normal call
    result = @rust add(10i32, 20i32)::Int32
 
-   # LLVM IR統合（最適化の可能性）
+   # LLVM IR integration (potential optimization)
    result = @rust_llvm add(Int32(10), Int32(20))
    ```
 
-2. ベンチマークを実行して比較：
+2. Run benchmarks to compare:
    ```bash
    julia --project benchmark/benchmarks.jl
    ```
 
-3. 型推論を避けて明示的に型を指定
+3. Avoid type inference and specify types explicitly
 
-## よくある質問
+## Frequently Asked Questions
 
-### Q: 複数のRustライブラリを同時に使用できますか？
+### Q: Can I use multiple Rust libraries simultaneously?
 
-A: はい、可能です。各`rust""`ブロックは独立したライブラリとしてコンパイルされます：
+A: Yes, it's possible. Each `rust""` block is compiled as an independent library:
 
 ```julia
 rust"""
-// ライブラリ1
+// Library 1
 #[no_mangle]
 pub extern "C" fn func1() -> i32 { 1 }
 """
 
 rust"""
-// ライブラリ2
+// Library 2
 #[no_mangle]
 pub extern "C" fn func2() -> i32 { 2 }
 """
 
-# 両方を使用可能
+# Both can be used
 result1 = @rust func1()::Int32
 result2 = @rust func2()::Int32
 ```
 
-### Q: Rustのジェネリクスは使用できますか？
+### Q: Can I use Rust generics?
 
-A: 現在、ジェネリクスは直接サポートされていません。`extern "C"`関数では具体的な型を使用する必要があります。将来的にはサポートを検討しています。
+A: Currently, generics are not directly supported. `extern "C"` functions need to use concrete types. We are considering support in the future.
 
-### Q: Rustの構造体を返すことはできますか？
+### Q: Can I return Rust structs?
 
-A: 現在、基本型とポインタ型のみサポートされています。構造体を返す場合は、`#[repr(C)]`を使用し、Julia側で対応する構造体を定義する必要があります（実験的）。
+A: Currently, only basic types and pointer types are supported. To return structs, you need to use `#[repr(C)]` and define corresponding structs on the Julia side (experimental).
 
-### Q: デバッグモードでコンパイルできますか？
+### Q: Can I compile in debug mode?
 
-A: はい、`RustCompiler`の設定を変更できます（内部実装）。通常は最適化レベル2でコンパイルされます。
+A: Yes, you can change `RustCompiler` settings (internal implementation). Normally it compiles at optimization level 2.
 
-### Q: キャッシュをクリアする必要があるのはいつですか？
+### Q: When should I clear the cache?
 
-A: 以下の場合にキャッシュをクリアしてください：
-- Rustコードを変更した後
-- コンパイルエラーが発生した後
-- 予期しない動作が発生した後
+A: Clear the cache in the following cases:
+- After modifying Rust code
+- After compilation errors occur
+- After unexpected behavior occurs
 
 ```julia
 clear_cache()
 ```
 
-### Q: Windowsで動作しますか？
+### Q: Does it work on Windows?
 
-A: はい、Windows、macOS、Linuxで動作します。ただし、Rust toolchainが正しくインストールされている必要があります。
+A: Yes, it works on Windows, macOS, and Linux. However, the Rust toolchain must be correctly installed.
 
-### Q: パフォーマンスはどうですか？
+### Q: What about performance?
 
-A: `@rust`マクロは標準的なFFIオーバーヘッドがあります。`@rust_llvm`（実験的）は最適化の可能性がありますが、すべてのケースで高速化されるわけではありません。ベンチマークを実行して確認してください。
+A: The `@rust` macro has standard FFI overhead. `@rust_llvm` (experimental) has optimization potential but doesn't speed up all cases. Run benchmarks to verify.
 
-### Q: エラーハンドリングのベストプラクティスは？
+### Q: What are the best practices for error handling?
 
 A:
-1. Rust側で`Result`型を使用
-2. Julia側で`result_to_exception`を使用して例外に変換
-3. または、`unwrap_or`でデフォルト値を提供
+1. Use `Result` type on Rust side
+2. Use `result_to_exception` on Julia side to convert to exceptions
+3. Or provide default values with `unwrap_or`
 
 ```julia
 result = some_rust_function()
 value = unwrap_or(result, default_value)
 ```
 
-## 追加のヘルプ
+## Additional Help
 
-問題が解決しない場合は：
+If problems persist:
 
-1. [GitHub Issues](https://github.com/your-repo/LastCall.jl/issues)で既存のIssueを検索
-2. 新しいIssueを作成（エラーメッセージ、再現可能なコード、環境情報を含める）
-3. [ドキュメント](../README.md)を確認
-4. [チュートリアル](tutorial.md)を参照
+1. Search existing Issues on [GitHub Issues](https://github.com/your-repo/LastCall.jl/issues)
+2. Create a new Issue (include error messages, reproducible code, environment information)
+3. Check [Documentation](../README.md)
+4. Refer to [Tutorial](tutorial.md)
 
-## デバッグのヒント
+## Debugging Tips
 
-### 1. 詳細なログを有効にする
+### 1. Enable Detailed Logging
 
 ```julia
 using Logging
 global_logger(ConsoleLogger(stderr, Logging.Debug))
 ```
 
-### 2. キャッシュをクリア
+### 2. Clear Cache
 
 ```julia
 clear_cache()
 ```
 
-### 3. Rustコードを個別にテスト
+### 3. Test Rust Code Individually
 
 ```bash
 cd /tmp
@@ -493,31 +493,31 @@ EOF
 rustc --crate-type cdylib test.rs
 ```
 
-### 4. ライブラリの状態を確認
+### 4. Check Library Status
 
 ```julia
-# キャッシュされたライブラリをリスト
+# List cached libraries
 list_cached_libraries()
 
-# キャッシュサイズを確認
+# Check cache size
 get_cache_size()
 ```
 
-### 5. 型情報を確認
+### 5. Check Type Information
 
 ```julia
-# 型マッピングを確認
+# Check type mapping
 rusttype_to_julia(:i32)  # => Int32
 juliatype_to_rust(Int32)  # => "i32"
 ```
 
-## まとめ
+## Summary
 
-このトラブルシューティングガイドで問題が解決しない場合は、GitHub Issuesで質問してください。問題を報告する際は、以下の情報を含めてください：
+If this troubleshooting guide doesn't solve your problem, please ask on GitHub Issues. When reporting issues, include the following information:
 
-- Juliaのバージョン
-- LastCall.jlのバージョン
-- Rustのバージョン
-- オペレーティングシステム
-- エラーメッセージの全文
-- 再現可能な最小限のコード例
+- Julia version
+- LastCall.jl version
+- Rust version
+- Operating system
+- Full error message
+- Minimal reproducible code example

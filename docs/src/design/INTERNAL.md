@@ -1,95 +1,95 @@
-# Cxx.jl 内部実装の詳細
+# Cxx.jl Internal Implementation Details
 
-このドキュメントでは、C++コードがどのように処理されてJuliaと連携できるのかの詳細な仕組みを説明します。
+This document explains in detail how C++ code is processed and integrated with Julia.
 
-## 目次
+## Table of Contents
 
-1. [アーキテクチャ概要](#アーキテクチャ概要)
-2. [処理フロー](#処理フロー)
-3. [マクロ処理 (`@cxx`)](#マクロ処理-cxx)
-4. [文字列リテラル (`cxx""` と `icxx""`)](#文字列リテラル-cxx-と-icxx)
-5. [型システム](#型システム)
-6. [コード生成プロセス](#コード生成プロセス)
-7. [Clang統合](#clang統合)
-8. [LLVM IR統合](#llvm-ir統合)
-
----
-
-## アーキテクチャ概要
-
-Cxx.jlは以下の3つの主要なコンポーネントで構成されています:
-
-1. **Julia側のマクロとステージド関数**: Juliaの構文を解析し、型情報を抽出
-2. **Clang統合**: C++コードを解析し、AST（抽象構文木）を生成
-3. **LLVM統合**: Clang ASTからLLVM IRを生成し、Juliaの`llvmcall`に埋め込む
-
-### データフロー
-
-```
-Juliaコード (@cxx マクロ)
-    ↓
-構文解析・型情報抽出 (cxxmacro.jl)
-    ↓
-ステージド関数 (@generated)
-    ↓
-Clang AST生成 (codegen.jl)
-    ↓
-LLVM IR生成 (Clang CodeGen)
-    ↓
-llvmcall埋め込み
-    ↓
-Julia実行時
-```
+1. [Architecture Overview](#architecture-overview)
+2. [Processing Flow](#processing-flow)
+3. [Macro Processing (`@cxx`)](#macro-processing-cxx)
+4. [String Literals (`cxx""` and `icxx""`)](#string-literals-cxx-and-icxx)
+5. [Type System](#type-system)
+6. [Code Generation Process](#code-generation-process)
+7. [Clang Integration](#clang-integration)
+8. [LLVM IR Integration](#llvm-ir-integration)
 
 ---
 
-## 処理フロー
+## Architecture Overview
 
-### 1. マクロ展開段階
+Cxx.jl consists of three main components:
 
-ユーザーが `@cxx foo::bar(args...)` と書くと:
+1. **Julia-side macros and staged functions**: Parse Julia syntax and extract type information
+2. **Clang integration**: Parse C++ code and generate AST (Abstract Syntax Tree)
+3. **LLVM integration**: Generate LLVM IR from Clang AST and embed it into Julia's `llvmcall`
+
+### Data Flow
+
+```
+Julia code (@cxx macro)
+    ↓
+Syntax parsing and type information extraction (cxxmacro.jl)
+    ↓
+Staged function (@generated)
+    ↓
+Clang AST generation (codegen.jl)
+    ↓
+LLVM IR generation (Clang CodeGen)
+    ↓
+llvmcall embedding
+    ↓
+Julia runtime execution
+```
+
+---
+
+## Processing Flow
+
+### 1. Macro Expansion Stage
+
+When a user writes `@cxx foo::bar(args...)`:
 
 ```julia
-# cxxmacro.jl の cpps_impl 関数が処理
+# cxxmacro.jl's cpps_impl function processes it
 @cxx foo::bar(args...)
     ↓
-# 構文を解析し、名前空間と関数名を抽出
-CppNNS{(:foo, :bar)} として型パラメータに格納
+# Parse syntax and extract namespace and function name
+Stored as CppNNS{(:foo, :bar)} in type parameters
     ↓
-# ステージド関数 cppcall を呼び出す式を生成
+# Generate expression calling staged function cppcall
 cppcall(__current_compiler__, CppNNS{(:foo, :bar)}(), args...)
 ```
 
-### 2. ステージド関数実行段階
+### 2. Staged Function Execution Stage
 
-`@generated` 関数はコンパイル時に実行され、型情報に基づいてコードを生成:
+`@generated` functions execute at compile time and generate code based on type information:
 
 ```julia
 @generated function cppcall(CT::CxxInstance, expr, args...)
-    # CT: コンパイラインスタンス
-    # expr: CppNNS{(:foo, :bar)} の型
-    # args: 引数の型情報
+    # CT: Compiler instance
+    # expr: CppNNS{(:foo, :bar)} type
+    # args: Argument type information
 
-    C = instance(CT)  # Clangインスタンスを取得
+    C = instance(CT)  # Get Clang instance
 
-    # 1. 型チェック
+    # 1. Type checking
     check_args(argt, expr)
 
-    # 2. Clang ASTを構築
+    # 2. Build Clang AST
     callargs, pvds = buildargexprs(C, argt)
-    d = declfornns(C, expr)  # 名前解決
+    d = declfornns(C, expr)  # Name resolution
 
-    # 3. 呼び出し式を生成
+    # 3. Generate call expression
     ce = CreateCallExpr(C, dne, callargs)
 
-    # 4. LLVM IRを生成してllvmcallに埋め込む
+    # 4. Generate LLVM IR and embed into llvmcall
     EmitExpr(C, ce, ...)
 end
 ```
 
-### 3. Clang AST生成
+### 3. Clang AST Generation
 
-`buildargexprs` 関数は、Juliaの引数をClangのASTノードに変換:
+The `buildargexprs` function converts Julia arguments to Clang AST nodes:
 
 ```julia
 function buildargexprs(C, argt; derefval = true)
@@ -98,19 +98,19 @@ function buildargexprs(C, argt; derefval = true)
 
     for i in 1:length(argt)
         t = argt[i]
-        st = stripmodifier(t)  # 修飾子を除去
+        st = stripmodifier(t)  # Remove modifiers
 
-        # Clangの型を取得
+        # Get Clang type
         argit = cpptype(C, st)
 
-        # ParmVarDeclを作成（関数パラメータの宣言）
+        # Create ParmVarDecl (function parameter declaration)
         argpvd = CreateParmVarDecl(C, argit)
         push!(pvds, argpvd)
 
-        # DeclRefExprを作成（変数参照）
+        # Create DeclRefExpr (variable reference)
         expr = CreateDeclRefExpr(C, argpvd)
 
-        # 修飾子を適用（*や&など）
+        # Apply modifiers (*, &, etc.)
         expr = resolvemodifier(C, t, expr)
         push!(callargs, expr)
     end
@@ -119,93 +119,93 @@ function buildargexprs(C, argt; derefval = true)
 end
 ```
 
-### 4. LLVM IR生成と埋め込み
+### 4. LLVM IR Generation and Embedding
 
-`EmitExpr` 関数は、Clang ASTからLLVM IRを生成し、Juliaの`llvmcall`に埋め込みます:
+The `EmitExpr` function generates LLVM IR from Clang AST and embeds it into Julia's `llvmcall`:
 
 ```julia
 function EmitExpr(C, ce, nE, ctce, argt, pvds, rett = Cvoid)
-    # 1. LLVM関数を作成
+    # 1. Create LLVM function
     f = CreateFunctionWithPersonality(C, llvmrt, map(julia_to_llvm, llvmargt))
 
-    # 2. Clangのコード生成環境をセットアップ
+    # 2. Setup Clang code generation environment
     state = setup_cpp_env(C, f)
     builder = irbuilder(C)
 
-    # 3. LLVM引数を処理
+    # 3. Process LLVM arguments
     args = llvmargs(C, builder, f, llvmargt)
 
-    # 4. Clang ASTとLLVM値を関連付け
+    # 4. Associate Clang AST with LLVM values
     associateargs(C, builder, argt, args, pvds)
 
-    # 5. Clang ASTをLLVM IRにコンパイル
+    # 5. Compile Clang AST to LLVM IR
     ret = EmitCallExpr(C, ce, rslot)
 
-    # 6. llvmcall式を生成
+    # 6. Generate llvmcall expression
     createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, state)
 end
 ```
 
-最終的に、以下のような`llvmcall`式が生成されます:
+Finally, an `llvmcall` expression like the following is generated:
 
 ```julia
 Expr(:call, Core.Intrinsics.llvmcall,
-    convert(Ptr{Cvoid}, f),  # LLVM関数へのポインタ
-    rett,                    # 戻り値の型
-    Tuple{argt...},         # 引数の型
-    args2...)               # 実際の引数
+    convert(Ptr{Cvoid}, f),  # Pointer to LLVM function
+    rett,                    # Return type
+    Tuple{argt...},         # Argument types
+    args2...)               # Actual arguments
 ```
 
 ---
 
-## マクロ処理 (`@cxx`)
+## Macro Processing (`@cxx`)
 
-### 構文解析
+### Syntax Parsing
 
-`cxxmacro.jl` の `cpps_impl` 関数が、Juliaの構文を解析してC++の意図を抽出します:
+The `cpps_impl` function in `cxxmacro.jl` parses Julia syntax and extracts C++ intent:
 
 ```julia
-# 例: @cxx foo::bar::baz(a, b)
+# Example: @cxx foo::bar::baz(a, b)
 #
-# 1. 名前空間の抽出
+# 1. Extract namespace
 nns = Expr(:curly, Tuple, :foo, :bar, :baz)
 
-# 2. 関数呼び出しの検出
+# 2. Detect function call
 cexpr = :(baz(a, b))
 
-# 3. ステージド関数呼び出しを生成
+# 3. Generate staged function call
 build_cpp_call(mod, cexpr, nothing, nns)
     ↓
 cppcall(__current_compiler__, CppNNS{(:foo, :bar, :baz)}(), a, b)
 ```
 
-### メンバー呼び出し
+### Member Calls
 
-`@cxx obj->method(args)` の場合:
+For `@cxx obj->method(args)`:
 
 ```julia
-# 1. -> 演算子を検出
+# 1. Detect -> operator
 expr.head == :(->)
 a = expr.args[1]  # obj
 b = expr.args[2]  # method(args)
 
-# 2. メンバー呼び出し用のステージド関数を呼び出す
+# 2. Call staged function for member call
 cppcall_member(__current_compiler__, CppNNS{(:method,)}(), obj, args...)
 ```
 
-### 修飾子の処理
+### Modifier Processing
 
-- `@cxx foo(*(a))`: `CppDeref` でラップ
-- `@cxx foo(&a)`: `CppAddr` でラップ
-- `@cxx foo(cast(T, a))`: `CppCast` でラップ
+- `@cxx foo(*(a))`: Wrapped with `CppDeref`
+- `@cxx foo(&a)`: Wrapped with `CppAddr`
+- `@cxx foo(cast(T, a))`: Wrapped with `CppCast`
 
 ---
 
-## 文字列リテラル (`cxx""` と `icxx""`)
+## String Literals (`cxx""` and `icxx""`)
 
-### `cxx""` (グローバルスコープ)
+### `cxx""` (Global Scope)
 
-`cxxstr.jl` の `process_cxx_string` 関数が処理:
+Processed by `process_cxx_string` function in `cxxstr.jl`:
 
 ```julia
 cxx"""
@@ -215,17 +215,17 @@ cxx"""
 """
 ```
 
-処理の流れ:
+Processing flow:
 
-1. **Julia式の抽出**: `$` で埋め込まれたJulia式を検出
-2. **プレースホルダー置換**: `__julia::var1`, `__julia::var2` などに置換
-3. **Clangパーサーに渡す**: `EnterBuffer` または `EnterVirtualSource`
-4. **パース**: `ParseToEndOfFile` でC++コードを解析
-5. **グローバルコンストラクタの実行**: `RunGlobalConstructors`
+1. **Extract Julia expressions**: Detect Julia expressions embedded with `$`
+2. **Replace placeholders**: Replace with `__julia::var1`, `__julia::var2`, etc.
+3. **Pass to Clang parser**: `EnterBuffer` or `EnterVirtualSource`
+4. **Parse**: Parse C++ code with `ParseToEndOfFile`
+5. **Execute global constructors**: `RunGlobalConstructors`
 
-### `icxx""` (関数スコープ)
+### `icxx""` (Function Scope)
 
-`icxx""` は関数内で使用され、実行時に評価されます:
+`icxx""` is used within functions and evaluated at runtime:
 
 ```julia
 function myfunc(x)
@@ -236,17 +236,17 @@ function myfunc(x)
 end
 ```
 
-処理の流れ:
+Processing flow:
 
-1. **ステージド関数の生成**: `cxxstr_impl` が `@generated` 関数として実行
-2. **Clang関数の作成**: `CreateFunctionWithBody` でClangの関数宣言を作成
-3. **パース**: `ParseFunctionStatementBody` で関数本体を解析
-4. **LLVM IR生成**: `EmitTopLevelDecl` でLLVM IRにコンパイル
-5. **呼び出し式の生成**: `CallDNE` で関数を呼び出す式を生成
+1. **Generate staged function**: `cxxstr_impl` executes as `@generated` function
+2. **Create Clang function**: Create Clang function declaration with `CreateFunctionWithBody`
+3. **Parse**: Parse function body with `ParseFunctionStatementBody`
+4. **Generate LLVM IR**: Compile to LLVM IR with `EmitTopLevelDecl`
+5. **Generate call expression**: Generate expression to call function with `CallDNE`
 
-### Julia式の埋め込み
+### Julia Expression Embedding
 
-`$` 構文でJulia式を埋め込む場合:
+When embedding Julia expressions with `$` syntax:
 
 ```julia
 cxx"""
@@ -256,50 +256,50 @@ cxx"""
 """
 ```
 
-処理:
+Processing:
 
-1. `find_expr` 関数が `$` を検出
-2. Julia式をパース: `Meta.parse(str, idx + 1)`
-3. プレースホルダーに置換: `__juliavar1` など
-4. Clangの外部セマンティックソースが、実行時にJulia式を評価
+1. `find_expr` function detects `$`
+2. Parse Julia expression: `Meta.parse(str, idx + 1)`
+3. Replace with placeholder: `__juliavar1`, etc.
+4. Clang's external semantic source evaluates Julia expression at runtime
 
 ---
 
-## 型システム
+## Type System
 
-### Julia型からC++型への変換
+### Conversion from Julia Types to C++ Types
 
-`typetranslation.jl` の `cpptype` 関数が変換を担当:
+The `cpptype` function in `typetranslation.jl` handles conversion:
 
 ```julia
-# 基本型
-cpptype(C, ::Type{Int32}) → QualType (clang::Type* へのポインタ)
+# Basic types
+cpptype(C, ::Type{Int32}) → QualType (pointer to clang::Type*)
 
-# C++クラス
+# C++ classes
 cpptype(C, ::Type{CppBaseType{:MyClass}})
-    → lookup_ctx(C, :MyClass)  # 名前解決
-    → typeForDecl(decl)        # Clang型を取得
+    → lookup_ctx(C, :MyClass)  # Name resolution
+    → typeForDecl(decl)        # Get Clang type
 
-# テンプレート
+# Templates
 cpptype(C, ::Type{CppTemplate{CppBaseType{:vector}, Tuple{Int32}}})
-    → specialize_template(C, cxxt, targs)  # テンプレート特殊化
+    → specialize_template(C, cxxt, targs)  # Template specialization
     → typeForDecl(specialized_decl)
 
-# ポインタ・参照
+# Pointers and references
 cpptype(C, ::Type{CppPtr{T, CVR}})
-    → pointerTo(C, cpptype(C, T))  # ポインタ型を取得
-    → addQualifiers(..., CVR)      # const/volatile/restrictを追加
+    → pointerTo(C, cpptype(C, T))  # Get pointer type
+    → addQualifiers(..., CVR)      # Add const/volatile/restrict
 ```
 
-### C++型からJulia型への変換
+### Conversion from C++ Types to Julia Types
 
-`juliatype` 関数が変換を担当:
+The `juliatype` function handles conversion:
 
 ```julia
 function juliatype(t::QualType, quoted = false, typeargs = Dict{Int,Cvoid}())
-    CVR = extractCVR(t)  # const/volatile/restrictを抽出
+    CVR = extractCVR(t)  # Extract const/volatile/restrict
     t = extractTypePtr(t)
-    t = canonicalType(t)  # 正規化
+    t = canonicalType(t)  # Normalize
 
     if isPointerType(t)
         pt = getPointeeType(t)
@@ -312,55 +312,55 @@ function juliatype(t::QualType, quoted = false, typeargs = Dict{Int,Cvoid}())
     elseif isEnumeralType(t)
         T = juliatype(getUnderlyingTypeOfEnum(t))
         return CppEnum{Symbol(get_name(t)), T}
-    # ... 他の型
+    # ... other types
 end
 ```
 
-### 型の表現
+### Type Representation
 
-- **CppBaseType{s}**: 基本型（例: `int`, `MyClass`）
-- **CppTemplate{T, targs}**: テンプレート型（例: `std::vector<int>`）
-- **CppPtr{T, CVR}**: ポインタ型
-- **CppRef{T, CVR}**: 参照型
-- **CppValue{T, N}**: 値型（スタック上）
-- **CxxQualType{T, CVR}**: CVR修飾子付き型
+- **CppBaseType{s}**: Base types (e.g., `int`, `MyClass`)
+- **CppTemplate{T, targs}**: Template types (e.g., `std::vector<int>`)
+- **CppPtr{T, CVR}**: Pointer types
+- **CppRef{T, CVR}**: Reference types
+- **CppValue{T, N}**: Value types (on stack)
+- **CxxQualType{T, CVR}**: Types with CVR qualifiers
 
 ---
 
-## コード生成プロセス
+## Code Generation Process
 
-### 1. 引数の準備 (`buildargexprs`)
+### 1. Argument Preparation (`buildargexprs`)
 
 ```julia
 function buildargexprs(C, argt; derefval = true)
-    # 各引数に対して:
-    # 1. Clangの型を取得
+    # For each argument:
+    # 1. Get Clang type
     argit = cpptype(C, stripmodifier(t))
 
-    # 2. ParmVarDeclを作成（関数パラメータの宣言）
+    # 2. Create ParmVarDecl (function parameter declaration)
     argpvd = CreateParmVarDecl(C, argit)
 
-    # 3. DeclRefExprを作成（変数参照式）
+    # 3. Create DeclRefExpr (variable reference expression)
     expr = CreateDeclRefExpr(C, argpvd)
 
-    # 4. 修飾子を適用（*や&など）
+    # 4. Apply modifiers (*, &, etc.)
     expr = resolvemodifier(C, t, expr)
 end
 ```
 
-### 2. 名前解決 (`declfornns`)
+### 2. Name Resolution (`declfornns`)
 
 ```julia
 function declfornns(C, ::Type{CppNNS{Tnns}}, cxxscope=C_NULL)
     nns = Tnns.parameters  # (:foo, :bar, :baz)
-    d = translation_unit(C)  # 翻訳単位から開始
+    d = translation_unit(C)  # Start from translation unit
 
     for (i, n) in enumerate(nns)
         if n <: CppTemplate
-            # テンプレートの特殊化
+            # Template specialization
             d = specialize_template_clang(C, cxxt, arr)
         else
-            # 通常の名前解決
+            # Normal name resolution
             d = lookup_name(C, (n,), cxxscope, d, i != length(nns))
         end
     end
@@ -369,42 +369,42 @@ function declfornns(C, ::Type{CppNNS{Tnns}}, cxxscope=C_NULL)
 end
 ```
 
-### 3. 呼び出し式の生成
+### 3. Call Expression Generation
 
 ```julia
-# 通常の関数呼び出し
+# Normal function call
 ce = CreateCallExpr(C, dne, callargs)
 
-# メンバー関数呼び出し
+# Member function call
 me = BuildMemberReference(C, callargs[1], cpptype(C, argt[1]),
                           argt[1] <: CppPtr, fname)
 ce = BuildCallToMemberFunction(C, me, callargs[2:end])
 
-# コンストラクタ呼び出し
+# Constructor call
 ctce = BuildCXXTypeConstructExpr(C, rt, callargs)
 
-# new式
+# new expression
 nE = BuildCXXNewExpr(C, QualType(typeForDecl(cxxd)), callargs)
 ```
 
-### 4. LLVM IR生成
+### 4. LLVM IR Generation
 
 ```julia
 function EmitExpr(C, ce, nE, ctce, argt, pvds, rett = Cvoid)
-    # 1. LLVM関数を作成
+    # 1. Create LLVM function
     f = CreateFunctionWithPersonality(C, llvmrt, map(julia_to_llvm, llvmargt))
 
-    # 2. コード生成環境をセットアップ
+    # 2. Setup code generation environment
     state = setup_cpp_env(C, f)
     builder = irbuilder(C)
 
-    # 3. LLVM引数を処理（Julia型からLLVM型へ変換）
+    # 3. Process LLVM arguments (convert from Julia types to LLVM types)
     args = llvmargs(C, builder, f, llvmargt)
 
-    # 4. Clang ASTとLLVM値を関連付け
+    # 4. Associate Clang AST with LLVM values
     associateargs(C, builder, argt, args, pvds)
 
-    # 5. Clang ASTをLLVM IRにコンパイル
+    # 5. Compile Clang AST to LLVM IR
     if ce != C_NULL
         ret = EmitCallExpr(C, ce, rslot)
     elseif nE != C_NULL
@@ -413,55 +413,55 @@ function EmitExpr(C, ce, nE, ctce, argt, pvds, rett = Cvoid)
         EmitAnyExprToMem(C, ctce, args[1], true)
     end
 
-    # 6. llvmcall式を生成
+    # 6. Generate llvmcall expression
     createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, state)
 end
 ```
 
-### 5. LLVM値の変換
+### 5. LLVM Value Conversion
 
-`resolvemodifier_llvm` 関数が、JuliaのLLVM表現をClangのLLVM表現に変換:
+The `resolvemodifier_llvm` function converts Julia's LLVM representation to Clang's LLVM representation:
 
 ```julia
-# ポインタ型
+# Pointer type
 resolvemodifier_llvm(C, builder, t::Type{Ptr{ptr}}, v)
     → IntToPtr(builder, v, toLLVM(C, cpptype(C, Ptr{ptr})))
 
-# CppValue型（値型）
+# CppValue type (value type)
 resolvemodifier_llvm(C, builder, t::Type{T} where T <: CppValue, v)
     → CreatePointerFromObjref(C, builder, v)
     → CreateBitCast(builder, v, getPointerTo(getPointerTo(toLLVM(C, ty))))
 
-# CppRef型（参照）
+# CppRef type (reference)
 resolvemodifier_llvm(C, builder, t::Type{CppRef{T, CVR}}, v)
     → IntToPtr(builder, v, toLLVM(C, ty))
 ```
 
 ---
 
-## Clang統合
+## Clang Integration
 
-### Clangインスタンスの初期化
+### Clang Instance Initialization
 
-`initialization.jl` の `setup_instance` 関数:
+`setup_instance` function in `initialization.jl`:
 
 ```julia
 function setup_instance(PCHBuffer = []; makeCCompiler=false, ...)
     x = Ref{ClangCompiler}()
 
-    # C++側のinit_clang_instanceを呼び出し
+    # Call C++ side init_clang_instance
     ccall((:init_clang_instance, libcxxffi), Cvoid,
         (Ptr{Cvoid}, Ptr{UInt8}, Ptr{UInt8}, ...),
         x, target, CPU, sysroot, ...)
 
-    # デフォルトABIを適用
+    # Apply default ABI
     useDefaultCxxABI && ccall((:apply_default_abi, libcxxffi), ...)
 
     x[]
 end
 ```
 
-### ヘッダー検索パスの追加
+### Adding Header Search Paths
 
 ```julia
 function addHeaderDir(C, dirname; kind = C_User, isFramework = false)
@@ -471,17 +471,17 @@ function addHeaderDir(C, dirname; kind = C_User, isFramework = false)
 end
 ```
 
-### ソースバッファの入力
+### Source Buffer Input
 
 ```julia
-# 匿名バッファ
+# Anonymous buffer
 function EnterBuffer(C, buf)
     ccall((:EnterSourceFile, libcxxffi), Cvoid,
         (Ref{ClangCompiler}, Ptr{UInt8}, Csize_t),
         C, buf, sizeof(buf))
 end
 
-# 仮想ファイル（ファイル名を指定）
+# Virtual file (specify filename)
 function EnterVirtualSource(C, buf, file::String)
     ccall((:EnterVirtualFile, libcxxffi), Cvoid,
         (Ref{ClangCompiler}, Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t),
@@ -489,13 +489,13 @@ function EnterVirtualSource(C, buf, file::String)
 end
 ```
 
-### パース
+### Parsing
 
 ```julia
 function ParseToEndOfFile(C)
     hadError = ccall((:_cxxparse, libcxxffi), Cint, (Ref{ClangCompiler},), C) == 0
     if !hadError
-        RunGlobalConstructors(C)  # グローバルコンストラクタを実行
+        RunGlobalConstructors(C)  # Execute global constructors
     end
     !hadError
 end
@@ -503,22 +503,22 @@ end
 
 ---
 
-## LLVM IR統合
+## LLVM IR Integration
 
-### llvmcallの使用
+### Using llvmcall
 
-Cxx.jlは、Juliaの`llvmcall`の第2形式（ポインタ形式）を使用:
+Cxx.jl uses Julia's `llvmcall` in the second form (pointer form):
 
 ```julia
-llvmcall(convert(Ptr{Cvoid}, f),  # LLVM関数へのポインタ
-         rett,                     # 戻り値の型
-         Tuple{argt...},          # 引数の型タプル
-         args...)                 # 実際の引数
+llvmcall(convert(Ptr{Cvoid}, f),  # Pointer to LLVM function
+         rett,                     # Return type
+         Tuple{argt...},          # Argument type tuple
+         args...)                 # Actual arguments
 ```
 
-この形式では、JuliaはLLVM関数を直接呼び出し、引数の変換とインライン化を行います。
+In this form, Julia directly calls the LLVM function and performs argument conversion and inlining.
 
-### LLVM関数の作成
+### LLVM Function Creation
 
 ```julia
 function CreateFunction(C, rt, argt)
@@ -529,18 +529,18 @@ function CreateFunction(C, rt, argt)
 end
 ```
 
-### 型変換
+### Type Conversion
 
 ```julia
 function julia_to_llvm(@nospecialize x)
     isboxed, ty = _julia_to_llvm(x)
-    isboxed ? getPRJLValueTy() : ty  # ボックス化された型はjl_value_t*に
+    isboxed ? getPRJLValueTy() : ty  # Boxed types become jl_value_t*
 end
 ```
 
-### 戻り値の処理
+### Return Value Processing
 
-`createReturn` 関数が、LLVM IRの戻り値をJuliaの形式に変換:
+The `createReturn` function converts LLVM IR return values to Julia format:
 
 ```julia
 function createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, state)
@@ -548,44 +548,44 @@ function createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, stat
         CreateRetVoid(builder)
     else
         if rett <: CppEnum || rett <: CppFptr
-            # 構造体にラップ
+            # Wrap in struct
             undef = getUndefValue(llvmrt)
             ret = InsertValue(builder, undef, ret, 0)
         elseif rett <: CppRef || rett <: CppPtr || rett <: Ptr
-            # ポインタを整数に変換
+            # Convert pointer to integer
             ret = PtrToInt(builder, ret, llvmrt)
         elseif rett <: CppValue
-            # 値型は特別な処理が必要
+            # Value types need special processing
             # ...
         end
         CreateRet(builder, ret)
     end
 
-    # llvmcall式を生成
+    # Generate llvmcall expression
     Expr(:call, Core.Intrinsics.llvmcall, convert(Ptr{Cvoid}, f), rett, ...)
 end
 ```
 
 ---
 
-## メモリ管理
+## Memory Management
 
-### C++オブジェクトのライフサイクル
+### C++ Object Lifecycle
 
-- **CppPtr**: ヒープに確保されたオブジェクトへのポインタ
-- **CppRef**: 既存オブジェクトへの参照
-- **CppValue**: スタック上またはJuliaの構造体内に格納された値
+- **CppPtr**: Pointer to heap-allocated object
+- **CppRef**: Reference to existing object
+- **CppValue**: Value stored on stack or within Julia struct
 
-### デストラクタの呼び出し
+### Destructor Invocation
 
-`CppValue` で非自明なデストラクタを持つ型の場合:
+For types with non-trivial destructors in `CppValue`:
 
 ```julia
 if rett <: CppValue
     T = cpptype(C, rett)
     D = getAsCXXRecordDecl(T)
     if D != C_NULL && !hasTrivialDestructor(C, D)
-        # finalizerを登録してデストラクタを呼び出す
+        # Register finalizer to call destructor
         push!(B.args, :(finalizer($(get_destruct_for_instance(C)), r)))
     end
 end
@@ -593,11 +593,11 @@ end
 
 ---
 
-## エラーハンドリング
+## Error Handling
 
-### C++例外の処理
+### C++ Exception Processing
 
-`exceptions.jl` でC++例外をJulia例外に変換:
+C++ exceptions are converted to Julia exceptions in `exceptions.jl`:
 
 ```julia
 function setup_exception_callback()
@@ -606,26 +606,26 @@ function setup_exception_callback()
 end
 ```
 
-C++側で例外が発生すると、このコールバックが呼び出され、Julia例外に変換されます。
+When an exception occurs on the C++ side, this callback is invoked and converted to a Julia exception.
 
 ---
 
-## 最適化のポイント
+## Optimization Points
 
-1. **型情報の活用**: ステージド関数により、コンパイル時に型が確定しているため、適切なC++関数を選択可能
-2. **インライン化**: `llvmcall`により、LLVM IRがJuliaのIRにインライン化され、最適化が適用される
-3. **PCH（Precompiled Header）**: 頻繁に使用されるヘッダーをプリコンパイルして高速化
-4. **テンプレート特殊化のキャッシュ**: 一度特殊化したテンプレートは再利用
+1. **Type information utilization**: Staged functions allow appropriate C++ functions to be selected at compile time since types are determined
+2. **Inlining**: `llvmcall` allows LLVM IR to be inlined into Julia's IR, applying optimizations
+3. **PCH (Precompiled Header)**: Precompile frequently used headers for speed
+4. **Template specialization cache**: Reuse once-specialized templates
 
 ---
 
-## まとめ
+## Summary
 
-Cxx.jlは、以下の技術を組み合わせてC++とJuliaの相互運用を実現しています:
+Cxx.jl achieves C++ and Julia interop by combining the following technologies:
 
-1. **マクロとステージド関数**: 構文解析と型情報の抽出
-2. **Clang統合**: C++コードの解析とAST生成
-3. **LLVM統合**: ASTからLLVM IRへの変換とJuliaへの埋め込み
-4. **型システム**: Julia型とC++型の双方向変換
+1. **Macros and staged functions**: Syntax parsing and type information extraction
+2. **Clang integration**: C++ code parsing and AST generation
+3. **LLVM integration**: Conversion from AST to LLVM IR and embedding into Julia
+4. **Type system**: Bidirectional conversion between Julia types and C++ types
 
-このアーキテクチャにより、C++コードをJuliaから直接呼び出すことができ、両言語の最適化を活用できます。
+This architecture enables direct calls to C++ code from Julia and leverages optimizations from both languages.
