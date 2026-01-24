@@ -1,70 +1,70 @@
-# パフォーマンスガイド
+# Performance Guide
 
-LastCall.jlは、JuliaからRustコードを呼び出す際のパフォーマンスを最適化するための複数の機能を提供しています。このガイドでは、パフォーマンスを向上させるためのベストプラクティスと最適化のヒントを説明します。
+LastCall.jl provides multiple features to optimize performance when calling Rust code from Julia. This guide explains best practices and optimization tips for improving performance.
 
-## 目次
+## Table of Contents
 
-1. [コンパイルキャッシュ](#コンパイルキャッシュ)
-2. [LLVM最適化](#llvm最適化)
-3. [関数呼び出しの最適化](#関数呼び出しの最適化)
-4. [メモリ管理](#メモリ管理)
-5. [ベンチマーク結果](#ベンチマーク結果)
-6. [パフォーマンスチューニングのヒント](#パフォーマンスチューニングのヒント)
+1. [Compilation Caching](#compilation-caching)
+2. [LLVM Optimization](#llvm-optimization)
+3. [Function Call Optimization](#function-call-optimization)
+4. [Memory Management](#memory-management)
+5. [Benchmark Results](#benchmark-results)
+6. [Performance Tuning Tips](#performance-tuning-tips)
 
-## コンパイルキャッシュ
+## Compilation Caching
 
-LastCall.jlは、コンパイル済みのRustライブラリを自動的にキャッシュします。同じコードを再コンパイルする必要がなくなり、起動時間を大幅に短縮できます。
+LastCall.jl automatically caches compiled Rust libraries. This eliminates the need to recompile the same code and significantly reduces startup time.
 
-### キャッシュの仕組み
+### How Caching Works
 
-- **キャッシュキー**: コードのハッシュ、コンパイラ設定、ターゲットトリプルから生成
-- **キャッシュ場所**: `~/.julia/compiled/vX.Y/LastCall/`
-- **自動検証**: キャッシュの整合性を自動的にチェック
+- **Cache Key**: Generated from code hash, compiler settings, and target triple
+- **Cache Location**: `~/.julia/compiled/vX.Y/LastCall/`
+- **Automatic Verification**: Automatically checks cache integrity
 
-### キャッシュの管理
+### Cache Management
 
 ```julia
 using LastCall
 
-# キャッシュサイズを確認
+# Check cache size
 size = get_cache_size()
 println("Cache size: $(size / 1024 / 1024) MB")
 
-# キャッシュされたライブラリを一覧表示
+# List cached libraries
 libraries = list_cached_libraries()
 println("Cached libraries: $(length(libraries))")
 
-# 古いキャッシュをクリーンアップ（30日以上古いもの）
+# Cleanup old cache (older than 30 days)
 cleanup_old_cache(30)
 
-# キャッシュを完全にクリア
+# Clear cache completely
 clear_cache()
 ```
 
-### キャッシュのベストプラクティス
+### Cache Best Practices
 
-1. **開発中**: キャッシュを有効にしたまま開発することで、再コンパイル時間を短縮
-2. **本番環境**: キャッシュを事前にウォームアップしておくことで、初回実行時の遅延を回避
-3. **CI/CD**: キャッシュを保存・復元することで、ビルド時間を短縮
+1. **During Development**: Keep cache enabled to reduce recompilation time
+2. **Production**: Warm up cache beforehand to avoid first-run delays
+3. **CI/CD**: Save and restore cache to reduce build time
 
-## LLVM最適化
+## LLVM Optimization
 
-LastCall.jlは、LLVM IRレベルでの最適化をサポートしています。`@rust_llvm`マクロを使用することで、より高度な最適化を適用できます。
+LastCall.jl supports optimization at the LLVM IR level. Using the `@rust_llvm` macro enables more advanced optimizations.
 
-### 最適化レベルの設定
+### Optimization Level Settings
 
 ```julia
 using LastCall
 
-# 最適化設定を作成
+# Create optimization configuration
 config = OptimizationConfig(
-    optimization_level=3,  # 0-3 (3が最も最適化)
+    optimization_level=3,  # 0-3 (3 is most optimized)
     enable_vectorization=true,
     enable_loop_unrolling=true,
     enable_licm=true
 )
 
-# モジュールを最適化
+# Optimize module
 rust"""
 #[no_mangle]
 pub extern "C" fn compute(x: f64) -> f64 {
@@ -72,298 +72,298 @@ pub extern "C" fn compute(x: f64) -> f64 {
 }
 """
 
-# 最適化を適用
+# Apply optimization
 mod = get_rust_module(rust_code)
 optimize_module!(mod; config=config)
 ```
 
-### 最適化のプリセット
+### Optimization Presets
 
 ```julia
-# 速度優先の最適化
+# Speed-optimized
 optimize_for_speed!(mod)
 
-# サイズ優先の最適化
+# Size-optimized
 optimize_for_size!(mod)
 
-# バランス型の最適化
+# Balanced optimization
 optimize_balanced!(mod)
 ```
 
-### 最適化レベルの選択
+### Optimization Level Selection
 
-- **Level 0**: 最適化なし（デバッグ用）
-- **Level 1**: 基本的な最適化
-- **Level 2**: 標準的な最適化（デフォルト）
-- **Level 3**: 最大限の最適化（コンパイル時間が長くなる可能性）
+- **Level 0**: No optimization (for debugging)
+- **Level 1**: Basic optimizations
+- **Level 2**: Standard optimizations (default)
+- **Level 3**: Maximum optimization (may take longer to compile)
 
-## 関数呼び出しの最適化
+## Function Call Optimization
 
 ### `@rust` vs `@rust_llvm`
 
-- **`@rust`**: 標準的な`ccall`経由の呼び出し。安定性が高く、ほとんどの場合に推奨
-- **`@rust_llvm`**: LLVM IR統合による呼び出し（実験的）。最適化の余地があるが、一部の型で制限あり
+- **`@rust`**: Standard call via `ccall`. Highly stable, recommended for most cases
+- **`@rust_llvm`**: Call via LLVM IR integration (experimental). Has optimization potential but limitations with some types
 
 ```julia
-# 標準的な呼び出し（推奨）
+# Standard call (recommended)
 result = @rust add(10i32, 20i32)
 
-# LLVM統合による呼び出し（実験的）
+# LLVM integration call (experimental)
 result = @rust_llvm add(10i32, 20i32)
 ```
 
-### 型推論の最適化
+### Type Inference Optimization
 
-明示的な型指定により、型推論のオーバーヘッドを削減できます：
+Explicit type specification can reduce type inference overhead:
 
 ```julia
-# 型推論あり（少し遅い）
+# With type inference (slightly slower)
 result = @rust add(10, 20)
 
-# 明示的な型指定（推奨）
+# Explicit type specification (recommended)
 result = @rust add(10i32, 20i32)::Int32
 ```
 
-### 関数登録による最適化
+### Function Registration Optimization
 
-頻繁に呼び出す関数は、事前に登録することで最適化できます：
+Frequently called functions can be optimized by registering them beforehand:
 
 ```julia
-# 関数を登録
+# Register function
 register_function("add", "mylib", Int32, [Int32, Int32])
 
-# 登録済み関数の呼び出し（型チェックがスキップされる）
+# Call registered function (type checking is skipped)
 result = @rust add(10i32, 20i32)
 ```
 
-## メモリ管理
+## Memory Management
 
-### 所有権型の効率的な使用
+### Efficient Use of Ownership Types
 
-所有権型（`RustBox`, `RustRc`, `RustArc`, `RustVec`）は、適切に使用することでメモリリークを防ぎます：
+Ownership types (`RustBox`, `RustRc`, `RustArc`, `RustVec`) prevent memory leaks when used appropriately:
 
 ```julia
-# 一時的な割り当ては自動的にクリーンアップされる
+# Temporary allocations are automatically cleaned up
 box = RustBox(Int32(42))
-# 使用後、自動的にドロップされる
+# Automatically dropped after use
 
-# 明示的なドロップ（早期解放が必要な場合）
+# Explicit drop (when early release is needed)
 drop!(box)
 ```
 
-### RustVecの効率的な使用
+### Efficient Use of RustVec
 
-`RustVec`はRustの`Vec<T>`をJuliaから操作するための型です。大量のデータを扱う場合のベストプラクティス：
+`RustVec` is a type for manipulating Rust's `Vec<T>` from Julia. Best practices when handling large amounts of data:
 
 ```julia
-# Julia配列からRustVecを作成
+# Create RustVec from Julia array
 julia_vec = Int32[1, 2, 3, 4, 5]
 rust_vec = create_rust_vec(julia_vec)
 
-# 効率的な一括コピー（推奨）
+# Efficient bulk copy (recommended)
 result = Vector{Int32}(undef, length(rust_vec))
 copy_to_julia!(rust_vec, result)
 
-# または to_julia_vector を使用
+# Or use to_julia_vector
 result = to_julia_vector(rust_vec)
 
-# 要素ごとのアクセス（大量データでは非推奨）
+# Element-by-element access (not recommended for large data)
 for i in 1:length(rust_vec)
-    value = rust_vec[i]  # FFI呼び出しが発生
+    value = rust_vec[i]  # FFI call occurs
 end
 
-# 使用後は明示的にドロップ
+# Explicitly drop after use
 drop!(rust_vec)
 ```
 
-### RustVec vs Julia配列の選択
+### RustVec vs Julia Array Selection
 
-| シナリオ | 推奨 |
-|----------|------|
-| Julia内での計算 | Julia配列 |
-| Rust関数への入力 | RustVec |
-| Rust関数からの出力 | RustVec → Julia配列に変換 |
-| 大量データの一時保存 | Julia配列（GCで管理） |
-| Rust側でのデータ操作 | RustVec |
+| Scenario | Recommendation |
+|----------|----------------|
+| Computation within Julia | Julia arrays |
+| Input to Rust functions | RustVec |
+| Output from Rust functions | RustVec → Convert to Julia array |
+| Temporary storage of large data | Julia arrays (managed by GC) |
+| Data manipulation on Rust side | RustVec |
 
-### メモリリークの回避
+### Avoiding Memory Leaks
 
 ```julia
-# パターン1: try-finallyを使用
+# Pattern 1: Use try-finally
 box = RustBox(Int32(42))
 try
-    # 使用
+    # Use
     value = box.ptr
 finally
-    drop!(box)  # 確実にクリーンアップ
+    drop!(box)  # Ensure cleanup
 end
 
-# パターン2: ローカルスコープを活用
+# Pattern 2: Leverage local scope
 function compute()
     box = RustBox(Int32(42))
-    # 使用
+    # Use
     return result
-    # boxは自動的にドロップされる
+    # box is automatically dropped
 end
 ```
 
-## ベンチマーク結果
+## Benchmark Results
 
-### 基本的な演算
+### Basic Operations
 
-以下のベンチマークは、Julia 1.12、Rust 1.92.0、macOS上で実行されました：
+The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS:
 
-| 操作 | Julia Native | @rust | @rust_llvm |
-|------|-------------|-------|------------|
-| i32加算 | 1.0x | 1.2x | 1.1x |
-| i64加算 | 1.0x | 1.2x | 1.1x |
-| f64加算 | 1.0x | 1.3x | 1.2x |
-| i32乗算 | 1.0x | 1.2x | 1.1x |
-| f64乗算 | 1.0x | 1.3x | 1.2x |
+| Operation | Julia Native | @rust | @rust_llvm |
+|-----------|-------------|-------|------------|
+| i32 addition | 1.0x | 1.2x | 1.1x |
+| i64 addition | 1.0x | 1.2x | 1.1x |
+| f64 addition | 1.0x | 1.3x | 1.2x |
+| i32 multiplication | 1.0x | 1.2x | 1.1x |
+| f64 multiplication | 1.0x | 1.3x | 1.2x |
 
-### 複雑な計算
+### Complex Computations
 
-| 計算 | Julia Native | @rust | @rust_llvm |
-|------|-------------|-------|------------|
+| Computation | Julia Native | @rust | @rust_llvm |
+|-------------|-------------|-------|------------|
 | Fibonacci (n=30) | 1.0x | 1.1x | 1.0x |
 | Sum Range (1..1000) | 1.0x | 1.2x | 1.1x |
 
-### 所有権型の操作
+### Ownership Type Operations
 
-| 操作 | 平均時間 | 備考 |
-|------|---------|------|
-| RustBox create+drop | ~170 ns | 単一値の割り当て・解放 |
-| RustRc create+drop | ~180 ns | 参照カウント付き |
-| RustRc clone+drop | ~180 ns | クローン操作 |
-| RustArc create+drop | ~190 ns | アトミック参照カウント |
-| RustArc clone+drop | ~200 ns | スレッドセーフ |
+| Operation | Average Time | Notes |
+|-----------|-------------|-------|
+| RustBox create+drop | ~170 ns | Single value allocation/release |
+| RustRc create+drop | ~180 ns | With reference counting |
+| RustRc clone+drop | ~180 ns | Clone operation |
+| RustArc create+drop | ~190 ns | Atomic reference counting |
+| RustArc clone+drop | ~200 ns | Thread-safe |
 
-### RustVec操作
+### RustVec Operations
 
-| 操作 | 平均時間 | 備考 |
-|------|---------|------|
-| RustVec(1000要素) create | ~1 μs | Julia配列からの変換 |
-| RustVec copy_to_julia!(1000要素) | ~500 ns | 効率的な一括コピー |
-| RustVec 要素アクセス | ~50 ns/要素 | FFI呼び出し含む |
-| RustVec push! | ~100 ns | 再アロケーションなしの場合 |
+| Operation | Average Time | Notes |
+|-----------|-------------|-------|
+| RustVec(1000 elements) create | ~1 μs | Conversion from Julia array |
+| RustVec copy_to_julia!(1000 elements) | ~500 ns | Efficient bulk copy |
+| RustVec element access | ~50 ns/element | Includes FFI call |
+| RustVec push! | ~100 ns | When no reallocation occurs |
 
-**注意**: これらの結果は環境によって異なる場合があります。実際のパフォーマンスは、ハードウェア、OS、Julia/Rustのバージョンによって大きく変動します。
+**Note**: These results may vary by environment. Actual performance can vary significantly depending on hardware, OS, and Julia/Rust versions.
 
-### ベンチマークの実行
+### Running Benchmarks
 
 ```bash
-# 基本ベンチマーク
+# Basic benchmarks
 julia --project benchmark/benchmarks.jl
 
-# LLVM統合ベンチマーク
+# LLVM integration benchmarks
 julia --project benchmark/benchmarks_llvm.jl
 
-# 所有権型ベンチマーク
+# Ownership type benchmarks
 julia --threads=4 --project benchmark/benchmarks_ownership.jl
 
-# 配列操作ベンチマーク
+# Array operation benchmarks
 julia --project benchmark/benchmarks_arrays.jl
 
-# ジェネリクスベンチマーク
+# Generics benchmarks
 julia --project benchmark/benchmarks_generics.jl
 ```
 
-## パフォーマンスチューニングのヒント
+## Performance Tuning Tips
 
-### 1. コンパイル時間の短縮
+### 1. Reducing Compilation Time
 
-- **キャッシュを活用**: 同じコードを再コンパイルしない
-- **最適化レベルを調整**: 開発中はLevel 1-2、本番環境でLevel 3
-- **デバッグ情報を無効化**: `emit_debug_info=false`
+- **Leverage cache**: Don't recompile the same code
+- **Adjust optimization level**: Level 1-2 during development, Level 3 in production
+- **Disable debug info**: `emit_debug_info=false`
 
 ```julia
 compiler = RustCompiler(
-    optimization_level=2,  # 開発中は2で十分
+    optimization_level=2,  # 2 is sufficient during development
     emit_debug_info=false
 )
 set_default_compiler(compiler)
 ```
 
-### 2. 実行時パフォーマンスの向上
+### 2. Improving Runtime Performance
 
-- **型を明示**: 型推論のオーバーヘッドを削減
-- **関数を登録**: 頻繁に呼び出す関数は事前登録
-- **バッチ処理**: 複数の呼び出しをまとめる
+- **Explicit types**: Reduce type inference overhead
+- **Register functions**: Pre-register frequently called functions
+- **Batch processing**: Combine multiple calls
 
 ```julia
-# 非効率的: ループ内で毎回型推論
+# Inefficient: Type inference every time in loop
 for i in 1:1000
-    result = @rust add(i, i+1)  # 型推論が毎回実行される
+    result = @rust add(i, i+1)  # Type inference runs every time
 end
 
-# 効率的: 型を明示
+# Efficient: Explicit types
 for i in 1:1000
     result = @rust add(Int32(i), Int32(i+1))::Int32
 end
 ```
 
-### 3. メモリ使用量の最適化
+### 3. Optimizing Memory Usage
 
-- **所有権型の適切な使用**: 不要になったらすぐにドロップ
-- **Rc/Arcの適切な選択**: シングルスレッドなら`Rc`、マルチスレッドなら`Arc`
-- **キャッシュのクリーンアップ**: 定期的に古いキャッシュを削除
+- **Appropriate use of ownership types**: Drop immediately when no longer needed
+- **Appropriate choice of Rc/Arc**: Use `Rc` for single-threaded, `Arc` for multi-threaded
+- **Cache cleanup**: Regularly delete old cache
 
-### 4. 並列処理の最適化
+### 4. Parallel Processing Optimization
 
 ```julia
 using Base.Threads
 
-# Arcを使用してスレッド間でデータを共有
+# Use Arc to share data between threads
 shared_data = RustArc(Int32(0))
 
-# 複数のスレッドで作業
+# Work on multiple threads
 @threads for i in 1:1000
     local_arc = clone(shared_data)
-    # 作業
+    # Work
     drop!(local_arc)
 end
 ```
 
-### 5. プロファイリング
+### 5. Profiling
 
-Juliaのプロファイリングツールを使用して、ボトルネックを特定：
+Use Julia's profiling tools to identify bottlenecks:
 
 ```julia
 using Profile
 
-# プロファイルを開始
+# Start profiling
 Profile.clear()
 @profile for i in 1:1000
     @rust add(Int32(i), Int32(i+1))
 end
 
-# 結果を表示
+# Display results
 Profile.print()
 ```
 
-## トラブルシューティング
+## Troubleshooting
 
-### パフォーマンスが期待より低い場合
+### When Performance is Lower Than Expected
 
-1. **キャッシュを確認**: キャッシュが正しく機能しているか確認
-2. **最適化レベルを確認**: 最適化レベルが適切に設定されているか確認
-3. **型を明示**: 型推論のオーバーヘッドを削減
-4. **プロファイリング**: ボトルネックを特定
+1. **Check cache**: Verify cache is working correctly
+2. **Check optimization level**: Verify optimization level is set appropriately
+3. **Explicit types**: Reduce type inference overhead
+4. **Profiling**: Identify bottlenecks
 
-### メモリ使用量が高い場合
+### When Memory Usage is High
 
-1. **所有権型の確認**: 適切にドロップされているか確認
-2. **キャッシュのクリーンアップ**: 古いキャッシュを削除
-3. **Rc/Arcの使用**: 不要なクローンを避ける
+1. **Check ownership types**: Verify they are being dropped appropriately
+2. **Cache cleanup**: Delete old cache
+3. **Rc/Arc usage**: Avoid unnecessary clones
 
-## まとめ
+## Summary
 
-LastCall.jlのパフォーマンスを最適化するには：
+To optimize LastCall.jl performance:
 
-1. ✅ **キャッシュを活用**: コンパイル時間を短縮
-2. ✅ **最適化レベルを調整**: 用途に応じて最適化レベルを選択
-3. ✅ **型を明示**: 型推論のオーバーヘッドを削減
-4. ✅ **メモリ管理**: 所有権型を適切に使用
-5. ✅ **プロファイリング**: ボトルネックを特定して最適化
+1. ✅ **Leverage cache**: Reduce compilation time
+2. ✅ **Adjust optimization level**: Select optimization level according to use case
+3. ✅ **Explicit types**: Reduce type inference overhead
+4. ✅ **Memory management**: Use ownership types appropriately
+5. ✅ **Profiling**: Identify and optimize bottlenecks
 
-これらのベストプラクティスに従うことで、LastCall.jlを使用したアプリケーションのパフォーマンスを最大限に引き出すことができます。
+By following these best practices, you can maximize the performance of applications using LastCall.jl.

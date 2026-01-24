@@ -1,24 +1,24 @@
-# Phase 1: C互換ABI経由の基本実装（MVP）
+# Phase 1: Basic Implementation via C-Compatible ABI (MVP)
 
-## 概要
+## Overview
 
-Phase 1では、C互換ABI（Application Binary Interface）を使用して、Rust関数をJuliaから呼び出せるようにする基本的な実装を行います。このフェーズでは、Rustの高度な機能（generics、traits、ownershipシステムなど）は使用せず、基本的な型と関数呼び出しに焦点を当てます。
+In Phase 1, we implement basic functionality to call Rust functions from Julia using a C-compatible ABI (Application Binary Interface). This phase focuses on basic types and function calls, without using advanced Rust features (generics, traits, ownership system, etc.).
 
-**目標期間**: 2-3ヶ月
-**成果物**: 基本的な`@rust`マクロ、型マッピング、文字列リテラル、エラーハンドリング
+**Target Duration**: 2-3 months
+**Deliverable**: Basic `@rust` macro, type mapping, string literals, error handling
 
 ---
 
-## 実装タスク一覧
+## Implementation Task List
 
-### タスク1: プロジェクト構造のセットアップ
+### Task 1: Project Structure Setup
 
-**優先度**: 最高
-**見積もり**: 1日
+**Priority**: Highest
+**Estimate**: 1 day
 
-#### 実装内容
+#### Implementation Details
 
-1. **プロジェクトディレクトリの作成**
+1. **Create Project Directory**
    ```
    LastCall.jl/
    ├── Project.toml
@@ -44,10 +44,10 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
            └── index.md
    ```
 
-2. **Project.tomlの作成**
+2. **Create Project.toml**
    ```toml
    name = "Rust"
-   uuid = "..." # 生成されたUUID
+   uuid = "..." # Generated UUID
    version = "0.1.0"
 
    [deps]
@@ -61,17 +61,17 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    test = ["Test"]
    ```
 
-3. **基本的なモジュール構造**
+3. **Basic Module Structure**
    ```julia
    # src/LastCall.jl
    __precompile__(true)
    module Rust
 
    module RustCore
-       # 内部実装
+       # Internal implementation
    end
 
-   # 公開API
+   # Public API
    export @rust, @rust_str, @irust_str
    # ...
 
@@ -80,19 +80,19 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
 
 ---
 
-### タスク2: 基本的な型システムの実装
+### Task 2: Basic Type System Implementation
 
-**優先度**: 最高
-**見積もり**: 1週間
+**Priority**: Highest
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **Rust型のJulia表現**
+1. **Julia Representation of Rust Types**
 
    ```julia
    # src/rusttypes.jl
 
-   # 基本型のマッピング
+   # Basic type mapping
    const RUST_TYPE_MAP = Dict(
        :i8 => Int8,
        :i16 => Int16,
@@ -105,21 +105,21 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
        :f32 => Float32,
        :f64 => Float64,
        :bool => Bool,
-       :usize => UInt,  # プラットフォーム依存
-       :isize => Int,   # プラットフォーム依存
+       :usize => UInt,  # Platform-dependent
+       :isize => Int,   # Platform-dependent
    )
 
-   # ポインタ型
+   # Pointer type
    struct RustPtr{T}
        ptr::Ptr{Cvoid}
    end
 
-   # 参照型（Julia側ではRefとして扱う）
+   # Reference type (treated as Ref on Julia side)
    struct RustRef{T}
        ptr::Ptr{Cvoid}
    end
 
-   # Result型
+   # Result type
    struct RustResult{T, E}
        is_ok::Bool
        value::Union{T, E}
@@ -129,7 +129,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
        end
    end
 
-   # Option型
+   # Option type
    struct RustOption{T}
        is_some::Bool
        value::Union{T, Nothing}
@@ -140,13 +140,13 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
    ```
 
-2. **型変換関数**
+2. **Type Conversion Functions**
 
    ```julia
    # src/typetranslation.jl
 
    """
-   Rust型名（Symbol）をJulia型に変換
+   Convert Rust type name (Symbol) to Julia type
    """
    function rusttype_to_julia(rust_type::Symbol)
        get(RUST_TYPE_MAP, rust_type) do
@@ -155,7 +155,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
 
    """
-   Julia型をRust型名（String）に変換
+   Convert Julia type to Rust type name (String)
    """
    function juliatype_to_rust(julia_type::Type)
        for (rust_sym, julia_typ) in RUST_TYPE_MAP
@@ -167,25 +167,25 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
 
    """
-   Rustの関数シグネチャを解析して型情報を取得
+   Parse Rust function signature to extract type information
    """
    function parse_rust_signature(sig::String)
-       # 例: "fn add(a: i32, b: i32) -> i32"
-       # 実装: 正規表現またはパーサーで解析
-       # 戻り値: (関数名, 引数型の配列, 戻り値型)
+       # Example: "fn add(a: i32, b: i32) -> i32"
+       # Implementation: Parse with regex or parser
+       # Return: (function name, array of argument types, return type)
    end
    ```
 
 ---
 
-### タスク3: `@rust` マクロの基本実装
+### Task 3: Basic Implementation of `@rust` Macro
 
-**優先度**: 最高
-**見積もり**: 1週間
+**Priority**: Highest
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **マクロの基本構造**
+1. **Basic Macro Structure**
 
    ```julia
    # src/rustmacro.jl
@@ -214,7 +214,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
    ```
 
-2. **関数呼び出しの構築**
+2. **Function Call Construction**
 
    ```julia
    function build_rust_call(mod, expr)
@@ -225,31 +225,31 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
        fname = expr.args[1]
        args = expr.args[2:end]
 
-       # 関数名を取得
+       # Get function name
        func_name = isa(fname, Symbol) ? string(fname) : error("Function name must be a Symbol")
 
-       # 現在のライブラリを取得
+       # Get current library
        lib_name = get_current_lib_name()
 
-       # 型情報を推論（実行時に決定）
-       # 注: Phase 1では型情報を明示的に指定する必要がある場合がある
+       # Infer type information (determined at runtime)
+       # Note: In Phase 1, type information may need to be explicitly specified
 
-       # ccallを生成
+       # Generate ccall
        quote
            ccall((Symbol($func_name), $lib_name),
-                 Any,  # 戻り値の型（後で改善）
-                 ($(map(_ -> :Any, args)...),),  # 引数の型（後で改善）
+                 Any,  # Return type (to be improved later)
+                 ($(map(_ -> :Any, args)...),),  # Argument types (to be improved later)
                  $(map(esc, args)...))
        end
    end
    ```
 
-3. **ライブラリ管理**
+3. **Library Management**
 
    ```julia
    # src/utils.jl
 
-   # 現在読み込まれているRustライブラリを管理
+   # Manage currently loaded Rust libraries
    const loaded_libraries = Dict{String, Ptr{Cvoid}}()
    const current_lib_name = Ref{String}("")
 
@@ -272,14 +272,14 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
 
 ---
 
-### タスク4: `rust""` 文字列リテラルの実装
+### Task 4: Implementation of `rust""` String Literal
 
-**優先度**: 高
-**見積もり**: 1週間
+**Priority**: High
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **マクロの実装**
+1. **Macro Implementation**
 
    ```julia
    # src/ruststr.jl
@@ -303,33 +303,33 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
    ```
 
-2. **Rustコードのコンパイル**
+2. **Rust Code Compilation**
 
    ```julia
    function process_rust_string(str::String, global_scope::Bool, source)
-       # 1. 一時ファイルに書き込み
+       # 1. Write to temporary file
        tmp_file = tempname() * ".rs"
        write(tmp_file, wrap_rust_code(str))
 
-       # 2. コンパイル
+       # 2. Compile
        lib_path = compile_rust_file(tmp_file)
 
-       # 3. 共有ライブラリを読み込み
+       # 3. Load shared library
        lib = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL)
 
-       # 4. ライブラリを登録
+       # 4. Register library
        lib_name = basename(lib_path)
        register_library(lib_name, lib)
 
-       # 5. 関数を登録（オプション）
+       # 5. Register functions (optional)
        register_functions_from_lib(lib)
 
        nothing
    end
 
    function wrap_rust_code(code::String)
-       # 必要に応じてRustコードをラップ
-       # 例: extern "C"ブロックの追加など
+       # Wrap Rust code as needed
+       # Example: Add extern "C" block, etc.
        code
    end
 
@@ -337,7 +337,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
        lib_ext = @static Sys.iswindows() ? ".dll" : (@static Sys.isapple() ? ".dylib" : ".so")
        lib_path = rs_file * lib_ext
 
-       # rustcでコンパイル
+       # Compile with rustc
        cmd = `rustc --crate-type cdylib -o $lib_path $rs_file`
        run(cmd)
 
@@ -349,26 +349,26 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
    ```
 
-3. **関数の自動登録（オプション）**
+3. **Automatic Function Registration (Optional)**
 
    ```julia
    function register_functions_from_lib(lib::Ptr{Cvoid})
-       # 共有ライブラリからエクスポートされた関数を検出
-       # 注: これは複雑な実装が必要（objdump、nmなどのツールを使用）
-       # Phase 1では手動登録でも可
+       # Detect exported functions from shared library
+       # Note: This requires complex implementation (using tools like objdump, nm)
+       # Manual registration is acceptable in Phase 1
    end
    ```
 
 ---
 
-### タスク5: `irust""` 文字列リテラルの実装（制限版）
+### Task 5: Implementation of `irust""` String Literal (Limited Version)
 
-**優先度**: 中
-**見積もり**: 3日
+**Priority**: Medium
+**Estimate**: 3 days
 
-#### 実装内容
+#### Implementation Details
 
-1. **マクロの実装**
+1. **Macro Implementation**
 
    ```julia
    """
@@ -391,16 +391,16 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
    ```
 
-2. **制限版の実装**
+2. **Limited Version Implementation**
 
    ```julia
    function process_irust_string(str::String, source)
-       # Phase 1では、irust""は以下の制限がある:
-       # 1. 単一の式のみ
-       # 2. 戻り値は基本型のみ
-       # 3. 関数としてコンパイルされる
+       # In Phase 1, irust"" has the following limitations:
+       # 1. Single expression only
+       # 2. Return value must be basic type only
+       # 3. Compiled as a function
 
-       # 一時的なRust関数を生成
+       # Generate temporary Rust function
        func_name = "irust_func_$(hash(str))"
        rust_code = """
        #[no_mangle]
@@ -409,21 +409,21 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
        }
        """
 
-       # コンパイルして実行
-       # （実装はrust""と同様）
+       # Compile and execute
+       # (Implementation similar to rust"")
    end
    ```
 
 ---
 
-### タスク6: Result型のサポート
+### Task 6: Result Type Support
 
-**優先度**: 高
-**見積もり**: 1週間
+**Priority**: High
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **Result型の定義（再掲）**
+1. **Result Type Definition (Repeated)**
 
    ```julia
    # src/rusttypes.jl
@@ -433,7 +433,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
        value::Union{T, E}
    end
 
-   # 便利関数
+   # Convenience functions
    function unwrap(result::RustResult{T, E}) where {T, E}
        if result.is_ok
            return result.value::T
@@ -447,14 +447,14 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
    ```
 
-2. **Rust側のResult型の扱い**
+2. **Handling Result Type on Rust Side**
 
    ```rust
-   // Rust側の例
+   // Example on Rust side
    #[repr(C)]
    pub struct RustResult<T, E> {
        pub is_ok: bool,
-       pub value: *mut c_void,  // TまたはEへのポインタ
+       pub value: *mut c_void,  // Pointer to T or E
    }
 
    #[no_mangle]
@@ -474,26 +474,26 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    }
    ```
 
-3. **Julia側での使用**
+3. **Usage on Julia Side**
 
    ```julia
-   # Result型を自動的に処理するマクロ拡張
+   # Macro extension to automatically handle Result type
    function build_rust_call_with_result(mod, expr, result_type)
-       # Result型を返す関数の場合、自動的にunwrapするオプションを提供
-       # または、明示的にResult型を返す
+       # For functions returning Result type, provide option to automatically unwrap
+       # Or explicitly return Result type
    end
    ```
 
 ---
 
-### タスク7: エラーハンドリング
+### Task 7: Error Handling
 
-**優先度**: 高
-**見積もり**: 3日
+**Priority**: High
+**Estimate**: 3 days
 
-#### 実装内容
+#### Implementation Details
 
-1. **エラー型の定義**
+1. **Error Type Definition**
 
    ```julia
    # src/exceptions.jl
@@ -506,7 +506,7 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    Base.showerror(io::IO, e::RustError) = print(io, "RustError: $(e.message) (code: $(e.code))")
    ```
 
-2. **Result型から例外への変換**
+2. **Result Type to Exception Conversion**
 
    ```julia
    function result_to_exception(result::RustResult{T, E}) where {T, E}
@@ -520,14 +520,14 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
 
 ---
 
-### タスク8: テストスイートの作成
+### Task 8: Test Suite Creation
 
-**優先度**: 高
-**見積もり**: 1週間
+**Priority**: High
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **基本テスト**
+1. **Basic Tests**
 
    ```julia
    # test/basic.jl
@@ -546,42 +546,42 @@ Phase 1では、C互換ABI（Application Binary Interface）を使用して、Ru
    end
    ```
 
-2. **型テスト**
+2. **Type Tests**
 
    ```julia
    # test/types.jl
    @testset "Type mappings" begin
-       # 各型のマッピングをテスト
+       # Test mapping for each type
    end
    ```
 
-3. **文字列リテラルテスト**
+3. **String Literal Tests**
 
    ```julia
    # test/strings.jl
    @testset "String literals" begin
-       # rust""とirust""のテスト
+       # Test rust"" and irust""
    end
    ```
 
 ---
 
-## 実装の詳細
+## Implementation Details
 
-### ファイル構成
+### File Structure
 
 ```
 src/
-├── LastCall.jl              # メインモジュール
-├── rustmacro.jl         # @rust マクロ
-├── ruststr.jl           # rust"" と irust""
-├── rusttypes.jl         # Rust型の定義
-├── typetranslation.jl   # 型変換
-├── exceptions.jl        # エラーハンドリング
-└── utils.jl             # ユーティリティ
+├── LastCall.jl              # Main module
+├── rustmacro.jl         # @rust macro
+├── ruststr.jl           # rust"" and irust""
+├── rusttypes.jl         # Rust type definitions
+├── typetranslation.jl   # Type conversion
+├── exceptions.jl        # Error handling
+└── utils.jl             # Utilities
 ```
 
-### 主要な関数のシグネチャ
+### Main Function Signatures
 
 ```julia
 # rustmacro.jl
@@ -607,31 +607,31 @@ register_library(name, lib) -> Nothing
 
 ---
 
-## 制限事項
+## Limitations
 
-Phase 1では以下の制限があります:
+Phase 1 has the following limitations:
 
-1. **型推論の制限**: 関数の型情報を明示的に指定する必要がある場合がある
-2. **Generics非対応**: Rustのジェネリクスは使用できない
-3. **Traits非対応**: Rustのトレイトは使用できない
-4. **所有権システム**: 所有権の詳細な管理はできない（基本的なポインタ/参照のみ）
-5. **irust""の制限**: 関数スコープでの実行は制限的
-
----
-
-## 次のステップ（Phase 2への移行）
-
-Phase 1が完了したら、以下の機能をPhase 2で実装:
-
-1. LLVM IR統合
-2. より高度な型システム
-3. Genericsのサポート
-4. 所有権システムの統合
+1. **Type inference limitations**: Type information may need to be explicitly specified for functions
+2. **No generics support**: Rust generics cannot be used
+3. **No traits support**: Rust traits cannot be used
+4. **Ownership system**: Detailed ownership management is not possible (only basic pointers/references)
+5. **irust"" limitations**: Execution in function scope is limited
 
 ---
 
-## 参考実装
+## Next Steps (Transition to Phase 2)
 
-- Cxx.jlの`cxxmacro.jl`と`cxxstr.jl`を参考にする
-- Juliaの`ccall`のドキュメントを参照
-- RustのFFIガイドを参照
+After Phase 1 is complete, implement the following features in Phase 2:
+
+1. LLVM IR integration
+2. More advanced type system
+3. Generics support
+4. Ownership system integration
+
+---
+
+## Reference Implementation
+
+- Refer to Cxx.jl's `cxxmacro.jl` and `cxxstr.jl`
+- Refer to Julia's `ccall` documentation
+- Refer to Rust FFI guide

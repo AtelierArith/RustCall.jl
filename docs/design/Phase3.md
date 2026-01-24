@@ -1,40 +1,40 @@
-# Phase 3: 外部ライブラリ統合とrustscript風フォーマット
+# Phase 3: External Library Integration and rustscript-style Format
 
-## 概要
+## Overview
 
-Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列リテラル内で使用できるようにし、rustscript風の依存関係指定フォーマットをサポートします。これにより、ndarrayなどの外部ライブラリを使った実用的なコードをJuliaから直接実行できるようになります。
+In Phase 3, we enable the use of external Rust crates (libraries) within `rust""` string literals and support rustscript-style dependency specification formats. This allows practical code using external libraries like ndarray to be executed directly from Julia.
 
-**目標期間**: 3-4ヶ月
-**成果物**: 外部クレート依存関係管理、rustscript風フォーマット、Cargoプロジェクト自動生成、ndarray統合例
+**Target Duration**: 3-4 months
+**Deliverable**: External crate dependency management, rustscript-style format, automatic Cargo project generation, ndarray integration example
 
 ---
 
-## 実装タスク一覧
+## Implementation Task List
 
-### タスク1: 依存関係パーサーの実装
+### Task 1: Dependency Parser Implementation
 
-**優先度**: 最高
-**見積もり**: 1週間
+**Priority**: Highest
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **rustscript風フォーマットの解析**
+1. **rustscript-style Format Parsing**
 
    ```julia
    # src/dependencies.jl
 
    """
-   rustscript風の依存関係指定を解析
+   Parse rustscript-style dependency specifications
 
-   サポートする形式:
-   1. ドキュメントコメント形式:
+   Supported formats:
+   1. Documentation comment format:
       //! ```cargo
       //! [dependencies]
       //! ndarray = "0.15"
       //! serde = { version = "1.0", features = ["derive"] }
       //! ```
 
-   2. 単一行コメント形式:
+   2. Single-line comment format:
       // cargo-deps: ndarray="0.15", serde="1.0"
    """
    struct DependencySpec
@@ -48,13 +48,13 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    function parse_dependencies_from_code(code::String)
        deps = DependencySpec[]
 
-       # 形式1: ドキュメントコメント形式を解析
+       # Format 1: Parse documentation comment format
        cargo_block = extract_cargo_block(code)
        if !isnothing(cargo_block)
            deps = vcat(deps, parse_cargo_toml_block(cargo_block))
        end
 
-       # 形式2: 単一行コメント形式を解析
+       # Format 2: Parse single-line comment format
        cargo_deps_line = extract_cargo_deps_line(code)
        if !isnothing(cargo_deps_line)
            deps = vcat(deps, parse_cargo_deps_line(cargo_deps_line))
@@ -64,51 +64,51 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
 
    function extract_cargo_block(code::String)
-       # ```cargo ... ``` ブロックを抽出
+       # Extract ```cargo ... ``` block
        pattern = r"```cargo\n(.*?)```"s
        m = match(pattern, code)
        isnothing(m) ? nothing : m.captures[1]
    end
 
    function parse_cargo_toml_block(block::String)
-       # TOML形式の依存関係を解析
-       # [dependencies]セクションを抽出してパース
+       # Parse TOML-format dependencies
+       # Extract and parse [dependencies] section
        deps = DependencySpec[]
-       # 実装: TOMLパーサーまたは正規表現で解析
+       # Implementation: Parse with TOML parser or regex
        deps
    end
 
    function extract_cargo_deps_line(code::String)
-       # // cargo-deps: ... の行を抽出
+       # Extract // cargo-deps: ... line
        pattern = r"//\s*cargo-deps:\s*(.+?)(?:\n|$)"
        m = match(pattern, code)
        isnothing(m) ? nothing : m.captures[1]
    end
 
    function parse_cargo_deps_line(line::String)
-       # cargo-deps: name="version", name2="version2" を解析
+       # Parse cargo-deps: name="version", name2="version2"
        deps = DependencySpec[]
-       # 実装: カンマ区切りで分割してパース
+       # Implementation: Split by comma and parse
        deps
    end
    ```
 
-2. **依存関係の正規化**
+2. **Dependency Normalization**
 
    ```julia
    function normalize_dependency(dep::DependencySpec)
-       # バージョン指定の正規化
-       # 機能のソート
-       # 重複のチェック
+       # Normalize version specification
+       # Sort features
+       # Check for duplicates
        dep
    end
 
    function merge_dependencies(deps1::Vector{DependencySpec}, deps2::Vector{DependencySpec})
-       # 依存関係のマージ（重複を除去）
+       # Merge dependencies (remove duplicates)
        merged = Dict{String, DependencySpec}()
        for dep in vcat(deps1, deps2)
            if haskey(merged, dep.name)
-               # バージョン競合の解決
+               # Resolve version conflicts
                merged[dep.name] = resolve_version_conflict(merged[dep.name], dep)
            else
                merged[dep.name] = dep
@@ -120,14 +120,14 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク2: Cargoプロジェクトの自動生成
+### Task 2: Automatic Cargo Project Generation
 
-**優先度**: 最高
-**見積もり**: 1週間
+**Priority**: Highest
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **Cargo.tomlの生成**
+1. **Cargo.toml Generation**
 
    ```julia
    # src/cargoproject.jl
@@ -150,15 +150,15 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
            path = mktempdir(prefix="lastcall_cargo_")
        end
 
-       # Cargo.tomlを生成
+       # Generate Cargo.toml
        cargo_toml = generate_cargo_toml(name, dependencies, edition)
        write(joinpath(path, "Cargo.toml"), cargo_toml)
 
-       # src/main.rsを作成（またはlib.rs）
+       # Create src/main.rs (or lib.rs)
        src_dir = joinpath(path, "src")
        mkpath(src_dir)
        lib_rs_path = joinpath(src_dir, "lib.rs")
-       # lib.rsは後でRustコードを書き込む
+       # lib.rs will be written with Rust code later
 
        CargoProject(name, "0.1.0", dependencies, edition, path)
    end
@@ -197,23 +197,23 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
    ```
 
-2. **Rustコードの統合**
+2. **Rust Code Integration**
 
    ```julia
    function write_rust_code_to_project(project::CargoProject, code::String)
-       # 依存関係のコメントを除去
+       # Remove dependency comments
        clean_code = remove_dependency_comments(code)
 
-       # lib.rsに書き込み
+       # Write to lib.rs
        lib_rs_path = joinpath(project.path, "src", "lib.rs")
        write(lib_rs_path, clean_code)
    end
 
    function remove_dependency_comments(code::String)
-       # ```cargo ... ``` ブロックを除去
+       # Remove ```cargo ... ``` block
        code = replace(code, r"```cargo\n.*?```"s => "")
 
-       # // cargo-deps: ... の行を除去
+       # Remove // cargo-deps: ... line
        code = replace(code, r"//\s*cargo-deps:.*?\n" => "")
 
        code
@@ -222,20 +222,20 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク3: Cargoビルド統合
+### Task 3: Cargo Build Integration
 
-**優先度**: 最高
-**見積もり**: 1週間
+**Priority**: Highest
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **Cargoビルドの実行**
+1. **Cargo Build Execution**
 
    ```julia
    # src/cargobuild.jl
 
    function build_cargo_project(project::CargoProject; release::Bool = false)
-       # cargo buildを実行
+       # Execute cargo build
        cmd = `cargo build $(release ? "--release" : "")`
        cd(project.path) do
            try
@@ -245,7 +245,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
            end
        end
 
-       # 生成されたライブラリのパスを取得
+       # Get generated library path
        lib_path = get_built_library_path(project, release)
        if !isfile(lib_path)
            error("Library not found after build: $lib_path")
@@ -262,7 +262,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
    ```
 
-2. **ビルドキャッシュの統合**
+2. **Build Cache Integration**
 
    ```julia
    function build_cargo_project_cached(
@@ -270,20 +270,20 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
        code_hash::String;
        release::Bool = false
    )
-       # 依存関係のハッシュも含める
+       # Include dependency hash as well
        deps_hash = hash_dependencies(project.dependencies)
        cache_key = "$(code_hash)_$(deps_hash)_$(release)"
 
-       # キャッシュをチェック
+       # Check cache
        cached_lib = get_cached_library(cache_key)
        if !isnothing(cached_lib) && isfile(cached_lib)
            return cached_lib
        end
 
-       # ビルド
+       # Build
        lib_path = build_cargo_project(project, release=release)
 
-       # キャッシュに保存
+       # Save to cache
        cache_library(cache_key, lib_path)
 
        lib_path
@@ -292,42 +292,42 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク4: rust""文字列リテラルの拡張
+### Task 4: Extension of `rust""` String Literal
 
-**優先度**: 最高
-**見積もり**: 1週間
+**Priority**: Highest
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **依存関係の自動検出と処理**
+1. **Automatic Dependency Detection and Processing**
 
    ```julia
-   # src/ruststr.jl (拡張)
+   # src/ruststr.jl (extended)
 
    function process_rust_string_with_dependencies(str::String, global_scope::Bool, source)
-       # 1. 依存関係を解析
+       # 1. Parse dependencies
        dependencies = parse_dependencies_from_code(str)
 
-       # 2. 依存関係がある場合はCargoプロジェクトを作成
+       # 2. Create Cargo project if dependencies exist
        if !isempty(dependencies)
            project_name = "lastcall_$(hash(str))"
            project = create_cargo_project(project_name, dependencies)
 
-           # 3. Rustコードをプロジェクトに書き込み
+           # 3. Write Rust code to project
            write_rust_code_to_project(project, str)
 
-           # 4. Cargoでビルド
+           # 4. Build with Cargo
            lib_path = build_cargo_project_cached(project, hash(str))
 
-           # 5. ライブラリを読み込み
+           # 5. Load library
            lib = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL)
            lib_name = basename(lib_path)
            register_library(lib_name, lib)
 
-           # 6. 一時プロジェクトをクリーンアップ（オプション）
+           # 6. Cleanup temporary project (optional)
            # cleanup_cargo_project(project)
        else
-           # 依存関係がない場合は従来の方法でコンパイル
+           # Compile with conventional method if no dependencies
            process_rust_string(str, global_scope, source)
        end
 
@@ -335,33 +335,33 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
    ```
 
-2. **既存のprocess_rust_stringとの統合**
+2. **Integration with Existing process_rust_string**
 
    ```julia
-   # ruststr.jlの既存関数を拡張
+   # Extend existing function in ruststr.jl
    function process_rust_string(str::String, global_scope::Bool, source)
-       # 依存関係をチェック
+       # Check dependencies
        dependencies = parse_dependencies_from_code(str)
 
        if !isempty(dependencies)
            return process_rust_string_with_dependencies(str, global_scope, source)
        end
 
-       # 既存の実装（依存関係なしの場合）
+       # Existing implementation (no dependencies)
        # ...
    end
    ```
 
 ---
 
-### タスク5: 依存関係のバージョン管理と解決
+### Task 5: Dependency Version Management and Resolution
 
-**優先度**: 高
-**見積もり**: 1週間
+**Priority**: High
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **バージョン競合の解決**
+1. **Version Conflict Resolution**
 
    ```julia
    # src/dependency_resolution.jl
@@ -371,20 +371,20 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
            error("Cannot resolve conflict between different dependencies")
        end
 
-       # バージョン指定が異なる場合の解決ロジック
-       # 1. より厳密なバージョン指定を優先
-       # 2. セマンティックバージョニングに基づいて最新を選択
-       # 3. ユーザーに警告を出す
+       # Resolution logic when version specifications differ
+       # 1. Prefer more strict version specification
+       # 2. Select latest based on semantic versioning
+       # 3. Warn user
 
        if dep1.version != dep2.version
            @warn "Version conflict for $(dep1.name): $(dep1.version) vs $(dep2.version). Using $(dep1.version)"
        end
 
-       # 機能をマージ
+       # Merge features
        merged_features = unique(vcat(dep1.features, dep2.features))
        DependencySpec(
            dep1.name,
-           dep1.version,  # またはより厳密なバージョン
+           dep1.version,  # Or more strict version
            merged_features,
            dep1.git,
            dep1.path
@@ -392,7 +392,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
    ```
 
-2. **依存関係の検証**
+2. **Dependency Validation**
 
    ```julia
    function validate_dependencies(deps::Vector{DependencySpec})
@@ -406,17 +406,17 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク6: エラーハンドリングの拡張
+### Task 6: Error Handling Extension
 
-**優先度**: 中
-**見積もり**: 3日
+**Priority**: Medium
+**Estimate**: 3 days
 
-#### 実装内容
+#### Implementation Details
 
-1. **Cargoビルドエラーの処理**
+1. **Cargo Build Error Handling**
 
    ```julia
-   # src/exceptions.jl (拡張)
+   # src/exceptions.jl (extended)
 
    struct CargoBuildError <: Exception
        message::String
@@ -443,7 +443,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
    ```
 
-2. **依存関係解決エラーの処理**
+2. **Dependency Resolution Error Handling**
 
    ```julia
    struct DependencyResolutionError <: Exception
@@ -457,14 +457,14 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-### タスク7: テストスイートの拡張
+### Task 7: Test Suite Extension
 
-**優先度**: 高
-**見積もり**: 1週間
+**Priority**: High
+**Estimate**: 1 week
 
-#### 実装内容
+#### Implementation Details
 
-1. **依存関係パーサーのテスト**
+1. **Dependency Parser Tests**
 
    ```julia
    # test/test_dependencies.jl
@@ -488,7 +488,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
    ```
 
-2. **Cargoプロジェクト生成のテスト**
+2. **Cargo Project Generation Tests**
 
    ```julia
    # test/test_cargo.jl
@@ -504,7 +504,7 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
    end
    ```
 
-3. **ndarray統合のテスト**
+3. **ndarray Integration Tests**
 
    ```julia
    # test/test_ndarray.jl
@@ -547,26 +547,26 @@ Phase 3では、外部Rustクレート（ライブラリ）を`rust""`文字列�
 
 ---
 
-## 実装の詳細
+## Implementation Details
 
-### ファイル構成（拡張）
+### File Structure (Extended)
 
 ```
 src/
-├── LastCall.jl              # メインモジュール
-├── rustmacro.jl         # @rust マクロ
-├── ruststr.jl           # rust"" と irust""（拡張）
-├── rusttypes.jl         # Rust型の定義
-├── typetranslation.jl   # 型変換
-├── exceptions.jl        # エラーハンドリング（拡張）
-├── dependencies.jl     # 依存関係パーサー（新規）
-├── cargoproject.jl     # Cargoプロジェクト管理（新規）
-├── cargobuild.jl       # Cargoビルド統合（新規）
-├── dependency_resolution.jl  # 依存関係解決（新規）
-└── ndarray.jl          # ndarray統合（新規）
+├── LastCall.jl              # Main module
+├── rustmacro.jl         # @rust macro
+├── ruststr.jl           # rust"" and irust"" (extended)
+├── rusttypes.jl         # Rust type definitions
+├── typetranslation.jl   # Type conversion
+├── exceptions.jl        # Error handling (extended)
+├── dependencies.jl     # Dependency parser (new)
+├── cargoproject.jl     # Cargo project management (new)
+├── cargobuild.jl       # Cargo build integration (new)
+├── dependency_resolution.jl  # Dependency resolution (new)
+└── ndarray.jl          # ndarray integration (new)
 ```
 
-### 主要な関数のシグネチャ
+### Main Function Signatures
 
 ```julia
 # dependencies.jl
@@ -602,14 +602,14 @@ to_julia_array(ndarr) -> Array
 
 ---
 
-## 使用例
+## Usage Examples
 
-### 基本的な外部ライブラリの使用
+### Basic External Library Usage
 
 ```julia
 using LastCall
 
-# serdeを使用した例
+# Example using serde
 rust"""
 //! ```cargo
 //! [dependencies]
@@ -635,13 +635,13 @@ pub extern "C" fn serialize_person(name_ptr: *const u8, name_len: usize, age: u3
         age,
     };
     let json = serde_json::to_string(&person).unwrap();
-    // メモリ管理の実装が必要
+    // Memory management implementation needed
     // ...
 }
 """
 ```
 
-### ndarrayを使った数値計算
+### Numerical Computation with ndarray
 
 ```julia
 using LastCall
@@ -675,60 +675,60 @@ pub extern "C" fn matrix_sum_rows(
 }
 """
 
-# Juliaから使用
+# Use from Julia
 matrix = [1.0 2.0 3.0; 4.0 5.0 6.0]
 result = Vector{Float64}(undef, 3)
 @rust matrix_sum_rows(pointer(matrix), 2, 3, pointer(result))
 println(result)  # => [5.0, 7.0, 9.0]
 ```
 
-### 単一行コメント形式の使用
+### Single-line Comment Format Usage
 
 ```julia
 rust"""
 // cargo-deps: tokio="1.0", serde="1.0"
 
-// 非同期処理の例（簡略化）
+// Asynchronous processing example (simplified)
 """
 ```
 
 ---
 
-## Phase 2からの移行
+## Migration from Phase 2
 
-Phase 2で実装した機能をPhase 3で拡張:
+Extend Phase 2 features in Phase 3:
 
-1. **rust""文字列リテラル**: 依存関係の自動検出とCargoプロジェクト生成
-2. **コンパイルキャッシュ**: 依存関係のハッシュも含めたキャッシュキー
-3. **エラーハンドリング**: Cargoビルドエラーの詳細な表示
-
----
-
-## 制限事項
-
-Phase 3でも以下の制限があります:
-
-1. **proc-macroのサポート**: proc-macroを使用するクレートは制限的にサポート
-2. **ビルド時間**: 外部依存関係がある場合、初回ビルドに時間がかかる
-3. **プラットフォーム固有の依存関係**: 一部のクレートは特定のプラットフォームでのみ動作
-4. **メモリ管理**: 複雑なデータ構造の受け渡しには追加の実装が必要
+1. **rust"" string literal**: Automatic dependency detection and Cargo project generation
+2. **Compilation cache**: Cache key including dependency hash
+3. **Error handling**: Detailed Cargo build error display
 
 ---
 
-## 次のステップ（将来の拡張）
+## Limitations
 
-Phase 3が完了したら、以下の機能を検討:
+Phase 3 still has the following limitations:
 
-1. **依存関係の事前コンパイル**: よく使うクレートを事前にビルド
-2. **バイナリキャッシュ**: ビルド済みライブラリの共有
-3. **より高度な型マッピング**: 複雑なRust型の自動マッピング
-4. **非同期処理の統合**: tokioなどの非同期ランタイムとの統合
+1. **proc-macro support**: Crates using proc-macros are only partially supported
+2. **Build time**: First build takes time when external dependencies exist
+3. **Platform-specific dependencies**: Some crates only work on specific platforms
+4. **Memory management**: Additional implementation needed for complex data structure passing
 
 ---
 
-## 参考実装
+## Next Steps (Future Extensions)
 
-- [rust-script](https://github.com/fornwall/rust-script) - Rustスクリプト実行ツール
-- [cargo-script](https://github.com/DanielKeep/cargo-script) - Cargoベースのスクリプト実行
-- [ndarray-rs](https://github.com/rust-ndarray/ndarray) - Rustの多次元配列ライブラリ
-- Cargoのドキュメント: [The Cargo Book](https://doc.rust-lang.org/cargo/)
+After Phase 3 is complete, consider the following features:
+
+1. **Dependency precompilation**: Pre-build commonly used crates
+2. **Binary cache**: Share pre-built libraries
+3. **More advanced type mapping**: Automatic mapping of complex Rust types
+4. **Asynchronous processing integration**: Integration with async runtimes like tokio
+
+---
+
+## Reference Implementation
+
+- [rust-script](https://github.com/fornwall/rust-script) - Rust script execution tool
+- [cargo-script](https://github.com/DanielKeep/cargo-script) - Cargo-based script execution
+- [ndarray-rs](https://github.com/rust-ndarray/ndarray) - Rust multidimensional array library
+- Cargo documentation: [The Cargo Book](https://doc.rust-lang.org/cargo/)

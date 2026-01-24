@@ -1,165 +1,165 @@
 Read also AGENTS.md
 
-# CLAUDE.md - LastCall.jl 開発ガイド
+# CLAUDE.md - LastCall.jl Development Guide
 
-このドキュメントは、Cxx.jlをベースにした**LastCall.jl**の開発を進めるためのガイドです。
+This document is a guide for developing **LastCall.jl**, a Foreign Function Interface (FFI) package based on Cxx.jl.
 
-## プロジェクト目標
+## Project Goals
 
-JuliaからRustコードを直接呼び出せるFFI（Foreign Function Interface）パッケージ「**LastCall.jl**」を開発する。
+Develop an FFI package called **LastCall.jl** that enables direct calls to Rust code from Julia.
 
-### 提供する機能
+### Features Provided
 
-- `@rust` マクロ: Rust関数をJuliaから直接呼び出し
-- `rust""` 文字列リテラル: Rustコードをグローバルスコープで評価
-- `irust""` 文字列リテラル: Rustコードを関数スコープで評価
-- `#[julia]` 属性: `#[no_mangle] pub extern "C"` の簡略記法
-- Rustの型システムとの統合
-- LLVM IR経由での最適化
+- `@rust` macro: Directly call Rust functions from Julia
+- `rust""` string literal: Evaluate Rust code in global scope
+- `irust""` string literal: Evaluate Rust code in function scope
+- `#[julia]` attribute: Shorthand for `#[no_mangle] pub extern "C"`
+- Integration with Rust's type system
+- Optimization via LLVM IR
 
-## 関連ドキュメント
+## Related Documents
 
-| ファイル | 内容 | 優先度 |
-|----------|------|--------|
-| `PLAN.md` | 全体計画・技術課題・解決策 | ★★★ 必読 |
-| `Phase1.md` | Phase 1 詳細実装プラン（C互換ABI） | ★★★ 必読 |
-| `Phase2.md` | Phase 2 詳細実装プラン（LLVM IR統合） | ★★☆ 重要 |
-| `INTERNAL.md` | Cxx.jlの内部実装詳細 | ★★☆ 参考 |
-| `LLVMCALL.md` | Julia `llvmcall` の詳細 | ★★☆ 参考 |
-| `DESCRIPTION.md` | Cxx.jl概要 | ★☆☆ 背景知識 |
+| File | Content | Priority |
+|------|---------|----------|
+| `PLAN.md` | Overall plan, technical challenges, and solutions | ★★★ Required reading |
+| `Phase1.md` | Phase 1 detailed implementation plan (C-compatible ABI) | ★★★ Required reading |
+| `Phase2.md` | Phase 2 detailed implementation plan (LLVM IR integration) | ★★☆ Important |
+| `INTERNAL.md` | Cxx.jl internal implementation details | ★★☆ Reference |
+| `LLVMCALL.md` | Details on Julia `llvmcall` | ★★☆ Reference |
+| `DESCRIPTION.md` | Cxx.jl overview | ★☆☆ Background knowledge |
 
-## 開発フェーズ
+## Development Phases
 
-### Phase 1: C互換ABI統合（2-3ヶ月）
+### Phase 1: C-Compatible ABI Integration (2-3 months)
 
-**目標**: `extern "C"` を使った基本的なRust-Julia連携
-
-```
-Julia (@rust マクロ)
-    ↓
-ccall ラッパー生成
-    ↓
-Rust共有ライブラリ (.so/.dylib/.dll)
-    ↓
-Rust関数呼び出し
-```
-
-**主要タスク**:
-1. プロジェクト構造の作成
-2. 基本型マッピング（`i32` ↔ `Int32` 等）
-3. `@rust` マクロの実装（`ccall`ラッパー）
-4. `rust""` 文字列リテラル（コンパイル・ロード）
-5. `Result<T, E>` → Julia例外の変換
-6. テストスイートの構築
-
-**成果物**: 基本的なRust関数呼び出しが動作
-
-### Phase 2: LLVM IR統合（4-6ヶ月）
-
-**目標**: LLVM IRレベルでの直接統合
+**Goal**: Basic Rust-Julia interop using `extern "C"`
 
 ```
-Julia (@rust マクロ)
+Julia (@rust macro)
     ↓
-@generated 関数
+ccall wrapper generation
     ↓
-rustc (LLVM IR生成)
+Rust shared library (.so/.dylib/.dll)
     ↓
-LLVM.jl (IR操作)
-    ↓
-llvmcall 埋め込み
-    ↓
-Julia JIT実行
+Rust function call
 ```
 
-**主要タスク**:
-1. LLVM.jl統合
-2. rustc → LLVM IR パイプライン
-3. IR最適化・変換
-4. `llvmcall` への埋め込み
-5. 所有権型のサポート（`Box<T>`、`Arc<T>`）
-6. ジェネリクス対応
+**Main Tasks**:
+1. Create project structure
+2. Basic type mapping (`i32` ↔ `Int32`, etc.)
+3. Implement `@rust` macro (`ccall` wrapper)
+4. `rust""` string literal (compile and load)
+5. `Result<T, E>` → Julia exception conversion
+6. Build test suite
 
-**成果物**: LLVM IRレベルでの最適化された統合
+**Deliverable**: Basic Rust function calls working
 
-### Phase 3: 外部ライブラリ統合（完了）
+### Phase 2: LLVM IR Integration (4-6 months)
 
-**目標**: Cargoを使った外部クレートの統合
+**Goal**: Direct integration at LLVM IR level
 
-- `// cargo-deps:` 形式での依存関係指定
-- 自動的なCargoプロジェクト生成
-- ビルドキャッシュ
+```
+Julia (@rust macro)
+    ↓
+@generated function
+    ↓
+rustc (LLVM IR generation)
+    ↓
+LLVM.jl (IR manipulation)
+    ↓
+llvmcall embedding
+    ↓
+Julia JIT execution
+```
 
-### Phase 4: Rust構造体のJuliaオブジェクト化（完了）
+**Main Tasks**:
+1. LLVM.jl integration
+2. rustc → LLVM IR pipeline
+3. IR optimization and transformation
+4. Embedding into `llvmcall`
+5. Support for ownership types (`Box<T>`, `Arc<T>`)
+6. Generics support
 
-**目標**: Rust構造体をJuliaで直接使用
+**Deliverable**: Optimized integration at LLVM IR level
 
-- `pub struct` の自動検出
-- C-FFIラッパーの自動生成
-- Julia側のラッパー型自動生成
-- ファイナライザーによる自動メモリ管理
+### Phase 3: External Library Integration (Completed)
 
-### Phase 5: `#[julia]` 属性（完了）
+**Goal**: Integration of external crates using Cargo
 
-**目標**: FFI関数定義の簡略化
+- Dependency specification via `// cargo-deps:` format
+- Automatic Cargo project generation
+- Build caching
+
+### Phase 4: Rust Struct Julia Objectification (Completed)
+
+**Goal**: Use Rust structs directly in Julia
+
+- Automatic detection of `pub struct`
+- Automatic C-FFI wrapper generation
+- Automatic Julia-side wrapper type generation
+- Automatic memory management via finalizers
+
+### Phase 5: `#[julia]` Attribute (Completed)
+
+**Goal**: Simplify FFI function definitions
 
 ```rust
-// Before: 冗長な記述が必要
+// Before: Verbose notation required
 #[no_mangle]
 pub extern "C" fn add(a: i32, b: i32) -> i32 { a + b }
 
-// After: #[julia] 属性で簡潔に
+// After: Concise with #[julia] attribute
 #[julia]
 fn add(a: i32, b: i32) -> i32 { a + b }
 ```
 
-**実装ファイル**: `src/julia_functions.jl`
+**Implementation file**: `src/julia_functions.jl`
 
-**主要関数**:
-- `parse_julia_functions(code)`: `#[julia]` 付き関数を検出
-- `transform_julia_attribute(code)`: `#[julia]` → `#[no_mangle] pub extern "C"` に変換
-- `emit_julia_function_wrappers(sigs)`: Julia側のラッパー関数を自動生成
+**Main functions**:
+- `parse_julia_functions(code)`: Detect functions with `#[julia]`
+- `transform_julia_attribute(code)`: Transform `#[julia]` → `#[no_mangle] pub extern "C"`
+- `emit_julia_function_wrappers(sigs)`: Automatically generate Julia-side wrapper functions
 
-### Phase 6: rustc内部API統合（実験的・未実装）
+### Phase 6: rustc Internal API Integration (Experimental, not implemented)
 
-**目標**: 完全なRust型システムサポート
+**Goal**: Full Rust type system support
 
-- rustcの内部APIを使用
-- 型推論・trait解決との連携
-- 完全なジェネリクスサポート
+- Use rustc's internal API
+- Integration with type inference and trait resolution
+- Full generics support
 
-**注意**: rustc APIは不安定。研究目的のみ推奨。
+**Note**: rustc API is unstable. Recommended for research purposes only.
 
-## 技術的な要点
+## Technical Points
 
-### Cxx.jlから学ぶべきパターン
+### Patterns to Learn from Cxx.jl
 
-Cxx.jlの以下のコードは、LastCall.jlでも同様のパターンで実装する：
+The following Cxx.jl code should be implemented with similar patterns in LastCall.jl:
 
-1. **`llvmcall`のポインタ形式**（`src/codegen.jl`）
+1. **`llvmcall` pointer form** (`src/codegen.jl`)
 ```julia
-# Cxx.jlの核心部分
+# Core part of Cxx.jl
 Expr(:call, Core.Intrinsics.llvmcall,
-     convert(Ptr{Cvoid}, f),  # LLVM関数ポインタ
-     rett,                     # 戻り値の型
-     Tuple{argt...},           # 引数の型
-     args2...)                 # 実引数
+     convert(Ptr{Cvoid}, f),  # LLVM function pointer
+     rett,                     # Return type
+     Tuple{argt...},           # Argument types
+     args2...)                 # Actual arguments
 ```
 
-2. **ステージド関数（@generated）**: 型情報に基づいてコンパイル時にコード生成
+2. **Staged functions (@generated)**: Code generation at compile time based on type information
 
-3. **型マッピング**: Julia型 ↔ ターゲット言語型の双方向変換
+3. **Type mapping**: Bidirectional conversion between Julia types ↔ target language types
 
-### Rust固有の課題
+### Rust-Specific Challenges
 
-| 課題 | Cxx.jl | LastCall.jl |
-|------|--------|---------|
-| コンパイラAPI | Clang（安定） | rustc（不安定） |
-| 型システム | C++型 | 所有権・lifetime |
-| エラー処理 | 例外 | `Result<T, E>` |
-| メモリ管理 | 手動/RAII | 所有権システム |
+| Challenge | Cxx.jl | LastCall.jl |
+|-----------|--------|-------------|
+| Compiler API | Clang (stable) | rustc (unstable) |
+| Type system | C++ types | Ownership and lifetimes |
+| Error handling | Exceptions | `Result<T, E>` |
+| Memory management | Manual/RAII | Ownership system |
 
-### 型マッピング（Phase 1）
+### Type Mapping (Phase 1)
 
 ```julia
 # Rust → Julia
@@ -181,22 +181,22 @@ const RUST_JULIA_TYPE_MAP = Dict(
 )
 ```
 
-## Cxx.jlソースコード参照
+## Cxx.jl Source Code Reference
 
-LastCall.jl実装時に参考にすべきファイル：
+Files to reference when implementing LastCall.jl:
 
-| Cxx.jlファイル | 役割 | LastCall.jlでの対応 |
-|----------------|------|-----------------|
-| `src/cxxmacro.jl` | `@cxx`マクロ | `@rust`マクロ |
-| `src/cxxstr.jl` | `cxx""`リテラル | `rust""`リテラル |
-| `src/codegen.jl` | LLVM IR生成 | LLVM IR統合 |
-| `src/typetranslation.jl` | 型変換 | Rust型変換 |
-| `src/clangwrapper.jl` | Clangラッパー | rustc/cbindgen連携 |
-| `src/cxxtypes.jl` | C++型定義 | Rust型定義 |
+| Cxx.jl File | Role | LastCall.jl Equivalent |
+|-------------|-----|----------------------|
+| `src/cxxmacro.jl` | `@cxx` macro | `@rust` macro |
+| `src/cxxstr.jl` | `cxx""` literal | `rust""` literal |
+| `src/codegen.jl` | LLVM IR generation | LLVM IR integration |
+| `src/typetranslation.jl` | Type conversion | Rust type conversion |
+| `src/clangwrapper.jl` | Clang wrapper | rustc/cbindgen integration |
+| `src/cxxtypes.jl` | C++ type definitions | Rust type definitions |
 
-## 開発環境セットアップ
+## Development Environment Setup
 
-### 必要なツール
+### Required Tools
 
 ```bash
 # Rust
@@ -204,33 +204,33 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup component add rustfmt clippy
 
 # Julia
-julia --version  # 1.6以上推奨
+julia --version  # 1.6+ recommended
 
-# cbindgen（Phase 1で使用）
+# cbindgen (used in Phase 1)
 cargo install cbindgen
 ```
 
-### プロジェクト作成
+### Project Creation
 
 ```bash
-# 新しいJuliaパッケージを作成
+# Create a new Julia package
 julia -e 'using Pkg; Pkg.generate("Rust")'
 cd Rust
 
-# Rustライブラリを作成
+# Create Rust library
 cargo new --lib deps/rustlib
 ```
 
-## 実装のヒント
+## Implementation Hints
 
-### Phase 1: @rustマクロの基本形
+### Phase 1: Basic Form of @rust Macro
 
 ```julia
 macro rust(lib, expr)
-    # 関数呼び出しの解析
+    # Parse function call
     func_name, args = parse_rust_call(expr)
 
-    # ccallの生成
+    # Generate ccall
     quote
         ccall(
             ($(QuoteNode(func_name)), $lib),
@@ -242,17 +242,17 @@ macro rust(lib, expr)
 end
 ```
 
-### Phase 2: llvmcallへの埋め込み
+### Phase 2: Embedding into llvmcall
 
 ```julia
 @generated function rust_call(::Type{Val{func_name}}, args...)
-    # 1. Rustコードをコンパイル（キャッシュ済みなら再利用）
+    # 1. Compile Rust code (reuse if cached)
     llvm_ir = compile_rust_to_llvm(func_name)
 
-    # 2. LLVM関数を取得
+    # 2. Get LLVM function
     fn_ptr = get_function_pointer(llvm_ir, func_name)
 
-    # 3. llvmcall式を生成
+    # 3. Generate llvmcall expression
     quote
         $(Expr(:call, Core.Intrinsics.llvmcall,
                fn_ptr, ret_type, Tuple{arg_types...}, args...))
@@ -260,26 +260,25 @@ end
 end
 ```
 
-## 注意事項
+## Notes
 
-1. **Cxx.jlはJulia 1.3までサポート**: 参考にはなるが、最新Juliaでは動かない
-2. **rustc APIは不安定**: Phase 3は実験的と位置づける
-3. **所有権の扱い**: Phase 1では`extern "C"`で単純化、Phase 2で本格対応
-4. **テストを先に書く**: TDDで進めると安全
-5. 多重ディスパッチ (multiple dispatch) を積極的に使うこと．Juliaらしいコードを書くように心がけて．
+1. **Cxx.jl supports Julia 1.3 and earlier**: Useful as reference, but won't work with latest Julia
+2. **rustc API is unstable**: Phase 3 should be considered experimental
+3. **Ownership handling**: Simplified with `extern "C"` in Phase 1, full support in Phase 2
+4. **Write tests first**: TDD approach is safer
+5. Use multiple dispatch actively. Write code in a Julia-like style.
 
-## 参考リソース
+## Reference Resources
 
 - [Cxx.jl GitHub](https://github.com/JuliaInterop/Cxx.jl)
 - [LLVM.jl](https://github.com/maleadt/LLVM.jl)
-- [Rust FFI ガイド](https://doc.rust-lang.org/nomicon/ffi.html)
+- [Rust FFI Guide](https://doc.rust-lang.org/nomicon/ffi.html)
 - [cbindgen](https://github.com/mozilla/cbindgen)
-- [Julia llvmcall ドキュメント](https://docs.julialang.org/en/v1/devdocs/llvm/)
+- [Julia llvmcall Documentation](https://docs.julialang.org/en/v1/devdocs/llvm/)
 
-## 次のステップ
+## Next Steps
 
-1. **PLAN.md を読む**: 全体像の把握
-2. **Phase1.md を読む**: 具体的な実装タスクの確認
-3. **INTERNAL.md を読む**: Cxx.jlの実装パターンを理解
-4. **プロジェクト構造を作成**: Phase 1 開始
-
+1. **Read PLAN.md**: Understand the overall picture
+2. **Read Phase1.md**: Check specific implementation tasks
+3. **Read INTERNAL.md**: Understand Cxx.jl implementation patterns
+4. **Create project structure**: Start Phase 1
