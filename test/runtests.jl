@@ -29,6 +29,7 @@ include("test_docs_examples.jl")
 include("test_dependencies.jl")
 include("test_cargo.jl")
 include("test_ndarray.jl")
+include("test_external_crates.jl")
 
 # Examples converted to tests
 include("test_basic_examples.jl")
