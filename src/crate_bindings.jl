@@ -231,8 +231,8 @@ Parse impl blocks for a struct and extract methods marked with #[julia].
 function parse_impl_methods_for_struct(code::String, struct_name::String)
     methods = RustMethod[]
 
-    # Pattern to find impl blocks for the struct
-    impl_pattern = Regex("impl(?:\\s*<[^>]+>)?\\s+$struct_name(?:\\s*<[^>]+>)?\\s*\\{")
+    # Pattern to find impl blocks for the struct (with optional #[julia] attribute before)
+    impl_pattern = Regex("(?:#\\[julia\\]\\s*)?impl(?:\\s*<[^>]+>)?\\s+$struct_name(?:\\s*<[^>]+>)?\\s*\\{")
 
     for impl_match in eachmatch(impl_pattern, code)
         # Extract the impl block
@@ -470,29 +470,32 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
     # Generate struct definitions and wrappers
     struct_defs = generate_crate_struct_wrappers(info, lib_path)
 
-    quote
-        module $mod_name
-            import LastCall: call_rust_function, get_function_pointer_from_lib
-            import Libdl
+    # Build the module body as a block
+    module_body = quote
+        import LastCall: call_rust_function, get_function_pointer_from_lib
+        import Libdl
 
-            const _LIB_PATH = $lib_path
-            const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
+        const _LIB_PATH = $lib_path
+        const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
 
-            function __init__()
-                _LIB_HANDLE[] = Libdl.dlopen(_LIB_PATH, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-            end
-
-            function _get_func_ptr(name::String)
-                if _LIB_HANDLE[] == C_NULL
-                    error("Library not loaded. Call __init__() first.")
-                end
-                Libdl.dlsym(_LIB_HANDLE[], name)
-            end
-
-            $func_defs
-            $struct_defs
+        function __init__()
+            _LIB_HANDLE[] = Libdl.dlopen(_LIB_PATH, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         end
+
+        function _get_func_ptr(name::String)
+            if _LIB_HANDLE[] == C_NULL
+                error("Library not loaded. Call __init__() first.")
+            end
+            Libdl.dlsym(_LIB_HANDLE[], name)
+        end
+
+        $func_defs
+        $struct_defs
     end
+
+    # Return a clean module expression (not wrapped in a block)
+    # The module expression format is: Expr(:module, not_baremodule, name, body)
+    Expr(:module, true, mod_name, module_body)
 end
 
 """
@@ -589,11 +592,11 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
             function $struct_name(ptr::Ptr{Cvoid})
                 obj = new(ptr)
                 finalizer(obj) do x
-                    if x.ptr != C_NULL
+                    if getfield(x, :ptr) != C_NULL
                         free_fn = $(struct_name_str * "_free")
                         func_ptr = _get_func_ptr(free_fn)
-                        ccall(func_ptr, Cvoid, (Ptr{Cvoid},), x.ptr)
-                        x.ptr = C_NULL
+                        ccall(func_ptr, Cvoid, (Ptr{Cvoid},), getfield(x, :ptr))
+                        setfield!(x, :ptr, C_NULL)
                     end
                 end
                 return obj
@@ -608,7 +611,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
         push!(exprs, method_wrapper)
     end
 
-    # Generate field accessors
+    # Generate field accessors (get_field, set_field! functions)
     for (field_name, field_type) in info.fields
         if _is_ffi_compatible_field_type(field_type)
             accessor_wrapper = _generate_crate_field_accessor(info, field_name, field_type)
@@ -616,7 +619,91 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
         end
     end
 
+    # Generate getproperty/setproperty! for natural field access syntax
+    property_accessors = _generate_property_accessors(info)
+    if property_accessors !== nothing
+        push!(exprs, property_accessors)
+    end
+
     Expr(:block, exprs...)
+end
+
+"""
+    _generate_property_accessors(info::RustStructInfo) -> Union{Expr, Nothing}
+
+Generate Base.getproperty and Base.setproperty! methods for natural field access.
+This allows `obj.field` and `obj.field = value` syntax.
+"""
+function _generate_property_accessors(info::RustStructInfo)
+    struct_name = Symbol(info.name)
+    struct_name_str = info.name
+
+    # Filter to FFI-compatible fields
+    compatible_fields = [(name, type) for (name, type) in info.fields if _is_ffi_compatible_field_type(type)]
+
+    if isempty(compatible_fields)
+        return nothing
+    end
+
+    # Build getproperty branches
+    getprop_branches = Expr[]
+    for (field_name, field_type) in compatible_fields
+        field_sym = QuoteNode(Symbol(field_name))
+        getter_fn = "$(struct_name_str)_get_$(field_name)"
+        julia_type = _rust_type_to_julia_type_symbol(field_type)
+        if julia_type === nothing
+            julia_type = :Any
+        end
+
+        push!(getprop_branches, quote
+            if field === $field_sym
+                func_ptr = _get_func_ptr($getter_fn)
+                return call_rust_function(func_ptr, $julia_type, getfield(self, :ptr))
+            end
+        end)
+    end
+
+    # Build setproperty! branches
+    setprop_branches = Expr[]
+    for (field_name, field_type) in compatible_fields
+        field_sym = QuoteNode(Symbol(field_name))
+        setter_fn = "$(struct_name_str)_set_$(field_name)"
+
+        push!(setprop_branches, quote
+            if field === $field_sym
+                func_ptr = _get_func_ptr($setter_fn)
+                call_rust_function(func_ptr, Cvoid, getfield(self, :ptr), value)
+                return value
+            end
+        end)
+    end
+
+    # Generate the field names tuple for propertynames
+    field_symbols = [QuoteNode(Symbol(name)) for (name, _) in compatible_fields]
+
+    quote
+        function Base.getproperty(self::$struct_name, field::Symbol)
+            # Allow access to internal ptr field
+            if field === :ptr
+                return getfield(self, :ptr)
+            end
+            $(getprop_branches...)
+            error("type $($struct_name_str) has no field $field")
+        end
+
+        function Base.setproperty!(self::$struct_name, field::Symbol, value)
+            # Disallow setting internal ptr field
+            if field === :ptr
+                error("cannot set internal field :ptr")
+            end
+            $(setprop_branches...)
+            error("type $($struct_name_str) has no field $field")
+        end
+
+        function Base.propertynames(self::$struct_name)
+            ($(field_symbols...),)
+        end
+    end
 end
 
 function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod)
@@ -627,6 +714,11 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
 
     arg_syms = [Symbol(name) for name in method.arg_names]
 
+    # Convert argument types to Julia types for ccall
+    arg_julia_types = [_rust_type_to_julia_type_symbol(t) for t in method.arg_types]
+    # Default to Any if type conversion fails
+    arg_julia_types = [t === nothing ? :Any : t for t in arg_julia_types]
+
     # Determine if it's a constructor
     is_constructor = method.name == "new" || method.return_type == "Self" || method.return_type == struct_name_str
 
@@ -636,7 +728,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             quote
                 function $struct_name($(arg_syms...))
                     func_ptr = _get_func_ptr($wrapper_name)
-                    ptr = ccall(func_ptr, Ptr{Cvoid}, ($(map(_ -> :Cint, arg_syms)...),), $(arg_syms...))
+                    ptr = ccall(func_ptr, Ptr{Cvoid}, ($(arg_julia_types...),), $(arg_syms...))
                     $struct_name(ptr)
                 end
             end
@@ -666,7 +758,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             quote
                 function $method_name(self::$struct_name, $(arg_syms...))
                     func_ptr = _get_func_ptr($wrapper_name)
-                    ptr = ccall(func_ptr, Ptr{Cvoid}, (Ptr{Cvoid}, $(map(_ -> :Cint, arg_syms)...),), self.ptr, $(arg_syms...))
+                    ptr = ccall(func_ptr, Ptr{Cvoid}, (Ptr{Cvoid}, $(arg_julia_types...),), getfield(self, :ptr), $(arg_syms...))
                     $struct_name(ptr)
                 end
                 export $method_name
@@ -675,7 +767,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             quote
                 function $method_name(self::$struct_name, $(arg_syms...))
                     func_ptr = _get_func_ptr($wrapper_name)
-                    call_rust_function(func_ptr, $julia_ret_type, self.ptr, $(arg_syms...))
+                    call_rust_function(func_ptr, $julia_ret_type, getfield(self, :ptr), $(arg_syms...))
                 end
                 export $method_name
             end
