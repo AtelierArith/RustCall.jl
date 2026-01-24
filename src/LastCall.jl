@@ -64,6 +64,9 @@ include("structs.jl")
 # Phase 5: #[julia] attribute support
 include("julia_functions.jl")
 
+# Phase 6: External crate bindings (Maturin-like feature)
+include("crate_bindings.jl")
+
 # Export public API
 export @rust, @rust_str, @irust, @irust_str
 export RustPtr, RustRef, RustResult, RustOption
@@ -117,6 +120,10 @@ export constraints_to_rust_string, merge_constraints
 export DependencySpec, parse_dependencies_from_code, has_dependencies
 export CargoProject, create_cargo_project, build_cargo_project
 export clear_cargo_cache, get_cargo_cache_size
+
+# Phase 6: External crate bindings (Maturin-like feature)
+export CrateInfo, CrateBindingOptions
+export scan_crate, generate_bindings, @rust_crate
 
 # Module initialization
 function __init__()

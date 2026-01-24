@@ -1,0 +1,21 @@
+[package]
+name = "lastcall_macros"
+version = "0.1.0"
+edition = "2021"
+description = "Proc macros for LastCall.jl - Julia-Rust FFI"
+license = "MIT"
+repository = "https://github.com/atelierarith/LastCall.jl"
+keywords = ["julia", "ffi", "proc-macro"]
+categories = ["development-tools::ffi"]
+readme = "README.md"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
+proc-macro2 = "1.0"
+
+[dev-dependencies]
+trybuild = "1.0"

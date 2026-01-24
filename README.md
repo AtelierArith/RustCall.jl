@@ -47,6 +47,13 @@
 - **Type inference**: Automatic Julia type conversion based on Rust types
 - **Zero boilerplate**: No need to manually define Julia wrapper functions
 
+### Phase 6: External Crate Bindings (Maturin-like) ✅
+- **`lastcall_macros` crate**: Proc-macro crate for `#[julia]` attribute (publishable to crates.io)
+- **`@rust_crate` macro**: Automatically generate Julia bindings for external Rust crates
+- **Crate scanning**: Detect `#[julia]` marked functions and structs in external crates
+- **Automatic building**: Build external crates and generate Julia modules
+- **Caching**: Cache compiled libraries for faster subsequent loads
+
 ## Requirements:
 
 - Julia 1.12 or later
@@ -223,6 +230,53 @@ pub extern "C" fn grayscale_image(pixels: *mut u8, width: usize, height: usize) 
 # Process image data
 pixels = vec(rand(UInt8, 256 * 256 * 3))
 @rust grayscale_image(pointer(pixels), UInt(256), UInt(256))::Cvoid
+```
+
+### 7. External Crate Bindings (Maturin-like)
+
+Generate Julia bindings for external Rust crates using `@rust_crate`:
+
+**Rust side (external crate):**
+```rust
+// Cargo.toml needs: lastcall_macros = "0.1"
+use lastcall_macros::julia;
+
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[julia]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[julia]
+impl Point {
+    #[julia]
+    pub fn new(x: f64, y: f64) -> Self {
+        Point { x, y }
+    }
+
+    #[julia]
+    pub fn distance(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+```
+
+**Julia side:**
+```julia
+using LastCall
+
+# Generate bindings from external crate
+@rust_crate "/path/to/my_crate"
+
+# Use the generated module
+MyCrate.add(1, 2)  # => 3
+p = MyCrate.Point(3.0, 4.0)
+MyCrate.distance(p)  # => 5.0
 ```
 
 ## Type Mapping
@@ -700,6 +754,14 @@ LastCall.jl uses a multi-phase approach:
 - Julia wrapper function auto-generation
 - Seamless type conversion
 
+### Phase 6: External Crate Bindings (Maturin-like) ✅ (Complete)
+
+- `lastcall_macros` proc-macro crate for `#[julia]` attribute
+- `@rust_crate` macro for automatic binding generation
+- Crate scanning to detect `#[julia]` marked items
+- Automatic Cargo build integration
+- Library caching for fast subsequent loads
+
 ## Current Limitations
 
 **Phase 1 limitations:**
@@ -740,7 +802,7 @@ LastCall.jl uses a multi-phase approach:
 
 ## Development Status
 
-LastCall.jl has completed **Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5**. The package is fully functional for production use cases.
+LastCall.jl has completed **Phase 1 through Phase 6**. The package is fully functional for production use cases.
 
 **Implemented:**
 - ✅ Basic type mapping
@@ -761,11 +823,15 @@ LastCall.jl has completed **Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5**. T
 - ✅ External crate integration (Cargo dependencies)
 - ✅ Automatic struct wrapper generation
 - ✅ Method binding for Rust structs
+- ✅ `#[julia]` attribute for simplified FFI
+- ✅ `@rust_crate` macro for external crate bindings
+- ✅ `lastcall_macros` proc-macro crate
 
 **Recently Completed:**
 - ✅ Phase 3: External library integration (Cargo, ndarray, etc.)
 - ✅ Phase 4: Rust structs as Julia objects
 - ✅ Phase 5: `#[julia]` attribute for simplified FFI
+- ✅ Phase 6: External crate bindings (Maturin-like feature)
 - ✅ Generic struct support with automatic monomorphization
 - ✅ Enhanced error handling with suggestions
 - ✅ Enhanced `@irust` with `$var` variable binding syntax
@@ -774,6 +840,7 @@ LastCall.jl has completed **Phase 1, Phase 2, Phase 3, Phase 4, and Phase 5**. T
 **Planned:**
 - ⏳ Lifetime/borrow checker integration
 - ⏳ CI/CD pipeline and package distribution
+- ⏳ `lastcall_macros` crate publication to crates.io
 
 ## Examples
 
@@ -816,6 +883,7 @@ See the `test/` directory for comprehensive examples:
 - `test/test_ndarray.jl` - External crate integration tests (Phase 3)
 - `test/test_phase4.jl` - Struct automation tests (Phase 4)
 - `test/test_julia_attribute.jl` - `#[julia]` attribute tests (Phase 5)
+- `test/test_crate_bindings.jl` - External crate bindings tests (Phase 6)
 
 ## Performance
 
