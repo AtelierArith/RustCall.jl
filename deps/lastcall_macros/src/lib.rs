@@ -1073,4 +1073,3 @@ fn generate_method_wrapper_pyo3(struct_name: &Ident, method: &syn::ImplItemFn) -
         }
     }
 }
-
