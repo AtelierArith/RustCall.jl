@@ -56,8 +56,8 @@ sample_crate_path = joinpath(dirname(dirname(pathof(LastCall))), "examples", "sa
 @rust_crate sample_crate_path
 
 # Call Rust functions
-Samplecrate.add(Int32(2), Int32(3))  # => 5
-Samplecrate.fibonacci(UInt32(10))    # => 55
+SampleCrate.add(Int32(2), Int32(3))  # => 5
+SampleCrate.fibonacci(UInt32(10))    # => 55
 ```
 
 ## Example Descriptions
@@ -101,13 +101,13 @@ using LastCall
 @rust_crate "/path/to/examples/sample_crate"
 
 # Functions
-Samplecrate.add(Int32(1), Int32(2))
+SampleCrate.add(Int32(1), Int32(2))
 
 # Structs with property access
-p = Samplecrate.Point(3.0, 4.0)
+p = SampleCrate.Point(3.0, 4.0)
 p.x  # => 3.0
 p.y  # => 4.0
-Samplecrate.distance_from_origin(p)  # => 5.0
+SampleCrate.distance_from_origin(p)  # => 5.0
 ```
 
 ## Learning Progression
@@ -146,11 +146,9 @@ clear_cache()
 
 ### Module name confusion
 
-When using `@rust_crate`, the generated module name is the crate name with:
-- Underscores removed
-- First letter capitalized
+When using `@rust_crate`, the generated module name is the crate name converted to PascalCase.
 
-Example: `sample_crate` → `Samplecrate`
+Example: `sample_crate` → `SampleCrate`
 
 You can specify a custom name:
 ```julia
