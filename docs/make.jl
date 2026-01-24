@@ -22,6 +22,8 @@ makedocs(
         "User Guide" => [
             "Struct Mapping" => "struct_mapping.md",
             "Generics" => "generics.md",
+            "External Crate Bindings" => "crate_bindings.md",
+            "Precompilation" => "precompilation.md",
             "Troubleshooting" => "troubleshooting.md",
         ],
         "Reference" => [
