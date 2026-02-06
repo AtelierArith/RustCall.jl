@@ -201,14 +201,14 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     converted_args = _convert_args_for_rust(args...)
 
     # Try to get type info from registered function info
-    func_info = get_function_info(func_name)
+    func_info = get_function_info(lib_name, func_name)
     if func_info !== nothing && func_info.return_type !== Any
         return call_rust_function(func_ptr, func_info.return_type, converted_args...)
     end
 
-    # Try to get return type from FUNCTION_RETURN_TYPES registry
-    if haskey(FUNCTION_RETURN_TYPES, func_name)
-        ret_type = FUNCTION_RETURN_TYPES[func_name]
+    # Try to get return type from registries (library-scoped first, then fallback)
+    ret_type = get_function_return_type(lib_name, func_name)
+    if ret_type !== nothing
         @debug "Using registered return type for $func_name: $ret_type"
         return call_rust_function(func_ptr, ret_type, converted_args...)
     end

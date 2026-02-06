@@ -20,10 +20,22 @@ Maps function name to FunctionInfo.
 const FUNCTION_REGISTRY = Dict{String, FunctionInfo}()
 
 """
+Library-scoped registry for function information.
+Maps (library name, function name) to FunctionInfo.
+"""
+const FUNCTION_REGISTRY_BY_LIB = Dict{Tuple{String, String}, FunctionInfo}()
+
+"""
 Registry for function return types (for functions without full signature registration).
 Maps function name to return type.
 """
 const FUNCTION_RETURN_TYPES = Dict{String, Type}()
+
+"""
+Library-scoped registry for function return types.
+Maps (library name, function name) to return type.
+"""
+const FUNCTION_RETURN_TYPES_BY_LIB = Dict{Tuple{String, String}, Type}()
 
 """
     register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
@@ -33,6 +45,7 @@ Register a function with its type signature for later calling.
 function register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
     func_ptr = get_function_pointer(lib_name, name)
     info = FunctionInfo(name, lib_name, ret_type, arg_types, func_ptr)
+    FUNCTION_REGISTRY_BY_LIB[(lib_name, name)] = info
     FUNCTION_REGISTRY[name] = info
     return info
 end
@@ -44,6 +57,30 @@ Get the registered function info for a function name.
 """
 function get_function_info(name::String)
     return get(FUNCTION_REGISTRY, name, nothing)
+end
+
+"""
+    get_function_info(lib_name::String, name::String) -> Union{FunctionInfo, Nothing}
+
+Get registered function info scoped to a library. Falls back to name-only registry
+for backward compatibility.
+"""
+function get_function_info(lib_name::String, name::String)
+    return get(FUNCTION_REGISTRY_BY_LIB, (lib_name, name), get(FUNCTION_REGISTRY, name, nothing))
+end
+
+"""
+    get_function_return_type(lib_name::String, func_name::String) -> Union{Type, Nothing}
+
+Get a registered return type for a function in a specific library.
+Falls back to global function-name mapping for backward compatibility.
+"""
+function get_function_return_type(lib_name::String, func_name::String)
+    by_lib = get(FUNCTION_RETURN_TYPES_BY_LIB, (lib_name, func_name), nothing)
+    if by_lib !== nothing
+        return by_lib
+    end
+    return get(FUNCTION_RETURN_TYPES, func_name, nothing)
 end
 
 """

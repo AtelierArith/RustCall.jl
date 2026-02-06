@@ -657,8 +657,8 @@ function _register_function_signatures(code::String, lib_name::String)
         if ret_type_str !== nothing && !isempty(strip(ret_type_str))
             ret_type = _parse_function_return_type(code, func_name)
             if ret_type !== nothing
-                # Always update FUNCTION_RETURN_TYPES for the current library
-                # This allows the same function name in different rust"" blocks to have different return types
+                # Update both library-scoped and global fallback registries.
+                FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, func_name)] = ret_type
                 FUNCTION_RETURN_TYPES[func_name] = ret_type
                 @debug "Registered return type for function: $func_name => $ret_type (library: $lib_name)"
             end
@@ -895,10 +895,15 @@ function _compile_and_call_irust(code::String, args...)
         # Check if already compiled
         if haskey(IRUST_FUNCTIONS, code_hash)
             lib_name, cached_func_name = IRUST_FUNCTIONS[code_hash]
-            # Re-infer return type for cached function (should match original)
-            rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
-            julia_ret_type = _rust_to_julia_type(rust_ret_type)
-            return _call_irust_function(lib_name, cached_func_name, julia_ret_type, args...)
+            if haskey(RUST_LIBRARIES, lib_name)
+                # Re-infer return type for cached function (should match original)
+                rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
+                julia_ret_type = _rust_to_julia_type(rust_ret_type)
+                return _call_irust_function(lib_name, cached_func_name, julia_ret_type, args...)
+            else
+                # Stale cache entry: library was unloaded, so recompile transparently.
+                delete!(IRUST_FUNCTIONS, code_hash)
+            end
         end
 
         # Check for unsupported types

@@ -52,6 +52,9 @@ include("test_crate_bindings.jl")
 # Hot reload tests
 include("test_hot_reload.jl")
 
+# Regression reproduction tests
+include("test_regressions.jl")
+
 @testset "LastCall.jl" begin
 
     @testset "Type Mappings" begin
