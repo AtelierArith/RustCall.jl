@@ -6,14 +6,14 @@ RustCall.jl provides a Maturin-like feature for generating Julia bindings from e
 
 The feature consists of two components:
 
-1. **`lastcall_macros`** - A Rust proc-macro crate that provides the `#[julia]` attribute
+1. **`rustcall_macros`** - A Rust proc-macro crate that provides the `#[julia]` attribute
 2. **`@rust_crate`** - A Julia macro that scans external crates and generates bindings
 
 ## Quick Start
 
 ### Rust Side
 
-Create a Rust crate with `lastcall_macros`:
+Create a Rust crate with `rustcall_macros`:
 
 ```toml
 # Cargo.toml
@@ -26,14 +26,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-lastcall_macros = { path = "/path/to/RustCall.jl/deps/lastcall_macros" }
+rustcall_macros = { path = "/path/to/RustCall.jl/deps/rustcall_macros" }
 # Or from crates.io (when published):
-# lastcall_macros = "0.1"
+# rustcall_macros = "0.1"
 ```
 
 ```rust
 // src/lib.rs
-use lastcall_macros::julia;
+use rustcall_macros::julia;
 
 #[julia]
 fn add(a: i32, b: i32) -> i32 {
@@ -305,14 +305,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-lastcall_macros = { path = "/path/to/RustCall.jl/deps/lastcall_macros" }
+rustcall_macros = { path = "/path/to/RustCall.jl/deps/rustcall_macros" }
 ```
 
 ### 3. Write Rust Code
 
 ```rust
 // src/lib.rs
-use lastcall_macros::julia;
+use rustcall_macros::julia;
 
 #[julia]
 fn factorial(n: u64) -> u64 {
@@ -451,7 +451,7 @@ Returns the generated Julia module code as a string.
 
 Ensure your crate has:
 - `crate-type = ["cdylib"]` in `[lib]` section
-- `lastcall_macros` as a dependency
+- `rustcall_macros` as a dependency
 - Valid Rust code that compiles
 
 ### Functions not found

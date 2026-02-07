@@ -172,7 +172,7 @@ MyPackage.multiply(1.0, 2.0)
 
 ### During Development
 
-- FirstCall.jl caches compiled libraries in `~/.julia/lastcall_cache/`
+- FirstCall.jl caches compiled libraries in `~/.julia/rustcall_cache/`
 - Cache is keyed by source code hash
 - Rebuilding only happens when source changes
 

@@ -113,8 +113,8 @@ the fallback function lookup across libraries in `get_function_pointer`.
 function _resolve_lib(mod::Module, lib_name::String)
     # Ensure ALL libraries from this module are loaded first
     # This is needed because get_function_pointer does fallback search across all libraries
-    if isdefined(mod, :__LASTCALL_LIBS)
-        libs = getfield(mod, :__LASTCALL_LIBS)
+    if isdefined(mod, :__RUSTCALL_LIBS)
+        libs = getfield(mod, :__RUSTCALL_LIBS)
         for (lname, code) in libs
             ensure_loaded(lname, code)
         end
@@ -123,8 +123,8 @@ function _resolve_lib(mod::Module, lib_name::String)
     # If no library name specified (e.g. @rust func() without a prior rust"""..."""),
     # try to use the module's active library.
     if isempty(lib_name)
-        if isdefined(mod, :__LASTCALL_ACTIVE_LIB)
-            lib_name = getfield(mod, :__LASTCALL_ACTIVE_LIB)[]
+        if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
+            lib_name = getfield(mod, :__RUSTCALL_ACTIVE_LIB)[]
         else
             return get_current_library()
         end

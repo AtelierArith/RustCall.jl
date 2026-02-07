@@ -24,7 +24,7 @@ jobs:
           - windows-latest
     defaults:
       run:
-        working-directory: deps/lastcall_macros
+        working-directory: deps/rustcall_macros
     steps:
       - uses: actions/checkout@v6
       - name: Install Rust toolchain

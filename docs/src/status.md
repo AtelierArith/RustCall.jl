@@ -60,7 +60,7 @@ RustCall.jl is an FFI (Foreign Function Interface) package for calling Rust code
 ### Phase 6: External Crate Bindings (Maturin-like) ✅ Complete
 
 - Goal: Generate Julia bindings for external Rust crates using `#[julia]` attribute
-- Approach: `lastcall_macros` proc-macro crate + `@rust_crate` macro
+- Approach: `rustcall_macros` proc-macro crate + `@rust_crate` macro
 - Status: **Complete** ✅
 
 ## Implementation Status
@@ -227,7 +227,7 @@ RustCall.jl is an FFI (Foreign Function Interface) package for calling Rust code
 
 ### Phase 6: Implemented Features ✅
 
-#### 1. Proc-macro Crate (`lastcall_macros`)
+#### 1. Proc-macro Crate (`rustcall_macros`)
 - [x] `#[julia]` attribute for functions
 - [x] `#[julia]` attribute for structs (generates FFI accessors)
 - [x] `#[julia]` on impl blocks (generates method wrappers)
@@ -304,7 +304,7 @@ RustCall.jl/
 │   ├── rust_helpers/     # Rust helpers library
 │   │   ├── Cargo.toml    # Cargo config
 │   │   └── src/lib.rs    # FFI functions (626 lines)
-│   └── lastcall_macros/  # Proc-macro crate (Phase 6)
+│   └── rustcall_macros/  # Proc-macro crate (Phase 6)
 │       ├── Cargo.toml    # Proc-macro config
 │       └── src/lib.rs    # #[julia] attribute (420 lines)
 └── docs/

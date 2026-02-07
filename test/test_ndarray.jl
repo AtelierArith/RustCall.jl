@@ -5,7 +5,7 @@ using RustCall
 using Test
 
 # Heavy ndarray tests (they take more time) - run by default unless disabled
-const RUN_HEAVY_INTEGRATION_TESTS = get(ENV, "LASTCALL_RUN_HEAVY_INTEGRATION_TESTS", "true") == "true"
+const RUN_HEAVY_INTEGRATION_TESTS = get(ENV, "RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS", "true") == "true"
 
 # Lightweight integration tests with small crates (libc, etc.) - run by default
 @testset "External Crate Integration" begin
@@ -143,7 +143,7 @@ if RUN_HEAVY_INTEGRATION_TESTS
     end
 else
     @testset "Heavy Crate Integration (skipped)" begin
-        @test_skip "Set LASTCALL_RUN_HEAVY_INTEGRATION_TESTS=true to run heavy integration tests"
+        @test_skip "Set RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS=true to run heavy integration tests"
     end
 end
 

@@ -1,6 +1,6 @@
 # sample_crate
 
-A demo Rust crate using the `#[julia]` attribute from `lastcall_macros`.
+A demo Rust crate using the `#[julia]` attribute from `rustcall_macros`.
 
 ## Overview
 
@@ -154,4 +154,4 @@ cargo test
 
 ## Dependencies
 
-- `lastcall_macros`: Provides the `#[julia]` attribute macro (local path reference)
+- `rustcall_macros`: Provides the `#[julia]` attribute macro (local path reference)

@@ -9,4 +9,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # Use local path for development; will be crates.io in production
-lastcall_macros = { path = "../../deps/lastcall_macros" }
+rustcall_macros = { path = "../../deps/rustcall_macros" }

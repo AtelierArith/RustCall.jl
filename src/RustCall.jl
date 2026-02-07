@@ -146,7 +146,7 @@ function __init__()
     # Try to load Rust helpers library
     if !try_load_rust_helpers()
         # Only show warning once, not on every test
-        if !haskey(ENV, "LASTCALL_SUPPRESS_HELPERS_WARNING")
+        if !haskey(ENV, "RUSTCALL_SUPPRESS_HELPERS_WARNING")
             @warn """
             Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work until the library is built.
 
@@ -156,7 +156,7 @@ function __init__()
                 julia --project -e 'using Pkg; Pkg.build("RustCall")'
 
             To suppress this warning, set:
-                ENV["LASTCALL_SUPPRESS_HELPERS_WARNING"] = "1"
+                ENV["RUSTCALL_SUPPRESS_HELPERS_WARNING"] = "1"
             """
         end
     else

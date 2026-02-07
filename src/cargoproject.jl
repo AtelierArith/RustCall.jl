@@ -53,7 +53,7 @@ function create_cargo_project(
 )
     # Create project directory
     if isnothing(path)
-        path = mktempdir(prefix="lastcall_cargo_")
+        path = mktempdir(prefix="rustcall_cargo_")
     else
         mkpath(path)
     end

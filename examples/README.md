@@ -82,7 +82,7 @@ julia --project=. test/runtests.jl
 
 ### sample_crate
 
-A standalone Rust crate demonstrating the `#[julia]` attribute from `lastcall_macros`.
+A standalone Rust crate demonstrating the `#[julia]` attribute from `rustcall_macros`.
 
 **Features demonstrated:**
 - `#[julia]` attribute for automatic FFI generation

@@ -1,6 +1,6 @@
 # External crate bindings generator (Maturin-like feature)
 # This module provides automatic Julia bindings generation for external Rust crates
-# that use the #[julia] attribute from lastcall_macros.
+# that use the #[julia] attribute from rustcall_macros.
 
 using TOML
 using SHA
@@ -384,7 +384,7 @@ Create a wrapper crate that depends on the target crate and re-exports #[julia] 
 """
 function create_wrapper_crate(info::CrateInfo, opts::CrateBindingOptions)
     # Create temporary directory for wrapper crate
-    wrapper_path = mktempdir(prefix="lastcall_wrapper_")
+    wrapper_path = mktempdir(prefix="rustcall_wrapper_")
 
     # Generate Cargo.toml
     cargo_toml_content = generate_wrapper_cargo_toml(info, opts)
@@ -423,12 +423,12 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
     push!(lines, "[dependencies]")
     # Add the target crate as a path dependency
     push!(lines, "$(info.name) = { path = \"$(info.path)\" }")
-    # Add lastcall_macros (use path for now, will be crates.io later)
-    lastcall_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "lastcall_macros")
-    if isdir(lastcall_macros_path)
-        push!(lines, "lastcall_macros = { path = \"$lastcall_macros_path\" }")
+    # Add rustcall_macros (use path for now, will be crates.io later)
+    rustcall_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "rustcall_macros")
+    if isdir(rustcall_macros_path)
+        push!(lines, "rustcall_macros = { path = \"$rustcall_macros_path\" }")
     else
-        push!(lines, "lastcall_macros = \"0.1\"")
+        push!(lines, "rustcall_macros = \"0.1\"")
     end
     push!(lines, "")
 
