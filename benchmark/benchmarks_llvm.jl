@@ -1,11 +1,11 @@
 # Performance benchmarks specifically for @rust_llvm
 # Tests quantitative performance improvements over @rust
 
-using LastCall
+using RustCall
 using BenchmarkTools
 
 # Only run benchmarks if rustc is available
-if !LastCall.check_rustc_available()
+if !RustCall.check_rustc_available()
     error("rustc not found. Benchmarks require Rust to be installed.")
 end
 
@@ -108,7 +108,7 @@ for func_name in ["llvm_bench_add_i32", "llvm_bench_add_i64", "llvm_bench_add_f6
     end
 
     try
-        LastCall.compile_and_register_rust_function(code, func_name)
+        RustCall.compile_and_register_rust_function(code, func_name)
         println("✓ Registered $func_name")
     catch e
         @warn "Failed to register $func_name: $e"
@@ -135,7 +135,7 @@ julia_sum_array(v::Vector{Int32}) = sum(v)
 
 # Benchmark suite
 println("\n" * "="^70)
-println("LastCall.jl @rust_llvm Performance Benchmark Suite")
+println("RustCall.jl @rust_llvm Performance Benchmark Suite")
 println("="^70)
 
 suite = BenchmarkGroup()

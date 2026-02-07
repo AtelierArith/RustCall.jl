@@ -2,7 +2,7 @@
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
-LastCall = "84591b13-8127-4a16-8156-1f71d7525150"
+RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 RustToolChain = "e9dc52e2-edb8-4742-9783-5e542d30dbb5"
 
 [compat]

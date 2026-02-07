@@ -1,5 +1,5 @@
 # Test cases converted from examples/phase4_pi.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Phase 4: Monte Carlo Pi Example" begin

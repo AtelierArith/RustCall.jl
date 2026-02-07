@@ -1,5 +1,5 @@
 """
-    LastCall.jl
+    RustCall.jl
 
 A Foreign Function Interface (FFI) package for calling Rust code from Julia
 using LLVM IR integration.
@@ -10,7 +10,7 @@ using LLVM IR integration.
 
 # Example
 ```julia
-using LastCall
+using RustCall
 
 # Define Rust code
 rust\"\"\"
@@ -24,7 +24,7 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
 result = @rust add(10i32, 20i32)
 ```
 """
-module LastCall
+module RustCall
 
 using LLVM
 using Libdl
@@ -140,23 +140,23 @@ export HotReloadState
 function __init__()
     # Check for rustc availability
     if !check_rustc_available()
-        @warn "rustc not found in PATH. LastCall.jl requires Rust to be installed."
+        @warn "rustc not found in PATH. RustCall.jl requires Rust to be installed."
     end
 
     # Try to load Rust helpers library
     if !try_load_rust_helpers()
         # Only show warning once, not on every test
-        if !haskey(ENV, "LASTCALL_SUPPRESS_HELPERS_WARNING")
+        if !haskey(ENV, "RUSTCALL_SUPPRESS_HELPERS_WARNING")
             @warn """
             Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work until the library is built.
 
             To build the library, run:
-                using Pkg; Pkg.build("LastCall")
+                using Pkg; Pkg.build("RustCall")
             Or from command line:
-                julia --project -e 'using Pkg; Pkg.build("LastCall")'
+                julia --project -e 'using Pkg; Pkg.build("RustCall")'
 
             To suppress this warning, set:
-                ENV["LASTCALL_SUPPRESS_HELPERS_WARNING"] = "1"
+                ENV["RUSTCALL_SUPPRESS_HELPERS_WARNING"] = "1"
             """
         end
     else
@@ -164,4 +164,4 @@ function __init__()
     end
 end
 
-end # module LastCall
+end # module RustCall

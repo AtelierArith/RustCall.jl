@@ -8,14 +8,14 @@ using InteractiveUtils
 begin
 	using Pkg
 	Pkg.activate(dirname(dirname(@__DIR__)))
-	using LastCall
+	using RustCall
 end
 
 # ╔═╡ 422f374a-81c7-4096-b02e-5b51299d56b0
 begin
 	rust"""
 	// cargo-deps: ndarray = "0.15"
-	
+
 	use ndarray::Array1;
 
 	#[julia]
@@ -27,7 +27,7 @@ begin
 	    }
 	}
 	"""
-	
+
 	# Call with Julia array
 	data = [1.0, 2.0, 3.0, 4.0, 5.0]
 	result = compute_sum(pointer(data), length(data))

@@ -1,5 +1,5 @@
 # Test cases converted from examples/ownership_examples.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Ownership Examples" begin

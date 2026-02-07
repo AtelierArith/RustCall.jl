@@ -1,5 +1,5 @@
-name = "LastCall"
-uuid = "84591b13-8127-4a16-8156-1f71d7525150"
+name = "RustCall"
+uuid = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 version = "0.1.0"
 authors = ["Satoshi Terasaki <terasakisatoshi.math@gmail.com>"]
 

@@ -1,4 +1,4 @@
-# Build script for LastCall.jl
+# Build script for RustCall.jl
 # This script verifies that the required tools are available and builds Rust helpers
 
 using RustToolChain: rustc, cargo
@@ -162,7 +162,7 @@ end
 # Main build process
 function main()
     println("=" ^ 60)
-    println("LastCall.jl - Rust Helpers Library Build")
+    println("RustCall.jl - Rust Helpers Library Build")
     println("=" ^ 60)
     println()
 
@@ -187,12 +187,12 @@ function main()
     lib_path = build_rust_helpers()
     println()
     println("=" ^ 60)
-    println("✓ LastCall.jl build completed successfully!")
+    println("✓ RustCall.jl build completed successfully!")
     println("=" ^ 60)
     return lib_path
 end
 
 # Run the build process
 # Pkg.build includes this file, so we always run main() when included
-# This ensures the Rust helpers library is built when Pkg.build("LastCall") is called
+# This ensures the Rust helpers library is built when Pkg.build("RustCall") is called
 main()

@@ -1,19 +1,19 @@
 # sample_crate
 
-A demo Rust crate using the `#[julia]` attribute from `lastcall_macros`.
+A demo Rust crate using the `#[julia]` attribute from `juliacall_macros`.
 
 ## Overview
 
-This crate was created for testing and demonstrating the functionality of binding external Rust crates using LastCall.jl's `@rust_crate` macro.
+This crate was created for testing and demonstrating the functionality of binding external Rust crates using RustCall.jl's `@rust_crate` macro.
 
 ## Usage Examples from Julia
 
 ### Basic Usage (REPL)
 
 ```julia
-using LastCall
+using RustCall
 
-sample_crate_path = joinpath(pkgdir(LastCall), "examples", "sample_crate")
+sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
 @rust_crate sample_crate_path
 
 # Call functions through the generated module (SampleCrate)
@@ -36,9 +36,9 @@ using Pkg
 
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
-using LastCall
+using RustCall
 
-sample_crate_path = joinpath(pkgdir(LastCall), "examples", "sample_crate")
+sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
 @rust_crate sample_crate_path
 
 @testset "SampleCrate" begin
@@ -133,7 +133,7 @@ Methods:
 ## Notes
 
 - `@rust_crate` recommends using absolute paths or paths specified with `joinpath`
-- `pkgdir(LastCall)` can be used to get the package root directory
+- `pkgdir(RustCall)` can be used to get the package root directory
 - Generated modules are directly defined in the caller's scope
 - Module names are converted from crate names to PascalCase (e.g., `sample_crate` → `SampleCrate`)
 - Custom module names can be specified with the `name="CustomName"` option
@@ -154,4 +154,4 @@ cargo test
 
 ## Dependencies
 
-- `lastcall_macros`: Provides the `#[julia]` attribute macro (local path reference)
+- `juliacall_macros`: Provides the `#[julia]` attribute macro (local path reference)

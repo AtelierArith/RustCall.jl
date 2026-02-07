@@ -5,7 +5,7 @@
 # to ensure they work correctly.
 
 using Test
-using LastCall
+using RustCall
 
 @testset "Documentation Examples" begin
     @testset "tutorial.md - Basic Usage" begin

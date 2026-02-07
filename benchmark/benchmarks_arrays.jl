@@ -1,11 +1,11 @@
-# Performance benchmarks for array operations in LastCall.jl
+# Performance benchmarks for array operations in RustCall.jl
 # Tests RustVec, RustSlice, and Julia Vector performance
 
-using LastCall
+using RustCall
 using BenchmarkTools
 
 # Only run benchmarks if rustc is available
-if !LastCall.check_rustc_available()
+if !RustCall.check_rustc_available()
     error("rustc not found. Benchmarks require Rust to be installed.")
 end
 
@@ -57,7 +57,7 @@ julia_vec_dot_product(v1::Vector{Float64}, v2::Vector{Float64}) = sum(v1 .* v2)
 
 # Benchmark suite
 println("\n" * "="^60)
-println("LastCall.jl Array Operations Benchmark Suite")
+println("RustCall.jl Array Operations Benchmark Suite")
 println("="^60)
 
 suite = BenchmarkGroup()
@@ -85,7 +85,7 @@ suite["vec_sum_i32"]["rust"] = @benchmark @rust bench_vec_sum_i32(pointer($test_
 display(suite["vec_sum_i32"]["rust"])
 
 # Test RustVec if available
-if LastCall.is_rust_helpers_available()
+if RustCall.is_rust_helpers_available()
     println("\nRustVec indexing and iteration:")
     try
         rust_vec = RustVec(test_vec_i32)
@@ -98,11 +98,11 @@ if LastCall.is_rust_helpers_available()
             s
         end
         display(suite["vec_sum_i32"]["rustvec_index"])
-        
+
         println("\nRustVec iteration (sum):")
         suite["vec_sum_i32"]["rustvec_iter"] = @benchmark sum($rust_vec)
         display(suite["vec_sum_i32"]["rustvec_iter"])
-        
+
         println("\nRustVec -> Julia Vector conversion:")
         suite["vec_sum_i32"]["rustvec_to_julia"] = @benchmark Vector($rust_vec)
         display(suite["vec_sum_i32"]["rustvec_to_julia"])
@@ -176,8 +176,8 @@ display(suite["vec_dot_product"]["julia"])
 
 println("\n@rust macro (passing pointers):")
 suite["vec_dot_product"]["rust"] = @benchmark @rust bench_vec_dot_product(
-    pointer($test_vec_f64), 
-    pointer($test_vec_f64_2), 
+    pointer($test_vec_f64),
+    pointer($test_vec_f64_2),
     length($test_vec_f64)
 )::Float64
 display(suite["vec_dot_product"]["rust"])
@@ -186,14 +186,14 @@ display(suite["vec_dot_product"]["rust"])
 # RustVec Indexing Performance
 # ============================================================================
 
-if LastCall.is_rust_helpers_available()
+if RustCall.is_rust_helpers_available()
     println("\n--- RustVec Indexing Performance ---")
-    
+
     suite["rustvec_indexing"] = BenchmarkGroup()
-    
+
     try
         rust_vec = RustVec(test_vec_i32)
-        
+
         println("RustVec indexing (sequential access):")
         suite["rustvec_indexing"]["sequential"] = @benchmark begin
             s = Int32(0)
@@ -203,7 +203,7 @@ if LastCall.is_rust_helpers_available()
             s
         end
         display(suite["rustvec_indexing"]["sequential"])
-        
+
         println("\nRustVec indexing (random access):")
         suite["rustvec_indexing"]["random"] = @benchmark begin
             s = Int32(0)
@@ -216,7 +216,7 @@ if LastCall.is_rust_helpers_available()
             s
         end
         display(suite["rustvec_indexing"]["random"])
-        
+
         println("\nJulia Vector indexing (for comparison):")
         suite["rustvec_indexing"]["julia_vector"] = @benchmark begin
             s = Int32(0)
@@ -235,14 +235,14 @@ end
 # RustVec Iteration Performance
 # ============================================================================
 
-if LastCall.is_rust_helpers_available()
+if RustCall.is_rust_helpers_available()
     println("\n--- RustVec Iteration Performance ---")
-    
+
     suite["rustvec_iteration"] = BenchmarkGroup()
-    
+
     try
         rust_vec = RustVec(test_vec_i32)
-        
+
         println("RustVec iteration (for loop):")
         suite["rustvec_iteration"]["for_loop"] = @benchmark begin
             s = Int32(0)
@@ -252,11 +252,11 @@ if LastCall.is_rust_helpers_available()
             s
         end
         display(suite["rustvec_iteration"]["for_loop"])
-        
+
         println("\nRustVec iteration (sum):")
         suite["rustvec_iteration"]["sum"] = @benchmark sum($rust_vec)
         display(suite["rustvec_iteration"]["sum"])
-        
+
         println("\nJulia Vector iteration (for comparison):")
         suite["rustvec_iteration"]["julia_vector"] = @benchmark begin
             s = Int32(0)
@@ -275,21 +275,21 @@ end
 # Array Conversion Performance
 # ============================================================================
 
-if LastCall.is_rust_helpers_available()
+if RustCall.is_rust_helpers_available()
     println("\n--- Array Conversion Performance ---")
-    
+
     suite["array_conversion"] = BenchmarkGroup()
-    
+
     try
         println("Julia Vector -> RustVec conversion:")
         suite["array_conversion"]["julia_to_rustvec"] = @benchmark RustVec($test_vec_i32)
         display(suite["array_conversion"]["julia_to_rustvec"])
-        
+
         rust_vec = RustVec(test_vec_i32)
         println("\nRustVec -> Julia Vector conversion:")
         suite["array_conversion"]["rustvec_to_julia"] = @benchmark Vector($rust_vec)
         display(suite["array_conversion"]["rustvec_to_julia"])
-        
+
         println("\nJulia Vector copy (for comparison):")
         suite["array_conversion"]["julia_copy"] = @benchmark copy($test_vec_i32)
         display(suite["array_conversion"]["julia_copy"])

@@ -1,5 +1,5 @@
 # Test cases for #[julia] attribute support (Phase 5)
-using LastCall
+using RustCall
 using Test
 
 @testset "Julia Attribute Support" begin
@@ -12,7 +12,7 @@ using Test
             a + b
         }
         """
-        sigs = LastCall.parse_julia_functions(code1)
+        sigs = RustCall.parse_julia_functions(code1)
         @test length(sigs) == 1
         @test sigs[1].name == "add"
         @test sigs[1].arg_names == ["a", "b"]
@@ -27,7 +27,7 @@ using Test
             x * y
         }
         """
-        sigs = LastCall.parse_julia_functions(code2)
+        sigs = RustCall.parse_julia_functions(code2)
         @test length(sigs) == 1
         @test sigs[1].name == "multiply"
         @test sigs[1].arg_types == ["f64", "f64"]
@@ -40,7 +40,7 @@ using Test
             println!("value: {}", a);
         }
         """
-        sigs = LastCall.parse_julia_functions(code3)
+        sigs = RustCall.parse_julia_functions(code3)
         @test length(sigs) == 1
         @test sigs[1].return_type == "()"
 
@@ -55,7 +55,7 @@ using Test
         #[julia]
         fn func2(b: f32) -> f32 { b }
         """
-        sigs = LastCall.parse_julia_functions(code4)
+        sigs = RustCall.parse_julia_functions(code4)
         @test length(sigs) == 2
         @test sigs[1].name == "func1"
         @test sigs[2].name == "func2"
@@ -65,27 +65,27 @@ using Test
         #[no_mangle]
         pub extern "C" fn regular_fn(a: i32) -> i32 { a }
         """
-        sigs = LastCall.parse_julia_functions(code5)
+        sigs = RustCall.parse_julia_functions(code5)
         @test length(sigs) == 0
     end
 
     @testset "transform_julia_attribute" begin
         # Test basic transformation
         code1 = "#[julia]\nfn add(a: i32, b: i32) -> i32 { a + b }"
-        result1 = LastCall.transform_julia_attribute(code1)
+        result1 = RustCall.transform_julia_attribute(code1)
         @test occursin("#[no_mangle]", result1)
         @test occursin("pub extern \"C\" fn add", result1)
         @test !occursin("#[julia]", result1)
 
         # Test pub fn transformation
         code2 = "#[julia]\npub fn multiply(x: f64) -> f64 { x * 2.0 }"
-        result2 = LastCall.transform_julia_attribute(code2)
+        result2 = RustCall.transform_julia_attribute(code2)
         @test occursin("#[no_mangle]", result2)
         @test occursin("pub extern \"C\" fn multiply", result2)
 
         # Test inline attribute
         code3 = "#[julia] fn inline_fn(a: i32) -> i32 { a }"
-        result3 = LastCall.transform_julia_attribute(code3)
+        result3 = RustCall.transform_julia_attribute(code3)
         @test occursin("pub extern \"C\" fn inline_fn", result3)
 
         # Test mixed code (some with #[julia], some without)
@@ -96,20 +96,20 @@ using Test
         #[no_mangle]
         pub extern "C" fn already_ffi(b: i32) -> i32 { b }
         """
-        result4 = LastCall.transform_julia_attribute(code4)
+        result4 = RustCall.transform_julia_attribute(code4)
         @test occursin("pub extern \"C\" fn with_julia", result4)
         @test occursin("pub extern \"C\" fn already_ffi", result4)  # unchanged
     end
 
     @testset "has_julia_attribute" begin
-        @test LastCall.has_julia_attribute("#[julia]\nfn test() {}")
-        @test LastCall.has_julia_attribute("code\n#[julia]\nfn test() {}")
-        @test !LastCall.has_julia_attribute("#[no_mangle]\nfn test() {}")
-        @test !LastCall.has_julia_attribute("fn test() {}")
+        @test RustCall.has_julia_attribute("#[julia]\nfn test() {}")
+        @test RustCall.has_julia_attribute("code\n#[julia]\nfn test() {}")
+        @test !RustCall.has_julia_attribute("#[no_mangle]\nfn test() {}")
+        @test !RustCall.has_julia_attribute("fn test() {}")
     end
 
     @testset "emit_julia_function_wrappers" begin
-        sig = LastCall.RustFunctionSignature(
+        sig = RustCall.RustFunctionSignature(
             "add",
             ["a", "b"],
             ["i32", "i32"],
@@ -118,7 +118,7 @@ using Test
             String[]
         )
 
-        expr = LastCall.emit_julia_function_wrappers([sig])
+        expr = RustCall.emit_julia_function_wrappers([sig])
         @test expr isa Expr
 
         # The expression should be a block containing a function definition

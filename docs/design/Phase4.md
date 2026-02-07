@@ -6,7 +6,7 @@ Enable Rust structs to be used as first-class objects in Julia. This includes au
 ## Key Features
 
 ### 1. Struct Mapping
-When a `pub struct` is defined in a `rust""` block, LastCall should optionally generate a corresponding Julia type.
+When a `pub struct` is defined in a `rust""` block, RustCall should optionally generate a corresponding Julia type.
 
 ### 2. Method Integration
 Rust `impl` blocks should be mapped to Julia methods.
@@ -23,7 +23,7 @@ Julia's `finalizer` will be used to call Rust's `Drop` implementation when the J
 We want to achieve something like this:
 
 ```julia
-using LastCall
+using RustCall
 
 # Define a Rust struct and its methods
 rust"""
@@ -59,7 +59,7 @@ println(get(c)) # Calls Counter::get(&self) -> 11
 To call Rust methods from Julia's C-FFI, we need to generate "extern C" wrappers for each method:
 
 ```rust
-// Generated automatically by LastCall
+// Generated automatically by RustCall
 #[no_mangle]
 pub extern "C" fn Counter_new(start: i32) -> *mut Counter {
     Box::into_raw(Box::new(Counter::new(start)))

@@ -147,7 +147,7 @@ In Phase 3, we enable the use of external Rust crates (libraries) within `rust""
        path::Union{String, Nothing} = nothing
    )
        if isnothing(path)
-           path = mktempdir(prefix="lastcall_cargo_")
+           path = mktempdir(prefix="rustcall_cargo_")
        end
 
        # Generate Cargo.toml
@@ -310,7 +310,7 @@ In Phase 3, we enable the use of external Rust crates (libraries) within `rust""
 
        # 2. Create Cargo project if dependencies exist
        if !isempty(dependencies)
-           project_name = "lastcall_$(hash(str))"
+           project_name = "rustcall_$(hash(str))"
            project = create_cargo_project(project_name, dependencies)
 
            # 3. Write Rust code to project
@@ -553,7 +553,7 @@ In Phase 3, we enable the use of external Rust crates (libraries) within `rust""
 
 ```
 src/
-├── LastCall.jl              # Main module
+├── RustCall.jl              # Main module
 ├── rustmacro.jl         # @rust macro
 ├── ruststr.jl           # rust"" and irust"" (extended)
 ├── rusttypes.jl         # Rust type definitions
@@ -607,7 +607,7 @@ to_julia_array(ndarr) -> Array
 ### Basic External Library Usage
 
 ```julia
-using LastCall
+using RustCall
 
 # Example using serde
 rust"""
@@ -644,7 +644,7 @@ pub extern "C" fn serialize_person(name_ptr: *const u8, name_len: usize, age: u3
 ### Numerical Computation with ndarray
 
 ```julia
-using LastCall
+using RustCall
 
 rust"""
 //! ```cargo

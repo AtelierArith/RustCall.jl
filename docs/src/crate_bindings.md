@@ -1,19 +1,19 @@
 # External Crate Bindings (Phase 6)
 
-LastCall.jl provides a Maturin-like feature for generating Julia bindings from external Rust crates. This allows you to develop Rust libraries with the `#[julia]` attribute and automatically generate Julia bindings.
+RustCall.jl provides a Maturin-like feature for generating Julia bindings from external Rust crates. This allows you to develop Rust libraries with the `#[julia]` attribute and automatically generate Julia bindings.
 
 ## Overview
 
 The feature consists of two components:
 
-1. **`lastcall_macros`** - A Rust proc-macro crate that provides the `#[julia]` attribute
+1. **`juliacall_macros`** - A Rust proc-macro crate that provides the `#[julia]` attribute
 2. **`@rust_crate`** - A Julia macro that scans external crates and generates bindings
 
 ## Quick Start
 
 ### Rust Side
 
-Create a Rust crate with `lastcall_macros`:
+Create a Rust crate with `juliacall_macros`:
 
 ```toml
 # Cargo.toml
@@ -26,14 +26,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-lastcall_macros = { path = "/path/to/LastCall.jl/deps/lastcall_macros" }
+juliacall_macros = { path = "/path/to/RustCall.jl/deps/juliacall_macros" }
 # Or from crates.io (when published):
-# lastcall_macros = "0.1"
+# juliacall_macros = "0.1"
 ```
 
 ```rust
 // src/lib.rs
-use lastcall_macros::julia;
+use juliacall_macros::julia;
 
 #[julia]
 fn add(a: i32, b: i32) -> i32 {
@@ -67,7 +67,7 @@ impl Counter {
 ### Julia Side
 
 ```julia
-using LastCall
+using RustCall
 
 # Generate and load bindings
 @rust_crate "/path/to/my_library"
@@ -250,7 +250,7 @@ Options for binding generation.
 
 ## Build Process
 
-When you call `@rust_crate`, LastCall.jl:
+When you call `@rust_crate`, RustCall.jl:
 
 1. **Scans the crate** - Parses all `.rs` files for `#[julia]` attributes
 2. **Checks cache** - If a cached library exists with matching hash, uses it
@@ -305,14 +305,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-lastcall_macros = { path = "/path/to/LastCall.jl/deps/lastcall_macros" }
+juliacall_macros = { path = "/path/to/RustCall.jl/deps/juliacall_macros" }
 ```
 
 ### 3. Write Rust Code
 
 ```rust
 // src/lib.rs
-use lastcall_macros::julia;
+use juliacall_macros::julia;
 
 #[julia]
 fn factorial(n: u64) -> u64 {
@@ -341,7 +341,7 @@ fn fibonacci(n: u32) -> u64 {
 ### 4. Use in Julia
 
 ```julia
-using LastCall
+using RustCall
 
 @rust_crate "/path/to/my_math"
 
@@ -356,7 +356,7 @@ For package development, you can generate bindings to a file that will be precom
 ### Generating Bindings to a File
 
 ```julia
-using LastCall
+using RustCall
 
 # Generate bindings and write to a file
 write_bindings_to_file(
@@ -385,7 +385,7 @@ write_bindings_to_file(
 
 2. **Generate bindings during development**:
    ```julia
-   using LastCall
+   using RustCall
    write_bindings_to_file(
        "deps/my_rust_crate",
        "src/generated/MyRustBindings.jl",
@@ -451,7 +451,7 @@ Returns the generated Julia module code as a string.
 
 Ensure your crate has:
 - `crate-type = ["cdylib"]` in `[lib]` section
-- `lastcall_macros` as a dependency
+- `juliacall_macros` as a dependency
 - Valid Rust code that compiles
 
 ### Functions not found

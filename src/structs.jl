@@ -1223,6 +1223,6 @@ function free_rust_obj(ptr::Ptr{Cvoid}, lib_func::String)
         # We use @rust here as it handles library lookup automatically
         # Since this is called from the finalizer, we need to be careful.
         # However, @rust is generally thread-safe as it uses a global registry.
-        @eval LastCall.@rust $(Symbol(lib_func))(ptr::Ptr{Cvoid})::Cvoid
+        @eval RustCall.@rust $(Symbol(lib_func))(ptr::Ptr{Cvoid})::Cvoid
     end
 end

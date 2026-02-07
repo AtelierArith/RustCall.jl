@@ -1,5 +1,5 @@
 # Test cases converted from examples/julia_to_rust_simple.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Julia to Rust Simple" begin

@@ -1,7 +1,7 @@
 # Test Cargo project generation and building for Phase 3
 # Tests for src/cargoproject.jl and src/cargobuild.jl
 
-using LastCall
+using RustCall
 using Test
 
 @testset "Cargo Project Generation" begin
@@ -12,7 +12,7 @@ using Test
             DependencySpec("serde", version="1.0", features=["derive", "std"])
         ]
 
-        cargo_toml = LastCall.generate_cargo_toml("test_project", deps, "2021")
+        cargo_toml = RustCall.generate_cargo_toml("test_project", deps, "2021")
 
         # Check package section
         @test occursin("[package]", cargo_toml)
@@ -33,12 +33,12 @@ using Test
     @testset "format_dependency_line" begin
         # Simple version
         dep1 = DependencySpec("ndarray", version="0.15")
-        line1 = LastCall.format_dependency_line(dep1)
+        line1 = RustCall.format_dependency_line(dep1)
         @test line1 == "ndarray = \"0.15\""
 
         # Version with features
         dep2 = DependencySpec("serde", version="1.0", features=["derive"])
-        line2 = LastCall.format_dependency_line(dep2)
+        line2 = RustCall.format_dependency_line(dep2)
         @test occursin("serde", line2)
         @test occursin("version", line2)
         @test occursin("features", line2)
@@ -46,13 +46,13 @@ using Test
 
         # Git dependency
         dep3 = DependencySpec("my_crate", git="https://github.com/user/repo.git")
-        line3 = LastCall.format_dependency_line(dep3)
+        line3 = RustCall.format_dependency_line(dep3)
         @test occursin("git", line3)
         @test occursin("https://github.com/user/repo.git", line3)
 
         # Path dependency
         dep4 = DependencySpec("local_crate", path="../local_crate")
-        line4 = LastCall.format_dependency_line(dep4)
+        line4 = RustCall.format_dependency_line(dep4)
         @test occursin("path", line4)
         @test occursin("../local_crate", line4)
     end
@@ -81,7 +81,7 @@ using Test
             @test length(project.dependencies) == 1
         finally
             # Clean up
-            LastCall.cleanup_cargo_project(project)
+            RustCall.cleanup_cargo_project(project)
         end
     end
 
@@ -102,7 +102,7 @@ using Test
             pub extern "C" fn test() -> i32 { 42 }
             """
 
-            LastCall.write_rust_code_to_project(project, code)
+            RustCall.write_rust_code_to_project(project, code)
 
             # Check lib.rs contents
             lib_rs = read(joinpath(project.path, "src", "lib.rs"), String)
@@ -113,7 +113,7 @@ using Test
             @test !occursin("```cargo", lib_rs)
             @test !occursin("[dependencies]", lib_rs)
         finally
-            LastCall.cleanup_cargo_project(project)
+            RustCall.cleanup_cargo_project(project)
         end
     end
 
@@ -129,13 +129,13 @@ using Test
         ]
 
         # Same dependencies in different order should produce same hash
-        hash1 = LastCall.hash_dependencies(deps1)
-        hash2 = LastCall.hash_dependencies(deps2)
+        hash1 = RustCall.hash_dependencies(deps1)
+        hash2 = RustCall.hash_dependencies(deps2)
         @test hash1 == hash2
 
         # Different dependencies should produce different hash
         deps3 = [DependencySpec("ndarray", version="0.16")]
-        hash3 = LastCall.hash_dependencies(deps3)
+        hash3 = RustCall.hash_dependencies(deps3)
         @test hash1 != hash3
     end
 end
@@ -148,18 +148,18 @@ end
             DependencySpec("ndarray", version="0.15"),
             DependencySpec("my_crate", git="https://github.com/user/repo.git")
         ]
-        @test_nowarn LastCall.validate_dependencies(deps_valid)
+        @test_nowarn RustCall.validate_dependencies(deps_valid)
 
         # Invalid: no version, git, or path
         deps_invalid = [DependencySpec("bad_dep")]
-        @test_throws DependencyResolutionError LastCall.validate_dependencies(deps_invalid)
+        @test_throws DependencyResolutionError RustCall.validate_dependencies(deps_invalid)
     end
 
     @testset "resolve_version_conflict" begin
         dep1 = DependencySpec("serde", version="1.0", features=["derive"])
         dep2 = DependencySpec("serde", version="1.0", features=["std"])
 
-        resolved = LastCall.resolve_version_conflict(dep1, dep2)
+        resolved = RustCall.resolve_version_conflict(dep1, dep2)
 
         @test resolved.name == "serde"
         @test resolved.version == "1.0"
@@ -168,10 +168,10 @@ end
     end
 
     @testset "version_specificity" begin
-        @test LastCall.version_specificity("1") == 1
-        @test LastCall.version_specificity("1.0") == 2
-        @test LastCall.version_specificity("1.0.5") == 3
-        @test LastCall.version_specificity("1.0.5-beta") == 4
+        @test RustCall.version_specificity("1") == 1
+        @test RustCall.version_specificity("1.0") == 2
+        @test RustCall.version_specificity("1.0.5") == 3
+        @test RustCall.version_specificity("1.0.5-beta") == 4
     end
 end
 
@@ -179,7 +179,7 @@ end
 
     @testset "cache operations" begin
         # Test cache directory creation
-        cache_dir = LastCall.get_cargo_cache_dir()
+        cache_dir = RustCall.get_cargo_cache_dir()
         @test isdir(cache_dir)
 
         # Test clearing cache

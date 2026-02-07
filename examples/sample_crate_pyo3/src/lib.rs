@@ -6,7 +6,7 @@
 //! This example demonstrates the unified `#[julia_pyo3]` macro that generates
 //! both Julia FFI bindings and Python/PyO3 bindings from a single definition.
 
-use lastcall_macros::julia_pyo3;
+use juliacall_macros::julia_pyo3;
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;

@@ -1,6 +1,6 @@
 # API Reference
 
-This page provides the API documentation for LastCall.jl.
+This page provides the API documentation for RustCall.jl.
 
 ## Macros
 
@@ -229,7 +229,7 @@ const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
 
 ### Internal Registries
 
-The following registries are used internally by LastCall.jl:
+The following registries are used internally by RustCall.jl:
 
 ```@docs
 GENERIC_FUNCTION_REGISTRY
@@ -241,7 +241,7 @@ The following registries and constants are not exported but are available for ad
 Note: These constants are internal implementation details. They are documented here for completeness but should not be accessed directly by users.
 
 ```@autodocs
-Modules = [LastCall]
+Modules = [RustCall]
 Private = true
 Filter = t -> begin
     name = try
@@ -270,7 +270,7 @@ The following functions and types are internal implementation details and are no
 They are documented here for completeness but should not be used directly by users.
 
 ```@autodocs
-Modules = [LastCall]
+Modules = [RustCall]
 Filter = t -> begin
     # Exclude items already documented in @docs blocks above
     excluded_names = [

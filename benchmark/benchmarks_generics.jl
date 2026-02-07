@@ -1,11 +1,11 @@
-# Performance benchmarks for generic functions in LastCall.jl
+# Performance benchmarks for generic functions in RustCall.jl
 # Tests monomorphization cost and performance of generic vs specialized functions
 
-using LastCall
+using RustCall
 using BenchmarkTools
 
 # Only run benchmarks if rustc is available
-if !LastCall.check_rustc_available()
+if !RustCall.check_rustc_available()
     error("rustc not found. Benchmarks require Rust to be installed.")
 end
 
@@ -67,7 +67,7 @@ julia_add_f64(a::Float64, b::Float64) = a + b
 
 # Benchmark suite
 println("\n" * "="^60)
-println("LastCall.jl Generics Performance Benchmark Suite")
+println("RustCall.jl Generics Performance Benchmark Suite")
 println("="^60)
 
 suite = BenchmarkGroup()
@@ -162,9 +162,9 @@ display(suite["add_i32"]["rust_specialized"])
 
 if is_generic_function("identity")
     println("\n--- Monomorphization Cost ---")
-    
+
     suite["monomorphization"] = BenchmarkGroup()
-    
+
         println("First monomorphization (includes compilation):")
         try
             # Clear cache to measure first-time cost
@@ -174,11 +174,11 @@ if is_generic_function("identity")
                 call_generic_function("identity", Int32(42))
             end
             display(suite["monomorphization"]["first_call"])
-            
+
             println("\nSubsequent calls (cached):")
             suite["monomorphization"]["cached_call"] = @benchmark call_generic_function("identity", Int32(42))
             display(suite["monomorphization"]["cached_call"])
-            
+
             println("\nSpecialized function call (for comparison):")
             suite["monomorphization"]["specialized"] = @benchmark @rust bench_identity_i32(Int32(42))::Int32
             display(suite["monomorphization"]["specialized"])

@@ -1,12 +1,12 @@
 Read also AGENTS.md
 
-# CLAUDE.md - LastCall.jl Development Guide
+# CLAUDE.md - RustCall.jl Development Guide
 
-This document is a guide for developing **LastCall.jl**, a Foreign Function Interface (FFI) package based on Cxx.jl.
+This document is a guide for developing **RustCall.jl**, a Foreign Function Interface (FFI) package based on Cxx.jl.
 
 ## Project Goals
 
-Develop an FFI package called **LastCall.jl** that enables direct calls to Rust code from Julia.
+Develop an FFI package called **RustCall.jl** that enables direct calls to Rust code from Julia.
 
 ### Features Provided
 
@@ -134,7 +134,7 @@ fn add(a: i32, b: i32) -> i32 { a + b }
 
 ### Patterns to Learn from Cxx.jl
 
-The following Cxx.jl code should be implemented with similar patterns in LastCall.jl:
+The following Cxx.jl code should be implemented with similar patterns in RustCall.jl:
 
 1. **`llvmcall` pointer form** (`src/codegen.jl`)
 ```julia
@@ -152,7 +152,7 @@ Expr(:call, Core.Intrinsics.llvmcall,
 
 ### Rust-Specific Challenges
 
-| Challenge | Cxx.jl | LastCall.jl |
+| Challenge | Cxx.jl | RustCall.jl |
 |-----------|--------|-------------|
 | Compiler API | Clang (stable) | rustc (unstable) |
 | Type system | C++ types | Ownership and lifetimes |
@@ -183,9 +183,9 @@ const RUST_JULIA_TYPE_MAP = Dict(
 
 ## Cxx.jl Source Code Reference
 
-Files to reference when implementing LastCall.jl:
+Files to reference when implementing RustCall.jl:
 
-| Cxx.jl File | Role | LastCall.jl Equivalent |
+| Cxx.jl File | Role | RustCall.jl Equivalent |
 |-------------|-----|----------------------|
 | `src/cxxmacro.jl` | `@cxx` macro | `@rust` macro |
 | `src/cxxstr.jl` | `cxx""` literal | `rust""` literal |

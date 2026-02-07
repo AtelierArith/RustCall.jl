@@ -1,7 +1,7 @@
 # Test dependency parsing for Phase 3
 # Tests for src/dependencies.jl
 
-using LastCall
+using RustCall
 using Test
 
 @testset "Dependency Parsing" begin
@@ -44,7 +44,7 @@ using Test
         pub extern "C" fn test() -> i32 { 42 }
         """
 
-        block = LastCall.extract_cargo_block(code1)
+        block = RustCall.extract_cargo_block(code1)
         @test !isnothing(block)
         @test occursin("[dependencies]", block)
         @test occursin("ndarray", block)
@@ -55,7 +55,7 @@ using Test
         pub extern "C" fn test() -> i32 { 42 }
         """
 
-        block2 = LastCall.extract_cargo_block(code2)
+        block2 = RustCall.extract_cargo_block(code2)
         @test isnothing(block2)
 
         # Test with multiple dependencies
@@ -68,7 +68,7 @@ using Test
         //! ```
         """
 
-        block3 = LastCall.extract_cargo_block(code3)
+        block3 = RustCall.extract_cargo_block(code3)
         @test !isnothing(block3)
         @test occursin("serde", block3)
         @test occursin("ndarray", block3)
@@ -84,7 +84,7 @@ using Test
         pub extern "C" fn test() -> i32 { 42 }
         """
 
-        line = LastCall.extract_cargo_deps_line(code1)
+        line = RustCall.extract_cargo_deps_line(code1)
         @test !isnothing(line)
         @test occursin("ndarray", line)
         @test occursin("serde", line)
@@ -95,7 +95,7 @@ using Test
         pub extern "C" fn test() -> i32 { 42 }
         """
 
-        line2 = LastCall.extract_cargo_deps_line(code2)
+        line2 = RustCall.extract_cargo_deps_line(code2)
         @test isnothing(line2)
     end
 
@@ -188,7 +188,7 @@ using Test
             DependencySpec("ndarray", version="0.15")
         ]
 
-        merged = LastCall.merge_dependencies(deps)
+        merged = RustCall.merge_dependencies(deps)
         @test length(merged) == 2
 
         # Check serde has merged features
@@ -213,7 +213,7 @@ using Test
         pub extern "C" fn test() -> i32 { 42 }
         """
 
-        clean = LastCall.remove_dependency_comments(code)
+        clean = RustCall.remove_dependency_comments(code)
 
         # Should not contain cargo block
         @test !occursin("```cargo", clean)

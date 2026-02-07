@@ -1,6 +1,6 @@
-# lastcall_macros
+# juliacall_macros
 
-Proc macros for [LastCall.jl](https://github.com/atelierarith/LastCall.jl) - Julia-Rust FFI.
+Proc macros for [RustCall.jl](https://github.com/atelierarith/RustCall.jl) - Julia-Rust FFI.
 
 ## Installation
 
@@ -8,7 +8,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lastcall_macros = "0.1"
+juliacall_macros = "0.1"
 ```
 
 ## Usage
@@ -18,7 +18,7 @@ lastcall_macros = "0.1"
 The `#[julia]` attribute on functions makes them FFI-compatible:
 
 ```rust
-use lastcall_macros::julia;
+use juliacall_macros::julia;
 
 #[julia]
 fn add(a: i32, b: i32) -> i32 {
@@ -40,7 +40,7 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
 The `#[julia]` attribute on structs adds `#[repr(C)]` and generates FFI accessor functions:
 
 ```rust
-use lastcall_macros::julia;
+use juliacall_macros::julia;
 
 #[julia]
 pub struct Point {
@@ -61,7 +61,7 @@ This generates:
 Use `#[julia]` on impl blocks to generate FFI wrappers for methods:
 
 ```rust
-use lastcall_macros::julia;
+use juliacall_macros::julia;
 
 pub struct Counter {
     value: i32,
@@ -96,7 +96,7 @@ This generates:
 On the Julia side, use `@rust_crate` to automatically generate bindings:
 
 ```julia
-using LastCall
+using RustCall
 
 @rust_crate "/path/to/my_crate"
 

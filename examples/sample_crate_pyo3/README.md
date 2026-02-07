@@ -87,10 +87,10 @@ maturin develop --features python
 
 ## Usage
 
-### From Julia (with LastCall.jl)
+### From Julia (with RustCall.jl)
 
 ```julia
-using LastCall
+using RustCall
 
 @rust_crate "/path/to/sample_crate_pyo3"
 
@@ -154,12 +154,12 @@ All APIs are generated from `#[julia_pyo3]` - **same function names** in both la
 
 ```toml
 [dependencies]
-lastcall_macros = { path = "../../deps/lastcall_macros" }
-pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+juliacall_macros = { path = "../../deps/juliacall_macros" }
+pyo3 = { version = "0.24", features = ["extension-module"], optional = true }
 
 [features]
 default = []
-python = ["pyo3", "lastcall_macros/python"]
+python = ["pyo3", "juliacall_macros/python"]
 ```
 
 ## Why Feature Flags?

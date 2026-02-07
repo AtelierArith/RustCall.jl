@@ -1,4 +1,4 @@
-// Rust helper functions for LastCall.jl ownership types
+// Rust helper functions for RustCall.jl ownership types
 // These functions provide FFI-safe wrappers for Box, Rc, and Arc
 
 use std::ffi::c_void;

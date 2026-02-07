@@ -172,7 +172,7 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
     else
         tmp_dir = mktempdir()
     end
-    
+
     rs_file = joinpath(tmp_dir, "rust_code.rs")
     ll_file = joinpath(tmp_dir, "rust_code.ll")
 
@@ -201,17 +201,17 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
     # Run rustc and capture stderr
     cmd = Cmd(cmd_args)
     cmd_str = join(cmd_args, " ")
-    
+
     try
         # Capture stderr for better error messages
         stderr_io = IOBuffer()
         proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
         wait(proc)
-        
+
         if !success(proc)
             stderr_str = String(take!(stderr_io))
             close(stderr_io)
-            
+
             # Clean up on error (unless debug mode)
             if !compiler.debug_mode
                 rm(tmp_dir, recursive=true, force=true)
@@ -221,11 +221,11 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
                 @info "Debug mode: Source file" file=rs_file
                 @info "Debug mode: Command" cmd=cmd_str
             end
-            
+
             # Extract error line numbers and file path
-            error_lines = LastCall._extract_error_line_numbers_impl(stderr_str)
+            error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
             line_num = isempty(error_lines) ? 0 : error_lines[1]
-            
+
             # Build context dictionary
             context = Dict{String, Any}(
                 "tmp_dir" => tmp_dir,
@@ -234,7 +234,7 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
                 "error_count" => length(error_lines),
                 "debug_mode" => compiler.debug_mode
             )
-            
+
             # Format and throw compilation error
             throw(CompilationError(
                 "Failed to compile Rust code to LLVM IR",
@@ -251,14 +251,14 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
         if isa(e, CompilationError)
             rethrow(e)
         end
-        
+
         # Clean up on error (unless debug mode)
         if !compiler.debug_mode
             rm(tmp_dir, recursive=true, force=true)
         else
             @warn "Debug mode: keeping intermediate files in $tmp_dir"
         end
-        
+
         # Fallback error
         throw(CompilationError(
             "Unexpected error during compilation: $e",
@@ -278,7 +278,7 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
             "tmp_dir" => tmp_dir,
             "debug_mode" => compiler.debug_mode
         )
-        
+
         throw(CompilationError(
             "LLVM IR file was not generated",
             "Output file does not exist: $ll_file",
@@ -326,7 +326,7 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
     else
         tmp_dir = mktempdir()
     end
-    
+
     rs_file = joinpath(tmp_dir, "rust_code.rs")
     lib_ext = get_library_extension()
     lib_file = joinpath(tmp_dir, "librust_code$lib_ext")
@@ -355,17 +355,17 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
     # Run rustc and capture stderr
     cmd = Cmd(cmd_args)
     cmd_str = join(cmd_args, " ")
-    
+
     try
         # Capture stderr for better error messages
         stderr_io = IOBuffer()
         proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
         wait(proc)
-        
+
         if !success(proc)
             stderr_str = String(take!(stderr_io))
             close(stderr_io)
-            
+
             # Clean up on error (unless debug mode)
             if !compiler.debug_mode
                 rm(tmp_dir, recursive=true, force=true)
@@ -375,11 +375,11 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
                 @info "Debug mode: Source file" file=rs_file
                 @info "Debug mode: Command" cmd=cmd_str
             end
-            
+
             # Extract error line numbers and file path
-            error_lines = LastCall._extract_error_line_numbers_impl(stderr_str)
+            error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
             line_num = isempty(error_lines) ? 0 : error_lines[1]
-            
+
             # Build context dictionary
             context = Dict{String, Any}(
                 "tmp_dir" => tmp_dir,
@@ -388,7 +388,7 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
                 "error_count" => length(error_lines),
                 "debug_mode" => compiler.debug_mode
             )
-            
+
             # Format and throw compilation error
             throw(CompilationError(
                 "Failed to compile Rust code to shared library",
@@ -405,14 +405,14 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
         if isa(e, CompilationError)
             rethrow(e)
         end
-        
+
         # Clean up on error (unless debug mode)
         if !compiler.debug_mode
             rm(tmp_dir, recursive=true, force=true)
         else
             @warn "Debug mode: keeping intermediate files in $tmp_dir"
         end
-        
+
         # Fallback error
         throw(CompilationError(
             "Unexpected error during compilation: $e",
@@ -432,7 +432,7 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
             "tmp_dir" => tmp_dir,
             "debug_mode" => compiler.debug_mode
         )
-        
+
         throw(CompilationError(
             "Shared library was not generated",
             "Output file does not exist: $lib_file",
@@ -478,7 +478,7 @@ function wrap_rust_code(code::String)
 end
 
 """
-    compile_with_recovery(code::String, compiler::RustCompiler; 
+    compile_with_recovery(code::String, compiler::RustCompiler;
                           retry_count::Int=1) -> String
 
 Compile Rust code with error recovery support.
@@ -502,12 +502,12 @@ Cache recovery should be handled by the caller (e.g., in `ruststr.jl`).
 This function only handles retry with different compiler settings.
 """
 function compile_with_recovery(
-    code::String, 
+    code::String,
     compiler::RustCompiler;
     retry_count::Int = 1
 )
     wrapped_code = wrap_rust_code(code)
-    
+
     # Try normal compilation first
     try
         return compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
@@ -515,7 +515,7 @@ function compile_with_recovery(
         if !isa(e, CompilationError)
             rethrow(e)
         end
-        
+
         # Attempt recovery
         code_fingerprint = bytes2hex(sha256(wrapped_code))[1:RECOVERY_FINGERPRINT_LEN]
         if compiler.debug_mode
@@ -523,7 +523,7 @@ function compile_with_recovery(
         else
             @debug "Compilation failed, attempting recovery..." code_id=code_fingerprint code_len=ncodeunits(wrapped_code) opt_level=compiler.optimization_level emit_debug_info=compiler.emit_debug_info target=compiler.target_triple
         end
-        
+
         # Recovery attempt 1: Retry with lower optimization level
         if retry_count > 0 && compiler.optimization_level > 0
             if compiler.debug_mode
@@ -544,7 +544,7 @@ function compile_with_recovery(
                 @debug "Retry with lower optimization failed: $retry_e"
             end
         end
-        
+
         # Recovery attempt 2: Retry with debug info enabled
         if retry_count > 0 && !compiler.emit_debug_info
             if compiler.debug_mode
@@ -565,7 +565,7 @@ function compile_with_recovery(
                 @debug "Retry with debug info failed: $retry_e"
             end
         end
-        
+
         # All recovery attempts failed, rethrow original error
         if compiler.debug_mode
             @error "All recovery attempts failed" code_id=code_fingerprint

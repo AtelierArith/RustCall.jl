@@ -4,11 +4,11 @@ version = "0.1.0"
 authors = ["Your Name <your.email@example.com>"]
 
 [deps]
-LastCall = "84591b13-8127-4a16-8156-1f71d7525150"
+RustCall = "84591b13-8127-4a16-8156-1f71d7525150"
 
 [compat]
 julia = "1.10"
-LastCall = "0.1"
+RustCall = "0.1"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

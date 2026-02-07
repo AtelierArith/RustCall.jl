@@ -1,13 +1,13 @@
 # Integration tests for popular external Rust crates
 # Phase 3: These tests require network access to download crates on first run
 
-using LastCall
+using RustCall
 using Test
 
 # Control which tests run via environment variables
-const RUN_SERDE_TESTS = get(ENV, "LASTCALL_RUN_SERDE_TESTS", "true") == "true"
-const RUN_REGEX_TESTS = get(ENV, "LASTCALL_RUN_REGEX_TESTS", "true") == "true"
-const RUN_UUID_TESTS = get(ENV, "LASTCALL_RUN_UUID_TESTS", "true") == "true"
+const RUN_SERDE_TESTS = get(ENV, "RUSTCALL_RUN_SERDE_TESTS", "true") == "true"
+const RUN_REGEX_TESTS = get(ENV, "RUSTCALL_RUN_REGEX_TESTS", "true") == "true"
+const RUN_UUID_TESTS = get(ENV, "RUSTCALL_RUN_UUID_TESTS", "true") == "true"
 
 @testset "External Crate Integration Tests" begin
 
@@ -88,7 +88,7 @@ const RUN_UUID_TESTS = get(ENV, "LASTCALL_RUN_UUID_TESTS", "true") == "true"
         end
     else
         @testset "serde_json Integration (skipped)" begin
-            @test_skip "Set LASTCALL_RUN_SERDE_TESTS=true to run serde tests"
+            @test_skip "Set RUSTCALL_RUN_SERDE_TESTS=true to run serde tests"
         end
     end
 
@@ -185,7 +185,7 @@ const RUN_UUID_TESTS = get(ENV, "LASTCALL_RUN_UUID_TESTS", "true") == "true"
         end
     else
         @testset "regex Integration (skipped)" begin
-            @test_skip "Set LASTCALL_RUN_REGEX_TESTS=true to run regex tests"
+            @test_skip "Set RUSTCALL_RUN_REGEX_TESTS=true to run regex tests"
         end
     end
 
@@ -237,7 +237,7 @@ const RUN_UUID_TESTS = get(ENV, "LASTCALL_RUN_UUID_TESTS", "true") == "true"
         end
     else
         @testset "uuid Integration (skipped)" begin
-            @test_skip "Set LASTCALL_RUN_UUID_TESTS=true to run uuid tests"
+            @test_skip "Set RUSTCALL_RUN_UUID_TESTS=true to run uuid tests"
         end
     end
 

@@ -1,10 +1,10 @@
 # MyExample.jl
 
-An example Julia package demonstrating how to use [LastCall.jl](https://github.com/atelierarith/LastCall.jl) to call Rust code from Julia.
+An example Julia package demonstrating how to use [RustCall.jl](https://github.com/atelierarith/RustCall.jl) to call Rust code from Julia.
 
 ## Installation
 
-This package depends on LastCall.jl. To use this example package:
+This package depends on RustCall.jl. To use this example package:
 
 ```julia
 using Pkg
@@ -12,14 +12,14 @@ using Pkg
 # Activate this package's environment
 Pkg.activate("examples/MyExample.jl")
 
-# Add LastCall.jl as a dev dependency (since it's not yet registered)
+# Add RustCall.jl as a dev dependency (since it's not yet registered)
 Pkg.develop(path="../../")  # Path relative to this package
 
 # Instantiate dependencies
 Pkg.instantiate()
 ```
 
-**Note**: Since LastCall.jl is not yet registered in the Julia package registry, you need to add it as a dev dependency using `Pkg.develop()`. The path `../../` assumes you're running from the `examples/MyExample.jl` directory and points to the root of the LastCall.jl repository.
+**Note**: Since RustCall.jl is not yet registered in the Julia package registry, you need to add it as a dev dependency using `Pkg.develop()`. The path `../../` assumes you're running from the `examples/MyExample.jl` directory and points to the root of the RustCall.jl repository.
 
 ## Usage
 
@@ -58,6 +58,6 @@ maximum = max_in_array(arr) # => 5
 
 ## How It Works
 
-This package uses LastCall.jl's `rust""` string literal to define Rust functions and the `@rust` macro to call them from Julia. The Rust code is compiled to a shared library and loaded dynamically.
+This package uses RustCall.jl's `rust""` string literal to define Rust functions and the `@rust` macro to call them from Julia. The Rust code is compiled to a shared library and loaded dynamically.
 
-For more information about LastCall.jl, see the [documentation](https://atelierarith.github.io/LastCall.jl/).
+For more information about RustCall.jl, see the [documentation](https://atelierarith.github.io/RustCall.jl/).

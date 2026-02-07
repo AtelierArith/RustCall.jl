@@ -1,10 +1,10 @@
-# LastCall.jl
+# RustCall.jl
 
-[![CI](https://github.com/atelierarith/LastCall.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/atelierarith/LastCall.jl/actions/workflows/CI.yml)
+[![CI](https://github.com/atelierarith/RustCall.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/atelierarith/RustCall.jl/actions/workflows/CI.yml)
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/AtelierArith/LastCall.jl)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/AtelierArith/RustCall.jl)
 
-**LastCall.jl** is a Foreign Function Interface (FFI) package for calling Rust code directly from Julia, inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
+**RustCall.jl** is a Foreign Function Interface (FFI) package for calling Rust code directly from Julia, inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
 
 > It's the last call for headache. 🦀
 
@@ -48,7 +48,7 @@
 - **Zero boilerplate**: No need to manually define Julia wrapper functions
 
 ### Phase 6: External Crate Bindings (Maturin-like) ✅
-- **`lastcall_macros` crate**: Proc-macro crate for `#[julia]` attribute (publishable to crates.io)
+- **`juliacall_macros` crate**: Proc-macro crate for `#[julia]` attribute (publishable to crates.io)
 - **`@rust_crate` macro**: Automatically generate Julia bindings for external Rust crates
 - **Crate scanning**: Detect `#[julia]` marked functions and structs in external crates
 - **Automatic building**: Build external crates and generate Julia modules
@@ -80,7 +80,7 @@ This will compile the Rust helpers library that provides FFI functions for owner
 ### 1. Define and Call Rust Functions (Simple Way)
 
 ```julia
-using LastCall
+using RustCall
 
 # Use #[julia] attribute - no boilerplate needed!
 rust"""
@@ -97,7 +97,7 @@ add(10, 20)  # => 30
 ### 2. Traditional FFI (Full Control)
 
 ```julia
-using LastCall
+using RustCall
 
 # Traditional way with explicit FFI markers
 rust"""
@@ -207,7 +207,7 @@ quadratic(1.0, 2.0, 1.0, 3.0)  # => 16.0 (x² + 2x + 1 at x=3)
 Process images using Rust for performance-critical operations:
 
 ```julia
-using LastCall
+using RustCall
 using Images
 
 # Define Rust grayscale conversion
@@ -238,8 +238,8 @@ Generate Julia bindings for external Rust crates using `@rust_crate`:
 
 **Rust side (external crate):**
 ```rust
-// Cargo.toml needs: lastcall_macros = "0.1"
-use lastcall_macros::julia;
+// Cargo.toml needs: juliacall_macros = "0.1"
+use juliacall_macros::julia;
 
 #[julia]
 fn add(a: i32, b: i32) -> i32 {
@@ -268,7 +268,7 @@ impl Point {
 
 **Julia side:**
 ```julia
-using LastCall
+using RustCall
 
 # Generate bindings from external crate
 @rust_crate "/path/to/my_crate"
@@ -281,7 +281,7 @@ MyCrate.distance(p)  # => 5.0
 
 ## Type Mapping
 
-LastCall.jl automatically maps Rust types to Julia types:
+RustCall.jl automatically maps Rust types to Julia types:
 
 | Rust Type | Julia Type |
 |-----------|------------|
@@ -304,10 +304,10 @@ LastCall.jl automatically maps Rust types to Julia types:
 
 ## String Support
 
-LastCall.jl supports passing Julia strings to Rust functions expecting C strings:
+RustCall.jl supports passing Julia strings to Rust functions expecting C strings:
 
 ```julia
-using LastCall
+using RustCall
 
 rust"""
 #[no_mangle]
@@ -326,10 +326,10 @@ result = @rust string_length("世界")::UInt32   # => 6 (UTF-8 bytes)
 
 ## Result and Option Types
 
-LastCall.jl provides Julia wrappers for Rust's `Result<T, E>` and `Option<T>` types:
+RustCall.jl provides Julia wrappers for Rust's `Result<T, E>` and `Option<T>` types:
 
 ```julia
-using LastCall
+using RustCall
 
 # Result type
 ok_result = RustResult{Int32, String}(true, Int32(42))
@@ -359,10 +359,10 @@ unwrap_or(none_opt, Int32(0))  # => 0
 
 ## Ownership Types (Phase 2)
 
-LastCall.jl provides Julia wrappers for Rust's ownership types. These require the Rust helpers library to be built:
+RustCall.jl provides Julia wrappers for Rust's ownership types. These require the Rust helpers library to be built:
 
 ```julia
-using LastCall
+using RustCall
 
 # Check if Rust helpers library is available
 if is_rust_helpers_available()
@@ -396,14 +396,14 @@ if is_rust_helpers_available()
 end
 ```
 
-**Note**: Ownership types require the Rust helpers library. Build it with `Pkg.build("LastCall")`.
+**Note**: Ownership types require the Rust helpers library. Build it with `Pkg.build("RustCall")`.
 
 ### Array and Collection Operations
 
-LastCall.jl provides full support for array operations on `RustVec` and `RustSlice`:
+RustCall.jl provides full support for array operations on `RustVec` and `RustSlice`:
 
 ```julia
-using LastCall
+using RustCall
 
 # Indexing (1-based, like Julia arrays)
 vec = RustVec{Int32}(ptr, 10, 20)
@@ -442,10 +442,10 @@ end
 
 ## LLVM IR Integration (Phase 2, Experimental)
 
-LastCall.jl supports direct LLVM IR integration for optimized function calls:
+RustCall.jl supports direct LLVM IR integration for optimized function calls:
 
 ```julia
-using LastCall
+using RustCall
 
 # Compile and register a Rust function
 rust"""
@@ -470,7 +470,7 @@ result = @rust_llvm add(Int32(10), Int32(20))  # => 30
 Configure optimization passes:
 
 ```julia
-using LastCall
+using RustCall
 
 # Compile Rust code to LLVM IR
 rust_code = """
@@ -480,12 +480,12 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
 }
 """
 
-wrapped_code = LastCall.wrap_rust_code(rust_code)
+wrapped_code = RustCall.wrap_rust_code(rust_code)
 compiler = get_default_compiler()
-ir_path = LastCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
+ir_path = RustCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
 
 # Load the LLVM IR module
-rust_mod = LastCall.load_llvm_ir(ir_path; source_code=wrapped_code)
+rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped_code)
 llvm_mod = rust_mod.mod  # Get the LLVM.Module
 
 # Create optimization config
@@ -505,12 +505,12 @@ optimize_for_size!(llvm_mod)   # Level 2, size optimizations
 
 ## External Library Integration (Phase 3)
 
-LastCall.jl supports using external Rust crates directly in `rust""` blocks. Dependencies are automatically downloaded and built using Cargo.
+RustCall.jl supports using external Rust crates directly in `rust""` blocks. Dependencies are automatically downloaded and built using Cargo.
 
 ### Basic Usage
 
 ```julia
-using LastCall
+using RustCall
 
 # Use external crates with cargo-deps format
 rust"""
@@ -536,7 +536,7 @@ println(result)  # => 15.0
 
 ### Dependency Formats
 
-LastCall.jl supports multiple dependency specification formats:
+RustCall.jl supports multiple dependency specification formats:
 
 **Format 1: cargo-deps comment**
 ```rust
@@ -554,7 +554,7 @@ LastCall.jl supports multiple dependency specification formats:
 ### Cargo Project Management
 
 ```julia
-using LastCall
+using RustCall
 
 # Dependencies are automatically parsed and built
 rust"""
@@ -581,12 +581,12 @@ result = @rust process_data(Int32(21))::Int32
 
 ## Rust Structs as Julia Objects (Phase 4)
 
-LastCall.jl automatically detects `pub struct` definitions and generates Julia wrappers, allowing you to use Rust objects as first-class Julia types.
+RustCall.jl automatically detects `pub struct` definitions and generates Julia wrappers, allowing you to use Rust objects as first-class Julia types.
 
 ### Basic Struct Usage
 
 ```julia
-using LastCall
+using RustCall
 
 # Define a Rust struct with methods
 rust"""
@@ -624,7 +624,7 @@ height = get_height(person)
 ### Generic Structs
 
 ```julia
-using LastCall
+using RustCall
 
 rust"""
 pub struct Point<T> {
@@ -655,7 +655,7 @@ dist = distance(point)  # => 5.0
 Rust structs are automatically managed with finalizers that call Rust's `Drop` implementation:
 
 ```julia
-using LastCall
+using RustCall
 
 rust"""
 pub struct Resource {
@@ -687,10 +687,10 @@ end
 
 ## Compilation Caching
 
-LastCall.jl uses a SHA256-based caching system to avoid recompiling unchanged Rust code:
+RustCall.jl uses a SHA256-based caching system to avoid recompiling unchanged Rust code:
 
 ```julia
-using LastCall
+using RustCall
 
 # Cache is automatically used
 rust"""
@@ -713,7 +713,7 @@ cleanup_old_cache(30)  # Remove entries older than 30 days
 
 ## Architecture
 
-LastCall.jl uses a multi-phase approach:
+RustCall.jl uses a multi-phase approach:
 
 ### Phase 1: C-Compatible ABI ✅ (Complete)
 
@@ -756,7 +756,7 @@ LastCall.jl uses a multi-phase approach:
 
 ### Phase 6: External Crate Bindings (Maturin-like) ✅ (Complete)
 
-- `lastcall_macros` proc-macro crate for `#[julia]` attribute
+- `juliacall_macros` proc-macro crate for `#[julia]` attribute
 - `@rust_crate` macro for automatic binding generation
 - Crate scanning to detect `#[julia]` marked items
 - Automatic Cargo build integration
@@ -772,7 +772,7 @@ LastCall.jl uses a multi-phase approach:
 
 **Phase 2 limitations:**
 - `@rust_llvm` is experimental and may have limitations
-- Ownership types require Rust helpers library to be built (`Pkg.build("LastCall")`)
+- Ownership types require Rust helpers library to be built (`Pkg.build("RustCall")`)
 - Some advanced Rust features are not yet supported
 
 **Generics support (Phase 2):**
@@ -802,7 +802,7 @@ LastCall.jl uses a multi-phase approach:
 
 ## Development Status
 
-LastCall.jl has completed **Phase 1 through Phase 6**. The package is fully functional for production use cases.
+RustCall.jl has completed **Phase 1 through Phase 6**. The package is fully functional for production use cases.
 
 **Implemented:**
 - ✅ Basic type mapping
@@ -825,7 +825,7 @@ LastCall.jl has completed **Phase 1 through Phase 6**. The package is fully func
 - ✅ Method binding for Rust structs
 - ✅ `#[julia]` attribute for simplified FFI
 - ✅ `@rust_crate` macro for external crate bindings
-- ✅ `lastcall_macros` proc-macro crate
+- ✅ `juliacall_macros` proc-macro crate
 
 **Recently Completed:**
 - ✅ Phase 3: External library integration (Cargo, ndarray, etc.)
@@ -840,13 +840,13 @@ LastCall.jl has completed **Phase 1 through Phase 6**. The package is fully func
 **Planned:**
 - ⏳ Lifetime/borrow checker integration
 - ⏳ CI/CD pipeline and package distribution
-- ⏳ `lastcall_macros` crate publication to crates.io
+- ⏳ `juliacall_macros` crate publication to crates.io
 
 ## Examples
 
 ### Example Scripts
 
-Run the example scripts to see LastCall.jl in action:
+Run the example scripts to see RustCall.jl in action:
 
 ```bash
 # Basic examples
@@ -887,7 +887,7 @@ See the `test/` directory for comprehensive examples:
 
 ## Performance
 
-LastCall.jl includes a comprehensive benchmark suite:
+RustCall.jl includes a comprehensive benchmark suite:
 
 ```bash
 # Basic performance benchmarks
@@ -931,7 +931,7 @@ MIT License (see LICENSE file)
 
 ### User Documentation
 
-- **[Tutorial](docs/src/tutorial.md)** - Step-by-step guide to using LastCall.jl
+- **[Tutorial](docs/src/tutorial.md)** - Step-by-step guide to using RustCall.jl
   - Basic usage and type system
   - String handling and error handling
   - Ownership types and LLVM IR integration

@@ -1,5 +1,5 @@
 # Test cases converted from examples/struct_examples.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Struct Examples" begin

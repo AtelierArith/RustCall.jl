@@ -91,13 +91,13 @@ function rust_impl_call(mod, expr, ret_type, source)
 
     if ret_type === nothing
         # Dynamic dispatch based on argument types
-        return Expr(:call, GlobalRef(LastCall, :_rust_call_dynamic),
-                    Expr(:call, GlobalRef(LastCall, :_resolve_lib), mod, ""),
+        return Expr(:call, GlobalRef(RustCall, :_rust_call_dynamic),
+                    Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, ""),
                     func_name_str, escaped_args...)
     else
         # Static dispatch with known return type
-        return Expr(:call, GlobalRef(LastCall, :_rust_call_typed),
-                    Expr(:call, GlobalRef(LastCall, :_resolve_lib), mod, ""),
+        return Expr(:call, GlobalRef(RustCall, :_rust_call_typed),
+                    Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, ""),
                     func_name_str, esc(ret_type), escaped_args...)
     end
 end
@@ -113,8 +113,8 @@ the fallback function lookup across libraries in `get_function_pointer`.
 function _resolve_lib(mod::Module, lib_name::String)
     # Ensure ALL libraries from this module are loaded first
     # This is needed because get_function_pointer does fallback search across all libraries
-    if isdefined(mod, :__LASTCALL_LIBS)
-        libs = getfield(mod, :__LASTCALL_LIBS)
+    if isdefined(mod, :__RUSTCALL_LIBS)
+        libs = getfield(mod, :__RUSTCALL_LIBS)
         for (lname, code) in libs
             ensure_loaded(lname, code)
         end
@@ -123,8 +123,8 @@ function _resolve_lib(mod::Module, lib_name::String)
     # If no library name specified (e.g. @rust func() without a prior rust"""..."""),
     # try to use the module's active library.
     if isempty(lib_name)
-        if isdefined(mod, :__LASTCALL_ACTIVE_LIB)
-            lib_name = getfield(mod, :__LASTCALL_ACTIVE_LIB)[]
+        if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
+            lib_name = getfield(mod, :__RUSTCALL_ACTIVE_LIB)[]
         else
             return get_current_library()
         end
@@ -164,7 +164,7 @@ function rust_impl_qualified(mod, expr, source)
     escaped_args = map(esc, args)
 
     return quote
-        $(GlobalRef(LastCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
+        $(GlobalRef(RustCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
     end
 end
 
@@ -277,7 +277,7 @@ macro rust_register(func_name, ret_type, arg_types...)
     arg_types_vec = collect(arg_types)
 
     return quote
-        lib_name = $(GlobalRef(LastCall, :get_current_library))()
-        $(GlobalRef(LastCall, :register_function))($(func_name_str), lib_name, $(esc(ret_type)), Type[$(map(esc, arg_types_vec)...)])
+        lib_name = $(GlobalRef(RustCall, :get_current_library))()
+        $(GlobalRef(RustCall, :register_function))($(func_name_str), lib_name, $(esc(ret_type)), Type[$(map(esc, arg_types_vec)...)])
     end
 end

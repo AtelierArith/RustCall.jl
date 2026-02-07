@@ -1,6 +1,6 @@
 # Windows Platform Guide
 
-This guide covers Windows-specific setup, configuration, and troubleshooting for LastCall.jl.
+This guide covers Windows-specific setup, configuration, and troubleshooting for RustCall.jl.
 
 ## Prerequisites
 
@@ -128,11 +128,11 @@ rustup run stable-x86_64-pc-windows-gnu cargo build
 
 ### PowerShell (Recommended)
 
-PowerShell is the recommended terminal for LastCall.jl development:
+PowerShell is the recommended terminal for RustCall.jl development:
 
 ```powershell
 # Run Julia with debug logging
-$env:JULIA_DEBUG = "LastCall"
+$env:JULIA_DEBUG = "RustCall"
 julia --project
 ```
 
@@ -141,7 +141,7 @@ julia --project
 Also works, but with different syntax:
 
 ```cmd
-set JULIA_DEBUG=LastCall
+set JULIA_DEBUG=RustCall
 julia --project
 ```
 
@@ -208,8 +208,8 @@ The specified module could not be found.
 1. **Check DLL location**: Ensure the compiled library is in the expected path
    ```julia
    # Debug: Check library path
-   using LastCall
-   lib_path = joinpath(LastCall.CACHE_DIR, "...")
+   using RustCall
+   lib_path = joinpath(RustCall.CACHE_DIR, "...")
    @info "Library exists?" isfile(lib_path)
    ```
 
@@ -287,7 +287,7 @@ The specified module could not be found.
 
 ### GitHub Actions
 
-LastCall.jl's CI already includes Windows testing:
+RustCall.jl's CI already includes Windows testing:
 
 ```yaml
 test:
@@ -375,7 +375,7 @@ rustup update
 cargo clean
 
 # Julia with debug logging
-$env:JULIA_DEBUG = "LastCall"; julia --project
+$env:JULIA_DEBUG = "RustCall"; julia --project
 ```
 
 ### Common Paths

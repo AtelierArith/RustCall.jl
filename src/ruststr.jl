@@ -156,20 +156,20 @@ macro rust_str(code)
         lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line))
 
         # Store library information in the calling module for precompilation support
-        if !isdefined($__module__, :__LASTCALL_LIBS)
+        if !isdefined($__module__, :__RUSTCALL_LIBS)
             # Use Core.eval to define the constant if it doesn't exist
             # Note: We use a Dict to support multiple blocks
-            @eval $__module__ const __LASTCALL_LIBS = Dict{String, String}()
+            @eval $__module__ const __RUSTCALL_LIBS = Dict{String, String}()
         end
-        $__module__.__LASTCALL_LIBS[lib_name] = $(esc(code))
+        $__module__.__RUSTCALL_LIBS[lib_name] = $(esc(code))
 
         # Track the "current" library for this module
         # Use Ref{String} so the binding is const but the value can be mutated
         # This avoids Pluto's "cannot assign to imported variable" error
-        if !isdefined($__module__, :__LASTCALL_ACTIVE_LIB)
-            @eval $__module__ const __LASTCALL_ACTIVE_LIB = Ref("")
+        if !isdefined($__module__, :__RUSTCALL_ACTIVE_LIB)
+            @eval $__module__ const __RUSTCALL_ACTIVE_LIB = Ref("")
         end
-        $__module__.__LASTCALL_ACTIVE_LIB[] = lib_name
+        $__module__.__RUSTCALL_ACTIVE_LIB[] = lib_name
 
         # Track active library for macro expansion in this session
         lock(REGISTRY_LOCK) do
@@ -408,7 +408,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     deps_hash = hash_dependencies(dependencies)
 
     # Project and library names
-    project_name = "lastcall_$(string(code_hash, base=16)[1:12])"
+    project_name = "rustcall_$(string(code_hash, base=16)[1:12])"
     lib_name = "rust_cargo_$(string(code_hash, base=16))"
 
     # Check if already compiled and loaded in memory
@@ -799,8 +799,8 @@ macro irust(code, args...)
             var_exprs = [esc(var) for var in all_vars]
 
             # Build the call expression with proper argument splatting
-            # We need to call LastCall._compile_and_call_irust with the escaped variables
-            return Expr(:call, GlobalRef(LastCall, :_compile_and_call_irust), processed_code, var_exprs...)
+            # We need to call RustCall._compile_and_call_irust with the escaped variables
+            return Expr(:call, GlobalRef(RustCall, :_compile_and_call_irust), processed_code, var_exprs...)
         end
     else
         # Non-string: treat as expression (for future expansion)

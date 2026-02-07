@@ -1,4 +1,4 @@
-# LLVM.jl integration for LastCall.jl
+# LLVM.jl integration for RustCall.jl
 
 using LLVM
 

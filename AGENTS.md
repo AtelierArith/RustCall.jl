@@ -3,7 +3,7 @@ Read also CLAUDE.md
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `src/LastCall.jl` defines the `LastCall` module and public API.
+- `src/RustCall.jl` defines the `RustCall` module and public API.
 - `Project.toml` holds package metadata for the root Julia project.
 - `docs/design/` contains design notes and planning documents.
 - `Cxx.jl/` is the Julia C++ FFI subproject with its own `src/`, `test/`, `docs/`, and `deps/`.
@@ -11,7 +11,7 @@ Read also CLAUDE.md
 
 ## Build, Test, and Development Commands
 - `julia --project -e 'using Pkg; Pkg.instantiate()'` sets up the root environment.
-- `julia --project -e 'using LastCall; LastCall.greet()'` runs a quick smoke check.
+- `julia --project -e 'using RustCall; RustCall.greet()'` runs a quick smoke check.
 - `julia --project=Cxx.jl -e 'using Pkg; Pkg.test()'` runs the Cxx.jl test suite.
 - `make -C julia` builds the Julia tree (see `julia/README.md` for prerequisites).
 - `make -C julia testall` runs the Julia test suite.

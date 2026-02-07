@@ -245,12 +245,12 @@ end
 
 This approach allows C++ code to be compiled with Clang and the generated LLVM IR to be directly embedded into Julia.
 
-## Planned Usage in LastCall.jl
+## Planned Usage in RustCall.jl
 
-LastCall.jl (Phase 2) will use a similar approach:
+RustCall.jl (Phase 2) will use a similar approach:
 
 ```julia
-# LastCall.jl internal implementation (planned)
+# RustCall.jl internal implementation (planned)
 @generated function rustcall(CT::RustInstance, expr, args...)
     # 1. Compile Rust code to LLVM IR
     llvm_mod = compile_rust_to_llvm(rust_code)
@@ -308,6 +308,6 @@ Using `llvmcall` provides the following performance benefits:
 `llvmcall` is a powerful tool for low-level optimization in Julia. In particular:
 
 - **String form**: Convenient for directly embedding simple LLVM IR code
-- **Pointer form**: Efficient when using already-generated LLVM functions (used in Cxx.jl, LastCall.jl)
+- **Pointer form**: Efficient when using already-generated LLVM functions (used in Cxx.jl, RustCall.jl)
 
-Packages like Cxx.jl and LastCall.jl achieve high-performance interop by compiling external language code (C++, Rust) to LLVM IR and integrating it into Julia using the pointer form of `llvmcall`.
+Packages like Cxx.jl and RustCall.jl achieve high-performance interop by compiling external language code (C++, Rust) to LLVM IR and integrating it into Julia using the pointer form of `llvmcall`.

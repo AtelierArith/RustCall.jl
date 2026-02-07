@@ -1,5 +1,5 @@
 # Test cases converted from examples/generic_struct_test.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Generic Struct Test" begin

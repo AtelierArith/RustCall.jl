@@ -1,17 +1,17 @@
 # Tests for LLVM call integration
 
-using LastCall
+using RustCall
 using Test
 
 @testset "LLVM Call Integration" begin
     @testset "LLVMCodeGenerator" begin
         # Test default configuration
-        codegen = LastCall.get_default_codegen()
-        @test codegen isa LastCall.LLVMCodeGenerator
+        codegen = RustCall.get_default_codegen()
+        @test codegen isa RustCall.LLVMCodeGenerator
         @test codegen.optimization_level >= 0 && codegen.optimization_level <= 3
 
         # Test custom configuration
-        custom = LastCall.LLVMCodeGenerator(
+        custom = RustCall.LLVMCodeGenerator(
             optimization_level=3,
             inline_threshold=300,
             enable_vectorization=true
@@ -23,7 +23,7 @@ using Test
 
     @testset "RustFunctionInfo" begin
         # Test struct definition
-        info = LastCall.RustFunctionInfo(
+        info = RustCall.RustFunctionInfo(
             "test_func",
             Int32,
             [Int32, Int32],
@@ -38,24 +38,24 @@ using Test
 
     @testset "LLVM IR Type Conversion" begin
         # Test Julia to LLVM IR type string conversion
-        @test LastCall.julia_type_to_llvm_ir_string(Int32) == "i32"
-        @test LastCall.julia_type_to_llvm_ir_string(Int64) == "i64"
-        @test LastCall.julia_type_to_llvm_ir_string(Float32) == "float"
-        @test LastCall.julia_type_to_llvm_ir_string(Float64) == "double"
-        @test LastCall.julia_type_to_llvm_ir_string(Bool) == "i1"
-        @test LastCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
-        @test LastCall.julia_type_to_llvm_ir_string(Ptr{Cvoid}) == "ptr"  # LLVM opaque pointer
+        @test RustCall.julia_type_to_llvm_ir_string(Int32) == "i32"
+        @test RustCall.julia_type_to_llvm_ir_string(Int64) == "i64"
+        @test RustCall.julia_type_to_llvm_ir_string(Float32) == "float"
+        @test RustCall.julia_type_to_llvm_ir_string(Float64) == "double"
+        @test RustCall.julia_type_to_llvm_ir_string(Bool) == "i1"
+        @test RustCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
+        @test RustCall.julia_type_to_llvm_ir_string(Ptr{Cvoid}) == "ptr"  # LLVM opaque pointer
     end
 
     @testset "LLVM IR Generation" begin
         # Test IR generation for function call
-        ir = LastCall.generate_llvmcall_ir("test_add", Int32, Type[Int32, Int32])
+        ir = RustCall.generate_llvmcall_ir("test_add", Int32, Type[Int32, Int32])
         @test occursin("i32", ir)
         @test occursin("call", ir)
     end
 
     # Only run integration tests if rustc is available
-    if LastCall.check_rustc_available()
+    if RustCall.check_rustc_available()
         @testset "Function Registration" begin
             # Compile and register a test function
             code = """
@@ -72,7 +72,7 @@ using Test
             @test info.func_ptr != C_NULL
 
             # Verify it's registered
-            retrieved = LastCall.get_registered_function("llvm_test_add")
+            retrieved = RustCall.get_registered_function("llvm_test_add")
             @test retrieved !== nothing
             @test retrieved.name == "llvm_test_add"
         end
@@ -130,16 +130,16 @@ using Test
         @testset "Generated Function" begin
             # Use already registered llvm_add for generated function test
             # Test generated function path
-            result = LastCall.rust_call_generated(Val(:llvm_add), Int32(5), Int32(7))
+            result = RustCall.rust_call_generated(Val(:llvm_add), Int32(5), Int32(7))
             @test result == 12
         end
 
         @testset "Tuple Type Support" begin
             # Test tuple type conversion to LLVM IR
-            @test LastCall.julia_type_to_llvm_ir_string(Tuple{Int32, Int64}) == "{i32, i64}"
-            @test LastCall.julia_type_to_llvm_ir_string(Tuple{Float64, Float32}) == "{double, float}"
-            @test LastCall.julia_type_to_llvm_ir_string(Tuple{}) == "{}"
-            @test LastCall.julia_type_to_llvm_ir_string(Tuple{Int32, Int32, Int32}) == "{i32, i32, i32}"
+            @test RustCall.julia_type_to_llvm_ir_string(Tuple{Int32, Int64}) == "{i32, i64}"
+            @test RustCall.julia_type_to_llvm_ir_string(Tuple{Float64, Float32}) == "{double, float}"
+            @test RustCall.julia_type_to_llvm_ir_string(Tuple{}) == "{}"
+            @test RustCall.julia_type_to_llvm_ir_string(Tuple{Int32, Int32, Int32}) == "{i32, i32, i32}"
         end
 
         @testset "Struct Type Support" begin
@@ -150,14 +150,14 @@ using Test
             end
 
             # Test struct type conversion to LLVM IR
-            ir_str = LastCall.julia_type_to_llvm_ir_string(TestPoint)
+            ir_str = RustCall.julia_type_to_llvm_ir_string(TestPoint)
             @test occursin("double", ir_str)
             @test occursin("{", ir_str)
             @test occursin("}", ir_str)
 
             # Test empty struct
             struct EmptyStruct end
-            @test LastCall.julia_type_to_llvm_ir_string(EmptyStruct) == "{}"
+            @test RustCall.julia_type_to_llvm_ir_string(EmptyStruct) == "{}"
         end
 
         @testset "Error Handling" begin

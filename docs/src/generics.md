@@ -1,14 +1,14 @@
-# Generics Support in LastCall.jl
+# Generics Support in RustCall.jl
 
-LastCall.jl now supports calling generic Rust functions from Julia. This document explains how to use this feature.
+RustCall.jl now supports calling generic Rust functions from Julia. This document explains how to use this feature.
 
 ```@setup generics
-using LastCall
+using RustCall
 ```
 
 ## Overview
 
-Generic functions in Rust use type parameters (e.g., `fn identity<T>(x: T) -> T`). LastCall.jl automatically:
+Generic functions in Rust use type parameters (e.g., `fn identity<T>(x: T) -> T`). RustCall.jl automatically:
 
 1. **Detects** generic functions in `rust""` blocks
 2. **Monomorphizes** them with specific type parameters when called
@@ -18,7 +18,7 @@ Generic functions in Rust use type parameters (e.g., `fn identity<T>(x: T) -> T`
 
 ### Automatic Detection
 
-When you define a generic function in a `rust""` block, LastCall.jl automatically detects and registers it:
+When you define a generic function in a `rust""` block, RustCall.jl automatically detects and registers it:
 
 ```julia
 
@@ -40,7 +40,7 @@ result = @rust identity(Float64(3.14))::Float64  # => 3.14
 You can also manually register generic functions:
 
 ```julia
-using LastCall
+using RustCall
 
 code = """
 #[no_mangle]
@@ -59,7 +59,7 @@ result = call_generic_function("add", Int32(10), Int32(20))  # => 30
 
 ### 1. Type Parameter Inference
 
-When you call a generic function, LastCall.jl infers type parameters from the argument types:
+When you call a generic function, RustCall.jl infers type parameters from the argument types:
 
 ```julia
 # For function: fn identity<T>(x: T) -> T
@@ -123,7 +123,7 @@ result = @rust identity(Int32(42))::Int32  # => 42
 
 ## Trait Bounds Support
 
-LastCall.jl now supports parsing trait bounds in generic functions. This includes:
+RustCall.jl now supports parsing trait bounds in generic functions. This includes:
 
 1. **Inline bounds**: `fn foo<T: Copy + Clone, U: Debug>(x: T) -> U`
 2. **Where clauses**: `fn foo<T, U>(x: T) -> U where T: Copy, U: Debug`
@@ -135,7 +135,7 @@ LastCall.jl now supports parsing trait bounds in generic functions. This include
 When registering a generic function, trait bounds are automatically parsed and stored:
 
 ```julia
-using LastCall
+using RustCall
 
 # Define a function with trait bounds
 code = """
@@ -154,7 +154,7 @@ println(info.constraints)  # Dict(:T => TypeConstraints([Copy, Clone]))
 You can also manually specify constraints when registering a generic function:
 
 ```julia
-using LastCall
+using RustCall
 
 code = """
 pub fn add<T>(a: T, b: T) -> T {
@@ -178,7 +178,7 @@ register_generic_function("add_legacy", code, [:T], Dict(:T => "Copy + Add<Outpu
 You can convert parsed constraints back to Rust syntax:
 
 ```julia
-using LastCall
+using RustCall
 
 constraints = Dict(:T => TypeConstraints([
     TraitBound("Copy", String[]),

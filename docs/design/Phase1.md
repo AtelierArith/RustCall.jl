@@ -20,11 +20,11 @@ In Phase 1, we implement basic functionality to call Rust functions from Julia u
 
 1. **Create Project Directory**
    ```
-   LastCall.jl/
+   RustCall.jl/
    ├── Project.toml
    ├── README.md
    ├── src/
-   │   ├── LastCall.jl
+   │   ├── RustCall.jl
    │   ├── rustmacro.jl
    │   ├── ruststr.jl
    │   ├── rusttypes.jl
@@ -63,7 +63,7 @@ In Phase 1, we implement basic functionality to call Rust functions from Julia u
 
 3. **Basic Module Structure**
    ```julia
-   # src/LastCall.jl
+   # src/RustCall.jl
    __precompile__(true)
    module Rust
 
@@ -572,7 +572,7 @@ In Phase 1, we implement basic functionality to call Rust functions from Julia u
 
 ```
 src/
-├── LastCall.jl              # Main module
+├── RustCall.jl              # Main module
 ├── rustmacro.jl         # @rust macro
 ├── ruststr.jl           # rust"" and irust""
 ├── rusttypes.jl         # Rust type definitions

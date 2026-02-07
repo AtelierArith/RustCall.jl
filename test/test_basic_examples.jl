@@ -1,5 +1,5 @@
 # Test cases converted from examples/basic_examples.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Basic Examples" begin

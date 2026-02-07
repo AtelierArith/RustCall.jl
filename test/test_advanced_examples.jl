@@ -1,5 +1,5 @@
 # Test cases converted from examples/advanced_examples.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Advanced Examples" begin
@@ -144,7 +144,7 @@ using Test
         }
         """
 
-        text = "Hello, LastCall.jl!"
+        text = "Hello, RustCall.jl!"
         result = @rust string_length(text)::UInt
         @test result == 0  # Simplified implementation
     end

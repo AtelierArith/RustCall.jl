@@ -1,6 +1,6 @@
 # Tests for ownership types with Rust integration
 
-using LastCall
+using RustCall
 using Test
 
 @testset "Ownership Types - Rust Integration" begin
@@ -83,7 +83,7 @@ using Test
         end
 
         @warn "Rust helpers library not available, skipping full integration tests"
-        @warn "To enable these tests, build the library with: using Pkg; Pkg.build(\"LastCall\")"
+        @warn "To enable these tests, build the library with: using Pkg; Pkg.build(\"RustCall\")"
     else
         # Full integration tests with actual Rust library
         @testset "RustBox Full Integration" begin

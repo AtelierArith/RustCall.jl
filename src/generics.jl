@@ -1,4 +1,4 @@
-# Generic function support for LastCall.jl
+# Generic function support for RustCall.jl
 # Phase 2: Monomorphization and type parameter inference
 
 # Import required functions and constants from other modules

@@ -1,4 +1,4 @@
-# LLVM optimization passes for LastCall.jl
+# LLVM optimization passes for RustCall.jl
 # Phase 2: Optimization integration
 
 using LLVM

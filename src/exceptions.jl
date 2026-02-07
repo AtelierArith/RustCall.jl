@@ -223,7 +223,7 @@ function Base.showerror(io::IO, e::CompilationError)
 
     # Show hint for enabling debug mode
     println(io, "")
-    println(io, "💡 Tip: Set JULIA_DEBUG=LastCall or enable debug mode for more detailed information.")
+    println(io, "💡 Tip: Set JULIA_DEBUG=RustCall or enable debug mode for more detailed information.")
 end
 
 # Export internal functions for testing (wrappers)

@@ -1,5 +1,5 @@
 # Test cases converted from examples/phase4_ndarray.jl
-using LastCall
+using RustCall
 using Test
 
 @testset "Phase 4: ndarray Example" begin

@@ -47,7 +47,7 @@ Cxx.jl/
 | `DESCRIPTION.md` | Project overview |
 | `INTERNAL.md` | Internal implementation details (C++ code processing flow) |
 | `LLVMCALL.md` | Details about Julia's `llvmcall` |
-| `PLAN.md` | LastCall.jl implementation plan |
+| `PLAN.md` | RustCall.jl implementation plan |
 | `Phase1.md` | Phase 1 (C-compatible ABI) detailed implementation plan |
 | `Phase2.md` | Phase 2 (LLVM IR integration) detailed implementation plan |
 
@@ -101,9 +101,9 @@ julia --project -e 'using Pkg; Pkg.test()'
 julia --project -e 'using Pkg; Pkg.build()'
 ```
 
-## LastCall.jl Plan
+## RustCall.jl Plan
 
-Planning a Rust implementation version (LastCall.jl) based on Cxx.jl:
+Planning a Rust implementation version (RustCall.jl) based on Cxx.jl:
 
 ### Phase 1: C-Compatible ABI (2-3 months)
 - `@rust` macro: `ccall` wrapper
@@ -125,7 +125,7 @@ Planning a Rust implementation version (LastCall.jl) based on Cxx.jl:
 
 A: Cxx.jl is internally tightly integrated with Clang's API and requires compatibility with Julia's LLVM version. In newer Julia versions, the LLVM version has changed and support hasn't caught up.
 
-### Q: What's the difference between Phase 1 and Phase 2 of LastCall.jl?
+### Q: What's the difference between Phase 1 and Phase 2 of RustCall.jl?
 
 A: Phase 1 uses C-compatible ABI (`extern "C"`), which is simple but cannot use advanced Rust features. Phase 2 directly manipulates LLVM IR, enabling more flexible integration but with more complex implementation.
 
@@ -144,4 +144,4 @@ A: The string form passes LLVM IR as a string, and Julia wraps it. The pointer f
 
 - This project is for learning and research purposes
 - For production environments, CxxWrap.jl is recommended
-- LastCall.jl is in the planning stage and has not yet been implemented
+- RustCall.jl is in the planning stage and has not yet been implemented

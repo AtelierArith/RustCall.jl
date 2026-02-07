@@ -1,6 +1,6 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use lastcall_macros::julia;
+use juliacall_macros::julia;
 
 // Test that #[julia] on functions compiles correctly
 #[julia]
