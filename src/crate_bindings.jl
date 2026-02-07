@@ -1,6 +1,6 @@
 # External crate bindings generator (Maturin-like feature)
 # This module provides automatic Julia bindings generation for external Rust crates
-# that use the #[julia] attribute from rustcall_macros.
+# that use the #[julia] attribute from juliacall_macros.
 
 using TOML
 using SHA
@@ -423,12 +423,12 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
     push!(lines, "[dependencies]")
     # Add the target crate as a path dependency
     push!(lines, "$(info.name) = { path = \"$(info.path)\" }")
-    # Add rustcall_macros (use path for now, will be crates.io later)
-    rustcall_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "rustcall_macros")
-    if isdir(rustcall_macros_path)
-        push!(lines, "rustcall_macros = { path = \"$rustcall_macros_path\" }")
+    # Add juliacall_macros (use path for now, will be crates.io later)
+    juliacall_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "juliacall_macros")
+    if isdir(juliacall_macros_path)
+        push!(lines, "juliacall_macros = { path = \"$juliacall_macros_path\" }")
     else
-        push!(lines, "rustcall_macros = \"0.1\"")
+        push!(lines, "juliacall_macros = \"0.1\"")
     end
     push!(lines, "")
 

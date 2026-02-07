@@ -48,7 +48,7 @@
 - **Zero boilerplate**: No need to manually define Julia wrapper functions
 
 ### Phase 6: External Crate Bindings (Maturin-like) ✅
-- **`rustcall_macros` crate**: Proc-macro crate for `#[julia]` attribute (publishable to crates.io)
+- **`juliacall_macros` crate**: Proc-macro crate for `#[julia]` attribute (publishable to crates.io)
 - **`@rust_crate` macro**: Automatically generate Julia bindings for external Rust crates
 - **Crate scanning**: Detect `#[julia]` marked functions and structs in external crates
 - **Automatic building**: Build external crates and generate Julia modules
@@ -238,8 +238,8 @@ Generate Julia bindings for external Rust crates using `@rust_crate`:
 
 **Rust side (external crate):**
 ```rust
-// Cargo.toml needs: rustcall_macros = "0.1"
-use rustcall_macros::julia;
+// Cargo.toml needs: juliacall_macros = "0.1"
+use juliacall_macros::julia;
 
 #[julia]
 fn add(a: i32, b: i32) -> i32 {
@@ -756,7 +756,7 @@ RustCall.jl uses a multi-phase approach:
 
 ### Phase 6: External Crate Bindings (Maturin-like) ✅ (Complete)
 
-- `rustcall_macros` proc-macro crate for `#[julia]` attribute
+- `juliacall_macros` proc-macro crate for `#[julia]` attribute
 - `@rust_crate` macro for automatic binding generation
 - Crate scanning to detect `#[julia]` marked items
 - Automatic Cargo build integration
@@ -825,7 +825,7 @@ RustCall.jl has completed **Phase 1 through Phase 6**. The package is fully func
 - ✅ Method binding for Rust structs
 - ✅ `#[julia]` attribute for simplified FFI
 - ✅ `@rust_crate` macro for external crate bindings
-- ✅ `rustcall_macros` proc-macro crate
+- ✅ `juliacall_macros` proc-macro crate
 
 **Recently Completed:**
 - ✅ Phase 3: External library integration (Cargo, ndarray, etc.)
@@ -840,7 +840,7 @@ RustCall.jl has completed **Phase 1 through Phase 6**. The package is fully func
 **Planned:**
 - ⏳ Lifetime/borrow checker integration
 - ⏳ CI/CD pipeline and package distribution
-- ⏳ `rustcall_macros` crate publication to crates.io
+- ⏳ `juliacall_macros` crate publication to crates.io
 
 ## Examples
 

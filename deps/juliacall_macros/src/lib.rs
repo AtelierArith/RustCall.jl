@@ -10,7 +10,7 @@
 //! The `#[julia]` attribute on functions expands to `#[no_mangle] pub extern "C"`:
 //!
 //! ```rust,ignore
-//! use rustcall_macros::julia;
+//! use juliacall_macros::julia;
 //!
 //! #[julia]
 //! fn add(a: i32, b: i32) -> i32 {
@@ -32,7 +32,7 @@
 //! Functions returning `Result<T, E>` or `Option<T>` are automatically wrapped:
 //!
 //! ```rust,ignore
-//! use rustcall_macros::julia;
+//! use juliacall_macros::julia;
 //!
 //! #[julia]
 //! fn safe_divide(a: f64, b: f64) -> Option<f64> {
@@ -50,7 +50,7 @@
 //! The `#[julia]` attribute on structs adds `#[repr(C)]` and generates FFI functions:
 //!
 //! ```rust,ignore
-//! use rustcall_macros::julia;
+//! use juliacall_macros::julia;
 //!
 //! #[julia]
 //! pub struct Point {

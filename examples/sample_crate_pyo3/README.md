@@ -154,12 +154,12 @@ All APIs are generated from `#[julia_pyo3]` - **same function names** in both la
 
 ```toml
 [dependencies]
-rustcall_macros = { path = "../../deps/rustcall_macros" }
+juliacall_macros = { path = "../../deps/juliacall_macros" }
 pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
 
 [features]
 default = []
-python = ["pyo3", "rustcall_macros/python"]
+python = ["pyo3", "juliacall_macros/python"]
 ```
 
 ## Why Feature Flags?

@@ -1,9 +1,9 @@
-//! Sample crate demonstrating the #[julia] attribute from rustcall_macros.
+//! Sample crate demonstrating the #[julia] attribute from juliacall_macros.
 //!
 //! This crate shows how to use the #[julia] attribute to create FFI-compatible
 //! functions and structs that can be automatically bound to Julia.
 
-use rustcall_macros::julia;
+use juliacall_macros::julia;
 
 // ============================================================================
 // Simple Functions

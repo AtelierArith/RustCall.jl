@@ -1,5 +1,5 @@
 [package]
-name = "rustcall_macros"
+name = "juliacall_macros"
 version = "0.1.0"
 edition = "2021"
 description = "Proc macros for RustCall.jl - Julia-Rust FFI"
