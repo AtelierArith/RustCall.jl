@@ -57,16 +57,40 @@ function rust_impl(mod, expr, source)
         end
     end
 
-    # Handle return type annotation: @rust func(args...)::Type
+    # Handle return type annotation:
+    # - @rust func(args...)::Type
+    # - @rust lib::func(args...)::Type
     if isexpr(expr, :(::))
-        call_expr = expr.args[1]
+        lhs = expr.args[1]
         ret_type = expr.args[2]
-        return rust_impl_with_type(mod, call_expr, ret_type, source)
+
+        # Qualified call with explicit return type
+        qualified = _parse_qualified_call(lhs)
+        if qualified !== nothing
+            lib_name, call_expr = qualified
+            return rust_impl_qualified(mod, lib_name, call_expr, ret_type, source)
+        end
+
+        # Regular typed call
+        if isexpr(lhs, :call)
+            return rust_impl_with_type(mod, lhs, ret_type, source)
+        end
+
+        # Qualified call without return type: @rust lib::func(args...)
+        qualified = _parse_qualified_call(expr)
+        if qualified !== nothing
+            lib_name, call_expr = qualified
+            return rust_impl_qualified(mod, lib_name, call_expr, nothing, source)
+        end
+
+        error("Expected function call before ::Type, got: $lhs")
     end
 
     # Handle library-qualified call: @rust lib::func(args...)
-    if isexpr(expr, :call) && isexpr(expr.args[1], :(::))
-        return rust_impl_qualified(mod, expr, source)
+    qualified = _parse_qualified_call(expr)
+    if qualified !== nothing
+        lib_name, call_expr = qualified
+        return rust_impl_qualified(mod, lib_name, call_expr, nothing, source)
     end
 
     # Handle simple function call: @rust func(args...)
@@ -147,25 +171,53 @@ function rust_impl_with_type(mod, call_expr, ret_type, source)
 end
 
 """
-    rust_impl_qualified(mod, expr, source)
+    rust_impl_qualified(mod, lib_name, call_expr, ret_type, source)
 
 Handle a library-qualified function call: lib::func(args...)
 """
-function rust_impl_qualified(mod, expr, source)
-    qualified_name = expr.args[1]
-    args = expr.args[2:end]
-
-    # Extract library and function name
-    lib_name = qualified_name.args[1]
-    func_name = qualified_name.args[2]
-
+function rust_impl_qualified(mod, lib_name, call_expr, ret_type, source)
+    func_name = call_expr.args[1]
+    args = call_expr.args[2:end]
     lib_name_str = string(lib_name)
     func_name_str = string(func_name)
     escaped_args = map(esc, args)
 
-    return quote
-        $(GlobalRef(RustCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
+    if ret_type === nothing
+        return quote
+            $(GlobalRef(RustCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
+        end
     end
+
+    return quote
+        $(GlobalRef(RustCall, :_rust_call_typed))($(lib_name_str), $(func_name_str), $(esc(ret_type)), $(escaped_args...))
+    end
+end
+
+"""
+    _parse_qualified_call(expr) -> Union{Tuple{Any, Expr}, Nothing}
+
+Parse `lib::func(args...)` into `(lib, call_expr)`.
+"""
+function _parse_qualified_call(expr)
+    if isexpr(expr, :(::)) && length(expr.args) == 2
+        lib_name = expr.args[1]
+        call_expr = expr.args[2]
+        if isexpr(call_expr, :call)
+            return (lib_name, call_expr)
+        end
+    end
+
+    if isexpr(expr, :call) && !isempty(expr.args) && isexpr(expr.args[1], :(::))
+        qualified_name = expr.args[1]
+        if length(qualified_name.args) == 2
+            lib_name = qualified_name.args[1]
+            func_name = qualified_name.args[2]
+            call_expr = Expr(:call, func_name, expr.args[2:end]...)
+            return (lib_name, call_expr)
+        end
+    end
+
+    return nothing
 end
 
 """

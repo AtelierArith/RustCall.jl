@@ -63,6 +63,46 @@ using Test
         @test result_f64 == 2.5
     end
 
+    @testset "@rust supports library-qualified call syntax" begin
+        if !RustCall.check_rustc_available()
+            @warn "rustc not found, skipping library-qualified call syntax test"
+            return
+        end
+
+        code = """
+        #[no_mangle]
+        pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
+            a * b
+        }
+        """
+
+        lib_name = RustCall._compile_and_load_rust(code, "test_regressions", 0)
+
+        result_untyped = eval(Meta.parse("@rust $(lib_name)::multiply(Int32(3), Int32(4))"))
+        result_typed = eval(Meta.parse("@rust $(lib_name)::multiply(Int32(5), Int32(6))::Int32"))
+
+        @test result_untyped == Int32(12)
+        @test result_typed == Int32(30)
+    end
+
+    @testset "Functions without return annotation are treated as Cvoid" begin
+        if !RustCall.check_rustc_available()
+            @warn "rustc not found, skipping Cvoid return inference test"
+            return
+        end
+
+        code = """
+        #[no_mangle]
+        pub extern "C" fn do_nothing(x: i32) {
+            let _ = x;
+        }
+        """
+
+        lib_name = RustCall._compile_and_load_rust(code, "test_regressions", 0)
+        result = RustCall._rust_call_dynamic(lib_name, "do_nothing", Int32(7))
+        @test result === nothing
+    end
+
     @testset "@irust stale cache after unload_all_libraries" begin
         if !RustCall.check_rustc_available()
             @warn "rustc not found, skipping @irust regression reproduction test"

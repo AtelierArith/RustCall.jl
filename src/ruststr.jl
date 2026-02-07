@@ -653,16 +653,22 @@ function _register_function_signatures(code::String, lib_name::String)
             continue
         end
 
-        # Parse return type
+        # Parse return type.
+        # Functions without an explicit return type in Rust default to `()`,
+        # which maps to `Cvoid` on the Julia FFI boundary.
+        ret_type = Cvoid
         if ret_type_str !== nothing && !isempty(strip(ret_type_str))
-            ret_type = _parse_function_return_type(code, func_name)
-            if ret_type !== nothing
-                # Update both library-scoped and global fallback registries.
-                FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, func_name)] = ret_type
-                FUNCTION_RETURN_TYPES[func_name] = ret_type
-                @debug "Registered return type for function: $func_name => $ret_type (library: $lib_name)"
+            parsed = _parse_function_return_type(code, func_name)
+            if parsed === nothing
+                continue
             end
+            ret_type = parsed
         end
+
+        # Update both library-scoped and global fallback registries.
+        FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, func_name)] = ret_type
+        FUNCTION_RETURN_TYPES[func_name] = ret_type
+        @debug "Registered return type for function: $func_name => $ret_type (library: $lib_name)"
     end
 end
 
