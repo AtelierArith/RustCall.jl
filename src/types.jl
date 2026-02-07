@@ -496,7 +496,20 @@ mutable struct RustVec{T}
         vec = new{T}(ptr, len, cap, false)
         finalizer(vec) do v
             if !v.dropped && v.ptr != C_NULL
-                v.dropped = true
+                # Call Rust-side drop when available; fall back to marking dropped.
+                try
+                    if isdefined(@__MODULE__, :drop_rust_vec)
+                        drop_fn = getfield(@__MODULE__, :drop_rust_vec)
+                        Base.invokelatest(drop_fn, v)
+                    else
+                        v.dropped = true
+                        v.ptr = C_NULL
+                    end
+                catch e
+                    @warn "Error dropping RustVec in finalizer: $e"
+                    v.dropped = true
+                    v.ptr = C_NULL
+                end
             end
         end
         return vec
@@ -814,24 +827,6 @@ function RustVec(v::Vector{T}) where T
 
     # Create RustVec from CVec
     vec = RustVec{T}(cvec.ptr, UInt(cvec.len), UInt(cvec.cap))
-
-    # Set up finalizer to call Rust drop function
-    # drop_rust_vec is defined in memory.jl, which is loaded after types.jl
-    # We use Base.invokelatest to resolve the function at runtime
-    finalizer(vec) do v
-        if !v.dropped && v.ptr != C_NULL
-            try
-                # Use Base.invokelatest to call drop_rust_vec at runtime
-                # This ensures memory.jl is loaded when this runs
-                Base.invokelatest(drop_rust_vec, v)
-            catch e
-                # If drop_rust_vec is not available or fails, just mark as dropped
-                @warn "Error dropping RustVec in finalizer: $e"
-                v.dropped = true
-                v.ptr = C_NULL
-            end
-        end
-    end
 
     return vec
 end

@@ -719,8 +719,10 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
 
         # Register the library (so it can be managed)
         lib_name = basename(lib_path)
-        if !haskey(RUST_LIBRARIES, lib_name)
-            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+        lock(REGISTRY_LOCK) do
+            if !haskey(RUST_LIBRARIES, lib_name)
+                RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+            end
         end
 
         # Get function pointer
@@ -742,8 +744,10 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         end
 
         # Cache the function pointer in the library's function cache
-        _, func_cache = RUST_LIBRARIES[lib_name]
-        func_cache[specialized_name] = func_ptr
+        lock(REGISTRY_LOCK) do
+            _, func_cache = RUST_LIBRARIES[lib_name]
+            func_cache[specialized_name] = func_ptr
+        end
 
         # Infer return type from specialized code
         # For now, use a simple heuristic: if return type is a type parameter, use the corresponding argument type

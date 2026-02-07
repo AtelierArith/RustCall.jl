@@ -136,7 +136,10 @@ function reload_library(state::HotReloadState)
 
     try
         # Unload the old library
-        if haskey(RUST_LIBRARIES, state.lib_name)
+        should_unload = lock(REGISTRY_LOCK) do
+            haskey(RUST_LIBRARIES, state.lib_name)
+        end
+        if should_unload
             unload_library(state.lib_name)
         end
 
@@ -148,7 +151,9 @@ function reload_library(state::HotReloadState)
 
         # Reload the library
         lib_handle = Libdl.dlopen(new_lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-        RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+        lock(REGISTRY_LOCK) do
+            RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+        end
 
         @info "Hot reload: Successfully reloaded $(state.lib_name)"
 
@@ -353,7 +358,9 @@ function enable_hot_reload(lib_name::String, crate_path::String;
 
     # Get current library path
     lib_path = ""
-    if haskey(RUST_LIBRARIES, lib_name)
+    if lock(REGISTRY_LOCK) do
+        haskey(RUST_LIBRARIES, lib_name)
+    end
         # Library is already loaded, we need to find its path
         # For now, we'll rebuild on first change
     end

@@ -163,9 +163,13 @@ function rust_impl_qualified(mod, expr, source)
     func_name_str = string(func_name)
     escaped_args = map(esc, args)
 
-    return quote
-        $(GlobalRef(RustCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
-    end
+    return Expr(
+        :call,
+        GlobalRef(RustCall, :_rust_call_from_lib),
+        Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, lib_name_str),
+        func_name_str,
+        escaped_args...
+    )
 end
 
 """
