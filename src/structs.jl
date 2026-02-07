@@ -37,67 +37,64 @@ Remove #[derive(JuliaStruct)] and related attributes from Rust code before compi
 This is necessary because JuliaStruct is not a real Rust macro.
 """
 function remove_derive_julia_struct_attributes(code::String)
-    lines = split(code, '\n')
-    result_lines = String[]
-    i = 1
+    derive_pattern = Regex(raw"#\s*\[\s*derive\s*\((.*?)\)\s*\]", "s")
+    return replace(code, derive_pattern => (m -> begin
+        m2 = match(derive_pattern, String(m))
+        if m2 === nothing
+            return String(m)
+        end
+        inner = String(m2.captures[1])
+        items = _split_top_level_commas(inner)
+        filtered = [item for item in items if strip(item) != "JuliaStruct"]
+        if isempty(filtered)
+            return ""
+        end
+        "#[derive($(join(filtered, ", ")))]"
+    end))
+end
 
-    while i <= length(lines)
-        line = lines[i]
+function _split_top_level_commas(s::AbstractString)
+    parts = String[]
+    current = IOBuffer()
+    angle_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
 
-        # Check if this line contains #[derive(JuliaStruct)]
-        if occursin(r"#\[derive\(.*JuliaStruct", line)
-            # Check if it's a single-line attribute
-            if occursin(r"#\[derive\([^)]*JuliaStruct[^)]*\)\]", line)
-                # Single line: #[derive(JuliaStruct)] or #[derive(JuliaStruct, Clone)]
-                # Remove JuliaStruct from the derive list
-                modified = replace(line, r"JuliaStruct\s*,?\s*" => "")
-                modified = replace(modified, r",\s*\)" => ")")
-                modified = replace(modified, r"\(\)" => "")
-
-                # If the entire attribute becomes empty, skip the line entirely
-                if occursin(r"#\[derive\(\)\]", modified) || occursin(r"#\[derive\(\s*\)\]", modified) || strip(modified) == "#[derive]"
-                    # Skip this line entirely
-                    i += 1
-                    continue
-                elseif !isempty(strip(modified))
-                    push!(result_lines, modified)
-                end
-            else
-                # Multi-line attribute: #[derive(JuliaStruct,
-                #                                  Clone)]
-                # Skip until we find the closing )]
-                push!(result_lines, line)  # Keep the opening line for now
-                i += 1
-                while i <= length(lines)
-                    next_line = lines[i]
-                    if occursin(r"\)\]", next_line)
-                        # Found closing, process it
-                        modified = replace(next_line, r"JuliaStruct\s*,?\s*" => "")
-                        modified = replace(modified, r",\s*\)" => ")")
-                        # Check if it becomes empty derive
-                        if occursin(r"#\[derive\(\)\]", modified) || occursin(r"#\[derive\(\s*\)\]", modified) || strip(modified) == "#[derive]"
-                            # Skip this line
-                        elseif !isempty(strip(modified))
-                            push!(result_lines, modified)
-                        end
-                        i += 1
-                        break
-                    else
-                        # Keep intermediate lines
-                        push!(result_lines, next_line)
-                        i += 1
-                    end
-                end
-                continue
+    for c in s
+        if c == '<'
+            angle_depth += 1
+            write(current, c)
+        elseif c == '>'
+            angle_depth = max(0, angle_depth - 1)
+            write(current, c)
+        elseif c == '('
+            paren_depth += 1
+            write(current, c)
+        elseif c == ')'
+            paren_depth = max(0, paren_depth - 1)
+            write(current, c)
+        elseif c == '['
+            bracket_depth += 1
+            write(current, c)
+        elseif c == ']'
+            bracket_depth = max(0, bracket_depth - 1)
+            write(current, c)
+        elseif c == ',' && angle_depth == 0 && paren_depth == 0 && bracket_depth == 0
+            part = strip(String(take!(current)))
+            if !isempty(part)
+                push!(parts, part)
             end
         else
-            push!(result_lines, line)
+            write(current, c)
         end
-
-        i += 1
     end
 
-    return join(result_lines, '\n')
+    last = strip(String(take!(current)))
+    if !isempty(last)
+        push!(parts, last)
+    end
+
+    return parts
 end
 
 """
@@ -134,16 +131,17 @@ function parse_structs_and_impls(code::String)
         # Look backwards from the match to find attributes
         start_pos = max(1, m.offset - 200)  # Look back up to 200 chars
         preceding_code = code[start_pos:m.offset-1]
-        has_derive_julia_struct = occursin(r"#\[derive\(JuliaStruct[^\]]*\)\]", preceding_code)
+        derive_pattern = Regex(raw"#\s*\[\s*derive\s*\((.*?)\)\s*\]", "s")
+        derive_matches = collect(eachmatch(derive_pattern, preceding_code))
+        has_derive_julia_struct = false
 
         # Parse derive options
         derive_options = Dict{String, Bool}()
-        if has_derive_julia_struct
-            # Extract derive attributes: #[derive(JuliaStruct, Clone)]
-            derive_match = match(r"#\[derive\(([^\]]+)\)\]", preceding_code)
-            if derive_match !== nothing
-                derive_list = derive_match.captures[1]
-                for item in split(derive_list, ',')
+        for derive_match in reverse(derive_matches)
+            derive_items = _split_top_level_commas(String(derive_match.captures[1]))
+            if any(strip(item) == "JuliaStruct" for item in derive_items)
+                has_derive_julia_struct = true
+                for item in derive_items
                     item = strip(item)
                     if item == "JuliaStruct"
                         derive_options["JuliaStruct"] = true
@@ -151,6 +149,7 @@ function parse_structs_and_impls(code::String)
                         derive_options[item] = true
                     end
                 end
+                break
             end
         end
 

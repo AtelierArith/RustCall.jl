@@ -183,14 +183,23 @@ function rust_impl_qualified(mod, lib_name, call_expr, ret_type, source)
     escaped_args = map(esc, args)
 
     if ret_type === nothing
-        return quote
-            $(GlobalRef(RustCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
-        end
+        return Expr(
+            :call,
+            GlobalRef(RustCall, :_rust_call_from_lib),
+            Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, lib_name_str),
+            func_name_str,
+            escaped_args...
+        )
     end
 
-    return quote
-        $(GlobalRef(RustCall, :_rust_call_typed))($(lib_name_str), $(func_name_str), $(esc(ret_type)), $(escaped_args...))
-    end
+    return Expr(
+        :call,
+        GlobalRef(RustCall, :_rust_call_typed),
+        Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, lib_name_str),
+        func_name_str,
+        esc(ret_type),
+        escaped_args...
+    )
 end
 
 """

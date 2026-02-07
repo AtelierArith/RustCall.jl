@@ -222,6 +222,14 @@ end
                 drop!(rust_vecf64)
             end
 
+            @testset "RustVec finalizer calls Rust drop" begin
+                rust_vec = create_rust_vec(Int32[1, 2, 3])
+                @test !rust_vec.dropped
+                finalize(rust_vec)
+                @test rust_vec.dropped
+                @test rust_vec.ptr == C_NULL
+            end
+
             @testset "rust_vec_get and rust_vec_set!" begin
                 julia_vec = Int32[10, 20, 30, 40, 50]
                 rust_vec = create_rust_vec(julia_vec)

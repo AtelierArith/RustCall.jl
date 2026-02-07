@@ -864,21 +864,17 @@ RustCall.jl has completed **Phase 1 through Phase 6**. The package is fully func
 Run the example scripts to see RustCall.jl in action:
 
 ```bash
-# Basic examples
-julia --project examples/basic_examples.jl
+# Basic FFI example crate
+julia --project examples/sample_crate/example.jl
 
-# Advanced examples (generics, arrays, LLVM optimization)
-julia --project examples/advanced_examples.jl
+# PyO3-backed crate integration
+julia --project examples/sample_crate_pyo3/main.jl
 
-# Ownership types examples (requires Rust helpers library)
-julia --project examples/ownership_examples.jl
+# Package-style example
+julia --project=examples/MyExample.jl -e 'using Pkg; Pkg.test()'
 
-# Struct automation examples (Phase 4)
-julia --project examples/struct_examples.jl
-
-# External crate integration (Phase 3)
-julia --project examples/phase4_ndarray.jl
-julia --project examples/phase4_pi.jl
+# Pluto-oriented example script
+julia --project examples/pluto/hello.jl
 ```
 
 ### Test Suite

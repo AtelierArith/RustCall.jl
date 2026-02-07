@@ -127,4 +127,62 @@ using Test
         empty!(RustCall.IRUST_FUNCTIONS)
         RustCall.unload_all_libraries()
     end
+
+    @testset "@irust rejects unsupported argument types" begin
+        err = try
+            RustCall._compile_and_call_irust("arg1", 1 + 2im)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing
+        @test err isa ErrorException
+        @test occursin("Unsupported Julia type for @irust", sprint(showerror, err))
+    end
+
+    @testset "Qualified @rust calls resolve libraries consistently" begin
+        qualified_call = Expr(:call, Expr(:(::), :fake_lib, :fake_fn), :(Int32(1)))
+        expanded = RustCall.rust_impl(@__MODULE__, qualified_call, LineNumberNode(1))
+        expanded_str = sprint(show, expanded)
+        @test occursin("_rust_call_from_lib", expanded_str)
+        @test occursin("_resolve_lib", expanded_str)
+    end
+
+    @testset "extract_function_code handles generic functions" begin
+        code = """
+        pub fn identity<T>(x: T) -> T {
+            x
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "identity")
+        @test extracted !== nothing
+        @test occursin("fn identity<T>", extracted)
+        @test occursin("x", extracted)
+    end
+
+    @testset "derive(JuliaStruct) parsing/removal handles multiline and order" begin
+        multiline = """
+        #[derive(
+            JuliaStruct,
+            Clone
+        )]
+        pub struct PointA {
+            x: i32,
+        }
+        """
+        cleaned_multiline = RustCall.remove_derive_julia_struct_attributes(multiline)
+        @test !occursin("JuliaStruct", cleaned_multiline)
+        @test occursin("Clone", cleaned_multiline)
+
+        reordered = """
+        #[derive(Clone, JuliaStruct)]
+        pub struct PointB {
+            x: i32,
+        }
+        """
+        infos = RustCall.parse_structs_and_impls(reordered)
+        @test length(infos) == 1
+        @test infos[1].has_derive_julia_struct
+        @test get(infos[1].derive_options, "Clone", false)
+    end
 end

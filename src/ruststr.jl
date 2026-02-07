@@ -189,7 +189,10 @@ Ensure that a Rust library is loaded in the current session.
 Useful for precompiled modules that need to reload libraries at runtime.
 """
 function ensure_loaded(lib_name::String, code::String)
-    if !haskey(RUST_LIBRARIES, lib_name)
+    needs_reload = lock(REGISTRY_LOCK) do
+        !haskey(RUST_LIBRARIES, lib_name)
+    end
+    if needs_reload
         _compile_and_load_rust(code, "reload", 0)
     end
     return nothing
@@ -412,8 +415,13 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     lib_name = "rust_cargo_$(string(code_hash, base=16))"
 
     # Check if already compiled and loaded in memory
-    if haskey(RUST_LIBRARIES, lib_name)
-        CURRENT_LIB[] = lib_name
+    is_in_memory = lock(REGISTRY_LOCK) do
+        haskey(RUST_LIBRARIES, lib_name)
+    end
+    if is_in_memory
+        lock(REGISTRY_LOCK) do
+            CURRENT_LIB[] = lib_name
+        end
         @debug "Using cached Cargo library from memory" lib_name=lib_name
 
         # Ensure generic functions are registered
@@ -422,6 +430,13 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             _detect_and_register_generic_functions(clean_code, lib_name)
         catch e
             @debug "Failed to register generic functions from memory cache: $e"
+        end
+
+        # Register function signatures from memory cache
+        try
+            _register_function_signatures(code, lib_name)
+        catch e
+            @debug "Failed to register function signatures from memory cache: $e"
         end
 
         return lib_name
@@ -435,8 +450,10 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # Load from cache
         lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         if lib_handle != C_NULL
-            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-            CURRENT_LIB[] = lib_name
+            lock(REGISTRY_LOCK) do
+                RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+                CURRENT_LIB[] = lib_name
+            end
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
 
             # Ensure generic functions are registered
@@ -445,6 +462,13 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
                 _detect_and_register_generic_functions(clean_code, lib_name)
             catch e
                 @debug "Failed to register generic functions from disk cache: $e"
+            end
+
+            # Register function signatures from disk cache
+            try
+                _register_function_signatures(code, lib_name)
+            catch e
+                @debug "Failed to register function signatures from disk cache: $e"
             end
 
             return lib_name
@@ -476,8 +500,10 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         end
 
         # Register the library
-        RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-        CURRENT_LIB[] = lib_name
+        lock(REGISTRY_LOCK) do
+            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+            CURRENT_LIB[] = lib_name
+        end
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
 
@@ -487,6 +513,13 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             _detect_and_register_generic_functions(clean_code, lib_name)
         catch e
             @debug "Failed to detect generic functions: $e"
+        end
+
+        # Register non-generic function signatures
+        try
+            _register_function_signatures(code, lib_name)
+        catch e
+            @debug "Failed to register function signatures: $e"
         end
     finally
         # Clean up temporary project (keep for debugging if debug mode is enabled)
@@ -513,7 +546,7 @@ Extract the full code for a function from Rust source code.
 """
 function extract_function_code(code::String, func_name::String)
     # Find function start - improved to handle nested brackets
-    func_start_pattern = Regex("fn\\\\s+\$func_name.*?\\\\{", "s")
+    func_start_pattern = Regex("fn\\s+$func_name.*?\\{", "s")
     m = match(func_start_pattern, code)
 
     if m === nothing
@@ -688,7 +721,9 @@ end
 List all currently loaded Rust libraries.
 """
 function list_loaded_libraries()
-    return collect(keys(RUST_LIBRARIES))
+    return lock(REGISTRY_LOCK) do
+        collect(keys(RUST_LIBRARIES))
+    end
 end
 
 """
@@ -716,18 +751,24 @@ end
 Unload a Rust library and free its resources.
 """
 function unload_library(lib_name::String)
-    if !haskey(RUST_LIBRARIES, lib_name)
+    local lib_handle
+    found = lock(REGISTRY_LOCK) do
+        if !haskey(RUST_LIBRARIES, lib_name)
+            return false
+        end
+        lib_handle, _ = RUST_LIBRARIES[lib_name]
+        delete!(RUST_LIBRARIES, lib_name)
+        if CURRENT_LIB[] == lib_name
+            CURRENT_LIB[] = ""
+        end
+        return true
+    end
+    if !found
         @warn "Library '$lib_name' not loaded"
         return
     end
 
-    lib_handle, _ = RUST_LIBRARIES[lib_name]
     Libdl.dlclose(lib_handle)
-    delete!(RUST_LIBRARIES, lib_name)
-
-    if CURRENT_LIB[] == lib_name
-        CURRENT_LIB[] = ""
-    end
 end
 
 """
@@ -736,7 +777,10 @@ end
 Unload all loaded Rust libraries.
 """
 function unload_all_libraries()
-    for lib_name in collect(keys(RUST_LIBRARIES))
+    libs = lock(REGISTRY_LOCK) do
+        collect(keys(RUST_LIBRARIES))
+    end
+    for lib_name in libs
         unload_library(lib_name)
     end
 end
@@ -896,12 +940,15 @@ function _compile_and_call_irust(code::String, args...)
         func_name = "irust_func_$(string(code_hash, base=16))"
 
         # Infer Rust types from Julia types (needed for both cached and new functions)
-        rust_arg_types = collect(map(_julia_to_rust_type, arg_types))  # Ensure Vector
+        rust_arg_types = collect(map(_julia_to_rust_type, arg_types))
 
         # Check if already compiled
         if haskey(IRUST_FUNCTIONS, code_hash)
             lib_name, cached_func_name = IRUST_FUNCTIONS[code_hash]
-            if haskey(RUST_LIBRARIES, lib_name)
+            is_loaded = lock(REGISTRY_LOCK) do
+                haskey(RUST_LIBRARIES, lib_name)
+            end
+            if is_loaded
                 # Re-infer return type for cached function (should match original)
                 rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
                 julia_ret_type = _rust_to_julia_type(rust_ret_type)
@@ -910,12 +957,6 @@ function _compile_and_call_irust(code::String, args...)
                 # Stale cache entry: library was unloaded, so recompile transparently.
                 delete!(IRUST_FUNCTIONS, code_hash)
             end
-        end
-
-        # Check for unsupported types
-        unsupported = filter(t -> _julia_to_rust_type(t) == "i64" && t != Int64, arg_types)
-        if !isempty(unsupported)
-            @warn "Some argument types may not be correctly inferred: $unsupported. Consider using explicit types."
         end
 
         # Infer return type from code (improved)
@@ -960,7 +1001,9 @@ function _compile_and_call_irust(code::String, args...)
 
         # Generate a unique library name
         lib_name = "irust_$(string(code_hash, base=16))"
-        RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+        lock(REGISTRY_LOCK) do
+            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+        end
         IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
 
         # Convert Rust return type to Julia type
@@ -998,7 +1041,7 @@ Convert Julia type to Rust type string.
 - Boolean: Bool
 
 # Error Handling
-Unsupported types default to "i64" with a warning.
+Unsupported types throw an error to prevent ABI mismatches.
 """
 function _julia_to_rust_type(julia_type::Type)
     type_map = Dict(
@@ -1017,10 +1060,8 @@ function _julia_to_rust_type(julia_type::Type)
 
     if haskey(type_map, julia_type)
         return type_map[julia_type]
-    else
-        # Default to i64, but this should be handled by caller
-        return "i64"
     end
+    error("Unsupported Julia type for @irust: $julia_type")
 end
 
 """
