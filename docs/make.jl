@@ -43,7 +43,7 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/atelierarith/RustCall.jl.git",
+    repo = "github.com/AtelierArith/RustCall.jl.git",
     devbranch = "main",
     push_preview = true,
 )
