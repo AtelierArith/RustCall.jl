@@ -1,6 +1,6 @@
-# LastCall.jl
+# RustCall.jl
 
-**LastCall.jl** is a Foreign Function Interface (FFI) package for calling Rust code directly from Julia, inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
+**RustCall.jl** is a Foreign Function Interface (FFI) package for calling Rust code directly from Julia, inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
 
 > It's the last call for headache. 🦀
 
@@ -34,7 +34,7 @@
 
 ```julia
 using Pkg
-Pkg.add("LastCall")
+Pkg.add("RustCall")
 ```
 
 **Requirements:**
@@ -49,13 +49,13 @@ For full functionality including ownership types (Box, Rc, Arc), you need to bui
 
 ```julia
 using Pkg
-Pkg.build("LastCall")
+Pkg.build("RustCall")
 ```
 
 ## Quick Start
 
 ```julia
-using LastCall
+using RustCall
 
 # Define and compile Rust code with #[julia] attribute
 rust"""
@@ -72,7 +72,7 @@ println(result)  # => 30
 
 ## Type Mapping
 
-LastCall.jl automatically maps Rust types to Julia types:
+RustCall.jl automatically maps Rust types to Julia types:
 
 | Rust Type | Julia Type |
 |-----------|------------|

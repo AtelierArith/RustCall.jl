@@ -1,6 +1,6 @@
 # Tests for array and collection types (RustVec, RustSlice)
 
-using LastCall
+using RustCall
 using Test
 using Libdl
 
@@ -9,7 +9,7 @@ function is_vec_helpers_available()
     if !is_rust_helpers_available()
         return false
     end
-    lib = LastCall.get_rust_helpers_lib()
+    lib = RustCall.get_rust_helpers_lib()
     if lib === nothing
         return false
     end
@@ -124,7 +124,7 @@ end
             @test_throws ErrorException RustVec(julia_vec)
         elseif !is_vec_helpers_available()
             # Library loaded but Vec functions not available - need rebuild
-            @warn "Rust helpers library loaded but Vec functions not available. Rebuild with: Pkg.build(\"LastCall\")"
+            @warn "Rust helpers library loaded but Vec functions not available. Rebuild with: Pkg.build(\"RustCall\")"
             @test true  # Placeholder to pass
         else
             # When Rust helpers and Vec functions are available, test actual conversion

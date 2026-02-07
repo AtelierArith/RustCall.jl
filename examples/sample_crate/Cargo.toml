@@ -2,7 +2,7 @@
 name = "sample_crate"
 version = "0.1.0"
 edition = "2021"
-description = "Sample crate for testing LastCall.jl crate bindings"
+description = "Sample crate for testing RustCall.jl crate bindings"
 
 [lib]
 crate-type = ["cdylib"]

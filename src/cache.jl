@@ -1,4 +1,4 @@
-# Compilation caching for LastCall.jl
+# Compilation caching for RustCall.jl
 # Phase 2: Persistent cache system
 
 using SHA
@@ -21,11 +21,11 @@ end
 """
     get_cache_dir() -> String
 
-Get the cache directory for LastCall.jl compiled libraries.
+Get the cache directory for RustCall.jl compiled libraries.
 Uses Julia's standard cache directory structure.
 """
 function get_cache_dir()
-    cache_root = joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "LastCall")
+    cache_root = joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "RustCall")
     mkpath(cache_root)
     return cache_root
 end

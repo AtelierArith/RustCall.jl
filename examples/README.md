@@ -1,6 +1,6 @@
-# LastCall.jl Examples
+# RustCall.jl Examples
 
-This directory contains example projects demonstrating how to use LastCall.jl for Julia-Rust interoperability.
+This directory contains example projects demonstrating how to use RustCall.jl for Julia-Rust interoperability.
 
 ## Prerequisites
 
@@ -13,7 +13,7 @@ Before running the examples, ensure you have:
    rustc --version
    cargo --version
    ```
-3. **LastCall.jl** available (either installed or developed locally)
+3. **RustCall.jl** available (either installed or developed locally)
 
 ## Available Examples
 
@@ -37,7 +37,7 @@ cd("examples/MyExample.jl")
 
 # Activate and set up the environment
 Pkg.activate(".")
-Pkg.develop(path="../../")  # Add LastCall.jl
+Pkg.develop(path="../../")  # Add RustCall.jl
 Pkg.instantiate()
 
 # Use the example
@@ -50,10 +50,10 @@ add_numbers(Int32(10), Int32(20))  # => 30
 If you're a Rust developer who wants to expose your code to Julia, start with **sample_crate**:
 
 ```julia
-using LastCall
+using RustCall
 
 # Load the sample crate
-sample_crate_path = joinpath(dirname(dirname(pathof(LastCall))), "examples", "sample_crate")
+sample_crate_path = joinpath(dirname(dirname(pathof(RustCall))), "examples", "sample_crate")
 @rust_crate sample_crate_path
 
 # Call Rust functions
@@ -98,7 +98,7 @@ cargo build --release
 
 **How to use from Julia:**
 ```julia
-using LastCall
+using RustCall
 @rust_crate "/path/to/examples/sample_crate"
 
 # Functions
@@ -136,7 +136,7 @@ maturin build --features python
 
 **How to use from Julia:**
 ```julia
-using LastCall
+using RustCall
 @rust_crate "/path/to/examples/sample_crate_pyo3"
 
 SampleCratePyo3.add(Int32(2), Int32(3))  # => 5
@@ -150,7 +150,7 @@ m.py_add(2, 3)  # => 5
 
 ## Learning Progression
 
-We recommend learning LastCall.jl in this order:
+We recommend learning RustCall.jl in this order:
 
 1. **Start with MyExample.jl**
    - Learn how to write inline Rust code
@@ -183,7 +183,7 @@ If you see "rustc not found in PATH", install Rust from [rustup.rs](https://rust
 
 Try clearing the cache and rebuilding:
 ```julia
-using LastCall
+using RustCall
 clear_cache()
 ```
 
@@ -200,6 +200,6 @@ You can specify a custom name:
 
 ## Additional Resources
 
-- [LastCall.jl Documentation](https://atelierarith.github.io/LastCall.jl/)
+- [RustCall.jl Documentation](https://atelierarith.github.io/RustCall.jl/)
 - [Rust FFI Guide](https://doc.rust-lang.org/nomicon/ffi.html)
 - [Julia ccall Documentation](https://docs.julialang.org/en/v1/manual/calling-c-and-fortran-code/)

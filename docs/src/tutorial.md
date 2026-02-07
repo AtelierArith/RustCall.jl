@@ -1,6 +1,6 @@
-# LastCall.jl Tutorial
+# RustCall.jl Tutorial
 
-This tutorial walks you through using LastCall.jl to call Rust code from Julia step by step.
+This tutorial walks you through using RustCall.jl to call Rust code from Julia step by step.
 
 ## Table of Contents
 
@@ -21,7 +21,7 @@ This tutorial walks you through using LastCall.jl to call Rust code from Julia s
 
 ```julia
 using Pkg
-Pkg.add("LastCall")
+Pkg.add("RustCall")
 ```
 
 ### Requirements
@@ -37,13 +37,13 @@ To use ownership types (Box, Rc, Arc), you need to build the Rust helpers librar
 
 ```julia
 using Pkg
-Pkg.build("LastCall")
+Pkg.build("RustCall")
 ```
 
 ## Basic Usage
 
 ```@setup tutorial
-using LastCall
+using RustCall
 ```
 
 ### The Easy Way: `#[julia]` Attribute
@@ -135,7 +135,7 @@ difference = @rust subtract(100, 30)::Int64  # => 70
 
 ### Basic Type Mapping
 
-LastCall.jl automatically maps Rust types to Julia types:
+RustCall.jl automatically maps Rust types to Julia types:
 
 | Rust Type | Julia Type | Example |
 |-----------|------------|---------|
@@ -155,7 +155,7 @@ LastCall.jl automatically maps Rust types to Julia types:
 
 ### Type Inference
 
-LastCall.jl tries to infer return types from argument types, but explicit specification is recommended:
+RustCall.jl tries to infer return types from argument types, but explicit specification is recommended:
 
 ```julia
 # Not recommended - relies on inference (works but not recommended)
@@ -356,7 +356,7 @@ result = @rust_llvm fast_add(Int32(10), Int32(20))  # => 30
 ### LLVM Optimization Settings
 
 ```julia
-using LastCall
+using RustCall
 
 # Create optimization configuration
 config = OptimizationConfig(
@@ -377,7 +377,7 @@ config = OptimizationConfig(
 
 ### Using Compilation Cache
 
-LastCall.jl automatically caches compilation results. No need to recompile the same code:
+RustCall.jl automatically caches compilation results. No need to recompile the same code:
 
 ```julia
 # First compilation (takes time)

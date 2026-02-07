@@ -1,14 +1,14 @@
 # Struct Mapping with #[derive(JuliaStruct)]
 
-LastCall.jl provides automatic struct mapping through the `#[derive(JuliaStruct)]` attribute, which allows you to seamlessly use Rust structs as first-class Julia objects.
+RustCall.jl provides automatic struct mapping through the `#[derive(JuliaStruct)]` attribute, which allows you to seamlessly use Rust structs as first-class Julia objects.
 
 ```@setup struct_mapping
-using LastCall
+using RustCall
 ```
 
 ## Overview
 
-When you add `#[derive(JuliaStruct)]` to a Rust struct, LastCall.jl automatically:
+When you add `#[derive(JuliaStruct)]` to a Rust struct, RustCall.jl automatically:
 
 - Generates Julia bindings for the struct
 - Creates field accessors (getters and setters)
@@ -128,7 +128,7 @@ config2 = copy(config)  # Clone support
 
 ### Automatic Getters and Setters
 
-When `#[derive(JuliaStruct)]` is present, LastCall.jl automatically generates:
+When `#[derive(JuliaStruct)]` is present, RustCall.jl automatically generates:
 
 - **Getters**: Access fields using `obj.field_name`
 - **Setters**: Modify fields using `obj.field_name = value`
@@ -491,7 +491,7 @@ If `copy()` doesn't work:
 
 ## See Also
 
-- [Tutorial](tutorial.md): General tutorial on using LastCall.jl
-- [Examples](examples.md): More examples of LastCall.jl usage
+- [Tutorial](tutorial.md): General tutorial on using RustCall.jl
+- [Examples](examples.md): More examples of RustCall.jl usage
 - [API Reference](api.md): Complete API documentation
-- [Generics](generics.md): Using generics with LastCall.jl
+- [Generics](generics.md): Using generics with RustCall.jl

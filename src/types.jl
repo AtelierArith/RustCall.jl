@@ -338,8 +338,8 @@ mutable struct RustBox{T}
             if !b.dropped && b.ptr != C_NULL
                 # Try to call Rust drop function if memory.jl is loaded
                 try
-                    if isdefined(LastCall, :drop_rust_box)
-                        LastCall.drop_rust_box(b)
+                    if isdefined(RustCall, :drop_rust_box)
+                        RustCall.drop_rust_box(b)
                     else
                         b.dropped = true
                     end
@@ -386,8 +386,8 @@ mutable struct RustRc{T}
         finalizer(rc) do r
             if !r.dropped && r.ptr != C_NULL
                 try
-                    if isdefined(LastCall, :drop_rust_rc)
-                        LastCall.drop_rust_rc(r)
+                    if isdefined(RustCall, :drop_rust_rc)
+                        RustCall.drop_rust_rc(r)
                     else
                         r.dropped = true
                     end
@@ -438,8 +438,8 @@ mutable struct RustArc{T}
         finalizer(arc) do a
             if !a.dropped && a.ptr != C_NULL
                 try
-                    if isdefined(LastCall, :drop_rust_arc)
-                        LastCall.drop_rust_arc(a)
+                    if isdefined(RustCall, :drop_rust_arc)
+                        RustCall.drop_rust_arc(a)
                     else
                         a.dropped = true
                     end
@@ -782,7 +782,7 @@ function RustVec(v::Vector{T}) where T
     if !is_rust_helpers_available()
         error("""
         RustVec creation from Julia Vector requires the Rust helpers library.
-        Build it with: using Pkg; Pkg.build("LastCall")
+        Build it with: using Pkg; Pkg.build("RustCall")
         """)
     end
 

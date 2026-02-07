@@ -1,9 +1,9 @@
 # Troubleshooting
 
-This guide covers common issues and solutions when using LastCall.jl.
+This guide covers common issues and solutions when using RustCall.jl.
 
 ```@setup troubleshooting
-using LastCall
+using RustCall
 ```
 
 ## Installation and Setup
@@ -12,7 +12,7 @@ using LastCall
 
 **Error message:**
 ```
-rustc not found in PATH. LastCall.jl requires Rust to be installed.
+rustc not found in PATH. RustCall.jl requires Rust to be installed.
 ```
 
 **Solution:**
@@ -50,7 +50,7 @@ Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work...
 1. Run the build:
    ```julia
    using Pkg
-   Pkg.build("LastCall")
+   Pkg.build("RustCall")
    ```
 
 2. Check Cargo availability:
@@ -219,21 +219,21 @@ A:
 
 ### 1. Enable debug logging
 
-LastCall.jl uses Julia's built-in Logging module with `@debug`, `@info`, `@warn`, and `@error` macros.
+RustCall.jl uses Julia's built-in Logging module with `@debug`, `@info`, `@warn`, and `@error` macros.
 
 **Option A: Environment variable (recommended)**
 
 Run Julia with the `JULIA_DEBUG` environment variable:
 
 ```bash
-JULIA_DEBUG=LastCall julia -e 'using LastCall; ...'
+JULIA_DEBUG=RustCall julia -e 'using RustCall; ...'
 ```
 
-Or set it within Julia before loading LastCall:
+Or set it within Julia before loading RustCall:
 
 ```julia
-ENV["JULIA_DEBUG"] = "LastCall"
-using LastCall
+ENV["JULIA_DEBUG"] = "RustCall"
+using RustCall
 ```
 
 **Option B: Global logger**
@@ -241,7 +241,7 @@ using LastCall
 ```julia
 using Logging
 global_logger(ConsoleLogger(stderr, Logging.Debug))
-using LastCall
+using RustCall
 ```
 
 Debug logging shows detailed information about:

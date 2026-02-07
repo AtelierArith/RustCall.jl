@@ -1,6 +1,6 @@
 # Precompilation Support
 
-LastCall.jl supports Julia's precompilation system, enabling faster startup times for packages that use Rust bindings.
+RustCall.jl supports Julia's precompilation system, enabling faster startup times for packages that use Rust bindings.
 
 ## Overview
 
@@ -70,7 +70,7 @@ Create a `build.jl` to generate bindings:
 
 ```julia
 # deps/build.jl
-using LastCall
+using RustCall
 
 # Path to Rust crate
 crate_path = joinpath(@__DIR__, "my_rust_crate")
@@ -125,7 +125,7 @@ include("deps/build.jl")
 
 ## PackageCompiler.jl Integration
 
-LastCall.jl works with PackageCompiler.jl for creating standalone applications.
+RustCall.jl works with PackageCompiler.jl for creating standalone applications.
 
 ### Creating a System Image
 
@@ -268,7 +268,7 @@ uuid = "..."
 version = "0.1.0"
 
 [deps]
-LastCall = "..."
+RustCall = "..."
 
 [extras]
 Test = "..."
@@ -279,7 +279,7 @@ test = ["Test"]
 
 ```julia
 # deps/build.jl
-using LastCall
+using RustCall
 
 write_bindings_to_file(
     joinpath(@__DIR__, "rust_crate"),

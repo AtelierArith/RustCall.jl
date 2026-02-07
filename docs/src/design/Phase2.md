@@ -630,7 +630,7 @@ In Phase 2, we achieve more flexible and high-performance Rust-Julia integration
 
 ```
 src/
-├── LastCall.jl              # Main module
+├── RustCall.jl              # Main module
 ├── rustmacro.jl         # @rust macro (extended)
 ├── ruststr.jl           # rust"" and irust"" (extended)
 ├── rusttypes.jl         # Rust type definitions (extended)

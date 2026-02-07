@@ -18,9 +18,9 @@ using Test
 using Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
-using LastCall
+using RustCall
 
-sample_crate_path = joinpath(pkgdir(LastCall), "examples", "sample_crate")
+sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
 @rust_crate sample_crate_path
 
 @testset "distance_from_origin" begin

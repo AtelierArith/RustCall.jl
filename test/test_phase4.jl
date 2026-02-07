@@ -1,10 +1,10 @@
 # Phase 4 Test: Automatic Struct and Method Mapping
-using LastCall
+using RustCall
 using Test
 
 @testset "Phase 4: Automatic Struct Mapping" begin
     # Define a struct in Rust.
-    # LastCall should automatically:
+    # RustCall should automatically:
     # 1. Generate C-wrappers for new, area, scale, and free.
     # 2. Define Julia type 'Rect' and methods area(r), scale(r, f).
     rust"""

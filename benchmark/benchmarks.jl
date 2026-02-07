@@ -1,11 +1,11 @@
-# Benchmarks for LastCall.jl
+# Benchmarks for RustCall.jl
 # Phase 2: Performance comparison between @rust and @rust_llvm
 
-using LastCall
+using RustCall
 using BenchmarkTools
 
 # Only run benchmarks if rustc is available
-if !LastCall.check_rustc_available()
+if !RustCall.check_rustc_available()
     error("rustc not found. Benchmarks require Rust to be installed.")
 end
 
@@ -90,7 +90,7 @@ julia_sum_range(n::Int64) = sum(1:n)
 
 # Benchmark suite
 println("\n" * "="^60)
-println("LastCall.jl Benchmark Suite")
+println("RustCall.jl Benchmark Suite")
 println("="^60)
 
 suite = BenchmarkGroup()

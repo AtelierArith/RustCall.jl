@@ -1,6 +1,6 @@
 # Performance Guide
 
-LastCall.jl provides multiple features to optimize performance when calling Rust code from Julia. This guide explains best practices and optimization tips for improving performance.
+RustCall.jl provides multiple features to optimize performance when calling Rust code from Julia. This guide explains best practices and optimization tips for improving performance.
 
 ## Table of Contents
 
@@ -13,18 +13,18 @@ LastCall.jl provides multiple features to optimize performance when calling Rust
 
 ## Compilation Caching
 
-LastCall.jl automatically caches compiled Rust libraries. This eliminates the need to recompile the same code and significantly reduces startup time.
+RustCall.jl automatically caches compiled Rust libraries. This eliminates the need to recompile the same code and significantly reduces startup time.
 
 ### How Caching Works
 
 - **Cache Key**: Generated from code hash, compiler settings, and target triple
-- **Cache Location**: `~/.julia/compiled/vX.Y/LastCall/`
+- **Cache Location**: `~/.julia/compiled/vX.Y/RustCall/`
 - **Automatic Verification**: Automatically checks cache integrity
 
 ### Cache Management
 
 ```julia
-using LastCall
+using RustCall
 
 # Check cache size
 size = get_cache_size()
@@ -49,12 +49,12 @@ clear_cache()
 
 ## LLVM Optimization
 
-LastCall.jl supports optimization at the LLVM IR level. Using the `@rust_llvm` macro enables more advanced optimizations.
+RustCall.jl supports optimization at the LLVM IR level. Using the `@rust_llvm` macro enables more advanced optimizations.
 
 ### Optimization Level Settings
 
 ```julia
-using LastCall
+using RustCall
 
 # Create optimization configuration
 config = OptimizationConfig(
@@ -358,7 +358,7 @@ Profile.print()
 
 ## Summary
 
-To optimize LastCall.jl performance:
+To optimize RustCall.jl performance:
 
 1. ✅ **Leverage cache**: Reduce compilation time
 2. ✅ **Adjust optimization level**: Select optimization level according to use case
@@ -366,4 +366,4 @@ To optimize LastCall.jl performance:
 4. ✅ **Memory management**: Use ownership types appropriately
 5. ✅ **Profiling**: Identify and optimize bottlenecks
 
-By following these best practices, you can maximize the performance of applications using LastCall.jl.
+By following these best practices, you can maximize the performance of applications using RustCall.jl.

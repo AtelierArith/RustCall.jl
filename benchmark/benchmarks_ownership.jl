@@ -1,4 +1,4 @@
-# Benchmarks for Ownership Types in LastCall.jl
+# Benchmarks for Ownership Types in RustCall.jl
 #
 # This file measures:
 # - Allocation/deallocation performance
@@ -8,20 +8,20 @@
 #
 # Run with: julia --project benchmark/benchmarks_ownership.jl
 
-using LastCall
+using RustCall
 
 # Check if Rust helpers library is available
 if !is_rust_helpers_available()
     @error """
     Rust helpers library not available!
     Please build it first with:
-        julia --project -e 'using Pkg; Pkg.build("LastCall")'
+        julia --project -e 'using Pkg; Pkg.build("RustCall")'
     """
     exit(1)
 end
 
 println("=" ^ 70)
-println("LastCall.jl - Ownership Types Benchmarks")
+println("RustCall.jl - Ownership Types Benchmarks")
 println("=" ^ 70)
 println()
 
@@ -37,7 +37,7 @@ function benchmark(f, warmup_iterations=100, iterations=10000)
     for _ in 1:warmup_iterations
         f()
     end
-    
+
     # Measure
     GC.gc()
     t_start = time_ns()
@@ -45,7 +45,7 @@ function benchmark(f, warmup_iterations=100, iterations=10000)
         f()
     end
     t_end = time_ns()
-    
+
     return (t_end - t_start) / iterations  # Average time in ns
 end
 
@@ -302,7 +302,7 @@ if n_threads > 1
         drop!(arc)
     end
     println("  Single-threaded 100 clones: ", format_time(time_single))
-    
+
     # Multi-threaded
     time_multi = benchmark(10, 100) do
         arc = RustArc(Int32(42))
@@ -318,7 +318,7 @@ if n_threads > 1
         drop!(arc)
     end
     println("  Multi-threaded 100 clones ($n_threads threads): ", format_time(time_multi))
-    
+
     speedup = time_single / time_multi
     println("  Speedup: ", round(speedup, digits=2), "x")
 else

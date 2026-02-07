@@ -1,6 +1,6 @@
-# LastCall.jl Examples
+# RustCall.jl Examples
 
-This document provides practical examples of using LastCall.jl.
+This document provides practical examples of using RustCall.jl.
 
 
 ## Table of Contents
@@ -331,7 +331,7 @@ println("Hash: $hash_value")
 This example demonstrates using Rust for image processing with visualization using Images.jl.
 
 ```@example imageprocessing
-using LastCall
+using RustCall
 using Images
 
 # Define Rust grayscale conversion function
@@ -571,7 +571,7 @@ println("Compressed: $(length(compressed)) bytes")
 When working with pointers, ensure Julia memory remains valid using `GC.@preserve`:
 
 ```julia
-using LastCall
+using RustCall
 
 # Define a Rust function that processes an array
 rust"""
@@ -723,7 +723,7 @@ println("identity(3.14) = $result_f64")
 
 ## Summary
 
-These examples demonstrate practical usage of LastCall.jl:
+These examples demonstrate practical usage of RustCall.jl:
 
 - **Memory Safety**: Always use `GC.@preserve` when passing Julia arrays to Rust
 - **Error Handling**: Use error codes or Result types instead of panics

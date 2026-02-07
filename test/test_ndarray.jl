@@ -1,7 +1,7 @@
 # Integration tests for external crate support (ndarray, etc.)
 # Phase 3: These tests require network access to download crates on first run
 
-using LastCall
+using RustCall
 using Test
 
 # Heavy ndarray tests (they take more time) - run by default unless disabled

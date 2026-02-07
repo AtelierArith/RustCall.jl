@@ -1,7 +1,7 @@
 """
     MyExample.jl
 
-An example Julia package demonstrating how to use LastCall.jl to call Rust code from Julia.
+An example Julia package demonstrating how to use RustCall.jl to call Rust code from Julia.
 
 This package includes several examples:
 - Basic numerical computations
@@ -10,7 +10,7 @@ This package includes several examples:
 """
 module MyExample
 
-using LastCall
+using RustCall
 
 # Export example functions
 export add_numbers, multiply_numbers, fibonacci

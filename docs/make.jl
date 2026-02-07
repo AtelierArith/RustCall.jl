@@ -1,13 +1,13 @@
 using Documenter
-using LastCall
+using RustCall
 
 makedocs(
-    sitename = "LastCall.jl",
-    modules = [LastCall],
+    sitename = "RustCall.jl",
+    modules = [RustCall],
     authors = "Satoshi Terasaki",
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",
-        canonical = "https://atelierarith.github.io/LastCall.jl",
+        canonical = "https://atelierarith.github.io/RustCall.jl",
         assets = String[],
         edit_link = :commit,
         size_threshold = 512000,  # Increase threshold for large API documentation (500 KiB in bytes)
@@ -43,7 +43,7 @@ makedocs(
 )
 
 deploydocs(
-    repo = "github.com/atelierarith/LastCall.jl.git",
+    repo = "github.com/atelierarith/RustCall.jl.git",
     devbranch = "main",
     push_preview = true,
 )

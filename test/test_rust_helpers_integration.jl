@@ -1,6 +1,6 @@
 # Integration tests for Rust helpers library build and load
 
-using LastCall
+using RustCall
 using Test
 using Libdl
 
@@ -21,15 +21,15 @@ end
 
 @testset "Rust Helpers Library Integration" begin
     @testset "Library Path Detection" begin
-        # Use LastCall module functions (not exported)
-        lib_path = LastCall.get_rust_helpers_lib_path()
+        # Use RustCall module functions (not exported)
+        lib_path = RustCall.get_rust_helpers_lib_path()
 
         if lib_path !== nothing
             @test isfile(lib_path)
             @test endswith(lib_path, get_library_extension()) || endswith(lib_path, ".dll")
             println("  Found library at: $lib_path")
         else
-            @warn "Rust helpers library not found. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            @warn "Rust helpers library not found. Build with: using Pkg; Pkg.build(\"RustCall\")"
         end
     end
 
@@ -79,7 +79,7 @@ end
             end
         else
             @warn "Rust helpers library not loaded. Skipping integration tests."
-            @warn "Build with: using Pkg; Pkg.build(\"LastCall\")"
+            @warn "Build with: using Pkg; Pkg.build(\"RustCall\")"
         end
     end
 

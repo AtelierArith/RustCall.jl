@@ -1,6 +1,6 @@
-# LastCall.jl Troubleshooting Guide
+# RustCall.jl Troubleshooting Guide
 
-This guide explains common problems and their solutions when using LastCall.jl.
+This guide explains common problems and their solutions when using RustCall.jl.
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@ This guide explains common problems and their solutions when using LastCall.jl.
 
 **Error Message:**
 ```
-rustc not found in PATH. LastCall.jl requires Rust to be installed.
+rustc not found in PATH. RustCall.jl requires Rust to be installed.
 ```
 
 **Solution:**
@@ -56,7 +56,7 @@ Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work...
 1. Run build:
    ```julia
    using Pkg
-   Pkg.build("LastCall")
+   Pkg.build("RustCall")
    ```
 
 2. Check if Cargo is available:
@@ -87,8 +87,8 @@ Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work...
 2. Reinstall package:
    ```julia
    using Pkg
-   Pkg.rm("LastCall")
-   Pkg.add("LastCall")
+   Pkg.rm("RustCall")
+   Pkg.add("RustCall")
    ```
 
 ## Compilation Errors
@@ -136,7 +136,7 @@ undefined symbol: ...
 1. Check if function name is correct (`#[no_mangle]` is required)
 2. Check if library is correctly loaded:
    ```julia
-   using LastCall
+   using RustCall
    # Reload library
    ```
 
@@ -462,7 +462,7 @@ value = unwrap_or(result, default_value)
 
 If problems persist:
 
-1. Search existing Issues on [GitHub Issues](https://github.com/your-repo/LastCall.jl/issues)
+1. Search existing Issues on [GitHub Issues](https://github.com/your-repo/RustCall.jl/issues)
 2. Create a new Issue (include error messages, reproducible code, environment information)
 3. Check [Documentation](../README.md)
 4. Refer to [Tutorial](tutorial.md)
@@ -516,7 +516,7 @@ juliatype_to_rust(Int32)  # => "i32"
 If this troubleshooting guide doesn't solve your problem, please ask on GitHub Issues. When reporting issues, include the following information:
 
 - Julia version
-- LastCall.jl version
+- RustCall.jl version
 - Rust version
 - Operating system
 - Full error message

@@ -1,6 +1,6 @@
 # Tests for compilation caching
 
-using LastCall
+using RustCall
 using Test
 
 @testset "Compilation Caching" begin
@@ -8,11 +8,11 @@ using Test
     clear_cache()
 
     @testset "Cache Directory Management" begin
-        cache_dir = LastCall.get_cache_dir()
+        cache_dir = RustCall.get_cache_dir()
         @test isdir(cache_dir)
-        @test occursin("LastCall", cache_dir)
+        @test occursin("RustCall", cache_dir)
 
-        metadata_dir = LastCall.get_metadata_dir()
+        metadata_dir = RustCall.get_metadata_dir()
         @test isdir(metadata_dir)
     end
 
@@ -27,17 +27,17 @@ using Test
         pub extern "C" fn test2() -> i32 { 42 }
         """
 
-        compiler = LastCall.get_default_compiler()
+        compiler = RustCall.get_default_compiler()
 
-        key1 = LastCall.generate_cache_key(code1, compiler)
-        key2 = LastCall.generate_cache_key(code2, compiler)
+        key1 = RustCall.generate_cache_key(code1, compiler)
+        key2 = RustCall.generate_cache_key(code2, compiler)
 
         @test key1 != key2  # Different code should produce different keys
         @test length(key1) == 64  # SHA256 produces 64 hex characters
         @test length(key2) == 64
 
         # Same code should produce same key
-        key1_again = LastCall.generate_cache_key(code1, compiler)
+        key1_again = RustCall.generate_cache_key(code1, compiler)
         @test key1 == key1_again
     end
 
@@ -52,7 +52,7 @@ using Test
     end
 
     # Only run rustc tests if rustc is available
-    if LastCall.check_rustc_available()
+    if RustCall.check_rustc_available()
         @testset "Cache Hit/Miss" begin
             # Clear cache
             clear_cache()
@@ -74,9 +74,9 @@ using Test
             @test length(cached_libs) > 0
 
             # Clear in-memory cache
-            LastCall.unload_all_libraries()
-            empty!(LastCall.RUST_LIBRARIES)
-            LastCall.CURRENT_LIB[] = ""
+            RustCall.unload_all_libraries()
+            empty!(RustCall.RUST_LIBRARIES)
+            RustCall.CURRENT_LIB[] = ""
 
             # Second compilation (should use cache)
             rust"""
@@ -97,11 +97,11 @@ using Test
             pub extern "C" fn validation_test() -> i32 { 100 }
             """
 
-            compiler = LastCall.get_default_compiler()
-            cache_key = LastCall.generate_cache_key(code, compiler)
+            compiler = RustCall.get_default_compiler()
+            cache_key = RustCall.generate_cache_key(code, compiler)
 
             # Test validation with non-existent cache
-            @test !LastCall.is_cache_valid(cache_key, code, compiler)
+            @test !RustCall.is_cache_valid(cache_key, code, compiler)
 
             # After compilation, cache should be valid
             rust"""
@@ -109,9 +109,9 @@ using Test
             pub extern "C" fn validation_test() -> i32 { 100 }
             """
 
-            wrapped_code = LastCall.wrap_rust_code(code)
-            cache_key = LastCall.generate_cache_key(wrapped_code, compiler)
-            @test LastCall.is_cache_valid(cache_key, wrapped_code, compiler)
+            wrapped_code = RustCall.wrap_rust_code(code)
+            cache_key = RustCall.generate_cache_key(wrapped_code, compiler)
+            @test RustCall.is_cache_valid(cache_key, wrapped_code, compiler)
         end
 
         @testset "Cache Cleanup" begin

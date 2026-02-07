@@ -1,8 +1,8 @@
-# main.jl - Demo of using sample_crate_pyo3 from Julia with LastCall.jl
+# main.jl - Demo of using sample_crate_pyo3 from Julia with RustCall.jl
 #
 # Run with: julia --project=../.. main.jl
 
-using LastCall
+using RustCall
 
 # ============================================================================
 # Build and load the crate using @rust_crate

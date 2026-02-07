@@ -1,4 +1,4 @@
-using LastCall
+using RustCall
 using Test
 
 # Include cache tests
@@ -55,7 +55,7 @@ include("test_hot_reload.jl")
 # Regression reproduction tests
 include("test_regressions.jl")
 
-@testset "LastCall.jl" begin
+@testset "RustCall.jl" begin
 
     @testset "Type Mappings" begin
         # Test Rust to Julia type conversion
@@ -217,12 +217,12 @@ include("test_regressions.jl")
 
     @testset "Compiler Configuration" begin
         # Test default compiler creation
-        compiler = LastCall.RustCompiler()
+        compiler = RustCall.RustCompiler()
         @test compiler.optimization_level == 2
         @test compiler.emit_debug_info == false
 
         # Test custom compiler
-        custom_compiler = LastCall.RustCompiler(
+        custom_compiler = RustCall.RustCompiler(
             optimization_level=3,
             emit_debug_info=true
         )
@@ -230,13 +230,13 @@ include("test_regressions.jl")
         @test custom_compiler.emit_debug_info == true
 
         # Test target detection
-        target = LastCall.get_default_target()
+        target = RustCall.get_default_target()
         @test !isempty(target)
         @test occursin("-", target)  # Target triples contain dashes
     end
 
     # Only run rustc tests if rustc is available
-    if LastCall.check_rustc_available()
+    if RustCall.check_rustc_available()
         @testset "Rust Compilation" begin
             @testset "Basic Function" begin
                 # Define a simple Rust function
@@ -278,7 +278,7 @@ include("test_regressions.jl")
         end
 
         @testset "Library Management" begin
-            libs = LastCall.list_loaded_libraries()
+            libs = RustCall.list_loaded_libraries()
             @test isa(libs, Vector{String})
         end
 
@@ -395,12 +395,12 @@ include("test_regressions.jl")
 
             @testset "LLVM Type Conversion" begin
                 # Test Julia to LLVM IR string conversion
-                @test LastCall.julia_type_to_llvm_ir_string(Int32) == "i32"
-                @test LastCall.julia_type_to_llvm_ir_string(Int64) == "i64"
-                @test LastCall.julia_type_to_llvm_ir_string(Float32) == "float"
-                @test LastCall.julia_type_to_llvm_ir_string(Float64) == "double"
-                @test LastCall.julia_type_to_llvm_ir_string(Bool) == "i1"
-                @test LastCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
+                @test RustCall.julia_type_to_llvm_ir_string(Int32) == "i32"
+                @test RustCall.julia_type_to_llvm_ir_string(Int64) == "i64"
+                @test RustCall.julia_type_to_llvm_ir_string(Float32) == "float"
+                @test RustCall.julia_type_to_llvm_ir_string(Float64) == "double"
+                @test RustCall.julia_type_to_llvm_ir_string(Bool) == "i1"
+                @test RustCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
             end
 
             @testset "LLVM Module Loading" begin
@@ -412,39 +412,39 @@ include("test_regressions.jl")
                 }
                 """
 
-                wrapped_code = LastCall.wrap_rust_code(rust_code)
-                compiler = LastCall.get_default_compiler()
-                ir_path = LastCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
+                wrapped_code = RustCall.wrap_rust_code(rust_code)
+                compiler = RustCall.get_default_compiler()
+                ir_path = RustCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
 
                 @test isfile(ir_path)
                 @test endswith(ir_path, ".ll")
 
                 # Load the LLVM IR
-                rust_mod = LastCall.load_llvm_ir(ir_path; source_code=wrapped_code)
+                rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped_code)
                 @test rust_mod !== nothing
-                @test rust_mod isa LastCall.RustModule
+                @test rust_mod isa RustCall.RustModule
 
                 # List functions
-                funcs = LastCall.list_functions(rust_mod)
+                funcs = RustCall.list_functions(rust_mod)
                 @test "llvm_test_add" in funcs
 
                 # Get function signature
-                fn = LastCall.get_function(rust_mod, "llvm_test_add")
+                fn = RustCall.get_function(rust_mod, "llvm_test_add")
                 @test fn !== nothing
 
-                ret_type, arg_types = LastCall.get_function_signature(fn)
+                ret_type, arg_types = RustCall.get_function_signature(fn)
                 @test ret_type == Int32
                 @test arg_types == [Int32, Int32]
             end
 
             @testset "LLVM Code Generator" begin
                 # Test code generator configuration
-                codegen = LastCall.LLVMCodeGenerator()
+                codegen = RustCall.LLVMCodeGenerator()
                 @test codegen.optimization_level == 2
                 @test codegen.enable_vectorization == true
 
                 # Test custom code generator
-                custom_codegen = LastCall.LLVMCodeGenerator(
+                custom_codegen = RustCall.LLVMCodeGenerator(
                     optimization_level=3,
                     inline_threshold=300,
                     enable_vectorization=false

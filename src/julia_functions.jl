@@ -262,9 +262,9 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     # This avoids macro expansion issues
     return quote
         function $func_name($(arg_syms...))
-            lib_name = LastCall.get_current_library()
-            func_ptr = LastCall.get_function_pointer(lib_name, $func_name_str)
-            LastCall.call_rust_function(func_ptr, $julia_ret_type, $(converted_args...))
+            lib_name = RustCall.get_current_library()
+            func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
+            RustCall.call_rust_function(func_ptr, $julia_ret_type, $(converted_args...))
         end
     end
 end

@@ -23,7 +23,7 @@ Last updated: January 2026
 
 ## Project Overview
 
-LastCall.jl is an FFI (Foreign Function Interface) package for calling Rust code directly from Julia. Inspired by Cxx.jl, it enables interoperability between Rust and Julia.
+RustCall.jl is an FFI (Foreign Function Interface) package for calling Rust code directly from Julia. Inspired by Cxx.jl, it enables interoperability between Rust and Julia.
 
 ## Current Phase
 
@@ -152,7 +152,7 @@ LastCall.jl is an FFI (Foreign Function Interface) package for calling Rust code
 #### 5. Compilation Cache System
 - [x] `cache.jl` - Complete cache system implementation (344 lines)
 - [x] SHA256-based cache key generation
-- [x] Disk-persistent cache (`~/.julia/compiled/vX.Y/LastCall/`)
+- [x] Disk-persistent cache (`~/.julia/compiled/vX.Y/RustCall/`)
 - [x] `CacheMetadata` struct (metadata management)
 - [x] `get_cached_library` / `save_cached_library` functions
 - [x] `get_cached_llvm_ir` / `save_cached_llvm_ir` functions
@@ -204,7 +204,7 @@ LastCall.jl is an FFI (Foreign Function Interface) package for calling Rust code
 - [x] Box, Rc, Arc, Vec FFI functions compiled
 - [x] Ownership type integration tests (`test/test_ownership.jl`) passing
 - [x] Multi-thread (Arc) integration verified
-- [x] Automatic build via `Pkg.build("LastCall")`
+- [x] Automatic build via `Pkg.build("RustCall")`
 
 ### Phase 4: Implemented Features ✅
 
@@ -255,13 +255,13 @@ LastCall.jl is an FFI (Foreign Function Interface) package for calling Rust code
 ## File Structure
 
 ```
-LastCall.jl/
+RustCall.jl/
 ├── Project.toml          # Dependencies (LLVM, Libdl, SHA, Dates)
 ├── README.md             # Project description
 ├── CLAUDE.md             # AI development guide
 ├── AGENTS.md             # Agent repository guidelines
 ├── src/
-│   ├── LastCall.jl       # Main module (140 lines)
+│   ├── RustCall.jl       # Main module (140 lines)
 │   ├── types.jl          # Rust types in Julia (837 lines)
 │   ├── typetranslation.jl # Type conversion (273 lines)
 │   ├── compiler.jl       # rustc wrapper (577 lines)
@@ -319,7 +319,7 @@ LastCall.jl/
 
 | File | Lines | Description | Phase |
 |------|-------|-------------|-------|
-| LastCall.jl | 118 | Main module | Core |
+| RustCall.jl | 118 | Main module | Core |
 | types.jl | 834 | Rust types in Julia | 1 |
 | typetranslation.jl | 273 | Type conversion logic | 1 |
 | compiler.jl | 501 | rustc wrapper | 1 |
@@ -559,7 +559,7 @@ julia --project benchmark/benchmarks.jl
 
 5. **Compilation Cache Design**
    - SHA256-based cache key (collision resistant)
-   - Disk persistence (`~/.julia/compiled/vX.Y/LastCall/`)
+   - Disk persistence (`~/.julia/compiled/vX.Y/RustCall/`)
    - Metadata management (compiler settings, function list, creation date)
    - Cache validation (hash comparison, file existence check)
    - Implementation: `cache.jl` (344 lines)
@@ -649,7 +649,7 @@ julia --project benchmark/benchmarks.jl
 julia --threads=4 --project benchmark/benchmarks_ownership.jl
 
 # Clear cache
-julia --project -e 'using LastCall; clear_cache()'
+julia --project -e 'using RustCall; clear_cache()'
 
 # Build documentation
 julia --project=docs -e 'include("docs/make.jl")'
@@ -658,7 +658,7 @@ julia --project=docs -e 'include("docs/make.jl")'
 ## Example: RustVec Usage
 
 ```julia
-using LastCall
+using RustCall
 
 # Create RustVec from Julia array
 julia_vec = Int32[1, 2, 3, 4, 5]
@@ -678,7 +678,7 @@ drop!(rust_vec)
 ## Example: Struct Mapping
 
 ```julia
-using LastCall
+using RustCall
 
 rust"""
 #[derive(JuliaStruct, Clone)]
@@ -715,7 +715,7 @@ p2 = copy(p)
 
 ## Summary
 
-**LastCall.jl** is a comprehensive FFI package for calling Rust code directly from Julia, with major functionality implemented from Phase 1 through Phase 4 (struct mapping).
+**RustCall.jl** is a comprehensive FFI package for calling Rust code directly from Julia, with major functionality implemented from Phase 1 through Phase 4 (struct mapping).
 
 ### Achievements
 

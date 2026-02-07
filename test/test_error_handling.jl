@@ -1,6 +1,6 @@
 # Tests for enhanced error handling
 
-using LastCall
+using RustCall
 using Test
 
 @testset "Error Handling Enhancements" begin
@@ -13,15 +13,15 @@ using Test
         1 | fn test() {
         2 | }
            |  ^ expected `;`
-        
+
         error: aborting due to previous error
         """
-        
+
         formatted = format_rustc_error(stderr)
         @test occursin("❌", formatted)
         @test occursin("error:", formatted)
         @test occursin("expected", formatted)
-        
+
         # Test warning highlighting
         stderr_warning = """
         warning: unused variable `x`
@@ -30,7 +30,7 @@ using Test
         1 | fn test() { let x = 42; }
            |         ^
         """
-        
+
         formatted_warning = format_rustc_error(stderr_warning)
         @test occursin("⚠️", formatted_warning)
         @test occursin("warning:", formatted_warning)
@@ -45,7 +45,7 @@ using Test
         2 | }
            |  ^
         """
-        
+
         line_numbers = _extract_error_line_numbers(stderr)
         @test 2 in line_numbers
     end
@@ -58,10 +58,10 @@ using Test
         1 | fn test() {
         2 | }
            |  ^ expected `;`
-        
+
         help: add `;` here
         """
-        
+
         suggestions = _extract_suggestions(stderr)
         @test !isempty(suggestions)
         # Check if suggestions contain help message or semicolon-related suggestion
@@ -75,14 +75,14 @@ using Test
         suggestions = suggest_fix_for_error(stderr, source)
         @test !isempty(suggestions)
         @test any(s -> occursin("semicolon", lowercase(s)), suggestions)
-        
+
         # Test mismatched braces
         stderr_brace = "error: expected `}`, found `EOF`"
         source_brace = "fn test() { let x = { 42"
         suggestions_brace = suggest_fix_for_error(stderr_brace, source_brace)
         @test !isempty(suggestions_brace)
         @test any(s -> occursin("brace", lowercase(s)), suggestions_brace)
-        
+
         # Test missing #[no_mangle]
         stderr_ffi = "error: cannot find function `test`"
         source_ffi = "pub extern \"C\" fn test() -> i32 { 42 }"
@@ -101,7 +101,7 @@ using Test
                 // Missing closing brace
             }
             """
-            
+
             compiler = RustCompiler(debug_mode=false)
             @test_throws CompilationError compile_rust_to_shared_lib(invalid_code; compiler=compiler)
         else
@@ -116,14 +116,14 @@ using Test
             #[no_mangle]
             pub extern "C" fn test() -> i32 { 42 }
             """
-            
+
             debug_dir = mktempdir()
             compiler = RustCompiler(debug_mode=true, debug_dir=debug_dir)
-            
+
             try
                 lib_path = compile_rust_to_shared_lib(valid_code; compiler=compiler)
                 @test isfile(lib_path)
-                
+
                 # Check that debug directory exists and has files
                 @test isdir(debug_dir)
             finally
@@ -138,7 +138,7 @@ using Test
     @testset "RuntimeError display" begin
         error = RuntimeError("Function failed", "test_func", "at test.rs:1:5")
         error_str = sprint(showerror, error)
-        
+
         @test occursin("RuntimeError", error_str)
         @test occursin("test_func", error_str)
         @test occursin("Function failed", error_str)
@@ -149,14 +149,14 @@ using Test
         # Test empty stderr
         formatted = format_rustc_error("")
         @test isempty(formatted) || isempty(strip(formatted))
-        
+
         # Test stderr with only warnings
         stderr_warning_only = """
         warning: unused variable `x`
         """
         formatted = format_rustc_error(stderr_warning_only)
         @test occursin("warning", formatted)
-        
+
         # Test multiple errors
         stderr_multiple = """
         error: first error

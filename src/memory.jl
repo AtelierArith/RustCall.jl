@@ -225,7 +225,7 @@ function drop_rust_box(box::RustBox{T}) where T
     if lib === nothing
         # Only warn once per session to avoid spam
         if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"RustCall\")"
             DROP_WARNING_SHOWN[] = true
         end
         box.dropped = true
@@ -338,7 +338,7 @@ function drop_rust_rc(rc::RustRc{T}) where T
     if lib === nothing
         # Only warn once per session to avoid spam
         if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"RustCall\")"
             DROP_WARNING_SHOWN[] = true
         end
         rc.dropped = true
@@ -447,7 +447,7 @@ function drop_rust_arc(arc::RustArc{T}) where T
     if lib === nothing
         # Only warn once per session to avoid spam
         if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"RustCall\")"
             DROP_WARNING_SHOWN[] = true
         end
         arc.dropped = true
@@ -558,7 +558,7 @@ function drop_rust_vec(vec::RustVec{T}) where {T}
     if lib === nothing
         # Only warn once per session to avoid spam
         if !DROP_WARNING_SHOWN[] && !haskey(ENV, "LASTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Cannot properly drop RustVec. Build with: using Pkg; Pkg.build(\"LastCall\")"
+            @warn "Rust helpers library not loaded. Cannot properly drop RustVec. Build with: using Pkg; Pkg.build(\"RustCall\")"
             DROP_WARNING_SHOWN[] = true
         end
         vec.dropped = true

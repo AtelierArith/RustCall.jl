@@ -91,13 +91,13 @@ function rust_impl_call(mod, expr, ret_type, source)
 
     if ret_type === nothing
         # Dynamic dispatch based on argument types
-        return Expr(:call, GlobalRef(LastCall, :_rust_call_dynamic),
-                    Expr(:call, GlobalRef(LastCall, :_resolve_lib), mod, ""),
+        return Expr(:call, GlobalRef(RustCall, :_rust_call_dynamic),
+                    Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, ""),
                     func_name_str, escaped_args...)
     else
         # Static dispatch with known return type
-        return Expr(:call, GlobalRef(LastCall, :_rust_call_typed),
-                    Expr(:call, GlobalRef(LastCall, :_resolve_lib), mod, ""),
+        return Expr(:call, GlobalRef(RustCall, :_rust_call_typed),
+                    Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, ""),
                     func_name_str, esc(ret_type), escaped_args...)
     end
 end
@@ -164,7 +164,7 @@ function rust_impl_qualified(mod, expr, source)
     escaped_args = map(esc, args)
 
     return quote
-        $(GlobalRef(LastCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
+        $(GlobalRef(RustCall, :_rust_call_from_lib))($(lib_name_str), $(func_name_str), $(escaped_args...))
     end
 end
 
@@ -277,7 +277,7 @@ macro rust_register(func_name, ret_type, arg_types...)
     arg_types_vec = collect(arg_types)
 
     return quote
-        lib_name = $(GlobalRef(LastCall, :get_current_library))()
-        $(GlobalRef(LastCall, :register_function))($(func_name_str), lib_name, $(esc(ret_type)), Type[$(map(esc, arg_types_vec)...)])
+        lib_name = $(GlobalRef(RustCall, :get_current_library))()
+        $(GlobalRef(RustCall, :register_function))($(func_name_str), lib_name, $(esc(ret_type)), Type[$(map(esc, arg_types_vec)...)])
     end
 end

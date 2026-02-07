@@ -2,9 +2,9 @@
 name = "lastcall_macros"
 version = "0.1.0"
 edition = "2021"
-description = "Proc macros for LastCall.jl - Julia-Rust FFI"
+description = "Proc macros for RustCall.jl - Julia-Rust FFI"
 license = "MIT"
-repository = "https://github.com/atelierarith/LastCall.jl"
+repository = "https://github.com/atelierarith/RustCall.jl"
 keywords = ["julia", "ffi", "proc-macro"]
 categories = ["development-tools::ffi"]
 readme = "README.md"

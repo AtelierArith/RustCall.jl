@@ -1,14 +1,14 @@
 # Tests for generic function support
 
-using LastCall
+using RustCall
 using Test
 
 # Import internal functions for testing
-import LastCall: GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS
-import LastCall: TraitBound, TypeConstraints, GenericFunctionInfo
-import LastCall: parse_trait_bounds, parse_single_trait, parse_where_clause
-import LastCall: parse_inline_constraints, parse_generic_function
-import LastCall: constraints_to_rust_string, merge_constraints
+import RustCall: GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS
+import RustCall: TraitBound, TypeConstraints, GenericFunctionInfo
+import RustCall: parse_trait_bounds, parse_single_trait, parse_where_clause
+import RustCall: parse_inline_constraints, parse_generic_function
+import RustCall: constraints_to_rust_string, merge_constraints
 
 # ============================================================================
 # Trait Bounds Parsing Tests
@@ -269,12 +269,12 @@ end
             x
         }
         """
-        
+
         register_generic_function("identity", code, [:T])
-        
+
         @test is_generic_function("identity")
         @test !is_generic_function("nonexistent")
-        
+
         # Check that it's in the registry
         @test haskey(GENERIC_FUNCTION_REGISTRY, "identity")
         info = GENERIC_FUNCTION_REGISTRY["identity"]
@@ -291,11 +291,11 @@ end
         }
         """
         register_generic_function("identity", code, [:T])
-        
+
         # Test inference with Int32
         type_params = infer_type_parameters("identity", [Int32])
         @test type_params == Dict(:T => Int32)
-        
+
         # Test inference with Float64
         type_params = infer_type_parameters("identity", [Float64])
         @test type_params == Dict(:T => Float64)
@@ -309,9 +309,9 @@ end
             x
         }
         """
-        
+
         specialized = specialize_generic_code(code, Dict(:T => Int32))
-        
+
         # Check that T is replaced with i32
         @test occursin("i32", specialized)
         @test !occursin("<T>", specialized)
@@ -327,7 +327,7 @@ end
                 x
             }
             """
-            
+
             # Check if it was registered
             # Note: This might not work if the detection fails silently
             # We'll test the manual registration path instead
@@ -347,17 +347,17 @@ end
             }
             """
             register_generic_function("test_identity", code, [:T])
-            
+
             # Test monomorphization with Int32
             type_params = Dict(:T => Int32)
             info = monomorphize_function("test_identity", type_params)
-            
+
             @test info.name != "test_identity"  # Should have a specialized name
             @test occursin("i32", info.name)  # Should contain type suffix
             @test info.return_type == Int32
             @test info.arg_types == [Int32]
             @test info.func_ptr != C_NULL
-            
+
             # Test that caching works
             info2 = monomorphize_function("test_identity", type_params)
             @test info.name == info2.name
@@ -377,11 +377,11 @@ end
             }
             """
             register_generic_function("test_add", code, [:T])
-            
+
             # Note: This test might fail because Rust generics with + operator
             # require trait bounds. For now, we'll test the infrastructure.
             # A working example would need: fn add<T: Copy + Add<Output = T>>(a: T, b: T) -> T
-            
+
             @test is_generic_function("test_add")
         else
             @warn "rustc not available, skipping generic function call test"
@@ -398,7 +398,7 @@ end
             }
             """
             register_generic_function("test_pair", code, [:T, :U])
-            
+
             # Test inference
             type_params = infer_type_parameters("test_pair", [Int32, Float64])
             @test type_params[:T] == Int32

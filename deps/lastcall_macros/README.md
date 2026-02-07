@@ -1,6 +1,6 @@
 # lastcall_macros
 
-Proc macros for [LastCall.jl](https://github.com/atelierarith/LastCall.jl) - Julia-Rust FFI.
+Proc macros for [RustCall.jl](https://github.com/atelierarith/RustCall.jl) - Julia-Rust FFI.
 
 ## Installation
 
@@ -96,7 +96,7 @@ This generates:
 On the Julia side, use `@rust_crate` to automatically generate bindings:
 
 ```julia
-using LastCall
+using RustCall
 
 @rust_crate "/path/to/my_crate"
 

@@ -1,7 +1,7 @@
 # Tests for the crate bindings feature (Maturin-like functionality)
 
 using Test
-using LastCall
+using RustCall
 
 # Path to the sample crate
 const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
@@ -64,7 +64,7 @@ const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate"
             return
         end
 
-        cargo = LastCall.parse_cargo_toml(cargo_toml_path)
+        cargo = RustCall.parse_cargo_toml(cargo_toml_path)
 
         @test haskey(cargo, "package")
         @test cargo["package"]["name"] == "sample_crate"
@@ -77,7 +77,7 @@ const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate"
             return
         end
 
-        sources = LastCall.find_rust_sources(SAMPLE_CRATE_PATH)
+        sources = RustCall.find_rust_sources(SAMPLE_CRATE_PATH)
 
         @test !isempty(sources)
         @test all(f -> endswith(f, ".rs"), sources)
@@ -106,7 +106,7 @@ const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate"
         }
         """
 
-        structs = LastCall.parse_julia_structs_from_source(code)
+        structs = RustCall.parse_julia_structs_from_source(code)
 
         @test length(structs) == 1
         @test structs[1].name == "TestStruct"
@@ -126,7 +126,7 @@ const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate"
         info = scan_crate(SAMPLE_CRATE_PATH)
         opts = CrateBindingOptions()
 
-        wrapper_path = LastCall.create_wrapper_crate(info, opts)
+        wrapper_path = RustCall.create_wrapper_crate(info, opts)
 
         try
             @test isdir(wrapper_path)
@@ -151,10 +151,10 @@ const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate"
         end
 
         info = scan_crate(SAMPLE_CRATE_PATH)
-        hash1 = LastCall.compute_crate_hash(info)
+        hash1 = RustCall.compute_crate_hash(info)
 
         # Hash should be deterministic
-        hash2 = LastCall.compute_crate_hash(info)
+        hash2 = RustCall.compute_crate_hash(info)
         @test hash1 == hash2
 
         # Hash should be 32 characters (hex-encoded SHA256 truncated)
@@ -196,45 +196,45 @@ end
 @testset "Result and Option Type Parsing" begin
     # Test Result<T, E> parsing
     @testset "parse_result_type" begin
-        result_info = LastCall.parse_result_type("Result<f64, i32>")
+        result_info = RustCall.parse_result_type("Result<f64, i32>")
         @test result_info !== nothing
         @test result_info.ok_type == "f64"
         @test result_info.err_type == "i32"
 
-        result_info2 = LastCall.parse_result_type("Result<u32, i32>")
+        result_info2 = RustCall.parse_result_type("Result<u32, i32>")
         @test result_info2 !== nothing
         @test result_info2.ok_type == "u32"
         @test result_info2.err_type == "i32"
 
         # Non-Result types should return nothing
-        @test LastCall.parse_result_type("i32") === nothing
-        @test LastCall.parse_result_type("Option<i32>") === nothing
+        @test RustCall.parse_result_type("i32") === nothing
+        @test RustCall.parse_result_type("Option<i32>") === nothing
     end
 
     # Test Option<T> parsing
     @testset "parse_option_type" begin
-        option_info = LastCall.parse_option_type("Option<f64>")
+        option_info = RustCall.parse_option_type("Option<f64>")
         @test option_info !== nothing
         @test option_info.inner_type == "f64"
 
-        option_info2 = LastCall.parse_option_type("Option<i32>")
+        option_info2 = RustCall.parse_option_type("Option<i32>")
         @test option_info2 !== nothing
         @test option_info2.inner_type == "i32"
 
         # Non-Option types should return nothing
-        @test LastCall.parse_option_type("i32") === nothing
-        @test LastCall.parse_option_type("Result<i32, i32>") === nothing
+        @test RustCall.parse_option_type("i32") === nothing
+        @test RustCall.parse_option_type("Result<i32, i32>") === nothing
     end
 
     # Test is_result_type and is_option_type
     @testset "type detection" begin
-        @test LastCall.is_result_type("Result<f64, i32>")
-        @test !LastCall.is_result_type("Option<f64>")
-        @test !LastCall.is_result_type("i32")
+        @test RustCall.is_result_type("Result<f64, i32>")
+        @test !RustCall.is_result_type("Option<f64>")
+        @test !RustCall.is_result_type("i32")
 
-        @test LastCall.is_option_type("Option<f64>")
-        @test !LastCall.is_option_type("Result<f64, i32>")
-        @test !LastCall.is_option_type("i32")
+        @test RustCall.is_option_type("Option<f64>")
+        @test !RustCall.is_option_type("Result<f64, i32>")
+        @test !RustCall.is_option_type("i32")
     end
 end
 
@@ -338,24 +338,24 @@ end
         info = scan_crate(SAMPLE_CRATE_PATH)
 
         # Test with absolute path
-        code = LastCall.emit_crate_module_code(info, "/tmp/test_lib.so")
+        code = RustCall.emit_crate_module_code(info, "/tmp/test_lib.so")
         @test occursin("module SampleCrate", code)
         @test occursin("const _LIB_PATH = \"/tmp/test_lib.so\"", code)
         @test occursin("function __init__()", code)
         @test occursin("Libdl.dlopen", code)
 
         # Test with relative path
-        code_rel = LastCall.emit_crate_module_code(info, "lib/libtest.so", use_relative_path=true)
+        code_rel = RustCall.emit_crate_module_code(info, "lib/libtest.so", use_relative_path=true)
         @test occursin("const _LIB_PATH = joinpath(@__DIR__, \"lib/libtest.so\")", code_rel)
 
         # Test with custom module name
-        code_named = LastCall.emit_crate_module_code(info, "/tmp/lib.so", module_name="CustomModule")
+        code_named = RustCall.emit_crate_module_code(info, "/tmp/lib.so", module_name="CustomModule")
         @test occursin("module CustomModule", code_named)
     end
 
     @testset "_emit_function_code" begin
         # Create a simple function signature
-        func = LastCall.RustFunctionSignature(
+        func = RustCall.RustFunctionSignature(
             "add",
             ["a", "b"],
             ["i32", "i32"],
@@ -364,7 +364,7 @@ end
             String[]
         )
 
-        code = LastCall._emit_function_code(func)
+        code = RustCall._emit_function_code(func)
         @test occursin("function add(a, b)", code)
         @test occursin("export add", code)
         @test occursin("_get_func_ptr(\"add\")", code)
@@ -372,17 +372,17 @@ end
 
     @testset "_emit_struct_code" begin
         # Create a simple struct info
-        struct_info = LastCall.RustStructInfo(
+        struct_info = RustCall.RustStructInfo(
             "Point",
             String[],
-            [LastCall.RustMethod("new", true, false, ["x", "y"], ["f64", "f64"], "Self")],
+            [RustCall.RustMethod("new", true, false, ["x", "y"], ["f64", "f64"], "Self")],
             "",
             [("x", "f64"), ("y", "f64")],
             true,
             Dict{String, Bool}()
         )
 
-        code = LastCall._emit_struct_code(struct_info)
+        code = RustCall._emit_struct_code(struct_info)
         @test occursin("mutable struct Point", code)
         @test occursin("ptr::Ptr{Cvoid}", code)
         @test occursin("finalizer", code)

@@ -1,7 +1,7 @@
-//! Proc macros for LastCall.jl - Julia-Rust FFI
+//! Proc macros for RustCall.jl - Julia-Rust FFI
 //!
 //! This crate provides the `#[julia]` attribute macro that simplifies creating
-//! FFI-compatible functions and structs for use with Julia through LastCall.jl.
+//! FFI-compatible functions and structs for use with Julia through RustCall.jl.
 //!
 //! # Usage
 //!

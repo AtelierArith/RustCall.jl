@@ -799,8 +799,8 @@ macro irust(code, args...)
             var_exprs = [esc(var) for var in all_vars]
 
             # Build the call expression with proper argument splatting
-            # We need to call LastCall._compile_and_call_irust with the escaped variables
-            return Expr(:call, GlobalRef(LastCall, :_compile_and_call_irust), processed_code, var_exprs...)
+            # We need to call RustCall._compile_and_call_irust with the escaped variables
+            return Expr(:call, GlobalRef(RustCall, :_compile_and_call_irust), processed_code, var_exprs...)
         end
     else
         # Non-string: treat as expression (for future expansion)

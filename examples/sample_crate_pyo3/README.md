@@ -87,10 +87,10 @@ maturin develop --features python
 
 ## Usage
 
-### From Julia (with LastCall.jl)
+### From Julia (with RustCall.jl)
 
 ```julia
-using LastCall
+using RustCall
 
 @rust_crate "/path/to/sample_crate_pyo3"
 
