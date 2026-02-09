@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Examples · RustCall.jl</title><meta name="title" content="Examples · RustCall.jl"/><meta property="og:title" content="Examples · RustCall.jl"/><meta property="twitter:title" content="Examples · RustCall.jl"/><meta name="description" content="Documentation for RustCall.jl."/><meta property="og:description" content="Documentation for RustCall.jl."/><meta property="twitter:description" content="Documentation for RustCall.jl."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/examples/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/examples/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/examples/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../tutorial/">Tutorial</a></li><li class="is-active"><a class="tocitem" href>Examples</a><ul class="internal"><li><a class="tocitem" href="#Table-of-Contents"><span>Table of Contents</span></a></li><li><a class="tocitem" href="#Numerical-Computations"><span>Numerical Computations</span></a></li><li><a class="tocitem" href="#String-Processing"><span>String Processing</span></a></li><li><a class="tocitem" href="#Data-Structures"><span>Data Structures</span></a></li><li><a class="tocitem" href="#Performance-Comparison"><span>Performance Comparison</span></a></li><li><a class="tocitem" href="#Real-world-Examples"><span>Real-world Examples</span></a></li><li><a class="tocitem" href="#Best-Practices"><span>Best Practices</span></a></li><li><a class="tocitem" href="#Summary"><span>Summary</span></a></li></ul></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../generics/">Generics</a></li><li><a class="tocitem" href="../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../troubleshooting/">Troubleshooting</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../api/">API Reference</a></li><li><a class="tocitem" href="../status/">Project Status</a></li></ul></li><li><span class="tocitem">Design</span><ul><li><a class="tocitem" href="../design/Phase1/">Phase 1</a></li><li><a class="tocitem" href="../design/Phase2/">Phase 2</a></li><li><a class="tocitem" href="../design/INTERNAL/">Internal</a></li><li><a class="tocitem" href="../design/LLVMCALL/">LLVM Call</a></li></ul></li><li><span class="tocitem">Platforms</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Getting Started</a></li><li class="is-active"><a href>Examples</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Examples</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl/blob/d355142c55cf048ecafb08292e6f8f172d7389d8/docs/src/examples.md" title="View source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="RustCall.jl-Examples"><a class="docs-heading-anchor" href="#RustCall.jl-Examples">RustCall.jl Examples</a><a id="RustCall.jl-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#RustCall.jl-Examples" title="Permalink"></a></h1><p>This document provides practical examples of using RustCall.jl.</p><h2 id="Table-of-Contents"><a class="docs-heading-anchor" href="#Table-of-Contents">Table of Contents</a><a id="Table-of-Contents-1"></a><a class="docs-heading-anchor-permalink" href="#Table-of-Contents" title="Permalink"></a></h2><ol><li><a href="#numerical-computations">Numerical Computations</a></li><li><a href="#string-processing">String Processing</a></li><li><a href="#data-structures">Data Structures</a></li><li><a href="#performance-comparison">Performance Comparison</a></li><li><a href="#real-world-examples">Real-world Examples</a></li><li><a href="#best-practices">Best Practices</a></li></ol><h2 id="Numerical-Computations"><a class="docs-heading-anchor" href="#Numerical-Computations">Numerical Computations</a><a id="Numerical-Computations-1"></a><a class="docs-heading-anchor-permalink" href="#Numerical-Computations" title="Permalink"></a></h2><h3 id="Basic-Math-Functions"><a class="docs-heading-anchor" href="#Basic-Math-Functions">Basic Math Functions</a><a id="Basic-Math-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Math-Functions" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn power(x: f64, n: i32) -&gt; f64 {
+    let mut result = 1.0;
+    for _ in 0..n {
+        result *= x;
+    }
+    result
+}
+&quot;&quot;&quot;
+
+# Usage - wrapper auto-generated
+result = power(2.0, 10)  # =&gt; 1024.0</code></pre><h3 id="Fibonacci-Sequence"><a class="docs-heading-anchor" href="#Fibonacci-Sequence">Fibonacci Sequence</a><a id="Fibonacci-Sequence-1"></a><a class="docs-heading-anchor-permalink" href="#Fibonacci-Sequence" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn fibonacci(n: u32) -&gt; u64 {
+    if n &lt;= 1 {
+        return n as u64;
+    }
+
+    let mut a = 0u64;
+    let mut b = 1u64;
+
+    for _ in 2..=n {
+        let temp = a + b;
+        a = b;
+        b = temp;
+    }
+
+    b
+}
+&quot;&quot;&quot;
+
+# Usage - wrapper auto-generated
+fib_10 = fibonacci(UInt32(10))  # =&gt; 55
+fib_20 = fibonacci(UInt32(20))  # =&gt; 6765</code></pre><h3 id="Statistical-Calculations"><a class="docs-heading-anchor" href="#Statistical-Calculations">Statistical Calculations</a><a id="Statistical-Calculations-1"></a><a class="docs-heading-anchor-permalink" href="#Statistical-Calculations" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn calculate_mean(data: *const f64, len: usize) -&gt; f64 {
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    let sum: f64 = slice.iter().sum();
+    sum / len as f64
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn calculate_variance(data: *const f64, len: usize, mean: f64) -&gt; f64 {
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    let sum_sq_diff: f64 = slice.iter()
+        .map(|&amp;x| (x - mean) * (x - mean))
+        .sum();
+    sum_sq_diff / len as f64
+}
+&quot;&quot;&quot;
+
+# Julia wrapper
+function compute_statistics(data::Vector{Float64})
+    len = length(data)
+    ptr = pointer(data)
+
+    mean = @rust calculate_mean(ptr, len)::Float64
+    variance = @rust calculate_variance(ptr, len, mean)::Float64
+
+    return (mean=mean, variance=variance, stddev=sqrt(variance))
+end
+
+# Usage
+data = [1.0, 2.0, 3.0, 4.0, 5.0]
+stats = compute_statistics(data)
+println(&quot;Mean: $(stats.mean), StdDev: $(stats.stddev)&quot;)</code></pre><h2 id="String-Processing"><a class="docs-heading-anchor" href="#String-Processing">String Processing</a><a id="String-Processing-1"></a><a class="docs-heading-anchor-permalink" href="#String-Processing" title="Permalink"></a></h2><h3 id="String-Search-and-Replacement"><a class="docs-heading-anchor" href="#String-Search-and-Replacement">String Search and Replacement</a><a id="String-Search-and-Replacement-1"></a><a class="docs-heading-anchor-permalink" href="#String-Search-and-Replacement" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn find_substring(haystack: *const u8, needle: *const u8) -&gt; i32 {
+    let haystack_str = unsafe {
+        std::ffi::CStr::from_ptr(haystack as *const i8)
+            .to_str()
+            .unwrap_or(&quot;&quot;)
+    };
+    let needle_str = unsafe {
+        std::ffi::CStr::from_ptr(needle as *const i8)
+            .to_str()
+            .unwrap_or(&quot;&quot;)
+    };
+
+    match haystack_str.find(needle_str) {
+        Some(pos) =&gt; pos as i32,
+        None =&gt; -1,
+    }
+}
+&quot;&quot;&quot;
+
+# Usage
+pos = @rust find_substring(&quot;hello world&quot;, &quot;world&quot;)::Int32  # =&gt; 6
+pos = @rust find_substring(&quot;hello world&quot;, &quot;xyz&quot;)::Int32    # =&gt; -1</code></pre><h3 id="Word-Counting"><a class="docs-heading-anchor" href="#Word-Counting">Word Counting</a><a id="Word-Counting-1"></a><a class="docs-heading-anchor-permalink" href="#Word-Counting" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn count_words(text: *const u8) -&gt; u32 {
+    let text_str = unsafe {
+        std::ffi::CStr::from_ptr(text as *const i8)
+            .to_str()
+            .unwrap_or(&quot;&quot;)
+    };
+
+    text_str.split_whitespace().count() as u32
+}
+&quot;&quot;&quot;
+
+# Usage
+word_count = @rust count_words(&quot;The quick brown fox&quot;)::UInt32  # =&gt; 4</code></pre><h3 id="UTF-8-String-Processing"><a class="docs-heading-anchor" href="#UTF-8-String-Processing">UTF-8 String Processing</a><a id="UTF-8-String-Processing-1"></a><a class="docs-heading-anchor-permalink" href="#UTF-8-String-Processing" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn count_utf8_chars(s: *const u8) -&gt; u32 {
+    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap_or(&quot;&quot;);
+    utf8_str.chars().count() as u32
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn reverse_utf8_string(s: *const u8, output: *mut u8, len: usize) {
+    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap_or(&quot;&quot;);
+    let reversed: String = utf8_str.chars().rev().collect();
+
+    let output_slice = unsafe { std::slice::from_raw_parts_mut(output, len) };
+    let bytes = reversed.as_bytes();
+    let copy_len = bytes.len().min(len);
+    output_slice[..copy_len].copy_from_slice(&amp;bytes[..copy_len]);
+}
+&quot;&quot;&quot;
+
+# Usage
+char_count = @rust count_utf8_chars(&quot;こんにちは&quot;)::UInt32  # =&gt; 5</code></pre><h2 id="Data-Structures"><a class="docs-heading-anchor" href="#Data-Structures">Data Structures</a><a id="Data-Structures-1"></a><a class="docs-heading-anchor-permalink" href="#Data-Structures" title="Permalink"></a></h2><h3 id="Array-Operations"><a class="docs-heading-anchor" href="#Array-Operations">Array Operations</a><a id="Array-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#Array-Operations" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn sum_array(data: *const i32, len: usize) -&gt; i64 {
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    slice.iter().map(|&amp;x| x as i64).sum()
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn max_element(data: *const i32, len: usize) -&gt; i32 {
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    *slice.iter().max().unwrap_or(&amp;0)
+}
+&quot;&quot;&quot;
+
+# Julia wrapper
+function process_array(data::Vector{Int32})
+    ptr = pointer(data)
+    len = length(data)
+
+    total = @rust sum_array(ptr, len)::Int64
+    maximum = @rust max_element(ptr, len)::Int32
+
+    return (sum=total, max=maximum)
+end
+
+# Usage
+arr = Int32[1, 5, 3, 9, 2]
+result = process_array(arr)
+println(&quot;Sum: $(result.sum), Max: $(result.max)&quot;)</code></pre><h3 id="In-place-Sorting"><a class="docs-heading-anchor" href="#In-place-Sorting">In-place Sorting</a><a id="In-place-Sorting-1"></a><a class="docs-heading-anchor-permalink" href="#In-place-Sorting" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn sort_array(data: *mut i32, len: usize) {
+    let slice = unsafe { std::slice::from_raw_parts_mut(data, len) };
+    slice.sort();
+}
+&quot;&quot;&quot;
+
+# Julia wrapper
+function sort_in_place(arr::Vector{Int32})
+    ptr = pointer(arr)
+    len = length(arr)
+    @rust sort_array(ptr, len)::Cvoid
+    return arr
+end
+
+# Usage
+arr = Int32[5, 2, 8, 1, 9]
+sort_in_place(arr)
+println(arr)  # =&gt; [1, 2, 5, 8, 9]</code></pre><h2 id="Performance-Comparison"><a class="docs-heading-anchor" href="#Performance-Comparison">Performance Comparison</a><a id="Performance-Comparison-1"></a><a class="docs-heading-anchor-permalink" href="#Performance-Comparison" title="Permalink"></a></h2><h3 id="Julia-vs-Rust:-Numerical-Computation"><a class="docs-heading-anchor" href="#Julia-vs-Rust:-Numerical-Computation">Julia vs Rust: Numerical Computation</a><a id="Julia-vs-Rust:-Numerical-Computation-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-vs-Rust:-Numerical-Computation" title="Permalink"></a></h3><pre><code class="language-julia hljs">using BenchmarkTools
+
+# Rust implementation
+rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn rust_sum_range(n: u64) -&gt; u64 {
+    (1..=n).sum()
+}
+&quot;&quot;&quot;
+
+# Julia implementation
+function julia_sum_range(n::UInt64)
+    sum = UInt64(0)
+    for i in 1:n
+        sum += i
+    end
+    return sum
+end
+
+# Benchmark
+n = UInt64(1_000_000)
+
+println(&quot;Julia native:&quot;)
+@btime julia_sum_range($n)
+
+println(&quot;Rust (@rust):&quot;)
+@btime @rust rust_sum_range($n)::UInt64</code></pre><h3 id="String-Processing-Performance"><a class="docs-heading-anchor" href="#String-Processing-Performance">String Processing Performance</a><a id="String-Processing-Performance-1"></a><a class="docs-heading-anchor-permalink" href="#String-Processing-Performance" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn rust_count_words(text: *const u8) -&gt; u32 {
+    let text_str = unsafe {
+        std::ffi::CStr::from_ptr(text as *const i8)
+            .to_str()
+            .unwrap_or(&quot;&quot;)
+    };
+    text_str.split_whitespace().count() as u32
+}
+&quot;&quot;&quot;
+
+function julia_count_words(text::String)
+    return length(split(text))
+end
+
+# Benchmark
+text = repeat(&quot;The quick brown fox jumps over the lazy dog. &quot;, 1000)
+
+println(&quot;Julia native:&quot;)
+@btime julia_count_words($text)
+
+println(&quot;Rust (@rust):&quot;)
+@btime @rust rust_count_words($text)::UInt32</code></pre><h2 id="Real-world-Examples"><a class="docs-heading-anchor" href="#Real-world-Examples">Real-world Examples</a><a id="Real-world-Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Real-world-Examples" title="Permalink"></a></h2><h3 id="Cryptographic-Hash-Calculation"><a class="docs-heading-anchor" href="#Cryptographic-Hash-Calculation">Cryptographic Hash Calculation</a><a id="Cryptographic-Hash-Calculation-1"></a><a class="docs-heading-anchor-permalink" href="#Cryptographic-Hash-Calculation" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+#[no_mangle]
+pub extern &quot;C&quot; fn calculate_hash(data: *const u8, len: usize) -&gt; u64 {
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    let mut hasher = DefaultHasher::new();
+    slice.hash(&amp;mut hasher);
+    hasher.finish()
+}
+&quot;&quot;&quot;
+
+# Usage
+data = Vector{UInt8}(b&quot;hello world&quot;)
+ptr = pointer(data)
+hash_value = @rust calculate_hash(ptr, length(data))::UInt64
+println(&quot;Hash: $hash_value&quot;)</code></pre><h3 id="Image-Processing-(Simplified)"><a class="docs-heading-anchor" href="#Image-Processing-(Simplified)">Image Processing (Simplified)</a><a id="Image-Processing-(Simplified)-1"></a><a class="docs-heading-anchor-permalink" href="#Image-Processing-(Simplified)" title="Permalink"></a></h3><p>This example demonstrates using Rust for image processing with visualization using Images.jl.</p><pre><code class="language-julia hljs">using RustCall
+using Images
+
+# Define Rust grayscale conversion function
+rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn grayscale_image(
+    pixels: *mut u8,
+    width: usize,
+    height: usize
+) {
+    let total_pixels = width * height * 3;  // RGB
+    let slice = unsafe { std::slice::from_raw_parts_mut(pixels, total_pixels) };
+
+    for i in 0..(width * height) {
+        let r = slice[i * 3] as f32;
+        let g = slice[i * 3 + 1] as f32;
+        let b = slice[i * 3 + 2] as f32;
+
+        // Standard luminance formula (ITU-R BT.601)
+        let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+
+        slice[i * 3] = gray;
+        slice[i * 3 + 1] = gray;
+        slice[i * 3 + 2] = gray;
+    }
+}
+&quot;&quot;&quot;
+
+# Julia wrapper for grayscale conversion
+function convert_to_grayscale!(pixels::Vector{UInt8}, width::Int, height::Int)
+    ptr = pointer(pixels)
+    @rust grayscale_image(ptr, UInt(width), UInt(height))::Cvoid
+    return pixels
+end
+
+# Create a sample RGB image (gradient with colors)
+function create_sample_image(width, height)
+    img = zeros(RGB{N0f8}, height, width)
+    for y in 1:height, x in 1:width
+        r = (x - 1) / (width - 1)    # Red increases left to right
+        g = (y - 1) / (height - 1)   # Green increases top to bottom
+        b = 0.5                       # Constant blue
+        img[y, x] = RGB{N0f8}(r, g, b)
+    end
+    return img
+end
+
+# Convert Julia image to raw RGB bytes (row-major, interleaved RGB)
+function image_to_bytes(img)
+    h, w = size(img)
+    pixels = Vector{UInt8}(undef, h * w * 3)
+    idx = 1
+    for y in 1:h, x in 1:w
+        pixel = img[y, x]
+        pixels[idx] = reinterpret(UInt8, red(pixel))
+        pixels[idx + 1] = reinterpret(UInt8, green(pixel))
+        pixels[idx + 2] = reinterpret(UInt8, blue(pixel))
+        idx += 3
+    end
+    return pixels
+end
+
+# Convert raw RGB bytes back to Julia image
+function bytes_to_image(pixels, width, height)
+    img = zeros(RGB{N0f8}, height, width)
+    idx = 1
+    for y in 1:height, x in 1:width
+        r = reinterpret(N0f8, pixels[idx])
+        g = reinterpret(N0f8, pixels[idx + 1])
+        b = reinterpret(N0f8, pixels[idx + 2])
+        img[y, x] = RGB{N0f8}(r, g, b)
+        idx += 3
+    end
+    return img
+end
+
+# Create sample image
+width, height = 256, 256
+original_img = create_sample_image(width, height)</code></pre><p><strong>Original Image (Color Gradient):</strong></p><pre><code class="language-julia hljs">original_img</code></pre><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAgY0hSTQAAeiYAAICEAAD6AAAAgOgAAHUwAADqYAAAOpgAABdwnLpRPAAAA/RJREFUeAHtwQENADAMAyCaVPilX8gK5YUQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCKFi5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs76suwGf6tbGn8AAAAASUVORK5C"><p>Now let&#39;s convert it to grayscale using Rust:</p><pre><code class="language-julia hljs"># Process the image with Rust
+pixels = image_to_bytes(original_img)
+convert_to_grayscale!(pixels, width, height)
+grayscale_img = bytes_to_image(pixels, width, height)</code></pre><p><strong>Grayscale Image (Processed by Rust):</strong></p><pre><code class="language-julia hljs">grayscale_img</code></pre><img src="c9d51cc7.png" alt="Example block output"/><p>Let&#39;s verify the grayscale conversion worked correctly:</p><pre><code class="language-julia hljs"># Check that R, G, B are equal (grayscale property)
+sample_pixel = grayscale_img[128, 128]
+println(&quot;Sample pixel at (128, 128):&quot;)
+println(&quot;  R = $(red(sample_pixel))&quot;)
+println(&quot;  G = $(green(sample_pixel))&quot;)
+println(&quot;  B = $(blue(sample_pixel))&quot;)
+println(&quot;  Grayscale verified: &quot;, red(sample_pixel) == green(sample_pixel) == blue(sample_pixel))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Sample pixel at (128, 128):
+  R = 0.498N0f8
+  G = 0.498N0f8
+  B = 0.498N0f8
+  Grayscale verified: true</code></pre><p><strong>Side-by-side comparison:</strong></p><pre><code class="language-julia hljs"># Create a side-by-side comparison image
+comparison = [original_img grayscale_img]</code></pre><img src="74c7eab3.png" alt="Example block output"/><div class="admonition is-info" id="Running-this-example-3ad20af0b455199"><header class="admonition-header">Running this example<a class="admonition-anchor" href="#Running-this-example-3ad20af0b455199" title="Permalink"></a></header><div class="admonition-body"><p>To run this example locally, you need the Images package:</p><pre><code class="language-julia hljs">using Pkg
+Pkg.add(&quot;Images&quot;)</code></pre><p>For <code>servedocs()</code>, make sure to run it from the docs environment:</p><pre><code class="language-julia hljs">julia --project=docs -e &#39;using Pkg; Pkg.instantiate()&#39;
+julia --project=docs -e &#39;using LiveServer; servedocs()&#39;</code></pre></div></div><h3 id="Network-Processing-(Simplified)"><a class="docs-heading-anchor" href="#Network-Processing-(Simplified)">Network Processing (Simplified)</a><a id="Network-Processing-(Simplified)-1"></a><a class="docs-heading-anchor-permalink" href="#Network-Processing-(Simplified)" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn validate_ip_address(ip: *const u8) -&gt; bool {
+    let ip_str = unsafe {
+        std::ffi::CStr::from_ptr(ip as *const i8)
+            .to_str()
+            .unwrap_or(&quot;&quot;)
+    };
+
+    let parts: Vec&lt;&amp;str&gt; = ip_str.split(&#39;.&#39;).collect();
+    if parts.len() != 4 {
+        return false;
+    }
+
+    for part in parts {
+        match part.parse::&lt;u8&gt;() {
+            Ok(num) if num &lt;= 255 =&gt; continue,
+            _ =&gt; return false,
+        }
+    }
+
+    true
+}
+&quot;&quot;&quot;
+
+# Usage
+is_valid = @rust validate_ip_address(&quot;192.168.1.1&quot;)::Bool  # =&gt; true
+is_valid = @rust validate_ip_address(&quot;999.999.999.999&quot;)::Bool  # =&gt; false</code></pre><h3 id="Data-Compression-(Simplified)"><a class="docs-heading-anchor" href="#Data-Compression-(Simplified)">Data Compression (Simplified)</a><a id="Data-Compression-(Simplified)-1"></a><a class="docs-heading-anchor-permalink" href="#Data-Compression-(Simplified)" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn simple_compress(
+    input: *const u8,
+    input_len: usize,
+    output: *mut u8,
+    output_capacity: usize
+) -&gt; usize {
+    let input_slice = unsafe { std::slice::from_raw_parts(input, input_len) };
+    let output_slice = unsafe { std::slice::from_raw_parts_mut(output, output_capacity) };
+
+    let mut output_idx = 0;
+    let mut i = 0;
+
+    while i &lt; input_len &amp;&amp; output_idx + 1 &lt; output_capacity {
+        let mut count = 1;
+        let current = input_slice[i];
+
+        // Count consecutive identical characters
+        while i + count &lt; input_len &amp;&amp; input_slice[i + count] == current &amp;&amp; count &lt; 255 {
+            count += 1;
+        }
+
+        if output_idx + 2 &lt;= output_capacity {
+            output_slice[output_idx] = count as u8;
+            output_slice[output_idx + 1] = current;
+            output_idx += 2;
+        }
+
+        i += count;
+    }
+
+    output_idx
+}
+&quot;&quot;&quot;
+
+# Julia wrapper
+function compress_data(data::Vector{UInt8})
+    input_len = length(data)
+    output_capacity = input_len * 2  # Worst case
+    output = Vector{UInt8}(undef, output_capacity)
+
+    input_ptr = pointer(data)
+    output_ptr = pointer(output)
+
+    compressed_len = @rust simple_compress(
+        input_ptr, input_len,
+        output_ptr, output_capacity
+    )::UInt
+
+    return output[1:compressed_len]
+end
+
+# Usage
+data = Vector{UInt8}(b&quot;aaabbbcccddd&quot;)
+compressed = compress_data(data)
+println(&quot;Original: $(length(data)) bytes&quot;)
+println(&quot;Compressed: $(length(compressed)) bytes&quot;)</code></pre><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><h3 id="1.-Memory-Safety"><a class="docs-heading-anchor" href="#1.-Memory-Safety">1. Memory Safety</a><a id="1.-Memory-Safety-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Memory-Safety" title="Permalink"></a></h3><p>When working with pointers, ensure Julia memory remains valid using <code>GC.@preserve</code>:</p><pre><code class="language-julia hljs">using RustCall
+
+# Define a Rust function that processes an array
+rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn sum_array(arr: *const i32, len: usize) -&gt; i32 {
+    let slice = unsafe { std::slice::from_raw_parts(arr, len) };
+    slice.iter().sum()
+}
+&quot;&quot;&quot;
+
+function safe_array_sum(arr::Vector{Int32})
+    if isempty(arr)
+        return Int32(0)
+    end
+
+    ptr = pointer(arr)
+    len = length(arr)
+
+    # GC.@preserve ensures arr remains valid during Rust call
+    GC.@preserve arr begin
+        result = @rust sum_array(ptr, UInt(len))::Int32
+    end
+
+    return result
+end
+
+# Test the safe function
+arr = Int32[1, 2, 3, 4, 5]
+result = safe_array_sum(arr)
+println(&quot;Sum of $arr = $result&quot;)  # =&gt; Sum of [1, 2, 3, 4, 5] = 15</code></pre><h3 id="2.-Error-Handling"><a class="docs-heading-anchor" href="#2.-Error-Handling">2. Error Handling</a><a id="2.-Error-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Error-Handling" title="Permalink"></a></h3><p>Use error codes or Result types for safe error handling:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn safe_divide(a: i32, b: i32, result: *mut i32) -&gt; bool {
+    if b == 0 {
+        return false;  // Indicate error
+    }
+    unsafe { *result = a / b; }
+    true  // Indicate success
+}
+&quot;&quot;&quot;
+
+function divide_safely(a::Int32, b::Int32)
+    result = Ref{Int32}(0)
+    success = @rust safe_divide(a, b, result)::Bool
+    if !success
+        throw(DomainError(b, &quot;Division by zero&quot;))
+    end
+    return result[]
+end
+
+# Test successful division
+divide_safely(Int32(10), Int32(2))  # =&gt; 5
+
+# Test error handling
+try
+    divide_safely(Int32(10), Int32(0))
+catch e
+    println(&quot;Caught error: $e&quot;)  # =&gt; DomainError
+end</code></pre><h3 id="3.-Performance-Optimization"><a class="docs-heading-anchor" href="#3.-Performance-Optimization">3. Performance Optimization</a><a id="3.-Performance-Optimization-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Performance-Optimization" title="Permalink"></a></h3><p>Benchmark to compare Julia and Rust performance:</p><pre><code class="language-julia hljs">using BenchmarkTools
+
+# Rust implementation for computing sum of squares
+rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn sum_of_squares_rust(arr: *const f64, len: usize) -&gt; f64 {
+    let slice = unsafe { std::slice::from_raw_parts(arr, len) };
+    slice.iter().map(|x| x * x).sum()
+}
+&quot;&quot;&quot;
+
+# Julia implementation
+function sum_of_squares_julia(arr::Vector{Float64})
+    sum(x -&gt; x * x, arr)
+end
+
+# Wrapper for Rust
+function sum_of_squares_rust_wrapper(arr::Vector{Float64})
+    GC.@preserve arr begin
+        @rust sum_of_squares_rust(pointer(arr), UInt(length(arr)))::Float64
+    end
+end
+
+# Benchmark
+data = rand(10000)
+@btime sum_of_squares_julia($data)
+@btime sum_of_squares_rust_wrapper($data)</code></pre><p><strong>Performance tips:</strong></p><ul><li>Use <code>GC.@preserve</code> for large arrays to prevent garbage collection during Rust calls</li><li>Consider <code>@rust_llvm</code> for performance-critical code with LLVM optimizations</li><li>Leverage caching to avoid recompilation (functions are cached automatically)</li><li>Always specify explicit types in <code>@rust</code> macro calls</li></ul><h3 id="4.-Debugging"><a class="docs-heading-anchor" href="#4.-Debugging">4. Debugging</a><a id="4.-Debugging-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Debugging" title="Permalink"></a></h3><p>When issues occur, use these debugging techniques:</p><pre><code class="language-julia hljs"># Check cache status
+cache_size = get_cache_size()
+println(&quot;Current cache size: $cache_size libraries&quot;)
+
+# List cached libraries
+cached = list_cached_libraries()
+println(&quot;Cached libraries: $(length(cached)) items&quot;)
+
+# Clear cache if needed
+clear_cache()
+println(&quot;Cache cleared&quot;)</code></pre><h3 id="5.-Type-Safety-with-Generics"><a class="docs-heading-anchor" href="#5.-Type-Safety-with-Generics">5. Type Safety with Generics</a><a id="5.-Type-Safety-with-Generics-1"></a><a class="docs-heading-anchor-permalink" href="#5.-Type-Safety-with-Generics" title="Permalink"></a></h3><p>Use generics for type-safe, reusable code:</p><pre><code class="language-julia hljs"># Register a generic identity function
+code = &quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn identity&lt;T&gt;(x: T) -&gt; T {
+    x
+}
+&quot;&quot;&quot;
+
+register_generic_function(&quot;identity&quot;, code, [:T])
+
+# Call with different types - automatic monomorphization
+result_i32 = call_generic_function(&quot;identity&quot;, Int32(42))  # =&gt; 42
+result_f64 = call_generic_function(&quot;identity&quot;, 3.14)       # =&gt; 3.14
+
+println(&quot;identity(Int32(42)) = $result_i32&quot;)
+println(&quot;identity(3.14) = $result_f64&quot;)</code></pre><h2 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h2><p>These examples demonstrate practical usage of RustCall.jl:</p><ul><li><strong>Memory Safety</strong>: Always use <code>GC.@preserve</code> when passing Julia arrays to Rust</li><li><strong>Error Handling</strong>: Use error codes or Result types instead of panics</li><li><strong>Performance</strong>: Benchmark and optimize with explicit types</li><li><strong>Debugging</strong>: Use cache management functions to troubleshoot</li><li><strong>Generics</strong>: Leverage automatic monomorphization for type-safe code</li></ul><p>For more detailed information, see the <a href="../tutorial/">Tutorial</a> and <a href="../api/">API Reference</a>.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tutorial/">« Tutorial</a><a class="docs-footer-nextpage" href="../struct_mapping/">Struct Mapping »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 9 February 2026 08:59">Monday 9 February 2026</span>. Using Julia version 1.12.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
