@@ -57,6 +57,15 @@ using Test
         @test RustCall.julia_type_to_llvm_ir_string(Ptr{Cvoid}) == "ptr"  # LLVM opaque pointer
     end
 
+    @testset "Cvoid === Nothing type alias safety (#110)" begin
+        # Cvoid is an alias for Nothing in Julia. A single method handles both.
+        @test Cvoid === Nothing
+        @test RustCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
+        @test RustCall.julia_type_to_llvm_ir_string(Nothing) == "void"
+        # Both should return the exact same result (same method)
+        @test RustCall.julia_type_to_llvm_ir_string(Cvoid) === RustCall.julia_type_to_llvm_ir_string(Nothing)
+    end
+
     @testset "LLVM IR Generation" begin
         # Test IR generation for function call
         ir = RustCall.generate_llvmcall_ir("test_add", Int32, Type[Int32, Int32])

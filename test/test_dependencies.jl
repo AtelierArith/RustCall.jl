@@ -253,4 +253,20 @@ using Test
         result3 = RustCall.split_cargo_deps("a=\"val\\\"ue\", b=\"1.0\"")
         @test length(result3) == 2
     end
+
+    @testset "Backslash parity determines quote escaping (#128)" begin
+        # 0 backslashes → quote is real (even)
+        @test iseven(RustCall._count_trailing_backslashes("abc"))
+        # 1 backslash → quote is escaped (odd)
+        @test isodd(RustCall._count_trailing_backslashes("abc\\"))
+        # 2 backslashes → quote is real (even, both backslashes are escaped)
+        @test iseven(RustCall._count_trailing_backslashes("abc\\\\"))
+        # 3 backslashes → quote is escaped (odd)
+        @test isodd(RustCall._count_trailing_backslashes("abc\\\\\\"))
+
+        # End-to-end: triple backslash before quote means quote is escaped
+        # (2 backslashes escape each other, 1 escapes the quote)
+        result = RustCall.split_cargo_deps("a=\"x\\\\\\\"y\", b=\"1.0\"")
+        @test length(result) == 2
+    end
 end

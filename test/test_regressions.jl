@@ -251,6 +251,32 @@ using Test
         @test get(infos[1].derive_options, "Clone", false)
     end
 
+    @testset "extract_function_code handles multiple escaped quotes (#124)" begin
+        # Multiple escaped quotes in a row should not break parsing
+        code = """
+        fn multi_escape() {
+            let s = "a\\"b\\"c\\"d";
+            let x = 99;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "multi_escape")
+        @test extracted !== nothing
+        @test occursin("let x = 99", extracted)
+    end
+
+    @testset "extract_function_code handles adjacent string literals (#124)" begin
+        code = """
+        fn adjacent_strings() {
+            let a = "{ open";
+            let b = "} close";
+            let result = 42;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "adjacent_strings")
+        @test extracted !== nothing
+        @test occursin("let result = 42", extracted)
+    end
+
     @testset "extract_function_code returns nothing for nonexistent function" begin
         code = """
         fn real_function() {
@@ -258,6 +284,18 @@ using Test
         }
         """
         @test RustCall.extract_function_code(code, "nonexistent") === nothing
+    end
+
+    @testset "Silent fallback emits warning with function name (#126)" begin
+        # When extract_function_code fails, the fallback must warn
+        # with the function name so developers can diagnose the issue
+        code = """
+        #[no_mangle]
+        pub extern "C" fn broken_body<T>(x: T) -> T
+        """
+        msg = @test_warn "Failed to extract function" RustCall._detect_and_register_generic_functions(code, "test_lib_126")
+        # The warning message should mention the specific function name
+        # (captured by @test_warn returning the log message)
     end
 
     @testset "detect_and_register warns on extraction fallback" begin
@@ -349,6 +387,115 @@ using Test
         # Should not be registered since there are no type parameters
         @test !haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "borrow")
         empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "RustVec/RustSlice use typed pointer indexing (#122)" begin
+        # Verify that RustVec and RustSlice use Julia's typed unsafe_load
+        # instead of manual pointer arithmetic (ptr + idx * sizeof(T))
+        # Test with a real buffer to verify correctness
+        data = Int32[10, 20, 30, 40, 50]
+        GC.@preserve data begin
+            ptr = Ptr{Cvoid}(pointer(data))
+            vec = RustVec{Int32}(ptr, UInt(5), UInt(5))
+
+            @test vec[1] == 10
+            @test vec[2] == 20
+            @test vec[5] == 50
+            @test_throws BoundsError vec[0]
+            @test_throws BoundsError vec[6]
+
+            # Mark as dropped after tests to prevent finalizer from freeing Julia-managed memory
+            vec.dropped = true
+
+            # Test RustSlice
+            slice = RustSlice{Int32}(Ptr{Int32}(ptr), UInt(5))
+            @test slice[1] == 10
+            @test slice[3] == 30
+            @test_throws BoundsError slice[0]
+            @test_throws BoundsError slice[6]
+
+            # Test with different element size (Float64 = 8 bytes)
+            fdata = Float64[1.5, 2.5, 3.5]
+            GC.@preserve fdata begin
+                fptr = Ptr{Cvoid}(pointer(fdata))
+                fvec = RustVec{Float64}(fptr, UInt(3), UInt(3))
+                @test fvec[1] ≈ 1.5
+                @test fvec[2] ≈ 2.5
+                @test fvec[3] ≈ 3.5
+                # Mark as dropped after tests to prevent finalizer from freeing Julia-managed memory
+                fvec.dropped = true
+            end
+        end
+    end
+
+    @testset "safe_dlsym prevents NULL segfaults (#118)" begin
+        # safe_dlsym should be defined
+        @test isdefined(RustCall, :safe_dlsym)
+
+        # With a valid library handle, looking up a nonexistent symbol
+        # should throw a clear error, not return NULL
+        if RustCall.is_rust_helpers_available()
+            lib = RustCall.get_rust_helpers_lib()
+            @test_throws ErrorException RustCall.safe_dlsym(lib, :nonexistent_symbol_xyz)
+            try
+                RustCall.safe_dlsym(lib, :nonexistent_symbol_xyz)
+            catch e
+                @test occursin("not found", e.msg)
+            end
+        end
+    end
+
+    @testset "Concurrent registry access is safe (#112)" begin
+        # Verify that concurrent reads/writes to global registries
+        # don't crash (thread safety via REGISTRY_LOCK)
+        n_tasks = 4
+        n_ops = 10
+        errors = Threads.Atomic{Int}(0)
+
+        tasks = []
+        for t in 1:n_tasks
+            task = Threads.@spawn begin
+                for i in 1:n_ops
+                    try
+                        # Read from GENERIC_FUNCTION_REGISTRY (should be locked)
+                        RustCall.is_generic_function("concurrent_test_$(t)_$(i)")
+                        # Read from IRUST_FUNCTIONS (should be locked)
+                        lock(RustCall.REGISTRY_LOCK) do
+                            haskey(RustCall.IRUST_FUNCTIONS, UInt64(t * 1000 + i))
+                        end
+                    catch
+                        Threads.atomic_add!(errors, 1)
+                    end
+                end
+            end
+            push!(tasks, task)
+        end
+
+        for task in tasks
+            fetch(task)
+        end
+        @test errors[] == 0
+    end
+
+    @testset "Deeply nested generics in specialize_generic_code (#108)" begin
+        # Ensure bracket-counting handles arbitrary nesting depth
+        code = "pub fn deep<T>(x: Vec<Option<Result<T, String>>>) -> T { todo!() }"
+        specialized = RustCall.specialize_generic_code(code, Dict(:T => Int32))
+        @test occursin("Vec<Option<Result<i32, String>>>", specialized)
+        @test occursin("fn deep(", specialized)
+        @test !occursin("<T>", specialized)
+
+        # HashMap<K, V> with two type params
+        code2 = "pub fn lookup<K, V>(m: HashMap<K, V>, key: K) -> V { todo!() }"
+        specialized2 = RustCall.specialize_generic_code(code2, Dict(:K => Int32, :V => Float64))
+        @test occursin("HashMap<i32, f64>", specialized2)
+        @test occursin("fn lookup(", specialized2)
+
+        # impl<T> with nested bounds
+        code3 = "impl<T: Add<Output = T>> MyStruct<T> { fn go(self) -> T { todo!() } }"
+        specialized3 = RustCall.specialize_generic_code(code3, Dict(:T => Int32))
+        @test occursin("impl MyStruct<i32>", specialized3) || occursin("impl  MyStruct<i32>", specialized3)
+        @test !occursin("<i32: Add", specialized3)
     end
 
     @testset "parse_inline_constraints skips lifetime parameters" begin

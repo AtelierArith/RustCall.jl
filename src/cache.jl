@@ -87,6 +87,18 @@ function get_metadata_dir()
 end
 
 """
+    stable_content_hash(data::String) -> String
+
+Compute a session-stable content hash using SHA256.
+Always use this instead of Julia's `hash()` for persistent cache keys,
+library names, or any value that must be stable across Julia sessions.
+Julia's `hash()` is randomized per session and unsuitable for persistent caching.
+"""
+function stable_content_hash(data::String)
+    return bytes2hex(sha256(data))
+end
+
+"""
     generate_cache_key(code::String, compiler::RustCompiler) -> String
 
 Generate a cache key based on code hash, compiler settings, and target triple.
