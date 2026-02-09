@@ -208,26 +208,6 @@ fn is_non_ffi_type(ty: &Type) -> bool {
 fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) -> TokenStream2 {
     let result_type_name = format_ident!("CResult_{}", func_name);
 
-    // Check that both ok_type and err_type are FFI-compatible
-    if is_non_ffi_type(ok_type) {
-        return quote! {
-            compile_error!(concat!(
-                "#[julia] function `", stringify!(#func_name),
-                "` returns Result with non-FFI-compatible Ok type `", stringify!(#ok_type),
-                "`. Use a primitive or #[repr(C)] type instead."
-            ));
-        };
-    }
-    if is_non_ffi_type(err_type) {
-        return quote! {
-            compile_error!(concat!(
-                "#[julia] function `", stringify!(#func_name),
-                "` returns Result with non-FFI-compatible Err type `", stringify!(#err_type),
-                "`. Use a primitive or #[repr(C)] type instead."
-            ));
-        };
-    }
-
     quote! {
         #[repr(C)]
         pub struct #result_type_name {
@@ -241,17 +221,6 @@ fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) ->
 /// Generate C-compatible Option type definition for a specific T
 fn generate_c_option_type(func_name: &Ident, inner_type: &Type) -> TokenStream2 {
     let option_type_name = format_ident!("COption_{}", func_name);
-
-    // Check that inner_type is FFI-compatible
-    if is_non_ffi_type(inner_type) {
-        return quote! {
-            compile_error!(concat!(
-                "#[julia] function `", stringify!(#func_name),
-                "` returns Option with non-FFI-compatible type `", stringify!(#inner_type),
-                "`. Use a primitive or #[repr(C)] type instead."
-            ));
-        };
-    }
 
     quote! {
         #[repr(C)]
@@ -359,6 +328,26 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
     let ok_type = &result_info.ok_type;
     let err_type = &result_info.err_type;
 
+    // Check FFI compatibility early to avoid cascading errors
+    if is_non_ffi_type(ok_type) {
+        return quote! {
+            compile_error!(concat!(
+                "#[julia] function `", stringify!(#func_name),
+                "` returns Result with non-FFI-compatible Ok type `", stringify!(#ok_type),
+                "`. Use a primitive or #[repr(C)] type instead."
+            ));
+        };
+    }
+    if is_non_ffi_type(err_type) {
+        return quote! {
+            compile_error!(concat!(
+                "#[julia] function `", stringify!(#func_name),
+                "` returns Result with non-FFI-compatible Err type `", stringify!(#err_type),
+                "`. Use a primitive or #[repr(C)] type instead."
+            ));
+        };
+    }
+
     // Generate C-compatible result type
     let c_result_type = generate_c_result_type(func_name, ok_type, err_type);
     let result_type_name = format_ident!("CResult_{}", func_name);
@@ -423,6 +412,17 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
 fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> TokenStream2 {
     let func_name = &func.sig.ident;
     let inner_type = &option_info.inner_type;
+
+    // Check FFI compatibility early to avoid cascading errors
+    if is_non_ffi_type(inner_type) {
+        return quote! {
+            compile_error!(concat!(
+                "#[julia] function `", stringify!(#func_name),
+                "` returns Option with non-FFI-compatible type `", stringify!(#inner_type),
+                "`. Use a primitive or #[repr(C)] type instead."
+            ));
+        };
+    }
 
     // Generate C-compatible option type
     let c_option_type = generate_c_option_type(func_name, inner_type);
