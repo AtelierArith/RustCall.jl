@@ -82,6 +82,32 @@ Maps (function_name, type_params_tuple) to FunctionInfo.
 const MONOMORPHIZED_FUNCTIONS = Dict{Tuple{String, Tuple}, FunctionInfo}()
 
 # ============================================================================
+# Rust Syntax Parsing — Angle Bracket Safety Rule
+# ============================================================================
+#
+# IMPORTANT: Never use regex alone to match angle brackets (`< >`) in Rust code.
+# Rust generics can nest arbitrarily deep:
+#
+#   Vec<Option<Result<T, String>>>
+#   impl<T: Add<Output = T>>
+#   HashMap<String, Vec<Option<i32>>>
+#
+# Patterns like `<[^>]+>`, `<.+?>`, or `<([^>]+(?:<[^>]*>)*)>` will fail
+# because they cannot handle arbitrary nesting depth.
+#
+# Instead, use bracket-counting (depth tracking) via the helpers:
+#   - `_find_matching_angle_bracket(s, open_pos)` — find matching `>` for `<`
+#   - `_remove_generic_params_from_fns(code)` — strip `<...>` from fn signatures
+#   - `_remove_generic_params_from_impls(code)` — strip `<...>` from impl blocks
+#   - `parse_trait_type_params(params_str)` — split params respecting nesting
+#   - `parse_trait_bounds(bounds_str)` — split `+`-separated bounds respecting nesting
+#   - `parse_inline_constraints(type_params_str)` — split `,`-separated params respecting nesting
+#
+# When adding new Rust syntax parsing, always include test cases with deeply
+# nested generics (2+ levels of angle brackets).
+# ============================================================================
+
+# ============================================================================
 # Trait Bounds Parsing Functions
 # ============================================================================
 
@@ -463,17 +489,25 @@ This would be parsed as:
 - constraints: Dict(:T => TypeConstraints([Copy]), :U => TypeConstraints([From<T>]))
 """
 function parse_generic_function(code::AbstractString, func_name::AbstractString)
-    # Pattern: fn func_name<...>(
-    # We need to handle nested angle brackets in trait bounds
-    generic_pattern = Regex("fn\\s+$func_name\\s*<([^>]+(?:<[^>]*>)*)>\\s*\\(")
-    m = match(generic_pattern, code)
+    # Find "fn func_name<" using regex, then use bracket-counting to find the
+    # matching ">". Never use regex alone to match angle brackets in Rust code —
+    # generics nest arbitrarily deep (e.g., Vec<Option<Result<T, String>>>).
+    prefix_pattern = Regex("fn\\s+$func_name\\s*<")
+    m = match(prefix_pattern, code)
 
     if m === nothing
         return nothing  # Not a generic function
     end
 
-    # Extract type parameters with inline constraints
-    type_params_str = m.captures[1]
+    # Position of the opening '<'
+    open_pos = m.offset + length(m.match) - 1
+    close_pos = _find_matching_angle_bracket(code, open_pos)
+    if close_pos == 0
+        return nothing  # Malformed generic signature
+    end
+
+    # Extract the content between < and >
+    type_params_str = code[nextind(code, open_pos):prevind(code, close_pos)]
     type_params, inline_constraints = parse_inline_constraints(type_params_str)
 
     # Parse where clause if present
