@@ -105,6 +105,52 @@ using Test
         end
     end
 
+    @testset "Concurrent cache access (issue #91)" begin
+        using Dates
+
+        # Verify CACHE_LOCK exists
+        @test isdefined(RustCall, :CACHE_LOCK)
+        @test RustCall.CACHE_LOCK isa ReentrantLock
+
+        # Run concurrent save/load operations to verify no corruption
+        n_tasks = 4
+        n_ops = 5
+        results = Vector{Bool}(undef, n_tasks)
+        test_keys = ["concurrent_test_$(t)_$(i)" for t in 1:n_tasks for i in 1:n_ops]
+
+        tasks = []
+        for t in 1:n_tasks
+            task = Threads.@spawn begin
+                for i in 1:n_ops
+                    key = "concurrent_test_$(t)_$(i)"
+                    meta = RustCall.CacheMetadata(
+                        key, "hash_$(t)_$(i)", "config", "triple",
+                        Dates.now(), ["func_$(t)_$(i)"]
+                    )
+                    RustCall.save_cache_metadata(key, meta)
+                    loaded = RustCall.load_cache_metadata(key)
+                    if loaded === nothing || loaded.cache_key != key
+                        return false
+                    end
+                end
+                return true
+            end
+            push!(tasks, task)
+        end
+
+        for (i, task) in enumerate(tasks)
+            results[i] = fetch(task)
+        end
+        @test all(results)
+
+        # Clean up test metadata files
+        metadata_dir = RustCall.get_metadata_dir()
+        for key in test_keys
+            p = joinpath(metadata_dir, "$(key).json")
+            isfile(p) && rm(p)
+        end
+    end
+
     # Only run rustc tests if rustc is available
     if RustCall.check_rustc_available()
         @testset "Cache Hit/Miss" begin
