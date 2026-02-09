@@ -318,6 +318,55 @@ end
         @test !occursin(": T", specialized) || occursin(": i32", specialized)
     end
 
+    @testset "Code Specialization with Container Types" begin
+        # Test that nested angle brackets in container types are handled correctly
+        # This was broken by the regex `<.+?>` which stops at the first `>`
+
+        # Vec<T> parameter
+        code = """
+        pub fn sum_vec<T: Copy + std::ops::Add<Output = T>>(v: *const T, len: usize) -> T {
+            let slice = unsafe { std::slice::from_raw_parts(v, len) };
+            slice[0]
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:T => Float64))
+        @test !occursin("<T:", specialized)  # generic params removed
+        @test occursin("f64", specialized)
+        @test occursin("fn sum_vec(", specialized)
+
+        # Nested generics: Vec<Vec<T>>
+        code = """
+        pub fn nested<T>(x: Vec<Vec<T>>) -> T {
+            x[0][0]
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:T => Int32))
+        @test !occursin("<T>", specialized)
+        @test occursin("Vec<Vec<i32>>", specialized)
+        @test occursin("fn nested(", specialized)
+
+        # Multiple type params with containers: HashMap<K, V>
+        code = """
+        pub fn get_value<K, V>(map: HashMap<K, V>, key: K) -> V {
+            map[key]
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:K => Int32, :V => Float64))
+        @test occursin("HashMap<i32, f64>", specialized)
+        @test occursin("fn get_value(", specialized)
+
+        # impl block with nested generics
+        code = """
+        impl<T: Copy> MyStruct<T> {
+            pub fn get(&self) -> T { self.value }
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:T => Int32))
+        @test !occursin("impl<", specialized)
+        @test occursin("impl", specialized)
+        @test occursin("i32", specialized)
+    end
+
     @testset "Generic Function Detection" begin
         # Test that generic functions are detected in rust"" blocks
         if check_rustc_available()
