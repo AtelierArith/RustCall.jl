@@ -229,16 +229,6 @@ function _parse_qualified_call(expr)
     return nothing
 end
 
-"""
-    _convert_args_for_rust(args...)
-
-Convert Julia arguments to Rust-compatible types.
-String arguments are passed directly and converted by ccall.
-"""
-function _convert_args_for_rust(args...)
-    # No conversion needed - ccall handles String -> Cstring
-    return args
-end
 
 """
     _rust_call_dynamic(lib_name::String, func_name::String, args...)
@@ -258,32 +248,29 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     @debug "Calling function '$func_name' from library '$lib_name'"
     func_ptr = get_function_pointer(lib_name, func_name)
 
-    # Convert arguments (String -> Cstring)
-    converted_args = _convert_args_for_rust(args...)
-
     # Try to get type info from registered function info
     func_info = get_function_info(lib_name, func_name)
     if func_info !== nothing && func_info.return_type !== Any
-        return call_rust_function(func_ptr, func_info.return_type, converted_args...)
+        return call_rust_function(func_ptr, func_info.return_type, args...)
     end
 
     # Try to get return type from registries (library-scoped first, then fallback)
     ret_type = get_function_return_type(lib_name, func_name)
     if ret_type !== nothing
         @debug "Using registered return type for $func_name: $ret_type"
-        return call_rust_function(func_ptr, ret_type, converted_args...)
+        return call_rust_function(func_ptr, ret_type, args...)
     end
 
     # Try to get type info from LLVM analysis
     try
         ret_type, expected_arg_types = infer_function_types(lib_name, func_name)
-        return call_rust_function(func_ptr, ret_type, converted_args...)
+        return call_rust_function(func_ptr, ret_type, args...)
     catch
         # Fall back to inference from arguments
     end
 
     # Use inference from argument types
-    return call_rust_function_infer(func_ptr, converted_args...)
+    return call_rust_function_infer(func_ptr, args...)
 end
 
 """
@@ -306,9 +293,7 @@ function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, a
         end
     end
 
-    # Convert arguments (String -> Cstring)
-    converted_args = _convert_args_for_rust(args...)
-    return call_rust_function(func_ptr, ret_type, converted_args...)
+    return call_rust_function(func_ptr, ret_type, args...)
 end
 
 """

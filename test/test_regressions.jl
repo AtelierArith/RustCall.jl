@@ -357,4 +357,10 @@ using Test
         @test haskey(constraints, :T)
         @test !haskey(constraints, Symbol("'a"))
     end
+
+    @testset "_convert_args_for_rust dead code removed (#99)" begin
+        # _convert_args_for_rust was a no-op function that returned args unchanged.
+        # Verify it has been removed from the module.
+        @test !isdefined(RustCall, :_convert_args_for_rust)
+    end
 end
