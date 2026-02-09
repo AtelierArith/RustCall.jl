@@ -351,6 +351,42 @@ using Test
         empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
     end
 
+    @testset "RustVec/RustSlice use typed pointer indexing (#122)" begin
+        # Verify that RustVec and RustSlice use Julia's typed unsafe_load
+        # instead of manual pointer arithmetic (ptr + idx * sizeof(T))
+        # Test with a real buffer to verify correctness
+        data = Int32[10, 20, 30, 40, 50]
+        GC.@preserve data begin
+            ptr = Ptr{Cvoid}(pointer(data))
+            vec = RustVec{Int32}(ptr, UInt(5), UInt(5))
+            vec.dropped = false  # Prevent finalizer issues
+
+            @test vec[1] == 10
+            @test vec[2] == 20
+            @test vec[5] == 50
+            @test_throws BoundsError vec[0]
+            @test_throws BoundsError vec[6]
+
+            # Test RustSlice
+            slice = RustSlice{Int32}(Ptr{Int32}(ptr), UInt(5))
+            @test slice[1] == 10
+            @test slice[3] == 30
+            @test_throws BoundsError slice[0]
+            @test_throws BoundsError slice[6]
+
+            # Test with different element size (Float64 = 8 bytes)
+            fdata = Float64[1.5, 2.5, 3.5]
+            GC.@preserve fdata begin
+                fptr = Ptr{Cvoid}(pointer(fdata))
+                fvec = RustVec{Float64}(fptr, UInt(3), UInt(3))
+                fvec.dropped = false
+                @test fvec[1] ≈ 1.5
+                @test fvec[2] ≈ 2.5
+                @test fvec[3] ≈ 3.5
+            end
+        end
+    end
+
     @testset "safe_dlsym prevents NULL segfaults (#118)" begin
         # safe_dlsym should be defined
         @test isdefined(RustCall, :safe_dlsym)
