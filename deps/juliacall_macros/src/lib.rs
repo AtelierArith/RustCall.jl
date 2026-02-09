@@ -176,9 +176,57 @@ fn extract_option_type(ty: &Type) -> Option<OptionTypeInfo> {
     }
 }
 
+/// Check if a type is a known non-FFI-compatible type (String, Vec<T>, Box<T>, etc.)
+fn is_non_ffi_type(ty: &Type) -> bool {
+    match ty {
+        Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                let type_name = segment.ident.to_string();
+                matches!(
+                    type_name.as_str(),
+                    "String"
+                        | "Vec"
+                        | "Box"
+                        | "Rc"
+                        | "Arc"
+                        | "HashMap"
+                        | "HashSet"
+                        | "BTreeMap"
+                        | "BTreeSet"
+                        | "Cow"
+                )
+            } else {
+                false
+            }
+        }
+        Type::Reference(_) => true, // References are not FFI-compatible in repr(C) structs
+        _ => false,
+    }
+}
+
 /// Generate C-compatible Result type definition for a specific T, E
 fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) -> TokenStream2 {
     let result_type_name = format_ident!("CResult_{}", func_name);
+
+    // Check that both ok_type and err_type are FFI-compatible
+    if is_non_ffi_type(ok_type) {
+        return quote! {
+            compile_error!(concat!(
+                "#[julia] function `", stringify!(#func_name),
+                "` returns Result with non-FFI-compatible Ok type `", stringify!(#ok_type),
+                "`. Use a primitive or #[repr(C)] type instead."
+            ));
+        };
+    }
+    if is_non_ffi_type(err_type) {
+        return quote! {
+            compile_error!(concat!(
+                "#[julia] function `", stringify!(#func_name),
+                "` returns Result with non-FFI-compatible Err type `", stringify!(#err_type),
+                "`. Use a primitive or #[repr(C)] type instead."
+            ));
+        };
+    }
 
     quote! {
         #[repr(C)]
@@ -193,6 +241,17 @@ fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) ->
 /// Generate C-compatible Option type definition for a specific T
 fn generate_c_option_type(func_name: &Ident, inner_type: &Type) -> TokenStream2 {
     let option_type_name = format_ident!("COption_{}", func_name);
+
+    // Check that inner_type is FFI-compatible
+    if is_non_ffi_type(inner_type) {
+        return quote! {
+            compile_error!(concat!(
+                "#[julia] function `", stringify!(#func_name),
+                "` returns Option with non-FFI-compatible type `", stringify!(#inner_type),
+                "`. Use a primitive or #[repr(C)] type instead."
+            ));
+        };
+    }
 
     quote! {
         #[repr(C)]
@@ -335,15 +394,25 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
         #[no_mangle]
         pub extern "C" fn #func_name(#(#args),*) -> #result_type_name {
             match #inner_fn_name(#(#arg_names),*) {
-                Ok(value) => #result_type_name {
-                    is_ok: 1,
-                    ok_value: value,
-                    err_value: unsafe { std::mem::zeroed() },
+                Ok(value) => {
+                    let mut result = std::mem::MaybeUninit::<#result_type_name>::uninit();
+                    let ptr = result.as_mut_ptr();
+                    unsafe {
+                        std::ptr::addr_of_mut!((*ptr).is_ok).write(1);
+                        std::ptr::addr_of_mut!((*ptr).ok_value).write(value);
+                        std::ptr::write_bytes(std::ptr::addr_of_mut!((*ptr).err_value), 0, 1);
+                        result.assume_init()
+                    }
                 },
-                Err(err) => #result_type_name {
-                    is_ok: 0,
-                    ok_value: unsafe { std::mem::zeroed() },
-                    err_value: err,
+                Err(err) => {
+                    let mut result = std::mem::MaybeUninit::<#result_type_name>::uninit();
+                    let ptr = result.as_mut_ptr();
+                    unsafe {
+                        std::ptr::addr_of_mut!((*ptr).is_ok).write(0);
+                        std::ptr::write_bytes(std::ptr::addr_of_mut!((*ptr).ok_value), 0, 1);
+                        std::ptr::addr_of_mut!((*ptr).err_value).write(err);
+                        result.assume_init()
+                    }
                 },
             }
         }
@@ -394,9 +463,14 @@ fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> Token
                     is_some: 1,
                     value,
                 },
-                None => #option_type_name {
-                    is_some: 0,
-                    value: unsafe { std::mem::zeroed() },
+                None => {
+                    let mut opt = std::mem::MaybeUninit::<#option_type_name>::uninit();
+                    let ptr = opt.as_mut_ptr();
+                    unsafe {
+                        std::ptr::addr_of_mut!((*ptr).is_some).write(0);
+                        std::ptr::write_bytes(std::ptr::addr_of_mut!((*ptr).value), 0, 1);
+                        opt.assume_init()
+                    }
                 },
             }
         }
@@ -537,11 +611,12 @@ fn generate_method_wrapper(struct_name: &Ident, method: &syn::ImplItemFn) -> Tok
         .iter()
         .any(|arg| matches!(arg, FnArg::Receiver(_)));
 
-    let is_constructor = method_name_str == "new"
-        || matches!(
-            &method.sig.output,
-            ReturnType::Type(_, ty) if is_self_type(ty, struct_name)
-        );
+    // A constructor must be a static method (no &self) AND either named "new" or return Self
+    let returns_self = matches!(
+        &method.sig.output,
+        ReturnType::Type(_, ty) if is_self_type(ty, struct_name)
+    );
+    let is_constructor = is_static && (method_name_str == "new" || returns_self);
 
     let _is_mutable = method
         .sig

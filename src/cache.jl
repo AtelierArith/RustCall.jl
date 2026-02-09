@@ -87,13 +87,33 @@ function get_metadata_dir()
 end
 
 """
+    _cached_rustc_version
+
+Cached output of `rustc --version` to avoid repeated process spawns.
+Populated on first call to `generate_cache_key`.
+"""
+const _cached_rustc_version = Ref{String}("")
+
+function _get_rustc_version()::String
+    if isempty(_cached_rustc_version[])
+        try
+            _cached_rustc_version[] = strip(read(`rustc --version`, String))
+        catch
+            _cached_rustc_version[] = "unknown"
+        end
+    end
+    return _cached_rustc_version[]
+end
+
+"""
     generate_cache_key(code::String, compiler::RustCompiler) -> String
 
-Generate a cache key based on code hash, compiler settings, and target triple.
-Uses SHA256 for collision resistance.
+Generate a cache key based on code hash, compiler settings, target triple,
+and `rustc` version. Uses SHA256 for collision resistance.
 """
 function generate_cache_key(code::String, compiler::RustCompiler)
-    config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)"
+    rustc_ver = _get_rustc_version()
+    config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)"
     key_data = "$(code)\n---\n$(config_str)"
     return stable_content_hash(key_data)
 end
@@ -134,9 +154,58 @@ function get_cached_llvm_ir(cache_key::String)
 end
 
 """
+    _compute_file_checksum(path::String) -> String
+
+Compute SHA-256 checksum of a file for integrity verification.
+"""
+function _compute_file_checksum(path::String)::String
+    return bytes2hex(open(sha256, path))
+end
+
+"""
+    _save_checksum(cache_key::String, lib_path::String)
+
+Save a SHA-256 checksum file alongside a cached library.
+"""
+function _save_checksum(cache_key::String, lib_path::String)
+    checksum = _compute_file_checksum(lib_path)
+    checksum_path = lib_path * ".sha256"
+    tmp_path = checksum_path * ".tmp"
+    open(tmp_path, "w") do io
+        println(io, checksum)
+    end
+    mv(tmp_path, checksum_path, force=true)
+end
+
+"""
+    _verify_cached_checksum(cache_key::String, lib_path::String)
+
+Verify the SHA-256 checksum of a cached library. Throws an error if the
+checksum doesn't match (possible corruption or tampering).
+"""
+function _verify_cached_checksum(cache_key::String, lib_path::String)
+    checksum_path = lib_path * ".sha256"
+    if !isfile(checksum_path)
+        # No checksum file (legacy cache entry) — allow loading with a warning
+        @debug "No checksum file for cached library: $lib_path"
+        return
+    end
+
+    stored_checksum = strip(read(checksum_path, String))
+    actual_checksum = _compute_file_checksum(lib_path)
+
+    if stored_checksum != actual_checksum
+        # Remove the corrupted cache entry
+        rm(lib_path, force=true)
+        rm(checksum_path, force=true)
+        error("Cache checksum mismatch for key $cache_key: expected $stored_checksum, got $actual_checksum. Corrupted cache entry removed.")
+    end
+end
+
+"""
     save_cached_library(cache_key::String, lib_path::String, metadata::CacheMetadata)
 
-Save a compiled library to the cache along with its metadata.
+Save a compiled library to the cache along with its metadata and checksum.
 """
 function save_cached_library(cache_key::String, lib_path::String, metadata::CacheMetadata)
     lock(CACHE_LOCK) do
@@ -146,6 +215,9 @@ function save_cached_library(cache_key::String, lib_path::String, metadata::Cach
 
         # Copy the library file
         cp(lib_path, dest_lib_path, force=true)
+
+        # Save checksum for integrity verification
+        _save_checksum(cache_key, dest_lib_path)
 
         # Save metadata (called under the same lock)
         _save_cache_metadata_unlocked(cache_key, metadata)
@@ -174,7 +246,11 @@ end
 """
     load_cached_library(cache_key::String) -> Tuple{Ptr{Cvoid}, String}
 
-Load a cached library and return its handle and library name.
+Load a cached library and return its handle and the cached library path.
+
+The caller is responsible for providing a consistent library name (e.g.,
+based on `stable_content_hash` of the wrapped code) to avoid mismatches
+between cache lookup keys and in-memory registry names.
 """
 function load_cached_library(cache_key::String)
     lock(CACHE_LOCK) do
@@ -183,16 +259,16 @@ function load_cached_library(cache_key::String)
             error("Cached library not found for key: $cache_key")
         end
 
+        # Verify checksum before loading (issue #198)
+        _verify_cached_checksum(cache_key, cached_lib)
+
         # Load the library
         lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
         if lib_handle == C_NULL
             error("Failed to load cached library: $cached_lib")
         end
 
-        # Generate library name from cache key
-        lib_name = "rust_cache_$(cache_key[1:16])"  # Use first 16 chars for readability
-
-        return lib_handle, lib_name
+        return lib_handle, cached_lib
     end
 end
 

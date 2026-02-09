@@ -42,7 +42,8 @@ using Test
 
         # Key must be deterministic (session-stable) — verify by computing expected SHA256
         using SHA
-        config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)"
+        rustc_ver = RustCall._get_rustc_version()
+        config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)"
         expected_key = bytes2hex(sha256("$(code1)\n---\n$(config_str)"))
         @test key1 == expected_key
     end

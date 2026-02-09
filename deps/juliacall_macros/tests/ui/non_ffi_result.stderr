@@ -1,0 +1,24 @@
+error: #[julia] function `bad_result` returns Result with non-FFI-compatible Ok type `String`. Use a primitive or #[repr(C)] type instead.
+ --> tests/ui/non_ffi_result.rs:4:1
+  |
+4 | #[julia]
+  | ^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `julia` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0412]: cannot find type `CResult_bad_result` in this scope
+ --> tests/ui/non_ffi_result.rs:5:4
+  |
+5 | fn bad_result(a: i32) -> Result<String, i32> {
+  |    ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `CResult_bad_result` in this scope
+ --> tests/ui/non_ffi_result.rs:5:4
+  |
+5 | fn bad_result(a: i32) -> Result<String, i32> {
+  |    ^^^^^^^^^^ not found in this scope
+  |
+help: you might be missing a type parameter
+  |
+5 | fn bad_result<CResult_bad_result>(a: i32) -> Result<String, i32> {
+  |              ++++++++++++++++++++

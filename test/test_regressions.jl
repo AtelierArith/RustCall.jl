@@ -1008,4 +1008,69 @@ end
         end
     end
 
+    # #162: TOML injection vulnerability in wrapper crate Cargo.toml
+    @testset "escape_toml_string prevents TOML injection (#162)" begin
+        # escape_toml_string must be defined
+        @test isdefined(RustCall, :escape_toml_string)
+
+        # Basic escaping
+        @test RustCall.escape_toml_string("hello") == "hello"
+        @test RustCall.escape_toml_string("path\\to\\dir") == "path\\\\to\\\\dir"
+        @test RustCall.escape_toml_string("say \"hello\"") == "say \\\"hello\\\""
+        @test RustCall.escape_toml_string("line1\nline2") == "line1\\nline2"
+
+        # Malicious TOML injection attempt
+        malicious = "\" }\n[package]\nname = \"malicious"
+        escaped = RustCall.escape_toml_string(malicious)
+        @test !occursin("\n[package]", escaped)
+        @test occursin("\\n", escaped)
+    end
+
+    # #163: Missing cleanup of temporary wrapper crate directories
+    @testset "Wrapper crate cleanup functions exist (#163)" begin
+        @test isdefined(RustCall, :cleanup_cargo_project)
+        @test RustCall.cleanup_cargo_project isa Function
+    end
+
+    # #179: Cache key / library naming consistency
+    @testset "load_cached_library returns library path (#179)" begin
+        # load_cached_library should return (handle, path) tuple
+        @test isdefined(RustCall, :load_cached_library)
+    end
+
+    # #180: Missing compiler config in Cargo cache key
+    @testset "Cache key includes rustc version (#180)" begin
+        # _get_rustc_version must be defined and return a non-empty string
+        @test isdefined(RustCall, :_get_rustc_version)
+        rustc_ver = RustCall._get_rustc_version()
+        @test !isempty(rustc_ver)
+
+        # Verify cache key changes with different compiler settings
+        code = "fn test() -> i32 { 1 }"
+        compiler1 = RustCall.RustCompiler(optimization_level=0)
+        compiler2 = RustCall.RustCompiler(optimization_level=2)
+        key1 = RustCall.generate_cache_key(code, compiler1)
+        key2 = RustCall.generate_cache_key(code, compiler2)
+        @test key1 != key2
+    end
+
+    # #198: No checksum verification of cached binaries
+    @testset "Cache checksum verification (#198)" begin
+        @test isdefined(RustCall, :_compute_file_checksum)
+        @test isdefined(RustCall, :_save_checksum)
+        @test isdefined(RustCall, :_verify_cached_checksum)
+
+        # Create a temp file and test checksum round-trip
+        tmp = tempname()
+        write(tmp, "test data for checksum")
+        checksum = RustCall._compute_file_checksum(tmp)
+        @test length(checksum) == 64  # SHA-256 hex
+
+        # Same content produces same checksum
+        checksum2 = RustCall._compute_file_checksum(tmp)
+        @test checksum == checksum2
+
+        rm(tmp)
+    end
+
 end

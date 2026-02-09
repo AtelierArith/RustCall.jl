@@ -1,0 +1,30 @@
+error: #[julia] function `bad_option` returns Option with non-FFI-compatible type `Vec < i32 >`. Use a primitive or #[repr(C)] type instead.
+ --> tests/ui/non_ffi_option.rs:4:1
+  |
+4 | #[julia]
+  | ^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `julia` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0412]: cannot find type `COption_bad_option` in this scope
+ --> tests/ui/non_ffi_option.rs:5:4
+  |
+5 | fn bad_option(a: i32) -> Option<Vec<i32>> {
+  |    ^^^^^^^^^^ not found in this scope
+
+error[E0422]: cannot find struct, variant or union type `COption_bad_option` in this scope
+ --> tests/ui/non_ffi_option.rs:5:4
+  |
+5 | fn bad_option(a: i32) -> Option<Vec<i32>> {
+  |    ^^^^^^^^^^ not found in this scope
+
+error[E0412]: cannot find type `COption_bad_option` in this scope
+ --> tests/ui/non_ffi_option.rs:5:4
+  |
+5 | fn bad_option(a: i32) -> Option<Vec<i32>> {
+  |    ^^^^^^^^^^ not found in this scope
+  |
+help: you might be missing a type parameter
+  |
+5 | fn bad_option<COption_bad_option>(a: i32) -> Option<Vec<i32>> {
+  |              ++++++++++++++++++++

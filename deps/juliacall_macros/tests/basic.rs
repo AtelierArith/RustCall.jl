@@ -94,6 +94,55 @@ impl Counter {
     }
 }
 
+// ============================================================================
+// Builder pattern tests (issue #160: constructor detection)
+// ============================================================================
+
+// Test that builder-pattern instance methods returning Self are NOT treated as constructors
+#[allow(dead_code)]
+pub struct Builder {
+    x: i32,
+    y: i32,
+}
+
+#[allow(clippy::new_without_default)]
+#[julia]
+impl Builder {
+    // This IS a constructor (static method named "new")
+    #[julia]
+    pub fn new() -> Self {
+        Self { x: 0, y: 0 }
+    }
+
+    // This is NOT a constructor — it's a builder method (has &mut self)
+    #[julia]
+    pub fn set_x(&mut self, x: i32) -> i32 {
+        self.x = x;
+        self.x
+    }
+
+    // Static method that returns Self IS a constructor
+    #[julia]
+    pub fn create_default() -> Self {
+        Self { x: 42, y: 42 }
+    }
+
+    #[julia]
+    pub fn get_x(&self) -> i32 {
+        self.x
+    }
+}
+
+// We need to manually declare Builder_free
+#[no_mangle]
+pub extern "C" fn Builder_free(ptr: *mut Builder) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
+    }
+}
+
 fn main() {
     // Verify the functions are callable
     let result = simple_add(1, 2);
@@ -165,6 +214,25 @@ fn main() {
     // Test find_first_positive (None case)
     let find_none = find_first_positive(-1, -2);
     assert_eq!(find_none.is_some, 0);
+
+    // Test Builder pattern (issue #160)
+    println!("Testing builder pattern...");
+
+    // Test constructor
+    let builder_ptr = Builder_new();
+    assert_eq!(Builder_get_x(builder_ptr), 0);
+
+    // Test builder method (NOT a constructor — should take a pointer, not return a boxed one)
+    let x_val = Builder_set_x(builder_ptr, 10);
+    assert_eq!(x_val, 10);
+    assert_eq!(Builder_get_x(builder_ptr), 10);
+
+    // Test static constructor (create_default returns Self)
+    let builder2_ptr = Builder_create_default();
+    assert_eq!(Builder_get_x(builder2_ptr), 42);
+
+    Builder_free(builder_ptr);
+    Builder_free(builder2_ptr);
 
     println!("All tests passed!");
 }

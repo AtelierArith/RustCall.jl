@@ -436,12 +436,12 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
 
     # Dependencies section
     push!(lines, "[dependencies]")
-    # Add the target crate as a path dependency
-    push!(lines, "$(info.name) = { path = \"$(info.path)\" }")
+    # Add the target crate as a path dependency (escape for TOML safety)
+    push!(lines, "$(info.name) = { path = \"$(escape_toml_string(info.path))\" }")
     # Add juliacall_macros (use path for now, will be crates.io later)
     juliacall_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "juliacall_macros")
     if isdir(juliacall_macros_path)
-        push!(lines, "juliacall_macros = { path = \"$juliacall_macros_path\" }")
+        push!(lines, "juliacall_macros = { path = \"$(escape_toml_string(juliacall_macros_path))\" }")
     else
         push!(lines, "juliacall_macros = \"0.1\"")
     end
@@ -1043,7 +1043,11 @@ function generate_bindings(crate_path::String;
                 wrapper_path
             )
 
-            lib_path = build_cargo_project(wrapper_project, release=build_release)
+            try
+                lib_path = build_cargo_project(wrapper_project, release=build_release)
+            finally
+                cleanup_cargo_project(wrapper_project)
+            end
         end
 
         # Cache the result
@@ -1282,7 +1286,11 @@ function write_bindings_to_file(crate_path::String, output_path::String;
             wrapper_path
         )
 
-        build_cargo_project(wrapper_project, release=build_release)
+        try
+            build_cargo_project(wrapper_project, release=build_release)
+        finally
+            cleanup_cargo_project(wrapper_project)
+        end
     end
 
     # Determine the library path to use in the generated code
