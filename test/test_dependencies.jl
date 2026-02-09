@@ -227,4 +227,30 @@ using Test
         @test occursin("#[no_mangle]", clean)
         @test occursin("pub extern", clean)
     end
+
+    @testset "_count_trailing_backslashes" begin
+        @test RustCall._count_trailing_backslashes("") == 0
+        @test RustCall._count_trailing_backslashes("hello") == 0
+        @test RustCall._count_trailing_backslashes("hello\\") == 1
+        @test RustCall._count_trailing_backslashes("hello\\\\") == 2
+        @test RustCall._count_trailing_backslashes("hello\\\\\\") == 3
+        @test RustCall._count_trailing_backslashes("\\") == 1
+    end
+
+    @testset "split_cargo_deps handles escaped quotes" begin
+        # Simple case — no escaping
+        result = RustCall.split_cargo_deps("ndarray=\"0.15\", serde=\"1.0\"")
+        @test length(result) == 2
+        @test result[1] == "ndarray=\"0.15\""
+        @test result[2] == "serde=\"1.0\""
+
+        # Double backslash before quote — quote is NOT escaped
+        # (the backslash itself is escaped, so the quote is real)
+        result2 = RustCall.split_cargo_deps("a={path=\"C:\\\\\"}, b=\"1.0\"")
+        @test length(result2) == 2
+
+        # Single backslash before quote — quote IS escaped (stays in string)
+        result3 = RustCall.split_cargo_deps("a=\"val\\\"ue\", b=\"1.0\"")
+        @test length(result3) == 2
+    end
 end

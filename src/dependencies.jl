@@ -277,6 +277,22 @@ function parse_cargo_deps_line(line::AbstractString)
 end
 
 """
+    _count_trailing_backslashes(s::AbstractString) -> Int
+
+Count consecutive trailing backslash characters. Used to determine whether
+a quote is escaped: the quote is escaped only if preceded by an odd number
+of backslashes (e.g., `\\"` is escaped, `\\\\"` is not).
+"""
+function _count_trailing_backslashes(s::AbstractString)
+    count = 0
+    for i in lastindex(s):-1:firstindex(s)
+        s[i] == '\\' || break
+        count += 1
+    end
+    return count
+end
+
+"""
     split_cargo_deps(line::String) -> Vector{String}
 
 Split cargo-deps line by commas, respecting braces and quotes.
@@ -288,7 +304,7 @@ function split_cargo_deps(line::String)
     in_quote = false
 
     for char in line
-        if char == '"' && (isempty(current) || current[end] != '\\')
+        if char == '"' && iseven(_count_trailing_backslashes(current))
             in_quote = !in_quote
             current *= char
         elseif char == '{' && !in_quote
