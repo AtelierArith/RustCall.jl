@@ -172,7 +172,7 @@ the cached library path. Otherwise, builds the project and caches the result.
 
 # Arguments
 - `project::CargoProject`: The Cargo project to build
-- `code_hash::UInt64`: Hash of the Rust source code
+- `code_hash::AbstractString`: SHA256 hex digest of the Rust source code
 
 # Keyword Arguments
 - `release::Bool`: Build in release mode (default: true)
@@ -182,7 +182,7 @@ the cached library path. Otherwise, builds the project and caches the result.
 """
 function build_cargo_project_cached(
     project::CargoProject,
-    code_hash::UInt64;
+    code_hash::AbstractString;
     release::Bool = true
 )
     # Generate cache key from code hash, dependency hash, and build mode

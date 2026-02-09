@@ -36,9 +36,15 @@ using Test
         @test length(key1) == 64  # SHA256 produces 64 hex characters
         @test length(key2) == 64
 
-        # Same code should produce same key
+        # Same code should produce same key (deterministic)
         key1_again = RustCall.generate_cache_key(code1, compiler)
         @test key1 == key1_again
+
+        # Key must be deterministic (session-stable) — verify by computing expected SHA256
+        using SHA
+        config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)"
+        expected_key = bytes2hex(sha256("$(code1)\n---\n$(config_str)"))
+        @test key1 == expected_key
     end
 
     @testset "Cache Operations" begin
