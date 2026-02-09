@@ -633,7 +633,15 @@ function result_to_exception(result::RustResult{T, E}) where {T, E}
         error_value = result.value::E
         error_msg = string(error_value)
         if error_value isa Integer
-            throw(RustError(error_msg, Int32(error_value), error_value))
+            # Validate that the error value fits in Int32 range before converting
+            int_val = Integer(error_value)
+            if typemin(Int32) <= int_val <= typemax(Int32)
+                throw(RustError(error_msg, Int32(int_val), error_value))
+            else
+                # Value doesn't fit in Int32; use -1 as fallback code and
+                # preserve the original value in original_error
+                throw(RustError(error_msg, Int32(-1), error_value))
+            end
         else
             throw(RustError(error_msg, Int32(-1), error_value))
         end

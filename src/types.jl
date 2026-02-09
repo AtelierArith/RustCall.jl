@@ -59,7 +59,14 @@ Base.cconvert(::Type{Ptr{Cvoid}}, r::RustRef) = r
 """
     RustResult{T, E}
 
-Represents Rust's `Result<T, E>` type.
+Represents Rust's `Result<T, E>` type on the Julia side.
+
+# FFI Compatibility Note
+This type uses a Julia `Union{T, E}` field which does NOT match C struct layout.
+It is intended for Julia-side representation only. For actual FFI with Rust,
+use `CRustResult` which has a C-compatible layout with `UInt8` discriminant
+and `Ptr{Cvoid}` value pointer. Conversion between `CRustResult` and
+`RustResult` should be done explicitly in the binding layer.
 """
 struct RustResult{T, E}
     is_ok::Bool
@@ -109,7 +116,14 @@ is_err(result::RustResult) = !result.is_ok
 """
     RustOption{T}
 
-Represents Rust's `Option<T>` type.
+Represents Rust's `Option<T>` type on the Julia side.
+
+# FFI Compatibility Note
+This type uses a Julia `Union{T, Nothing}` field which does NOT match C struct
+layout. It is intended for Julia-side representation only. For actual FFI with
+Rust, use `CRustOption` which has a C-compatible layout with `UInt8`
+discriminant and `Ptr{Cvoid}` value pointer. Conversion between `CRustOption`
+and `RustOption` should be done explicitly in the binding layer.
 """
 struct RustOption{T}
     is_some::Bool
@@ -271,7 +285,10 @@ function julia_string_to_rust(s::String)
 
     # Get pointer to the string data
     ptr = Base.unsafe_convert(Ptr{UInt8}, s)
-    len = UInt(sizeof(s))
+    # For Julia String, sizeof(s) == ncodeunits(s) — both return the number of
+    # UTF-8 code units (bytes). We use ncodeunits for clarity since we need the
+    # byte length for Rust's &str (which is also UTF-8).
+    len = UInt(ncodeunits(s))
 
     return RustStr(ptr, len)
 end
@@ -329,23 +346,26 @@ drop!(box)
 mutable struct RustBox{T}
     ptr::Ptr{Cvoid}
     dropped::Bool
+    const drop_lock::ReentrantLock
 
     function RustBox{T}(ptr::Ptr{Cvoid}) where {T}
-        box = new{T}(ptr, false)
+        box = new{T}(ptr, false, ReentrantLock())
         # Attach finalizer for automatic cleanup
         # The actual drop will be handled by memory.jl if available
         finalizer(box) do b
-            if !b.dropped && b.ptr != C_NULL
-                # Try to call Rust drop function if memory.jl is loaded
-                try
-                    if isdefined(RustCall, :drop_rust_box)
-                        RustCall.drop_rust_box(b)
-                    else
+            lock(b.drop_lock) do
+                if !b.dropped && b.ptr != C_NULL
+                    # Try to call Rust drop function if memory.jl is loaded
+                    try
+                        if isdefined(RustCall, :drop_rust_box)
+                            RustCall.drop_rust_box(b)
+                        else
+                            b.dropped = true
+                        end
+                    catch e
+                        @warn "Error dropping RustBox in finalizer: $e"
                         b.dropped = true
                     end
-                catch e
-                    @warn "Error dropping RustBox in finalizer: $e"
-                    b.dropped = true
                 end
             end
         end
@@ -380,20 +400,23 @@ Multiple `RustRc` instances can share ownership of the same data.
 mutable struct RustRc{T}
     ptr::Ptr{Cvoid}
     dropped::Bool
+    const drop_lock::ReentrantLock
 
     function RustRc{T}(ptr::Ptr{Cvoid}) where {T}
-        rc = new{T}(ptr, false)
+        rc = new{T}(ptr, false, ReentrantLock())
         finalizer(rc) do r
-            if !r.dropped && r.ptr != C_NULL
-                try
-                    if isdefined(RustCall, :drop_rust_rc)
-                        RustCall.drop_rust_rc(r)
-                    else
+            lock(r.drop_lock) do
+                if !r.dropped && r.ptr != C_NULL
+                    try
+                        if isdefined(RustCall, :drop_rust_rc)
+                            RustCall.drop_rust_rc(r)
+                        else
+                            r.dropped = true
+                        end
+                    catch e
+                        @warn "Error dropping RustRc in finalizer: $e"
                         r.dropped = true
                     end
-                catch e
-                    @warn "Error dropping RustRc in finalizer: $e"
-                    r.dropped = true
                 end
             end
         end
@@ -432,20 +455,23 @@ end
 mutable struct RustArc{T}
     ptr::Ptr{Cvoid}
     dropped::Bool
+    const drop_lock::ReentrantLock
 
     function RustArc{T}(ptr::Ptr{Cvoid}) where {T}
-        arc = new{T}(ptr, false)
+        arc = new{T}(ptr, false, ReentrantLock())
         finalizer(arc) do a
-            if !a.dropped && a.ptr != C_NULL
-                try
-                    if isdefined(RustCall, :drop_rust_arc)
-                        RustCall.drop_rust_arc(a)
-                    else
+            lock(a.drop_lock) do
+                if !a.dropped && a.ptr != C_NULL
+                    try
+                        if isdefined(RustCall, :drop_rust_arc)
+                            RustCall.drop_rust_arc(a)
+                        else
+                            a.dropped = true
+                        end
+                    catch e
+                        @warn "Error dropping RustArc in finalizer: $e"
                         a.dropped = true
                     end
-                catch e
-                    @warn "Error dropping RustArc in finalizer: $e"
-                    a.dropped = true
                 end
             end
         end
@@ -491,25 +517,28 @@ mutable struct RustVec{T}
     len::UInt
     cap::UInt
     dropped::Bool
+    const drop_lock::ReentrantLock
 
     function RustVec{T}(ptr::Ptr{Cvoid}, len::UInt, cap::UInt) where {T}
         isbitstype(T) || error("RustVec only supports isbits types, got $T")
-        vec = new{T}(ptr, len, cap, false)
+        vec = new{T}(ptr, len, cap, false, ReentrantLock())
         finalizer(vec) do v
-            if !v.dropped && v.ptr != C_NULL
-                # Call Rust-side drop when available; fall back to marking dropped.
-                try
-                    if isdefined(@__MODULE__, :drop_rust_vec)
-                        drop_fn = getfield(@__MODULE__, :drop_rust_vec)
-                        Base.invokelatest(drop_fn, v)
-                    else
+            lock(v.drop_lock) do
+                if !v.dropped && v.ptr != C_NULL
+                    # Call Rust-side drop when available; fall back to marking dropped.
+                    try
+                        if isdefined(@__MODULE__, :drop_rust_vec)
+                            drop_fn = getfield(@__MODULE__, :drop_rust_vec)
+                            Base.invokelatest(drop_fn, v)
+                        else
+                            v.dropped = true
+                            v.ptr = C_NULL
+                        end
+                    catch e
+                        @warn "Error dropping RustVec in finalizer: $e"
                         v.dropped = true
                         v.ptr = C_NULL
                     end
-                catch e
-                    @warn "Error dropping RustVec in finalizer: $e"
-                    v.dropped = true
-                    v.ptr = C_NULL
                 end
             end
         end
@@ -590,8 +619,11 @@ function Base.getindex(vec::RustVec{T}, i::Int) where {T}
         throw(BoundsError(vec, i))
     end
 
-    # Use typed pointer with 1-based index (Julia's unsafe_load handles stride)
-    unsafe_load(Ptr{T}(vec.ptr), i)
+    # GC.@preserve ensures vec is not finalized during the unsafe pointer operation
+    GC.@preserve vec begin
+        # Use typed pointer with 1-based index (Julia's unsafe_load handles stride)
+        unsafe_load(Ptr{T}(vec.ptr), i)
+    end
 end
 
 """
@@ -625,8 +657,11 @@ function Base.setindex!(vec::RustVec{T}, value, i::Int) where {T}
     # Convert value to type T
     typed_value = convert(T, value)
 
-    # Use typed pointer with 1-based index (Julia's unsafe_store! handles stride)
-    unsafe_store!(Ptr{T}(vec.ptr), typed_value, i)
+    # GC.@preserve ensures vec is not finalized during the unsafe pointer operation
+    GC.@preserve vec begin
+        # Use typed pointer with 1-based index (Julia's unsafe_store! handles stride)
+        unsafe_store!(Ptr{T}(vec.ptr), typed_value, i)
+    end
     return value
 end
 
@@ -830,15 +865,17 @@ end
 """
     drop!(x::Union{RustBox, RustRc, RustArc, RustVec})
 
-Mark an ownership type as dropped. The actual memory deallocation
-should be handled by Rust-side drop functions.
-
-Note: This sets the dropped flag to prevent double-drop but does not
-actually free memory. Call the appropriate Rust drop function for that.
+Drop an ownership type, calling the appropriate Rust-side drop function
+if the Rust helpers library is loaded. This is a fallback definition that
+will be overridden by the type-specific `drop!` methods in `memory.jl`
+once it is loaded. The fallback only marks the object as dropped without
+freeing Rust memory.
 """
 function drop!(x::Union{RustBox, RustRc, RustArc, RustVec})
-    x.dropped = true
-    x.ptr = C_NULL
+    lock(x.drop_lock) do
+        x.dropped = true
+        x.ptr = C_NULL
+    end
     return nothing
 end
 

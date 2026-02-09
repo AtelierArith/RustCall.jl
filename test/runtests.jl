@@ -52,6 +52,9 @@ include("test_crate_bindings.jl")
 # Hot reload tests
 include("test_hot_reload.jl")
 
+# Types, memory, and safety fixes
+include("test_types_memory_safety.jl")
+
 # LLVM/Codegen bug fix tests
 include("test_llvm_fixes.jl")
 
