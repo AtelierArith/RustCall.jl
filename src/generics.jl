@@ -273,6 +273,10 @@ function parse_inline_constraints(type_params_str::AbstractString)
     # Parse each parameter
     for param in params
         param = strip(param)
+        # Skip Rust lifetime parameters (e.g., 'a, 'static)
+        if startswith(param, "'")
+            continue
+        end
         if occursin(':', param)
             # Has trait bounds: "T: Copy + Clone"
             parts = split(param, ':', limit=2)

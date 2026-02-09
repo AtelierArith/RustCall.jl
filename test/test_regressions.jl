@@ -320,4 +320,41 @@ using Test
         @test result !== nothing
         @test occursin("Wrapper", result)
     end
+
+    @testset "Lifetime parameters are skipped in generic function detection" begin
+        # Function with lifetime and type parameter
+        code = """
+        pub fn process<'a, T>(data: &'a T) -> &'a T {
+            data
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_lifetime")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "process")
+        info = RustCall.GENERIC_FUNCTION_REGISTRY["process"]
+        # Should only have T, not 'a
+        @test info.type_params == [:T]
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "Lifetime-only generic functions are not registered" begin
+        # Function with only lifetime parameters (not truly generic for monomorphization)
+        code = """
+        pub fn borrow<'a>(data: &'a i32) -> &'a i32 {
+            data
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_lifetime_only")
+        # Should not be registered since there are no type parameters
+        @test !haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "borrow")
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "parse_inline_constraints skips lifetime parameters" begin
+        type_params, constraints = RustCall.parse_inline_constraints("'a, T: Clone, U")
+        @test type_params == [:T, :U]
+        @test haskey(constraints, :T)
+        @test !haskey(constraints, Symbol("'a"))
+    end
 end

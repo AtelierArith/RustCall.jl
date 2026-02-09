@@ -584,20 +584,33 @@ function extract_function_code(code::String, func_name::String)
                 i = nextind(code_after_start, i)
             end
         elseif c == '\''
-            # Character literal — skip until unescaped closing quote
-            i = nextind(code_after_start, i)
-            while i <= len
-                sc = code_after_start[i]
-                if sc == '\\'
-                    i = nextind(code_after_start, i)
-                    if i <= len
+            # Distinguish Rust lifetime parameters ('a, 'static) from char literals ('x', '\n')
+            # Lifetimes: preceded by & or , or < or whitespace, followed by an identifier
+            # Char literals: 'x' or '\x' — always have a closing ' within a few characters
+            next_i = nextind(code_after_start, i)
+            if next_i <= len
+                next_c = code_after_start[next_i]
+                if isletter(next_c) || next_c == '_'
+                    # Check if this is a lifetime: identifier followed by non-quote
+                    # Scan forward to see if closing quote comes immediately after one char
+                    after_id = nextind(code_after_start, next_i)
+                    if after_id <= len && code_after_start[after_id] == '\''
+                        # Char literal like 'x' — skip the three characters
+                        i = after_id
+                    else
+                        # Lifetime like 'a — just skip the quote, let normal iteration handle the rest
+                    end
+                elseif next_c == '\\'
+                    # Escaped char literal like '\n', '\x00' — skip until closing '
+                    i = next_i
+                    while i <= len
+                        sc = code_after_start[i]
+                        if sc == '\''
+                            break
+                        end
                         i = nextind(code_after_start, i)
                     end
-                    continue
-                elseif sc == '\''
-                    break
                 end
-                i = nextind(code_after_start, i)
             end
         elseif c == '/' && i < len
             next_c = code_after_start[nextind(code_after_start, i)]
@@ -654,11 +667,20 @@ function _detect_and_register_generic_functions(code::String, lib_name::String)
             type_params = Symbol[]
             for param in split(type_params_str, ',', keepempty=false)
                 param = strip(param)
+                # Skip Rust lifetime parameters (e.g., 'a, 'static)
+                if startswith(param, "'")
+                    continue
+                end
                 # Handle trait bounds: T: Copy + Clone -> just T
                 if occursin(':', param)
                     param = split(param, ':')[1]
                 end
                 push!(type_params, Symbol(strip(param)))
+            end
+
+            # Skip if only lifetime parameters were found (no type params to monomorphize)
+            if isempty(type_params)
+                continue
             end
 
             # Extract the full function code

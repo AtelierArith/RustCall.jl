@@ -56,6 +56,10 @@ function parse_julia_functions(code::String)
             is_generic = true
             for param in split(type_params_str, ',')
                 param = strip(param)
+                # Skip Rust lifetime parameters (e.g., 'a, 'static)
+                if startswith(param, "'")
+                    continue
+                end
                 # Handle trait bounds: T: Copy -> just T
                 if occursin(':', param)
                     param = strip(split(param, ':')[1])

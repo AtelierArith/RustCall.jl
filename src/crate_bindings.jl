@@ -203,6 +203,10 @@ function parse_julia_structs_from_source(code::String)
         if type_params_str !== nothing && !isempty(type_params_str)
             for p in split(type_params_str, ',')
                 p = strip(p)
+                # Skip Rust lifetime parameters (e.g., 'a, 'static)
+                if startswith(p, "'")
+                    continue
+                end
                 if occursin(':', p)
                     p = strip(split(p, ':')[1])
                 end
