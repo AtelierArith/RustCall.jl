@@ -4,6 +4,16 @@ using RustCall
 using Test
 
 @testset "LLVM Call Integration" begin
+    @testset "RUST_MODULES uses String keys (#102)" begin
+        # RUST_MODULES should use String (SHA256 hex) keys, not UInt64
+        @test keytype(RustCall.RUST_MODULES) == String
+    end
+
+    @testset "FUNCTION_CACHE removed (#103)" begin
+        # FUNCTION_CACHE was dead code (never populated) and has been removed
+        @test !isdefined(RustCall, :FUNCTION_CACHE)
+    end
+
     @testset "LLVMCodeGenerator" begin
         # Test default configuration
         codegen = RustCall.get_default_codegen()

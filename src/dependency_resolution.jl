@@ -133,19 +133,29 @@ Higher score = more specific.
 - "1.0.5-beta" -> 4
 """
 function version_specificity(version::String)
-    # Strip leading operators (^, ~, =, >, <)
-    clean_version = replace(version, r"^[\^~=><]+" => "")
+    # Handle compound constraints like ">=1.0, <2.0" by splitting on ","
+    # and taking the maximum specificity across parts
+    constraints = split(version, ',')
+    max_score = 0
 
-    # Count version components
-    parts = split(clean_version, '.')
-    score = length(parts)
+    for constraint in constraints
+        part = strip(constraint)
+        # Strip leading operators (^, ~, =, >, <)
+        clean_version = replace(part, r"^[\^~=><]+" => "")
 
-    # Add point for prerelease/build metadata
-    if occursin('-', clean_version) || occursin('+', clean_version)
-        score += 1
+        # Count version components
+        components = split(clean_version, '.')
+        score = length(components)
+
+        # Add point for prerelease/build metadata
+        if occursin('-', clean_version) || occursin('+', clean_version)
+            score += 1
+        end
+
+        max_score = max(max_score, score)
     end
 
-    score
+    max_score
 end
 
 """
