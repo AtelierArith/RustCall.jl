@@ -42,7 +42,7 @@ const RUST_TO_JULIA_TYPE_MAP = Dict{Symbol, Type}(
     :c_double => Cdouble,
 
     # String types (basic support)
-    :str => Cstring,  # &str is passed as *const u8 (Cstring)
+    :str => Cstring,  # bare :str symbol maps to Cstring for simple FFI
 )
 
 """
@@ -132,8 +132,10 @@ function rusttype_to_julia(rust_type::String)
     # Handle string types
     if rust_type == "String"
         return RustString
-    elseif rust_type == "&str" || rust_type == "str"
-        return Cstring  # &str is passed as Cstring in FFI
+    elseif rust_type == "&str"
+        return RustStr  # &str is a fat pointer (ptr + len), represented by RustStr
+    elseif rust_type == "str"
+        return Cstring  # bare str symbol maps to Cstring for simple FFI
     end
 
     # Handle unit type
@@ -168,7 +170,7 @@ function juliatype_to_rust(julia_type::Type)
     elseif julia_type == RustString
         return "String"
     elseif julia_type == RustStr
-        return "*const u8"  # &str is passed as *const u8
+        return "&str"  # RustStr represents Rust's &str (fat pointer: ptr + len)
     end
 
     # Handle pointer types

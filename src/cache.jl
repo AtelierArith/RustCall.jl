@@ -5,6 +5,15 @@ using SHA
 using Dates
 
 """
+    CACHE_LOCK
+
+ReentrantLock guarding concurrent access to the cache directory.
+Prevents corruption when multiple tasks/threads save or load cached
+artifacts simultaneously.
+"""
+const CACHE_LOCK = ReentrantLock()
+
+"""
     CacheMetadata
 
 Metadata stored with cached libraries.
@@ -101,17 +110,19 @@ end
 Save a compiled library to the cache along with its metadata.
 """
 function save_cached_library(cache_key::String, lib_path::String, metadata::CacheMetadata)
-    cache_dir = get_cache_dir()
-    lib_ext = get_library_extension()
-    dest_lib_path = joinpath(cache_dir, "$(cache_key)$(lib_ext)")
+    lock(CACHE_LOCK) do
+        cache_dir = get_cache_dir()
+        lib_ext = get_library_extension()
+        dest_lib_path = joinpath(cache_dir, "$(cache_key)$(lib_ext)")
 
-    # Copy the library file
-    cp(lib_path, dest_lib_path, force=true)
+        # Copy the library file
+        cp(lib_path, dest_lib_path, force=true)
 
-    # Save metadata
-    save_cache_metadata(cache_key, metadata)
+        # Save metadata (called under the same lock)
+        _save_cache_metadata_unlocked(cache_key, metadata)
 
-    return dest_lib_path
+        return dest_lib_path
+    end
 end
 
 """
@@ -120,13 +131,15 @@ end
 Save a compiled LLVM IR file to the cache.
 """
 function save_cached_llvm_ir(cache_key::String, ir_path::String)
-    cache_dir = get_cache_dir()
-    dest_ir_path = joinpath(cache_dir, "$(cache_key).ll")
+    lock(CACHE_LOCK) do
+        cache_dir = get_cache_dir()
+        dest_ir_path = joinpath(cache_dir, "$(cache_key).ll")
 
-    # Copy the IR file
-    cp(ir_path, dest_ir_path, force=true)
+        # Copy the IR file
+        cp(ir_path, dest_ir_path, force=true)
 
-    return dest_ir_path
+        return dest_ir_path
+    end
 end
 
 """
@@ -135,21 +148,23 @@ end
 Load a cached library and return its handle and library name.
 """
 function load_cached_library(cache_key::String)
-    cached_lib = get_cached_library(cache_key)
-    if cached_lib === nothing
-        error("Cached library not found for key: $cache_key")
+    lock(CACHE_LOCK) do
+        cached_lib = get_cached_library(cache_key)
+        if cached_lib === nothing
+            error("Cached library not found for key: $cache_key")
+        end
+
+        # Load the library
+        lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        if lib_handle == C_NULL
+            error("Failed to load cached library: $cached_lib")
+        end
+
+        # Generate library name from cache key
+        lib_name = "rust_cache_$(cache_key[1:16])"  # Use first 16 chars for readability
+
+        return lib_handle, lib_name
     end
-
-    # Load the library
-    lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
-    if lib_handle == C_NULL
-        error("Failed to load cached library: $cached_lib")
-    end
-
-    # Generate library name from cache key
-    lib_name = "rust_cache_$(cache_key[1:16])"  # Use first 16 chars for readability
-
-    return lib_handle, lib_name
 end
 
 """
@@ -175,21 +190,19 @@ save_cache_metadata("abc123...", metadata)
 ```
 """
 function save_cache_metadata(cache_key::String, metadata::CacheMetadata)
+    lock(CACHE_LOCK) do
+        _save_cache_metadata_unlocked(cache_key, metadata)
+    end
+end
+
+# Internal helper called when CACHE_LOCK is already held.
+function _save_cache_metadata_unlocked(cache_key::String, metadata::CacheMetadata)
     metadata_dir = get_metadata_dir()
     metadata_path = joinpath(metadata_dir, "$(cache_key).json")
 
-    # Simple JSON-like serialization (we'll use a simple format)
-    metadata_dict = Dict(
-        "cache_key" => metadata.cache_key,
-        "code_hash" => string(metadata.code_hash),
-        "compiler_config" => metadata.compiler_config,
-        "target_triple" => metadata.target_triple,
-        "created_at" => string(metadata.created_at),
-        "functions" => metadata.functions
-    )
-
-    # Write as JSON (simple format for now)
-    open(metadata_path, "w") do io
+    # Write to a temp file first, then atomically rename to prevent partial reads
+    tmp_path = metadata_path * ".tmp"
+    open(tmp_path, "w") do io
         println(io, "{")
         println(io, "  \"cache_key\": \"$(metadata.cache_key)\",")
         println(io, "  \"code_hash\": \"$(metadata.code_hash)\",")
@@ -199,6 +212,7 @@ function save_cache_metadata(cache_key::String, metadata::CacheMetadata)
         println(io, "  \"functions\": [$(join(map(f -> "\"$f\"", metadata.functions), ", "))]")
         println(io, "}")
     end
+    mv(tmp_path, metadata_path, force=true)
 end
 
 """
@@ -225,6 +239,12 @@ end
 ```
 """
 function load_cache_metadata(cache_key::String)
+    lock(CACHE_LOCK) do
+        _load_cache_metadata_unlocked(cache_key)
+    end
+end
+
+function _load_cache_metadata_unlocked(cache_key::String)
     metadata_dir = get_metadata_dir()
     metadata_path = joinpath(metadata_dir, "$(cache_key).json")
 
@@ -232,14 +252,36 @@ function load_cache_metadata(cache_key::String)
         return nothing
     end
 
-    # Simple JSON parsing (for now, we'll use a basic approach)
-    # In production, consider using JSON.jl
     try
         content = read(metadata_path, String)
-        # Simple parsing - extract key fields
-        # For now, return a basic structure
-        # Full JSON parsing can be added later if needed
-        return nothing  # Placeholder - implement full parsing if needed
+
+        # Parse simple JSON fields written by save_cache_metadata.
+        # The format is a flat object with string values and one string-array value.
+        function _extract_string_field(text, key)
+            m = match(Regex("\"$(key)\"\\s*:\\s*\"([^\"]*)\""), text)
+            return m === nothing ? "" : String(m.captures[1])
+        end
+
+        ck = _extract_string_field(content, "cache_key")
+        ch = _extract_string_field(content, "code_hash")
+        cc = _extract_string_field(content, "compiler_config")
+        tt = _extract_string_field(content, "target_triple")
+        ca_str = _extract_string_field(content, "created_at")
+
+        # Parse the functions array: "functions": ["f1", "f2"]
+        funcs = String[]
+        m_funcs = match(r"\"functions\"\s*:\s*\[([^\]]*)\]", content)
+        if m_funcs !== nothing
+            arr_content = m_funcs.captures[1]
+            for m_item in eachmatch(r"\"([^\"]+)\"", arr_content)
+                push!(funcs, String(m_item.captures[1]))
+            end
+        end
+
+        # Parse created_at datetime
+        created_at = isempty(ca_str) ? Dates.now() : DateTime(ca_str)
+
+        return CacheMetadata(ck, ch, cc, tt, created_at, funcs)
     catch e
         @warn "Failed to load cache metadata: $e"
         return nothing
@@ -253,6 +295,12 @@ Clear all cached libraries and metadata.
 On Windows, some files may be locked and cannot be deleted immediately.
 """
 function clear_cache()
+    lock(CACHE_LOCK) do
+        _clear_cache_unlocked()
+    end
+end
+
+function _clear_cache_unlocked()
     cache_dir = get_cache_dir()
     if isdir(cache_dir)
         try

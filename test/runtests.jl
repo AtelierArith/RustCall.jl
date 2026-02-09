@@ -81,13 +81,14 @@ include("test_regressions.jl")
 
         # Test string types
         @test rusttype_to_julia("String") == RustString
-        @test rusttype_to_julia("&str") == Cstring
-        @test rusttype_to_julia("str") == Cstring
+        @test rusttype_to_julia("&str") == RustStr  # &str is a fat pointer (issue #89)
+        @test rusttype_to_julia("str") == Cstring    # bare str maps to Cstring
         @test rusttype_to_julia("*const u8") == Cstring
         @test rusttype_to_julia("*mut u8") == Ptr{UInt8}
         @test juliatype_to_rust(String) == "*const u8"
         @test juliatype_to_rust(Cstring) == "*const u8"
         @test juliatype_to_rust(RustString) == "String"
+        @test juliatype_to_rust(RustStr) == "&str"   # RustStr round-trips to &str (issue #89)
     end
 
     @testset "RustResult" begin
@@ -616,6 +617,68 @@ include("test_regressions.jl")
         end
     else
         @warn "rustc not found, skipping compilation tests"
+    end
+
+    @testset "Temp directory cleanup (issue #88)" begin
+        if check_rustc_available()
+            @testset "Temp dir cleaned up on compilation error" begin
+                invalid_code = """
+                #[no_mangle]
+                pub extern "C" fn bad_syntax( -> i32 { 42 }
+                """
+                compiler = RustCompiler(debug_mode=false)
+
+                # Track temp dirs created during compilation
+                pre_tmpdirs = Set(readdir(tempdir()))
+
+                @test_throws CompilationError compile_rust_to_shared_lib(invalid_code; compiler=compiler)
+
+                # Verify no new temp dirs leaked (the try-finally should clean up)
+                post_tmpdirs = Set(readdir(tempdir()))
+                new_dirs = setdiff(post_tmpdirs, pre_tmpdirs)
+                # Filter for rust_code-related dirs only
+                rust_dirs = filter(d -> isdir(joinpath(tempdir(), d)) && isfile(joinpath(tempdir(), d, "rust_code.rs")), new_dirs)
+                @test isempty(rust_dirs)
+            end
+
+            @testset "Temp dir cleaned up on LLVM IR compilation error" begin
+                invalid_code = """
+                #[no_mangle]
+                pub extern "C" fn bad_syntax( -> i32 { 42 }
+                """
+                compiler = RustCompiler(debug_mode=false)
+
+                pre_tmpdirs = Set(readdir(tempdir()))
+
+                @test_throws CompilationError compile_rust_to_llvm_ir(invalid_code; compiler=compiler)
+
+                post_tmpdirs = Set(readdir(tempdir()))
+                new_dirs = setdiff(post_tmpdirs, pre_tmpdirs)
+                rust_dirs = filter(d -> isdir(joinpath(tempdir(), d)) && isfile(joinpath(tempdir(), d, "rust_code.rs")), new_dirs)
+                @test isempty(rust_dirs)
+            end
+
+            @testset "Debug mode preserves temp dir on error" begin
+                invalid_code = """
+                #[no_mangle]
+                pub extern "C" fn bad_syntax( -> i32 { 42 }
+                """
+                debug_dir = mktempdir()
+                compiler = RustCompiler(debug_mode=true, debug_dir=debug_dir)
+
+                @test_throws CompilationError compile_rust_to_shared_lib(invalid_code; compiler=compiler)
+
+                # Debug mode should keep the files (filename uses hash via _unique_source_name)
+                @test isdir(debug_dir)
+                rs_files = filter(f -> endswith(f, ".rs"), readdir(debug_dir))
+                @test !isempty(rs_files)
+
+                # Clean up
+                rm(debug_dir, recursive=true, force=true)
+            end
+        else
+            @warn "rustc not found, skipping temp directory cleanup tests"
+        end
     end
 
     @testset "Error Handling Enhancement" begin

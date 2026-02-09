@@ -192,130 +192,134 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
     base_name = _unique_source_name(code, compiler)
     rs_file = joinpath(tmp_dir, "$(base_name).rs")
     ll_file = joinpath(tmp_dir, "$(base_name).ll")
-
-    # Write the Rust code to the temporary file
-    write(rs_file, code)
-
-    # Build the rustc command using RustToolChain.jl
-    rustc_cmd = rustc()
-    cmd_args = vcat(
-        [string(rustc_cmd.exec[1])],  # Get the actual rustc path from RustToolChain
-        [
-            "--emit=llvm-ir",
-            "--crate-type=cdylib",
-            "-C", "opt-level=$(compiler.optimization_level)",
-            "-C", "panic=abort",  # Simpler error handling for FFI
-            "--target=$(compiler.target_triple)",
-            "-o", ll_file,
-            rs_file
-        ]
-    )
-
-    if compiler.emit_debug_info
-        push!(cmd_args, "-g")
-    end
-
-    # Run rustc and capture stderr
-    cmd = Cmd(cmd_args)
-    cmd_str = join(cmd_args, " ")
+    success_flag = false
 
     try
-        # Capture stderr for better error messages
-        stderr_io = IOBuffer()
-        proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
-        wait(proc)
+        # Write the Rust code to the temporary file
+        write(rs_file, code)
 
-        if !success(proc)
-            stderr_str = String(take!(stderr_io))
+        # Build the rustc command using RustToolChain.jl
+        rustc_cmd = rustc()
+        cmd_args = vcat(
+            [string(rustc_cmd.exec[1])],  # Get the actual rustc path from RustToolChain
+            [
+                "--emit=llvm-ir",
+                "--crate-type=cdylib",
+                "-C", "opt-level=$(compiler.optimization_level)",
+                "-C", "panic=abort",  # Simpler error handling for FFI
+                "--target=$(compiler.target_triple)",
+                "-o", ll_file,
+                rs_file
+            ]
+        )
+
+        if compiler.emit_debug_info
+            push!(cmd_args, "-g")
+        end
+
+        # Run rustc and capture stderr
+        cmd = Cmd(cmd_args)
+        cmd_str = join(cmd_args, " ")
+
+        try
+            # Capture stderr for better error messages
+            stderr_io = IOBuffer()
+            proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
+            wait(proc)
+
+            if !Base.success(proc)
+                stderr_str = String(take!(stderr_io))
+                close(stderr_io)
+
+                if compiler.debug_mode
+                    @warn "Debug mode: keeping intermediate files in $tmp_dir"
+                    @info "Debug mode: You can inspect the files to debug the compilation error"
+                    @info "Debug mode: Source file" file=rs_file
+                    @info "Debug mode: Command" cmd=cmd_str
+                end
+
+                # Extract error line numbers and file path
+                error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
+                line_num = isempty(error_lines) ? 0 : error_lines[1]
+
+                # Build context dictionary
+                context = Dict{String, Any}(
+                    "tmp_dir" => tmp_dir,
+                    "rs_file" => rs_file,
+                    "ll_file" => ll_file,
+                    "error_count" => length(error_lines),
+                    "debug_mode" => compiler.debug_mode
+                )
+
+                # Format and throw compilation error
+                throw(CompilationError(
+                    "Failed to compile Rust code to LLVM IR",
+                    stderr_str,
+                    code,
+                    cmd_str;
+                    file_path=rs_file,
+                    line_number=line_num,
+                    context=context
+                ))
+            end
             close(stderr_io)
-
-            # Clean up on error (unless debug mode)
-            if !compiler.debug_mode
-                rm(tmp_dir, recursive=true, force=true)
-            else
-                @warn "Debug mode: keeping intermediate files in $tmp_dir"
-                @info "Debug mode: You can inspect the files to debug the compilation error"
-                @info "Debug mode: Source file" file=rs_file
-                @info "Debug mode: Command" cmd=cmd_str
+        catch e
+            if isa(e, CompilationError)
+                rethrow(e)
             end
 
-            # Extract error line numbers and file path
-            error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
-            line_num = isempty(error_lines) ? 0 : error_lines[1]
+            if compiler.debug_mode
+                @warn "Debug mode: keeping intermediate files in $tmp_dir"
+            end
 
-            # Build context dictionary
+            # Fallback error
+            throw(CompilationError(
+                "Unexpected error during compilation: $e",
+                "",
+                code,
+                cmd_str
+            ))
+        end
+
+        # Verify the output file exists
+        if !isfile(ll_file)
             context = Dict{String, Any}(
+                "expected_file" => ll_file,
                 "tmp_dir" => tmp_dir,
-                "rs_file" => rs_file,
-                "ll_file" => ll_file,
-                "error_count" => length(error_lines),
                 "debug_mode" => compiler.debug_mode
             )
 
-            # Format and throw compilation error
             throw(CompilationError(
-                "Failed to compile Rust code to LLVM IR",
-                stderr_str,
+                "LLVM IR file was not generated",
+                "Output file does not exist: $ll_file",
                 code,
                 cmd_str;
                 file_path=rs_file,
-                line_number=line_num,
                 context=context
             ))
         end
-        close(stderr_io)
-    catch e
-        if isa(e, CompilationError)
-            rethrow(e)
+
+        # Debug mode: print file locations and additional info
+        if compiler.debug_mode
+            @info "Debug mode: LLVM IR generated" file=ll_file source=rs_file
+            @info "Debug mode: Temporary directory" dir=tmp_dir
+            if compiler.emit_debug_info
+                @info "Debug mode: Debug info enabled"
+            end
         end
 
-        # Clean up on error (unless debug mode)
-        if !compiler.debug_mode
-            rm(tmp_dir, recursive=true, force=true)
-        else
-            @warn "Debug mode: keeping intermediate files in $tmp_dir"
-        end
-
-        # Fallback error
-        throw(CompilationError(
-            "Unexpected error during compilation: $e",
-            "",
-            code,
-            cmd_str
-        ))
-    end
-
-    # Verify the output file exists
-    if !isfile(ll_file)
-        if !compiler.debug_mode
-            rm(tmp_dir, recursive=true, force=true)
-        end
-        context = Dict{String, Any}(
-            "expected_file" => ll_file,
-            "tmp_dir" => tmp_dir,
-            "debug_mode" => compiler.debug_mode
-        )
-
-        throw(CompilationError(
-            "LLVM IR file was not generated",
-            "Output file does not exist: $ll_file",
-            code,
-            cmd_str;
-            file_path=rs_file,
-            context=context
-        ))
-    end
-
-    # Debug mode: print file locations and additional info
-    if compiler.debug_mode
-        @info "Debug mode: LLVM IR generated" file=ll_file source=rs_file
-        @info "Debug mode: Temporary directory" dir=tmp_dir
-        if compiler.emit_debug_info
-            @info "Debug mode: Debug info enabled"
+        success_flag = true
+        return ll_file
+    finally
+        # Clean up temp directory on error paths, unless debug mode retains files
+        if !success_flag && !compiler.debug_mode && isdir(tmp_dir)
+            try
+                rm(tmp_dir, recursive=true, force=true)
+            catch
+                # Best-effort cleanup; ignore errors (e.g., locked files on Windows)
+            end
         end
     end
-
-    return ll_file
 end
 
 """
@@ -349,130 +353,134 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
     rs_file = joinpath(tmp_dir, "$(base_name).rs")
     lib_ext = get_library_extension()
     lib_file = joinpath(tmp_dir, "lib$(base_name)$lib_ext")
-
-    # Write the Rust code to the temporary file
-    write(rs_file, code)
-
-    # Build the rustc command for shared library using RustToolChain.jl
-    rustc_cmd = rustc()
-    cmd_args = vcat(
-        [string(rustc_cmd.exec[1])],  # Get the actual rustc path from RustToolChain
-        [
-            "--crate-type=cdylib",
-            "-C", "opt-level=$(compiler.optimization_level)",
-            "-C", "panic=abort",
-            "--target=$(compiler.target_triple)",
-            "-o", lib_file,
-            rs_file
-        ]
-    )
-
-    if compiler.emit_debug_info
-        push!(cmd_args, "-g")
-    end
-
-    # Run rustc and capture stderr
-    cmd = Cmd(cmd_args)
-    cmd_str = join(cmd_args, " ")
+    success_flag = false
 
     try
-        # Capture stderr for better error messages
-        stderr_io = IOBuffer()
-        proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
-        wait(proc)
+        # Write the Rust code to the temporary file
+        write(rs_file, code)
 
-        if !success(proc)
-            stderr_str = String(take!(stderr_io))
+        # Build the rustc command for shared library using RustToolChain.jl
+        rustc_cmd = rustc()
+        cmd_args = vcat(
+            [string(rustc_cmd.exec[1])],  # Get the actual rustc path from RustToolChain
+            [
+                "--crate-type=cdylib",
+                "-C", "opt-level=$(compiler.optimization_level)",
+                "-C", "panic=abort",
+                "--target=$(compiler.target_triple)",
+                "-o", lib_file,
+                rs_file
+            ]
+        )
+
+        if compiler.emit_debug_info
+            push!(cmd_args, "-g")
+        end
+
+        # Run rustc and capture stderr
+        cmd = Cmd(cmd_args)
+        cmd_str = join(cmd_args, " ")
+
+        try
+            # Capture stderr for better error messages
+            stderr_io = IOBuffer()
+            proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
+            wait(proc)
+
+            if !Base.success(proc)
+                stderr_str = String(take!(stderr_io))
+                close(stderr_io)
+
+                if compiler.debug_mode
+                    @warn "Debug mode: keeping intermediate files in $tmp_dir"
+                    @info "Debug mode: You can inspect the files to debug the compilation error"
+                    @info "Debug mode: Source file" file=rs_file
+                    @info "Debug mode: Command" cmd=cmd_str
+                end
+
+                # Extract error line numbers and file path
+                error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
+                line_num = isempty(error_lines) ? 0 : error_lines[1]
+
+                # Build context dictionary
+                context = Dict{String, Any}(
+                    "tmp_dir" => tmp_dir,
+                    "rs_file" => rs_file,
+                    "lib_file" => lib_file,
+                    "error_count" => length(error_lines),
+                    "debug_mode" => compiler.debug_mode
+                )
+
+                # Format and throw compilation error
+                throw(CompilationError(
+                    "Failed to compile Rust code to shared library",
+                    stderr_str,
+                    code,
+                    cmd_str;
+                    file_path=rs_file,
+                    line_number=line_num,
+                    context=context
+                ))
+            end
             close(stderr_io)
-
-            # Clean up on error (unless debug mode)
-            if !compiler.debug_mode
-                rm(tmp_dir, recursive=true, force=true)
-            else
-                @warn "Debug mode: keeping intermediate files in $tmp_dir"
-                @info "Debug mode: You can inspect the files to debug the compilation error"
-                @info "Debug mode: Source file" file=rs_file
-                @info "Debug mode: Command" cmd=cmd_str
+        catch e
+            if isa(e, CompilationError)
+                rethrow(e)
             end
 
-            # Extract error line numbers and file path
-            error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
-            line_num = isempty(error_lines) ? 0 : error_lines[1]
+            if compiler.debug_mode
+                @warn "Debug mode: keeping intermediate files in $tmp_dir"
+            end
 
-            # Build context dictionary
+            # Fallback error
+            throw(CompilationError(
+                "Unexpected error during compilation: $e",
+                "",
+                code,
+                cmd_str
+            ))
+        end
+
+        # Verify the output file exists
+        if !isfile(lib_file)
             context = Dict{String, Any}(
+                "expected_file" => lib_file,
                 "tmp_dir" => tmp_dir,
-                "rs_file" => rs_file,
-                "lib_file" => lib_file,
-                "error_count" => length(error_lines),
                 "debug_mode" => compiler.debug_mode
             )
 
-            # Format and throw compilation error
             throw(CompilationError(
-                "Failed to compile Rust code to shared library",
-                stderr_str,
+                "Shared library was not generated",
+                "Output file does not exist: $lib_file",
                 code,
                 cmd_str;
                 file_path=rs_file,
-                line_number=line_num,
                 context=context
             ))
         end
-        close(stderr_io)
-    catch e
-        if isa(e, CompilationError)
-            rethrow(e)
+
+        # Debug mode: print file locations and additional info
+        if compiler.debug_mode
+            @info "Debug mode: Shared library generated" file=lib_file source=rs_file
+            @info "Debug mode: Temporary directory" dir=tmp_dir
+            if compiler.emit_debug_info
+                @info "Debug mode: Debug info enabled"
+            end
+            @info "Debug mode: Optimization level" level=compiler.optimization_level
         end
 
-        # Clean up on error (unless debug mode)
-        if !compiler.debug_mode
-            rm(tmp_dir, recursive=true, force=true)
-        else
-            @warn "Debug mode: keeping intermediate files in $tmp_dir"
+        success_flag = true
+        return lib_file
+    finally
+        # Clean up temp directory on error paths, unless debug mode retains files
+        if !success_flag && !compiler.debug_mode && isdir(tmp_dir)
+            try
+                rm(tmp_dir, recursive=true, force=true)
+            catch
+                # Best-effort cleanup; ignore errors (e.g., locked files on Windows)
+            end
         end
-
-        # Fallback error
-        throw(CompilationError(
-            "Unexpected error during compilation: $e",
-            "",
-            code,
-            cmd_str
-        ))
     end
-
-    # Verify the output file exists
-    if !isfile(lib_file)
-        if !compiler.debug_mode
-            rm(tmp_dir, recursive=true, force=true)
-        end
-        context = Dict{String, Any}(
-            "expected_file" => lib_file,
-            "tmp_dir" => tmp_dir,
-            "debug_mode" => compiler.debug_mode
-        )
-
-        throw(CompilationError(
-            "Shared library was not generated",
-            "Output file does not exist: $lib_file",
-            code,
-            cmd_str;
-            file_path=rs_file,
-            context=context
-        ))
-    end
-
-    # Debug mode: print file locations and additional info
-    if compiler.debug_mode
-        @info "Debug mode: Shared library generated" file=lib_file source=rs_file
-        @info "Debug mode: Temporary directory" dir=tmp_dir
-        if compiler.emit_debug_info
-            @info "Debug mode: Debug info enabled"
-        end
-        @info "Debug mode: Optimization level" level=compiler.optimization_level
-    end
-
-    return lib_file
 end
 
 """
