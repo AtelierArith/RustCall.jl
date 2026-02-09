@@ -109,6 +109,15 @@ using Test
             @test arc.dropped
         end
 
+        @testset "update_*_finalizer dead code removed (#116)" begin
+            # update_box_finalizer, update_rc_finalizer, update_arc_finalizer
+            # were dangerous because Julia's finalizer() appends (doesn't replace).
+            # They must not exist in the module.
+            @test !isdefined(RustCall, :update_box_finalizer)
+            @test !isdefined(RustCall, :update_rc_finalizer)
+            @test !isdefined(RustCall, :update_arc_finalizer)
+        end
+
         @warn "Rust helpers library not available, skipping full integration tests"
         @warn "To enable these tests, build the library with: using Pkg; Pkg.build(\"RustCall\")"
     else
