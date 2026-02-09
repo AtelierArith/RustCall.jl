@@ -250,4 +250,24 @@ using Test
         @test infos[1].has_derive_julia_struct
         @test get(infos[1].derive_options, "Clone", false)
     end
+
+    @testset "extract_function_code returns nothing for nonexistent function" begin
+        code = """
+        fn real_function() {
+            let x = 1;
+        }
+        """
+        @test RustCall.extract_function_code(code, "nonexistent") === nothing
+    end
+
+    @testset "detect_and_register warns on extraction fallback" begin
+        # Code with a generic function whose name doesn't match the fn pattern
+        # (no braces after function signature — causes extract_function_code to fail)
+        code = """
+        #[no_mangle]
+        pub extern "C" fn missing_body<T>(x: T) -> T
+        """
+        # Should emit a warning about falling back to entire block
+        @test_warn "Failed to extract function" RustCall._detect_and_register_generic_functions(code, "test_lib")
+    end
 end

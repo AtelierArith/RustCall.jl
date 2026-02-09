@@ -665,6 +665,8 @@ function _detect_and_register_generic_functions(code::String, lib_name::String)
             func_code = extract_function_code(code, func_name)
 
             if func_code === nothing
+                @warn "Failed to extract function '$(func_name)' from code block; " *
+                      "falling back to entire block. This may cause issues with generic specialization."
                 func_code = code
             end
 
