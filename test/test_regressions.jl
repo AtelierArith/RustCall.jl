@@ -351,6 +351,23 @@ using Test
         empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
     end
 
+    @testset "safe_dlsym prevents NULL segfaults (#118)" begin
+        # safe_dlsym should be defined
+        @test isdefined(RustCall, :safe_dlsym)
+
+        # With a valid library handle, looking up a nonexistent symbol
+        # should throw a clear error, not return NULL
+        if RustCall.is_rust_helpers_available()
+            lib = RustCall.get_rust_helpers_lib()
+            @test_throws ErrorException RustCall.safe_dlsym(lib, :nonexistent_symbol_xyz)
+            try
+                RustCall.safe_dlsym(lib, :nonexistent_symbol_xyz)
+            catch e
+                @test occursin("not found", e.msg)
+            end
+        end
+    end
+
     @testset "Concurrent registry access is safe (#112)" begin
         # Verify that concurrent reads/writes to global registries
         # don't crash (thread safety via REGISTRY_LOCK)
