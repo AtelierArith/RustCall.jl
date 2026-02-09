@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>External Crate Bindings · RustCall.jl</title><meta name="title" content="External Crate Bindings · RustCall.jl"/><meta property="og:title" content="External Crate Bindings · RustCall.jl"/><meta property="twitter:title" content="External Crate Bindings · RustCall.jl"/><meta name="description" content="Documentation for RustCall.jl."/><meta property="og:description" content="Documentation for RustCall.jl."/><meta property="twitter:description" content="Documentation for RustCall.jl."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/crate_bindings/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/crate_bindings/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/crate_bindings/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../examples/">Examples</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../generics/">Generics</a></li><li class="is-active"><a class="tocitem" href>External Crate Bindings</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Quick-Start"><span>Quick Start</span></a></li><li><a class="tocitem" href="#The-#[julia]-Attribute"><span>The <code>#[julia]</code> Attribute</span></a></li><li><a class="tocitem" href="#Property-Access-Syntax"><span>Property Access Syntax</span></a></li><li><a class="tocitem" href="#API-Reference"><span>API Reference</span></a></li><li><a class="tocitem" href="#Type-Definitions"><span>Type Definitions</span></a></li><li><a class="tocitem" href="#Build-Process"><span>Build Process</span></a></li><li><a class="tocitem" href="#Caching"><span>Caching</span></a></li><li><a class="tocitem" href="#Supported-Types"><span>Supported Types</span></a></li><li><a class="tocitem" href="#Example:-Complete-Workflow"><span>Example: Complete Workflow</span></a></li><li><a class="tocitem" href="#Precompilation-Support"><span>Precompilation Support</span></a></li><li><a class="tocitem" href="#Troubleshooting"><span>Troubleshooting</span></a></li></ul></li><li><a class="tocitem" href="../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../troubleshooting/">Troubleshooting</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../api/">API Reference</a></li><li><a class="tocitem" href="../status/">Project Status</a></li></ul></li><li><span class="tocitem">Design</span><ul><li><a class="tocitem" href="../design/Phase1/">Phase 1</a></li><li><a class="tocitem" href="../design/Phase2/">Phase 2</a></li><li><a class="tocitem" href="../design/INTERNAL/">Internal</a></li><li><a class="tocitem" href="../design/LLVMCALL/">LLVM Call</a></li></ul></li><li><span class="tocitem">Platforms</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">User Guide</a></li><li class="is-active"><a href>External Crate Bindings</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>External Crate Bindings</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl/blob/cab7a25a22e35975c9c58742661fcbd80227c452/docs/src/crate_bindings.md" title="View source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="External-Crate-Bindings-(Phase-6)"><a class="docs-heading-anchor" href="#External-Crate-Bindings-(Phase-6)">External Crate Bindings (Phase 6)</a><a id="External-Crate-Bindings-(Phase-6)-1"></a><a class="docs-heading-anchor-permalink" href="#External-Crate-Bindings-(Phase-6)" title="Permalink"></a></h1><p>RustCall.jl provides a Maturin-like feature for generating Julia bindings from external Rust crates. This allows you to develop Rust libraries with the <code>#[julia]</code> attribute and automatically generate Julia bindings.</p><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>The feature consists of two components:</p><ol><li><strong><code>juliacall_macros</code></strong> - A Rust proc-macro crate that provides the <code>#[julia]</code> attribute</li><li><strong><code>@rust_crate</code></strong> - A Julia macro that scans external crates and generates bindings</li></ol><h2 id="Quick-Start"><a class="docs-heading-anchor" href="#Quick-Start">Quick Start</a><a id="Quick-Start-1"></a><a class="docs-heading-anchor-permalink" href="#Quick-Start" title="Permalink"></a></h2><h3 id="Rust-Side"><a class="docs-heading-anchor" href="#Rust-Side">Rust Side</a><a id="Rust-Side-1"></a><a class="docs-heading-anchor-permalink" href="#Rust-Side" title="Permalink"></a></h3><p>Create a Rust crate with <code>juliacall_macros</code>:</p><pre><code class="language-toml hljs"># Cargo.toml
+[package]
+name = &quot;my_library&quot;
+version = &quot;0.1.0&quot;
+edition = &quot;2021&quot;
+
+[lib]
+crate-type = [&quot;cdylib&quot;]
+
+[dependencies]
+juliacall_macros = { path = &quot;/path/to/RustCall.jl/deps/juliacall_macros&quot; }
+# Or from crates.io (when published):
+# juliacall_macros = &quot;0.1&quot;</code></pre><pre><code class="language-rust hljs">// src/lib.rs
+use juliacall_macros::julia;
+
+#[julia]
+fn add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}
+
+#[julia]
+pub struct Counter {
+    pub value: i32,
+}
+
+#[julia]
+impl Counter {
+    #[julia]
+    pub fn new(initial: i32) -&gt; Self {
+        Self { value: initial }
+    }
+
+    #[julia]
+    pub fn increment(&amp;mut self) {
+        self.value += 1;
+    }
+
+    #[julia]
+    pub fn get(&amp;self) -&gt; i32 {
+        self.value
+    }
+}</code></pre><h3 id="Julia-Side"><a class="docs-heading-anchor" href="#Julia-Side">Julia Side</a><a id="Julia-Side-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-Side" title="Permalink"></a></h3><pre><code class="language-julia hljs">using RustCall
+
+# Generate and load bindings
+@rust_crate &quot;/path/to/my_library&quot;
+
+# Use the generated module
+result = MyLibrary.add(1, 2)  # =&gt; 3
+
+c = MyLibrary.Counter(0)
+MyLibrary.increment(c)
+MyLibrary.get(c)  # =&gt; 1
+
+# Struct fields support property access syntax
+c.value        # =&gt; 1 (calls get_value)
+c.value = 5    # calls set_value</code></pre><h2 id="The-#[julia]-Attribute"><a class="docs-heading-anchor" href="#The-#[julia]-Attribute">The <code>#[julia]</code> Attribute</a><a id="The-#[julia]-Attribute-1"></a><a class="docs-heading-anchor-permalink" href="#The-#[julia]-Attribute" title="Permalink"></a></h2><p>The <code>#[julia]</code> attribute simplifies FFI function definitions.</p><h3 id="For-Functions"><a class="docs-heading-anchor" href="#For-Functions">For Functions</a><a id="For-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#For-Functions" title="Permalink"></a></h3><pre><code class="language-rust hljs">// Before: verbose FFI declaration
+#[no_mangle]
+pub extern &quot;C&quot; fn add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}
+
+// After: simple #[julia] attribute
+#[julia]
+fn add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}</code></pre><p>The <code>#[julia]</code> attribute automatically:</p><ul><li>Adds <code>#[no_mangle]</code></li><li>Makes the function <code>pub extern &quot;C&quot;</code></li></ul><h3 id="For-Structs"><a class="docs-heading-anchor" href="#For-Structs">For Structs</a><a id="For-Structs-1"></a><a class="docs-heading-anchor-permalink" href="#For-Structs" title="Permalink"></a></h3><pre><code class="language-rust hljs">#[julia]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}</code></pre><p>This generates:</p><ul><li><code>#[repr(C)]</code> for C-compatible layout</li><li><code>Point_free(ptr)</code> - Free function</li><li><code>Point_get_x(ptr)</code> / <code>Point_set_x(ptr, value)</code> - Field accessors</li><li><code>Point_get_y(ptr)</code> / <code>Point_set_y(ptr, value)</code> - Field accessors</li></ul><p>On the Julia side, you can access struct fields naturally:</p><pre><code class="language-julia hljs">p = MyModule.Point(3.0, 4.0)
+p.x      # =&gt; 3.0 (uses Point_get_x)
+p.y      # =&gt; 4.0 (uses Point_get_y)
+p.x = 5.0  # (uses Point_set_x)</code></pre><h3 id="For-Impl-Blocks"><a class="docs-heading-anchor" href="#For-Impl-Blocks">For Impl Blocks</a><a id="For-Impl-Blocks-1"></a><a class="docs-heading-anchor-permalink" href="#For-Impl-Blocks" title="Permalink"></a></h3><pre><code class="language-rust hljs">#[julia]
+impl Counter {
+    #[julia]
+    pub fn new(initial: i32) -&gt; Self {
+        Self { value: initial }
+    }
+
+    #[julia]
+    pub fn get(&amp;self) -&gt; i32 {
+        self.value
+    }
+}</code></pre><p>This generates FFI wrappers:</p><ul><li><code>Counter_new(initial)</code> - Returns <code>*mut Counter</code></li><li><code>Counter_get(ptr)</code> - Takes <code>*const Counter</code>, returns <code>i32</code></li></ul><h2 id="Property-Access-Syntax"><a class="docs-heading-anchor" href="#Property-Access-Syntax">Property Access Syntax</a><a id="Property-Access-Syntax-1"></a><a class="docs-heading-anchor-permalink" href="#Property-Access-Syntax" title="Permalink"></a></h2><p>Generated struct wrappers support Julia&#39;s property access syntax for natural field access:</p><pre><code class="language-julia hljs"># Instead of calling accessor functions directly:
+get_x(p)
+set_x(p, 5.0)
+
+# You can use dot notation:
+p.x        # Get field value
+p.x = 5.0  # Set field value</code></pre><p>This works for all FFI-compatible field types (<code>i8</code>, <code>i16</code>, <code>i32</code>, <code>i64</code>, <code>u8</code>, <code>u16</code>, <code>u32</code>, <code>u64</code>, <code>f32</code>, <code>f64</code>, <code>bool</code>, <code>usize</code>, <code>isize</code>).</p><p>You can also use <code>propertynames()</code> to list available fields:</p><pre><code class="language-julia hljs">p = MyModule.Point(1.0, 2.0)
+propertynames(p)  # =&gt; (:x, :y)</code></pre><h2 id="API-Reference"><a class="docs-heading-anchor" href="#API-Reference">API Reference</a><a id="API-Reference-1"></a><a class="docs-heading-anchor-permalink" href="#API-Reference" title="Permalink"></a></h2><h3 id="scan_crate(path)"><a class="docs-heading-anchor" href="#scan_crate(path)"><code>scan_crate(path)</code></a><a id="scan_crate(path)-1"></a><a class="docs-heading-anchor-permalink" href="#scan_crate(path)" title="Permalink"></a></h3><p>Scan a Rust crate and extract <code>#[julia]</code> marked items.</p><pre><code class="language-julia hljs">info = scan_crate(&quot;/path/to/crate&quot;)
+
+println(&quot;Crate: &quot;, info.name)
+println(&quot;Functions: &quot;, length(info.julia_functions))
+println(&quot;Structs: &quot;, length(info.julia_structs))</code></pre><h3 id="generate_bindings(path;-kwargs...)"><a class="docs-heading-anchor" href="#generate_bindings(path;-kwargs...)"><code>generate_bindings(path; kwargs...)</code></a><a id="generate_bindings(path;-kwargs...)-1"></a><a class="docs-heading-anchor-permalink" href="#generate_bindings(path;-kwargs...)" title="Permalink"></a></h3><p>Generate Julia bindings for an external crate.</p><pre><code class="language-julia hljs">bindings = generate_bindings(&quot;/path/to/crate&quot;,
+    output_module_name = &quot;MyBindings&quot;,
+    build_release = true,
+    cache_enabled = true
+)
+
+eval(bindings)
+
+# Now MyBindings module is available
+MyBindings.add(1, 2)</code></pre><h3 id="@rust_crate"><a class="docs-heading-anchor" href="#@rust_crate"><code>@rust_crate</code></a><a id="@rust_crate-1"></a><a class="docs-heading-anchor-permalink" href="#@rust_crate" title="Permalink"></a></h3><p>Macro form for easy one-line usage.</p><pre><code class="language-julia hljs"># Basic usage
+@rust_crate &quot;/path/to/crate&quot;
+
+# With options
+@rust_crate &quot;/path/to/crate&quot; name=&quot;CustomName&quot; release=true cache=true</code></pre><h2 id="Type-Definitions"><a class="docs-heading-anchor" href="#Type-Definitions">Type Definitions</a><a id="Type-Definitions-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Definitions" title="Permalink"></a></h2><h3 id="CrateInfo"><a class="docs-heading-anchor" href="#CrateInfo"><code>CrateInfo</code></a><a id="CrateInfo-1"></a><a class="docs-heading-anchor-permalink" href="#CrateInfo" title="Permalink"></a></h3><p>Information about a scanned Rust crate.</p><table><tr><th style="text-align: right">Field</th><th style="text-align: right">Type</th><th style="text-align: right">Description</th></tr><tr><td style="text-align: right"><code>name</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">Crate name</td></tr><tr><td style="text-align: right"><code>path</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">Absolute path</td></tr><tr><td style="text-align: right"><code>version</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">Crate version</td></tr><tr><td style="text-align: right"><code>dependencies</code></td><td style="text-align: right"><code>Vector{DependencySpec}</code></td><td style="text-align: right">Dependencies</td></tr><tr><td style="text-align: right"><code>julia_functions</code></td><td style="text-align: right"><code>Vector{RustFunctionSignature}</code></td><td style="text-align: right"><code>#[julia]</code> functions</td></tr><tr><td style="text-align: right"><code>julia_structs</code></td><td style="text-align: right"><code>Vector{RustStructInfo}</code></td><td style="text-align: right"><code>#[julia]</code> structs</td></tr><tr><td style="text-align: right"><code>source_files</code></td><td style="text-align: right"><code>Vector{String}</code></td><td style="text-align: right">.rs file paths</td></tr></table><h3 id="CrateBindingOptions"><a class="docs-heading-anchor" href="#CrateBindingOptions"><code>CrateBindingOptions</code></a><a id="CrateBindingOptions-1"></a><a class="docs-heading-anchor-permalink" href="#CrateBindingOptions" title="Permalink"></a></h3><p>Options for binding generation.</p><table><tr><th style="text-align: right">Field</th><th style="text-align: right">Type</th><th style="text-align: right">Default</th><th style="text-align: right">Description</th></tr><tr><td style="text-align: right"><code>output_module_name</code></td><td style="text-align: right"><code>Union{String, Nothing}</code></td><td style="text-align: right"><code>nothing</code></td><td style="text-align: right">Override module name</td></tr><tr><td style="text-align: right"><code>output_path</code></td><td style="text-align: right"><code>Union{String, Nothing}</code></td><td style="text-align: right"><code>nothing</code></td><td style="text-align: right">Write generated code to file</td></tr><tr><td style="text-align: right"><code>use_wrapper_crate</code></td><td style="text-align: right"><code>Bool</code></td><td style="text-align: right"><code>true</code></td><td style="text-align: right">Create wrapper crate</td></tr><tr><td style="text-align: right"><code>build_release</code></td><td style="text-align: right"><code>Bool</code></td><td style="text-align: right"><code>true</code></td><td style="text-align: right">Build in release mode</td></tr><tr><td style="text-align: right"><code>cache_enabled</code></td><td style="text-align: right"><code>Bool</code></td><td style="text-align: right"><code>true</code></td><td style="text-align: right">Enable library caching</td></tr></table><h2 id="Build-Process"><a class="docs-heading-anchor" href="#Build-Process">Build Process</a><a id="Build-Process-1"></a><a class="docs-heading-anchor-permalink" href="#Build-Process" title="Permalink"></a></h2><p>When you call <code>@rust_crate</code>, RustCall.jl:</p><ol><li><strong>Scans the crate</strong> - Parses all <code>.rs</code> files for <code>#[julia]</code> attributes</li><li><strong>Checks cache</strong> - If a cached library exists with matching hash, uses it</li><li><strong>Builds the crate</strong> - If the crate already has <code>cdylib</code> crate-type, builds directly; otherwise creates a wrapper crate</li><li><strong>Generates Julia module</strong> - Creates wrapper functions and struct definitions</li><li><strong>Loads the library</strong> - Loads the compiled <code>.so</code>/<code>.dylib</code>/<code>.dll</code></li></ol><h2 id="Caching"><a class="docs-heading-anchor" href="#Caching">Caching</a><a id="Caching-1"></a><a class="docs-heading-anchor-permalink" href="#Caching" title="Permalink"></a></h2><p>Compiled libraries are cached based on source code hash:</p><pre><code class="language-julia hljs"># Clear the cache
+clear_cargo_cache()
+
+# Check cache size
+get_cargo_cache_size()</code></pre><h2 id="Supported-Types"><a class="docs-heading-anchor" href="#Supported-Types">Supported Types</a><a id="Supported-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Supported-Types" title="Permalink"></a></h2><p>The following Rust types are supported in <code>#[julia]</code> functions:</p><table><tr><th style="text-align: right">Rust Type</th><th style="text-align: right">Julia Type</th></tr><tr><td style="text-align: right"><code>i8</code>, <code>i16</code>, <code>i32</code>, <code>i64</code></td><td style="text-align: right"><code>Int8</code>, <code>Int16</code>, <code>Int32</code>, <code>Int64</code></td></tr><tr><td style="text-align: right"><code>u8</code>, <code>u16</code>, <code>u32</code>, <code>u64</code></td><td style="text-align: right"><code>UInt8</code>, <code>UInt16</code>, <code>UInt32</code>, <code>UInt64</code></td></tr><tr><td style="text-align: right"><code>f32</code>, <code>f64</code></td><td style="text-align: right"><code>Float32</code>, <code>Float64</code></td></tr><tr><td style="text-align: right"><code>bool</code></td><td style="text-align: right"><code>Bool</code></td></tr><tr><td style="text-align: right"><code>usize</code>, <code>isize</code></td><td style="text-align: right"><code>UInt</code>, <code>Int</code></td></tr><tr><td style="text-align: right"><code>()</code></td><td style="text-align: right"><code>Cvoid</code></td></tr><tr><td style="text-align: right"><code>*const T</code>, <code>*mut T</code></td><td style="text-align: right"><code>Ptr{T}</code></td></tr></table><h2 id="Example:-Complete-Workflow"><a class="docs-heading-anchor" href="#Example:-Complete-Workflow">Example: Complete Workflow</a><a id="Example:-Complete-Workflow-1"></a><a class="docs-heading-anchor-permalink" href="#Example:-Complete-Workflow" title="Permalink"></a></h2><h3 id="1.-Create-Rust-Crate"><a class="docs-heading-anchor" href="#1.-Create-Rust-Crate">1. Create Rust Crate</a><a id="1.-Create-Rust-Crate-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Create-Rust-Crate" title="Permalink"></a></h3><pre><code class="language-bash hljs">cargo new --lib my_math
+cd my_math</code></pre><h3 id="2.-Configure-Cargo.toml"><a class="docs-heading-anchor" href="#2.-Configure-Cargo.toml">2. Configure Cargo.toml</a><a id="2.-Configure-Cargo.toml-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Configure-Cargo.toml" title="Permalink"></a></h3><pre><code class="language-toml hljs">[package]
+name = &quot;my_math&quot;
+version = &quot;0.1.0&quot;
+edition = &quot;2021&quot;
+
+[lib]
+crate-type = [&quot;cdylib&quot;]
+
+[dependencies]
+juliacall_macros = { path = &quot;/path/to/RustCall.jl/deps/juliacall_macros&quot; }</code></pre><h3 id="3.-Write-Rust-Code"><a class="docs-heading-anchor" href="#3.-Write-Rust-Code">3. Write Rust Code</a><a id="3.-Write-Rust-Code-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Write-Rust-Code" title="Permalink"></a></h3><pre><code class="language-rust hljs">// src/lib.rs
+use juliacall_macros::julia;
+
+#[julia]
+fn factorial(n: u64) -&gt; u64 {
+    (1..=n).product()
+}
+
+#[julia]
+fn fibonacci(n: u32) -&gt; u64 {
+    match n {
+        0 =&gt; 0,
+        1 =&gt; 1,
+        _ =&gt; {
+            let mut a = 0u64;
+            let mut b = 1u64;
+            for _ in 2..=n {
+                let c = a + b;
+                a = b;
+                b = c;
+            }
+            b
+        }
+    }
+}</code></pre><h3 id="4.-Use-in-Julia"><a class="docs-heading-anchor" href="#4.-Use-in-Julia">4. Use in Julia</a><a id="4.-Use-in-Julia-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Use-in-Julia" title="Permalink"></a></h3><pre><code class="language-julia hljs">using RustCall
+
+@rust_crate &quot;/path/to/my_math&quot;
+
+factorial(UInt64(10))  # =&gt; 3628800
+fibonacci(UInt32(20))  # =&gt; 6765</code></pre><h2 id="Precompilation-Support"><a class="docs-heading-anchor" href="#Precompilation-Support">Precompilation Support</a><a id="Precompilation-Support-1"></a><a class="docs-heading-anchor-permalink" href="#Precompilation-Support" title="Permalink"></a></h2><p>For package development, you can generate bindings to a file that will be precompiled with your package, improving startup time.</p><h3 id="Generating-Bindings-to-a-File"><a class="docs-heading-anchor" href="#Generating-Bindings-to-a-File">Generating Bindings to a File</a><a id="Generating-Bindings-to-a-File-1"></a><a class="docs-heading-anchor-permalink" href="#Generating-Bindings-to-a-File" title="Permalink"></a></h3><pre><code class="language-julia hljs">using RustCall
+
+# Generate bindings and write to a file
+write_bindings_to_file(
+    &quot;deps/my_rust_crate&quot;,              # Path to Rust crate
+    &quot;src/generated/MyRustBindings.jl&quot;, # Output file
+    output_module_name = &quot;MyRust&quot;,
+    relative_lib_path = &quot;../deps/lib&quot;  # Path relative to the output file
+)</code></pre><h3 id="Package-Development-Workflow"><a class="docs-heading-anchor" href="#Package-Development-Workflow">Package Development Workflow</a><a id="Package-Development-Workflow-1"></a><a class="docs-heading-anchor-permalink" href="#Package-Development-Workflow" title="Permalink"></a></h3><ol><li><p><strong>Set up your package structure</strong>:</p><pre><code class="nohighlight hljs">MyPackage/
+├── Project.toml
+├── src/
+│   ├── MyPackage.jl
+│   └── generated/
+│       └── MyRustBindings.jl  # Generated bindings
+├── deps/
+│   ├── my_rust_crate/         # Your Rust crate
+│   └── lib/                   # Compiled library
+└── test/</code></pre></li><li><p><strong>Generate bindings during development</strong>:</p><pre><code class="language-julia hljs">using RustCall
+write_bindings_to_file(
+    &quot;deps/my_rust_crate&quot;,
+    &quot;src/generated/MyRustBindings.jl&quot;,
+    output_module_name = &quot;MyRust&quot;,
+    relative_lib_path = &quot;../deps/lib&quot;
+)</code></pre></li><li><p><strong>Include in your package</strong>:</p><pre><code class="language-julia hljs"># In src/MyPackage.jl
+module MyPackage
+
+include(&quot;generated/MyRustBindings.jl&quot;)
+using .MyRust
+
+# Re-export functions if desired
+export add, multiply
+
+end</code></pre></li><li><p><strong>The generated file uses <code>@__DIR__</code></strong> for library paths, ensuring it works when the package is installed elsewhere.</p></li></ol><h3 id="API-Reference-2"><a class="docs-heading-anchor" href="#API-Reference-2">API Reference</a><a class="docs-heading-anchor-permalink" href="#API-Reference-2" title="Permalink"></a></h3><h4 id="write_bindings_to_file"><a class="docs-heading-anchor" href="#write_bindings_to_file"><code>write_bindings_to_file</code></a><a id="write_bindings_to_file-1"></a><a class="docs-heading-anchor-permalink" href="#write_bindings_to_file" title="Permalink"></a></h4><pre><code class="language-julia hljs">write_bindings_to_file(
+    crate_path::String,
+    output_path::String;
+    output_module_name = nothing,
+    build_release = true,
+    relative_lib_path = nothing
+) -&gt; String</code></pre><table><tr><th style="text-align: right">Parameter</th><th style="text-align: right">Type</th><th style="text-align: right">Description</th></tr><tr><td style="text-align: right"><code>crate_path</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">Path to the Rust crate</td></tr><tr><td style="text-align: right"><code>output_path</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">Path for the generated Julia file</td></tr><tr><td style="text-align: right"><code>output_module_name</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">Name for the generated module</td></tr><tr><td style="text-align: right"><code>build_release</code></td><td style="text-align: right"><code>Bool</code></td><td style="text-align: right">Build in release mode</td></tr><tr><td style="text-align: right"><code>relative_lib_path</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">Path for library relative to output file</td></tr></table><h4 id="emit_crate_module_code"><a class="docs-heading-anchor" href="#emit_crate_module_code"><code>emit_crate_module_code</code></a><a id="emit_crate_module_code-1"></a><a class="docs-heading-anchor-permalink" href="#emit_crate_module_code" title="Permalink"></a></h4><pre><code class="language-julia hljs">emit_crate_module_code(
+    info::CrateInfo,
+    lib_path::String;
+    module_name = nothing,
+    use_relative_path = false
+) -&gt; String</code></pre><p>Returns the generated Julia module code as a string.</p><h2 id="Troubleshooting"><a class="docs-heading-anchor" href="#Troubleshooting">Troubleshooting</a><a id="Troubleshooting-1"></a><a class="docs-heading-anchor-permalink" href="#Troubleshooting" title="Permalink"></a></h2><h3 id="Crate-not-building"><a class="docs-heading-anchor" href="#Crate-not-building">Crate not building</a><a id="Crate-not-building-1"></a><a class="docs-heading-anchor-permalink" href="#Crate-not-building" title="Permalink"></a></h3><p>Ensure your crate has:</p><ul><li><code>crate-type = [&quot;cdylib&quot;]</code> in <code>[lib]</code> section</li><li><code>juliacall_macros</code> as a dependency</li><li>Valid Rust code that compiles</li></ul><h3 id="Functions-not-found"><a class="docs-heading-anchor" href="#Functions-not-found">Functions not found</a><a id="Functions-not-found-1"></a><a class="docs-heading-anchor-permalink" href="#Functions-not-found" title="Permalink"></a></h3><p>Check that:</p><ul><li>Functions have the <code>#[julia]</code> attribute</li><li>Function signatures use FFI-compatible types</li><li>The crate builds without errors</li></ul><h3 id="Type-errors"><a class="docs-heading-anchor" href="#Type-errors">Type errors</a><a id="Type-errors-1"></a><a class="docs-heading-anchor-permalink" href="#Type-errors" title="Permalink"></a></h3><p>Ensure you&#39;re using the correct Julia types that match the Rust function signatures.</p><h3 id="Precompilation-issues"><a class="docs-heading-anchor" href="#Precompilation-issues">Precompilation issues</a><a id="Precompilation-issues-1"></a><a class="docs-heading-anchor-permalink" href="#Precompilation-issues" title="Permalink"></a></h3><p>If you encounter precompilation issues:</p><ul><li>Ensure the library path is correct (use <code>relative_lib_path</code> for portable packages)</li><li>Check that the library was copied to the correct location</li><li>Verify the generated code compiles without errors</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../generics/">« Generics</a><a class="docs-footer-nextpage" href="../precompilation/">Precompilation »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 9 February 2026 08:42">Monday 9 February 2026</span>. Using Julia version 1.12.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
