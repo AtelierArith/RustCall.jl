@@ -69,6 +69,19 @@ function _defer_vec_drop(ptr::Ptr{Cvoid}, len::UInt, cap::UInt, type_name::Strin
 end
 
 """
+    get_deferred_drop_count() -> Int
+
+Return the number of ownership objects waiting for deferred deallocation.
+A non-zero value indicates objects that could not be freed because the Rust
+helpers library was unavailable at drop time.
+"""
+function get_deferred_drop_count()
+    lock(DEFERRED_DROPS_LOCK) do
+        return length(DEFERRED_DROPS)
+    end
+end
+
+"""
     flush_deferred_drops() -> Int
 
 Attempt to free all deferred pointers using the Rust helpers library.
