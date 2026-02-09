@@ -424,4 +424,163 @@ using Test
             rm(debug_dir, recursive=true, force=true)
         end
     end
+
+    # Issue #85: extract_function_code handles raw strings with braces
+    @testset "extract_function_code handles raw strings with braces (#85)" begin
+        code = """
+        fn with_raw_string() {
+            let s = r#"{ "key": "value" }"#;
+            let x = 42;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_raw_string")
+        @test extracted !== nothing
+        @test occursin("let x = 42", extracted)
+    end
+
+    @testset "extract_function_code handles raw strings without hashes (#85)" begin
+        code = """
+        fn raw_no_hash() {
+            let s = r"some { braces }";
+            let y = 99;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "raw_no_hash")
+        @test extracted !== nothing
+        @test occursin("let y = 99", extracted)
+    end
+
+    @testset "extract_function_code handles closures (#85)" begin
+        code = """
+        fn with_closure() {
+            let f = |x| { x + 1 };
+            let result = f(5);
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_closure")
+        @test extracted !== nothing
+        @test occursin("let result = f(5)", extracted)
+    end
+
+    # Issue #86: regex patterns match async/unsafe/const fn modifiers
+    @testset "generic function detection matches async fn (#86)" begin
+        code = """
+        pub async fn fetch_data<T>(url: T) -> T {
+            url
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_async")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "fetch_data")
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "generic function detection matches unsafe fn (#86)" begin
+        code = """
+        pub unsafe fn raw_op<T>(ptr: *const T) -> T {
+            *ptr
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_unsafe")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "raw_op")
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "generic function detection matches const fn (#86)" begin
+        code = """
+        pub const fn const_identity<T>(x: T) -> T {
+            x
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_const")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "const_identity")
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "return type parsing matches unsafe fn (#86)" begin
+        code = """
+        #[no_mangle]
+        pub unsafe extern "C" fn unsafe_add(a: i32, b: i32) -> i32 {
+            a + b
+        }
+        """
+        ret_type = RustCall._parse_function_return_type(code, "unsafe_add")
+        @test ret_type == Int32
+    end
+
+    @testset "function signature registration matches unsafe fn (#86)" begin
+        code = """
+        #[no_mangle]
+        pub unsafe extern "C" fn unsafe_mul(a: i32, b: i32) -> i32 {
+            a * b
+        }
+        """
+        empty!(RustCall.FUNCTION_RETURN_TYPES)
+        empty!(RustCall.FUNCTION_RETURN_TYPES_BY_LIB)
+        RustCall._register_function_signatures(code, "test_unsafe_lib")
+        @test haskey(RustCall.FUNCTION_RETURN_TYPES, "unsafe_mul")
+        @test RustCall.FUNCTION_RETURN_TYPES["unsafe_mul"] == Int32
+        empty!(RustCall.FUNCTION_RETURN_TYPES)
+        empty!(RustCall.FUNCTION_RETURN_TYPES_BY_LIB)
+    end
+
+    @testset "extract_function_code captures async/unsafe/const fn prefix (#86)" begin
+        code = """
+        pub async fn async_fetch() {
+            let x = 1;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "async_fetch")
+        @test extracted !== nothing
+        @test occursin("async fn async_fetch", extracted)
+    end
+
+    # Issue #87: @rust comparison processes both sides symmetrically
+    @testset "@rust comparison processes both sides symmetrically (#87)" begin
+        # Both sides should go through the same processing pipeline.
+        # When both LHS and RHS are Rust calls, both should be expanded via rust_impl.
+        lhs_call = Expr(:call, :add, :(Int32(1)), :(Int32(2)))
+        rhs_call = Expr(:call, :sub, :(Int32(5)), :(Int32(2)))
+        cmp_expr = Expr(:call, :(==), lhs_call, rhs_call)
+        expanded = RustCall.rust_impl(@__MODULE__, cmp_expr)
+        expanded_str = sprint(show, expanded)
+        # Both add and sub should be expanded through rust_impl (dynamic call path)
+        @test occursin("_rust_call_dynamic", expanded_str) || occursin("_resolve_lib", expanded_str)
+        # The expanded expression should be a comparison
+        @test expanded.head == :call
+        @test expanded.args[1] == :(==)
+    end
+
+    @testset "@rust comparison with plain value RHS (#87)" begin
+        # @rust add(1, 2) == 3  —  LHS is a call, RHS is a literal
+        lhs_call = Expr(:call, :add, :(Int32(1)), :(Int32(2)))
+        cmp_expr = Expr(:call, :(==), lhs_call, 3)
+        expanded = RustCall.rust_impl(@__MODULE__, cmp_expr)
+        @test expanded.head == :call
+        @test expanded.args[1] == :(==)
+        # LHS should be a Rust call expansion
+        lhs_expanded_str = sprint(show, expanded.args[2])
+        @test occursin("_rust_call_dynamic", lhs_expanded_str) || occursin("_resolve_lib", lhs_expanded_str)
+    end
+
+    @testset "@rust comparison leaves Julia operator RHS as Julia (#87)" begin
+        # @rust divide(10.0, 3.0) ≈ 10.0 / 3.0
+        # RHS `10.0 / 3.0` is :(/(10.0, 3.0)) — a :call with operator `/`.
+        # It must NOT be routed to rust_impl (which would look for Rust fn "/").
+        lhs_call = Expr(:call, :divide, 10.0, 3.0)
+        rhs_op = Expr(:call, :/, 10.0, 3.0)
+        cmp_expr = Expr(:call, Symbol("≈"), lhs_call, rhs_op)
+        expanded = RustCall.rust_impl(@__MODULE__, cmp_expr)
+        @test expanded.head == :call
+        @test expanded.args[1] == Symbol("≈")
+        # LHS should be a Rust call
+        lhs_str = sprint(show, expanded.args[2])
+        @test occursin("_rust_call_dynamic", lhs_str) || occursin("_resolve_lib", lhs_str)
+        # RHS should be escaped Julia expression, NOT a Rust call
+        rhs_str = sprint(show, expanded.args[3])
+        @test !occursin("_rust_call_dynamic", rhs_str)
+        @test !occursin("_resolve_lib", rhs_str)
+    end
 end
