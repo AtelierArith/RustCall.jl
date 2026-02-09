@@ -46,7 +46,15 @@ like a Rust call (or qualified call), expand it via `rust_impl`; otherwise
 just escape it so plain Julia values pass through unchanged.
 """
 function _rust_comparison_operand(mod, expr)
-    if isexpr(expr, :call) || isexpr(expr, :(::))
+    if isexpr(expr, :call)
+        fname = expr.args[1]
+        # Only treat as a Rust call if the function name is a plain identifier
+        # (not a Julia operator like +, -, *, /).  Operator calls such as
+        # `10.0 / 3.0` should stay on the Julia side.
+        if fname isa Symbol && !Base.isoperator(fname)
+            return rust_impl(mod, expr)
+        end
+    elseif isexpr(expr, :(::))
         return rust_impl(mod, expr)
     end
     return esc(expr)

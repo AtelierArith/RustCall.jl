@@ -564,4 +564,23 @@ using Test
         lhs_expanded_str = sprint(show, expanded.args[2])
         @test occursin("_rust_call_dynamic", lhs_expanded_str) || occursin("_resolve_lib", lhs_expanded_str)
     end
+
+    @testset "@rust comparison leaves Julia operator RHS as Julia (#87)" begin
+        # @rust divide(10.0, 3.0) ≈ 10.0 / 3.0
+        # RHS `10.0 / 3.0` is :(/(10.0, 3.0)) — a :call with operator `/`.
+        # It must NOT be routed to rust_impl (which would look for Rust fn "/").
+        lhs_call = Expr(:call, :divide, 10.0, 3.0)
+        rhs_op = Expr(:call, :/, 10.0, 3.0)
+        cmp_expr = Expr(:call, Symbol("≈"), lhs_call, rhs_op)
+        expanded = RustCall.rust_impl(@__MODULE__, cmp_expr)
+        @test expanded.head == :call
+        @test expanded.args[1] == Symbol("≈")
+        # LHS should be a Rust call
+        lhs_str = sprint(show, expanded.args[2])
+        @test occursin("_rust_call_dynamic", lhs_str) || occursin("_resolve_lib", lhs_str)
+        # RHS should be escaped Julia expression, NOT a Rust call
+        rhs_str = sprint(show, expanded.args[3])
+        @test !occursin("_rust_call_dynamic", rhs_str)
+        @test !occursin("_resolve_lib", rhs_str)
+    end
 end
