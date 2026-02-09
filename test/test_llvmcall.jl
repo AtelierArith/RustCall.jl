@@ -52,6 +52,21 @@ using Test
         ir = RustCall.generate_llvmcall_ir("test_add", Int32, Type[Int32, Int32])
         @test occursin("i32", ir)
         @test occursin("call", ir)
+
+        # Verify correct interpolation: args should be "i32 %0, i32 %1", not "["i32", "i32"][1] %0"
+        @test occursin("i32 %0", ir)
+        @test occursin("i32 %1", ir)
+        @test !occursin("[", ir)  # No array-like syntax in the IR
+
+        # Test void return type
+        ir_void = RustCall.generate_llvmcall_ir("test_void", Cvoid, Type[Int32])
+        @test occursin("call void", ir_void)
+        @test occursin("ret void", ir_void)
+
+        # Test with mixed argument types
+        ir_mixed = RustCall.generate_llvmcall_ir("test_mixed", Float64, Type[Int32, Float64])
+        @test occursin("i32 %0", ir_mixed)
+        @test occursin("double %1", ir_mixed)
     end
 
     # Only run integration tests if rustc is available

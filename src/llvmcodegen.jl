@@ -79,7 +79,7 @@ function generate_llvmcall_ir(func_name::String, ret_type::Type, arg_types::Vect
     llvm_args = [julia_type_to_llvm_ir_string(t) for t in arg_types]
 
     # Build argument list
-    arg_list = join(["$llvm_args[$i] %$(i-1)" for i in 1:length(arg_types)], ", ")
+    arg_list = join(["$(llvm_args[i]) %$(i-1)" for i in 1:length(arg_types)], ", ")
     arg_refs = join(["%$(i-1)" for i in 1:length(arg_types)], ", ")
 
     if ret_type == Cvoid || ret_type == Nothing
@@ -120,7 +120,7 @@ julia_type_to_llvm_ir_string(::Type{UInt128}) = "i128"
 julia_type_to_llvm_ir_string(::Type{Float32}) = "float"
 julia_type_to_llvm_ir_string(::Type{Float64}) = "double"
 
-# Void type (Cvoid is an alias for Nothing in Julia)
+# Void type (Cvoid === Nothing in Julia, so this handles both)
 julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
 
 # Pointer types (opaque pointer in modern LLVM)
