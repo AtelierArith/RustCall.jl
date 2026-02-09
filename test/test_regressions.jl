@@ -424,4 +424,41 @@ using Test
             rm(debug_dir, recursive=true, force=true)
         end
     end
+
+    # Issue #85: extract_function_code handles raw strings with braces
+    @testset "extract_function_code handles raw strings with braces (#85)" begin
+        code = """
+        fn with_raw_string() {
+            let s = r#"{ "key": "value" }"#;
+            let x = 42;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_raw_string")
+        @test extracted !== nothing
+        @test occursin("let x = 42", extracted)
+    end
+
+    @testset "extract_function_code handles raw strings without hashes (#85)" begin
+        code = """
+        fn raw_no_hash() {
+            let s = r"some { braces }";
+            let y = 99;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "raw_no_hash")
+        @test extracted !== nothing
+        @test occursin("let y = 99", extracted)
+    end
+
+    @testset "extract_function_code handles closures (#85)" begin
+        code = """
+        fn with_closure() {
+            let f = |x| { x + 1 };
+            let result = f(5);
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_closure")
+        @test extracted !== nothing
+        @test occursin("let result = f(5)", extracted)
+    end
 end

@@ -566,6 +566,43 @@ function extract_function_code(code::String, func_name::String)
     while i <= len
         c = code_after_start[i]
 
+        if c == 'r' && i < len
+            # Rust raw string literal: r"...", r#"..."#, r##"..."##, etc.
+            j = nextind(code_after_start, i)
+            hash_count = 0
+            while j <= len && code_after_start[j] == '#'
+                hash_count += 1
+                j = nextind(code_after_start, j)
+            end
+            if j <= len && code_after_start[j] == '"'
+                # This is a raw string — skip until closing "###
+                i = nextind(code_after_start, j)
+                closing = string('"', repeat('#', hash_count))
+                while i <= len
+                    if code_after_start[i] == '"'
+                        # Check if followed by the right number of hashes
+                        end_pos = i
+                        matched = true
+                        for _ in 1:hash_count
+                            end_pos = nextind(code_after_start, end_pos)
+                            if end_pos > len || code_after_start[end_pos] != '#'
+                                matched = false
+                                break
+                            end
+                        end
+                        if matched
+                            i = end_pos
+                            break
+                        end
+                    end
+                    i = nextind(code_after_start, i)
+                end
+                i = nextind(code_after_start, i)
+                continue
+            end
+            # Not a raw string, fall through to other handling
+        end
+
         if c == '"'
             # String literal — skip until unescaped closing quote
             i = nextind(code_after_start, i)
