@@ -308,6 +308,14 @@ function create_rust_rc(value::T) where T
         fn_ptr = safe_dlsym(lib, :rust_rc_new_i64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
         return RustRc{Int64}(ptr)
+    elseif T == Float32
+        fn_ptr = safe_dlsym(lib, :rust_rc_new_f32)
+        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
+        return RustRc{Float32}(ptr)
+    elseif T == Float64
+        fn_ptr = safe_dlsym(lib, :rust_rc_new_f64)
+        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
+        return RustRc{Float64}(ptr)
     else
         error("Unsupported type for RustRc: $T")
     end
@@ -338,6 +346,14 @@ function clone(rc::RustRc{T}) where T
         fn_ptr = safe_dlsym(lib, :rust_rc_clone_i64)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
         return RustRc{Int64}(new_ptr)
+    elseif T == Float32
+        fn_ptr = safe_dlsym(lib, :rust_rc_clone_f32)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
+        return RustRc{Float32}(new_ptr)
+    elseif T == Float64
+        fn_ptr = safe_dlsym(lib, :rust_rc_clone_f64)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
+        return RustRc{Float64}(new_ptr)
     else
         error("Unsupported type for RustRc clone: $T")
     end
@@ -373,6 +389,12 @@ function drop_rust_rc(rc::RustRc{T}) where T
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
     elseif T == Int64
         fn_ptr = safe_dlsym(lib, :rust_rc_drop_i64)
+        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
+    elseif T == Float32
+        fn_ptr = safe_dlsym(lib, :rust_rc_drop_f32)
+        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
+    elseif T == Float64
+        fn_ptr = safe_dlsym(lib, :rust_rc_drop_f64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
     else
         error("Unsupported type for RustRc drop: $T")
@@ -413,6 +435,10 @@ function create_rust_arc(value::T) where T
         fn_ptr = safe_dlsym(lib, :rust_arc_new_i64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
         return RustArc{Int64}(ptr)
+    elseif T == Float32
+        fn_ptr = safe_dlsym(lib, :rust_arc_new_f32)
+        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
+        return RustArc{Float32}(ptr)
     elseif T == Float64
         fn_ptr = safe_dlsym(lib, :rust_arc_new_f64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
@@ -447,6 +473,10 @@ function clone(arc::RustArc{T}) where T
         fn_ptr = safe_dlsym(lib, :rust_arc_clone_i64)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
         return RustArc{Int64}(new_ptr)
+    elseif T == Float32
+        fn_ptr = safe_dlsym(lib, :rust_arc_clone_f32)
+        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
+        return RustArc{Float32}(new_ptr)
     elseif T == Float64
         fn_ptr = safe_dlsym(lib, :rust_arc_clone_f64)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
@@ -487,6 +517,9 @@ function drop_rust_arc(arc::RustArc{T}) where T
     elseif T == Int64
         fn_ptr = safe_dlsym(lib, :rust_arc_drop_i64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
+    elseif T == Float32
+        fn_ptr = safe_dlsym(lib, :rust_arc_drop_f32)
+        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
     elseif T == Float64
         fn_ptr = safe_dlsym(lib, :rust_arc_drop_f64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
@@ -518,10 +551,13 @@ RustBox(value::Bool) = create_rust_box(value)
 # RustRc constructors
 RustRc(value::Int32) = create_rust_rc(value)
 RustRc(value::Int64) = create_rust_rc(value)
+RustRc(value::Float32) = create_rust_rc(value)
+RustRc(value::Float64) = create_rust_rc(value)
 
 # RustArc constructors
 RustArc(value::Int32) = create_rust_arc(value)
 RustArc(value::Int64) = create_rust_arc(value)
+RustArc(value::Float32) = create_rust_arc(value)
 RustArc(value::Float64) = create_rust_arc(value)
 
 # ============================================================================

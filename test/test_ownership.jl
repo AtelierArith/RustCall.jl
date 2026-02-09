@@ -30,11 +30,14 @@ using Test
     @testset "RustRc Constructors" begin
         @test hasmethod(RustRc, Tuple{Int32})
         @test hasmethod(RustRc, Tuple{Int64})
+        @test hasmethod(RustRc, Tuple{Float32})
+        @test hasmethod(RustRc, Tuple{Float64})
     end
 
     @testset "RustArc Constructors" begin
         @test hasmethod(RustArc, Tuple{Int32})
         @test hasmethod(RustArc, Tuple{Int64})
+        @test hasmethod(RustArc, Tuple{Float32})
         @test hasmethod(RustArc, Tuple{Float64})
     end
 
@@ -201,6 +204,28 @@ using Test
                 drop!(rc2)
                 @test is_dropped(rc2)
             end
+
+            @testset "RustRc{Float32}" begin
+                rc = RustRc(Float32(3.14))
+                @test is_valid(rc)
+                rc2 = clone(rc)
+                @test rc.ptr == rc2.ptr
+                drop!(rc)
+                @test is_valid(rc2)
+                drop!(rc2)
+                @test is_dropped(rc2)
+            end
+
+            @testset "RustRc{Float64}" begin
+                rc = RustRc(Float64(2.71828))
+                @test is_valid(rc)
+                rc2 = clone(rc)
+                @test rc.ptr == rc2.ptr
+                drop!(rc)
+                @test is_valid(rc2)
+                drop!(rc2)
+                @test is_dropped(rc2)
+            end
         end
 
         @testset "RustArc Thread-Safe Reference Counting" begin
@@ -236,6 +261,17 @@ using Test
 
                 drop!(arc3)
                 @test is_dropped(arc3)
+            end
+
+            @testset "RustArc{Float32}" begin
+                arc = RustArc(Float32(1.41421))
+                @test is_valid(arc)
+                arc2 = clone(arc)
+                @test arc.ptr == arc2.ptr
+                drop!(arc)
+                @test is_valid(arc2)
+                drop!(arc2)
+                @test is_dropped(arc2)
             end
 
             @testset "RustArc{Float64}" begin

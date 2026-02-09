@@ -105,6 +105,17 @@ pub extern "C" fn rust_rc_new_i64(value: i64) -> *mut c_void {
     Rc::into_raw(Rc::new(value)) as *mut c_void
 }
 
+/// Create an Rc<f32> from a value
+#[no_mangle]
+pub extern "C" fn rust_rc_new_f32(value: f32) -> *mut c_void {
+    Rc::into_raw(Rc::new(value)) as *mut c_void
+}
+
+/// Create an Rc<f64> from a value
+#[no_mangle]
+pub extern "C" fn rust_rc_new_f64(value: f64) -> *mut c_void {
+    Rc::into_raw(Rc::new(value)) as *mut c_void
+}
 
 /// Clone an Rc<i32> (increment reference count)
 #[no_mangle]
@@ -131,6 +142,30 @@ pub unsafe extern "C" fn rust_rc_clone_i64(ptr: *mut c_void) -> *mut c_void {
     Rc::into_raw(cloned) as *mut c_void
 }
 
+/// Clone an Rc<f32> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_rc_clone_f32(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let rc = Rc::from_raw(ptr as *const f32);
+    let cloned = Rc::clone(&rc);
+    std::mem::forget(rc);
+    Rc::into_raw(cloned) as *mut c_void
+}
+
+/// Clone an Rc<f64> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_rc_clone_f64(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let rc = Rc::from_raw(ptr as *const f64);
+    let cloned = Rc::clone(&rc);
+    std::mem::forget(rc);
+    Rc::into_raw(cloned) as *mut c_void
+}
+
 /// Drop an Rc<i32> (decrement reference count)
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_drop_i32(ptr: *mut c_void) {
@@ -144,6 +179,22 @@ pub unsafe extern "C" fn rust_rc_drop_i32(ptr: *mut c_void) {
 pub unsafe extern "C" fn rust_rc_drop_i64(ptr: *mut c_void) {
     if !ptr.is_null() {
         let _ = Rc::from_raw(ptr as *const i64);
+    }
+}
+
+/// Drop an Rc<f32> (decrement reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_rc_drop_f32(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        let _ = Rc::from_raw(ptr as *const f32);
+    }
+}
+
+/// Drop an Rc<f64> (decrement reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_rc_drop_f64(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        let _ = Rc::from_raw(ptr as *const f64);
     }
 }
 
@@ -163,12 +214,17 @@ pub extern "C" fn rust_arc_new_i64(value: i64) -> *mut c_void {
     Arc::into_raw(Arc::new(value)) as *mut c_void
 }
 
+/// Create an Arc<f32> from a value
+#[no_mangle]
+pub extern "C" fn rust_arc_new_f32(value: f32) -> *mut c_void {
+    Arc::into_raw(Arc::new(value)) as *mut c_void
+}
+
 /// Create an Arc<f64> from a value
 #[no_mangle]
 pub extern "C" fn rust_arc_new_f64(value: f64) -> *mut c_void {
     Arc::into_raw(Arc::new(value)) as *mut c_void
 }
-
 
 /// Clone an Arc<i32> (increment reference count)
 #[no_mangle]
@@ -192,6 +248,18 @@ pub unsafe extern "C" fn rust_arc_clone_i64(ptr: *mut c_void) -> *mut c_void {
     let arc = Arc::from_raw(ptr as *const i64);
     let cloned = Arc::clone(&arc);
     std::mem::forget(arc);  // Keep original reference alive
+    Arc::into_raw(cloned) as *mut c_void
+}
+
+/// Clone an Arc<f32> (increment reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_arc_clone_f32(ptr: *mut c_void) -> *mut c_void {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let arc = Arc::from_raw(ptr as *const f32);
+    let cloned = Arc::clone(&arc);
+    std::mem::forget(arc);
     Arc::into_raw(cloned) as *mut c_void
 }
 
@@ -220,6 +288,14 @@ pub unsafe extern "C" fn rust_arc_drop_i32(ptr: *mut c_void) {
 pub unsafe extern "C" fn rust_arc_drop_i64(ptr: *mut c_void) {
     if !ptr.is_null() {
         let _ = Arc::from_raw(ptr as *const i64);
+    }
+}
+
+/// Drop an Arc<f32> (decrement reference count)
+#[no_mangle]
+pub unsafe extern "C" fn rust_arc_drop_f32(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        let _ = Arc::from_raw(ptr as *const f32);
     }
 }
 
