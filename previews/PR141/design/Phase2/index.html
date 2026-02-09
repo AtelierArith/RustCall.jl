@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Phase 2 · RustCall.jl</title><meta name="title" content="Phase 2 · RustCall.jl"/><meta property="og:title" content="Phase 2 · RustCall.jl"/><meta property="twitter:title" content="Phase 2 · RustCall.jl"/><meta name="description" content="Documentation for RustCall.jl."/><meta property="og:description" content="Documentation for RustCall.jl."/><meta property="twitter:description" content="Documentation for RustCall.jl."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/design/Phase2/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/design/Phase2/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/design/Phase2/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">RustCall.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../examples/">Examples</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../../generics/">Generics</a></li><li><a class="tocitem" href="../../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../api/">API Reference</a></li><li><a class="tocitem" href="../../status/">Project Status</a></li></ul></li><li><span class="tocitem">Design</span><ul><li><a class="tocitem" href="../Phase1/">Phase 1</a></li><li class="is-active"><a class="tocitem" href>Phase 2</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Implementation-Task-List"><span>Implementation Task List</span></a></li><li><a class="tocitem" href="#Implementation-Details-10"><span>Implementation Details</span></a></li><li><a class="tocitem" href="#Migration-from-Phase-1"><span>Migration from Phase 1</span></a></li><li><a class="tocitem" href="#Limitations"><span>Limitations</span></a></li><li><a class="tocitem" href="#Next-Steps-(Transition-to-Phase-3)"><span>Next Steps (Transition to Phase 3)</span></a></li><li><a class="tocitem" href="#Reference-Implementation"><span>Reference Implementation</span></a></li></ul></li><li><a class="tocitem" href="../INTERNAL/">Internal</a></li><li><a class="tocitem" href="../LLVMCALL/">LLVM Call</a></li></ul></li><li><span class="tocitem">Platforms</span><ul><li><a class="tocitem" href="../../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Design</a></li><li class="is-active"><a href>Phase 2</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Phase 2</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl/blob/971e5b5ee98613a5eb1b6c6ddf95c53b6d57e0a4/docs/src/design/Phase2.md" title="View source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Phase-2:-LLVM-IR-Integration"><a class="docs-heading-anchor" href="#Phase-2:-LLVM-IR-Integration">Phase 2: LLVM IR Integration</a><a id="Phase-2:-LLVM-IR-Integration-1"></a><a class="docs-heading-anchor-permalink" href="#Phase-2:-LLVM-IR-Integration" title="Permalink"></a></h1><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>In Phase 2, we achieve more flexible and high-performance Rust-Julia integration by directly manipulating LLVM IR. This phase retrieves LLVM IR generated by rustc and embeds it into Julia&#39;s <code>llvmcall</code>, bypassing C-compatible ABI limitations and enabling more advanced type systems and optimizations.</p><p><strong>Target Duration</strong>: 4-6 months <strong>Deliverable</strong>: LLVM IR integration, extended type system, ownership type support, optimization</p><hr/><h2 id="Implementation-Task-List"><a class="docs-heading-anchor" href="#Implementation-Task-List">Implementation Task List</a><a id="Implementation-Task-List-1"></a><a class="docs-heading-anchor-permalink" href="#Implementation-Task-List" title="Permalink"></a></h2><h3 id="Task-1:-LLVM.jl-Integration-and-Setup"><a class="docs-heading-anchor" href="#Task-1:-LLVM.jl-Integration-and-Setup">Task 1: LLVM.jl Integration and Setup</a><a id="Task-1:-LLVM.jl-Integration-and-Setup-1"></a><a class="docs-heading-anchor-permalink" href="#Task-1:-LLVM.jl-Integration-and-Setup" title="Permalink"></a></h3><p><strong>Priority</strong>: Highest <strong>Estimate</strong>: 1 week</p><h4 id="Implementation-Details"><a class="docs-heading-anchor" href="#Implementation-Details">Implementation Details</a><a id="Implementation-Details-1"></a><a class="docs-heading-anchor-permalink" href="#Implementation-Details" title="Permalink"></a></h4><ol><li><p><strong>Add Dependencies</strong></p><pre><code class="language-toml hljs"># Project.toml
+[deps]
+LLVM = &quot;929cbde3-209d-540e-8aea-1fcc83b56489&quot;
+LLVM_jll = &quot;dad2f222-ce93-54a1-a47d-0025e8a3acab&quot;</code></pre></li><li><p><strong>Initialize LLVM Module</strong></p><pre><code class="language-julia hljs"># src/llvmintegration.jl
+using LLVM
+using LLVM.Interop
+
+# Manage LLVM contexts
+const llvm_contexts = Dict{String, LLVM.Context}()
+
+function get_llvm_context(name::String = &quot;default&quot;)
+    if !haskey(llvm_contexts, name)
+        llvm_contexts[name] = Context()
+    end
+    llvm_contexts[name]
+end</code></pre></li><li><p><strong>LLVM IR Loading Functionality</strong></p><pre><code class="language-julia hljs">function parse_llvm_ir(ir_file::String)
+    ctx = get_llvm_context()
+    mod = parse(LLVM.Module, read(ir_file, String), ctx)
+    mod
+end
+
+function parse_llvm_ir_string(ir_string::String)
+    ctx = get_llvm_context()
+    mod = parse(LLVM.Module, ir_string, ctx)
+    mod
+end</code></pre></li></ol><hr/><h3 id="Task-2:-Rust-Compiler-Integration"><a class="docs-heading-anchor" href="#Task-2:-Rust-Compiler-Integration">Task 2: Rust Compiler Integration</a><a id="Task-2:-Rust-Compiler-Integration-1"></a><a class="docs-heading-anchor-permalink" href="#Task-2:-Rust-Compiler-Integration" title="Permalink"></a></h3><p><strong>Priority</strong>: Highest <strong>Estimate</strong>: 2 weeks</p><h4 id="Implementation-Details-2"><a class="docs-heading-anchor" href="#Implementation-Details-2">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-2" title="Permalink"></a></h4><ol><li><p><strong>Rust Compiler Configuration</strong></p><pre><code class="language-julia hljs"># src/rustcompiler.jl
+
+struct RustCompiler
+    target_triple::String
+    optimization_level::Int  # 0-3
+    emit_debug_info::Bool
+    crate_type::String  # &quot;cdylib&quot;, &quot;rlib&quot;, etc.
+end
+
+function RustCompiler(;
+    target_triple::String = get_default_target(),
+    optimization_level::Int = 2,
+    emit_debug_info::Bool = false,
+    crate_type::String = &quot;cdylib&quot;
+)
+    RustCompiler(target_triple, optimization_level, emit_debug_info, crate_type)
+end
+
+function get_default_target()
+    # Get target for current platform
+    @static Sys.iswindows() ? &quot;x86_64-pc-windows-msvc&quot; :
+    @static Sys.isapple() ? &quot;x86_64-apple-darwin&quot; :
+    &quot;x86_64-unknown-linux-gnu&quot;
+end</code></pre></li><li><p><strong>Compile Rust Code to LLVM IR</strong></p><pre><code class="language-julia hljs">function compile_rust_to_llvm(
+    compiler::RustCompiler,
+    code::String;
+    output_file::Union{String, Nothing} = nothing
+)
+    # 1. Write to temporary file
+    tmp_file = tempname() * &quot;.rs&quot;
+    write(tmp_file, wrap_rust_code_for_llvm(code))
+
+    # 2. Determine LLVM IR file path
+    if output_file === nothing
+        ir_file = tempname() * &quot;.ll&quot;
+    else
+        ir_file = output_file
+    end
+
+    # 3. Generate LLVM IR with rustc
+    cmd = `rustc --emit llvm-ir
+           --target $(compiler.target_triple)
+           -C opt-level=$(compiler.optimization_level)
+           $(compiler.emit_debug_info ? &quot;-g&quot; : &quot;&quot;)
+           -o $ir_file $tmp_file`
+
+    try
+        run(cmd)
+    catch e
+        error(&quot;Failed to compile Rust code: $e&quot;)
+    end
+
+    # 4. Load LLVM IR
+    if !isfile(ir_file)
+        error(&quot;LLVM IR file not generated: $ir_file&quot;)
+    end
+
+    mod = parse_llvm_ir(ir_file)
+
+    # 5. Cleanup temporary files (optional)
+    # rm(tmp_file, force=true)
+
+    mod
+end
+
+function wrap_rust_code_for_llvm(code::String)
+    # Wrap Rust code appropriately
+    # Add extern &quot;C&quot; block or other settings as needed
+    code
+end</code></pre></li><li><p><strong>Incremental Compilation Support</strong></p><pre><code class="language-julia hljs"># Cache compilation results
+const compilation_cache = Dict{String, LLVM.Module}()
+
+function compile_rust_to_llvm_cached(
+    compiler::RustCompiler,
+    code::String
+)
+    code_hash = hash(code)
+    cache_key = &quot;$(code_hash)_$(compiler.optimization_level)&quot;
+
+    if haskey(compilation_cache, cache_key)
+        return compilation_cache[cache_key]
+    end
+
+    mod = compile_rust_to_llvm(compiler, code)
+    compilation_cache[cache_key] = mod
+    mod
+end</code></pre></li></ol><hr/><h3 id="Task-3:-LLVM-IR-Optimization"><a class="docs-heading-anchor" href="#Task-3:-LLVM-IR-Optimization">Task 3: LLVM IR Optimization</a><a id="Task-3:-LLVM-IR-Optimization-1"></a><a class="docs-heading-anchor-permalink" href="#Task-3:-LLVM-IR-Optimization" title="Permalink"></a></h3><p><strong>Priority</strong>: High <strong>Estimate</strong>: 1 week</p><h4 id="Implementation-Details-3"><a class="docs-heading-anchor" href="#Implementation-Details-3">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-3" title="Permalink"></a></h4><ol><li><p><strong>Optimization Pass Configuration</strong></p><pre><code class="language-julia hljs"># src/llvmoptimization.jl
+
+function create_optimization_pipeline(level::Int = 2)
+    pm = ModulePassManager()
+
+    if level &gt;= 1
+        # Basic optimizations
+        add_pass!(pm, Pass(&quot;mem2reg&quot;))
+        add_pass!(pm, Pass(&quot;instcombine&quot;))
+        add_pass!(pm, Pass(&quot;simplifycfg&quot;))
+    end
+
+    if level &gt;= 2
+        # More aggressive optimizations
+        add_pass!(pm, Pass(&quot;gvn&quot;))
+        add_pass!(pm, Pass(&quot;licm&quot;))
+        add_pass!(pm, Pass(&quot;loop-vectorize&quot;))
+    end
+
+    if level &gt;= 3
+        # Maximum optimization
+        add_pass!(pm, Pass(&quot;slp-vectorize&quot;))
+        add_pass!(pm, Pass(&quot;aggressive-instcombine&quot;))
+    end
+
+    pm
+end
+
+function optimize_llvm_module(mod::LLVM.Module, level::Int = 2)
+    pm = create_optimization_pipeline(level)
+    run!(pm, mod)
+    mod
+end</code></pre></li><li><p><strong>Function-Level Optimization</strong></p><pre><code class="language-julia hljs">function optimize_function(fn::LLVM.Function, level::Int = 2)
+    fpm = FunctionPassManager(fn)
+
+    if level &gt;= 1
+        add_pass!(fpm, Pass(&quot;mem2reg&quot;))
+        add_pass!(fpm, Pass(&quot;instcombine&quot;))
+    end
+
+    if level &gt;= 2
+        add_pass!(fpm, Pass(&quot;gvn&quot;))
+    end
+
+    initialize!(fpm)
+    run!(fpm, fn)
+    finalize!(fpm)
+end</code></pre></li></ol><hr/><h3 id="Task-4:-LLVM-IR-Embedding-in-Staged-Functions"><a class="docs-heading-anchor" href="#Task-4:-LLVM-IR-Embedding-in-Staged-Functions">Task 4: LLVM IR Embedding in Staged Functions</a><a id="Task-4:-LLVM-IR-Embedding-in-Staged-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Task-4:-LLVM-IR-Embedding-in-Staged-Functions" title="Permalink"></a></h3><p><strong>Priority</strong>: Highest <strong>Estimate</strong>: 2 weeks</p><h4 id="Implementation-Details-4"><a class="docs-heading-anchor" href="#Implementation-Details-4">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-4" title="Permalink"></a></h4><ol><li><p><strong>RustInstance Definition</strong></p><pre><code class="language-julia hljs"># src/rustinstances.jl
+
+struct RustCompilerInstance
+    compiler::RustCompiler
+    llvm_modules::Vector{LLVM.Module}
+end
+
+struct RustInstance{n}
+end
+
+const active_rust_instances = RustCompilerInstance[]
+
+function instance(::RustInstance{n}) where {n}
+    active_rust_instances[n]
+end
+
+const __current_rust_compiler__ = RustInstance{1}()</code></pre></li><li><p><strong>Staged Function Implementation</strong></p><pre><code class="language-julia hljs"># src/rustcodegen.jl
+
+@generated function rustcall(
+    CT::RustInstance,
+    expr::Type{RustNNS{Tnns}},
+    args...
+) where {Tnns}
+    C = instance(CT)
+
+    # 1. Get function name
+    func_name = get_function_name_from_nns(Tnns)
+
+    # 2. Get Rust code (from type information or cache)
+    rust_code = get_rust_code_for_function(func_name)
+
+    # 3. Generate LLVM IR
+    llvm_mod = compile_rust_to_llvm_cached(C.compiler, rust_code)
+
+    # 4. Optimize
+    optimize_llvm_module(llvm_mod, C.compiler.optimization_level)
+
+    # 5. Get function
+    fn = functions(llvm_mod)[func_name]
+
+    if fn === nothing
+        error(&quot;Function $func_name not found in LLVM module&quot;)
+    end
+
+    # 6. Get type information
+    ret_type = get_return_type_from_llvm(fn)
+    arg_types = get_argument_types_from_llvm(fn)
+
+    # 7. Generate llvmcall expression
+    Expr(:call, Core.Intrinsics.llvmcall,
+        convert(Ptr{Cvoid}, fn),
+        ret_type,
+        Tuple{arg_types...},
+        [:(args[$i]) for i in 1:length(arg_types)]...)
+end</code></pre></li><li><p><strong>Type Information Extraction</strong></p><pre><code class="language-julia hljs">function get_return_type_from_llvm(fn::LLVM.Function)
+    ret_ty = return_type(fn)
+    llvm_to_julia_type(ret_ty)
+end
+
+function get_argument_types_from_llvm(fn::LLVM.Function)
+    [llvm_to_julia_type(param_type(fn, i))
+     for i in 1:length(parameters(fn))]
+end
+
+function llvm_to_julia_type(llvm_ty::LLVM.Type)
+    if isa(llvm_ty, LLVM.IntegerType)
+        width = bits(llvm_ty)
+        if width == 1
+            return Bool
+        elseif width == 8
+            return Int8
+        elseif width == 16
+            return Int16
+        elseif width == 32
+            return Int32
+        elseif width == 64
+            return Int64
+        end
+    elseif isa(llvm_ty, LLVM.FloatingPointType)
+        if isa(llvm_ty, LLVM.FloatType)
+            return Float32
+        elseif isa(llvm_ty, LLVM.DoubleType)
+            return Float64
+        end
+    elseif isa(llvm_ty, LLVM.PointerType)
+        return Ptr{Cvoid}  # More detailed type inference needed
+    elseif isa(llvm_ty, LLVM.VoidType)
+        return Cvoid
+    end
+    error(&quot;Unsupported LLVM type: $llvm_ty&quot;)
+end</code></pre></li></ol><hr/><h3 id="Task-5:-Extended-Type-System-Implementation"><a class="docs-heading-anchor" href="#Task-5:-Extended-Type-System-Implementation">Task 5: Extended Type System Implementation</a><a id="Task-5:-Extended-Type-System-Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Task-5:-Extended-Type-System-Implementation" title="Permalink"></a></h3><p><strong>Priority</strong>: High <strong>Estimate</strong>: 2 weeks</p><h4 id="Implementation-Details-5"><a class="docs-heading-anchor" href="#Implementation-Details-5">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-5" title="Permalink"></a></h4><ol><li><p><strong>Ownership Type Support</strong></p><pre><code class="language-julia hljs"># src/rusttypes.jl (extended)
+
+# Box&lt;T&gt; - Heap-allocated value
+struct RustBox{T}
+    ptr::Ptr{Cvoid}
+
+    function RustBox{T}(ptr::Ptr{Cvoid}) where {T}
+        new(ptr)
+    end
+end
+
+# Rc&lt;T&gt; - Reference-counted type
+struct RustRc{T}
+    ptr::Ptr{Cvoid}
+    # Reference count managed on Rust side
+end
+
+# Arc&lt;T&gt; - Atomic reference-counted type
+struct RustArc{T}
+    ptr::Ptr{Cvoid}
+    # Atomic reference count managed on Rust side
+end</code></pre></li><li><p><strong>Collection Type Support</strong></p><pre><code class="language-julia hljs"># Vec&lt;T&gt;
+struct RustVec{T}
+    ptr::Ptr{Cvoid}
+    len::UInt
+    cap::UInt
+end
+
+# String
+struct RustString
+    vec::RustVec{UInt8}
+end
+
+# &amp;str (string slice)
+struct RustStr
+    ptr::Ptr{UInt8}
+    len::UInt
+end</code></pre></li><li><p><strong>Extended Type Conversion</strong></p><pre><code class="language-julia hljs"># src/typetranslation.jl (extended)
+
+function rusttype_to_julia_extended(rust_type::String)
+    # Basic types
+    if haskey(RUST_TYPE_MAP, Symbol(rust_type))
+        return RUST_TYPE_MAP[Symbol(rust_type)]
+    end
+
+    # Box&lt;T&gt;
+    if startswith(rust_type, &quot;Box&lt;&quot;)
+        inner_type = extract_generic_type(rust_type, &quot;Box&quot;)
+        return RustBox{rusttype_to_julia_extended(inner_type)}
+    end
+
+    # Vec&lt;T&gt;
+    if startswith(rust_type, &quot;Vec&lt;&quot;)
+        inner_type = extract_generic_type(rust_type, &quot;Vec&quot;)
+        return RustVec{rusttype_to_julia_extended(inner_type)}
+    end
+
+    # Other types...
+    error(&quot;Unsupported Rust type: $rust_type&quot;)
+end
+
+function extract_generic_type(type_str::String, container::String)
+    # &quot;Vec&lt;i32&gt;&quot; -&gt; &quot;i32&quot;
+    # Implementation: Extract with regex or parser
+end</code></pre></li></ol><hr/><h3 id="Task-6:-Basic-Generics-Support"><a class="docs-heading-anchor" href="#Task-6:-Basic-Generics-Support">Task 6: Basic Generics Support</a><a id="Task-6:-Basic-Generics-Support-1"></a><a class="docs-heading-anchor-permalink" href="#Task-6:-Basic-Generics-Support" title="Permalink"></a></h3><p><strong>Priority</strong>: Medium <strong>Estimate</strong>: 2 weeks</p><h4 id="Implementation-Details-6"><a class="docs-heading-anchor" href="#Implementation-Details-6">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-6" title="Permalink"></a></h4><ol><li><p><strong>Generics Type Representation</strong></p><pre><code class="language-julia hljs"># src/rusttypes.jl
+
+struct RustGeneric{T, Args}
+    # T: Base type (e.g., Vec)
+    # Args: Tuple of type parameters
+end
+
+# Example: Vec&lt;i32&gt; -&gt; RustGeneric{Val{:Vec}, Tuple{Int32}}</code></pre></li><li><p><strong>Generics Function Compilation</strong></p><pre><code class="language-julia hljs">function compile_generic_rust_function(
+    compiler::RustCompiler,
+    code::String,
+    type_params::Dict{Symbol, Type}
+)
+    # 1. Replace type parameters with concrete types
+    specialized_code = specialize_generic_code(code, type_params)
+
+    # 2. Compile
+    compile_rust_to_llvm(compiler, specialized_code)
+end
+
+function specialize_generic_code(code::String, type_params::Dict{Symbol, Type})
+    # Replace type parameters with concrete types
+    # Example: T -&gt; i32
+    specialized = code
+    for (param, concrete_type) in type_params
+        rust_type = juliatype_to_rust(concrete_type)
+        specialized = replace(specialized, &quot;T&quot; =&gt; rust_type)
+    end
+    specialized
+end</code></pre></li></ol><hr/><h3 id="Task-7:-Memory-Management-Integration"><a class="docs-heading-anchor" href="#Task-7:-Memory-Management-Integration">Task 7: Memory Management Integration</a><a id="Task-7:-Memory-Management-Integration-1"></a><a class="docs-heading-anchor-permalink" href="#Task-7:-Memory-Management-Integration" title="Permalink"></a></h3><p><strong>Priority</strong>: High <strong>Estimate</strong>: 1 week</p><h4 id="Implementation-Details-7"><a class="docs-heading-anchor" href="#Implementation-Details-7">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-7" title="Permalink"></a></h4><ol><li><p><strong>Ownership Management</strong></p><pre><code class="language-julia hljs"># src/memory.jl
+
+# Rust object lifecycle management
+const rust_object_registry = Dict{Ptr{Cvoid}, Any}()
+
+function register_rust_object(ptr::Ptr{Cvoid}, obj::Any)
+    rust_object_registry[ptr] = obj
+    finalizer(obj) do x
+        # Call drop on Rust side
+        drop_rust_object(ptr)
+        delete!(rust_object_registry, ptr)
+    end
+end
+
+function drop_rust_object(ptr::Ptr{Cvoid})
+    # Call Rust drop function
+    # Implementation: Call Rust drop via ccall
+end</code></pre></li><li><p><strong>Arc&lt;T&gt; Integration with Julia GC</strong></p><pre><code class="language-julia hljs">function create_rust_arc(T::Type, value)
+    # Call Arc::new on Rust side
+    arc_ptr = ccall((:rust_arc_new, lib), Ptr{Cvoid}, (Any,), value)
+
+    # Manage on Julia side
+    arc = RustArc{T}(arc_ptr)
+    register_rust_object(arc_ptr, arc)
+    arc
+end</code></pre></li></ol><hr/><h3 id="Task-8:-Performance-Optimization"><a class="docs-heading-anchor" href="#Task-8:-Performance-Optimization">Task 8: Performance Optimization</a><a id="Task-8:-Performance-Optimization-1"></a><a class="docs-heading-anchor-permalink" href="#Task-8:-Performance-Optimization" title="Permalink"></a></h3><p><strong>Priority</strong>: Medium <strong>Estimate</strong>: 1 week</p><h4 id="Implementation-Details-8"><a class="docs-heading-anchor" href="#Implementation-Details-8">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-8" title="Permalink"></a></h4><ol><li><p><strong>Inlining Optimization</strong></p><pre><code class="language-julia hljs">function optimize_for_inlining(mod::LLVM.Module)
+    # Mark small functions as inline candidates
+    for fn in functions(mod)
+        if length(parameters(fn)) &lt;= 3 &amp;&amp;
+           !has_attributes(fn, &quot;noinline&quot;)
+            add_inline_attribute!(fn)
+        end
+    end
+end</code></pre></li><li><p><strong>Cache Improvement</strong></p><pre><code class="language-julia hljs"># Persist compilation results
+const persistent_cache = Dict{String, String}()  # code_hash -&gt; ir_file_path
+
+function get_cached_llvm_ir(code_hash::String)
+    if haskey(persistent_cache, code_hash)
+        ir_file = persistent_cache[code_hash]
+        if isfile(ir_file)
+            return parse_llvm_ir(ir_file)
+        end
+    end
+    nothing
+end</code></pre></li></ol><hr/><h3 id="Task-9:-Test-Suite-Extension"><a class="docs-heading-anchor" href="#Task-9:-Test-Suite-Extension">Task 9: Test Suite Extension</a><a id="Task-9:-Test-Suite-Extension-1"></a><a class="docs-heading-anchor-permalink" href="#Task-9:-Test-Suite-Extension" title="Permalink"></a></h3><p><strong>Priority</strong>: High <strong>Estimate</strong>: 1 week</p><h4 id="Implementation-Details-9"><a class="docs-heading-anchor" href="#Implementation-Details-9">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-9" title="Permalink"></a></h4><ol><li><p><strong>LLVM IR Integration Tests</strong></p><pre><code class="language-julia hljs"># test/llvm.jl
+@testset &quot;LLVM IR integration&quot; begin
+    rust_code = &quot;&quot;&quot;
+    pub fn add(a: i32, b: i32) -&gt; i32 {
+        a + b
+    }
+    &quot;&quot;&quot;
+
+    mod = compile_rust_to_llvm(RustCompiler(), rust_code)
+    @test mod !== nothing
+
+    fn = functions(mod)[&quot;add&quot;]
+    @test fn !== nothing
+end</code></pre></li><li><p><strong>Ownership Type Tests</strong></p><pre><code class="language-julia hljs"># test/ownership.jl
+@testset &quot;Ownership types&quot; begin
+    # Test Box, Rc, Arc
+end</code></pre></li></ol><hr/><h2 id="Implementation-Details-10"><a class="docs-heading-anchor" href="#Implementation-Details-10">Implementation Details</a><a class="docs-heading-anchor-permalink" href="#Implementation-Details-10" title="Permalink"></a></h2><h3 id="File-Structure-(Extended)"><a class="docs-heading-anchor" href="#File-Structure-(Extended)">File Structure (Extended)</a><a id="File-Structure-(Extended)-1"></a><a class="docs-heading-anchor-permalink" href="#File-Structure-(Extended)" title="Permalink"></a></h3><pre><code class="nohighlight hljs">src/
+├── RustCall.jl              # Main module
+├── rustmacro.jl         # @rust macro (extended)
+├── ruststr.jl           # rust&quot;&quot; and irust&quot;&quot; (extended)
+├── rusttypes.jl         # Rust type definitions (extended)
+├── typetranslation.jl   # Type conversion (extended)
+├── rustcompiler.jl      # Rust compiler integration (new)
+├── llvmintegration.jl  # LLVM integration (new)
+├── llvmoptimization.jl # LLVM optimization (new)
+├── rustcodegen.jl      # Code generation (new)
+├── rustinstances.jl    # Compiler instances (new)
+├── memory.jl           # Memory management (new)
+└── exceptions.jl       # Error handling (extended)</code></pre><h3 id="Main-Function-Signatures-(Extended)"><a class="docs-heading-anchor" href="#Main-Function-Signatures-(Extended)">Main Function Signatures (Extended)</a><a id="Main-Function-Signatures-(Extended)-1"></a><a class="docs-heading-anchor-permalink" href="#Main-Function-Signatures-(Extended)" title="Permalink"></a></h3><pre><code class="language-julia hljs"># rustcompiler.jl
+RustCompiler(; kwargs...) -&gt; RustCompiler
+compile_rust_to_llvm(compiler, code; output_file) -&gt; LLVM.Module
+compile_rust_to_llvm_cached(compiler, code) -&gt; LLVM.Module
+
+# llvmintegration.jl
+parse_llvm_ir(ir_file) -&gt; LLVM.Module
+parse_llvm_ir_string(ir_string) -&gt; LLVM.Module
+get_llvm_context(name) -&gt; LLVM.Context
+
+# llvmoptimization.jl
+optimize_llvm_module(mod, level) -&gt; LLVM.Module
+optimize_function(fn, level) -&gt; Nothing
+create_optimization_pipeline(level) -&gt; ModulePassManager
+
+# rustcodegen.jl
+rustcall(CT, expr, args...) -&gt; (generated function)
+get_return_type_from_llvm(fn) -&gt; Type
+get_argument_types_from_llvm(fn) -&gt; Vector{Type}
+llvm_to_julia_type(llvm_ty) -&gt; Type
+
+# memory.jl
+register_rust_object(ptr, obj) -&gt; Nothing
+drop_rust_object(ptr) -&gt; Nothing
+create_rust_arc(T, value) -&gt; RustArc{T}</code></pre><hr/><h2 id="Migration-from-Phase-1"><a class="docs-heading-anchor" href="#Migration-from-Phase-1">Migration from Phase 1</a><a id="Migration-from-Phase-1-1"></a><a class="docs-heading-anchor-permalink" href="#Migration-from-Phase-1" title="Permalink"></a></h2><p>Extend Phase 1 features in Phase 2:</p><ol><li><strong>@rust macro</strong>: Migrate from ccall to llvmcall</li><li><strong>rust&quot;&quot; string literal</strong>: Migrate from shared library to LLVM IR generation</li><li><strong>Type system</strong>: Extend from basic types to ownership types and collection types</li></ol><hr/><h2 id="Limitations"><a class="docs-heading-anchor" href="#Limitations">Limitations</a><a id="Limitations-1"></a><a class="docs-heading-anchor-permalink" href="#Limitations" title="Permalink"></a></h2><p>Phase 2 still has the following limitations:</p><ol><li><strong>Explicit lifetime handling</strong>: Lifetime parameters are not yet fully supported</li><li><strong>Borrow checker</strong>: Compile-time checks are performed on Rust side</li><li><strong>Macro system</strong>: Full proc-macro support is not yet available</li></ol><hr/><h2 id="Next-Steps-(Transition-to-Phase-3)"><a class="docs-heading-anchor" href="#Next-Steps-(Transition-to-Phase-3)">Next Steps (Transition to Phase 3)</a><a id="Next-Steps-(Transition-to-Phase-3)-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps-(Transition-to-Phase-3)" title="Permalink"></a></h2><p>After Phase 2 is complete, implement the following features in Phase 3:</p><ol><li>rustc internal API integration</li><li>Full lifetime support</li><li>Borrow checker integration</li><li>Full macro system support</li></ol><hr/><h2 id="Reference-Implementation"><a class="docs-heading-anchor" href="#Reference-Implementation">Reference Implementation</a><a id="Reference-Implementation-1"></a><a class="docs-heading-anchor-permalink" href="#Reference-Implementation" title="Permalink"></a></h2><ul><li>Refer to Cxx.jl&#39;s <code>codegen.jl</code></li><li>Refer to LLVM.jl documentation</li><li>Investigate Rust LLVM IR output</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../Phase1/">« Phase 1</a><a class="docs-footer-nextpage" href="../INTERNAL/">Internal »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 9 February 2026 08:07">Monday 9 February 2026</span>. Using Julia version 1.12.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
