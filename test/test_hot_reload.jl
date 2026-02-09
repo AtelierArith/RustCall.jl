@@ -93,6 +93,62 @@ const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate"
         @test !is_hot_reload_enabled("NonExistentLib")
     end
 
+    @testset "Per-library reload lock" begin
+        # Verify _get_reload_lock returns a ReentrantLock
+        lock1 = RustCall._get_reload_lock("test_lib_a")
+        @test lock1 isa ReentrantLock
+
+        # Same library name returns the same lock instance
+        lock2 = RustCall._get_reload_lock("test_lib_a")
+        @test lock1 === lock2
+
+        # Different library names return different locks
+        lock3 = RustCall._get_reload_lock("test_lib_b")
+        @test lock1 !== lock3
+
+        # Clean up
+        lock(RustCall.RELOAD_LOCKS_LOCK) do
+            delete!(RustCall.RELOAD_LOCKS, "test_lib_a")
+            delete!(RustCall.RELOAD_LOCKS, "test_lib_b")
+        end
+    end
+
+    @testset "Per-library lock serializes reload across tasks" begin
+        # Verify that acquiring the lock blocks other tasks
+        lib_lock = RustCall._get_reload_lock("test_serialization")
+        order = Int[]
+
+        lock(lib_lock)
+        try
+            # Spawn a task that tries to acquire the same lock
+            t = @async begin
+                lock(lib_lock)
+                try
+                    push!(order, 2)
+                finally
+                    unlock(lib_lock)
+                end
+            end
+
+            # Give the async task time to attempt the lock
+            sleep(0.1)
+            # Task should be blocked — order should still be empty
+            @test isempty(order)
+            push!(order, 1)
+        finally
+            unlock(lib_lock)
+        end
+
+        # Now the async task should complete
+        sleep(0.1)
+        @test order == [1, 2]
+
+        # Clean up
+        lock(RustCall.RELOAD_LOCKS_LOCK) do
+            delete!(RustCall.RELOAD_LOCKS, "test_serialization")
+        end
+    end
+
 end
 
 # Integration tests with actual crate (slower)

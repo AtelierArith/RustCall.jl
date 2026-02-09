@@ -44,6 +44,24 @@ Global flag to enable/disable all hot reload functionality.
 """
 const HOT_RELOAD_ENABLED = Ref(true)
 
+"""
+Per-library locks to serialize reload operations for the same library.
+Prevents concurrent hot reloads of the same crate from corrupting state.
+"""
+const RELOAD_LOCKS = Dict{String, ReentrantLock}()
+const RELOAD_LOCKS_LOCK = ReentrantLock()
+
+"""
+    _get_reload_lock(lib_name::String) -> ReentrantLock
+
+Get or create a per-library lock for serializing reload operations.
+"""
+function _get_reload_lock(lib_name::String)
+    lock(RELOAD_LOCKS_LOCK) do
+        get!(() -> ReentrantLock(), RELOAD_LOCKS, lib_name)
+    end
+end
+
 # ============================================================================
 # File Watching
 # ============================================================================
@@ -132,20 +150,39 @@ Rebuild and reload a Rust library.
 Returns true if successful, false otherwise.
 """
 function reload_library(state::HotReloadState)
+    # Acquire per-library lock to serialize reload operations for the same
+    # library.  This prevents concurrent hot reloads from corrupting state (#80).
+    lib_lock = _get_reload_lock(state.lib_name)
+    lock(lib_lock) do
+        _reload_library_locked(state)
+    end
+end
+
+"""
+    _reload_library_locked(state::HotReloadState) -> Bool
+
+Internal implementation of reload_library, called while holding the
+per-library lock.
+"""
+function _reload_library_locked(state::HotReloadState)
     @info "Hot reload: Rebuilding $(state.lib_name)..."
 
     try
-        # Unload the old library
-        should_unload = lock(REGISTRY_LOCK) do
-            haskey(RUST_LIBRARIES, state.lib_name)
-        end
-        if should_unload
-            unload_library(state.lib_name)
-        end
-
-        # Clear stale monomorphized function pointers that belonged to the
-        # unloaded library to prevent use-after-free (#73)
+        # Unload the old library and clear stale monomorphized functions
+        # atomically under REGISTRY_LOCK to prevent other threads from
+        # observing an inconsistent state between check and unload.
         lock(REGISTRY_LOCK) do
+            if haskey(RUST_LIBRARIES, state.lib_name)
+                lib_handle, _ = RUST_LIBRARIES[state.lib_name]
+                delete!(RUST_LIBRARIES, state.lib_name)
+                if CURRENT_LIB[] == state.lib_name
+                    CURRENT_LIB[] = ""
+                end
+                Libdl.dlclose(lib_handle)
+            end
+
+            # Clear stale monomorphized function pointers that belonged to the
+            # unloaded library to prevent use-after-free (#73)
             stale_keys = [k for (k, v) in MONOMORPHIZED_FUNCTIONS
                           if v.lib_name == state.lib_name]
             for k in stale_keys
@@ -156,15 +193,20 @@ function reload_library(state::HotReloadState)
             end
         end
 
-        # Rebuild the library
+        # Rebuild the library (outside REGISTRY_LOCK — this takes significant
+        # time and must not block other library operations).
         new_lib_path = rebuild_crate(state.crate_path)
 
         # Update state
         state.lib_path = new_lib_path
 
-        # Reload the library
+        # Re-register the library.  Check that nothing else has registered the
+        # same name during the rebuild window.
         lib_handle = Libdl.dlopen(new_lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         lock(REGISTRY_LOCK) do
+            if haskey(RUST_LIBRARIES, state.lib_name)
+                @warn "Hot reload: Library $(state.lib_name) was re-registered during rebuild; overwriting"
+            end
             RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
         end
 
