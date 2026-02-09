@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Struct Mapping · RustCall.jl</title><meta name="title" content="Struct Mapping · RustCall.jl"/><meta property="og:title" content="Struct Mapping · RustCall.jl"/><meta property="twitter:title" content="Struct Mapping · RustCall.jl"/><meta name="description" content="Documentation for RustCall.jl."/><meta property="og:description" content="Documentation for RustCall.jl."/><meta property="twitter:description" content="Documentation for RustCall.jl."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/struct_mapping/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/struct_mapping/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/struct_mapping/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../examples/">Examples</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li class="is-active"><a class="tocitem" href>Struct Mapping</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>Overview</span></a></li><li><a class="tocitem" href="#Basic-Usage"><span>Basic Usage</span></a></li><li><a class="tocitem" href="#Derive-Options"><span>Derive Options</span></a></li><li><a class="tocitem" href="#Field-Access"><span>Field Access</span></a></li><li><a class="tocitem" href="#Generic-Structs"><span>Generic Structs</span></a></li><li><a class="tocitem" href="#Memory-Management"><span>Memory Management</span></a></li><li><a class="tocitem" href="#Method-Binding"><span>Method Binding</span></a></li><li><a class="tocitem" href="#Static-Methods"><span>Static Methods</span></a></li><li><a class="tocitem" href="#Best-Practices"><span>Best Practices</span></a></li><li><a class="tocitem" href="#Limitations"><span>Limitations</span></a></li><li><a class="tocitem" href="#Examples"><span>Examples</span></a></li><li><a class="tocitem" href="#Troubleshooting"><span>Troubleshooting</span></a></li><li><a class="tocitem" href="#See-Also"><span>See Also</span></a></li></ul></li><li><a class="tocitem" href="../generics/">Generics</a></li><li><a class="tocitem" href="../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../troubleshooting/">Troubleshooting</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../api/">API Reference</a></li><li><a class="tocitem" href="../status/">Project Status</a></li><li><a class="tocitem" href="../developer_pitfalls/">Developer Pitfalls</a></li></ul></li><li><span class="tocitem">Design</span><ul><li><a class="tocitem" href="../design/Phase1/">Phase 1</a></li><li><a class="tocitem" href="../design/Phase2/">Phase 2</a></li><li><a class="tocitem" href="../design/INTERNAL/">Internal</a></li><li><a class="tocitem" href="../design/LLVMCALL/">LLVM Call</a></li></ul></li><li><span class="tocitem">Platforms</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">User Guide</a></li><li class="is-active"><a href>Struct Mapping</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Struct Mapping</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl/blob/5a8055e188ea7992ed2904991858a60a54689173/docs/src/struct_mapping.md" title="View source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Struct-Mapping-with-#[derive(JuliaStruct)]"><a class="docs-heading-anchor" href="#Struct-Mapping-with-#[derive(JuliaStruct)]">Struct Mapping with #[derive(JuliaStruct)]</a><a id="Struct-Mapping-with-#[derive(JuliaStruct)]-1"></a><a class="docs-heading-anchor-permalink" href="#Struct-Mapping-with-#[derive(JuliaStruct)]" title="Permalink"></a></h1><p>RustCall.jl provides automatic struct mapping through the <code>#[derive(JuliaStruct)]</code> attribute, which allows you to seamlessly use Rust structs as first-class Julia objects.</p><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">Overview</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>When you add <code>#[derive(JuliaStruct)]</code> to a Rust struct, RustCall.jl automatically:</p><ul><li>Generates Julia bindings for the struct</li><li>Creates field accessors (getters and setters)</li><li>Generates trait implementations (Clone, Debug, etc.) when requested</li><li>Manages memory lifecycle with automatic finalizers</li></ul><h2 id="Basic-Usage"><a class="docs-heading-anchor" href="#Basic-Usage">Basic Usage</a><a id="Basic-Usage-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Usage" title="Permalink"></a></h2><h3 id="Simple-Struct"><a class="docs-heading-anchor" href="#Simple-Struct">Simple Struct</a><a id="Simple-Struct-1"></a><a class="docs-heading-anchor-permalink" href="#Simple-Struct" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Point2D {
+    x: f64,
+    y: f64,
+}
+
+impl Point2D {
+    pub fn new(x: f64, y: f64) -&gt; Self {
+        Point2D { x, y }
+    }
+
+    pub fn distance(&amp;self) -&gt; f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+&quot;&quot;&quot;
+
+# Create a Point2D instance
+p = Point2D(3.0, 4.0)
+
+# Access fields directly
+println(p.x)  # =&gt; 3.0
+println(p.y)  # =&gt; 4.0
+
+# Modify fields
+p.y = 5.0
+println(p.y)  # =&gt; 5.0
+
+# Call methods
+dist = p.distance()
+println(dist)  # =&gt; 5.830951894845301</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3.0
+4.0
+5.0
+5.830951894845301</code></pre><h3 id="With-Clone-Support"><a class="docs-heading-anchor" href="#With-Clone-Support">With Clone Support</a><a id="With-Clone-Support-1"></a><a class="docs-heading-anchor-permalink" href="#With-Clone-Support" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct, Clone)]
+pub struct PersonInfo {
+    name: String,
+    age: i32,
+}
+
+impl PersonInfo {
+    pub fn new(name: String, age: i32) -&gt; Self {
+        PersonInfo { name, age }
+    }
+
+    pub fn get_name(&amp;self) -&gt; String {
+        self.name.clone()
+    }
+}
+&quot;&quot;&quot;
+
+# Create a person
+person = PersonInfo(&quot;Alice&quot;, 30)
+
+# Clone the person
+person2 = copy(person)  # Uses Rust&#39;s Clone trait
+
+# Both are independent objects
+person.age = 31
+println(person.age)   # =&gt; 31
+println(person2.age)  # =&gt; 30</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">31
+30</code></pre><h2 id="Derive-Options"><a class="docs-heading-anchor" href="#Derive-Options">Derive Options</a><a id="Derive-Options-1"></a><a class="docs-heading-anchor-permalink" href="#Derive-Options" title="Permalink"></a></h2><p>The <code>#[derive(JuliaStruct)]</code> attribute supports additional derive options:</p><h3 id="Supported-Traits"><a class="docs-heading-anchor" href="#Supported-Traits">Supported Traits</a><a id="Supported-Traits-1"></a><a class="docs-heading-anchor-permalink" href="#Supported-Traits" title="Permalink"></a></h3><ul><li><strong><code>Clone</code></strong>: Enables <code>copy()</code> function in Julia</li><li><strong><code>Debug</code></strong>: (Reserved for future use)</li><li><strong><code>PartialEq</code></strong>: (Reserved for future use)</li><li><strong><code>Eq</code></strong>: (Reserved for future use)</li><li><strong><code>PartialOrd</code></strong>: (Reserved for future use)</li><li><strong><code>Ord</code></strong>: (Reserved for future use)</li><li><strong><code>Hash</code></strong>: (Reserved for future use)</li><li><strong><code>Default</code></strong>: (Reserved for future use)</li></ul><h3 id="Example-with-Multiple-Traits"><a class="docs-heading-anchor" href="#Example-with-Multiple-Traits">Example with Multiple Traits</a><a id="Example-with-Multiple-Traits-1"></a><a class="docs-heading-anchor-permalink" href="#Example-with-Multiple-Traits" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct, Clone)]
+pub struct Config {
+    host: String,
+    port: i32,
+    timeout: f64,
+}
+
+impl Config {
+    pub fn new(host: String, port: i32, timeout: f64) -&gt; Self {
+        Config { host, port, timeout }
+    }
+}
+&quot;&quot;&quot;
+
+config = Config(&quot;localhost&quot;, 8080, 30.0)
+config2 = copy(config)  # Clone support</code></pre><h2 id="Field-Access"><a class="docs-heading-anchor" href="#Field-Access">Field Access</a><a id="Field-Access-1"></a><a class="docs-heading-anchor-permalink" href="#Field-Access" title="Permalink"></a></h2><h3 id="Automatic-Getters-and-Setters"><a class="docs-heading-anchor" href="#Automatic-Getters-and-Setters">Automatic Getters and Setters</a><a id="Automatic-Getters-and-Setters-1"></a><a class="docs-heading-anchor-permalink" href="#Automatic-Getters-and-Setters" title="Permalink"></a></h3><p>When <code>#[derive(JuliaStruct)]</code> is present, RustCall.jl automatically generates:</p><ul><li><strong>Getters</strong>: Access fields using <code>obj.field_name</code></li><li><strong>Setters</strong>: Modify fields using <code>obj.field_name = value</code></li></ul><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Rectangle {
+    width: f64,
+    height: f64,
+}
+
+impl Rectangle {
+    pub fn new(width: f64, height: f64) -&gt; Self {
+        Rectangle { width, height }
+    }
+
+    pub fn area(&amp;self) -&gt; f64 {
+        self.width * self.height
+    }
+}
+&quot;&quot;&quot;
+
+rect = Rectangle(10.0, 20.0)
+
+# Get field values
+w = rect.width   # =&gt; 10.0
+h = rect.height  # =&gt; 20.0
+
+# Set field values
+rect.width = 15.0
+rect.height = 25.0
+
+# Calculate area
+rect_area = rect.area()  # =&gt; 375.0</code></pre><h3 id="Field-Type-Mapping"><a class="docs-heading-anchor" href="#Field-Type-Mapping">Field Type Mapping</a><a id="Field-Type-Mapping-1"></a><a class="docs-heading-anchor-permalink" href="#Field-Type-Mapping" title="Permalink"></a></h3><p>Field types are automatically mapped from Rust to Julia:</p><table><tr><th style="text-align: right">Rust Type</th><th style="text-align: right">Julia Type</th><th style="text-align: right">Notes</th></tr><tr><td style="text-align: right"><code>i32</code></td><td style="text-align: right"><code>Int32</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>i64</code></td><td style="text-align: right"><code>Int64</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>f32</code></td><td style="text-align: right"><code>Float32</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>f64</code></td><td style="text-align: right"><code>Float64</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>bool</code></td><td style="text-align: right"><code>Bool</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>String</code></td><td style="text-align: right"><code>RustString</code></td><td style="text-align: right">Owned string</td></tr><tr><td style="text-align: right"><code>&amp;str</code></td><td style="text-align: right"><code>RustStr</code></td><td style="text-align: right">String slice</td></tr></table><h2 id="Generic-Structs"><a class="docs-heading-anchor" href="#Generic-Structs">Generic Structs</a><a id="Generic-Structs-1"></a><a class="docs-heading-anchor-permalink" href="#Generic-Structs" title="Permalink"></a></h2><p>Generic structs are also supported:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Pair&lt;T&gt; {
+    first: T,
+    second: T,
+}
+
+impl&lt;T&gt; Pair&lt;T&gt; {
+    pub fn new(first: T, second: T) -&gt; Self {
+        Pair { first, second }
+    }
+}
+&quot;&quot;&quot;
+
+# Create a Pair with Int32
+pair_int = Pair{Int32}(10, 20)
+println(pair_int.first)   # =&gt; 10
+println(pair_int.second)  # =&gt; 20
+
+# Create a Pair with Float64
+pair_float = Pair{Float64}(3.14, 2.71)
+println(pair_float.first)   # =&gt; 3.14
+println(pair_float.second)  # =&gt; 2.71</code></pre><div class="admonition is-info" id="Future-Feature-149aea7f0b9daa6c"><header class="admonition-header">Future Feature<a class="admonition-anchor" href="#Future-Feature-149aea7f0b9daa6c" title="Permalink"></a></header><div class="admonition-body"><p>Generic struct support is planned for a future release.</p></div></div><h2 id="Memory-Management"><a class="docs-heading-anchor" href="#Memory-Management">Memory Management</a><a id="Memory-Management-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Management" title="Permalink"></a></h2><p>Structs created with <code>#[derive(JuliaStruct)]</code> are automatically managed by Julia&#39;s garbage collector. When a Julia object is reclaimed, its corresponding Rust memory is automatically freed.</p><h2 id="Method-Binding"><a class="docs-heading-anchor" href="#Method-Binding">Method Binding</a><a id="Method-Binding-1"></a><a class="docs-heading-anchor-permalink" href="#Method-Binding" title="Permalink"></a></h2><p>All <code>pub fn</code> methods in <code>impl</code> blocks are automatically bound:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Calculator {
+    value: f64,
+}
+
+impl Calculator {
+    pub fn new(value: f64) -&gt; Self {
+        Calculator { value }
+    }
+
+    pub fn add(&amp;mut self, x: f64) {
+        self.value += x;
+    }
+
+    pub fn multiply(&amp;mut self, x: f64) {
+        self.value *= x;
+    }
+
+    pub fn get_value(&amp;self) -&gt; f64 {
+        self.value
+    }
+
+    pub fn reset(&amp;mut self) {
+        self.value = 0.0;
+    }
+}
+&quot;&quot;&quot;
+
+calc = Calculator(10.0)
+calc.add(5.0)
+calc.multiply(2.0)
+println(calc.get_value())  # =&gt; 30.0
+calc.reset()
+println(calc.get_value())  # =&gt; 0.0</code></pre><h2 id="Static-Methods"><a class="docs-heading-anchor" href="#Static-Methods">Static Methods</a><a id="Static-Methods-1"></a><a class="docs-heading-anchor-permalink" href="#Static-Methods" title="Permalink"></a></h2><p>Static methods (methods without <code>self</code>) are also supported:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct MathUtils;
+
+impl MathUtils {
+    pub fn add(a: f64, b: f64) -&gt; f64 {
+        a + b
+    }
+
+    pub fn multiply(a: f64, b: f64) -&gt; f64 {
+        a * b
+    }
+}
+&quot;&quot;&quot;
+
+# Create an instance and call methods
+utils = MathUtils()
+result1 = utils.add(3.0, 4.0)      # =&gt; 7.0
+result2 = utils.multiply(3.0, 4.0) # =&gt; 12.0</code></pre><div class="admonition is-info" id="Future-Feature-2c58b1363596ed6e"><header class="admonition-header">Future Feature<a class="admonition-anchor" href="#Future-Feature-2c58b1363596ed6e" title="Permalink"></a></header><div class="admonition-body"><p>Unit struct (struct without fields) support is planned for a future release.</p></div></div><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><h3 id="1.-Always-Use-#[derive(JuliaStruct)]"><a class="docs-heading-anchor" href="#1.-Always-Use-#[derive(JuliaStruct)]">1. Always Use <code>#[derive(JuliaStruct)]</code></a><a id="1.-Always-Use-#[derive(JuliaStruct)]-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Always-Use-#[derive(JuliaStruct)]" title="Permalink"></a></h3><p>For structs that you want to use in Julia, always add the attribute:</p><pre><code class="language-rust hljs">#[derive(JuliaStruct)]  // ✅ Good
+pub struct MyStruct {
+    // ...
+}</code></pre><h3 id="2.-Use-Clone-for-Expensive-Operations"><a class="docs-heading-anchor" href="#2.-Use-Clone-for-Expensive-Operations">2. Use Clone for Expensive Operations</a><a id="2.-Use-Clone-for-Expensive-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Use-Clone-for-Expensive-Operations" title="Permalink"></a></h3><p>If you need to copy structs frequently, derive <code>Clone</code>:</p><pre><code class="language-rust hljs">#[derive(JuliaStruct, Clone)]  // ✅ Good for copyable structs
+pub struct Config {
+    // ...
+}</code></pre><h3 id="3.-Keep-Structs-Simple"><a class="docs-heading-anchor" href="#3.-Keep-Structs-Simple">3. Keep Structs Simple</a><a id="3.-Keep-Structs-Simple-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Keep-Structs-Simple" title="Permalink"></a></h3><p>Prefer simple field types that map well to Julia:</p><pre><code class="language-rust hljs">#[derive(JuliaStruct)]
+pub struct Point {
+    x: f64,  // ✅ Good: simple type
+    y: f64,
+}</code></pre><h3 id="4.-Use-Methods-for-Complex-Operations"><a class="docs-heading-anchor" href="#4.-Use-Methods-for-Complex-Operations">4. Use Methods for Complex Operations</a><a id="4.-Use-Methods-for-Complex-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Use-Methods-for-Complex-Operations" title="Permalink"></a></h3><p>For complex operations, use methods instead of exposing internal state:</p><pre><code class="language-rust hljs">#[derive(JuliaStruct)]
+pub struct BankAccount {
+    balance: f64,
+}
+
+impl BankAccount {
+    pub fn new(balance: f64) -&gt; Self {
+        BankAccount { balance }
+    }
+
+    pub fn withdraw(&amp;mut self, amount: f64) -&gt; Result&lt;f64, String&gt; {
+        if amount &gt; self.balance {
+            Err(&quot;Insufficient funds&quot;.to_string())
+        } else {
+            self.balance -= amount;
+            Ok(self.balance)
+        }
+    }
+
+    pub fn get_balance(&amp;self) -&gt; f64 {
+        self.balance
+    }
+}</code></pre><h2 id="Limitations"><a class="docs-heading-anchor" href="#Limitations">Limitations</a><a id="Limitations-1"></a><a class="docs-heading-anchor-permalink" href="#Limitations" title="Permalink"></a></h2><h3 id="Current-Limitations"><a class="docs-heading-anchor" href="#Current-Limitations">Current Limitations</a><a id="Current-Limitations-1"></a><a class="docs-heading-anchor-permalink" href="#Current-Limitations" title="Permalink"></a></h3><ol><li><strong>Nested structs</strong>: Nested structs are not yet fully supported</li><li><strong>Complex generics</strong>: Very complex generic constraints may not work</li><li><strong>Lifetime parameters</strong>: Lifetime parameters are not supported</li><li><strong>Associated types</strong>: Associated types in traits are not supported</li></ol><h3 id="Workarounds"><a class="docs-heading-anchor" href="#Workarounds">Workarounds</a><a id="Workarounds-1"></a><a class="docs-heading-anchor-permalink" href="#Workarounds" title="Permalink"></a></h3><p>For nested structs, use pointers or references:</p><pre><code class="language-rust hljs">#[derive(JuliaStruct)]
+pub struct Outer {
+    inner: *mut Inner,  // Use pointer instead of direct nesting
+}
+
+#[derive(JuliaStruct)]
+pub struct Inner {
+    value: i32,
+}</code></pre><h2 id="Examples"><a class="docs-heading-anchor" href="#Examples">Examples</a><a id="Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Examples" title="Permalink"></a></h2><h3 id="Complete-Example:-2D-Vector"><a class="docs-heading-anchor" href="#Complete-Example:-2D-Vector">Complete Example: 2D Vector</a><a id="Complete-Example:-2D-Vector-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Example:-2D-Vector" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct, Clone)]
+pub struct Vec2DD {
+    x: f64,
+    y: f64,
+}
+
+impl Vec2DD {
+    pub fn new(x: f64, y: f64) -&gt; Self {
+        Vec2DD { x, y }
+    }
+
+    pub fn zero() -&gt; Self {
+        Vec2DD { x: 0.0, y: 0.0 }
+    }
+
+    pub fn add(&amp;self, other: &amp;Vec2DD) -&gt; Vec2DD {
+        Vec2DD {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+
+    pub fn scale(&amp;mut self, factor: f64) {
+        self.x *= factor;
+        self.y *= factor;
+    }
+
+    pub fn magnitude(&amp;self) -&gt; f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+
+    pub fn normalize(&amp;mut self) {
+        let mag = self.magnitude();
+        if mag &gt; 0.0 {
+            self.scale(1.0 / mag);
+        }
+    }
+}
+&quot;&quot;&quot;
+
+# Create vectors
+v1 = Vec2DD(3.0, 4.0)
+v2 = Vec2DD(1.0, 2.0)
+
+# Access fields
+println(&quot;v1: ($(v1.x), $(v1.y))&quot;)  # =&gt; v1: (3.0, 4.0)
+
+# Modify fields
+v1.x = 5.0
+println(&quot;v1: ($(v1.x), $(v1.y))&quot;)  # =&gt; v1: (5.0, 4.0)
+
+# Call methods
+v3 = v1.add(v2)
+println(&quot;v3: ($(v3.x), $(v3.y))&quot;)  # =&gt; v3: (6.0, 6.0)
+
+# Static method
+v_zero = Vec2DD.zero()
+println(&quot;zero: ($(v_zero.x), $(v_zero.y))&quot;)  # =&gt; zero: (0.0, 0.0)
+
+# Clone
+v4 = copy(v1)
+v4.scale(2.0)
+println(&quot;v1 magnitude: $(v1.magnitude())&quot;)  # =&gt; v1 magnitude: 6.4031242374328485
+println(&quot;v4 magnitude: $(v4.magnitude())&quot;)  # =&gt; v4 magnitude: 12.806248474865697</code></pre><div class="admonition is-info" id="Future-Feature-bc14cda854904022"><header class="admonition-header">Future Feature<a class="admonition-anchor" href="#Future-Feature-bc14cda854904022" title="Permalink"></a></header><div class="admonition-body"><p>Methods returning custom struct types are planned for a future release.</p></div></div><h2 id="Troubleshooting"><a class="docs-heading-anchor" href="#Troubleshooting">Troubleshooting</a><a id="Troubleshooting-1"></a><a class="docs-heading-anchor-permalink" href="#Troubleshooting" title="Permalink"></a></h2><h3 id="Struct-Not-Found"><a class="docs-heading-anchor" href="#Struct-Not-Found">Struct Not Found</a><a id="Struct-Not-Found-1"></a><a class="docs-heading-anchor-permalink" href="#Struct-Not-Found" title="Permalink"></a></h3><p>If you get an error that the struct is not found, make sure:</p><ol><li>The struct is marked with <code>pub</code></li><li>The struct has <code>#[derive(JuliaStruct)]</code></li><li>The struct is defined in the <code>rust&quot;&quot;</code> block</li></ol><pre><code class="language-rust hljs">// ❌ Bad: missing pub
+struct MyStruct { ... }
+
+// ✅ Good
+#[derive(JuliaStruct)]
+pub struct MyStruct { ... }</code></pre><h3 id="Field-Access-Errors"><a class="docs-heading-anchor" href="#Field-Access-Errors">Field Access Errors</a><a id="Field-Access-Errors-1"></a><a class="docs-heading-anchor-permalink" href="#Field-Access-Errors" title="Permalink"></a></h3><p>If field access doesn&#39;t work:</p><ol><li>Make sure the struct has <code>#[derive(JuliaStruct)]</code></li><li>Check that field names match exactly</li><li>Verify field types are supported</li></ol><h3 id="Clone-Not-Working"><a class="docs-heading-anchor" href="#Clone-Not-Working">Clone Not Working</a><a id="Clone-Not-Working-1"></a><a class="docs-heading-anchor-permalink" href="#Clone-Not-Working" title="Permalink"></a></h3><p>If <code>copy()</code> doesn&#39;t work:</p><ol><li>Add <code>Clone</code> to the derive list: <code>#[derive(JuliaStruct, Clone)]</code></li><li>Make sure all fields implement <code>Clone</code> in Rust</li></ol><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">See Also</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../tutorial/">Tutorial</a>: General tutorial on using RustCall.jl</li><li><a href="../examples/">Examples</a>: More examples of RustCall.jl usage</li><li><a href="../api/">API Reference</a>: Complete API documentation</li><li><a href="../generics/">Generics</a>: Using generics with RustCall.jl</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../examples/">« Examples</a><a class="docs-footer-nextpage" href="../generics/">Generics »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 9 February 2026 10:52">Monday 9 February 2026</span>. Using Julia version 1.12.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
