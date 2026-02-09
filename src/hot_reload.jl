@@ -143,6 +143,19 @@ function reload_library(state::HotReloadState)
             unload_library(state.lib_name)
         end
 
+        # Clear stale monomorphized function pointers that belonged to the
+        # unloaded library to prevent use-after-free (#73)
+        lock(REGISTRY_LOCK) do
+            stale_keys = [k for (k, v) in MONOMORPHIZED_FUNCTIONS
+                          if v.lib_name == state.lib_name]
+            for k in stale_keys
+                delete!(MONOMORPHIZED_FUNCTIONS, k)
+            end
+            if !isempty(stale_keys)
+                @debug "Hot reload: Cleared $(length(stale_keys)) stale monomorphized functions"
+            end
+        end
+
         # Rebuild the library
         new_lib_path = rebuild_crate(state.crate_path)
 

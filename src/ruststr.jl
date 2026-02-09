@@ -944,21 +944,26 @@ function _compile_and_call_irust(code::String, args...)
         # Infer Rust types from Julia types (needed for both cached and new functions)
         rust_arg_types = collect(map(_julia_to_rust_type, arg_types))
 
-        # Check if already compiled
-        if haskey(IRUST_FUNCTIONS, code_hash)
-            lib_name, cached_func_name = IRUST_FUNCTIONS[code_hash]
-            is_loaded = lock(REGISTRY_LOCK) do
-                haskey(RUST_LIBRARIES, lib_name)
+        # Check if already compiled (protect IRUST_FUNCTIONS with REGISTRY_LOCK)
+        cached = lock(REGISTRY_LOCK) do
+            if haskey(IRUST_FUNCTIONS, code_hash)
+                lib_name, cached_func_name = IRUST_FUNCTIONS[code_hash]
+                if haskey(RUST_LIBRARIES, lib_name)
+                    return (lib_name, cached_func_name, true)
+                else
+                    # Stale cache entry: library was unloaded, so recompile transparently.
+                    delete!(IRUST_FUNCTIONS, code_hash)
+                    return nothing
+                end
             end
-            if is_loaded
-                # Re-infer return type for cached function (should match original)
-                rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
-                julia_ret_type = _rust_to_julia_type(rust_ret_type)
-                return _call_irust_function(lib_name, cached_func_name, julia_ret_type, args...)
-            else
-                # Stale cache entry: library was unloaded, so recompile transparently.
-                delete!(IRUST_FUNCTIONS, code_hash)
-            end
+            return nothing
+        end
+        if cached !== nothing
+            lib_name, cached_func_name, _ = cached
+            # Re-infer return type for cached function (should match original)
+            rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
+            julia_ret_type = _rust_to_julia_type(rust_ret_type)
+            return _call_irust_function(lib_name, cached_func_name, julia_ret_type, args...)
         end
 
         # Infer return type from code (improved)
@@ -1001,12 +1006,12 @@ function _compile_and_call_irust(code::String, args...)
             """)
         end
 
-        # Generate a unique library name
+        # Generate a unique library name and register under lock
         lib_name = "irust_$(string(code_hash, base=16))"
         lock(REGISTRY_LOCK) do
             RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+            IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
         end
-        IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
 
         # Convert Rust return type to Julia type
         julia_ret_type = _rust_to_julia_type(rust_ret_type)

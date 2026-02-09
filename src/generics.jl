@@ -642,8 +642,10 @@ Infer type parameters for a generic function from argument types.
 ```
 """
 function infer_type_parameters(func_name::String, arg_types::Vector{<:Type})
-    # Get generic function info
-    generic_info = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+    # Get generic function info (protect read with REGISTRY_LOCK)
+    generic_info = lock(REGISTRY_LOCK) do
+        get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+    end
     if generic_info === nothing
         error("Function '$func_name' is not registered as a generic function")
     end
@@ -953,8 +955,10 @@ end
 Check if a function is registered as a generic function.
 """
 function is_generic_function(func_name::String)
-    @debug "Checking if function is generic" func_name registry_keys=collect(keys(GENERIC_FUNCTION_REGISTRY))
-    return haskey(GENERIC_FUNCTION_REGISTRY, func_name)
+    return lock(REGISTRY_LOCK) do
+        @debug "Checking if function is generic" func_name registry_keys=collect(keys(GENERIC_FUNCTION_REGISTRY))
+        haskey(GENERIC_FUNCTION_REGISTRY, func_name)
+    end
 end
 
 """
