@@ -351,6 +351,27 @@ using Test
         empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
     end
 
+    @testset "Deeply nested generics in specialize_generic_code (#108)" begin
+        # Ensure bracket-counting handles arbitrary nesting depth
+        code = "pub fn deep<T>(x: Vec<Option<Result<T, String>>>) -> T { todo!() }"
+        specialized = RustCall.specialize_generic_code(code, Dict(:T => Int32))
+        @test occursin("Vec<Option<Result<i32, String>>>", specialized)
+        @test occursin("fn deep(", specialized)
+        @test !occursin("<T>", specialized)
+
+        # HashMap<K, V> with two type params
+        code2 = "pub fn lookup<K, V>(m: HashMap<K, V>, key: K) -> V { todo!() }"
+        specialized2 = RustCall.specialize_generic_code(code2, Dict(:K => Int32, :V => Float64))
+        @test occursin("HashMap<i32, f64>", specialized2)
+        @test occursin("fn lookup(", specialized2)
+
+        # impl<T> with nested bounds
+        code3 = "impl<T: Add<Output = T>> MyStruct<T> { fn go(self) -> T { todo!() } }"
+        specialized3 = RustCall.specialize_generic_code(code3, Dict(:T => Int32))
+        @test occursin("impl MyStruct<i32>", specialized3) || occursin("impl  MyStruct<i32>", specialized3)
+        @test !occursin("<i32: Add", specialized3)
+    end
+
     @testset "parse_inline_constraints skips lifetime parameters" begin
         type_params, constraints = RustCall.parse_inline_constraints("'a, T: Clone, U")
         @test type_params == [:T, :U]
