@@ -15,13 +15,10 @@ mutable struct RustModule
     ir_file::String
 end
 
-# Registry of loaded Rust modules
-const RUST_MODULES = Dict{UInt64, RustModule}()
+# Registry of loaded Rust modules (keyed by SHA256 hash of IR content)
+const RUST_MODULES = Dict{String, RustModule}()
 
-# Cache for compiled functions
-const FUNCTION_CACHE = Dict{String, Ptr{Cvoid}}()
-
-# Lock for thread-safe access to LLVM registries (RUST_MODULES, FUNCTION_CACHE,
+# Lock for thread-safe access to LLVM registries (RUST_MODULES
 # and LLVM_FUNCTION_REGISTRY in llvmcodegen.jl)
 const LLVM_REGISTRY_LOCK = ReentrantLock()
 
@@ -62,8 +59,8 @@ function load_llvm_ir(ir_file::String; source_code::String = "")
 
     rust_mod = RustModule(ctx, mod, source_code, functions, ir_file)
 
-    # Register in the global registry
-    mod_hash = hash(ir_content)
+    # Register in the global registry using SHA256 of IR content to avoid hash collisions
+    mod_hash = bytes2hex(sha256(ir_content))
     lock(LLVM_REGISTRY_LOCK) do
         RUST_MODULES[mod_hash] = rust_mod
     end
@@ -244,21 +241,11 @@ mod = load_llvm_ir("path/to/file.ll")
 ```
 """
 function get_or_compile_function(mod::RustModule, name::String)
-    cache_key = "$(objectid(mod))_$name"
-
-    cached = lock(LLVM_REGISTRY_LOCK) do
-        get(FUNCTION_CACHE, cache_key, nothing)
-    end
-    if cached !== nothing
-        return cached
-    end
-
     fn = get_function(mod, name)
     if fn === nothing
         error("Function '$name' not found in module")
     end
 
-    # For now, we'll use the shared library approach
     # LLVM IR -> llvmcall integration requires more work
     # This is a placeholder for future LLVM JIT compilation
     error("Direct LLVM JIT compilation not yet implemented. Use shared library approach.")
