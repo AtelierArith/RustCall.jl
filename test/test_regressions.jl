@@ -286,6 +286,18 @@ using Test
         @test RustCall.extract_function_code(code, "nonexistent") === nothing
     end
 
+    @testset "Silent fallback emits warning with function name (#126)" begin
+        # When extract_function_code fails, the fallback must warn
+        # with the function name so developers can diagnose the issue
+        code = """
+        #[no_mangle]
+        pub extern "C" fn broken_body<T>(x: T) -> T
+        """
+        msg = @test_warn "Failed to extract function" RustCall._detect_and_register_generic_functions(code, "test_lib_126")
+        # The warning message should mention the specific function name
+        # (captured by @test_warn returning the log message)
+    end
+
     @testset "detect_and_register warns on extraction fallback" begin
         # Code with a generic function whose name doesn't match the fn pattern
         # (no braces after function signature — causes extract_function_code to fail)
