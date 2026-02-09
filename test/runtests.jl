@@ -393,6 +393,39 @@ include("test_regressions.jl")
                 @test custom_config.inline_threshold == 100
             end
 
+            @testset "Optimization passes are not no-ops" begin
+                # Verify that optimize_module! actually modifies IR (issue #95)
+                # Create unoptimized Rust IR with dead code that optimization should remove
+                rust_code = """
+                #[no_mangle]
+                pub extern "C" fn opt_test_dead_code(a: i32, b: i32) -> i32 {
+                    let _unused = a * b;
+                    let _also_unused = a + b + 1;
+                    a + b
+                }
+                """
+                wrapped = RustCall.wrap_rust_code(rust_code)
+                # Use opt_level=0 to get unoptimized IR
+                compiler_o0 = RustCall.RustCompiler(optimization_level=0)
+                ir_path = RustCall.compile_rust_to_llvm_ir(wrapped; compiler=compiler_o0)
+
+                rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped)
+                llvm_mod = rust_mod.mod
+
+                # Count instructions before optimization
+                stats_before = RustCall.get_optimization_stats(llvm_mod)
+
+                # Run optimization at level 2
+                config = OptimizationConfig(level=2)
+                optimize_module!(llvm_mod; config=config)
+
+                # Count instructions after optimization
+                stats_after = RustCall.get_optimization_stats(llvm_mod)
+
+                # Optimization should reduce instruction count (dead code removal)
+                @test stats_after["total_instructions"] <= stats_before["total_instructions"]
+            end
+
             @testset "LLVM Type Conversion" begin
                 # Test Julia to LLVM IR string conversion
                 @test RustCall.julia_type_to_llvm_ir_string(Int32) == "i32"

@@ -53,93 +53,46 @@ end
 """
     optimize_module!(mod::LLVM.Module; config=get_default_opt_config())
 
-Apply optimization passes to an LLVM module.
+Apply optimization passes to an LLVM module using LLVM's New Pass Manager.
 Returns the optimized module (modified in place).
 """
 function optimize_module!(mod::LLVM.Module; config::OptimizationConfig = get_default_opt_config())
-    # Use LLVM's PassManager
-    LLVM.@dispose pm=LLVM.ModulePassManager() begin
-        # Add passes based on optimization level
-        add_optimization_passes!(pm, config)
+    if config.level == 0 && config.size_level == 0
+        return mod
+    end
 
-        # Run the passes
-        LLVM.run!(pm, mod)
+    # Determine effective optimization level for DefaultPipeline
+    opt_level = if config.size_level >= 2
+        's'  # Oz — minimize size
+    elseif config.size_level >= 1
+        's'  # Os — optimize for size
+    else
+        config.level
+    end
+
+    # Use the New Pass Manager with LLVM's built-in DefaultPipeline.
+    # DefaultPipeline maps to LLVM's standard -O1/-O2/-O3/-Os pipelines which
+    # include instcombine, simplifycfg, mem2reg, GVN, DCE, DSE, inlining,
+    # LICM, loop unrolling, vectorization, and more.
+    LLVM.@dispose pb=LLVM.NewPMPassBuilder(
+        loop_vectorization=config.enable_vectorization,
+        slp_vectorization=config.enable_vectorization,
+        loop_unrolling=config.enable_loop_unrolling,
+        loop_interleaving=config.enable_loop_unrolling
+    ) begin
+        LLVM.add!(pb, LLVM.DefaultPipeline(opt_level=opt_level))
+
+        # Additional size-focused passes beyond what DefaultPipeline provides
+        if config.size_level >= 2
+            LLVM.add!(pb, LLVM.NewPMModulePassManager()) do mpm
+                LLVM.add!(mpm, "mergefunc")
+            end
+        end
+
+        LLVM.run!(pb, mod)
     end
 
     return mod
-end
-
-"""
-    add_optimization_passes!(pm::LLVM.ModulePassManager, config::OptimizationConfig)
-
-Add optimization passes to the pass manager based on configuration.
-"""
-function add_optimization_passes!(pm::LLVM.ModulePassManager, config::OptimizationConfig)
-    # Level 0: No optimization (only required passes)
-    if config.level == 0
-        return
-    end
-
-    # Helper function to create a ModulePass with a no-op runner
-    # The actual optimization is handled by LLVM's pass infrastructure
-    # The callback function must return a Bool (true = success, false = failure)
-    function create_pass(pass_name::String)
-        return LLVM.ModulePass(pass_name, mod -> true)
-    end
-
-    # Level 1: Basic optimizations
-    if config.level >= 1
-        # Basic cleanup and simplification
-        LLVM.add!(pm, create_pass("instcombine"))
-        LLVM.add!(pm, create_pass("simplifycfg"))
-        LLVM.add!(pm, create_pass("reassociate"))
-        LLVM.add!(pm, create_pass("mem2reg"))
-    end
-
-    # Level 2: Standard optimizations
-    if config.level >= 2
-        # More aggressive optimizations
-        LLVM.add!(pm, create_pass("gvn"))
-        LLVM.add!(pm, create_pass("dce"))
-        LLVM.add!(pm, create_pass("dse"))
-
-        # Inlining
-        LLVM.add!(pm, create_pass("inline"))
-
-        # Loop optimizations
-        if config.enable_licm
-            LLVM.add!(pm, create_pass("licm"))
-        end
-        if config.enable_loop_unrolling
-            LLVM.add!(pm, create_pass("loop-unroll"))
-        end
-    end
-
-    # Level 3: Aggressive optimizations
-    if config.level >= 3
-        # Vectorization
-        if config.enable_vectorization
-            LLVM.add!(pm, create_pass("loop-vectorize"))
-            LLVM.add!(pm, create_pass("slp-vectorizer"))
-        end
-
-        # More aggressive inlining and cleanup
-        LLVM.add!(pm, create_pass("aggressive-instcombine"))
-
-        # Final cleanup
-        LLVM.add!(pm, create_pass("instcombine"))
-        LLVM.add!(pm, create_pass("simplifycfg"))
-    end
-
-    # Size optimizations
-    if config.size_level >= 1
-        LLVM.add!(pm, create_pass("globaldce"))
-        LLVM.add!(pm, create_pass("strip-dead-prototypes"))
-    end
-
-    if config.size_level >= 2
-        LLVM.add!(pm, create_pass("mergefunc"))
-    end
 end
 
 """
@@ -150,41 +103,34 @@ Apply optimization passes to a single LLVM function.
 function optimize_function!(fn::LLVM.Function; config::OptimizationConfig = get_default_opt_config())
     mod = LLVM.parent(fn)
 
-    # For function-level optimization, we create a module pass manager
-    # and run it on the parent module
-    LLVM.@dispose pm=LLVM.ModulePassManager() begin
-        add_function_optimization_passes!(pm, config)
-        LLVM.run!(pm, mod)
+    if config.level == 0
+        return fn
+    end
+
+    # Run a function-scoped pipeline via the New Pass Manager
+    LLVM.@dispose pb=LLVM.NewPMPassBuilder() begin
+        LLVM.add!(pb, LLVM.NewPMFunctionPassManager()) do fpm
+            if config.level >= 1
+                LLVM.add!(fpm, "mem2reg")
+                LLVM.add!(fpm, "instcombine")
+                LLVM.add!(fpm, "simplifycfg")
+                LLVM.add!(fpm, "reassociate")
+            end
+            if config.level >= 2
+                LLVM.add!(fpm, "gvn")
+                LLVM.add!(fpm, "dce")
+                LLVM.add!(fpm, "dse")
+            end
+            if config.level >= 3
+                LLVM.add!(fpm, "aggressive-instcombine")
+                LLVM.add!(fpm, "instcombine")
+                LLVM.add!(fpm, "simplifycfg")
+            end
+        end
+        LLVM.run!(pb, mod)
     end
 
     return fn
-end
-
-"""
-    add_function_optimization_passes!(pm::LLVM.ModulePassManager, config::OptimizationConfig)
-
-Add function-level optimization passes.
-"""
-function add_function_optimization_passes!(pm::LLVM.ModulePassManager, config::OptimizationConfig)
-    # Helper function to create a ModulePass with a no-op runner
-    # The callback function must return a Bool (true = success, false = failure)
-    function create_pass(pass_name::String)
-        return LLVM.ModulePass(pass_name, mod -> true)
-    end
-
-    if config.level >= 1
-        LLVM.add!(pm, create_pass("mem2reg"))
-        LLVM.add!(pm, create_pass("instcombine"))
-    end
-
-    if config.level >= 2
-        LLVM.add!(pm, create_pass("gvn"))
-        LLVM.add!(pm, create_pass("dce"))
-    end
-
-    if config.level >= 3
-        LLVM.add!(pm, create_pass("aggressive-instcombine"))
-    end
 end
 
 """
