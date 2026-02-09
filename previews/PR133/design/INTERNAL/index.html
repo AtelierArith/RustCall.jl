@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Internal · RustCall.jl</title><meta name="title" content="Internal · RustCall.jl"/><meta property="og:title" content="Internal · RustCall.jl"/><meta property="twitter:title" content="Internal · RustCall.jl"/><meta name="description" content="Documentation for RustCall.jl."/><meta property="og:description" content="Documentation for RustCall.jl."/><meta property="twitter:description" content="Documentation for RustCall.jl."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/design/INTERNAL/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/design/INTERNAL/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/design/INTERNAL/"/><script data-outdated-warner src="../../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL="../.."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../../assets/documenter.js"></script><script src="../../search_index.js"></script><script src="../../siteinfo.js"></script><script src="../../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../../">RustCall.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../../tutorial/">Tutorial</a></li><li><a class="tocitem" href="../../examples/">Examples</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../../generics/">Generics</a></li><li><a class="tocitem" href="../../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../../troubleshooting/">Troubleshooting</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../../api/">API Reference</a></li><li><a class="tocitem" href="../../status/">Project Status</a></li></ul></li><li><span class="tocitem">Design</span><ul><li><a class="tocitem" href="../Phase1/">Phase 1</a></li><li><a class="tocitem" href="../Phase2/">Phase 2</a></li><li class="is-active"><a class="tocitem" href>Internal</a><ul class="internal"><li><a class="tocitem" href="#Table-of-Contents"><span>Table of Contents</span></a></li><li><a class="tocitem" href="#Architecture-Overview"><span>Architecture Overview</span></a></li><li><a class="tocitem" href="#Processing-Flow"><span>Processing Flow</span></a></li><li><a class="tocitem" href="#Macro-Processing-(@cxx)"><span>Macro Processing (<code>@cxx</code>)</span></a></li><li><a class="tocitem" href="#String-Literals-(cxx&quot;&quot;-and-icxx&quot;&quot;)"><span>String Literals (<code>cxx&quot;&quot;</code> and <code>icxx&quot;&quot;</code>)</span></a></li><li><a class="tocitem" href="#Type-System"><span>Type System</span></a></li><li><a class="tocitem" href="#Code-Generation-Process"><span>Code Generation Process</span></a></li><li><a class="tocitem" href="#Clang-Integration"><span>Clang Integration</span></a></li><li><a class="tocitem" href="#LLVM-IR-Integration"><span>LLVM IR Integration</span></a></li><li><a class="tocitem" href="#Memory-Management"><span>Memory Management</span></a></li><li><a class="tocitem" href="#Error-Handling"><span>Error Handling</span></a></li><li><a class="tocitem" href="#Optimization-Points"><span>Optimization Points</span></a></li><li><a class="tocitem" href="#Summary"><span>Summary</span></a></li></ul></li><li><a class="tocitem" href="../LLVMCALL/">LLVM Call</a></li></ul></li><li><span class="tocitem">Platforms</span><ul><li><a class="tocitem" href="../../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Design</a></li><li class="is-active"><a href>Internal</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Internal</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl/blob/d6c37739fd17cecb66a1b74bd7d5f8e3450e0f0b/docs/src/design/INTERNAL.md" title="View source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Cxx.jl-Internal-Implementation-Details"><a class="docs-heading-anchor" href="#Cxx.jl-Internal-Implementation-Details">Cxx.jl Internal Implementation Details</a><a id="Cxx.jl-Internal-Implementation-Details-1"></a><a class="docs-heading-anchor-permalink" href="#Cxx.jl-Internal-Implementation-Details" title="Permalink"></a></h1><p>This document explains in detail how C++ code is processed and integrated with Julia.</p><h2 id="Table-of-Contents"><a class="docs-heading-anchor" href="#Table-of-Contents">Table of Contents</a><a id="Table-of-Contents-1"></a><a class="docs-heading-anchor-permalink" href="#Table-of-Contents" title="Permalink"></a></h2><ol><li><a href="#architecture-overview">Architecture Overview</a></li><li><a href="#processing-flow">Processing Flow</a></li><li><a href="#macro-processing-cxx">Macro Processing (<code>@cxx</code>)</a></li><li><a href="#string-literals-cxx-and-icxx">String Literals (<code>cxx&quot;&quot;</code> and <code>icxx&quot;&quot;</code>)</a></li><li><a href="#type-system">Type System</a></li><li><a href="#code-generation-process">Code Generation Process</a></li><li><a href="#clang-integration">Clang Integration</a></li><li><a href="#llvm-ir-integration">LLVM IR Integration</a></li></ol><hr/><h2 id="Architecture-Overview"><a class="docs-heading-anchor" href="#Architecture-Overview">Architecture Overview</a><a id="Architecture-Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Architecture-Overview" title="Permalink"></a></h2><p>Cxx.jl consists of three main components:</p><ol><li><strong>Julia-side macros and staged functions</strong>: Parse Julia syntax and extract type information</li><li><strong>Clang integration</strong>: Parse C++ code and generate AST (Abstract Syntax Tree)</li><li><strong>LLVM integration</strong>: Generate LLVM IR from Clang AST and embed it into Julia&#39;s <code>llvmcall</code></li></ol><h3 id="Data-Flow"><a class="docs-heading-anchor" href="#Data-Flow">Data Flow</a><a id="Data-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Data-Flow" title="Permalink"></a></h3><pre><code class="nohighlight hljs">Julia code (@cxx macro)
+    ↓
+Syntax parsing and type information extraction (cxxmacro.jl)
+    ↓
+Staged function (@generated)
+    ↓
+Clang AST generation (codegen.jl)
+    ↓
+LLVM IR generation (Clang CodeGen)
+    ↓
+llvmcall embedding
+    ↓
+Julia runtime execution</code></pre><hr/><h2 id="Processing-Flow"><a class="docs-heading-anchor" href="#Processing-Flow">Processing Flow</a><a id="Processing-Flow-1"></a><a class="docs-heading-anchor-permalink" href="#Processing-Flow" title="Permalink"></a></h2><h3 id="1.-Macro-Expansion-Stage"><a class="docs-heading-anchor" href="#1.-Macro-Expansion-Stage">1. Macro Expansion Stage</a><a id="1.-Macro-Expansion-Stage-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Macro-Expansion-Stage" title="Permalink"></a></h3><p>When a user writes <code>@cxx foo::bar(args...)</code>:</p><pre><code class="language-julia hljs"># cxxmacro.jl&#39;s cpps_impl function processes it
+@cxx foo::bar(args...)
+    ↓
+# Parse syntax and extract namespace and function name
+Stored as CppNNS{(:foo, :bar)} in type parameters
+    ↓
+# Generate expression calling staged function cppcall
+cppcall(__current_compiler__, CppNNS{(:foo, :bar)}(), args...)</code></pre><h3 id="2.-Staged-Function-Execution-Stage"><a class="docs-heading-anchor" href="#2.-Staged-Function-Execution-Stage">2. Staged Function Execution Stage</a><a id="2.-Staged-Function-Execution-Stage-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Staged-Function-Execution-Stage" title="Permalink"></a></h3><p><code>@generated</code> functions execute at compile time and generate code based on type information:</p><pre><code class="language-julia hljs">@generated function cppcall(CT::CxxInstance, expr, args...)
+    # CT: Compiler instance
+    # expr: CppNNS{(:foo, :bar)} type
+    # args: Argument type information
+
+    C = instance(CT)  # Get Clang instance
+
+    # 1. Type checking
+    check_args(argt, expr)
+
+    # 2. Build Clang AST
+    callargs, pvds = buildargexprs(C, argt)
+    d = declfornns(C, expr)  # Name resolution
+
+    # 3. Generate call expression
+    ce = CreateCallExpr(C, dne, callargs)
+
+    # 4. Generate LLVM IR and embed into llvmcall
+    EmitExpr(C, ce, ...)
+end</code></pre><h3 id="3.-Clang-AST-Generation"><a class="docs-heading-anchor" href="#3.-Clang-AST-Generation">3. Clang AST Generation</a><a id="3.-Clang-AST-Generation-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Clang-AST-Generation" title="Permalink"></a></h3><p>The <code>buildargexprs</code> function converts Julia arguments to Clang AST nodes:</p><pre><code class="language-julia hljs">function buildargexprs(C, argt; derefval = true)
+    callargs = pcpp&quot;clang::Expr&quot;[]
+    pvds = pcpp&quot;clang::ParmVarDecl&quot;[]
+
+    for i in 1:length(argt)
+        t = argt[i]
+        st = stripmodifier(t)  # Remove modifiers
+
+        # Get Clang type
+        argit = cpptype(C, st)
+
+        # Create ParmVarDecl (function parameter declaration)
+        argpvd = CreateParmVarDecl(C, argit)
+        push!(pvds, argpvd)
+
+        # Create DeclRefExpr (variable reference)
+        expr = CreateDeclRefExpr(C, argpvd)
+
+        # Apply modifiers (*, &amp;, etc.)
+        expr = resolvemodifier(C, t, expr)
+        push!(callargs, expr)
+    end
+
+    callargs, pvds
+end</code></pre><h3 id="4.-LLVM-IR-Generation-and-Embedding"><a class="docs-heading-anchor" href="#4.-LLVM-IR-Generation-and-Embedding">4. LLVM IR Generation and Embedding</a><a id="4.-LLVM-IR-Generation-and-Embedding-1"></a><a class="docs-heading-anchor-permalink" href="#4.-LLVM-IR-Generation-and-Embedding" title="Permalink"></a></h3><p>The <code>EmitExpr</code> function generates LLVM IR from Clang AST and embeds it into Julia&#39;s <code>llvmcall</code>:</p><pre><code class="language-julia hljs">function EmitExpr(C, ce, nE, ctce, argt, pvds, rett = Cvoid)
+    # 1. Create LLVM function
+    f = CreateFunctionWithPersonality(C, llvmrt, map(julia_to_llvm, llvmargt))
+
+    # 2. Setup Clang code generation environment
+    state = setup_cpp_env(C, f)
+    builder = irbuilder(C)
+
+    # 3. Process LLVM arguments
+    args = llvmargs(C, builder, f, llvmargt)
+
+    # 4. Associate Clang AST with LLVM values
+    associateargs(C, builder, argt, args, pvds)
+
+    # 5. Compile Clang AST to LLVM IR
+    ret = EmitCallExpr(C, ce, rslot)
+
+    # 6. Generate llvmcall expression
+    createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, state)
+end</code></pre><p>Finally, an <code>llvmcall</code> expression like the following is generated:</p><pre><code class="language-julia hljs">Expr(:call, Core.Intrinsics.llvmcall,
+    convert(Ptr{Cvoid}, f),  # Pointer to LLVM function
+    rett,                    # Return type
+    Tuple{argt...},         # Argument types
+    args2...)               # Actual arguments</code></pre><hr/><h2 id="Macro-Processing-(@cxx)"><a class="docs-heading-anchor" href="#Macro-Processing-(@cxx)">Macro Processing (<code>@cxx</code>)</a><a id="Macro-Processing-(@cxx)-1"></a><a class="docs-heading-anchor-permalink" href="#Macro-Processing-(@cxx)" title="Permalink"></a></h2><h3 id="Syntax-Parsing"><a class="docs-heading-anchor" href="#Syntax-Parsing">Syntax Parsing</a><a id="Syntax-Parsing-1"></a><a class="docs-heading-anchor-permalink" href="#Syntax-Parsing" title="Permalink"></a></h3><p>The <code>cpps_impl</code> function in <code>cxxmacro.jl</code> parses Julia syntax and extracts C++ intent:</p><pre><code class="language-julia hljs"># Example: @cxx foo::bar::baz(a, b)
+#
+# 1. Extract namespace
+nns = Expr(:curly, Tuple, :foo, :bar, :baz)
+
+# 2. Detect function call
+cexpr = :(baz(a, b))
+
+# 3. Generate staged function call
+build_cpp_call(mod, cexpr, nothing, nns)
+    ↓
+cppcall(__current_compiler__, CppNNS{(:foo, :bar, :baz)}(), a, b)</code></pre><h3 id="Member-Calls"><a class="docs-heading-anchor" href="#Member-Calls">Member Calls</a><a id="Member-Calls-1"></a><a class="docs-heading-anchor-permalink" href="#Member-Calls" title="Permalink"></a></h3><p>For <code>@cxx obj-&gt;method(args)</code>:</p><pre><code class="language-julia hljs"># 1. Detect -&gt; operator
+expr.head == :(-&gt;)
+a = expr.args[1]  # obj
+b = expr.args[2]  # method(args)
+
+# 2. Call staged function for member call
+cppcall_member(__current_compiler__, CppNNS{(:method,)}(), obj, args...)</code></pre><h3 id="Modifier-Processing"><a class="docs-heading-anchor" href="#Modifier-Processing">Modifier Processing</a><a id="Modifier-Processing-1"></a><a class="docs-heading-anchor-permalink" href="#Modifier-Processing" title="Permalink"></a></h3><ul><li><code>@cxx foo(*(a))</code>: Wrapped with <code>CppDeref</code></li><li><code>@cxx foo(&amp;a)</code>: Wrapped with <code>CppAddr</code></li><li><code>@cxx foo(cast(T, a))</code>: Wrapped with <code>CppCast</code></li></ul><hr/><h2 id="String-Literals-(cxx&quot;&quot;-and-icxx&quot;&quot;)"><a class="docs-heading-anchor" href="#String-Literals-(cxx&quot;&quot;-and-icxx&quot;&quot;)">String Literals (<code>cxx&quot;&quot;</code> and <code>icxx&quot;&quot;</code>)</a><a id="String-Literals-(cxx&quot;&quot;-and-icxx&quot;&quot;)-1"></a><a class="docs-heading-anchor-permalink" href="#String-Literals-(cxx&quot;&quot;-and-icxx&quot;&quot;)" title="Permalink"></a></h2><h3 id="cxx&quot;&quot;-(Global-Scope)"><a class="docs-heading-anchor" href="#cxx&quot;&quot;-(Global-Scope)"><code>cxx&quot;&quot;</code> (Global Scope)</a><a id="cxx&quot;&quot;-(Global-Scope)-1"></a><a class="docs-heading-anchor-permalink" href="#cxx&quot;&quot;-(Global-Scope)" title="Permalink"></a></h3><p>Processed by <code>process_cxx_string</code> function in <code>cxxstr.jl</code>:</p><pre><code class="language-julia hljs">cxx&quot;&quot;&quot;
+    void myfunction(int x) {
+        std::cout &lt;&lt; x &lt;&lt; std::endl;
+    }
+&quot;&quot;&quot;</code></pre><p>Processing flow:</p><ol><li><strong>Extract Julia expressions</strong>: Detect Julia expressions embedded with <code>$</code></li><li><strong>Replace placeholders</strong>: Replace with <code>__julia::var1</code>, <code>__julia::var2</code>, etc.</li><li><strong>Pass to Clang parser</strong>: <code>EnterBuffer</code> or <code>EnterVirtualSource</code></li><li><strong>Parse</strong>: Parse C++ code with <code>ParseToEndOfFile</code></li><li><strong>Execute global constructors</strong>: <code>RunGlobalConstructors</code></li></ol><h3 id="icxx&quot;&quot;-(Function-Scope)"><a class="docs-heading-anchor" href="#icxx&quot;&quot;-(Function-Scope)"><code>icxx&quot;&quot;</code> (Function Scope)</a><a id="icxx&quot;&quot;-(Function-Scope)-1"></a><a class="docs-heading-anchor-permalink" href="#icxx&quot;&quot;-(Function-Scope)" title="Permalink"></a></h3><p><code>icxx&quot;&quot;</code> is used within functions and evaluated at runtime:</p><pre><code class="language-julia hljs">function myfunc(x)
+    icxx&quot;&quot;&quot;
+        int result = $(x) * 2;
+        return result;
+    &quot;&quot;&quot;
+end</code></pre><p>Processing flow:</p><ol><li><strong>Generate staged function</strong>: <code>cxxstr_impl</code> executes as <code>@generated</code> function</li><li><strong>Create Clang function</strong>: Create Clang function declaration with <code>CreateFunctionWithBody</code></li><li><strong>Parse</strong>: Parse function body with <code>ParseFunctionStatementBody</code></li><li><strong>Generate LLVM IR</strong>: Compile to LLVM IR with <code>EmitTopLevelDecl</code></li><li><strong>Generate call expression</strong>: Generate expression to call function with <code>CallDNE</code></li></ol><h3 id="Julia-Expression-Embedding"><a class="docs-heading-anchor" href="#Julia-Expression-Embedding">Julia Expression Embedding</a><a id="Julia-Expression-Embedding-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-Expression-Embedding" title="Permalink"></a></h3><p>When embedding Julia expressions with <code>$</code> syntax:</p><pre><code class="language-julia hljs">cxx&quot;&quot;&quot;
+    void test() {
+        $:(println(&quot;Hello from Julia&quot;)::Nothing);
+    }
+&quot;&quot;&quot;</code></pre><p>Processing:</p><ol><li><code>find_expr</code> function detects <code>$</code></li><li>Parse Julia expression: <code>Meta.parse(str, idx + 1)</code></li><li>Replace with placeholder: <code>__juliavar1</code>, etc.</li><li>Clang&#39;s external semantic source evaluates Julia expression at runtime</li></ol><hr/><h2 id="Type-System"><a class="docs-heading-anchor" href="#Type-System">Type System</a><a id="Type-System-1"></a><a class="docs-heading-anchor-permalink" href="#Type-System" title="Permalink"></a></h2><h3 id="Conversion-from-Julia-Types-to-C-Types"><a class="docs-heading-anchor" href="#Conversion-from-Julia-Types-to-C-Types">Conversion from Julia Types to C++ Types</a><a id="Conversion-from-Julia-Types-to-C-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Conversion-from-Julia-Types-to-C-Types" title="Permalink"></a></h3><p>The <code>cpptype</code> function in <code>typetranslation.jl</code> handles conversion:</p><pre><code class="language-julia hljs"># Basic types
+cpptype(C, ::Type{Int32}) → QualType (pointer to clang::Type*)
+
+# C++ classes
+cpptype(C, ::Type{CppBaseType{:MyClass}})
+    → lookup_ctx(C, :MyClass)  # Name resolution
+    → typeForDecl(decl)        # Get Clang type
+
+# Templates
+cpptype(C, ::Type{CppTemplate{CppBaseType{:vector}, Tuple{Int32}}})
+    → specialize_template(C, cxxt, targs)  # Template specialization
+    → typeForDecl(specialized_decl)
+
+# Pointers and references
+cpptype(C, ::Type{CppPtr{T, CVR}})
+    → pointerTo(C, cpptype(C, T))  # Get pointer type
+    → addQualifiers(..., CVR)      # Add const/volatile/restrict</code></pre><h3 id="Conversion-from-C-Types-to-Julia-Types"><a class="docs-heading-anchor" href="#Conversion-from-C-Types-to-Julia-Types">Conversion from C++ Types to Julia Types</a><a id="Conversion-from-C-Types-to-Julia-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Conversion-from-C-Types-to-Julia-Types" title="Permalink"></a></h3><p>The <code>juliatype</code> function handles conversion:</p><pre><code class="language-julia hljs">function juliatype(t::QualType, quoted = false, typeargs = Dict{Int,Cvoid}())
+    CVR = extractCVR(t)  # Extract const/volatile/restrict
+    t = extractTypePtr(t)
+    t = canonicalType(t)  # Normalize
+
+    if isPointerType(t)
+        pt = getPointeeType(t)
+        tt = juliatype(pt, quoted, typeargs)
+        return CppPtr{tt, CVR}
+    elseif isReferenceType(t)
+        t = getPointeeType(t)
+        pointeeT = juliatype(t, quoted, typeargs)
+        return CppRef{pointeeT, CVR}
+    elseif isEnumeralType(t)
+        T = juliatype(getUnderlyingTypeOfEnum(t))
+        return CppEnum{Symbol(get_name(t)), T}
+    # ... other types
+end</code></pre><h3 id="Type-Representation"><a class="docs-heading-anchor" href="#Type-Representation">Type Representation</a><a id="Type-Representation-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Representation" title="Permalink"></a></h3><ul><li><strong>CppBaseType{s}</strong>: Base types (e.g., <code>int</code>, <code>MyClass</code>)</li><li><strong>CppTemplate{T, targs}</strong>: Template types (e.g., <code>std::vector&lt;int&gt;</code>)</li><li><strong>CppPtr{T, CVR}</strong>: Pointer types</li><li><strong>CppRef{T, CVR}</strong>: Reference types</li><li><strong>CppValue{T, N}</strong>: Value types (on stack)</li><li><strong>CxxQualType{T, CVR}</strong>: Types with CVR qualifiers</li></ul><hr/><h2 id="Code-Generation-Process"><a class="docs-heading-anchor" href="#Code-Generation-Process">Code Generation Process</a><a id="Code-Generation-Process-1"></a><a class="docs-heading-anchor-permalink" href="#Code-Generation-Process" title="Permalink"></a></h2><h3 id="1.-Argument-Preparation-(buildargexprs)"><a class="docs-heading-anchor" href="#1.-Argument-Preparation-(buildargexprs)">1. Argument Preparation (<code>buildargexprs</code>)</a><a id="1.-Argument-Preparation-(buildargexprs)-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Argument-Preparation-(buildargexprs)" title="Permalink"></a></h3><pre><code class="language-julia hljs">function buildargexprs(C, argt; derefval = true)
+    # For each argument:
+    # 1. Get Clang type
+    argit = cpptype(C, stripmodifier(t))
+
+    # 2. Create ParmVarDecl (function parameter declaration)
+    argpvd = CreateParmVarDecl(C, argit)
+
+    # 3. Create DeclRefExpr (variable reference expression)
+    expr = CreateDeclRefExpr(C, argpvd)
+
+    # 4. Apply modifiers (*, &amp;, etc.)
+    expr = resolvemodifier(C, t, expr)
+end</code></pre><h3 id="2.-Name-Resolution-(declfornns)"><a class="docs-heading-anchor" href="#2.-Name-Resolution-(declfornns)">2. Name Resolution (<code>declfornns</code>)</a><a id="2.-Name-Resolution-(declfornns)-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Name-Resolution-(declfornns)" title="Permalink"></a></h3><pre><code class="language-julia hljs">function declfornns(C, ::Type{CppNNS{Tnns}}, cxxscope=C_NULL)
+    nns = Tnns.parameters  # (:foo, :bar, :baz)
+    d = translation_unit(C)  # Start from translation unit
+
+    for (i, n) in enumerate(nns)
+        if n &lt;: CppTemplate
+            # Template specialization
+            d = specialize_template_clang(C, cxxt, arr)
+        else
+            # Normal name resolution
+            d = lookup_name(C, (n,), cxxscope, d, i != length(nns))
+        end
+    end
+
+    d
+end</code></pre><h3 id="3.-Call-Expression-Generation"><a class="docs-heading-anchor" href="#3.-Call-Expression-Generation">3. Call Expression Generation</a><a id="3.-Call-Expression-Generation-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Call-Expression-Generation" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Normal function call
+ce = CreateCallExpr(C, dne, callargs)
+
+# Member function call
+me = BuildMemberReference(C, callargs[1], cpptype(C, argt[1]),
+                          argt[1] &lt;: CppPtr, fname)
+ce = BuildCallToMemberFunction(C, me, callargs[2:end])
+
+# Constructor call
+ctce = BuildCXXTypeConstructExpr(C, rt, callargs)
+
+# new expression
+nE = BuildCXXNewExpr(C, QualType(typeForDecl(cxxd)), callargs)</code></pre><h3 id="4.-LLVM-IR-Generation"><a class="docs-heading-anchor" href="#4.-LLVM-IR-Generation">4. LLVM IR Generation</a><a id="4.-LLVM-IR-Generation-1"></a><a class="docs-heading-anchor-permalink" href="#4.-LLVM-IR-Generation" title="Permalink"></a></h3><pre><code class="language-julia hljs">function EmitExpr(C, ce, nE, ctce, argt, pvds, rett = Cvoid)
+    # 1. Create LLVM function
+    f = CreateFunctionWithPersonality(C, llvmrt, map(julia_to_llvm, llvmargt))
+
+    # 2. Setup code generation environment
+    state = setup_cpp_env(C, f)
+    builder = irbuilder(C)
+
+    # 3. Process LLVM arguments (convert from Julia types to LLVM types)
+    args = llvmargs(C, builder, f, llvmargt)
+
+    # 4. Associate Clang AST with LLVM values
+    associateargs(C, builder, argt, args, pvds)
+
+    # 5. Compile Clang AST to LLVM IR
+    if ce != C_NULL
+        ret = EmitCallExpr(C, ce, rslot)
+    elseif nE != C_NULL
+        ret = EmitCXXNewExpr(C, nE)
+    elseif ctce != C_NULL
+        EmitAnyExprToMem(C, ctce, args[1], true)
+    end
+
+    # 6. Generate llvmcall expression
+    createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, state)
+end</code></pre><h3 id="5.-LLVM-Value-Conversion"><a class="docs-heading-anchor" href="#5.-LLVM-Value-Conversion">5. LLVM Value Conversion</a><a id="5.-LLVM-Value-Conversion-1"></a><a class="docs-heading-anchor-permalink" href="#5.-LLVM-Value-Conversion" title="Permalink"></a></h3><p>The <code>resolvemodifier_llvm</code> function converts Julia&#39;s LLVM representation to Clang&#39;s LLVM representation:</p><pre><code class="language-julia hljs"># Pointer type
+resolvemodifier_llvm(C, builder, t::Type{Ptr{ptr}}, v)
+    → IntToPtr(builder, v, toLLVM(C, cpptype(C, Ptr{ptr})))
+
+# CppValue type (value type)
+resolvemodifier_llvm(C, builder, t::Type{T} where T &lt;: CppValue, v)
+    → CreatePointerFromObjref(C, builder, v)
+    → CreateBitCast(builder, v, getPointerTo(getPointerTo(toLLVM(C, ty))))
+
+# CppRef type (reference)
+resolvemodifier_llvm(C, builder, t::Type{CppRef{T, CVR}}, v)
+    → IntToPtr(builder, v, toLLVM(C, ty))</code></pre><hr/><h2 id="Clang-Integration"><a class="docs-heading-anchor" href="#Clang-Integration">Clang Integration</a><a id="Clang-Integration-1"></a><a class="docs-heading-anchor-permalink" href="#Clang-Integration" title="Permalink"></a></h2><h3 id="Clang-Instance-Initialization"><a class="docs-heading-anchor" href="#Clang-Instance-Initialization">Clang Instance Initialization</a><a id="Clang-Instance-Initialization-1"></a><a class="docs-heading-anchor-permalink" href="#Clang-Instance-Initialization" title="Permalink"></a></h3><p><code>setup_instance</code> function in <code>initialization.jl</code>:</p><pre><code class="language-julia hljs">function setup_instance(PCHBuffer = []; makeCCompiler=false, ...)
+    x = Ref{ClangCompiler}()
+
+    # Call C++ side init_clang_instance
+    ccall((:init_clang_instance, libcxxffi), Cvoid,
+        (Ptr{Cvoid}, Ptr{UInt8}, Ptr{UInt8}, ...),
+        x, target, CPU, sysroot, ...)
+
+    # Apply default ABI
+    useDefaultCxxABI &amp;&amp; ccall((:apply_default_abi, libcxxffi), ...)
+
+    x[]
+end</code></pre><h3 id="Adding-Header-Search-Paths"><a class="docs-heading-anchor" href="#Adding-Header-Search-Paths">Adding Header Search Paths</a><a id="Adding-Header-Search-Paths-1"></a><a class="docs-heading-anchor-permalink" href="#Adding-Header-Search-Paths" title="Permalink"></a></h3><pre><code class="language-julia hljs">function addHeaderDir(C, dirname; kind = C_User, isFramework = false)
+    ccall((:add_directory, libcxxffi), Cvoid,
+        (Ref{ClangCompiler}, Cint, Cint, Ptr{UInt8}),
+        C, kind, isFramework, dirname)
+end</code></pre><h3 id="Source-Buffer-Input"><a class="docs-heading-anchor" href="#Source-Buffer-Input">Source Buffer Input</a><a id="Source-Buffer-Input-1"></a><a class="docs-heading-anchor-permalink" href="#Source-Buffer-Input" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Anonymous buffer
+function EnterBuffer(C, buf)
+    ccall((:EnterSourceFile, libcxxffi), Cvoid,
+        (Ref{ClangCompiler}, Ptr{UInt8}, Csize_t),
+        C, buf, sizeof(buf))
+end
+
+# Virtual file (specify filename)
+function EnterVirtualSource(C, buf, file::String)
+    ccall((:EnterVirtualFile, libcxxffi), Cvoid,
+        (Ref{ClangCompiler}, Ptr{UInt8}, Csize_t, Ptr{UInt8}, Csize_t),
+        C, buf, sizeof(buf), file, sizeof(file))
+end</code></pre><h3 id="Parsing"><a class="docs-heading-anchor" href="#Parsing">Parsing</a><a id="Parsing-1"></a><a class="docs-heading-anchor-permalink" href="#Parsing" title="Permalink"></a></h3><pre><code class="language-julia hljs">function ParseToEndOfFile(C)
+    hadError = ccall((:_cxxparse, libcxxffi), Cint, (Ref{ClangCompiler},), C) == 0
+    if !hadError
+        RunGlobalConstructors(C)  # Execute global constructors
+    end
+    !hadError
+end</code></pre><hr/><h2 id="LLVM-IR-Integration"><a class="docs-heading-anchor" href="#LLVM-IR-Integration">LLVM IR Integration</a><a id="LLVM-IR-Integration-1"></a><a class="docs-heading-anchor-permalink" href="#LLVM-IR-Integration" title="Permalink"></a></h2><h3 id="Using-llvmcall"><a class="docs-heading-anchor" href="#Using-llvmcall">Using llvmcall</a><a id="Using-llvmcall-1"></a><a class="docs-heading-anchor-permalink" href="#Using-llvmcall" title="Permalink"></a></h3><p>Cxx.jl uses Julia&#39;s <code>llvmcall</code> in the second form (pointer form):</p><pre><code class="language-julia hljs">llvmcall(convert(Ptr{Cvoid}, f),  # Pointer to LLVM function
+         rett,                     # Return type
+         Tuple{argt...},          # Argument type tuple
+         args...)                 # Actual arguments</code></pre><p>In this form, Julia directly calls the LLVM function and performs argument conversion and inlining.</p><h3 id="LLVM-Function-Creation"><a class="docs-heading-anchor" href="#LLVM-Function-Creation">LLVM Function Creation</a><a id="LLVM-Function-Creation-1"></a><a class="docs-heading-anchor-permalink" href="#LLVM-Function-Creation" title="Permalink"></a></h3><pre><code class="language-julia hljs">function CreateFunction(C, rt, argt)
+    pcpp&quot;llvm::Function&quot;(
+        ccall((:CreateFunction, libcxxffi), Ptr{Cvoid},
+            (Ref{ClangCompiler}, Ptr{Cvoid}, Ptr{Ptr{Cvoid}}, Csize_t),
+            C, rt, cptrarr(argt), length(argt)))
+end</code></pre><h3 id="Type-Conversion"><a class="docs-heading-anchor" href="#Type-Conversion">Type Conversion</a><a id="Type-Conversion-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Conversion" title="Permalink"></a></h3><pre><code class="language-julia hljs">function julia_to_llvm(@nospecialize x)
+    isboxed, ty = _julia_to_llvm(x)
+    isboxed ? getPRJLValueTy() : ty  # Boxed types become jl_value_t*
+end</code></pre><h3 id="Return-Value-Processing"><a class="docs-heading-anchor" href="#Return-Value-Processing">Return Value Processing</a><a id="Return-Value-Processing-1"></a><a class="docs-heading-anchor-permalink" href="#Return-Value-Processing" title="Permalink"></a></h3><p>The <code>createReturn</code> function converts LLVM IR return values to Julia format:</p><pre><code class="language-julia hljs">function createReturn(C, builder, f, argt, llvmargt, llvmrt, rett, rt, ret, state)
+    if ret == C_NULL
+        CreateRetVoid(builder)
+    else
+        if rett &lt;: CppEnum || rett &lt;: CppFptr
+            # Wrap in struct
+            undef = getUndefValue(llvmrt)
+            ret = InsertValue(builder, undef, ret, 0)
+        elseif rett &lt;: CppRef || rett &lt;: CppPtr || rett &lt;: Ptr
+            # Convert pointer to integer
+            ret = PtrToInt(builder, ret, llvmrt)
+        elseif rett &lt;: CppValue
+            # Value types need special processing
+            # ...
+        end
+        CreateRet(builder, ret)
+    end
+
+    # Generate llvmcall expression
+    Expr(:call, Core.Intrinsics.llvmcall, convert(Ptr{Cvoid}, f), rett, ...)
+end</code></pre><hr/><h2 id="Memory-Management"><a class="docs-heading-anchor" href="#Memory-Management">Memory Management</a><a id="Memory-Management-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Management" title="Permalink"></a></h2><h3 id="C-Object-Lifecycle"><a class="docs-heading-anchor" href="#C-Object-Lifecycle">C++ Object Lifecycle</a><a id="C-Object-Lifecycle-1"></a><a class="docs-heading-anchor-permalink" href="#C-Object-Lifecycle" title="Permalink"></a></h3><ul><li><strong>CppPtr</strong>: Pointer to heap-allocated object</li><li><strong>CppRef</strong>: Reference to existing object</li><li><strong>CppValue</strong>: Value stored on stack or within Julia struct</li></ul><h3 id="Destructor-Invocation"><a class="docs-heading-anchor" href="#Destructor-Invocation">Destructor Invocation</a><a id="Destructor-Invocation-1"></a><a class="docs-heading-anchor-permalink" href="#Destructor-Invocation" title="Permalink"></a></h3><p>For types with non-trivial destructors in <code>CppValue</code>:</p><pre><code class="language-julia hljs">if rett &lt;: CppValue
+    T = cpptype(C, rett)
+    D = getAsCXXRecordDecl(T)
+    if D != C_NULL &amp;&amp; !hasTrivialDestructor(C, D)
+        # Register finalizer to call destructor
+        push!(B.args, :(finalizer($(get_destruct_for_instance(C)), r)))
+    end
+end</code></pre><hr/><h2 id="Error-Handling"><a class="docs-heading-anchor" href="#Error-Handling">Error Handling</a><a id="Error-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#Error-Handling" title="Permalink"></a></h2><h3 id="C-Exception-Processing"><a class="docs-heading-anchor" href="#C-Exception-Processing">C++ Exception Processing</a><a id="C-Exception-Processing-1"></a><a class="docs-heading-anchor-permalink" href="#C-Exception-Processing" title="Permalink"></a></h3><p>C++ exceptions are converted to Julia exceptions in <code>exceptions.jl</code>:</p><pre><code class="language-julia hljs">function setup_exception_callback()
+    callback = cglobal((:process_cxx_exception, libcxxffi), Ptr{Cvoid})
+    unsafe_store!(callback, @cfunction(process_cxx_exception, Union{}, (UInt64, Ptr{Cvoid})))
+end</code></pre><p>When an exception occurs on the C++ side, this callback is invoked and converted to a Julia exception.</p><hr/><h2 id="Optimization-Points"><a class="docs-heading-anchor" href="#Optimization-Points">Optimization Points</a><a id="Optimization-Points-1"></a><a class="docs-heading-anchor-permalink" href="#Optimization-Points" title="Permalink"></a></h2><ol><li><strong>Type information utilization</strong>: Staged functions allow appropriate C++ functions to be selected at compile time since types are determined</li><li><strong>Inlining</strong>: <code>llvmcall</code> allows LLVM IR to be inlined into Julia&#39;s IR, applying optimizations</li><li><strong>PCH (Precompiled Header)</strong>: Precompile frequently used headers for speed</li><li><strong>Template specialization cache</strong>: Reuse once-specialized templates</li></ol><hr/><h2 id="Summary"><a class="docs-heading-anchor" href="#Summary">Summary</a><a id="Summary-1"></a><a class="docs-heading-anchor-permalink" href="#Summary" title="Permalink"></a></h2><p>Cxx.jl achieves C++ and Julia interop by combining the following technologies:</p><ol><li><strong>Macros and staged functions</strong>: Syntax parsing and type information extraction</li><li><strong>Clang integration</strong>: C++ code parsing and AST generation</li><li><strong>LLVM integration</strong>: Conversion from AST to LLVM IR and embedding into Julia</li><li><strong>Type system</strong>: Bidirectional conversion between Julia types and C++ types</li></ol><p>This architecture enables direct calls to C++ code from Julia and leverages optimizations from both languages.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../Phase2/">« Phase 2</a><a class="docs-footer-nextpage" href="../LLVMCALL/">LLVM Call »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 9 February 2026 06:57">Monday 9 February 2026</span>. Using Julia version 1.12.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
