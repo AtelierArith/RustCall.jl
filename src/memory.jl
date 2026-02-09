@@ -217,7 +217,11 @@ end
 Drop a RustBox, calling the appropriate Rust drop function.
 """
 function drop_rust_box(box::RustBox{T}) where T
-    if box.dropped || box.ptr == C_NULL
+    if box.dropped
+        @debug "Attempted to drop an already-dropped RustBox{$T}"
+        return nothing
+    end
+    if box.ptr == C_NULL
         return nothing
     end
 
@@ -330,7 +334,11 @@ end
 Drop a RustRc, decrementing the reference count.
 """
 function drop_rust_rc(rc::RustRc{T}) where T
-    if rc.dropped || rc.ptr == C_NULL
+    if rc.dropped
+        @debug "Attempted to drop an already-dropped RustRc{$T}"
+        return nothing
+    end
+    if rc.ptr == C_NULL
         return nothing
     end
 
@@ -439,7 +447,11 @@ end
 Drop a RustArc, decrementing the atomic reference count.
 """
 function drop_rust_arc(arc::RustArc{T}) where T
-    if arc.dropped || arc.ptr == C_NULL
+    if arc.dropped
+        @debug "Attempted to drop an already-dropped RustArc{$T}"
+        return nothing
+    end
+    if arc.ptr == C_NULL
         return nothing
     end
 
@@ -498,49 +510,6 @@ RustArc(value::Int64) = create_rust_arc(value)
 RustArc(value::Float64) = create_rust_arc(value)
 
 # ============================================================================
-# Update finalizers to call Rust drop functions
-# ============================================================================
-
-# Update RustBox finalizer
-function update_box_finalizer(box::RustBox{T}) where T
-    finalizer(box) do b
-        if !b.dropped && b.ptr != C_NULL
-            try
-                drop_rust_box(b)
-            catch e
-                @warn "Error dropping RustBox in finalizer: $e"
-            end
-        end
-    end
-end
-
-# Update RustRc finalizer
-function update_rc_finalizer(rc::RustRc{T}) where T
-    finalizer(rc) do r
-        if !r.dropped && r.ptr != C_NULL
-            try
-                drop_rust_rc(r)
-            catch e
-                @warn "Error dropping RustRc in finalizer: $e"
-            end
-        end
-    end
-end
-
-# Update RustArc finalizer
-function update_arc_finalizer(arc::RustArc{T}) where T
-    finalizer(arc) do a
-        if !a.dropped && a.ptr != C_NULL
-            try
-                drop_rust_arc(a)
-            catch e
-                @warn "Error dropping RustArc in finalizer: $e"
-            end
-        end
-    end
-end
-
-# ============================================================================
 # RustVec drop functions
 # ============================================================================
 
@@ -550,7 +519,11 @@ end
 Drop a RustVec by calling the Rust-side drop function.
 """
 function drop_rust_vec(vec::RustVec{T}) where {T}
-    if vec.dropped || vec.ptr == C_NULL
+    if vec.dropped
+        @debug "Attempted to drop an already-dropped RustVec{$T}"
+        return nothing
+    end
+    if vec.ptr == C_NULL
         return nothing
     end
 

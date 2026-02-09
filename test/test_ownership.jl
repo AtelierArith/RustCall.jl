@@ -82,6 +82,30 @@ using Test
             @test !is_valid(arc)
         end
 
+        @testset "Double-drop safety (No Library)" begin
+            # RustBox: drop! twice should not crash
+            box = RustBox{Int32}(Ptr{Cvoid}(UInt(0x1000)))
+            drop!(box)
+            @test box.dropped
+            # Second drop should be a no-op (no crash, no error)
+            drop!(box)
+            @test box.dropped
+
+            # RustRc: drop! twice should not crash
+            rc = RustRc{Int32}(Ptr{Cvoid}(UInt(0x1000)))
+            drop!(rc)
+            @test rc.dropped
+            drop!(rc)
+            @test rc.dropped
+
+            # RustArc: drop! twice should not crash
+            arc = RustArc{Int32}(Ptr{Cvoid}(UInt(0x1000)))
+            drop!(arc)
+            @test arc.dropped
+            drop!(arc)
+            @test arc.dropped
+        end
+
         @warn "Rust helpers library not available, skipping full integration tests"
         @warn "To enable these tests, build the library with: using Pkg; Pkg.build(\"RustCall\")"
     else
@@ -355,5 +379,40 @@ using Test
                 @test all(is_dropped, clones)
             end
         end
+
+        @testset "Double-drop safety (With Library)" begin
+            # RustBox: drop! twice should not crash
+            box = RustBox(Int32(42))
+            @test is_valid(box)
+            drop!(box)
+            @test is_dropped(box)
+            # Second drop should be a safe no-op
+            drop!(box)
+            @test is_dropped(box)
+
+            # RustRc: drop! twice should not crash
+            rc = RustRc(Int32(100))
+            @test is_valid(rc)
+            drop!(rc)
+            @test is_dropped(rc)
+            drop!(rc)
+            @test is_dropped(rc)
+
+            # RustArc: drop! twice should not crash
+            arc = RustArc(Int32(200))
+            @test is_valid(arc)
+            drop!(arc)
+            @test is_dropped(arc)
+            drop!(arc)
+            @test is_dropped(arc)
+        end
+    end
+
+    @testset "No dangerous update_*_finalizer functions" begin
+        # These functions were removed because they appended a second finalizer,
+        # risking double-free. Verify they no longer exist.
+        @test !isdefined(RustCall, :update_box_finalizer)
+        @test !isdefined(RustCall, :update_rc_finalizer)
+        @test !isdefined(RustCall, :update_arc_finalizer)
     end
 end
