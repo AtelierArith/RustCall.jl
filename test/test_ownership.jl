@@ -356,4 +356,25 @@ using Test
             end
         end
     end
+
+    @testset "safe_dlsym" begin
+        @test isdefined(RustCall, :safe_dlsym)
+
+        # Test with invalid symbol on a real library (if available)
+        if is_rust_helpers_available()
+            lib = RustCall.get_rust_helpers_lib()
+            # Valid symbol should work
+            ptr = RustCall.safe_dlsym(lib, :rust_box_new_i32)
+            @test ptr != C_NULL
+
+            # Invalid symbol should throw a clear error (not segfault)
+            @test_throws ErrorException RustCall.safe_dlsym(lib, :nonexistent_symbol_xyz)
+            try
+                RustCall.safe_dlsym(lib, :nonexistent_symbol_xyz)
+            catch e
+                @test occursin("not found", e.msg)
+                @test occursin("Pkg.build", e.msg)
+            end
+        end
+    end
 end
