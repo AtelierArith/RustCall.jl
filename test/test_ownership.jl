@@ -472,4 +472,46 @@ using Test
             end
         end
     end
+
+    @testset "Deferred Drop Infrastructure" begin
+        # Test that deferred drop types and functions exist
+        @test isdefined(RustCall, :flush_deferred_drops)
+        @test isdefined(RustCall, :deferred_drop_count)
+        @test isdefined(RustCall, :_defer_drop)
+        @test isdefined(RustCall, :_defer_vec_drop)
+        @test isdefined(RustCall, :DEFERRED_DROPS)
+        @test isdefined(RustCall, :DEFERRED_DROPS_LOCK)
+
+        # Test deferred_drop_count returns an integer
+        @test deferred_drop_count() isa Int
+        @test deferred_drop_count() >= 0
+
+        # Test flush_deferred_drops is callable
+        count_before = deferred_drop_count()
+        freed = flush_deferred_drops()
+        @test freed isa Int
+        @test freed >= 0
+
+        # Test _defer_drop adds to the queue
+        initial_count = deferred_drop_count()
+        RustCall._defer_drop(Ptr{Cvoid}(UInt(0xDEAD)), "TestType", :nonexistent_drop)
+        @test deferred_drop_count() == initial_count + 1
+
+        # Test _defer_vec_drop adds to the queue
+        RustCall._defer_vec_drop(Ptr{Cvoid}(UInt(0xBEEF)), UInt(10), UInt(20), "TestVecType", :nonexistent_vec_drop)
+        @test deferred_drop_count() == initial_count + 2
+
+        # flush_deferred_drops should not crash on unknown symbols
+        # (deferred entries with nonexistent symbols remain in the queue)
+        if is_rust_helpers_available()
+            freed = flush_deferred_drops()
+            # The nonexistent symbols should remain in the failed queue
+            @test deferred_drop_count() >= 2  # Our test entries should still be there
+        end
+
+        # Clean up: remove our test entries
+        lock(RustCall.DEFERRED_DROPS_LOCK) do
+            filter!(dd -> dd.type_name != "TestType" && dd.type_name != "TestVecType", RustCall.DEFERRED_DROPS)
+        end
+    end
 end

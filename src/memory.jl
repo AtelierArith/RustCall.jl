@@ -24,6 +24,114 @@ end
 # Flag to track if we've already warned about missing library
 const DROP_WARNING_SHOWN = Ref{Bool}(false)
 
+# Deferred pointer tracking for cleanup when library becomes available
+struct DeferredDrop
+    ptr::Ptr{Cvoid}
+    type_name::String      # e.g. "RustBox{Int32}"
+    drop_symbol::Symbol    # e.g. :rust_box_drop_i32
+    # For RustVec, we need len/cap to reconstruct CRustVec
+    vec_len::UInt
+    vec_cap::UInt
+    is_vec::Bool
+end
+
+# Convenience constructor for non-vec types
+DeferredDrop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol) =
+    DeferredDrop(ptr, type_name, drop_symbol, UInt(0), UInt(0), false)
+
+const DEFERRED_DROPS = DeferredDrop[]
+const DEFERRED_DROPS_LOCK = ReentrantLock()
+
+"""
+    _defer_drop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol)
+
+Record a pointer for deferred deallocation when the Rust helpers library becomes available.
+"""
+function _defer_drop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol)
+    lock(DEFERRED_DROPS_LOCK) do
+        push!(DEFERRED_DROPS, DeferredDrop(ptr, type_name, drop_symbol))
+    end
+    @warn "Deferring drop for $type_name at $ptr — Rust helpers library unavailable. " *
+          "Build with: using Pkg; Pkg.build(\"RustCall\")" maxlog=10
+end
+
+"""
+    _defer_vec_drop(ptr::Ptr{Cvoid}, len::UInt, cap::UInt, type_name::String, drop_symbol::Symbol)
+
+Record a RustVec pointer for deferred deallocation (needs len/cap for CRustVec reconstruction).
+"""
+function _defer_vec_drop(ptr::Ptr{Cvoid}, len::UInt, cap::UInt, type_name::String, drop_symbol::Symbol)
+    lock(DEFERRED_DROPS_LOCK) do
+        push!(DEFERRED_DROPS, DeferredDrop(ptr, type_name, drop_symbol, len, cap, true))
+    end
+    @warn "Deferring drop for $type_name at $ptr — Rust helpers library unavailable. " *
+          "Build with: using Pkg; Pkg.build(\"RustCall\")" maxlog=10
+end
+
+"""
+    flush_deferred_drops() -> Int
+
+Attempt to free all deferred pointers using the Rust helpers library.
+Returns the number of successfully freed pointers.
+Call this after rebuilding/reloading the helpers library.
+"""
+function flush_deferred_drops()
+    lib = get_rust_helpers_lib()
+    if lib === nothing
+        return 0
+    end
+
+    drops = lock(DEFERRED_DROPS_LOCK) do
+        d = copy(DEFERRED_DROPS)
+        empty!(DEFERRED_DROPS)
+        d
+    end
+
+    freed = 0
+    failed = DeferredDrop[]
+    for dd in drops
+        fn_ptr = Libdl.dlsym(lib, dd.drop_symbol; throw_error=false)
+        if fn_ptr !== nothing && fn_ptr != C_NULL
+            try
+                if dd.is_vec
+                    cvec = CRustVec(dd.ptr, dd.vec_len, dd.vec_cap)
+                    ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
+                else
+                    ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), dd.ptr)
+                end
+                freed += 1
+            catch
+                push!(failed, dd)
+            end
+        else
+            push!(failed, dd)
+        end
+    end
+
+    if !isempty(failed)
+        lock(DEFERRED_DROPS_LOCK) do
+            prepend!(DEFERRED_DROPS, failed)
+        end
+    end
+
+    if freed > 0
+        @info "Flushed $freed deferred drops" remaining=length(failed)
+    end
+
+    return freed
+end
+
+"""
+    deferred_drop_count() -> Int
+
+Return the number of pointers awaiting deferred deallocation.
+"""
+function deferred_drop_count()
+    return lock(DEFERRED_DROPS_LOCK) do
+        length(DEFERRED_DROPS)
+    end
+end
+
 """
     get_rust_helpers_lib() -> Union{Ptr{Cvoid}, Nothing}
 
@@ -176,6 +284,8 @@ function try_load_rust_helpers()
 
         RUST_HELPERS_LIB[] = lib_handle
         DROP_WARNING_SHOWN[] = false  # Reset warning flag when library is loaded
+        # Flush any deferred drops now that the library is available
+        flush_deferred_drops()
         return true
     catch e
         @debug "Failed to load Rust helpers library from $lib_path: $e"
@@ -240,38 +350,30 @@ function drop_rust_box(box::RustBox{T}) where T
         return nothing
     end
 
+    # Determine the drop symbol for this type
+    drop_sym = if T == Int32
+        :rust_box_drop_i32
+    elseif T == Int64
+        :rust_box_drop_i64
+    elseif T == Float32
+        :rust_box_drop_f32
+    elseif T == Float64
+        :rust_box_drop_f64
+    elseif T == Bool
+        :rust_box_drop_bool
+    else
+        :rust_box_drop
+    end
+
     lib = get_rust_helpers_lib()
     if lib === nothing
-        # Only warn once per session to avoid spam
-        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "RUSTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"RustCall\")"
-            DROP_WARNING_SHOWN[] = true
-        end
+        _defer_drop(box.ptr, "RustBox{$T}", drop_sym)
         box.dropped = true
         return nothing
     end
 
-    # Dispatch based on type
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_box_drop_i32)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_box_drop_i64)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_box_drop_f32)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_box_drop_f64)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
-    elseif T == Bool
-        fn_ptr = safe_dlsym(lib, :rust_box_drop_bool)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
-    else
-        # Fallback to generic drop (unsafe)
-        fn_ptr = safe_dlsym(lib, :rust_box_drop)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
-    end
+    fn_ptr = safe_dlsym(lib, drop_sym)
+    ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
 
     box.dropped = true
     box.ptr = C_NULL
@@ -373,32 +475,27 @@ function drop_rust_rc(rc::RustRc{T}) where T
         return nothing
     end
 
+    drop_sym = if T == Int32
+        :rust_rc_drop_i32
+    elseif T == Int64
+        :rust_rc_drop_i64
+    elseif T == Float32
+        :rust_rc_drop_f32
+    elseif T == Float64
+        :rust_rc_drop_f64
+    else
+        error("Unsupported type for RustRc drop: $T")
+    end
+
     lib = get_rust_helpers_lib()
     if lib === nothing
-        # Only warn once per session to avoid spam
-        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "RUSTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"RustCall\")"
-            DROP_WARNING_SHOWN[] = true
-        end
+        _defer_drop(rc.ptr, "RustRc{$T}", drop_sym)
         rc.dropped = true
         return nothing
     end
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_rc_drop_i32)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_rc_drop_i64)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_rc_drop_f32)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_rc_drop_f64)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
-    else
-        error("Unsupported type for RustRc drop: $T")
-    end
+    fn_ptr = safe_dlsym(lib, drop_sym)
+    ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
 
     rc.dropped = true
     rc.ptr = C_NULL
@@ -500,32 +597,27 @@ function drop_rust_arc(arc::RustArc{T}) where T
         return nothing
     end
 
+    drop_sym = if T == Int32
+        :rust_arc_drop_i32
+    elseif T == Int64
+        :rust_arc_drop_i64
+    elseif T == Float32
+        :rust_arc_drop_f32
+    elseif T == Float64
+        :rust_arc_drop_f64
+    else
+        error("Unsupported type for RustArc drop: $T")
+    end
+
     lib = get_rust_helpers_lib()
     if lib === nothing
-        # Only warn once per session to avoid spam
-        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "RUSTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Ownership types (Box, Rc, Arc) will not work properly. Build with: using Pkg; Pkg.build(\"RustCall\")"
-            DROP_WARNING_SHOWN[] = true
-        end
+        _defer_drop(arc.ptr, "RustArc{$T}", drop_sym)
         arc.dropped = true
         return nothing
     end
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_arc_drop_i32)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_arc_drop_i64)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_arc_drop_f32)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_arc_drop_f64)
-        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
-    else
-        error("Unsupported type for RustArc drop: $T")
-    end
+    fn_ptr = safe_dlsym(lib, drop_sym)
+    ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
 
     arc.dropped = true
     arc.ptr = C_NULL
@@ -578,36 +670,28 @@ function drop_rust_vec(vec::RustVec{T}) where {T}
         return nothing
     end
 
+    drop_sym = if T == Int32
+        :rust_vec_drop_i32
+    elseif T == Int64
+        :rust_vec_drop_i64
+    elseif T == Float32
+        :rust_vec_drop_f32
+    elseif T == Float64
+        :rust_vec_drop_f64
+    else
+        error("Unsupported type for RustVec drop: $T. Supported types: Int32, Int64, Float32, Float64")
+    end
+
     lib = get_rust_helpers_lib()
     if lib === nothing
-        # Only warn once per session to avoid spam
-        if !DROP_WARNING_SHOWN[] && !haskey(ENV, "RUSTCALL_SUPPRESS_DROP_WARNING")
-            @warn "Rust helpers library not loaded. Cannot properly drop RustVec. Build with: using Pkg; Pkg.build(\"RustCall\")"
-            DROP_WARNING_SHOWN[] = true
-        end
+        _defer_vec_drop(vec.ptr, UInt(vec.len), UInt(vec.cap), "RustVec{$T}", drop_sym)
         vec.dropped = true
         return nothing
     end
 
-    # Convert RustVec to CVec for FFI
-    # CRustVec is defined in types.jl, which is loaded before memory.jl
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
-
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_vec_drop_i32)
-        ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_vec_drop_i64)
-        ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_vec_drop_f32)
-        ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_vec_drop_f64)
-        ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
-    else
-        error("Unsupported type for RustVec drop: $T. Supported types: Int32, Int64, Float32, Float64")
-    end
+    fn_ptr = safe_dlsym(lib, drop_sym)
+    ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
 
     vec.dropped = true
     vec.ptr = C_NULL

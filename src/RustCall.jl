@@ -101,6 +101,7 @@ export drop!, is_dropped, is_valid
 export clone  # For RustRc and RustArc
 export is_rust_helpers_available  # Check if Rust helpers library is loaded
 export get_rust_helpers_lib, get_rust_helpers_lib_path  # For testing and advanced usage
+export flush_deferred_drops, deferred_drop_count  # Deferred drop management
 
 # RustVec operations (Phase 2)
 export create_rust_vec, rust_vec_get, rust_vec_set!, copy_to_julia!, to_julia_vector
