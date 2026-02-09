@@ -11,7 +11,7 @@ Metadata stored with cached libraries.
 """
 struct CacheMetadata
     cache_key::String
-    code_hash::UInt64
+    code_hash::String  # SHA256 hex digest (session-stable)
     compiler_config::String  # Serialized compiler config
     target_triple::String
     created_at::DateTime
@@ -49,12 +49,13 @@ Generate a cache key based on code hash, compiler settings, and target triple.
 Uses SHA256 for collision resistance.
 """
 function generate_cache_key(code::String, compiler::RustCompiler)
-    # Create a unique key from code hash and compiler settings
-    code_hash = hash(code)
+    # Create a unique key from code and compiler settings
+    # Use SHA256 directly on the code string for session-stable hashing
+    # (Julia's hash() is randomized per session and unsuitable for persistent caching)
     config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)"
-    key_data = "$(code_hash)_$(config_str)"
+    key_data = "$(code)\n---\n$(config_str)"
 
-    # Use SHA256 for the final key
+    # Use SHA256 for a deterministic, session-stable key
     hash_bytes = sha256(key_data)
     return bytes2hex(hash_bytes)
 end
