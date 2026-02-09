@@ -110,7 +110,7 @@ function parse_structs_and_impls(code::String)
     # 1. Find all pub structs
     # Pattern: pub struct Name<T> { ... } or #[derive(JuliaStruct)] pub struct Name { ... }
     # Capture 1: Name, Capture 2: Generics (optional)
-    struct_head_pattern = r"pub\s+struct\s+([A-Z]\w*)\s*(?:<(.+?)>)?\s*(?:\{|\()"
+    struct_head_pattern = r"pub\s+struct\s+([A-Z]\w*)\s*(?:<(.+?)>)?\s*(?:\s+where\s+[^{(]+)?(?:\{|\()"
 
     for m in eachmatch(struct_head_pattern, code)
         name = String(m.captures[1])
@@ -163,7 +163,7 @@ function parse_structs_and_impls(code::String)
 
     # 2. Find impl blocks
     # Pattern: impl<T> Name<T> { ... } or impl Name { ... }
-    impl_head_pattern = r"impl(?:\s*<.*?>)?\s+([A-Z]\w*)(?:\s*<.*?>)?\s*\{"
+    impl_head_pattern = r"impl(?:\s*<.*?>)?\s+([A-Z]\w*)(?:\s*<.*?>)?\s*(?:\s+where\s+[^{]+)?\{"
 
     for m in eachmatch(impl_head_pattern, code)
         struct_name = String(m.captures[1])
@@ -266,6 +266,48 @@ function _is_ffi_compatible_field_type(rust_type::String)
     return true
 end
 
+"""
+    _extract_field_type(rest::AbstractString) -> String
+
+Extract a Rust field type from the text after the colon, using bracket-counting
+to correctly handle generic types with commas like `HashMap<String, Vec<Option<i32>>>`.
+Stops at a trailing comma or semicolon at bracket depth 0.
+"""
+function _extract_field_type(rest::AbstractString)
+    buf = IOBuffer()
+    angle_depth = 0
+    paren_depth = 0
+    bracket_depth = 0
+
+    for c in rest
+        if c == '<'
+            angle_depth += 1
+            write(buf, c)
+        elseif c == '>'
+            angle_depth = max(0, angle_depth - 1)
+            write(buf, c)
+        elseif c == '('
+            paren_depth += 1
+            write(buf, c)
+        elseif c == ')'
+            paren_depth = max(0, paren_depth - 1)
+            write(buf, c)
+        elseif c == '['
+            bracket_depth += 1
+            write(buf, c)
+        elseif c == ']'
+            bracket_depth = max(0, bracket_depth - 1)
+            write(buf, c)
+        elseif (c == ',' || c == ';') && angle_depth == 0 && paren_depth == 0 && bracket_depth == 0
+            break
+        else
+            write(buf, c)
+        end
+    end
+
+    return strip(String(take!(buf)))
+end
+
 function parse_struct_fields(struct_def::String)
     fields = Tuple{String, String}[]
 
@@ -284,19 +326,31 @@ function parse_struct_fields(struct_def::String)
     # Extract the body content
     body = struct_def[brace_start+1:brace_end-1]
 
-    # Pattern to match field definitions: field_name: field_type,
-    # Handles cases like:
-    #   x: f64,
-    #   name: String,
-    #   data: Vec<u8>,
-    field_pattern = r"(\w+)\s*:\s*([^,;]+?)(?:[,;]|$)"
-
-    for m in eachmatch(field_pattern, body)
-        field_name = strip(String(m.captures[1]))
-        field_type = strip(String(m.captures[2]))
-
-        # Skip if empty or if it's a comment
-        if !isempty(field_name) && !isempty(field_type) && !startswith(field_name, "//")
+    # Parse fields using bracket-counting to handle generic types with commas
+    # e.g. HashMap<String, Vec<Option<i32>>> or (String, i32)
+    # Split body into lines and parse each field
+    for line in split(body, '\n')
+        line = strip(line)
+        # Skip empty lines and comments
+        if isempty(line) || startswith(line, "//") || startswith(line, "/*")
+            continue
+        end
+        # Skip visibility modifiers, then find "name: type"
+        line = replace(line, r"^\s*pub\s+" => "")
+        # Match field_name: ...
+        colon_pos = findfirst(':', line)
+        if colon_pos === nothing
+            continue
+        end
+        field_name = strip(line[1:prevind(line, colon_pos)])
+        # Validate field name is a simple identifier
+        if !occursin(r"^\w+$", field_name) || startswith(field_name, "//")
+            continue
+        end
+        # Extract field type using bracket-counting to find the end
+        rest = strip(line[nextind(line, colon_pos):end])
+        field_type = _extract_field_type(rest)
+        if !isempty(field_type)
             push!(fields, (field_name, field_type))
         end
     end

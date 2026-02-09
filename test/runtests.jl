@@ -55,6 +55,9 @@ include("test_hot_reload.jl")
 # Regression reproduction tests
 include("test_regressions.jl")
 
+# Parsing, generics, and hot-reload fixes (#168, #169, #170, #172, #173, #184, #185)
+include("test_parsing_generics_hotreload_fixes.jl")
+
 @testset "RustCall.jl" begin
 
     @testset "Type Mappings" begin

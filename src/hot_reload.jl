@@ -336,9 +336,18 @@ Stop the file watching task for a crate.
 function stop_watch_task(state::HotReloadState)
     state.enabled = false
 
-    if state.watch_task !== nothing && !istaskdone(state.watch_task)
-        # The task will stop on its own when state.enabled becomes false
+    task = state.watch_task
+    if task !== nothing && !istaskdone(task)
+        # Wait for the watch task to finish so any in-progress reload completes
+        # before we return. This prevents the caller from observing an
+        # inconsistent state where a reload is still running.
         @info "Hot reload: Stopping watch task for $(state.lib_name)..."
+        try
+            wait(task)
+        catch e
+            # Task may throw if it was interrupted; ignore
+            @debug "Hot reload: Watch task ended with: $e"
+        end
     end
 
     state.watch_task = nothing
@@ -390,12 +399,14 @@ function enable_hot_reload(lib_name::String, crate_path::String;
         error("Crate path does not exist: $crate_path")
     end
 
-    # Check if already registered
-    if haskey(HOT_RELOAD_REGISTRY, lib_name)
-        existing = HOT_RELOAD_REGISTRY[lib_name]
-        if existing.enabled
-            @warn "Hot reload already enabled for $lib_name"
-            return existing
+    # Check if already registered (protect HOT_RELOAD_REGISTRY with REGISTRY_LOCK)
+    lock(REGISTRY_LOCK) do
+        if haskey(HOT_RELOAD_REGISTRY, lib_name)
+            existing = HOT_RELOAD_REGISTRY[lib_name]
+            if existing.enabled
+                @warn "Hot reload already enabled for $lib_name"
+                return existing
+            end
         end
     end
 
@@ -413,11 +424,11 @@ function enable_hot_reload(lib_name::String, crate_path::String;
 
     # Get current library path
     lib_path = ""
-    if lock(REGISTRY_LOCK) do
-        haskey(RUST_LIBRARIES, lib_name)
-    end
-        # Library is already loaded, we need to find its path
-        # For now, we'll rebuild on first change
+    lock(REGISTRY_LOCK) do
+        if haskey(RUST_LIBRARIES, lib_name)
+            # Library is already loaded, we need to find its path
+            # For now, we'll rebuild on first change
+        end
     end
 
     # Create state
@@ -432,8 +443,10 @@ function enable_hot_reload(lib_name::String, crate_path::String;
         callback
     )
 
-    # Register
-    HOT_RELOAD_REGISTRY[lib_name] = state
+    # Register (protect HOT_RELOAD_REGISTRY with REGISTRY_LOCK)
+    lock(REGISTRY_LOCK) do
+        HOT_RELOAD_REGISTRY[lib_name] = state
+    end
 
     # Start watching
     start_watch_task(state, interval=interval)
@@ -450,12 +463,18 @@ Disable hot reload for a Rust crate.
 - `lib_name::String`: Name of the library to disable hot reload for
 """
 function disable_hot_reload(lib_name::String)
-    if !haskey(HOT_RELOAD_REGISTRY, lib_name)
-        @warn "Hot reload not enabled for $lib_name"
+    state = lock(REGISTRY_LOCK) do
+        if !haskey(HOT_RELOAD_REGISTRY, lib_name)
+            @warn "Hot reload not enabled for $lib_name"
+            return nothing
+        end
+        HOT_RELOAD_REGISTRY[lib_name]
+    end
+
+    if state === nothing
         return
     end
 
-    state = HOT_RELOAD_REGISTRY[lib_name]
     stop_watch_task(state)
     state.enabled = false
 
@@ -468,7 +487,10 @@ end
 Disable hot reload for all registered crates.
 """
 function disable_all_hot_reload()
-    for lib_name in keys(HOT_RELOAD_REGISTRY)
+    lib_names = lock(REGISTRY_LOCK) do
+        collect(keys(HOT_RELOAD_REGISTRY))
+    end
+    for lib_name in lib_names
         disable_hot_reload(lib_name)
     end
 end
@@ -479,10 +501,12 @@ end
 Check if hot reload is enabled for a library.
 """
 function is_hot_reload_enabled(lib_name::String)
-    if !haskey(HOT_RELOAD_REGISTRY, lib_name)
-        return false
+    lock(REGISTRY_LOCK) do
+        if !haskey(HOT_RELOAD_REGISTRY, lib_name)
+            return false
+        end
+        return HOT_RELOAD_REGISTRY[lib_name].enabled
     end
-    return HOT_RELOAD_REGISTRY[lib_name].enabled
 end
 
 """
@@ -491,7 +515,9 @@ end
 List all crates with hot reload enabled.
 """
 function list_hot_reload_crates()
-    return [name for (name, state) in HOT_RELOAD_REGISTRY if state.enabled]
+    lock(REGISTRY_LOCK) do
+        return [name for (name, state) in HOT_RELOAD_REGISTRY if state.enabled]
+    end
 end
 
 """
@@ -502,11 +528,12 @@ Manually trigger a reload for a library.
 Returns true if successful, false otherwise.
 """
 function trigger_reload(lib_name::String)
-    if !haskey(HOT_RELOAD_REGISTRY, lib_name)
-        error("Hot reload not enabled for $lib_name. Call enable_hot_reload first.")
+    state = lock(REGISTRY_LOCK) do
+        if !haskey(HOT_RELOAD_REGISTRY, lib_name)
+            error("Hot reload not enabled for $lib_name. Call enable_hot_reload first.")
+        end
+        HOT_RELOAD_REGISTRY[lib_name]
     end
-
-    state = HOT_RELOAD_REGISTRY[lib_name]
     return reload_library(state)
 end
 

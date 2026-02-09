@@ -17,168 +17,168 @@ This page provides the API documentation for RustCall.jl.
 ### Result and Option Types
 
 ```@docs
-RustResult
-RustOption
+RustCall.RustResult
+RustCall.RustOption
 ```
 
 ### Ownership Types
 
 ```@docs
-RustBox
-RustRc
-RustArc
-RustVec
-RustSlice
+RustCall.RustBox
+RustCall.RustRc
+RustCall.RustArc
+RustCall.RustVec
+RustCall.RustSlice
 ```
 
 ### Pointer Types
 
 ```@docs
-RustPtr
-RustRef
+RustCall.RustPtr
+RustCall.RustRef
 ```
 
 ### String Types
 
 ```@docs
-RustString
-RustStr
+RustCall.RustString
+RustCall.RustStr
 ```
 
 ### Error Types
 
 ```@docs
-RustError
-CompilationError
-RuntimeError
-CargoBuildError
-DependencyResolutionError
+RustCall.RustError
+RustCall.CompilationError
+RustCall.RuntimeError
+RustCall.CargoBuildError
+RustCall.DependencyResolutionError
 ```
 
 ## Type Conversion Functions
 
 ```@docs
-rusttype_to_julia
-juliatype_to_rust
+RustCall.rusttype_to_julia
+RustCall.juliatype_to_rust
 ```
 
 ## Result/Option Operations
 
 ```@docs
-unwrap
-unwrap_or
-is_ok
-is_err
-is_some
-is_none
-result_to_exception
-unwrap_or_throw
+RustCall.unwrap
+RustCall.unwrap_or
+RustCall.is_ok
+RustCall.is_err
+RustCall.is_some
+RustCall.is_none
+RustCall.result_to_exception
+RustCall.unwrap_or_throw
 ```
 
 ## String Conversion Functions
 
 ```@docs
-rust_string_to_julia
-rust_str_to_julia
-julia_string_to_rust
-julia_string_to_cstring
-cstring_to_julia_string
+RustCall.rust_string_to_julia
+RustCall.rust_str_to_julia
+RustCall.julia_string_to_rust
+RustCall.julia_string_to_cstring
+RustCall.cstring_to_julia_string
 ```
 
 ## Error Handling
 
 ```@docs
-format_rustc_error
-suggest_fix_for_error
+RustCall.format_rustc_error
+RustCall.suggest_fix_for_error
 ```
 
 ## Compiler Functions
 
 ```@docs
-RustCompiler
-compile_with_recovery
-check_rustc_available
-get_rustc_version
-get_default_compiler
-set_default_compiler
-compile_rust_to_shared_lib
-compile_rust_to_llvm_ir
-load_llvm_ir
-wrap_rust_code
+RustCall.RustCompiler
+RustCall.compile_with_recovery
+RustCall.check_rustc_available
+RustCall.get_rustc_version
+RustCall.get_default_compiler
+RustCall.set_default_compiler
+RustCall.compile_rust_to_shared_lib
+RustCall.compile_rust_to_llvm_ir
+RustCall.load_llvm_ir
+RustCall.wrap_rust_code
 ```
 
 ## Ownership Type Operations
 
 ```@docs
-drop!
-is_dropped
-is_valid
-clone
-is_rust_helpers_available
-get_rust_helpers_lib
-get_rust_helpers_lib_path
+RustCall.drop!
+RustCall.is_dropped
+RustCall.is_valid
+RustCall.clone
+RustCall.is_rust_helpers_available
+RustCall.get_rust_helpers_lib
+RustCall.get_rust_helpers_lib_path
 ```
 
 ## RustVec Operations
 
 ```@docs
-create_rust_vec
-rust_vec_get
-rust_vec_set!
-copy_to_julia!
-to_julia_vector
+RustCall.create_rust_vec
+RustCall.rust_vec_get
+RustCall.rust_vec_set!
+RustCall.copy_to_julia!
+RustCall.to_julia_vector
 ```
 
 ## Cache Management
 
 ```@docs
-clear_cache
-get_cache_size
-list_cached_libraries
-cleanup_old_cache
+RustCall.clear_cache
+RustCall.get_cache_size
+RustCall.list_cached_libraries
+RustCall.cleanup_old_cache
 ```
 
 ## LLVM Optimization
 
 ```@docs
-OptimizationConfig
-optimize_module!
-optimize_for_speed!
-optimize_for_size!
+RustCall.OptimizationConfig
+RustCall.optimize_module!
+RustCall.optimize_for_speed!
+RustCall.optimize_for_size!
 ```
 
 ## LLVM Function Registration
 
 ```@docs
-RustFunctionInfo
-compile_and_register_rust_function
-julia_type_to_llvm_ir_string
+RustCall.RustFunctionInfo
+RustCall.compile_and_register_rust_function
+RustCall.julia_type_to_llvm_ir_string
 ```
 
 ## Generics Support
 
 ```@docs
-register_generic_function
-call_generic_function
-is_generic_function
-monomorphize_function
-specialize_generic_code
-infer_type_parameters
+RustCall.register_generic_function
+RustCall.call_generic_function
+RustCall.is_generic_function
+RustCall.monomorphize_function
+RustCall.specialize_generic_code
+RustCall.infer_type_parameters
 ```
 
 ## Generic Constraints
 
 ```@docs
-TraitBound
-TypeConstraints
-GenericFunctionInfo
-parse_trait_bounds
-parse_single_trait
-parse_where_clause
-parse_inline_constraints
-parse_generic_function
-constraints_to_rust_string
-merge_constraints
+RustCall.TraitBound
+RustCall.TypeConstraints
+RustCall.GenericFunctionInfo
+RustCall.parse_trait_bounds
+RustCall.parse_single_trait
+RustCall.parse_where_clause
+RustCall.parse_inline_constraints
+RustCall.parse_generic_function
+RustCall.constraints_to_rust_string
+RustCall.merge_constraints
 ```
 
 ## External Library Integration
@@ -186,44 +186,44 @@ merge_constraints
 ### Dependency Management
 
 ```@docs
-DependencySpec
-parse_dependencies_from_code
-has_dependencies
+RustCall.DependencySpec
+RustCall.parse_dependencies_from_code
+RustCall.has_dependencies
 ```
 
 ### Cargo Project Management
 
 ```@docs
-CargoProject
-create_cargo_project
-build_cargo_project
-clear_cargo_cache
-get_cargo_cache_size
+RustCall.CargoProject
+RustCall.create_cargo_project
+RustCall.build_cargo_project
+RustCall.clear_cargo_cache
+RustCall.get_cargo_cache_size
 ```
 
 ## Crate Bindings
 
 ```@docs
-CrateInfo
-CrateBindingOptions
-scan_crate
-generate_bindings
-write_bindings_to_file
+RustCall.CrateInfo
+RustCall.CrateBindingOptions
+RustCall.scan_crate
+RustCall.generate_bindings
+RustCall.write_bindings_to_file
 @rust_crate
 ```
 
 ## Hot Reload
 
 ```@docs
-HotReloadState
-enable_hot_reload
-disable_hot_reload
-disable_all_hot_reload
-is_hot_reload_enabled
-list_hot_reload_crates
-trigger_reload
-set_hot_reload_global
-enable_hot_reload_for_crate
+RustCall.HotReloadState
+RustCall.enable_hot_reload
+RustCall.disable_hot_reload
+RustCall.disable_all_hot_reload
+RustCall.is_hot_reload_enabled
+RustCall.list_hot_reload_crates
+RustCall.trigger_reload
+RustCall.set_hot_reload_global
+RustCall.enable_hot_reload_for_crate
 ```
 
 ## Type System
@@ -273,8 +273,8 @@ const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
 The following registries are used internally by RustCall.jl:
 
 ```@docs
-GENERIC_FUNCTION_REGISTRY
-MONOMORPHIZED_FUNCTIONS
+RustCall.GENERIC_FUNCTION_REGISTRY
+RustCall.MONOMORPHIZED_FUNCTIONS
 ```
 
 The following registries and constants are not exported but are available for advanced usage.

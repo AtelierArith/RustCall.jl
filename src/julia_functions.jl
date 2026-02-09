@@ -34,33 +34,74 @@ Returns a vector of `RustFunctionSignature` for each `#[julia]` marked function.
 function parse_julia_functions(code::String)
     signatures = RustFunctionSignature[]
 
-    # Pattern to match #[julia] or #[julia_pyo3] followed by fn definition
-    # Handles:
-    # - #[julia] fn name(...)
-    # - #[julia_pyo3] fn name(...)
-    # - #[julia] pub fn name(...)
-    # - #[julia]\npub fn name(...)
-    # - #[julia] fn name<T>(...)
-    pattern = r"#\[julia(?:_pyo3)?\]\s*(?:pub\s+)?fn\s+(\w+)\s*(?:<([^>]+)>)?\s*\(([^)]*)\)(?:\s*->\s*([^\{]+))?\s*\{"
+    # Use a two-step approach:
+    # 1. Find #[julia] or #[julia_pyo3] markers with regex
+    # 2. Parse the function signature using bracket-counting for generics
+    #
+    # This handles nested generic types like HashMap<String, Vec<Option<i32>>>
+    # which regex alone cannot match correctly.
+    attr_pattern = r"#\[julia(?:_pyo3)?\]\s*(?:pub\s+)?fn\s+(\w+)\s*"
 
-    for m in eachmatch(pattern, code)
+    for m in eachmatch(attr_pattern, code)
         func_name = String(m.captures[1])
-        type_params_str = m.captures[2]
-        args_str = m.captures[3] !== nothing ? String(m.captures[3]) : ""
-        return_type = m.captures[4] !== nothing ? strip(String(m.captures[4])) : "()"
+
+        # Position right after "fn name"
+        pos = m.offset + length(m.match)
+
+        # Check for generic parameters: <...>
+        type_params_str = nothing
+        is_generic = false
+        if pos <= ncodeunits(code) && code[pos] == '<'
+            close_pos = _find_matching_angle_bracket_jf(code, pos)
+            if close_pos > 0
+                type_params_str = code[nextind(code, pos):prevind(code, close_pos)]
+                pos = nextind(code, close_pos)
+                # Skip whitespace
+                while pos <= ncodeunits(code) && isspace(code[pos])
+                    pos = nextind(code, pos)
+                end
+            end
+        end
+
+        # Expect '('
+        if pos > ncodeunits(code) || code[pos] != '('
+            continue
+        end
+
+        # Find matching ')' using bracket counting
+        paren_close = _find_matching_paren(code, pos)
+        if paren_close == 0
+            continue
+        end
+        args_str = code[nextind(code, pos):prevind(code, paren_close)]
+
+        # Parse return type: look for -> ... {
+        return_type = "()"
+        rest_pos = nextind(code, paren_close)
+        # Skip whitespace
+        while rest_pos <= ncodeunits(code) && isspace(code[rest_pos])
+            rest_pos = nextind(code, rest_pos)
+        end
+        if rest_pos + 1 <= ncodeunits(code) && code[rest_pos] == '-' && code[nextind(code, rest_pos)] == '>'
+            # Found return type
+            ret_start = nextind(code, nextind(code, rest_pos))
+            # Find '{' at depth 0
+            brace_pos = _find_open_brace(code, ret_start)
+            if brace_pos > 0
+                return_type = strip(code[ret_start:prevind(code, brace_pos)])
+            end
+        end
 
         # Parse type parameters
         type_params = String[]
-        is_generic = false
-        if type_params_str !== nothing && !isempty(type_params_str)
+        if type_params_str !== nothing && !isempty(strip(type_params_str))
             is_generic = true
-            for param in split(type_params_str, ',')
-                param = strip(param)
-                # Skip Rust lifetime parameters (e.g., 'a, 'static)
+            # Split by comma at depth 0
+            for param_str in _split_at_depth_zero(type_params_str, ',')
+                param = strip(param_str)
                 if startswith(param, "'")
                     continue
                 end
-                # Handle trait bounds: T: Copy -> just T
                 if occursin(':', param)
                     param = strip(split(param, ':')[1])
                 end
@@ -73,28 +114,8 @@ function parse_julia_functions(code::String)
         arg_types = String[]
 
         if !isempty(strip(args_str))
-            # Parse each argument, handling nested generics
-            current_arg = ""
-            bracket_level = 0
-
-            for char in args_str
-                if char in ['<', '(', '[']
-                    bracket_level += 1
-                    current_arg *= char
-                elseif char in ['>', ')', ']']
-                    bracket_level -= 1
-                    current_arg *= char
-                elseif char == ',' && bracket_level == 0
-                    _parse_single_arg!(arg_names, arg_types, strip(current_arg))
-                    current_arg = ""
-                else
-                    current_arg *= char
-                end
-            end
-
-            # Process last argument
-            if !isempty(strip(current_arg))
-                _parse_single_arg!(arg_names, arg_types, strip(current_arg))
+            for arg_part in _split_at_depth_zero(args_str, ',')
+                _parse_single_arg!(arg_names, arg_types, strip(arg_part))
             end
         end
 
@@ -104,6 +125,120 @@ function parse_julia_functions(code::String)
     end
 
     return signatures
+end
+
+"""
+    _find_matching_angle_bracket_jf(s, open_pos) -> Int
+
+Find the matching '>' for '<' at open_pos, handling nesting. Returns 0 if not found.
+"""
+function _find_matching_angle_bracket_jf(s::AbstractString, open_pos::Int)
+    depth = 0
+    i = open_pos
+    while i <= ncodeunits(s)
+        c = s[i]
+        if c == '<'
+            depth += 1
+        elseif c == '>'
+            depth -= 1
+            if depth == 0
+                return i
+            end
+        end
+        i = nextind(s, i)
+    end
+    return 0
+end
+
+"""
+    _find_matching_paren(s, open_pos) -> Int
+
+Find the matching ')' for '(' at open_pos, handling nesting. Returns 0 if not found.
+"""
+function _find_matching_paren(s::AbstractString, open_pos::Int)
+    depth = 0
+    i = open_pos
+    while i <= ncodeunits(s)
+        c = s[i]
+        if c == '('
+            depth += 1
+        elseif c == ')'
+            depth -= 1
+            if depth == 0
+                return i
+            end
+        end
+        i = nextind(s, i)
+    end
+    return 0
+end
+
+"""
+    _find_open_brace(s, start_pos) -> Int
+
+Find the next '{' at bracket depth 0, starting from start_pos. Returns 0 if not found.
+"""
+function _find_open_brace(s::AbstractString, start_pos::Int)
+    depth = 0
+    i = start_pos
+    while i <= ncodeunits(s)
+        c = s[i]
+        if c == '<'
+            depth += 1
+        elseif c == '>'
+            depth -= 1
+        elseif c == '{' && depth == 0
+            return i
+        end
+        i = nextind(s, i)
+    end
+    return 0
+end
+
+"""
+    _split_at_depth_zero(s, delimiter) -> Vector{String}
+
+Split string by delimiter only when bracket depth (angle, paren, square) is zero.
+"""
+function _split_at_depth_zero(s::AbstractString, delimiter::Char)
+    parts = String[]
+    current = IOBuffer()
+    angle = 0
+    paren = 0
+    bracket = 0
+
+    for c in s
+        if c == '<'
+            angle += 1
+            write(current, c)
+        elseif c == '>'
+            angle = max(0, angle - 1)
+            write(current, c)
+        elseif c == '('
+            paren += 1
+            write(current, c)
+        elseif c == ')'
+            paren = max(0, paren - 1)
+            write(current, c)
+        elseif c == '['
+            bracket += 1
+            write(current, c)
+        elseif c == ']'
+            bracket = max(0, bracket - 1)
+            write(current, c)
+        elseif c == delimiter && angle == 0 && paren == 0 && bracket == 0
+            push!(parts, String(take!(current)))
+        else
+            write(current, c)
+        end
+    end
+
+    last = String(take!(current))
+    if !isempty(strip(last))
+        push!(parts, last)
+    end
+
+    return parts
 end
 
 """
