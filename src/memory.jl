@@ -42,14 +42,24 @@ DeferredDrop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol) =
 const DEFERRED_DROPS = DeferredDrop[]
 const DEFERRED_DROPS_LOCK = ReentrantLock()
 
+# Maximum number of deferred drops before a warning is issued and a flush is attempted.
+# This prevents unbounded memory growth when the Rust helpers library is unavailable.
+const MAX_DEFERRED_DROPS = Ref{Int}(1000)
+
 """
     _defer_drop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol)
 
 Record a pointer for deferred deallocation when the Rust helpers library becomes available.
+If the queue exceeds `MAX_DEFERRED_DROPS`, attempts a flush first.
 """
 function _defer_drop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol)
-    lock(DEFERRED_DROPS_LOCK) do
+    should_flush = lock(DEFERRED_DROPS_LOCK) do
         push!(DEFERRED_DROPS, DeferredDrop(ptr, type_name, drop_symbol))
+        return length(DEFERRED_DROPS) >= MAX_DEFERRED_DROPS[]
+    end
+    if should_flush
+        @warn "Deferred drop queue reached $(MAX_DEFERRED_DROPS[]) entries, attempting flush" maxlog=5
+        flush_deferred_drops()
     end
     @warn "Deferring drop for $type_name at $ptr — Rust helpers library unavailable. " *
           "Build with: using Pkg; Pkg.build(\"RustCall\")" maxlog=10
@@ -59,10 +69,16 @@ end
     _defer_vec_drop(ptr::Ptr{Cvoid}, len::UInt, cap::UInt, type_name::String, drop_symbol::Symbol)
 
 Record a RustVec pointer for deferred deallocation (needs len/cap for CRustVec reconstruction).
+If the queue exceeds `MAX_DEFERRED_DROPS`, attempts a flush first.
 """
 function _defer_vec_drop(ptr::Ptr{Cvoid}, len::UInt, cap::UInt, type_name::String, drop_symbol::Symbol)
-    lock(DEFERRED_DROPS_LOCK) do
+    should_flush = lock(DEFERRED_DROPS_LOCK) do
         push!(DEFERRED_DROPS, DeferredDrop(ptr, type_name, drop_symbol, len, cap, true))
+        return length(DEFERRED_DROPS) >= MAX_DEFERRED_DROPS[]
+    end
+    if should_flush
+        @warn "Deferred drop queue reached $(MAX_DEFERRED_DROPS[]) entries, attempting flush" maxlog=5
+        flush_deferred_drops()
     end
     @warn "Deferring drop for $type_name at $ptr — Rust helpers library unavailable. " *
           "Build with: using Pkg; Pkg.build(\"RustCall\")" maxlog=10
@@ -143,6 +159,26 @@ function deferred_drop_count()
     return lock(DEFERRED_DROPS_LOCK) do
         length(DEFERRED_DROPS)
     end
+end
+
+"""
+    set_max_deferred_drops(n::Int)
+
+Set the maximum number of deferred drops before an automatic flush is attempted.
+Default is 1000.
+"""
+function set_max_deferred_drops(n::Int)
+    n > 0 || error("MAX_DEFERRED_DROPS must be positive, got $n")
+    MAX_DEFERRED_DROPS[] = n
+end
+
+"""
+    get_max_deferred_drops() -> Int
+
+Return the current maximum deferred drop queue size.
+"""
+function get_max_deferred_drops()
+    return MAX_DEFERRED_DROPS[]
 end
 
 """
@@ -353,44 +389,47 @@ end
     drop_rust_box(box::RustBox{T}) where T
 
 Drop a RustBox, calling the appropriate Rust drop function.
+Uses the object's drop_lock to synchronize with the GC finalizer.
 """
 function drop_rust_box(box::RustBox{T}) where T
-    if box.dropped
-        @debug "Attempted to drop an already-dropped RustBox{$T}"
-        return nothing
-    end
-    if box.ptr == C_NULL
-        return nothing
-    end
+    lock(box.drop_lock) do
+        if box.dropped
+            @debug "Attempted to drop an already-dropped RustBox{$T}"
+            return nothing
+        end
+        if box.ptr == C_NULL
+            return nothing
+        end
 
-    # Determine the drop symbol for this type
-    drop_sym = if T == Int32
-        :rust_box_drop_i32
-    elseif T == Int64
-        :rust_box_drop_i64
-    elseif T == Float32
-        :rust_box_drop_f32
-    elseif T == Float64
-        :rust_box_drop_f64
-    elseif T == Bool
-        :rust_box_drop_bool
-    else
-        :rust_box_drop
-    end
+        # Determine the drop symbol for this type
+        drop_sym = if T == Int32
+            :rust_box_drop_i32
+        elseif T == Int64
+            :rust_box_drop_i64
+        elseif T == Float32
+            :rust_box_drop_f32
+        elseif T == Float64
+            :rust_box_drop_f64
+        elseif T == Bool
+            :rust_box_drop_bool
+        else
+            :rust_box_drop
+        end
 
-    lib = get_rust_helpers_lib()
-    if lib === nothing
-        _defer_drop(box.ptr, "RustBox{$T}", drop_sym)
+        lib = get_rust_helpers_lib()
+        if lib === nothing
+            _defer_drop(box.ptr, "RustBox{$T}", drop_sym)
+            box.dropped = true
+            return nothing
+        end
+
+        fn_ptr = safe_dlsym(lib, drop_sym)
+        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
+
         box.dropped = true
+        box.ptr = C_NULL
         return nothing
     end
-
-    fn_ptr = safe_dlsym(lib, drop_sym)
-    ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
-
-    box.dropped = true
-    box.ptr = C_NULL
-    return nothing
 end
 
 # Override drop! for RustBox to call Rust drop
@@ -478,41 +517,48 @@ end
     drop_rust_rc(rc::RustRc{T}) where T
 
 Drop a RustRc, decrementing the reference count.
+Uses the object's drop_lock to synchronize with the GC finalizer.
 """
 function drop_rust_rc(rc::RustRc{T}) where T
-    if rc.dropped
-        @debug "Attempted to drop an already-dropped RustRc{$T}"
-        return nothing
-    end
-    if rc.ptr == C_NULL
-        return nothing
-    end
+    lock(rc.drop_lock) do
+        if rc.dropped
+            @debug "Attempted to drop an already-dropped RustRc{$T}"
+            return nothing
+        end
+        if rc.ptr == C_NULL
+            return nothing
+        end
 
-    drop_sym = if T == Int32
-        :rust_rc_drop_i32
-    elseif T == Int64
-        :rust_rc_drop_i64
-    elseif T == Float32
-        :rust_rc_drop_f32
-    elseif T == Float64
-        :rust_rc_drop_f64
-    else
-        error("Unsupported type for RustRc drop: $T")
-    end
+        drop_sym = if T == Int32
+            :rust_rc_drop_i32
+        elseif T == Int64
+            :rust_rc_drop_i64
+        elseif T == Float32
+            :rust_rc_drop_f32
+        elseif T == Float64
+            :rust_rc_drop_f64
+        else
+            # Unsupported type — mark as dropped without calling Rust drop
+            @debug "No Rust drop function for RustRc{$T}, marking as dropped"
+            rc.dropped = true
+            rc.ptr = C_NULL
+            return nothing
+        end
 
-    lib = get_rust_helpers_lib()
-    if lib === nothing
-        _defer_drop(rc.ptr, "RustRc{$T}", drop_sym)
+        lib = get_rust_helpers_lib()
+        if lib === nothing
+            _defer_drop(rc.ptr, "RustRc{$T}", drop_sym)
+            rc.dropped = true
+            return nothing
+        end
+
+        fn_ptr = safe_dlsym(lib, drop_sym)
+        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
+
         rc.dropped = true
+        rc.ptr = C_NULL
         return nothing
     end
-
-    fn_ptr = safe_dlsym(lib, drop_sym)
-    ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
-
-    rc.dropped = true
-    rc.ptr = C_NULL
-    return nothing
 end
 
 # Override drop! for RustRc
@@ -600,41 +646,48 @@ end
     drop_rust_arc(arc::RustArc{T}) where T
 
 Drop a RustArc, decrementing the atomic reference count.
+Uses the object's drop_lock to synchronize with the GC finalizer.
 """
 function drop_rust_arc(arc::RustArc{T}) where T
-    if arc.dropped
-        @debug "Attempted to drop an already-dropped RustArc{$T}"
-        return nothing
-    end
-    if arc.ptr == C_NULL
-        return nothing
-    end
+    lock(arc.drop_lock) do
+        if arc.dropped
+            @debug "Attempted to drop an already-dropped RustArc{$T}"
+            return nothing
+        end
+        if arc.ptr == C_NULL
+            return nothing
+        end
 
-    drop_sym = if T == Int32
-        :rust_arc_drop_i32
-    elseif T == Int64
-        :rust_arc_drop_i64
-    elseif T == Float32
-        :rust_arc_drop_f32
-    elseif T == Float64
-        :rust_arc_drop_f64
-    else
-        error("Unsupported type for RustArc drop: $T")
-    end
+        drop_sym = if T == Int32
+            :rust_arc_drop_i32
+        elseif T == Int64
+            :rust_arc_drop_i64
+        elseif T == Float32
+            :rust_arc_drop_f32
+        elseif T == Float64
+            :rust_arc_drop_f64
+        else
+            # Unsupported type — mark as dropped without calling Rust drop
+            @debug "No Rust drop function for RustArc{$T}, marking as dropped"
+            arc.dropped = true
+            arc.ptr = C_NULL
+            return nothing
+        end
 
-    lib = get_rust_helpers_lib()
-    if lib === nothing
-        _defer_drop(arc.ptr, "RustArc{$T}", drop_sym)
+        lib = get_rust_helpers_lib()
+        if lib === nothing
+            _defer_drop(arc.ptr, "RustArc{$T}", drop_sym)
+            arc.dropped = true
+            return nothing
+        end
+
+        fn_ptr = safe_dlsym(lib, drop_sym)
+        ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
+
         arc.dropped = true
+        arc.ptr = C_NULL
         return nothing
     end
-
-    fn_ptr = safe_dlsym(lib, drop_sym)
-    ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
-
-    arc.dropped = true
-    arc.ptr = C_NULL
-    return nothing
 end
 
 # Override drop! for RustArc
@@ -673,42 +726,49 @@ RustArc(value::Float64) = create_rust_arc(value)
     drop_rust_vec(vec::RustVec{T}) -> Nothing
 
 Drop a RustVec by calling the Rust-side drop function.
+Uses the object's drop_lock to synchronize with the GC finalizer.
 """
 function drop_rust_vec(vec::RustVec{T}) where {T}
-    if vec.dropped
-        @debug "Attempted to drop an already-dropped RustVec{$T}"
-        return nothing
-    end
-    if vec.ptr == C_NULL
-        return nothing
-    end
+    lock(vec.drop_lock) do
+        if vec.dropped
+            @debug "Attempted to drop an already-dropped RustVec{$T}"
+            return nothing
+        end
+        if vec.ptr == C_NULL
+            return nothing
+        end
 
-    drop_sym = if T == Int32
-        :rust_vec_drop_i32
-    elseif T == Int64
-        :rust_vec_drop_i64
-    elseif T == Float32
-        :rust_vec_drop_f32
-    elseif T == Float64
-        :rust_vec_drop_f64
-    else
-        error("Unsupported type for RustVec drop: $T. Supported types: Int32, Int64, Float32, Float64")
-    end
+        drop_sym = if T == Int32
+            :rust_vec_drop_i32
+        elseif T == Int64
+            :rust_vec_drop_i64
+        elseif T == Float32
+            :rust_vec_drop_f32
+        elseif T == Float64
+            :rust_vec_drop_f64
+        else
+            # Unsupported type — mark as dropped without calling Rust drop
+            @debug "No Rust drop function for RustVec{$T}, marking as dropped"
+            vec.dropped = true
+            vec.ptr = C_NULL
+            return nothing
+        end
 
-    lib = get_rust_helpers_lib()
-    if lib === nothing
-        _defer_vec_drop(vec.ptr, UInt(vec.len), UInt(vec.cap), "RustVec{$T}", drop_sym)
+        lib = get_rust_helpers_lib()
+        if lib === nothing
+            _defer_vec_drop(vec.ptr, UInt(vec.len), UInt(vec.cap), "RustVec{$T}", drop_sym)
+            vec.dropped = true
+            return nothing
+        end
+
+        cvec = CRustVec(vec.ptr, vec.len, vec.cap)
+        fn_ptr = safe_dlsym(lib, drop_sym)
+        ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
+
         vec.dropped = true
+        vec.ptr = C_NULL
         return nothing
     end
-
-    cvec = CRustVec(vec.ptr, vec.len, vec.cap)
-    fn_ptr = safe_dlsym(lib, drop_sym)
-    ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
-
-    vec.dropped = true
-    vec.ptr = C_NULL
-    return nothing
 end
 
 # Override drop! for RustVec

@@ -224,45 +224,47 @@ function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_defa
         try
             # Capture stderr for better error messages
             stderr_io = IOBuffer()
-            proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
-            wait(proc)
+            try
+                proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
+                wait(proc)
 
-            if !Base.success(proc)
-                stderr_str = String(take!(stderr_io))
-                close(stderr_io)
+                if !Base.success(proc)
+                    stderr_str = String(take!(stderr_io))
 
-                if compiler.debug_mode
-                    @warn "Debug mode: keeping intermediate files in $tmp_dir"
-                    @info "Debug mode: You can inspect the files to debug the compilation error"
-                    @info "Debug mode: Source file" file=rs_file
-                    @info "Debug mode: Command" cmd=cmd_str
+                    if compiler.debug_mode
+                        @warn "Debug mode: keeping intermediate files in $tmp_dir"
+                        @info "Debug mode: You can inspect the files to debug the compilation error"
+                        @info "Debug mode: Source file" file=rs_file
+                        @info "Debug mode: Command" cmd=cmd_str
+                    end
+
+                    # Extract error line numbers and file path
+                    error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
+                    line_num = isempty(error_lines) ? 0 : error_lines[1]
+
+                    # Build context dictionary
+                    context = Dict{String, Any}(
+                        "tmp_dir" => tmp_dir,
+                        "rs_file" => rs_file,
+                        "ll_file" => ll_file,
+                        "error_count" => length(error_lines),
+                        "debug_mode" => compiler.debug_mode
+                    )
+
+                    # Format and throw compilation error
+                    throw(CompilationError(
+                        "Failed to compile Rust code to LLVM IR",
+                        stderr_str,
+                        code,
+                        cmd_str;
+                        file_path=rs_file,
+                        line_number=line_num,
+                        context=context
+                    ))
                 end
-
-                # Extract error line numbers and file path
-                error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
-                line_num = isempty(error_lines) ? 0 : error_lines[1]
-
-                # Build context dictionary
-                context = Dict{String, Any}(
-                    "tmp_dir" => tmp_dir,
-                    "rs_file" => rs_file,
-                    "ll_file" => ll_file,
-                    "error_count" => length(error_lines),
-                    "debug_mode" => compiler.debug_mode
-                )
-
-                # Format and throw compilation error
-                throw(CompilationError(
-                    "Failed to compile Rust code to LLVM IR",
-                    stderr_str,
-                    code,
-                    cmd_str;
-                    file_path=rs_file,
-                    line_number=line_num,
-                    context=context
-                ))
+            finally
+                close(stderr_io)
             end
-            close(stderr_io)
         catch e
             if isa(e, CompilationError)
                 rethrow(e)
@@ -384,45 +386,47 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
         try
             # Capture stderr for better error messages
             stderr_io = IOBuffer()
-            proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
-            wait(proc)
+            try
+                proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
+                wait(proc)
 
-            if !Base.success(proc)
-                stderr_str = String(take!(stderr_io))
-                close(stderr_io)
+                if !Base.success(proc)
+                    stderr_str = String(take!(stderr_io))
 
-                if compiler.debug_mode
-                    @warn "Debug mode: keeping intermediate files in $tmp_dir"
-                    @info "Debug mode: You can inspect the files to debug the compilation error"
-                    @info "Debug mode: Source file" file=rs_file
-                    @info "Debug mode: Command" cmd=cmd_str
+                    if compiler.debug_mode
+                        @warn "Debug mode: keeping intermediate files in $tmp_dir"
+                        @info "Debug mode: You can inspect the files to debug the compilation error"
+                        @info "Debug mode: Source file" file=rs_file
+                        @info "Debug mode: Command" cmd=cmd_str
+                    end
+
+                    # Extract error line numbers and file path
+                    error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
+                    line_num = isempty(error_lines) ? 0 : error_lines[1]
+
+                    # Build context dictionary
+                    context = Dict{String, Any}(
+                        "tmp_dir" => tmp_dir,
+                        "rs_file" => rs_file,
+                        "lib_file" => lib_file,
+                        "error_count" => length(error_lines),
+                        "debug_mode" => compiler.debug_mode
+                    )
+
+                    # Format and throw compilation error
+                    throw(CompilationError(
+                        "Failed to compile Rust code to shared library",
+                        stderr_str,
+                        code,
+                        cmd_str;
+                        file_path=rs_file,
+                        line_number=line_num,
+                        context=context
+                    ))
                 end
-
-                # Extract error line numbers and file path
-                error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
-                line_num = isempty(error_lines) ? 0 : error_lines[1]
-
-                # Build context dictionary
-                context = Dict{String, Any}(
-                    "tmp_dir" => tmp_dir,
-                    "rs_file" => rs_file,
-                    "lib_file" => lib_file,
-                    "error_count" => length(error_lines),
-                    "debug_mode" => compiler.debug_mode
-                )
-
-                # Format and throw compilation error
-                throw(CompilationError(
-                    "Failed to compile Rust code to shared library",
-                    stderr_str,
-                    code,
-                    cmd_str;
-                    file_path=rs_file,
-                    line_number=line_num,
-                    context=context
-                ))
+            finally
+                close(stderr_io)
             end
-            close(stderr_io)
         catch e
             if isa(e, CompilationError)
                 rethrow(e)
