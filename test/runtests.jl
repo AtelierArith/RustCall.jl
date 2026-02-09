@@ -500,6 +500,38 @@ include("test_regressions.jl")
                 @test result == 12
             end
 
+            @testset "LLVM Registry Thread Safety" begin
+                # Verify LLVM_REGISTRY_LOCK exists and is a ReentrantLock
+                @test isdefined(RustCall, :LLVM_REGISTRY_LOCK)
+                @test RustCall.LLVM_REGISTRY_LOCK isa ReentrantLock
+
+                # Verify lock works correctly with concurrent access
+                n_tasks = 4
+                n_ops = 10
+                results = Vector{Bool}(undef, n_tasks)
+
+                tasks = []
+                for t in 1:n_tasks
+                    task = Threads.@spawn begin
+                        for i in 1:n_ops
+                            # get_registered_function should safely return nothing
+                            # for unknown functions without crashing
+                            info = RustCall.get_registered_function("nonexistent_$(t)_$(i)")
+                            if info !== nothing
+                                return false
+                            end
+                        end
+                        return true
+                    end
+                    push!(tasks, task)
+                end
+
+                for (i, task) in enumerate(tasks)
+                    results[i] = fetch(task)
+                end
+                @test all(results)
+            end
+
             @testset "Extended Ownership Types" begin
                 # Only test with dummy pointers if Rust helpers library is NOT available
                 # (to avoid crash when drop! tries to free invalid pointer)

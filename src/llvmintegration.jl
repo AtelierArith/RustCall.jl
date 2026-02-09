@@ -21,6 +21,10 @@ const RUST_MODULES = Dict{UInt64, RustModule}()
 # Cache for compiled functions
 const FUNCTION_CACHE = Dict{String, Ptr{Cvoid}}()
 
+# Lock for thread-safe access to LLVM registries (RUST_MODULES, FUNCTION_CACHE,
+# and LLVM_FUNCTION_REGISTRY in llvmcodegen.jl)
+const LLVM_REGISTRY_LOCK = ReentrantLock()
+
 """
     load_llvm_ir(ir_file::String) -> RustModule
 
@@ -60,7 +64,9 @@ function load_llvm_ir(ir_file::String; source_code::String = "")
 
     # Register in the global registry
     mod_hash = hash(ir_content)
-    RUST_MODULES[mod_hash] = rust_mod
+    lock(LLVM_REGISTRY_LOCK) do
+        RUST_MODULES[mod_hash] = rust_mod
+    end
 
     return rust_mod
 end
@@ -191,10 +197,12 @@ Dispose of the LLVM resources associated with a RustModule.
 """
 function dispose_module(mod::RustModule)
     # Remove from cache
-    for (k, v) in RUST_MODULES
-        if v === mod
-            delete!(RUST_MODULES, k)
-            break
+    lock(LLVM_REGISTRY_LOCK) do
+        for (k, v) in RUST_MODULES
+            if v === mod
+                delete!(RUST_MODULES, k)
+                break
+            end
         end
     end
 
@@ -238,8 +246,11 @@ mod = load_llvm_ir("path/to/file.ll")
 function get_or_compile_function(mod::RustModule, name::String)
     cache_key = "$(objectid(mod))_$name"
 
-    if haskey(FUNCTION_CACHE, cache_key)
-        return FUNCTION_CACHE[cache_key]
+    cached = lock(LLVM_REGISTRY_LOCK) do
+        get(FUNCTION_CACHE, cache_key, nothing)
+    end
+    if cached !== nothing
+        return cached
     end
 
     fn = get_function(mod, name)

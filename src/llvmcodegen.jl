@@ -196,11 +196,14 @@ Compile Rust code and register the function for llvmcall usage.
 """
 function compile_and_register_rust_function(code::String, func_name::String)
     # Check if already registered
-    if haskey(LLVM_FUNCTION_REGISTRY, func_name)
-        return LLVM_FUNCTION_REGISTRY[func_name]
+    existing = lock(LLVM_REGISTRY_LOCK) do
+        get(LLVM_FUNCTION_REGISTRY, func_name, nothing)
+    end
+    if existing !== nothing
+        return existing
     end
 
-    # Wrap and compile
+    # Wrap and compile (outside lock — compilation is slow)
     wrapped_code = wrap_rust_code(code)
     compiler = get_default_compiler()
 
@@ -224,9 +227,11 @@ function compile_and_register_rust_function(code::String, func_name::String)
     # Extract the function IR
     llvm_ir = extract_function_ir(rust_mod, func_name)
 
-    # Register
+    # Register under lock
     info = RustFunctionInfo(func_name, ret_type, arg_types, llvm_ir, func_ptr)
-    LLVM_FUNCTION_REGISTRY[func_name] = info
+    lock(LLVM_REGISTRY_LOCK) do
+        LLVM_FUNCTION_REGISTRY[func_name] = info
+    end
 
     return info
 end
@@ -237,7 +242,9 @@ end
 Get a registered Rust function's information.
 """
 function get_registered_function(func_name::String)
-    return get(LLVM_FUNCTION_REGISTRY, func_name, nothing)
+    return lock(LLVM_REGISTRY_LOCK) do
+        get(LLVM_FUNCTION_REGISTRY, func_name, nothing)
+    end
 end
 
 # ============================================================================
