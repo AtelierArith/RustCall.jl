@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Tutorial · RustCall.jl</title><meta name="title" content="Tutorial · RustCall.jl"/><meta property="og:title" content="Tutorial · RustCall.jl"/><meta property="twitter:title" content="Tutorial · RustCall.jl"/><meta name="description" content="Documentation for RustCall.jl."/><meta property="og:description" content="Documentation for RustCall.jl."/><meta property="twitter:description" content="Documentation for RustCall.jl."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/tutorial/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/tutorial/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/tutorial/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li class="is-active"><a class="tocitem" href>Tutorial</a><ul class="internal"><li><a class="tocitem" href="#Table-of-Contents"><span>Table of Contents</span></a></li><li><a class="tocitem" href="#Getting-Started"><span>Getting Started</span></a></li><li><a class="tocitem" href="#Basic-Usage"><span>Basic Usage</span></a></li><li><a class="tocitem" href="#Understanding-the-Type-System"><span>Understanding the Type System</span></a></li><li><a class="tocitem" href="#String-Handling"><span>String Handling</span></a></li><li><a class="tocitem" href="#Error-Handling"><span>Error Handling</span></a></li><li><a class="tocitem" href="#Using-Ownership-Types"><span>Using Ownership Types</span></a></li><li><a class="tocitem" href="#LLVM-IR-Integration-(Advanced)"><span>LLVM IR Integration (Advanced)</span></a></li><li><a class="tocitem" href="#Performance-Optimization"><span>Performance Optimization</span></a></li><li><a class="tocitem" href="#Best-Practices"><span>Best Practices</span></a></li><li><a class="tocitem" href="#Next-Steps"><span>Next Steps</span></a></li></ul></li><li><a class="tocitem" href="../examples/">Examples</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../generics/">Generics</a></li><li><a class="tocitem" href="../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../troubleshooting/">Troubleshooting</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><a class="tocitem" href="../api/">API Reference</a></li><li><a class="tocitem" href="../status/">Project Status</a></li></ul></li><li><span class="tocitem">Design</span><ul><li><a class="tocitem" href="../design/Phase1/">Phase 1</a></li><li><a class="tocitem" href="../design/Phase2/">Phase 2</a></li><li><a class="tocitem" href="../design/INTERNAL/">Internal</a></li><li><a class="tocitem" href="../design/LLVMCALL/">LLVM Call</a></li></ul></li><li><span class="tocitem">Platforms</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Getting Started</a></li><li class="is-active"><a href>Tutorial</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tutorial</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl/blob/081b193ddf98186b036db89aeb97a7dc60fde2d9/docs/src/tutorial.md" title="View source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="RustCall.jl-Tutorial"><a class="docs-heading-anchor" href="#RustCall.jl-Tutorial">RustCall.jl Tutorial</a><a id="RustCall.jl-Tutorial-1"></a><a class="docs-heading-anchor-permalink" href="#RustCall.jl-Tutorial" title="Permalink"></a></h1><p>This tutorial walks you through using RustCall.jl to call Rust code from Julia step by step.</p><h2 id="Table-of-Contents"><a class="docs-heading-anchor" href="#Table-of-Contents">Table of Contents</a><a id="Table-of-Contents-1"></a><a class="docs-heading-anchor-permalink" href="#Table-of-Contents" title="Permalink"></a></h2><ol><li><a href="#getting-started">Getting Started</a></li><li><a href="#basic-usage">Basic Usage</a><ul><li><a href="#the-easy-way-julia-attribute">The Easy Way: <code>#[julia]</code> Attribute</a></li><li><a href="#the-traditional-way-manual-ffi">The Traditional Way: Manual FFI</a></li></ul></li><li><a href="#understanding-the-type-system">Understanding the Type System</a></li><li><a href="#string-handling">String Handling</a></li><li><a href="#error-handling">Error Handling</a></li><li><a href="#using-ownership-types">Using Ownership Types</a></li><li><a href="#llvm-ir-integration-advanced">LLVM IR Integration (Advanced)</a></li><li><a href="#performance-optimization">Performance Optimization</a></li></ol><h2 id="Getting-Started"><a class="docs-heading-anchor" href="#Getting-Started">Getting Started</a><a id="Getting-Started-1"></a><a class="docs-heading-anchor-permalink" href="#Getting-Started" title="Permalink"></a></h2><h3 id="Installation"><a class="docs-heading-anchor" href="#Installation">Installation</a><a id="Installation-1"></a><a class="docs-heading-anchor-permalink" href="#Installation" title="Permalink"></a></h3><pre><code class="language-julia hljs">using Pkg
+Pkg.add(&quot;RustCall&quot;)</code></pre><h3 id="Requirements"><a class="docs-heading-anchor" href="#Requirements">Requirements</a><a id="Requirements-1"></a><a class="docs-heading-anchor-permalink" href="#Requirements" title="Permalink"></a></h3><ul><li>Julia 1.12 or later</li><li>Rust toolchain (<code>rustc</code> and <code>cargo</code>) installed and available in PATH</li></ul><p>To install Rust, visit <a href="https://rustup.rs/">rustup.rs</a>.</p><h3 id="Building-Rust-Helpers-Library-(Optional)"><a class="docs-heading-anchor" href="#Building-Rust-Helpers-Library-(Optional)">Building Rust Helpers Library (Optional)</a><a id="Building-Rust-Helpers-Library-(Optional)-1"></a><a class="docs-heading-anchor-permalink" href="#Building-Rust-Helpers-Library-(Optional)" title="Permalink"></a></h3><p>To use ownership types (Box, Rc, Arc), you need to build the Rust helpers library:</p><pre><code class="language-julia hljs">using Pkg
+Pkg.build(&quot;RustCall&quot;)</code></pre><h2 id="Basic-Usage"><a class="docs-heading-anchor" href="#Basic-Usage">Basic Usage</a><a id="Basic-Usage-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Usage" title="Permalink"></a></h2><h3 id="The-Easy-Way:-#[julia]-Attribute"><a class="docs-heading-anchor" href="#The-Easy-Way:-#[julia]-Attribute">The Easy Way: <code>#[julia]</code> Attribute</a><a id="The-Easy-Way:-#[julia]-Attribute-1"></a><a class="docs-heading-anchor-permalink" href="#The-Easy-Way:-#[julia]-Attribute" title="Permalink"></a></h3><p>The simplest way to define Rust functions is using the <code>#[julia]</code> attribute:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}
+&quot;&quot;&quot;
+
+# Call directly - no @rust macro needed!
+result = add(10, 20)
+println(result)  # =&gt; 30</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">30</code></pre><p>The <code>#[julia]</code> attribute automatically:</p><ul><li>Converts to <code>#[no_mangle] pub extern &quot;C&quot;</code></li><li>Generates a Julia wrapper function with proper type conversions</li></ul><h3 id="The-Traditional-Way:-Manual-FFI"><a class="docs-heading-anchor" href="#The-Traditional-Way:-Manual-FFI">The Traditional Way: Manual FFI</a><a id="The-Traditional-Way:-Manual-FFI-1"></a><a class="docs-heading-anchor-permalink" href="#The-Traditional-Way:-Manual-FFI" title="Permalink"></a></h3><p>For more control, you can use the traditional FFI approach:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn multiply(a: i32, b: i32) -&gt; i32 {
+    a * b
+}
+&quot;&quot;&quot;
+
+# Use @rust macro with explicit types
+result = @rust multiply(Int32(5), Int32(7))::Int32
+println(result)  # =&gt; 35</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">35</code></pre><h3 id="Step-1:-Define-and-Compile-Rust-Code"><a class="docs-heading-anchor" href="#Step-1:-Define-and-Compile-Rust-Code">Step 1: Define and Compile Rust Code</a><a id="Step-1:-Define-and-Compile-Rust-Code-1"></a><a class="docs-heading-anchor-permalink" href="#Step-1:-Define-and-Compile-Rust-Code" title="Permalink"></a></h3><p>Use the <code>rust&quot;&quot;</code> string literal to define and compile Rust code:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn subtract(a: i32, b: i32) -&gt; i32 {
+    a - b
+}
+&quot;&quot;&quot;</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;rust_557beece8d59c287&quot;</code></pre><p>This code is automatically compiled and loaded as a shared library.</p><h3 id="Step-2:-Call-Rust-Functions"><a class="docs-heading-anchor" href="#Step-2:-Call-Rust-Functions">Step 2: Call Rust Functions</a><a id="Step-2:-Call-Rust-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Step-2:-Call-Rust-Functions" title="Permalink"></a></h3><p>Use the <code>@rust</code> macro to call functions:</p><pre><code class="language-julia hljs"># With type inference
+result = @rust subtract(Int32(100), Int32(30))::Int32
+println(result)  # =&gt; 70</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">70</code></pre><h3 id="Step-3:-Define-Multiple-Functions"><a class="docs-heading-anchor" href="#Step-3:-Define-Multiple-Functions">Step 3: Define Multiple Functions</a><a id="Step-3:-Define-Multiple-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Step-3:-Define-Multiple-Functions" title="Permalink"></a></h3><p>You can define multiple functions in the same <code>rust&quot;&quot;</code> block:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn multiply(x: f64, y: f64) -&gt; f64 {
+    x * y
+}
+
+#[no_mangle]
+pub extern &quot;C&quot; fn subtract(a: i64, b: i64) -&gt; i64 {
+    a - b
+}
+&quot;&quot;&quot;
+
+# Usage
+product = @rust multiply(3.0, 4.0)::Float64  # =&gt; 12.0
+difference = @rust subtract(100, 30)::Int64  # =&gt; 70</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">70</code></pre><h2 id="Understanding-the-Type-System"><a class="docs-heading-anchor" href="#Understanding-the-Type-System">Understanding the Type System</a><a id="Understanding-the-Type-System-1"></a><a class="docs-heading-anchor-permalink" href="#Understanding-the-Type-System" title="Permalink"></a></h2><h3 id="Basic-Type-Mapping"><a class="docs-heading-anchor" href="#Basic-Type-Mapping">Basic Type Mapping</a><a id="Basic-Type-Mapping-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Type-Mapping" title="Permalink"></a></h3><p>RustCall.jl automatically maps Rust types to Julia types:</p><table><tr><th style="text-align: right">Rust Type</th><th style="text-align: right">Julia Type</th><th style="text-align: right">Example</th></tr><tr><td style="text-align: right"><code>i8</code></td><td style="text-align: right"><code>Int8</code></td><td style="text-align: right"><code>10i8</code></td></tr><tr><td style="text-align: right"><code>i16</code></td><td style="text-align: right"><code>Int16</code></td><td style="text-align: right"><code>100i16</code></td></tr><tr><td style="text-align: right"><code>i32</code></td><td style="text-align: right"><code>Int32</code></td><td style="text-align: right"><code>1000i32</code></td></tr><tr><td style="text-align: right"><code>i64</code></td><td style="text-align: right"><code>Int64</code></td><td style="text-align: right"><code>10000i64</code></td></tr><tr><td style="text-align: right"><code>u8</code></td><td style="text-align: right"><code>UInt8</code></td><td style="text-align: right"><code>10u8</code></td></tr><tr><td style="text-align: right"><code>u32</code></td><td style="text-align: right"><code>UInt32</code></td><td style="text-align: right"><code>1000u32</code></td></tr><tr><td style="text-align: right"><code>u64</code></td><td style="text-align: right"><code>UInt64</code></td><td style="text-align: right"><code>10000u64</code></td></tr><tr><td style="text-align: right"><code>f32</code></td><td style="text-align: right"><code>Float32</code></td><td style="text-align: right"><code>3.14f0</code></td></tr><tr><td style="text-align: right"><code>f64</code></td><td style="text-align: right"><code>Float64</code></td><td style="text-align: right"><code>3.14159</code></td></tr><tr><td style="text-align: right"><code>bool</code></td><td style="text-align: right"><code>Bool</code></td><td style="text-align: right"><code>true</code></td></tr><tr><td style="text-align: right"><code>usize</code></td><td style="text-align: right"><code>UInt</code></td><td style="text-align: right"><code>100u</code></td></tr><tr><td style="text-align: right"><code>isize</code></td><td style="text-align: right"><code>Int</code></td><td style="text-align: right"><code>100</code></td></tr><tr><td style="text-align: right"><code>()</code></td><td style="text-align: right"><code>Cvoid</code></td><td style="text-align: right">-</td></tr></table><h3 id="Type-Inference"><a class="docs-heading-anchor" href="#Type-Inference">Type Inference</a><a id="Type-Inference-1"></a><a class="docs-heading-anchor-permalink" href="#Type-Inference" title="Permalink"></a></h3><p>RustCall.jl tries to infer return types from argument types, but explicit specification is recommended:</p><pre><code class="language-julia hljs"># Not recommended - relies on inference (works but not recommended)
+result = @rust add(Int32(10), Int32(20))
+
+# Recommended - explicit type specification
+result = @rust add(Int32(10), Int32(20))::Int32</code></pre><h3 id="Boolean-Values"><a class="docs-heading-anchor" href="#Boolean-Values">Boolean Values</a><a id="Boolean-Values-1"></a><a class="docs-heading-anchor-permalink" href="#Boolean-Values" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn is_positive(x: i32) -&gt; bool {
+    x &gt; 0
+}
+&quot;&quot;&quot;
+
+@rust is_positive(Int32(5))::Bool   # =&gt; true
+@rust is_positive(Int32(-5))::Bool  # =&gt; false</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">false</code></pre><h2 id="String-Handling"><a class="docs-heading-anchor" href="#String-Handling">String Handling</a><a id="String-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#String-Handling" title="Permalink"></a></h2><h3 id="Passing-as-C-Strings"><a class="docs-heading-anchor" href="#Passing-as-C-Strings">Passing as C Strings</a><a id="Passing-as-C-Strings-1"></a><a class="docs-heading-anchor-permalink" href="#Passing-as-C-Strings" title="Permalink"></a></h3><p>When Rust functions expect <code>*const u8</code> (C strings), you can pass Julia <code>String</code> directly:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn string_length(s: *const u8) -&gt; u32 {
+    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    c_str.to_bytes().len() as u32
+}
+&quot;&quot;&quot;
+
+# Julia String is automatically converted to Cstring
+len = @rust string_length(&quot;hello&quot;)::UInt32  # =&gt; 5
+len = @rust string_length(&quot;世界&quot;)::UInt32   # =&gt; 6 (UTF-8 bytes)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">0x00000006</code></pre><h3 id="UTF-8-String-Handling"><a class="docs-heading-anchor" href="#UTF-8-String-Handling">UTF-8 String Handling</a><a id="UTF-8-String-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#UTF-8-String-Handling" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn count_chars(s: *const u8) -&gt; u32 {
+    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
+    utf8_str.chars().count() as u32
+}
+&quot;&quot;&quot;
+
+# Count UTF-8 characters
+count = @rust count_chars(&quot;hello&quot;)::UInt32    # =&gt; 5
+count = @rust count_chars(&quot;世界&quot;)::UInt32     # =&gt; 2 (characters, not bytes)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">0x00000002</code></pre><h2 id="Error-Handling"><a class="docs-heading-anchor" href="#Error-Handling">Error Handling</a><a id="Error-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#Error-Handling" title="Permalink"></a></h2><h3 id="Using-Result-Type"><a class="docs-heading-anchor" href="#Using-Result-Type">Using Result Type</a><a id="Using-Result-Type-1"></a><a class="docs-heading-anchor-permalink" href="#Using-Result-Type" title="Permalink"></a></h3><p>Rust&#39;s <code>Result&lt;T, E&gt;</code> type is represented as <code>RustResult{T, E}</code> in Julia:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn divide(a: i32, b: i32) -&gt; i32 {
+    if b == 0 {
+        return -1;  // Return -1 as error code
+    }
+    a / b
+}
+&quot;&quot;&quot;
+
+# Error checking
+result = @rust divide(Int32(10), Int32(2))::Int32
+if result == -1
+    println(&quot;Division by zero!&quot;)
+end</code></pre><h3 id="Explicit-Use-of-RustResult"><a class="docs-heading-anchor" href="#Explicit-Use-of-RustResult">Explicit Use of RustResult</a><a id="Explicit-Use-of-RustResult-1"></a><a class="docs-heading-anchor-permalink" href="#Explicit-Use-of-RustResult" title="Permalink"></a></h3><p>For a more Rust-like approach, you can define functions that return <code>Result</code> types:</p><pre><code class="language-julia hljs"># Create RustResult manually
+ok_result = RustResult{Int32, String}(true, Int32(42))
+is_ok(ok_result)  # =&gt; true
+unwrap(ok_result)  # =&gt; 42
+
+err_result = RustResult{Int32, String}(false, &quot;error message&quot;)
+is_err(err_result)  # =&gt; true
+unwrap_or(err_result, Int32(0))  # =&gt; 0</code></pre><h3 id="Converting-to-Exceptions"><a class="docs-heading-anchor" href="#Converting-to-Exceptions">Converting to Exceptions</a><a id="Converting-to-Exceptions-1"></a><a class="docs-heading-anchor-permalink" href="#Converting-to-Exceptions" title="Permalink"></a></h3><p>Use <code>result_to_exception</code> to convert <code>Result</code> to Julia exceptions:</p><pre><code class="language-julia hljs">err_result = RustResult{Int32, String}(false, &quot;division by zero&quot;)
+try
+    value = result_to_exception(err_result)
+catch e
+    if e isa RustError
+        println(&quot;Rust error: $(e.message)&quot;)
+    end
+end</code></pre><h2 id="Using-Ownership-Types"><a class="docs-heading-anchor" href="#Using-Ownership-Types">Using Ownership Types</a><a id="Using-Ownership-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Using-Ownership-Types" title="Permalink"></a></h2><h3 id="RustBox-(Single-Ownership)"><a class="docs-heading-anchor" href="#RustBox-(Single-Ownership)">RustBox (Single Ownership)</a><a id="RustBox-(Single-Ownership)-1"></a><a class="docs-heading-anchor-permalink" href="#RustBox-(Single-Ownership)" title="Permalink"></a></h3><p><code>RustBox&lt;T&gt;</code> is a heap-allocated value with single ownership:</p><pre><code class="language-julia hljs"># Rust helpers library required
+if is_rust_helpers_available()
+    # Create Box (usually returned from Rust functions)
+    # Here as an example, actual usage is from Rust function return values
+    box = RustBox{Int32}(ptr)  # ptr obtained from Rust function
+
+    # Explicitly drop after use
+    drop!(box)
+end</code></pre><h3 id="RustRc-(Reference-Counting,-Single-threaded)"><a class="docs-heading-anchor" href="#RustRc-(Reference-Counting,-Single-threaded)">RustRc (Reference Counting, Single-threaded)</a><a id="RustRc-(Reference-Counting,-Single-threaded)-1"></a><a class="docs-heading-anchor-permalink" href="#RustRc-(Reference-Counting,-Single-threaded)" title="Permalink"></a></h3><pre><code class="language-julia hljs">if is_rust_helpers_available()
+    # Create Rc
+    rc1 = RustRc{Int32}(ptr)
+
+    # Clone to increment reference count
+    rc2 = clone(rc1)
+
+    # Dropping one keeps the other valid
+    drop!(rc1)
+    @assert is_valid(rc2)  # Still valid
+
+    # Drop last reference
+    drop!(rc2)
+end</code></pre><h3 id="RustArc-(Atomic-Reference-Counting,-Thread-safe)"><a class="docs-heading-anchor" href="#RustArc-(Atomic-Reference-Counting,-Thread-safe)">RustArc (Atomic Reference Counting, Thread-safe)</a><a id="RustArc-(Atomic-Reference-Counting,-Thread-safe)-1"></a><a class="docs-heading-anchor-permalink" href="#RustArc-(Atomic-Reference-Counting,-Thread-safe)" title="Permalink"></a></h3><pre><code class="language-julia hljs">if is_rust_helpers_available()
+    # Create Arc
+    arc1 = RustArc{Int32}(ptr)
+
+    # Thread-safe clone
+    arc2 = clone(arc1)
+
+    # Can be used from different tasks
+    @sync begin
+        @async begin
+            # Use arc2
+        end
+    end
+
+    drop!(arc1)
+    drop!(arc2)
+end</code></pre><h2 id="LLVM-IR-Integration-(Advanced)"><a class="docs-heading-anchor" href="#LLVM-IR-Integration-(Advanced)">LLVM IR Integration (Advanced)</a><a id="LLVM-IR-Integration-(Advanced)-1"></a><a class="docs-heading-anchor-permalink" href="#LLVM-IR-Integration-(Advanced)" title="Permalink"></a></h2><h3 id="Using-@rust_llvm-Macro"><a class="docs-heading-anchor" href="#Using-@rust_llvm-Macro">Using @rust_llvm Macro</a><a id="Using-@rust_llvm-Macro-1"></a><a class="docs-heading-anchor-permalink" href="#Using-@rust_llvm-Macro" title="Permalink"></a></h3><p>The <code>@rust_llvm</code> macro enables optimized calls via LLVM IR integration (experimental):</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn fast_add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}
+&quot;&quot;&quot;
+
+# Register function
+info = compile_and_register_rust_function(&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn fast_add(a: i32, b: i32) -&gt; i32 { a + b }
+&quot;&quot;&quot;, &quot;fast_add&quot;)
+
+# Call with @rust_llvm (potentially optimized)
+result = @rust_llvm fast_add(Int32(10), Int32(20))  # =&gt; 30</code></pre><h3 id="LLVM-Optimization-Settings"><a class="docs-heading-anchor" href="#LLVM-Optimization-Settings">LLVM Optimization Settings</a><a id="LLVM-Optimization-Settings-1"></a><a class="docs-heading-anchor-permalink" href="#LLVM-Optimization-Settings" title="Permalink"></a></h3><pre><code class="language-julia hljs">using RustCall
+
+# Create optimization configuration
+config = OptimizationConfig(
+    level=3,  # Optimization level 0-3
+    enable_vectorization=true,
+    inline_threshold=300
+)
+
+# Optimize module
+# optimize_module!(module, config)
+
+# Convenience functions
+# optimize_for_speed!(module)  # Level 3, aggressive optimization
+# optimize_for_size!(module)   # Level 2, size optimization</code></pre><h2 id="Performance-Optimization"><a class="docs-heading-anchor" href="#Performance-Optimization">Performance Optimization</a><a id="Performance-Optimization-1"></a><a class="docs-heading-anchor-permalink" href="#Performance-Optimization" title="Permalink"></a></h2><h3 id="Using-Compilation-Cache"><a class="docs-heading-anchor" href="#Using-Compilation-Cache">Using Compilation Cache</a><a id="Using-Compilation-Cache-1"></a><a class="docs-heading-anchor-permalink" href="#Using-Compilation-Cache" title="Permalink"></a></h3><p>RustCall.jl automatically caches compilation results. No need to recompile the same code:</p><pre><code class="language-julia hljs"># First compilation (takes time)
+rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn compute(x: i32) -&gt; i32 {
+    x * 2
+}
+&quot;&quot;&quot;
+
+# Same code again (fast load from cache)
+rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn compute(x: i32) -&gt; i32 {
+    x * 2
+}
+&quot;&quot;&quot;</code></pre><h3 id="Cache-Management"><a class="docs-heading-anchor" href="#Cache-Management">Cache Management</a><a id="Cache-Management-1"></a><a class="docs-heading-anchor-permalink" href="#Cache-Management" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Check cache size
+size = get_cache_size()
+println(&quot;Cache size: $size bytes&quot;)
+
+# List cached libraries
+libs = list_cached_libraries()
+println(&quot;Cached libraries: $libs&quot;)
+
+# Cleanup old cache (older than 30 days)
+cleanup_old_cache(30)
+
+# Clear all cache
+clear_cache()</code></pre><h3 id="Running-Benchmarks"><a class="docs-heading-anchor" href="#Running-Benchmarks">Running Benchmarks</a><a id="Running-Benchmarks-1"></a><a class="docs-heading-anchor-permalink" href="#Running-Benchmarks" title="Permalink"></a></h3><p>To measure performance:</p><pre><code class="language-bash hljs">julia --project benchmark/benchmarks.jl</code></pre><p>This compares performance of Julia native, <code>@rust</code>, and <code>@rust_llvm</code>.</p><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">Best Practices</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><h3 id="1.-Always-Specify-Types-Explicitly"><a class="docs-heading-anchor" href="#1.-Always-Specify-Types-Explicitly">1. Always Specify Types Explicitly</a><a id="1.-Always-Specify-Types-Explicitly-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Always-Specify-Types-Explicitly" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Recommended
+result = @rust add(Int32(10), Int32(20))::Int32
+
+# Not recommended (relies on type inference)
+result = @rust add(Int32(10), Int32(20))</code></pre><h3 id="2.-Proper-Error-Handling"><a class="docs-heading-anchor" href="#2.-Proper-Error-Handling">2. Proper Error Handling</a><a id="2.-Proper-Error-Handling-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Proper-Error-Handling" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Use Result type
+result = some_rust_function()
+if is_err(result)
+    # Handle error
+    return
+end
+value = unwrap(result)</code></pre><h3 id="3.-Be-Careful-with-Memory-Management"><a class="docs-heading-anchor" href="#3.-Be-Careful-with-Memory-Management">3. Be Careful with Memory Management</a><a id="3.-Be-Careful-with-Memory-Management-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Be-Careful-with-Memory-Management" title="Permalink"></a></h3><p>When using ownership types, always call <code>drop!</code> appropriately:</p><pre><code class="language-julia hljs">box = RustBox{Int32}(ptr)
+try
+    # Use box
+finally
+    drop!(box)  # Always cleanup
+end</code></pre><h3 id="4.-Leverage-Caching"><a class="docs-heading-anchor" href="#4.-Leverage-Caching">4. Leverage Caching</a><a id="4.-Leverage-Caching-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Leverage-Caching" title="Permalink"></a></h3><p>When using the same Rust code multiple times, caching is automatically leveraged.</p><h3 id="5.-Clear-Cache-When-Debugging"><a class="docs-heading-anchor" href="#5.-Clear-Cache-When-Debugging">5. Clear Cache When Debugging</a><a id="5.-Clear-Cache-When-Debugging-1"></a><a class="docs-heading-anchor-permalink" href="#5.-Clear-Cache-When-Debugging" title="Permalink"></a></h3><p>If issues occur, try clearing the cache and recompiling:</p><pre><code class="language-julia hljs">clear_cache()</code></pre><h2 id="Next-Steps"><a class="docs-heading-anchor" href="#Next-Steps">Next Steps</a><a id="Next-Steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps" title="Permalink"></a></h2><ul><li>See <a href="../examples/">Examples</a> for more advanced usage examples</li><li>Check <a href="../troubleshooting/">Troubleshooting</a> to solve problems</li><li>Review <a href="../api/">API Reference</a> for all features</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../">« Home</a><a class="docs-footer-nextpage" href="../examples/">Examples »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.16.1 on <span class="colophon-date" title="Monday 9 February 2026 06:18">Monday 9 February 2026</span>. Using Julia version 1.12.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
