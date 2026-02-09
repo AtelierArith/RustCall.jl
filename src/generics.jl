@@ -482,6 +482,75 @@ function parse_generic_function(code::AbstractString, func_name::AbstractString)
 end
 
 """
+    _find_matching_angle_bracket(s::AbstractString, open_pos::Int) -> Int
+
+Find the position of the matching closing `>` for an opening `<` at `open_pos`,
+correctly handling nested angle brackets like `Vec<Option<T>>`.
+Returns 0 if no matching bracket is found.
+"""
+function _find_matching_angle_bracket(s::AbstractString, open_pos::Int)
+    depth = 0
+    i = open_pos
+    while i <= ncodeunits(s)
+        c = s[i]
+        if c == '<'
+            depth += 1
+        elseif c == '>'
+            depth -= 1
+            if depth == 0
+                return i
+            end
+        end
+        i = nextind(s, i)
+    end
+    return 0
+end
+
+"""
+    _remove_generic_params_from_fns(code::AbstractString) -> String
+
+Remove generic parameter lists from function signatures (e.g., `fn name<T, Vec<U>>(` -> `fn name(`),
+correctly handling nested angle brackets.
+"""
+function _remove_generic_params_from_fns(code::AbstractString)
+    result = code
+    # Repeatedly find and remove generic params from fn signatures
+    while true
+        m = match(r"(fn\s+\w+)\s*<", result)
+        m === nothing && break
+        open_pos = m.offset + length(m.match) - 1  # position of '<'
+        close_pos = _find_matching_angle_bracket(result, open_pos)
+        close_pos == 0 && break
+        # Skip any whitespace after '>' before '('
+        rest = result[nextind(result, close_pos):end]
+        rest_trimmed = lstrip(rest)
+        ws_len = length(rest) - length(rest_trimmed)
+        result = result[1:m.offset + length(m.captures[1]) - 1] * rest[ws_len+1:end]
+    end
+    return result
+end
+
+"""
+    _remove_generic_params_from_impls(code::AbstractString) -> String
+
+Remove generic parameter lists from impl blocks (e.g., `impl<T>` -> `impl`),
+correctly handling nested angle brackets.
+"""
+function _remove_generic_params_from_impls(code::AbstractString)
+    result = code
+    while true
+        m = match(r"impl\s*<", result)
+        m === nothing && break
+        open_pos = m.offset + length(m.match) - 1  # position of '<'
+        close_pos = _find_matching_angle_bracket(result, open_pos)
+        close_pos == 0 && break
+        # Replace impl<...> with impl
+        result = result[1:m.offset + 3] * result[nextind(result, close_pos):end]
+    end
+    return result
+end
+
+"""
     specialize_generic_code(code::String, type_params::Dict{Symbol, Type}) -> String
 
 Specialize a generic Rust function by replacing type parameters with concrete types.
@@ -502,11 +571,10 @@ function specialize_generic_code(code::String, type_params::Dict{Symbol, <:Type}
     specialized = code
 
     # 1. First, remove the generic parameter list from function signature(s) and impl blocks
-    # Pattern: fn name<T, U>( -> fn name(
-    specialized = replace(specialized, Regex("(fn\\s+\\w+)\\s*<.+?>\\s*\\(", "s") => s"\1(")
-
-    # Pattern: impl<T> -> impl
-    specialized = replace(specialized, Regex("impl\\s*<.+?>", "s") => "impl")
+    # Use bracket-counting instead of regex to correctly handle nested angle brackets
+    # like Vec<T>, Option<T>, HashMap<K, V>
+    specialized = _remove_generic_params_from_fns(specialized)
+    specialized = _remove_generic_params_from_impls(specialized)
 
     # Convert Julia types to Rust types
     julia_to_rust_map = Dict(
