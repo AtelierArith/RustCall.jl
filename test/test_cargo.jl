@@ -194,6 +194,17 @@ end
         @test RustCall.version_specificity("1.0") == 2
         @test RustCall.version_specificity("1.0.5") == 3
         @test RustCall.version_specificity("1.0.5-beta") == 4
+
+        # Compound version constraints (#104)
+        @test RustCall.version_specificity(">=1.0,<2.0") == 2
+        @test RustCall.version_specificity(">=1.0.0, <2.0.0") == 3
+        @test RustCall.version_specificity(">=1.0, <2.0.0") == 3
+        @test RustCall.version_specificity(">=1,<2") == 1
+
+        # Version with operators
+        @test RustCall.version_specificity("^1.0") == 2
+        @test RustCall.version_specificity("~1.0.5") == 3
+        @test RustCall.version_specificity(">=1.0.0") == 3
     end
 end
 
