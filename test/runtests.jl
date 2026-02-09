@@ -55,8 +55,14 @@ include("test_hot_reload.jl")
 # Types, memory, and safety fixes
 include("test_types_memory_safety.jl")
 
+# LLVM/Codegen bug fix tests
+include("test_llvm_fixes.jl")
+
 # Regression reproduction tests
 include("test_regressions.jl")
+
+# Parsing, generics, and hot-reload fixes (#168, #169, #170, #172, #173, #184, #185)
+include("test_parsing_generics_hotreload_fixes.jl")
 
 @testset "RustCall.jl" begin
 
@@ -457,7 +463,7 @@ include("test_regressions.jl")
                 @test RustCall.julia_type_to_llvm_ir_string(Int64) == "i64"
                 @test RustCall.julia_type_to_llvm_ir_string(Float32) == "float"
                 @test RustCall.julia_type_to_llvm_ir_string(Float64) == "double"
-                @test RustCall.julia_type_to_llvm_ir_string(Bool) == "i1"
+                @test RustCall.julia_type_to_llvm_ir_string(Bool) == "i8"  # C ABI uses i8 (#165)
                 @test RustCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
             end
 

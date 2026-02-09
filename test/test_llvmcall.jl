@@ -52,7 +52,7 @@ using Test
         @test RustCall.julia_type_to_llvm_ir_string(Int64) == "i64"
         @test RustCall.julia_type_to_llvm_ir_string(Float32) == "float"
         @test RustCall.julia_type_to_llvm_ir_string(Float64) == "double"
-        @test RustCall.julia_type_to_llvm_ir_string(Bool) == "i1"
+        @test RustCall.julia_type_to_llvm_ir_string(Bool) == "i8"  # C ABI uses i8 (#165)
         @test RustCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
         @test RustCall.julia_type_to_llvm_ir_string(Ptr{Cvoid}) == "ptr"  # LLVM opaque pointer
     end
@@ -79,7 +79,7 @@ using Test
 
         # Test void return type
         ir_void = RustCall.generate_llvmcall_ir("test_void", Cvoid, Type[Int32])
-        @test occursin("call void", ir_void)
+        @test occursin("call ccc void", ir_void)  # C calling convention (#166)
         @test occursin("ret void", ir_void)
 
         # Test with mixed argument types

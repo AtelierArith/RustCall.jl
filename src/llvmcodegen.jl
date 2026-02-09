@@ -84,12 +84,12 @@ function generate_llvmcall_ir(func_name::String, ret_type::Type, arg_types::Vect
 
     if ret_type == Cvoid || ret_type == Nothing
         return """
-        call void @$func_name($arg_list)
+        call ccc void @$func_name($arg_list)
         ret void
         """
     else
         return """
-        %result = call $llvm_ret @$func_name($arg_list)
+        %result = call ccc $llvm_ret @$func_name($arg_list)
         ret $llvm_ret %result
         """
     end
@@ -104,7 +104,7 @@ Supports basic types, pointers, tuples, and structs.
 function julia_type_to_llvm_ir_string end
 
 # Basic integer types
-julia_type_to_llvm_ir_string(::Type{Bool}) = "i1"
+julia_type_to_llvm_ir_string(::Type{Bool}) = "i8"  # C ABI uses i8 for bool, not i1
 julia_type_to_llvm_ir_string(::Type{Int8}) = "i8"
 julia_type_to_llvm_ir_string(::Type{UInt8}) = "i8"
 julia_type_to_llvm_ir_string(::Type{Int16}) = "i16"
@@ -115,6 +115,19 @@ julia_type_to_llvm_ir_string(::Type{Int64}) = "i64"
 julia_type_to_llvm_ir_string(::Type{UInt64}) = "i64"
 julia_type_to_llvm_ir_string(::Type{Int128}) = "i128"
 julia_type_to_llvm_ir_string(::Type{UInt128}) = "i128"
+
+# Platform-dependent C types (sized based on runtime sizeof)
+# Only define methods for types that don't alias an already-defined base type,
+# to avoid "method overwritten" warnings (see Known Pitfalls in CLAUDE.md).
+const _LLVM_IR_BASE_TYPES = Set{Type}([
+    Bool, Int8, UInt8, Int16, UInt16, Int32, UInt32,
+    Int64, UInt64, Int128, UInt128,
+])
+for ctype in [Cint, Cuint, Clong, Culong, Csize_t, Cssize_t, Cptrdiff_t, Clonglong, Culonglong]
+    if ctype ∉ _LLVM_IR_BASE_TYPES
+        @eval julia_type_to_llvm_ir_string(::Type{$ctype}) = $(string("i", 8 * sizeof(ctype)))
+    end
+end
 
 # Floating point types
 julia_type_to_llvm_ir_string(::Type{Float32}) = "float"
@@ -170,8 +183,34 @@ function _struct_type_to_llvm_ir(t::Type)
         return "{}"
     end
 
-    llvm_types = [julia_type_to_llvm_ir_string(ft) for ft in field_types]
-    return "{$(join(llvm_types, ", "))}"
+    # Check if Julia inserts padding (field offsets don't match packed layout)
+    # If so, we need to include explicit padding bytes in the LLVM IR struct
+    llvm_fields = String[]
+    current_offset = 0
+    for (i, ft) in enumerate(field_types)
+        field_offset = fieldoffset(t, i)
+        # Insert padding bytes if there's a gap
+        padding = Int(field_offset) - current_offset
+        if padding > 0
+            for _ in 1:padding
+                push!(llvm_fields, "i8")
+            end
+        end
+        llvm_type = julia_type_to_llvm_ir_string(ft)
+        push!(llvm_fields, llvm_type)
+        current_offset = Int(field_offset) + sizeof(ft)
+    end
+
+    # Add trailing padding if needed to match total struct size
+    total_size = sizeof(t)
+    trailing_padding = total_size - current_offset
+    if trailing_padding > 0
+        for _ in 1:trailing_padding
+            push!(llvm_fields, "i8")
+        end
+    end
+
+    return "{$(join(llvm_fields, ", "))}"
 end
 
 """

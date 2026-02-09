@@ -399,15 +399,15 @@ Merge two constraint dictionaries. If a type parameter exists in both, merge the
 function merge_constraints(c1::Dict{Symbol, TypeConstraints}, c2::Dict{Symbol, TypeConstraints})
     result = Dict{Symbol, TypeConstraints}()
 
-    # Add all from c1
+    # Add copies from c1 to avoid mutating originals
     for (k, v) in c1
-        result[k] = v
+        result[k] = TypeConstraints(copy(v.bounds))
     end
 
     # Merge c2
     for (k, v) in c2
         if haskey(result, k)
-            # Merge bounds (avoiding duplicates)
+            # Merge bounds (avoiding duplicates) — result[k] is already a copy
             existing_bounds = result[k].bounds
             for bound in v.bounds
                 if !(bound in existing_bounds)
@@ -415,7 +415,8 @@ function merge_constraints(c1::Dict{Symbol, TypeConstraints}, c2::Dict{Symbol, T
                 end
             end
         else
-            result[k] = v
+            # Copy v.bounds to avoid sharing the vector
+            result[k] = TypeConstraints(copy(v.bounds))
         end
     end
 
@@ -688,24 +689,135 @@ function infer_type_parameters(func_name::String, arg_types::Vector{<:Type})
         error("Function '$func_name' is not registered as a generic function")
     end
 
-    # Parse function signature to map parameters to type params
-    # This is a simplified implementation
-    # In practice, we'd need to parse the Rust function signature more carefully
-
     type_params = Dict{Symbol, Type}()
 
-    # Simple inference: match by position if possible
-    if length(generic_info.type_params) == 1 && !isempty(arg_types)
-        type_params[generic_info.type_params[1]] = arg_types[1]
-    elseif length(generic_info.type_params) == length(arg_types)
-        for i in 1:length(arg_types)
-            type_params[generic_info.type_params[i]] = arg_types[i]
+    # Try to infer type parameters by analyzing the function signature.
+    # Parse argument types from the function code to map each argument to its
+    # type parameter (if any).
+    sig_arg_types = _parse_fn_arg_types(generic_info.code, func_name)
+    type_param_set = Set(generic_info.type_params)
+
+    if !isempty(sig_arg_types) && length(sig_arg_types) == length(arg_types)
+        # Map each signature arg type to the corresponding Julia type
+        for (rust_type, julia_type) in zip(sig_arg_types, arg_types)
+            param_sym = Symbol(rust_type)
+            if param_sym in type_param_set && !haskey(type_params, param_sym)
+                type_params[param_sym] = julia_type
+            end
         end
-    else
-        error("Cannot infer type parameters for '$func_name' with $(length(arg_types)) arguments and $(length(generic_info.type_params)) type parameters")
+    end
+
+    # Fallback: if we didn't infer all type params from signature analysis,
+    # use positional matching
+    if length(type_params) < length(generic_info.type_params)
+        if length(generic_info.type_params) == 1 && !isempty(arg_types)
+            if !haskey(type_params, generic_info.type_params[1])
+                type_params[generic_info.type_params[1]] = arg_types[1]
+            end
+        elseif length(type_params) == 0 && length(generic_info.type_params) == length(arg_types)
+            for i in 1:length(arg_types)
+                type_params[generic_info.type_params[i]] = arg_types[i]
+            end
+        elseif length(type_params) < length(generic_info.type_params)
+            # Try to fill remaining params from unused arg types
+            used_indices = Set{Int}()
+            for (rust_type, idx) in zip(sig_arg_types, 1:length(sig_arg_types))
+                if Symbol(rust_type) in keys(type_params)
+                    push!(used_indices, idx)
+                end
+            end
+            remaining_params = [p for p in generic_info.type_params if !haskey(type_params, p)]
+            remaining_types = [arg_types[i] for i in 1:length(arg_types) if !(i in used_indices)]
+            if length(remaining_params) == length(remaining_types)
+                for (p, t) in zip(remaining_params, remaining_types)
+                    type_params[p] = t
+                end
+            elseif length(type_params) < length(generic_info.type_params)
+                error("Cannot infer type parameters for '$func_name' with $(length(arg_types)) arguments and $(length(generic_info.type_params)) type parameters")
+            end
+        end
     end
 
     return type_params
+end
+
+"""
+    _parse_fn_arg_types(code::AbstractString, func_name::AbstractString) -> Vector{String}
+
+Parse the argument type annotations from a Rust function signature.
+Returns a vector of type strings (e.g., ["T", "U", "i32"]).
+"""
+function _parse_fn_arg_types(code::AbstractString, func_name::AbstractString)
+    types = String[]
+
+    # Find the function signature: fn name<...>(...) or fn name(...)
+    # We need to find the parenthesized argument list
+    fn_pattern = Regex("fn\\s+$(func_name)\\s*(?:<[^{]*?>)?\\s*\\(")
+    m = match(fn_pattern, code)
+    if m === nothing
+        return types
+    end
+
+    # Find the matching closing parenthesis using bracket counting
+    paren_start = m.offset + length(m.match) - 1  # position of '('
+    depth = 1
+    i = nextind(code, paren_start)
+    while i <= ncodeunits(code) && depth > 0
+        c = code[i]
+        if c == '('
+            depth += 1
+        elseif c == ')'
+            depth -= 1
+        end
+        if depth > 0
+            i = nextind(code, i)
+        end
+    end
+
+    if depth != 0
+        return types
+    end
+
+    args_str = code[nextind(code, paren_start):prevind(code, i)]
+
+    # Split arguments by comma at depth 0
+    current = IOBuffer()
+    bracket_depth = 0
+    for c in args_str
+        if c in ('<', '(', '[')
+            bracket_depth += 1
+            write(current, c)
+        elseif c in ('>', ')', ']')
+            bracket_depth -= 1
+            write(current, c)
+        elseif c == ',' && bracket_depth == 0
+            arg = strip(String(take!(current)))
+            if !isempty(arg)
+                _extract_arg_type!(types, arg)
+            end
+        else
+            write(current, c)
+        end
+    end
+    last_arg = strip(String(take!(current)))
+    if !isempty(last_arg)
+        _extract_arg_type!(types, last_arg)
+    end
+
+    return types
+end
+
+function _extract_arg_type!(types::Vector{String}, arg::AbstractString)
+    # Skip self parameters
+    arg = strip(arg)
+    if arg in ("self", "&self", "&mut self")
+        return
+    end
+    # Parse "name: type"
+    colon_pos = findfirst(':', arg)
+    if colon_pos !== nothing
+        push!(types, strip(String(arg[nextind(arg, colon_pos):end])))
+    end
 end
 
 """

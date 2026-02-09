@@ -31,21 +31,21 @@ function load_llvm_ir(ir_file::String; source_code::String = "")
     # Read the IR file
     ir_content = read(ir_file, String)
 
-    # Get or create the LLVM context
-    # Note: LLVM.jl 9.x uses module-level contexts
+    # Create a context and activate it before parsing (#164).
+    # This ensures the context and module share the same lifecycle.
     ctx = LLVM.Context()
-
-    # Parse the IR using LLVM.jl's API
-    # In LLVM.jl 9.x, parse doesn't take a ctx argument for string parsing
+    LLVM.activate(ctx)
     mod = try
         parse(LLVM.Module, ir_content)
     catch e
+        LLVM.deactivate(ctx)
         try
             dispose(ctx)
         catch
         end
         error("Failed to parse LLVM IR: $e")
     end
+    LLVM.deactivate(ctx)
 
     # Extract functions
     functions = Dict{String, LLVM.Function}()
@@ -139,7 +139,14 @@ function llvm_type_to_julia(llvm_type::LLVM.LLVMType)
     elseif llvm_type isa LLVM.LLVMDouble
         return Float64
     elseif llvm_type isa LLVM.PointerType
-        return Ptr{Cvoid}
+        # Try to preserve inner type information when available (#182)
+        inner_type = try
+            eltype = LLVM.eltype(llvm_type)
+            llvm_type_to_julia(eltype)
+        catch
+            Cvoid
+        end
+        return Ptr{inner_type}
     elseif llvm_type isa LLVM.StructType
         # For structs, return a generic pointer for now
         return Ptr{Cvoid}
@@ -178,7 +185,18 @@ function julia_type_to_llvm(julia_type::Type)
     elseif julia_type == Float64
         return LLVM.DoubleType()
     elseif julia_type <: Ptr
-        return LLVM.PointerType(LLVM.IntType(8))
+        # Preserve inner type information when possible (#182)
+        inner = eltype(julia_type)
+        if inner == Cvoid || inner == Nothing
+            return LLVM.PointerType(LLVM.IntType(8))
+        else
+            inner_llvm = try
+                julia_type_to_llvm(inner)
+            catch
+                LLVM.IntType(8)
+            end
+            return LLVM.PointerType(inner_llvm)
+        end
     else
         error("Unsupported Julia type for LLVM: $julia_type")
     end
@@ -193,27 +211,27 @@ julia_type_to_llvm(ctx::LLVM.Context, julia_type::Type) = julia_type_to_llvm(jul
 Dispose of the LLVM resources associated with a RustModule.
 """
 function dispose_module(mod::RustModule)
-    # Remove from cache
     lock(LLVM_REGISTRY_LOCK) do
+        # Remove from cache
         for (k, v) in RUST_MODULES
             if v === mod
                 delete!(RUST_MODULES, k)
                 break
             end
         end
-    end
 
-    # Clean up temporary files
-    if isfile(mod.ir_file)
-        try
-            rm(dirname(mod.ir_file), recursive=true, force=true)
-        catch
+        # Clean up temporary files
+        if isfile(mod.ir_file)
+            try
+                rm(dirname(mod.ir_file), recursive=true, force=true)
+            catch
+            end
         end
-    end
 
-    # Dispose LLVM resources
-    dispose(mod.mod)
-    dispose(mod.ctx)
+        # Dispose LLVM resources inside the lock to prevent race conditions (#167)
+        dispose(mod.mod)
+        dispose(mod.ctx)
+    end
 end
 
 """
