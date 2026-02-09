@@ -160,6 +160,71 @@ using Test
         @test occursin("x", extracted)
     end
 
+    @testset "extract_function_code handles escaped quotes in strings" begin
+        # Escaped double quote inside string should not break brace counting
+        code = """
+        fn process() {
+            let s = "contains \\" escaped quote";
+            let x = 42;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "process")
+        @test extracted !== nothing
+        @test occursin("let x = 42", extracted)
+        @test occursin("}", extracted)
+    end
+
+    @testset "extract_function_code handles braces in strings" begin
+        # Braces inside string literals should not be counted
+        code = """
+        fn format_json() -> String {
+            let s = "{ \\"key\\": \\"value\\" }";
+            s.to_string()
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "format_json")
+        @test extracted !== nothing
+        @test occursin("s.to_string()", extracted)
+    end
+
+    @testset "extract_function_code handles line comments" begin
+        # Braces in comments should not be counted
+        code = """
+        fn with_comments() {
+            // This comment has { braces } in it
+            let x = 1;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_comments")
+        @test extracted !== nothing
+        @test occursin("let x = 1", extracted)
+    end
+
+    @testset "extract_function_code handles block comments" begin
+        code = """
+        fn with_block_comment() {
+            /* This block comment has { braces } */
+            let x = 2;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_block_comment")
+        @test extracted !== nothing
+        @test occursin("let x = 2", extracted)
+    end
+
+    @testset "extract_function_code handles char literals with braces" begin
+        code = """
+        fn char_braces() {
+            let open = '{';
+            let close = '}';
+            let x = 3;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "char_braces")
+        @test extracted !== nothing
+        @test occursin("let x = 3", extracted)
+    end
+
     @testset "derive(JuliaStruct) parsing/removal handles multiline and order" begin
         multiline = """
         #[derive(
