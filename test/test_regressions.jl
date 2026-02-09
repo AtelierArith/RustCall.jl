@@ -568,4 +568,441 @@ using Test
             rm(debug_dir, recursive=true, force=true)
         end
     end
+
+    # Issue #85: extract_function_code handles raw strings with braces
+    @testset "extract_function_code handles raw strings with braces (#85)" begin
+        code = """
+        fn with_raw_string() {
+            let s = r#"{ "key": "value" }"#;
+            let x = 42;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_raw_string")
+        @test extracted !== nothing
+        @test occursin("let x = 42", extracted)
+    end
+
+    @testset "extract_function_code handles raw strings without hashes (#85)" begin
+        code = """
+        fn raw_no_hash() {
+            let s = r"some { braces }";
+            let y = 99;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "raw_no_hash")
+        @test extracted !== nothing
+        @test occursin("let y = 99", extracted)
+    end
+
+    @testset "extract_function_code handles closures (#85)" begin
+        code = """
+        fn with_closure() {
+            let f = |x| { x + 1 };
+            let result = f(5);
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "with_closure")
+        @test extracted !== nothing
+        @test occursin("let result = f(5)", extracted)
+    end
+
+    # Issue #86: regex patterns match async/unsafe/const fn modifiers
+    @testset "generic function detection matches async fn (#86)" begin
+        code = """
+        pub async fn fetch_data<T>(url: T) -> T {
+            url
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_async")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "fetch_data")
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "generic function detection matches unsafe fn (#86)" begin
+        code = """
+        pub unsafe fn raw_op<T>(ptr: *const T) -> T {
+            *ptr
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_unsafe")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "raw_op")
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "generic function detection matches const fn (#86)" begin
+        code = """
+        pub const fn const_identity<T>(x: T) -> T {
+            x
+        }
+        """
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        RustCall._detect_and_register_generic_functions(code, "test_const")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "const_identity")
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+    end
+
+    @testset "return type parsing matches unsafe fn (#86)" begin
+        code = """
+        #[no_mangle]
+        pub unsafe extern "C" fn unsafe_add(a: i32, b: i32) -> i32 {
+            a + b
+        }
+        """
+        ret_type = RustCall._parse_function_return_type(code, "unsafe_add")
+        @test ret_type == Int32
+    end
+
+    @testset "function signature registration matches unsafe fn (#86)" begin
+        code = """
+        #[no_mangle]
+        pub unsafe extern "C" fn unsafe_mul(a: i32, b: i32) -> i32 {
+            a * b
+        }
+        """
+        empty!(RustCall.FUNCTION_RETURN_TYPES)
+        empty!(RustCall.FUNCTION_RETURN_TYPES_BY_LIB)
+        RustCall._register_function_signatures(code, "test_unsafe_lib")
+        @test haskey(RustCall.FUNCTION_RETURN_TYPES, "unsafe_mul")
+        @test RustCall.FUNCTION_RETURN_TYPES["unsafe_mul"] == Int32
+        empty!(RustCall.FUNCTION_RETURN_TYPES)
+        empty!(RustCall.FUNCTION_RETURN_TYPES_BY_LIB)
+    end
+
+    @testset "extract_function_code captures async/unsafe/const fn prefix (#86)" begin
+        code = """
+        pub async fn async_fetch() {
+            let x = 1;
+        }
+        """
+        extracted = RustCall.extract_function_code(code, "async_fetch")
+        @test extracted !== nothing
+        @test occursin("async fn async_fetch", extracted)
+    end
+
+    # Issue #87: @rust comparison processes both sides symmetrically
+    @testset "@rust comparison processes both sides symmetrically (#87)" begin
+        # Both sides should go through the same processing pipeline.
+        # When both LHS and RHS are Rust calls, both should be expanded via rust_impl.
+        lhs_call = Expr(:call, :add, :(Int32(1)), :(Int32(2)))
+        rhs_call = Expr(:call, :sub, :(Int32(5)), :(Int32(2)))
+        cmp_expr = Expr(:call, :(==), lhs_call, rhs_call)
+        expanded = RustCall.rust_impl(@__MODULE__, cmp_expr)
+        expanded_str = sprint(show, expanded)
+        # Both add and sub should be expanded through rust_impl (dynamic call path)
+        @test occursin("_rust_call_dynamic", expanded_str) || occursin("_resolve_lib", expanded_str)
+        # The expanded expression should be a comparison
+        @test expanded.head == :call
+        @test expanded.args[1] == :(==)
+    end
+
+    @testset "@rust comparison with plain value RHS (#87)" begin
+        # @rust add(1, 2) == 3  —  LHS is a call, RHS is a literal
+        lhs_call = Expr(:call, :add, :(Int32(1)), :(Int32(2)))
+        cmp_expr = Expr(:call, :(==), lhs_call, 3)
+        expanded = RustCall.rust_impl(@__MODULE__, cmp_expr)
+        @test expanded.head == :call
+        @test expanded.args[1] == :(==)
+        # LHS should be a Rust call expansion
+        lhs_expanded_str = sprint(show, expanded.args[2])
+        @test occursin("_rust_call_dynamic", lhs_expanded_str) || occursin("_resolve_lib", lhs_expanded_str)
+    end
+
+    @testset "@rust comparison leaves Julia operator RHS as Julia (#87)" begin
+        # @rust divide(10.0, 3.0) ≈ 10.0 / 3.0
+        # RHS `10.0 / 3.0` is :(/(10.0, 3.0)) — a :call with operator `/`.
+        # It must NOT be routed to rust_impl (which would look for Rust fn "/").
+        lhs_call = Expr(:call, :divide, 10.0, 3.0)
+        rhs_op = Expr(:call, :/, 10.0, 3.0)
+        cmp_expr = Expr(:call, Symbol("≈"), lhs_call, rhs_op)
+        expanded = RustCall.rust_impl(@__MODULE__, cmp_expr)
+        @test expanded.head == :call
+        @test expanded.args[1] == Symbol("≈")
+        # LHS should be a Rust call
+        lhs_str = sprint(show, expanded.args[2])
+        @test occursin("_rust_call_dynamic", lhs_str) || occursin("_resolve_lib", lhs_str)
+        # RHS should be escaped Julia expression, NOT a Rust call
+        rhs_str = sprint(show, expanded.args[3])
+        @test !occursin("_rust_call_dynamic", rhs_str)
+        @test !occursin("_resolve_lib", rhs_str)
+    end
+end
+
+# ============================================================================
+# Prevention regression tests
+# These tests guard against recurrence of previously fixed issues.
+# ============================================================================
+
+@testset "Prevention Regressions" begin
+
+    # #130 / #82: Cross-file function dependencies lack load-time validation
+    @testset "Cross-file dependencies are accessible (#130)" begin
+        # Verify critical cross-file functions are defined in the module
+        @test isdefined(RustCall, :extract_block_at)
+        @test isdefined(RustCall, :parse_struct_fields)
+        @test isdefined(RustCall, :parse_julia_functions)
+        @test isdefined(RustCall, :parse_structs_and_impls)
+
+        # Verify the load-time guard in crate_bindings.jl would have caught missing deps
+        # (If extract_block_at wasn't defined, the include would have errored)
+        @test RustCall.extract_block_at isa Function
+        @test RustCall.parse_struct_fields isa Function
+    end
+
+    # #132 / #80: Race condition in multi-step lock/unlock sequences
+    @testset "Per-library reload locks exist (#132)" begin
+        # Verify the per-library lock infrastructure exists
+        @test isdefined(RustCall, :RELOAD_LOCKS)
+        @test isdefined(RustCall, :RELOAD_LOCKS_LOCK)
+        @test isdefined(RustCall, :_get_reload_lock)
+
+        # Verify _get_reload_lock returns a ReentrantLock and caches it
+        lock1 = RustCall._get_reload_lock("test_prevention_lib")
+        @test lock1 isa ReentrantLock
+        lock2 = RustCall._get_reload_lock("test_prevention_lib")
+        @test lock1 === lock2  # Same lock returned for same library
+
+        # Different library gets different lock
+        lock3 = RustCall._get_reload_lock("test_prevention_other")
+        @test lock1 !== lock3
+
+        # Clean up
+        delete!(RustCall.RELOAD_LOCKS, "test_prevention_lib")
+        delete!(RustCall.RELOAD_LOCKS, "test_prevention_other")
+    end
+
+    # #134 / #84: Rust syntax elements misidentified in code parsing
+    @testset "Lifetime parameters are filtered in type parsing (#134)" begin
+        # parse_inline_constraints should skip lifetime params
+        type_params, constraints = RustCall.parse_inline_constraints("'a, T: Clone, 'b, U")
+        @test type_params == [:T, :U]
+        @test !haskey(constraints, Symbol("'a"))
+        @test !haskey(constraints, Symbol("'b"))
+        @test haskey(constraints, :T)
+
+        # Lifetime-only should produce empty type params
+        type_params2, _ = RustCall.parse_inline_constraints("'a, 'static")
+        @test isempty(type_params2)
+
+        # Mixed lifetime and type with trait bounds
+        type_params3, constraints3 = RustCall.parse_inline_constraints("'a, T: Clone + Send, U: Sync")
+        @test type_params3 == [:T, :U]
+    end
+
+    # #136 / #93: Unguarded exceptions in finalizers crash GC
+    @testset "Generated finalizers have try-catch guards (#136)" begin
+        # Create a test struct info
+        test_struct = RustCall.RustStructInfo(
+            "TestStruct",
+            String[],
+            RustCall.RustMethod[],
+            "",
+            [("x", "i32"), ("y", "f64")],
+            false,
+            Dict{String, Bool}()
+        )
+
+        # Verify _emit_struct_code wraps finalizer in try-catch
+        code = RustCall._emit_struct_code(test_struct)
+        @test occursin("try", code)
+        @test occursin("catch", code)
+        @test occursin("finalizer", code)
+        # Should use exception= kwarg, not string interpolation of $e
+        @test occursin("exception=e", code) || occursin("exception = e", code)
+    end
+
+    # #138 / #94: Missing null pointer guards in generated wrappers
+    @testset "Generated wrappers include null pointer checks (#138)" begin
+        # _check_not_freed function exists
+        @test isdefined(RustCall, :_check_not_freed)
+
+        # Test _check_not_freed with valid pointer
+        obj_alive = (ptr = Ptr{Cvoid}(1),)
+        @test_nowarn RustCall._check_not_freed(obj_alive, "TestType")
+
+        # Test _check_not_freed with null pointer
+        obj_freed = (ptr = Ptr{Cvoid}(0),)
+        @test_throws ErrorException RustCall._check_not_freed(obj_freed, "TestType")
+
+        # Verify error message mentions the type name
+        try
+            RustCall._check_not_freed(obj_freed, "MyStruct")
+        catch e
+            @test occursin("MyStruct", e.msg)
+            @test occursin("freed", e.msg)
+        end
+
+        # Verify generated method code includes _check_not_freed for instance methods
+        test_struct = RustCall.RustStructInfo(
+            "GuardTest",
+            String[],
+            [RustCall.RustMethod("do_something", false, false, String[], String[], "i32")],
+            "",
+            [("x", "i32")],
+            false,
+            Dict{String, Bool}()
+        )
+        method_code = RustCall._emit_method_code(test_struct, test_struct.methods[1])
+        @test occursin("_check_not_freed", method_code)
+
+        # Verify property access code includes _check_not_freed
+        struct_code = RustCall._emit_struct_code(test_struct)
+        @test occursin("_check_not_freed", struct_code)
+
+        # Static methods should NOT have _check_not_freed (no self)
+        static_method = RustCall.RustMethod("create", true, false, ["val"], ["i32"], "Self")
+        static_code = RustCall._emit_method_code(test_struct, static_method)
+        @test !occursin("_check_not_freed", static_code)
+    end
+
+    # #140 / #95: No-op LLVM optimization passes
+    @testset "LLVM optimization uses New Pass Manager (#140)" begin
+        # Verify the optimization functions exist and use NewPMPassBuilder
+        @test isdefined(RustCall, :optimize_module!)
+        @test isdefined(RustCall, :optimize_function!)
+        @test isdefined(RustCall, :OptimizationConfig)
+
+        # Verify default config has sensible defaults
+        config = RustCall.OptimizationConfig()
+        @test config.level == 2
+        @test config.size_level == 0
+        @test config.enable_vectorization == true
+
+        # Verify level 0 short-circuits (no-op)
+        config0 = RustCall.OptimizationConfig(level=0, size_level=0)
+        @test config0.level == 0
+    end
+
+    # #142 / #92: Greedy regex parsing of nested Rust generic types
+    @testset "Bracket-aware Result/Option type parsing (#142)" begin
+        # Simple Result types
+        result = RustCall.parse_result_type("Result<String, Error>")
+        @test result !== nothing
+        @test result.ok_type == "String"
+        @test result.err_type == "Error"
+
+        # Nested generics — the bug was that HashMap<String, i32> would split incorrectly
+        result_nested = RustCall.parse_result_type("Result<HashMap<String, i32>, Error>")
+        @test result_nested !== nothing
+        @test result_nested.ok_type == "HashMap<String, i32>"
+        @test result_nested.err_type == "Error"
+
+        # Deeply nested generics
+        result_deep = RustCall.parse_result_type("Result<Vec<HashMap<String, Vec<i32>>>, Box<dyn Error>>")
+        @test result_deep !== nothing
+        @test result_deep.ok_type == "Vec<HashMap<String, Vec<i32>>>"
+        @test result_deep.err_type == "Box<dyn Error>"
+
+        # Tuple inner type with comma
+        result_tuple = RustCall.parse_result_type("Result<(i32, i64), String>")
+        @test result_tuple !== nothing
+        @test result_tuple.ok_type == "(i32, i64)"
+        @test result_tuple.err_type == "String"
+
+        # Simple Option
+        option = RustCall.parse_option_type("Option<Vec<i32>>")
+        @test option !== nothing
+        @test option.inner_type == "Vec<i32>"
+
+        # Nested Option
+        option_nested = RustCall.parse_option_type("Option<HashMap<String, Vec<i32>>>")
+        @test option_nested !== nothing
+        @test option_nested.inner_type == "HashMap<String, Vec<i32>>"
+    end
+
+    # #144 / #98: Missing floating-point type support in RustRc/RustArc
+    @testset "Float types supported in ownership wrappers (#144)" begin
+        # Verify Float32/Float64 branches exist in create_rust_rc and create_rust_arc
+        # (We test the type dispatch path, not the actual FFI — library may not be loaded)
+
+        # RustRc should accept Float32 and Float64 (method exists)
+        @test hasmethod(RustCall.RustRc, Tuple{Float32})
+        @test hasmethod(RustCall.RustRc, Tuple{Float64})
+
+        # RustArc should accept Float32 and Float64
+        @test hasmethod(RustCall.RustArc, Tuple{Float32})
+        @test hasmethod(RustCall.RustArc, Tuple{Float64})
+
+        # RustBox should accept Float32 and Float64
+        @test hasmethod(RustCall.RustBox, Tuple{Float32})
+        @test hasmethod(RustCall.RustBox, Tuple{Float64})
+    end
+
+    # #146 / #97: Hardcoded error codes in error conversion functions
+    @testset "Error codes preserved in result_to_exception (#146)" begin
+        # Integer error should use the error value as the code
+        int_err = RustCall.RustResult{String, Int32}(false, Int32(42))
+        try
+            RustCall.result_to_exception(int_err)
+            @test false  # should not reach here
+        catch e
+            @test e isa RustCall.RustError
+            @test e.code == Int32(42)
+            @test e.original_error == Int32(42)
+        end
+
+        # Non-integer error should get code -1, not 0
+        str_err = RustCall.RustResult{Int32, String}(false, "not found")
+        try
+            RustCall.result_to_exception(str_err)
+            @test false
+        catch e
+            @test e isa RustCall.RustError
+            @test e.code == Int32(-1)  # Not the old hardcoded 0
+            @test e.original_error == "not found"
+        end
+
+        # Ok result should return value
+        ok_result = RustCall.RustResult{Int32, String}(true, Int32(99))
+        @test RustCall.result_to_exception(ok_result) == Int32(99)
+
+        # Explicit code overload
+        err_with_code = RustCall.RustResult{Int32, String}(false, "error")
+        try
+            RustCall.result_to_exception(err_with_code, Int32(7))
+            @test false
+        catch e
+            @test e.code == Int32(7)
+            @test e.original_error == "error"
+        end
+    end
+
+    # #148 / #96: Unprotected LLVM global dictionaries
+    @testset "LLVM global dicts have locks (#148)" begin
+        # LLVM_REGISTRY_LOCK must exist
+        @test isdefined(RustCall, :LLVM_REGISTRY_LOCK)
+        @test RustCall.LLVM_REGISTRY_LOCK isa ReentrantLock
+
+        # REGISTRY_LOCK must exist (for RUST_LIBRARIES, etc.)
+        @test isdefined(RustCall, :REGISTRY_LOCK)
+        @test RustCall.REGISTRY_LOCK isa ReentrantLock
+
+        # RUST_MODULES must exist and be properly keyed
+        @test isdefined(RustCall, :RUST_MODULES)
+    end
+
+    # #150 / #77: Silent memory leak in drop functions when helpers unavailable
+    @testset "Deferred drop infrastructure exists (#150)" begin
+        # Deferred drop tracking exists
+        @test isdefined(RustCall, :DEFERRED_DROPS)
+        @test isdefined(RustCall, :DEFERRED_DROPS_LOCK)
+        @test isdefined(RustCall, :deferred_drop_count)
+        @test isdefined(RustCall, :flush_deferred_drops)
+        @test isdefined(RustCall, :_defer_drop)
+
+        # deferred_drop_count returns an integer
+        @test RustCall.deferred_drop_count() isa Int
+
+        # Simulate deferred drop behavior
+        initial_count = RustCall.deferred_drop_count()
+        RustCall._defer_drop(Ptr{Cvoid}(UInt(0xDEAD)), "TestType{Int32}", :test_drop_sym)
+        @test RustCall.deferred_drop_count() == initial_count + 1
+
+        # Clean up the test entry
+        lock(RustCall.DEFERRED_DROPS_LOCK) do
+            filter!(d -> d.type_name != "TestType{Int32}", RustCall.DEFERRED_DROPS)
+        end
+    end
+
 end

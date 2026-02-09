@@ -29,6 +29,7 @@ makedocs(
         "Reference" => [
             "API Reference" => "api.md",
             "Project Status" => "status.md",
+            "Developer Pitfalls" => "developer_pitfalls.md",
         ],
         "Design" => [
             "Phase 1" => "design/Phase1.md",

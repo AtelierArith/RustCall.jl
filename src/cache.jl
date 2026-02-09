@@ -1,8 +1,52 @@
 # Compilation caching for RustCall.jl
 # Phase 2: Persistent cache system
+#
+# IMPORTANT — Hashing rule for persistent keys
+# =============================================
+# Julia's built-in `hash()` is randomized per session (hash flooding protection).
+# NEVER use `hash()` for values that are persisted to disk or must be stable across
+# Julia processes (cache keys, library names, file names).
+#
+# Use `stable_content_hash()` (defined below) for all persistent identifiers.
+# In-memory-only Dict keys (e.g., RUST_MODULE_REGISTRY, IRUST_FUNCTIONS) may
+# still use `hash()` since they are never written to disk.
 
 using SHA
 using Dates
+
+"""
+    CACHE_LOCK
+
+ReentrantLock guarding concurrent access to the cache directory.
+Prevents corruption when multiple tasks/threads save or load cached
+artifacts simultaneously.
+"""
+const CACHE_LOCK = ReentrantLock()
+
+"""
+    stable_content_hash(data::String) -> String
+
+Compute a deterministic, session-stable hex digest of `data` using SHA-256.
+
+This function MUST be used instead of Julia's `hash()` whenever the result is
+persisted to disk or must be reproducible across Julia processes.  Julia's
+built-in `hash()` is intentionally randomized per session for hash-flooding
+protection and therefore unsuitable for persistent cache keys, library names,
+or file names.
+
+# Returns
+- A 64-character lowercase hex string (SHA-256 digest).
+
+# Examples
+```julia
+h = stable_content_hash("fn add(a: i32, b: i32) -> i32 { a + b }")
+@assert length(h) == 64
+@assert h == stable_content_hash("fn add(a: i32, b: i32) -> i32 { a + b }")
+```
+"""
+function stable_content_hash(data::String)::String
+    return bytes2hex(sha256(data))
+end
 
 """
     CacheMetadata
@@ -61,15 +105,9 @@ Generate a cache key based on code hash, compiler settings, and target triple.
 Uses SHA256 for collision resistance.
 """
 function generate_cache_key(code::String, compiler::RustCompiler)
-    # Create a unique key from code and compiler settings
-    # Use SHA256 directly on the code string for session-stable hashing
-    # (Julia's hash() is randomized per session and unsuitable for persistent caching)
     config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)"
     key_data = "$(code)\n---\n$(config_str)"
-
-    # Use SHA256 for a deterministic, session-stable key
-    hash_bytes = sha256(key_data)
-    return bytes2hex(hash_bytes)
+    return stable_content_hash(key_data)
 end
 
 """
@@ -113,17 +151,19 @@ end
 Save a compiled library to the cache along with its metadata.
 """
 function save_cached_library(cache_key::String, lib_path::String, metadata::CacheMetadata)
-    cache_dir = get_cache_dir()
-    lib_ext = get_library_extension()
-    dest_lib_path = joinpath(cache_dir, "$(cache_key)$(lib_ext)")
+    lock(CACHE_LOCK) do
+        cache_dir = get_cache_dir()
+        lib_ext = get_library_extension()
+        dest_lib_path = joinpath(cache_dir, "$(cache_key)$(lib_ext)")
 
-    # Copy the library file
-    cp(lib_path, dest_lib_path, force=true)
+        # Copy the library file
+        cp(lib_path, dest_lib_path, force=true)
 
-    # Save metadata
-    save_cache_metadata(cache_key, metadata)
+        # Save metadata (called under the same lock)
+        _save_cache_metadata_unlocked(cache_key, metadata)
 
-    return dest_lib_path
+        return dest_lib_path
+    end
 end
 
 """
@@ -132,13 +172,15 @@ end
 Save a compiled LLVM IR file to the cache.
 """
 function save_cached_llvm_ir(cache_key::String, ir_path::String)
-    cache_dir = get_cache_dir()
-    dest_ir_path = joinpath(cache_dir, "$(cache_key).ll")
+    lock(CACHE_LOCK) do
+        cache_dir = get_cache_dir()
+        dest_ir_path = joinpath(cache_dir, "$(cache_key).ll")
 
-    # Copy the IR file
-    cp(ir_path, dest_ir_path, force=true)
+        # Copy the IR file
+        cp(ir_path, dest_ir_path, force=true)
 
-    return dest_ir_path
+        return dest_ir_path
+    end
 end
 
 """
@@ -147,21 +189,23 @@ end
 Load a cached library and return its handle and library name.
 """
 function load_cached_library(cache_key::String)
-    cached_lib = get_cached_library(cache_key)
-    if cached_lib === nothing
-        error("Cached library not found for key: $cache_key")
+    lock(CACHE_LOCK) do
+        cached_lib = get_cached_library(cache_key)
+        if cached_lib === nothing
+            error("Cached library not found for key: $cache_key")
+        end
+
+        # Load the library
+        lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        if lib_handle == C_NULL
+            error("Failed to load cached library: $cached_lib")
+        end
+
+        # Generate library name from cache key
+        lib_name = "rust_cache_$(cache_key[1:16])"  # Use first 16 chars for readability
+
+        return lib_handle, lib_name
     end
-
-    # Load the library
-    lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
-    if lib_handle == C_NULL
-        error("Failed to load cached library: $cached_lib")
-    end
-
-    # Generate library name from cache key
-    lib_name = "rust_cache_$(cache_key[1:16])"  # Use first 16 chars for readability
-
-    return lib_handle, lib_name
 end
 
 """
@@ -187,21 +231,19 @@ save_cache_metadata("abc123...", metadata)
 ```
 """
 function save_cache_metadata(cache_key::String, metadata::CacheMetadata)
+    lock(CACHE_LOCK) do
+        _save_cache_metadata_unlocked(cache_key, metadata)
+    end
+end
+
+# Internal helper called when CACHE_LOCK is already held.
+function _save_cache_metadata_unlocked(cache_key::String, metadata::CacheMetadata)
     metadata_dir = get_metadata_dir()
     metadata_path = joinpath(metadata_dir, "$(cache_key).json")
 
-    # Simple JSON-like serialization (we'll use a simple format)
-    metadata_dict = Dict(
-        "cache_key" => metadata.cache_key,
-        "code_hash" => string(metadata.code_hash),
-        "compiler_config" => metadata.compiler_config,
-        "target_triple" => metadata.target_triple,
-        "created_at" => string(metadata.created_at),
-        "functions" => metadata.functions
-    )
-
-    # Write as JSON (simple format for now)
-    open(metadata_path, "w") do io
+    # Write to a temp file first, then atomically rename to prevent partial reads
+    tmp_path = metadata_path * ".tmp"
+    open(tmp_path, "w") do io
         println(io, "{")
         println(io, "  \"cache_key\": \"$(metadata.cache_key)\",")
         println(io, "  \"code_hash\": \"$(metadata.code_hash)\",")
@@ -211,6 +253,7 @@ function save_cache_metadata(cache_key::String, metadata::CacheMetadata)
         println(io, "  \"functions\": [$(join(map(f -> "\"$f\"", metadata.functions), ", "))]")
         println(io, "}")
     end
+    mv(tmp_path, metadata_path, force=true)
 end
 
 """
@@ -237,6 +280,12 @@ end
 ```
 """
 function load_cache_metadata(cache_key::String)
+    lock(CACHE_LOCK) do
+        _load_cache_metadata_unlocked(cache_key)
+    end
+end
+
+function _load_cache_metadata_unlocked(cache_key::String)
     metadata_dir = get_metadata_dir()
     metadata_path = joinpath(metadata_dir, "$(cache_key).json")
 
@@ -244,14 +293,36 @@ function load_cache_metadata(cache_key::String)
         return nothing
     end
 
-    # Simple JSON parsing (for now, we'll use a basic approach)
-    # In production, consider using JSON.jl
     try
         content = read(metadata_path, String)
-        # Simple parsing - extract key fields
-        # For now, return a basic structure
-        # Full JSON parsing can be added later if needed
-        return nothing  # Placeholder - implement full parsing if needed
+
+        # Parse simple JSON fields written by save_cache_metadata.
+        # The format is a flat object with string values and one string-array value.
+        function _extract_string_field(text, key)
+            m = match(Regex("\"$(key)\"\\s*:\\s*\"([^\"]*)\""), text)
+            return m === nothing ? "" : String(m.captures[1])
+        end
+
+        ck = _extract_string_field(content, "cache_key")
+        ch = _extract_string_field(content, "code_hash")
+        cc = _extract_string_field(content, "compiler_config")
+        tt = _extract_string_field(content, "target_triple")
+        ca_str = _extract_string_field(content, "created_at")
+
+        # Parse the functions array: "functions": ["f1", "f2"]
+        funcs = String[]
+        m_funcs = match(r"\"functions\"\s*:\s*\[([^\]]*)\]", content)
+        if m_funcs !== nothing
+            arr_content = m_funcs.captures[1]
+            for m_item in eachmatch(r"\"([^\"]+)\"", arr_content)
+                push!(funcs, String(m_item.captures[1]))
+            end
+        end
+
+        # Parse created_at datetime
+        created_at = isempty(ca_str) ? Dates.now() : DateTime(ca_str)
+
+        return CacheMetadata(ck, ch, cc, tt, created_at, funcs)
     catch e
         @warn "Failed to load cache metadata: $e"
         return nothing
@@ -265,6 +336,12 @@ Clear all cached libraries and metadata.
 On Windows, some files may be locked and cannot be deleted immediately.
 """
 function clear_cache()
+    lock(CACHE_LOCK) do
+        _clear_cache_unlocked()
+    end
+end
+
+function _clear_cache_unlocked()
     cache_dir = get_cache_dir()
     if isdir(cache_dir)
         try

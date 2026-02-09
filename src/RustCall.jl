@@ -108,6 +108,7 @@ export create_rust_vec, rust_vec_get, rust_vec_set!, copy_to_julia!, to_julia_ve
 
 # Caching (Phase 2)
 export clear_cache, get_cache_size, list_cached_libraries, cleanup_old_cache
+export stable_content_hash
 
 # Generics support (Phase 2)
 export register_generic_function, call_generic_function, is_generic_function

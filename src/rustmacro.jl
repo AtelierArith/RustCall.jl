@@ -39,6 +39,28 @@ const RUST_COMPARISON_OPS = Set{Symbol}([
 ])
 
 """
+    _rust_comparison_operand(mod, expr)
+
+Process an operand of a comparison in `@rust`.  If the expression looks
+like a Rust call (or qualified call), expand it via `rust_impl`; otherwise
+just escape it so plain Julia values pass through unchanged.
+"""
+function _rust_comparison_operand(mod, expr)
+    if isexpr(expr, :call)
+        fname = expr.args[1]
+        # Only treat as a Rust call if the function name is a plain identifier
+        # (not a Julia operator like +, -, *, /).  Operator calls such as
+        # `10.0 / 3.0` should stay on the Julia side.
+        if fname isa Symbol && !Base.isoperator(fname)
+            return rust_impl(mod, expr)
+        end
+    elseif isexpr(expr, :(::))
+        return rust_impl(mod, expr)
+    end
+    return esc(expr)
+end
+
+"""
     rust_impl(mod, expr)
 
 Implementation of the @rust macro.
@@ -52,8 +74,9 @@ function rust_impl(mod, expr)
             end
             lhs = expr.args[2]
             rhs = expr.args[3]
-            rust_expr = rust_impl(mod, lhs)
-            return Expr(:call, op, rust_expr, esc(rhs))
+            rust_lhs = _rust_comparison_operand(mod, lhs)
+            rust_rhs = _rust_comparison_operand(mod, rhs)
+            return Expr(:call, op, rust_lhs, rust_rhs)
         end
     end
 

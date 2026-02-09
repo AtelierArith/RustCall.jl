@@ -9,6 +9,14 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Code Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check string interpolation patterns
+        run: bash scripts/lint_interpolation.sh src
+
   rust-tests:
     name: Rust ${{ matrix.rust }} - ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

@@ -9,6 +9,43 @@ import RustCall: TraitBound, TypeConstraints, GenericFunctionInfo
 import RustCall: parse_trait_bounds, parse_single_trait, parse_where_clause
 import RustCall: parse_inline_constraints, parse_generic_function
 import RustCall: constraints_to_rust_string, merge_constraints
+import RustCall: _find_matching_angle_bracket
+
+# ============================================================================
+# Bracket-counting Helper Tests
+# ============================================================================
+
+@testset "Bracket-counting helpers" begin
+    @testset "_find_matching_angle_bracket" begin
+        # Simple: <T>
+        @test _find_matching_angle_bracket("<T>", 1) == 3
+
+        # One level: <Vec<T>>
+        @test _find_matching_angle_bracket("<Vec<T>>", 1) == 8
+
+        # Two levels: <Option<Result<T, E>>>
+        s = "<Option<Result<T, E>>>"
+        @test _find_matching_angle_bracket(s, 1) == lastindex(s)
+
+        # Three levels: <Vec<Option<Result<T, String>>>>
+        s = "<Vec<Option<Result<T, String>>>>"
+        @test _find_matching_angle_bracket(s, 1) == lastindex(s)
+
+        # Multiple params with nesting: <K: Hash, V: Into<Vec<U>>>
+        s = "<K: Hash, V: Into<Vec<U>>>"
+        @test _find_matching_angle_bracket(s, 1) == lastindex(s)
+
+        # No matching bracket
+        @test _find_matching_angle_bracket("<T", 1) == 0
+
+        # Starting from non-first position
+        s = "fn foo<T: Add<Output = T>>(x: T)"
+        open_pos = findfirst('<', s)
+        close_pos = _find_matching_angle_bracket(s, open_pos)
+        inner = s[open_pos+1:close_pos-1]
+        @test inner == "T: Add<Output = T>"
+    end
+end
 
 # ============================================================================
 # Trait Bounds Parsing Tests
@@ -171,6 +208,109 @@ import RustCall: constraints_to_rust_string, merge_constraints
         @test info !== nothing
         @test info.type_params == [:T]
         @test isempty(info.constraints)
+    end
+
+    @testset "parse_generic_function with deeply nested generics" begin
+        # Two levels of nesting: Add<Output = T>
+        code = """
+        pub fn add_values<T: Copy + Add<Output = T>>(a: T, b: T) -> T {
+            a + b
+        }
+        """
+        info = parse_generic_function(code, "add_values")
+        @test info !== nothing
+        @test info.type_params == [:T]
+        @test haskey(info.constraints, :T)
+        @test length(info.constraints[:T].bounds) == 2
+        @test info.constraints[:T].bounds[1].trait_name == "Copy"
+        @test info.constraints[:T].bounds[2].trait_name == "Add"
+        @test info.constraints[:T].bounds[2].type_params == ["Output = T"]
+
+        # Three levels of nesting: Vec<Option<T>>
+        code = """
+        pub fn first_some<T: Clone>(items: Vec<Option<T>>) -> T {
+            items[0].unwrap().clone()
+        }
+        """
+        info = parse_generic_function(code, "first_some")
+        @test info !== nothing
+        @test info.type_params == [:T]
+        @test info.constraints[:T].bounds[1].trait_name == "Clone"
+
+        # Deeply nested: Vec<Option<Result<T, String>>>
+        code = """
+        pub fn unwrap_deep<T>(items: Vec<Option<Result<T, String>>>) -> T {
+            items[0].unwrap().unwrap()
+        }
+        """
+        info = parse_generic_function(code, "unwrap_deep")
+        @test info !== nothing
+        @test info.type_params == [:T]
+
+        # Multiple type params with nested generics in bounds
+        code = """
+        pub fn convert<T: Into<Vec<U>>, U: Clone>(x: T) -> Vec<U> {
+            x.into()
+        }
+        """
+        info = parse_generic_function(code, "convert")
+        @test info !== nothing
+        @test info.type_params == [:T, :U]
+        @test info.constraints[:T].bounds[1].trait_name == "Into"
+        @test info.constraints[:T].bounds[1].type_params == ["Vec<U>"]
+        @test info.constraints[:U].bounds[1].trait_name == "Clone"
+
+        # impl with nested trait: impl<T: Add<Output = T>>
+        # (parse_generic_function only handles fn, but test the pattern concept)
+        code = """
+        pub fn sum_all<T: Copy + Add<Output = T> + Default>(items: &[T]) -> T {
+            items.iter().copied().fold(T::default(), |a, b| a + b)
+        }
+        """
+        info = parse_generic_function(code, "sum_all")
+        @test info !== nothing
+        @test info.type_params == [:T]
+        @test length(info.constraints[:T].bounds) == 3
+        @test info.constraints[:T].bounds[1].trait_name == "Copy"
+        @test info.constraints[:T].bounds[2].trait_name == "Add"
+        @test info.constraints[:T].bounds[3].trait_name == "Default"
+    end
+
+    @testset "parse_single_trait with nested generics" begin
+        # Nested generic in trait: Into<Vec<String>>
+        tb = parse_single_trait("Into<Vec<String>>")
+        @test tb.trait_name == "Into"
+        @test tb.type_params == ["Vec<String>"]
+
+        # Deeply nested: From<Option<Result<T, E>>>
+        tb = parse_single_trait("From<Option<Result<T, E>>>")
+        @test tb.trait_name == "From"
+        @test tb.type_params == ["Option<Result<T, E>>"]
+
+        # Multiple params with nesting: Fn<(Vec<T>,), Output = Result<U, E>>
+        tb = parse_single_trait("Fn<(Vec<T>,), Output = Result<U, E>>")
+        @test tb.trait_name == "Fn"
+        @test length(tb.type_params) == 2
+        @test tb.type_params[1] == "(Vec<T>,)"
+        @test tb.type_params[2] == "Output = Result<U, E>"
+    end
+
+    @testset "parse_trait_bounds with nested generic traits" begin
+        # Bounds with nested generic traits
+        tc = parse_trait_bounds("Copy + Into<Vec<String>> + Debug")
+        @test length(tc.bounds) == 3
+        @test tc.bounds[1].trait_name == "Copy"
+        @test tc.bounds[2].trait_name == "Into"
+        @test tc.bounds[2].type_params == ["Vec<String>"]
+        @test tc.bounds[3].trait_name == "Debug"
+
+        # Two generic traits with nesting
+        tc = parse_trait_bounds("From<Option<T>> + Into<Result<U, E>>")
+        @test length(tc.bounds) == 2
+        @test tc.bounds[1].trait_name == "From"
+        @test tc.bounds[1].type_params == ["Option<T>"]
+        @test tc.bounds[2].trait_name == "Into"
+        @test tc.bounds[2].type_params == ["Result<U, E>"]
     end
 
     @testset "constraints_to_rust_string" begin
@@ -365,6 +505,51 @@ end
         @test !occursin("impl<", specialized)
         @test occursin("impl", specialized)
         @test occursin("i32", specialized)
+    end
+
+    @testset "Deeply nested generic specialization" begin
+        # Three levels: Vec<Option<Result<T, String>>>
+        code = """
+        pub fn unwrap_deep<T>(items: Vec<Option<Result<T, String>>>) -> T {
+            items[0].unwrap().unwrap()
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:T => Int32))
+        @test occursin("Vec<Option<Result<i32, String>>>", specialized)
+        @test occursin("fn unwrap_deep(", specialized)
+        @test !occursin("<T>", specialized)
+
+        # Nested trait bounds in fn signature: Add<Output = T>
+        code = """
+        pub fn sum<T: Copy + Add<Output = T> + Default>(items: &[T]) -> T {
+            items.iter().copied().fold(T::default(), |a, b| a + b)
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:T => Float64))
+        @test occursin("fn sum(", specialized)
+        @test !occursin("<T:", specialized)
+        @test occursin("f64", specialized)
+
+        # impl block with deeply nested generics
+        code = """
+        impl<T: Clone + Into<Vec<Option<T>>>> Wrapper<T> {
+            pub fn convert(&self) -> Vec<Option<T>> { self.value.clone().into() }
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:T => Int64))
+        @test !occursin("impl<", specialized)
+        @test occursin("impl", specialized)
+        @test occursin("i64", specialized)
+
+        # Multiple type params with nested containers
+        code = """
+        pub fn merge<K, V>(a: HashMap<K, Vec<V>>, b: HashMap<K, Vec<V>>) -> HashMap<K, Vec<V>> {
+            a
+        }
+        """
+        specialized = specialize_generic_code(code, Dict(:K => Int32, :V => Float64))
+        @test occursin("HashMap<i32, Vec<f64>>", specialized)
+        @test occursin("fn merge(", specialized)
     end
 
     @testset "Generic Function Detection" begin
