@@ -359,16 +359,36 @@ Returns nothing if not a Result type.
 function parse_result_type(rust_type::String)
     rust_type = strip(rust_type)
 
-    # Pattern to match Result<T, E>
-    m = match(r"^Result\s*<\s*(.+)\s*,\s*(.+)\s*>$", rust_type)
+    # Match the "Result<" prefix
+    m = match(r"^Result\s*<", rust_type)
     if m === nothing
         return nothing
     end
 
-    ok_type = strip(String(m.captures[1]))
-    err_type = strip(String(m.captures[2]))
+    # Extract the inner content between "Result<" and the final ">"
+    inner_start = m.offset + length(m.match)
+    # The last character must be '>'
+    if rust_type[end] != '>'
+        return nothing
+    end
+    inner = rust_type[inner_start:prevind(rust_type, lastindex(rust_type))]
 
-    return ResultTypeInfo(ok_type, err_type)
+    # Find the comma that separates ok_type and err_type at bracket depth 0
+    depth = 0
+    for i in eachindex(inner)
+        c = inner[i]
+        if c in ('<', '(', '[')
+            depth += 1
+        elseif c in ('>', ')', ']')
+            depth -= 1
+        elseif c == ',' && depth == 0
+            ok_type = strip(inner[1:prevind(inner, i)])
+            err_type = strip(inner[nextind(inner, i):end])
+            return ResultTypeInfo(ok_type, err_type)
+        end
+    end
+
+    return nothing
 end
 
 """
@@ -380,13 +400,23 @@ Returns nothing if not an Option type.
 function parse_option_type(rust_type::String)
     rust_type = strip(rust_type)
 
-    # Pattern to match Option<T>
-    m = match(r"^Option\s*<\s*(.+)\s*>$", rust_type)
+    # Match the "Option<" prefix
+    m = match(r"^Option\s*<", rust_type)
     if m === nothing
         return nothing
     end
 
-    inner_type = strip(String(m.captures[1]))
+    # Extract the inner content between "Option<" and the final ">"
+    inner_start = m.offset + length(m.match)
+    # The last character must be '>'
+    if rust_type[end] != '>'
+        return nothing
+    end
+    inner_type = strip(rust_type[inner_start:prevind(rust_type, lastindex(rust_type))])
+
+    if isempty(inner_type)
+        return nothing
+    end
 
     return OptionTypeInfo(inner_type)
 end

@@ -209,6 +209,24 @@ end
         # Non-Result types should return nothing
         @test RustCall.parse_result_type("i32") === nothing
         @test RustCall.parse_result_type("Option<i32>") === nothing
+
+        # Nested generics (issue #92)
+        result_nested = RustCall.parse_result_type("Result<HashMap<String, i32>, Error>")
+        @test result_nested !== nothing
+        @test result_nested.ok_type == "HashMap<String, i32>"
+        @test result_nested.err_type == "Error"
+
+        # Tuple inner types
+        result_tuple = RustCall.parse_result_type("Result<(i32, i32), String>")
+        @test result_tuple !== nothing
+        @test result_tuple.ok_type == "(i32, i32)"
+        @test result_tuple.err_type == "String"
+
+        # Deeply nested generics
+        result_deep = RustCall.parse_result_type("Result<Vec<Vec<i32>>, Box<dyn Error>>")
+        @test result_deep !== nothing
+        @test result_deep.ok_type == "Vec<Vec<i32>>"
+        @test result_deep.err_type == "Box<dyn Error>"
     end
 
     # Test Option<T> parsing
@@ -224,6 +242,21 @@ end
         # Non-Option types should return nothing
         @test RustCall.parse_option_type("i32") === nothing
         @test RustCall.parse_option_type("Result<i32, i32>") === nothing
+
+        # Nested generics (issue #92)
+        option_nested = RustCall.parse_option_type("Option<Vec<i32>>")
+        @test option_nested !== nothing
+        @test option_nested.inner_type == "Vec<i32>"
+
+        # Option with tuple
+        option_tuple = RustCall.parse_option_type("Option<(i32, String)>")
+        @test option_tuple !== nothing
+        @test option_tuple.inner_type == "(i32, String)"
+
+        # Option with nested HashMap
+        option_map = RustCall.parse_option_type("Option<HashMap<String, Vec<i32>>>")
+        @test option_map !== nothing
+        @test option_map.inner_type == "HashMap<String, Vec<i32>>"
     end
 
     # Test is_result_type and is_option_type
