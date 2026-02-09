@@ -390,6 +390,50 @@ end
         @test occursin("export Point", code)
         @test occursin("Base.getproperty", code)
         @test occursin("Base.setproperty!", code)
+
+        # Null pointer checks should be present in getproperty/setproperty!
+        @test occursin("_check_not_freed", code)
+    end
+
+    @testset "_check_not_freed" begin
+        # Test that _check_not_freed is defined
+        @test isdefined(RustCall, :_check_not_freed)
+
+        # Create a mock object with a non-null ptr
+        obj_alive = (ptr = Ptr{Cvoid}(1),)
+        @test_nowarn RustCall._check_not_freed(obj_alive, "TestType")
+
+        # Create a mock object with a null ptr (freed)
+        obj_freed = (ptr = Ptr{Cvoid}(0),)
+        @test_throws ErrorException RustCall._check_not_freed(obj_freed, "TestType")
+
+        # Verify error message mentions the type name
+        err = try
+            RustCall._check_not_freed(obj_freed, "MyStruct")
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("MyStruct", err.msg)
+        @test occursin("freed", err.msg)
+    end
+
+    @testset "_emit_method_code null pointer checks" begin
+        # Instance method should contain null pointer check
+        method = RustCall.RustMethod("get_sum", false, true, String[], String[], "f64")
+        struct_info = RustCall.RustStructInfo(
+            "Point",
+            String[],
+            [method],
+            "",
+            [("x", "f64"), ("y", "f64")],
+            true,
+            Dict{String, Bool}()
+        )
+
+        code = RustCall._emit_method_code(struct_info, method)
+        @test occursin("_check_not_freed", code)
     end
 
     @testset "write_bindings_to_file" begin

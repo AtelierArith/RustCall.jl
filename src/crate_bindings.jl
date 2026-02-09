@@ -518,7 +518,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
 
     # Build the module body as a block
     module_body = quote
-        import RustCall: call_rust_function, get_function_pointer_from_lib
+        import RustCall: call_rust_function, get_function_pointer_from_lib, _check_not_freed
         import Libdl
 
         const _LIB_PATH = $lib_path
@@ -832,6 +832,7 @@ function _generate_property_accessors(info::RustStructInfo)
             if field === :ptr
                 return getfield(self, :ptr)
             end
+            _check_not_freed(self, $struct_name_str)
             $(getprop_branches...)
             error("type $($struct_name_str) has no field $field")
         end
@@ -841,6 +842,7 @@ function _generate_property_accessors(info::RustStructInfo)
             if field === :ptr
                 error("cannot set internal field :ptr")
             end
+            _check_not_freed(self, $struct_name_str)
             $(setprop_branches...)
             error("type $($struct_name_str) has no field $field")
         end
@@ -848,6 +850,18 @@ function _generate_property_accessors(info::RustStructInfo)
         function Base.propertynames(self::$struct_name)
             ($(field_symbols...),)
         end
+    end
+end
+
+"""
+    _check_not_freed(obj, type_name::String)
+
+Check that a wrapped Rust object has not been freed. Throws an error if the
+internal pointer is C_NULL, preventing use-after-free crashes.
+"""
+function _check_not_freed(obj, type_name::String)
+    if getfield(obj, :ptr) == C_NULL
+        error("Attempted to use a freed $type_name object")
     end
 end
 
@@ -902,6 +916,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             # Method that returns Self
             quote
                 function $method_name(self::$struct_name, $(arg_syms...))
+                    _check_not_freed(self, $struct_name_str)
                     func_ptr = _get_func_ptr($wrapper_name)
                     ptr = ccall(func_ptr, Ptr{Cvoid}, (Ptr{Cvoid}, $(arg_julia_types...),), getfield(self, :ptr), $(arg_syms...))
                     $struct_name(ptr)
@@ -911,6 +926,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         else
             quote
                 function $method_name(self::$struct_name, $(arg_syms...))
+                    _check_not_freed(self, $struct_name_str)
                     func_ptr = _get_func_ptr($wrapper_name)
                     call_rust_function(func_ptr, $julia_ret_type, getfield(self, :ptr), $(arg_syms...))
                 end
@@ -1338,7 +1354,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "")
 
     # Imports
-    push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption")
+    push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed")
     push!(lines, "import Libdl")
     push!(lines, "")
 
@@ -1531,6 +1547,7 @@ function _emit_struct_code(info::RustStructInfo)
         push!(lines, "    if field === :ptr")
         push!(lines, "        return getfield(self, :ptr)")
         push!(lines, "    end")
+        push!(lines, "    _check_not_freed(self, \"$struct_name\")")
         for (field_name, field_type) in compatible_fields
             julia_type = _rust_type_to_julia_type_symbol(field_type)
             julia_type_str = julia_type !== nothing ? string(julia_type) : "Any"
@@ -1549,6 +1566,7 @@ function _emit_struct_code(info::RustStructInfo)
         push!(lines, "    if field === :ptr")
         push!(lines, "        error(\"cannot set internal field :ptr\")")
         push!(lines, "    end")
+        push!(lines, "    _check_not_freed(self, \"$struct_name\")")
         for (field_name, field_type) in compatible_fields
             setter_fn = "$(struct_name)_set_$(field_name)"
             push!(lines, "    if field === :$field_name")
@@ -1624,6 +1642,7 @@ export $method_name"""
             arg_types_with_ptr = isempty(arg_types_str) ? "Ptr{Cvoid}" : "Ptr{Cvoid}, $arg_types_str"
             return """
 function $method_name(self::$struct_name$self_args)
+    _check_not_freed(self, "$struct_name")
     func_ptr = _get_func_ptr("$wrapper_name")
     ptr = ccall(func_ptr, Ptr{Cvoid}, ($arg_types_with_ptr,), getfield(self, :ptr)$self_args)
     $struct_name(ptr)
@@ -1633,6 +1652,7 @@ export $method_name"""
             self_args = isempty(arg_syms) ? "" : ", $arg_syms"
             return """
 function $method_name(self::$struct_name$self_args)
+    _check_not_freed(self, "$struct_name")
     func_ptr = _get_func_ptr("$wrapper_name")
     call_rust_function(func_ptr, $ret_type_str, getfield(self, :ptr)$self_args)
 end
