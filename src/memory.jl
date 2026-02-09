@@ -6,6 +6,21 @@ using Libdl
 # Registry for Rust helper library
 const RUST_HELPERS_LIB = Ref{Union{Ptr{Cvoid}, Nothing}}(nothing)
 
+"""
+    safe_dlsym(lib::Ptr{Cvoid}, sym::Symbol) -> Ptr{Cvoid}
+
+Look up a symbol in a shared library, raising a clear error instead of returning
+NULL (which would cause a segfault when passed to `ccall`).
+"""
+function safe_dlsym(lib::Ptr{Cvoid}, sym::Symbol)
+    ptr = Libdl.dlsym(lib, sym; throw_error=false)
+    if ptr === nothing || ptr == C_NULL
+        error("Symbol :$sym not found in Rust helpers library. " *
+              "Try rebuilding with: using Pkg; Pkg.build(\"RustCall\")")
+    end
+    return ptr
+end
+
 # Flag to track if we've already warned about missing library
 const DROP_WARNING_SHOWN = Ref{Bool}(false)
 
@@ -187,23 +202,23 @@ function create_rust_box(value::T) where T
 
     # Dispatch based on type - use dlsym to get function pointer
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_box_new_i32)
+        fn_ptr = safe_dlsym(lib, :rust_box_new_i32)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
         return RustBox{Int32}(ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_box_new_i64)
+        fn_ptr = safe_dlsym(lib, :rust_box_new_i64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
         return RustBox{Int64}(ptr)
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_box_new_f32)
+        fn_ptr = safe_dlsym(lib, :rust_box_new_f32)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
         return RustBox{Float32}(ptr)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_box_new_f64)
+        fn_ptr = safe_dlsym(lib, :rust_box_new_f64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
         return RustBox{Float64}(ptr)
     elseif T == Bool
-        fn_ptr = Libdl.dlsym(lib, :rust_box_new_bool)
+        fn_ptr = safe_dlsym(lib, :rust_box_new_bool)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Bool,), value)
         return RustBox{Bool}(ptr)
     else
@@ -238,23 +253,23 @@ function drop_rust_box(box::RustBox{T}) where T
 
     # Dispatch based on type
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_box_drop_i32)
+        fn_ptr = safe_dlsym(lib, :rust_box_drop_i32)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_box_drop_i64)
+        fn_ptr = safe_dlsym(lib, :rust_box_drop_i64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_box_drop_f32)
+        fn_ptr = safe_dlsym(lib, :rust_box_drop_f32)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_box_drop_f64)
+        fn_ptr = safe_dlsym(lib, :rust_box_drop_f64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
     elseif T == Bool
-        fn_ptr = Libdl.dlsym(lib, :rust_box_drop_bool)
+        fn_ptr = safe_dlsym(lib, :rust_box_drop_bool)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
     else
         # Fallback to generic drop (unsafe)
-        fn_ptr = Libdl.dlsym(lib, :rust_box_drop)
+        fn_ptr = safe_dlsym(lib, :rust_box_drop)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), box.ptr)
     end
 
@@ -286,11 +301,11 @@ function create_rust_rc(value::T) where T
     lib = get_rust_helpers_lib()
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_rc_new_i32)
+        fn_ptr = safe_dlsym(lib, :rust_rc_new_i32)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
         return RustRc{Int32}(ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_rc_new_i64)
+        fn_ptr = safe_dlsym(lib, :rust_rc_new_i64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
         return RustRc{Int64}(ptr)
     else
@@ -316,11 +331,11 @@ function clone(rc::RustRc{T}) where T
 
     # Use type-specific clone functions
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_rc_clone_i32)
+        fn_ptr = safe_dlsym(lib, :rust_rc_clone_i32)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
         return RustRc{Int32}(new_ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_rc_clone_i64)
+        fn_ptr = safe_dlsym(lib, :rust_rc_clone_i64)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
         return RustRc{Int64}(new_ptr)
     else
@@ -354,10 +369,10 @@ function drop_rust_rc(rc::RustRc{T}) where T
     end
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_rc_drop_i32)
+        fn_ptr = safe_dlsym(lib, :rust_rc_drop_i32)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_rc_drop_i64)
+        fn_ptr = safe_dlsym(lib, :rust_rc_drop_i64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), rc.ptr)
     else
         error("Unsupported type for RustRc drop: $T")
@@ -391,15 +406,15 @@ function create_rust_arc(value::T) where T
     lib = get_rust_helpers_lib()
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_new_i32)
+        fn_ptr = safe_dlsym(lib, :rust_arc_new_i32)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
         return RustArc{Int32}(ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_new_i64)
+        fn_ptr = safe_dlsym(lib, :rust_arc_new_i64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
         return RustArc{Int64}(ptr)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_new_f64)
+        fn_ptr = safe_dlsym(lib, :rust_arc_new_f64)
         ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
         return RustArc{Float64}(ptr)
     else
@@ -425,15 +440,15 @@ function clone(arc::RustArc{T}) where T
 
     # Use type-specific clone functions
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_clone_i32)
+        fn_ptr = safe_dlsym(lib, :rust_arc_clone_i32)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
         return RustArc{Int32}(new_ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_clone_i64)
+        fn_ptr = safe_dlsym(lib, :rust_arc_clone_i64)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
         return RustArc{Int64}(new_ptr)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_clone_f64)
+        fn_ptr = safe_dlsym(lib, :rust_arc_clone_f64)
         new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
         return RustArc{Float64}(new_ptr)
     else
@@ -467,13 +482,13 @@ function drop_rust_arc(arc::RustArc{T}) where T
     end
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_drop_i32)
+        fn_ptr = safe_dlsym(lib, :rust_arc_drop_i32)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_drop_i64)
+        fn_ptr = safe_dlsym(lib, :rust_arc_drop_i64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_arc_drop_f64)
+        fn_ptr = safe_dlsym(lib, :rust_arc_drop_f64)
         ccall(fn_ptr, Cvoid, (Ptr{Cvoid},), arc.ptr)
     else
         error("Unsupported type for RustArc drop: $T")
@@ -543,16 +558,16 @@ function drop_rust_vec(vec::RustVec{T}) where {T}
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_drop_i32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_drop_i32)
         ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_drop_i64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_drop_i64)
         ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_drop_f32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_drop_f32)
         ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_drop_f64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_drop_f64)
         ccall(fn_ptr, Cvoid, (CRustVec,), cvec)
     else
         error("Unsupported type for RustVec drop: $T. Supported types: Int32, Int64, Float32, Float64")
@@ -611,16 +626,16 @@ function create_rust_vec(v::Vector{T}) where T
     len = length(v)
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_i32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_i32)
         cvec = ccall(fn_ptr, CRustVec, (Ptr{Int32}, UInt), data_ptr, len)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_i64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_i64)
         cvec = ccall(fn_ptr, CRustVec, (Ptr{Int64}, UInt), data_ptr, len)
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_f32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_f32)
         cvec = ccall(fn_ptr, CRustVec, (Ptr{Float32}, UInt), data_ptr, len)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_f64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_f64)
         cvec = ccall(fn_ptr, CRustVec, (Ptr{Float64}, UInt), data_ptr, len)
     else
         error("Unsupported type for RustVec: $T. Supported types: Int32, Int64, Float32, Float64")
@@ -680,16 +695,16 @@ function rust_vec_get(vec::RustVec{T}, index::Integer) where T
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_get_i32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_get_i32)
         return ccall(fn_ptr, Int32, (CRustVec, UInt), cvec, index)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_get_i64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_get_i64)
         return ccall(fn_ptr, Int64, (CRustVec, UInt), cvec, index)
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_get_f32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_get_f32)
         return ccall(fn_ptr, Float32, (CRustVec, UInt), cvec, index)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_get_f64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_get_f64)
         return ccall(fn_ptr, Float64, (CRustVec, UInt), cvec, index)
     else
         error("Unsupported type for RustVec get: $T")
@@ -718,19 +733,19 @@ function rust_vec_set!(vec::RustVec{T}, index::Integer, value::T) where T
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_set_i32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_set_i32)
         result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Int32), cvec, index, value)
         return Bool(result != 0x00)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_set_i64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_set_i64)
         result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Int64), cvec, index, value)
         return Bool(result != 0x00)
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_set_f32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_set_f32)
         result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Float32), cvec, index, value)
         return Bool(result != 0x00)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_set_f64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_set_f64)
         result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Float64), cvec, index, value)
         return Bool(result != 0x00)
     else
@@ -761,16 +776,16 @@ function Base.push!(vec::RustVec{T}, value::T) where T
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_push_i32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_push_i32)
         new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Int32), cvec, value)
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_push_i64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_push_i64)
         new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Int64), cvec, value)
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_push_f32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_push_f32)
         new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Float32), cvec, value)
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_push_f64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_push_f64)
         new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Float64), cvec, value)
     else
         error("Unsupported type for RustVec push: $T")
@@ -845,16 +860,16 @@ function copy_to_julia!(vec::RustVec{T}, dest::Vector{T}) where T
     dest_len = length(dest)
 
     if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_copy_to_array_i32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_i32)
         return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Int32}, UInt), cvec, dest_ptr, dest_len))
     elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_copy_to_array_i64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_i64)
         return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Int64}, UInt), cvec, dest_ptr, dest_len))
     elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_copy_to_array_f32)
+        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_f32)
         return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Float32}, UInt), cvec, dest_ptr, dest_len))
     elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_copy_to_array_f64)
+        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_f64)
         return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Float64}, UInt), cvec, dest_ptr, dest_len))
     else
         error("Unsupported type for RustVec copy: $T")
