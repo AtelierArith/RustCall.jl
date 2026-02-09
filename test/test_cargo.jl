@@ -52,6 +52,26 @@ using Test
         @test !occursin("]\n", escaped)
     end
 
+    @testset "escape_toml_string injection prevention (#114)" begin
+        # Fuzz-style: ensure no raw control chars survive escaping
+        attack_strings = [
+            "",
+            "a\"b",
+            "a\\b",
+            "a\nb\rc\td",
+            "]]]\n[package]",
+            "= \"pwned\"",
+            "\\\"\n[evil]\nkey = \"val\"",
+            "a\\\\\"b",  # escaped backslash then quote
+        ]
+        for s in attack_strings
+            escaped = RustCall.escape_toml_string(s)
+            @test !occursin('\n', escaped)
+            @test !occursin('\r', escaped)
+            @test !occursin('\t', escaped)
+        end
+    end
+
     @testset "format_dependency_line" begin
         # Simple version
         dep1 = DependencySpec("ndarray", version="0.15")
