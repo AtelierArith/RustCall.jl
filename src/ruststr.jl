@@ -558,30 +558,79 @@ function extract_function_code(code::String, func_name::String)
     start_idx = m.offset
     code_after_start = code[start_idx:end]
 
-    # Find matching closing brace
+    # Find matching closing brace with proper string/comment/escape handling
     brace_count = 0
-    in_string = false
-    string_char = nothing
+    i = 1
+    len = ncodeunits(code_after_start)
 
-    for (i, char) in enumerate(code_after_start)
-        if char == '"' || char == '\''
-            if !in_string
-                in_string = true
-                string_char = char
-            elseif char == string_char
-                in_string = false
-                string_char = nothing
-            end
-        elseif !in_string
-            if char == '{'
-                brace_count += 1
-            elseif char == '}'
-                brace_count -= 1
-                if brace_count == 0
-                    return String(code_after_start[1:i])
+    while i <= len
+        c = code_after_start[i]
+
+        if c == '"'
+            # String literal — skip until unescaped closing quote
+            i = nextind(code_after_start, i)
+            while i <= len
+                sc = code_after_start[i]
+                if sc == '\\'
+                    # Skip escaped character
+                    i = nextind(code_after_start, i)
+                    if i <= len
+                        i = nextind(code_after_start, i)
+                    end
+                    continue
+                elseif sc == '"'
+                    break
                 end
+                i = nextind(code_after_start, i)
+            end
+        elseif c == '\''
+            # Character literal — skip until unescaped closing quote
+            i = nextind(code_after_start, i)
+            while i <= len
+                sc = code_after_start[i]
+                if sc == '\\'
+                    i = nextind(code_after_start, i)
+                    if i <= len
+                        i = nextind(code_after_start, i)
+                    end
+                    continue
+                elseif sc == '\''
+                    break
+                end
+                i = nextind(code_after_start, i)
+            end
+        elseif c == '/' && i < len
+            next_c = code_after_start[nextind(code_after_start, i)]
+            if next_c == '/'
+                # Line comment — skip to end of line
+                while i <= len && code_after_start[i] != '\n'
+                    i = nextind(code_after_start, i)
+                end
+            elseif next_c == '*'
+                # Block comment — skip to */
+                i = nextind(code_after_start, i)  # skip /
+                i = nextind(code_after_start, i)  # skip *
+                while i <= len
+                    if code_after_start[i] == '*' && i < len &&
+                       code_after_start[nextind(code_after_start, i)] == '/'
+                        i = nextind(code_after_start, i)  # skip /
+                        break
+                    end
+                    i = nextind(code_after_start, i)
+                end
+            else
+                # Not a comment, just a slash — skip
+            end
+        elseif c == '{'
+            brace_count += 1
+        elseif c == '}'
+            brace_count -= 1
+            if brace_count == 0
+                return String(code_after_start[1:i])
             end
         end
+
+        i = nextind(code_after_start, i)
     end
 
     return nothing
