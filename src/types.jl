@@ -493,6 +493,7 @@ mutable struct RustVec{T}
     dropped::Bool
 
     function RustVec{T}(ptr::Ptr{Cvoid}, len::UInt, cap::UInt) where {T}
+        isbitstype(T) || error("RustVec only supports isbits types, got $T")
         vec = new{T}(ptr, len, cap, false)
         finalizer(vec) do v
             if !v.dropped && v.ptr != C_NULL
@@ -589,12 +590,8 @@ function Base.getindex(vec::RustVec{T}, i::Int) where {T}
         throw(BoundsError(vec, i))
     end
 
-    # Convert to 0-based index for pointer arithmetic
-    idx = i - 1
-    # Get pointer to the element
-    elem_ptr = vec.ptr + idx * sizeof(T)
-    # Read the value
-    unsafe_load(Ptr{T}(elem_ptr))
+    # Use typed pointer with 1-based index (Julia's unsafe_load handles stride)
+    unsafe_load(Ptr{T}(vec.ptr), i)
 end
 
 """
@@ -628,12 +625,8 @@ function Base.setindex!(vec::RustVec{T}, value, i::Int) where {T}
     # Convert value to type T
     typed_value = convert(T, value)
 
-    # Convert to 0-based index for pointer arithmetic
-    idx = i - 1
-    # Get pointer to the element
-    elem_ptr = vec.ptr + idx * sizeof(T)
-    # Write the value
-    unsafe_store!(Ptr{T}(elem_ptr), typed_value)
+    # Use typed pointer with 1-based index (Julia's unsafe_store! handles stride)
+    unsafe_store!(Ptr{T}(vec.ptr), typed_value, i)
     return value
 end
 
@@ -660,12 +653,8 @@ function Base.getindex(slice::RustSlice{T}, i::Int) where {T}
         throw(BoundsError(slice, i))
     end
 
-    # Convert to 0-based index for pointer arithmetic
-    idx = i - 1
-    # Get pointer to the element
-    elem_ptr = slice.ptr + idx * sizeof(T)
-    # Read the value
-    unsafe_load(elem_ptr)
+    # Use typed pointer with 1-based index (Julia's unsafe_load handles stride)
+    unsafe_load(slice.ptr, i)
 end
 
 # ============================================================================

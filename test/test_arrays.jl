@@ -182,6 +182,17 @@ end
         end
     end
 
+    @testset "RustVec isbitstype validation" begin
+        # isbits types should work
+        @test_nowarn RustVec{Int32}(C_NULL, UInt(0), UInt(0))
+        @test_nowarn RustVec{Float64}(C_NULL, UInt(0), UInt(0))
+
+        # Non-isbits types should be rejected
+        @test_throws ErrorException RustVec{String}(C_NULL, UInt(0), UInt(0))
+        @test_throws ErrorException RustVec{Any}(C_NULL, UInt(0), UInt(0))
+        @test_throws ErrorException RustVec{Vector{Int}}(C_NULL, UInt(0), UInt(0))
+    end
+
     @testset "RustVec Type Constructors" begin
         # Test generic constructor handles all supported types via type inference
         # The generic RustVec(v::Vector{T}) where T handles these automatically
