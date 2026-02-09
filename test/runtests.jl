@@ -81,13 +81,14 @@ include("test_regressions.jl")
 
         # Test string types
         @test rusttype_to_julia("String") == RustString
-        @test rusttype_to_julia("&str") == Cstring
-        @test rusttype_to_julia("str") == Cstring
+        @test rusttype_to_julia("&str") == RustStr  # &str is a fat pointer (issue #89)
+        @test rusttype_to_julia("str") == Cstring    # bare str maps to Cstring
         @test rusttype_to_julia("*const u8") == Cstring
         @test rusttype_to_julia("*mut u8") == Ptr{UInt8}
         @test juliatype_to_rust(String) == "*const u8"
         @test juliatype_to_rust(Cstring) == "*const u8"
         @test juliatype_to_rust(RustString) == "String"
+        @test juliatype_to_rust(RustStr) == "&str"   # RustStr round-trips to &str (issue #89)
     end
 
     @testset "RustResult" begin
