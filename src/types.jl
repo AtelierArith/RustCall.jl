@@ -815,44 +815,7 @@ This function requires the Rust helpers library to be built.
 The data is copied to Rust-managed memory.
 """
 function RustVec(v::Vector{T}) where T
-    # Check if Rust helpers library is available
-    if !is_rust_helpers_available()
-        error("""
-        RustVec creation from Julia Vector requires the Rust helpers library.
-        Build it with: using Pkg; Pkg.build("RustCall")
-        """)
-    end
-
-    lib = get_rust_helpers_lib()
-    if lib === nothing
-        error("Rust helpers library not loaded")
-    end
-
-    # Get pointer to data and length
-    data_ptr = pointer(v)
-    len = length(v)
-
-    # Call appropriate FFI function based on type
-    if T == Int32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_i32)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Int32}, UInt), data_ptr, len)
-    elseif T == Int64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_i64)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Int64}, UInt), data_ptr, len)
-    elseif T == Float32
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_f32)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Float32}, UInt), data_ptr, len)
-    elseif T == Float64
-        fn_ptr = Libdl.dlsym(lib, :rust_vec_new_from_array_f64)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Float64}, UInt), data_ptr, len)
-    else
-        error("Unsupported type for RustVec creation: $T. Supported types: Int32, Int64, Float32, Float64")
-    end
-
-    # Create RustVec from CVec
-    vec = RustVec{T}(cvec.ptr, UInt(cvec.len), UInt(cvec.cap))
-
-    return vec
+    return create_rust_vec(v)
 end
 
 # Note: Type-specific constructors are not needed because

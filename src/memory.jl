@@ -343,6 +343,160 @@ function try_load_rust_helpers()
 end
 
 # ============================================================================
+# Type-dispatch helpers for Rust helper symbols
+# ============================================================================
+
+# Box<T> supports Bool in addition to numeric primitives.
+_rust_box_new_symbol(::Type{Int32}) = :rust_box_new_i32
+_rust_box_new_symbol(::Type{Int64}) = :rust_box_new_i64
+_rust_box_new_symbol(::Type{Float32}) = :rust_box_new_f32
+_rust_box_new_symbol(::Type{Float64}) = :rust_box_new_f64
+_rust_box_new_symbol(::Type{Bool}) = :rust_box_new_bool
+_rust_box_new_symbol(::Type{T}) where {T} = error("Unsupported type for RustBox: $T")
+
+_rust_box_drop_symbol(::Type{Int32}) = :rust_box_drop_i32
+_rust_box_drop_symbol(::Type{Int64}) = :rust_box_drop_i64
+_rust_box_drop_symbol(::Type{Float32}) = :rust_box_drop_f32
+_rust_box_drop_symbol(::Type{Float64}) = :rust_box_drop_f64
+_rust_box_drop_symbol(::Type{Bool}) = :rust_box_drop_bool
+_rust_box_drop_symbol(::Type) = :rust_box_drop
+
+_rust_rc_new_symbol(::Type{Int32}) = :rust_rc_new_i32
+_rust_rc_new_symbol(::Type{Int64}) = :rust_rc_new_i64
+_rust_rc_new_symbol(::Type{Float32}) = :rust_rc_new_f32
+_rust_rc_new_symbol(::Type{Float64}) = :rust_rc_new_f64
+_rust_rc_new_symbol(::Type{T}) where {T} = error("Unsupported type for RustRc: $T")
+
+_rust_rc_clone_symbol(::Type{Int32}) = :rust_rc_clone_i32
+_rust_rc_clone_symbol(::Type{Int64}) = :rust_rc_clone_i64
+_rust_rc_clone_symbol(::Type{Float32}) = :rust_rc_clone_f32
+_rust_rc_clone_symbol(::Type{Float64}) = :rust_rc_clone_f64
+_rust_rc_clone_symbol(::Type{T}) where {T} = error("Unsupported type for RustRc clone: $T")
+
+_rust_rc_drop_symbol(::Type{Int32}) = :rust_rc_drop_i32
+_rust_rc_drop_symbol(::Type{Int64}) = :rust_rc_drop_i64
+_rust_rc_drop_symbol(::Type{Float32}) = :rust_rc_drop_f32
+_rust_rc_drop_symbol(::Type{Float64}) = :rust_rc_drop_f64
+_rust_rc_drop_symbol(::Type) = nothing
+
+_rust_arc_new_symbol(::Type{Int32}) = :rust_arc_new_i32
+_rust_arc_new_symbol(::Type{Int64}) = :rust_arc_new_i64
+_rust_arc_new_symbol(::Type{Float32}) = :rust_arc_new_f32
+_rust_arc_new_symbol(::Type{Float64}) = :rust_arc_new_f64
+_rust_arc_new_symbol(::Type{T}) where {T} = error("Unsupported type for RustArc: $T")
+
+_rust_arc_clone_symbol(::Type{Int32}) = :rust_arc_clone_i32
+_rust_arc_clone_symbol(::Type{Int64}) = :rust_arc_clone_i64
+_rust_arc_clone_symbol(::Type{Float32}) = :rust_arc_clone_f32
+_rust_arc_clone_symbol(::Type{Float64}) = :rust_arc_clone_f64
+_rust_arc_clone_symbol(::Type{T}) where {T} = error("Unsupported type for RustArc clone: $T")
+
+_rust_arc_drop_symbol(::Type{Int32}) = :rust_arc_drop_i32
+_rust_arc_drop_symbol(::Type{Int64}) = :rust_arc_drop_i64
+_rust_arc_drop_symbol(::Type{Float32}) = :rust_arc_drop_f32
+_rust_arc_drop_symbol(::Type{Float64}) = :rust_arc_drop_f64
+_rust_arc_drop_symbol(::Type) = nothing
+
+_rust_vec_new_symbol(::Type{Int32}) = :rust_vec_new_from_array_i32
+_rust_vec_new_symbol(::Type{Int64}) = :rust_vec_new_from_array_i64
+_rust_vec_new_symbol(::Type{Float32}) = :rust_vec_new_from_array_f32
+_rust_vec_new_symbol(::Type{Float64}) = :rust_vec_new_from_array_f64
+_rust_vec_new_symbol(::Type{T}) where {T} =
+    error("Unsupported type for RustVec: $T. Supported types: Int32, Int64, Float32, Float64")
+
+_rust_vec_drop_symbol(::Type{Int32}) = :rust_vec_drop_i32
+_rust_vec_drop_symbol(::Type{Int64}) = :rust_vec_drop_i64
+_rust_vec_drop_symbol(::Type{Float32}) = :rust_vec_drop_f32
+_rust_vec_drop_symbol(::Type{Float64}) = :rust_vec_drop_f64
+_rust_vec_drop_symbol(::Type) = nothing
+
+_rust_vec_get_symbol(::Type{Int32}) = :rust_vec_get_i32
+_rust_vec_get_symbol(::Type{Int64}) = :rust_vec_get_i64
+_rust_vec_get_symbol(::Type{Float32}) = :rust_vec_get_f32
+_rust_vec_get_symbol(::Type{Float64}) = :rust_vec_get_f64
+_rust_vec_get_symbol(::Type{T}) where {T} = error("Unsupported type for RustVec get: $T")
+
+_rust_vec_set_symbol(::Type{Int32}) = :rust_vec_set_i32
+_rust_vec_set_symbol(::Type{Int64}) = :rust_vec_set_i64
+_rust_vec_set_symbol(::Type{Float32}) = :rust_vec_set_f32
+_rust_vec_set_symbol(::Type{Float64}) = :rust_vec_set_f64
+_rust_vec_set_symbol(::Type{T}) where {T} = error("Unsupported type for RustVec set: $T")
+
+_rust_vec_push_symbol(::Type{Int32}) = :rust_vec_push_i32
+_rust_vec_push_symbol(::Type{Int64}) = :rust_vec_push_i64
+_rust_vec_push_symbol(::Type{Float32}) = :rust_vec_push_f32
+_rust_vec_push_symbol(::Type{Float64}) = :rust_vec_push_f64
+_rust_vec_push_symbol(::Type{T}) where {T} = error("Unsupported type for RustVec push: $T")
+
+_rust_vec_copy_symbol(::Type{Int32}) = :rust_vec_copy_to_array_i32
+_rust_vec_copy_symbol(::Type{Int64}) = :rust_vec_copy_to_array_i64
+_rust_vec_copy_symbol(::Type{Float32}) = :rust_vec_copy_to_array_f32
+_rust_vec_copy_symbol(::Type{Float64}) = :rust_vec_copy_to_array_f64
+_rust_vec_copy_symbol(::Type{T}) where {T} = error("Unsupported type for RustVec copy: $T")
+
+# Concrete ccall signatures for operations that cannot use TypeVars in tuple signatures.
+_ccall_box_new(fn_ptr::Ptr{Cvoid}, value::Int32) = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
+_ccall_box_new(fn_ptr::Ptr{Cvoid}, value::Int64) = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
+_ccall_box_new(fn_ptr::Ptr{Cvoid}, value::Float32) = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
+_ccall_box_new(fn_ptr::Ptr{Cvoid}, value::Float64) = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
+_ccall_box_new(fn_ptr::Ptr{Cvoid}, value::Bool) = ccall(fn_ptr, Ptr{Cvoid}, (Bool,), value)
+
+_ccall_rc_new(fn_ptr::Ptr{Cvoid}, value::Int32) = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
+_ccall_rc_new(fn_ptr::Ptr{Cvoid}, value::Int64) = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
+_ccall_rc_new(fn_ptr::Ptr{Cvoid}, value::Float32) = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
+_ccall_rc_new(fn_ptr::Ptr{Cvoid}, value::Float64) = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
+
+_ccall_arc_new(fn_ptr::Ptr{Cvoid}, value::Int32) = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
+_ccall_arc_new(fn_ptr::Ptr{Cvoid}, value::Int64) = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
+_ccall_arc_new(fn_ptr::Ptr{Cvoid}, value::Float32) = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
+_ccall_arc_new(fn_ptr::Ptr{Cvoid}, value::Float64) = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
+
+_ccall_vec_new(fn_ptr::Ptr{Cvoid}, data_ptr::Ptr{Int32}, len::Integer) =
+    ccall(fn_ptr, CRustVec, (Ptr{Int32}, UInt), data_ptr, len)
+_ccall_vec_new(fn_ptr::Ptr{Cvoid}, data_ptr::Ptr{Int64}, len::Integer) =
+    ccall(fn_ptr, CRustVec, (Ptr{Int64}, UInt), data_ptr, len)
+_ccall_vec_new(fn_ptr::Ptr{Cvoid}, data_ptr::Ptr{Float32}, len::Integer) =
+    ccall(fn_ptr, CRustVec, (Ptr{Float32}, UInt), data_ptr, len)
+_ccall_vec_new(fn_ptr::Ptr{Cvoid}, data_ptr::Ptr{Float64}, len::Integer) =
+    ccall(fn_ptr, CRustVec, (Ptr{Float64}, UInt), data_ptr, len)
+
+_ccall_vec_get(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, ::Type{Int32}) =
+    ccall(fn_ptr, Int32, (CRustVec, UInt), cvec, index)
+_ccall_vec_get(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, ::Type{Int64}) =
+    ccall(fn_ptr, Int64, (CRustVec, UInt), cvec, index)
+_ccall_vec_get(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, ::Type{Float32}) =
+    ccall(fn_ptr, Float32, (CRustVec, UInt), cvec, index)
+_ccall_vec_get(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, ::Type{Float64}) =
+    ccall(fn_ptr, Float64, (CRustVec, UInt), cvec, index)
+
+_ccall_vec_set(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, value::Int32) =
+    ccall(fn_ptr, UInt8, (CRustVec, UInt, Int32), cvec, index, value)
+_ccall_vec_set(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, value::Int64) =
+    ccall(fn_ptr, UInt8, (CRustVec, UInt, Int64), cvec, index, value)
+_ccall_vec_set(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, value::Float32) =
+    ccall(fn_ptr, UInt8, (CRustVec, UInt, Float32), cvec, index, value)
+_ccall_vec_set(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, index::Integer, value::Float64) =
+    ccall(fn_ptr, UInt8, (CRustVec, UInt, Float64), cvec, index, value)
+
+_ccall_vec_push(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, value::Int32) =
+    ccall(fn_ptr, CRustVec, (CRustVec, Int32), cvec, value)
+_ccall_vec_push(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, value::Int64) =
+    ccall(fn_ptr, CRustVec, (CRustVec, Int64), cvec, value)
+_ccall_vec_push(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, value::Float32) =
+    ccall(fn_ptr, CRustVec, (CRustVec, Float32), cvec, value)
+_ccall_vec_push(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, value::Float64) =
+    ccall(fn_ptr, CRustVec, (CRustVec, Float64), cvec, value)
+
+_ccall_vec_copy(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, dest_ptr::Ptr{Int32}, dest_len::Integer) =
+    Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Int32}, UInt), cvec, dest_ptr, dest_len))
+_ccall_vec_copy(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, dest_ptr::Ptr{Int64}, dest_len::Integer) =
+    Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Int64}, UInt), cvec, dest_ptr, dest_len))
+_ccall_vec_copy(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, dest_ptr::Ptr{Float32}, dest_len::Integer) =
+    Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Float32}, UInt), cvec, dest_ptr, dest_len))
+_ccall_vec_copy(fn_ptr::Ptr{Cvoid}, cvec::CRustVec, dest_ptr::Ptr{Float64}, dest_len::Integer) =
+    Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Float64}, UInt), cvec, dest_ptr, dest_len))
+
+# ============================================================================
 # Box<T> creation and management
 # ============================================================================
 
@@ -359,30 +513,9 @@ function create_rust_box(value::T) where T
 
     lib = get_rust_helpers_lib()
 
-    # Dispatch based on type - use dlsym to get function pointer
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_box_new_i32)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
-        return RustBox{Int32}(ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_box_new_i64)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
-        return RustBox{Int64}(ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_box_new_f32)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
-        return RustBox{Float32}(ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_box_new_f64)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
-        return RustBox{Float64}(ptr)
-    elseif T == Bool
-        fn_ptr = safe_dlsym(lib, :rust_box_new_bool)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Bool,), value)
-        return RustBox{Bool}(ptr)
-    else
-        error("Unsupported type for RustBox: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_box_new_symbol(T))
+    ptr = _ccall_box_new(fn_ptr, value)
+    return RustBox{T}(ptr)
 end
 
 """
@@ -401,20 +534,7 @@ function drop_rust_box(box::RustBox{T}) where T
             return nothing
         end
 
-        # Determine the drop symbol for this type
-        drop_sym = if T == Int32
-            :rust_box_drop_i32
-        elseif T == Int64
-            :rust_box_drop_i64
-        elseif T == Float32
-            :rust_box_drop_f32
-        elseif T == Float64
-            :rust_box_drop_f64
-        elseif T == Bool
-            :rust_box_drop_bool
-        else
-            :rust_box_drop
-        end
+        drop_sym = _rust_box_drop_symbol(T)
 
         lib = get_rust_helpers_lib()
         if lib === nothing
@@ -454,25 +574,9 @@ function create_rust_rc(value::T) where T
 
     lib = get_rust_helpers_lib()
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_rc_new_i32)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
-        return RustRc{Int32}(ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_rc_new_i64)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
-        return RustRc{Int64}(ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_rc_new_f32)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
-        return RustRc{Float32}(ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_rc_new_f64)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
-        return RustRc{Float64}(ptr)
-    else
-        error("Unsupported type for RustRc: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_rc_new_symbol(T))
+    ptr = _ccall_rc_new(fn_ptr, value)
+    return RustRc{T}(ptr)
 end
 
 """
@@ -491,26 +595,9 @@ function clone(rc::RustRc{T}) where T
 
     lib = get_rust_helpers_lib()
 
-    # Use type-specific clone functions
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_rc_clone_i32)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
-        return RustRc{Int32}(new_ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_rc_clone_i64)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
-        return RustRc{Int64}(new_ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_rc_clone_f32)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
-        return RustRc{Float32}(new_ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_rc_clone_f64)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
-        return RustRc{Float64}(new_ptr)
-    else
-        error("Unsupported type for RustRc clone: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_rc_clone_symbol(T))
+    new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
+    return RustRc{T}(new_ptr)
 end
 
 """
@@ -529,15 +616,8 @@ function drop_rust_rc(rc::RustRc{T}) where T
             return nothing
         end
 
-        drop_sym = if T == Int32
-            :rust_rc_drop_i32
-        elseif T == Int64
-            :rust_rc_drop_i64
-        elseif T == Float32
-            :rust_rc_drop_f32
-        elseif T == Float64
-            :rust_rc_drop_f64
-        else
+        drop_sym = _rust_rc_drop_symbol(T)
+        if drop_sym === nothing
             # Unsupported type — mark as dropped without calling Rust drop
             @debug "No Rust drop function for RustRc{$T}, marking as dropped"
             rc.dropped = true
@@ -583,25 +663,9 @@ function create_rust_arc(value::T) where T
 
     lib = get_rust_helpers_lib()
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_arc_new_i32)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int32,), value)
-        return RustArc{Int32}(ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_arc_new_i64)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Int64,), value)
-        return RustArc{Int64}(ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_arc_new_f32)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float32,), value)
-        return RustArc{Float32}(ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_arc_new_f64)
-        ptr = ccall(fn_ptr, Ptr{Cvoid}, (Float64,), value)
-        return RustArc{Float64}(ptr)
-    else
-        error("Unsupported type for RustArc: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_arc_new_symbol(T))
+    ptr = _ccall_arc_new(fn_ptr, value)
+    return RustArc{T}(ptr)
 end
 
 """
@@ -620,26 +684,9 @@ function clone(arc::RustArc{T}) where T
 
     lib = get_rust_helpers_lib()
 
-    # Use type-specific clone functions
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_arc_clone_i32)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
-        return RustArc{Int32}(new_ptr)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_arc_clone_i64)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
-        return RustArc{Int64}(new_ptr)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_arc_clone_f32)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
-        return RustArc{Float32}(new_ptr)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_arc_clone_f64)
-        new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
-        return RustArc{Float64}(new_ptr)
-    else
-        error("Unsupported type for RustArc clone: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_arc_clone_symbol(T))
+    new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
+    return RustArc{T}(new_ptr)
 end
 
 """
@@ -658,15 +705,8 @@ function drop_rust_arc(arc::RustArc{T}) where T
             return nothing
         end
 
-        drop_sym = if T == Int32
-            :rust_arc_drop_i32
-        elseif T == Int64
-            :rust_arc_drop_i64
-        elseif T == Float32
-            :rust_arc_drop_f32
-        elseif T == Float64
-            :rust_arc_drop_f64
-        else
+        drop_sym = _rust_arc_drop_symbol(T)
+        if drop_sym === nothing
             # Unsupported type — mark as dropped without calling Rust drop
             @debug "No Rust drop function for RustArc{$T}, marking as dropped"
             arc.dropped = true
@@ -738,15 +778,8 @@ function drop_rust_vec(vec::RustVec{T}) where {T}
             return nothing
         end
 
-        drop_sym = if T == Int32
-            :rust_vec_drop_i32
-        elseif T == Int64
-            :rust_vec_drop_i64
-        elseif T == Float32
-            :rust_vec_drop_f32
-        elseif T == Float64
-            :rust_vec_drop_f64
-        else
+        drop_sym = _rust_vec_drop_symbol(T)
+        if drop_sym === nothing
             # Unsupported type — mark as dropped without calling Rust drop
             @debug "No Rust drop function for RustVec{$T}, marking as dropped"
             vec.dropped = true
@@ -818,21 +851,8 @@ function create_rust_vec(v::Vector{T}) where T
     data_ptr = pointer(v)
     len = length(v)
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_i32)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Int32}, UInt), data_ptr, len)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_i64)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Int64}, UInt), data_ptr, len)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_f32)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Float32}, UInt), data_ptr, len)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_vec_new_from_array_f64)
-        cvec = ccall(fn_ptr, CRustVec, (Ptr{Float64}, UInt), data_ptr, len)
-    else
-        error("Unsupported type for RustVec: $T. Supported types: Int32, Int64, Float32, Float64")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_vec_new_symbol(T))
+    cvec = _ccall_vec_new(fn_ptr, data_ptr, len)
 
     return RustVec{T}(cvec.ptr, UInt(cvec.len), UInt(cvec.cap))
 end
@@ -887,21 +907,8 @@ function rust_vec_get(vec::RustVec{T}, index::Integer) where T
     lib = get_rust_helpers_lib()
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_vec_get_i32)
-        return ccall(fn_ptr, Int32, (CRustVec, UInt), cvec, index)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_vec_get_i64)
-        return ccall(fn_ptr, Int64, (CRustVec, UInt), cvec, index)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_vec_get_f32)
-        return ccall(fn_ptr, Float32, (CRustVec, UInt), cvec, index)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_vec_get_f64)
-        return ccall(fn_ptr, Float64, (CRustVec, UInt), cvec, index)
-    else
-        error("Unsupported type for RustVec get: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_vec_get_symbol(T))
+    return _ccall_vec_get(fn_ptr, cvec, index, T)
 end
 
 """
@@ -925,25 +932,9 @@ function rust_vec_set!(vec::RustVec{T}, index::Integer, value::T) where T
     lib = get_rust_helpers_lib()
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_vec_set_i32)
-        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Int32), cvec, index, value)
-        return Bool(result != 0x00)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_vec_set_i64)
-        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Int64), cvec, index, value)
-        return Bool(result != 0x00)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_vec_set_f32)
-        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Float32), cvec, index, value)
-        return Bool(result != 0x00)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_vec_set_f64)
-        result = ccall(fn_ptr, UInt8, (CRustVec, UInt, Float64), cvec, index, value)
-        return Bool(result != 0x00)
-    else
-        error("Unsupported type for RustVec set: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_vec_set_symbol(T))
+    result = _ccall_vec_set(fn_ptr, cvec, index, value)
+    return Bool(result != 0x00)
 end
 
 # ============================================================================
@@ -968,21 +959,8 @@ function Base.push!(vec::RustVec{T}, value::T) where T
     lib = get_rust_helpers_lib()
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_vec_push_i32)
-        new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Int32), cvec, value)
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_vec_push_i64)
-        new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Int64), cvec, value)
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_vec_push_f32)
-        new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Float32), cvec, value)
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_vec_push_f64)
-        new_cvec = ccall(fn_ptr, CRustVec, (CRustVec, Float64), cvec, value)
-    else
-        error("Unsupported type for RustVec push: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_vec_push_symbol(T))
+    new_cvec = _ccall_vec_push(fn_ptr, cvec, value)
 
     # Update vec in place
     vec.ptr = new_cvec.ptr
@@ -1052,21 +1030,8 @@ function copy_to_julia!(vec::RustVec{T}, dest::Vector{T}) where T
     dest_ptr = pointer(dest)
     dest_len = length(dest)
 
-    if T == Int32
-        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_i32)
-        return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Int32}, UInt), cvec, dest_ptr, dest_len))
-    elseif T == Int64
-        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_i64)
-        return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Int64}, UInt), cvec, dest_ptr, dest_len))
-    elseif T == Float32
-        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_f32)
-        return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Float32}, UInt), cvec, dest_ptr, dest_len))
-    elseif T == Float64
-        fn_ptr = safe_dlsym(lib, :rust_vec_copy_to_array_f64)
-        return Int(ccall(fn_ptr, UInt, (CRustVec, Ptr{Float64}, UInt), cvec, dest_ptr, dest_len))
-    else
-        error("Unsupported type for RustVec copy: $T")
-    end
+    fn_ptr = safe_dlsym(lib, _rust_vec_copy_symbol(T))
+    return _ccall_vec_copy(fn_ptr, cvec, dest_ptr, dest_len)
 end
 
 """
