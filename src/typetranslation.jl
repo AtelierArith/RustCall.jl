@@ -162,6 +162,7 @@ juliatype_to_rust(Cstring) # => "*const u8"
 ```
 """
 juliatype_to_rust(::Type{String}) = "*const u8"  # String is passed as *const u8 in FFI
+juliatype_to_rust(::Type{Cstring}) = "*const u8"
 juliatype_to_rust(::Type{RustString}) = "String"
 juliatype_to_rust(::Type{RustStr}) = "&str"  # RustStr represents Rust's &str
 juliatype_to_rust(::Type{Int}) = Sys.WORD_SIZE == 64 ? "i64" : "i32"
