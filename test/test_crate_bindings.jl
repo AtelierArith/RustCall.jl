@@ -191,6 +191,28 @@ end
         end
     end
 
+    @testset "Wrapper crate artifact survives cleanup" begin
+        # Repro for wrapper cleanup bug: crates without [lib].crate-type used wrapper crates.
+        tmp_crate = mktempdir(prefix="rustcall_wrapper_test_")
+        mkpath(joinpath(tmp_crate, "src"))
+        write(joinpath(tmp_crate, "Cargo.toml"), """
+[package]
+name = "wrapper_test_crate"
+version = "0.1.0"
+edition = "2021"
+""")
+        write(joinpath(tmp_crate, "src", "lib.rs"), "pub fn noop() {}\n")
+
+        mod_name = "WrapperArtifactTest_$(rand(UInt32))"
+        bindings = RustCall.generate_bindings(tmp_crate, output_module_name=mod_name, cache_enabled=false)
+        Core.eval(Main, bindings)
+        mod = getfield(Main, Symbol(mod_name))
+
+        # Module init runs during eval; verify the path it uses still exists.
+        @test isfile(getfield(mod, :_LIB_PATH))
+        @test_nowarn Base.invokelatest(getfield(mod, :__init__))
+    end
+
 end
 
 @testset "Result and Option Type Parsing" begin
@@ -268,6 +290,12 @@ end
         @test RustCall.is_option_type("Option<f64>")
         @test !RustCall.is_option_type("Result<f64, i32>")
         @test !RustCall.is_option_type("i32")
+    end
+
+    @testset "pointer type mapping" begin
+        @test string(RustCall._rust_type_to_julia_type_symbol("*const i32")) == "Ptr{Int32}"
+        @test string(RustCall._rust_type_to_julia_type_symbol("*mut f64")) == "Ptr{Float64}"
+        @test string(RustCall._rust_type_to_julia_type_symbol("*const UnknownType")) == "Ptr{Cvoid}"
     end
 end
 

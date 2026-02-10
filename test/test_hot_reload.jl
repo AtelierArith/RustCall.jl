@@ -218,6 +218,29 @@ end
         end
     end
 
+    @testset "Detect deleted source files" begin
+        tmp_crate = mktempdir(prefix="rustcall_hotreload_delete_")
+        src_dir = joinpath(tmp_crate, "src")
+        mkpath(src_dir)
+        src_file = joinpath(src_dir, "lib.rs")
+        write(src_file, "pub fn noop() {}\\n")
+
+        state = RustCall.HotReloadState(
+            tmp_crate,
+            "",
+            "DeleteDetection",
+            [src_file],
+            Dict(src_file => RustCall.get_file_mtime(src_file)),
+            nothing,
+            true,
+            nothing
+        )
+
+        rm(src_file, force=true)
+        @test RustCall.check_for_changes(state)
+        @test !(src_file in state.source_files)
+    end
+
     @testset "Callback support" begin
         empty!(RustCall.HOT_RELOAD_REGISTRY)
 
@@ -239,6 +262,51 @@ end
             @test state.rebuild_callback !== nothing
             @test state.rebuild_callback === my_callback
 
+        finally
+            RustCall.disable_all_hot_reload()
+            sleep(0.1)
+            empty!(RustCall.HOT_RELOAD_REGISTRY)
+        end
+    end
+
+    @testset "enable_hot_reload_for_crate refreshes @rust_crate module" begin
+        empty!(RustCall.HOT_RELOAD_REGISTRY)
+
+        tmp_crate = mktempdir(prefix="rustcall_hotreload_refresh_")
+        run(`cp -R $(SAMPLE_CRATE_PATH)/. $tmp_crate`)
+
+        # Fix local dependency path after copying to temp.
+        repo_root = dirname(@__DIR__)
+        macros_abs = joinpath(repo_root, "deps", "juliacall_macros")
+        cargo_toml = joinpath(tmp_crate, "Cargo.toml")
+        cargo_content = read(cargo_toml, String)
+        cargo_content = replace(cargo_content, "../../deps/juliacall_macros" => macros_abs)
+        write(cargo_toml, cargo_content)
+
+        mod_name = "HotReloadRefresh_$(rand(UInt32))"
+
+        try
+            Core.eval(Main, :(RustCall.@rust_crate $tmp_crate name=$mod_name cache=false))
+            mod = getfield(Main, Symbol(mod_name))
+
+            before = Base.invokelatest(mod.add, Int32(1), Int32(2))
+
+            state = RustCall.enable_hot_reload_for_crate(
+                tmp_crate,
+                module_name=mod_name,
+                module_scope=Main,
+                interval=0.1,
+            )
+
+            lib_rs = joinpath(tmp_crate, "src", "lib.rs")
+            code = read(lib_rs, String)
+            code2 = replace(code, "a + b" => "a + b + 100", count=1)
+            write(lib_rs, code2)
+
+            @test RustCall.trigger_reload(state.lib_name)
+
+            after = Base.invokelatest(mod.add, Int32(1), Int32(2))
+            @test after == before + 100
         finally
             RustCall.disable_all_hot_reload()
             sleep(0.1)
