@@ -57,13 +57,13 @@ using RustCall
         rust"""
         #[no_mangle]
         pub extern "C" fn string_length_tutorial(s: *const u8) -> u32 {
-            let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+            let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const std::os::raw::c_char) };
             c_str.to_bytes().len() as u32
         }
 
         #[no_mangle]
         pub extern "C" fn count_chars_tutorial(s: *const u8) -> u32 {
-            let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+            let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const std::os::raw::c_char) };
             let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
             utf8_str.chars().count() as u32
         }
@@ -242,12 +242,12 @@ using RustCall
         #[no_mangle]
         pub extern "C" fn find_substring(haystack: *const u8, needle: *const u8) -> i32 {
             let haystack_str = unsafe {
-                std::ffi::CStr::from_ptr(haystack as *const i8)
+                std::ffi::CStr::from_ptr(haystack as *const std::os::raw::c_char)
                     .to_str()
                     .unwrap_or("")
             };
             let needle_str = unsafe {
-                std::ffi::CStr::from_ptr(needle as *const i8)
+                std::ffi::CStr::from_ptr(needle as *const std::os::raw::c_char)
                     .to_str()
                     .unwrap_or("")
             };
@@ -269,7 +269,7 @@ using RustCall
         #[no_mangle]
         pub extern "C" fn count_words(text: *const u8) -> u32 {
             let text_str = unsafe {
-                std::ffi::CStr::from_ptr(text as *const i8)
+                std::ffi::CStr::from_ptr(text as *const std::os::raw::c_char)
                     .to_str()
                     .unwrap_or("")
             };
@@ -284,7 +284,7 @@ using RustCall
         rust"""
         #[no_mangle]
         pub extern "C" fn count_utf8_chars(s: *const u8) -> u32 {
-            let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+            let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const std::os::raw::c_char) };
             let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap_or("");
             utf8_str.chars().count() as u32
         }
@@ -367,7 +367,7 @@ using RustCall
         #[no_mangle]
         pub extern "C" fn validate_ip_address(ip: *const u8) -> bool {
             let ip_str = unsafe {
-                std::ffi::CStr::from_ptr(ip as *const i8)
+                std::ffi::CStr::from_ptr(ip as *const std::os::raw::c_char)
                     .to_str()
                     .unwrap_or("")
             };

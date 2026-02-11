@@ -2,6 +2,8 @@
 
 using Test
 using RustCall
+using RustToolChain: cargo
+import TOML
 
 # Path to the sample crate
 const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
@@ -160,7 +162,7 @@ end
 
     # Check if cargo is available
     try
-        run(pipeline(`cargo --version`, devnull))
+        run(pipeline(`$(cargo()) --version`, devnull))
     catch
         @warn "Cargo not available, skipping hot reload integration tests"
         return
@@ -243,6 +245,68 @@ end
             RustCall.disable_all_hot_reload()
             sleep(0.1)
             empty!(RustCall.HOT_RELOAD_REGISTRY)
+        end
+    end
+
+    @testset "enable_hot_reload_for_crate refreshes @rust_crate module" begin
+        empty!(RustCall.HOT_RELOAD_REGISTRY)
+        repo_root = normpath(joinpath(@__DIR__, ".."))
+        crate_path = mktempdir(prefix="rustcall_hotreload_refresh_")
+        try
+            # Copy sample_crate so we can modify lib.rs
+            for f in readdir(SAMPLE_CRATE_PATH)
+                src = joinpath(SAMPLE_CRATE_PATH, f)
+                dst = joinpath(crate_path, f)
+                if isdir(src)
+                    cp(src, dst)
+                else
+                    write(dst, read(src, String))
+                end
+            end
+            # Fix Cargo.toml to use absolute path for juliacall_macros
+            cargo_path = joinpath(crate_path, "Cargo.toml")
+            cargo = TOML.parsefile(cargo_path)
+            deps = get!(cargo, "dependencies", Dict())
+            deps["juliacall_macros"] = Dict("path" => joinpath(repo_root, "deps", "juliacall_macros"))
+            open(cargo_path, "w") do io
+                TOML.print(io, cargo)
+            end
+
+            mod_name = "HotReloadRefresh_$(getpid())"
+            # Initial load: generate and eval
+            bindings = RustCall.generate_bindings(crate_path; output_module_name=mod_name, cache_enabled=false)
+            Core.eval(Main, bindings)
+            Mod = getfield(Main, Symbol(mod_name))
+
+            # Enable hot reload with callback that re-evals the module so it dlopens the new .so
+            state = RustCall.enable_hot_reload_for_crate(crate_path, callback=(lib_name, ok, err) -> begin
+                if ok
+                    bindings2 = RustCall.generate_bindings(crate_path; output_module_name=mod_name, cache_enabled=false)
+                    Core.eval(Main, bindings2)
+                end
+            end)
+
+            before = Mod.add(Int32(1), Int32(2))
+            @test before == 3
+
+            # Change add to return a + b + 100
+            lib_rs = joinpath(crate_path, "src", "lib.rs")
+            lib_content = read(lib_rs, String)
+            lib_content = replace(lib_content, "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}" =>
+                "fn add(a: i32, b: i32) -> i32 {\n    a + b + 100\n}")
+            write(lib_rs, lib_content)
+
+            ok = RustCall.reload_library(state)
+            @test ok
+
+            # After refresh, add(1,2) should be 103 (invokelatest in wrappers ensures we see new code)
+            after = Mod.add(Int32(1), Int32(2))
+            @test after == before + 100
+        finally
+            RustCall.disable_all_hot_reload()
+            sleep(0.1)
+            empty!(RustCall.HOT_RELOAD_REGISTRY)
+            rm(crate_path; recursive=true, force=true)
         end
     end
 
