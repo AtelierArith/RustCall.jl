@@ -64,6 +64,11 @@ include("structs.jl")
 # Phase 5: #[julia] attribute support
 include("julia_functions.jl")
 
+# Shared library handle registry for crate bindings (used by hot reload)
+# Maps canonical lib_path → Ptr{Cvoid} so that old module references
+# can find the new library handle after hot reload.
+const CRATE_LIB_HANDLES = Dict{String, Ptr{Cvoid}}()
+
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 

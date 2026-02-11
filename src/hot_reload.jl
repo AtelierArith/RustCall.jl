@@ -2,6 +2,7 @@
 # This module provides automatic detection and rebuild when Rust source files change.
 
 using FileWatching
+using RustToolChain: cargo
 
 # ============================================================================
 # Hot Reload State
@@ -193,6 +194,19 @@ function _reload_library_locked(state::HotReloadState)
             end
         end
 
+        # Also close the handle held by the crate binding module (via
+        # CRATE_LIB_HANDLES) so that the OS fully unloads the old library
+        # and a subsequent dlopen on the same path loads the new binary.
+        # Compute the expected lib path before rebuilding.
+        expected_lib_path = _expected_crate_lib_path(state.crate_path)
+        if expected_lib_path !== nothing
+            old_handle = get(CRATE_LIB_HANDLES, expected_lib_path, C_NULL)
+            if old_handle != C_NULL
+                Libdl.dlclose(old_handle)
+                CRATE_LIB_HANDLES[expected_lib_path] = C_NULL
+            end
+        end
+
         # Rebuild the library (outside REGISTRY_LOCK — this takes significant
         # time and must not block other library operations).
         new_lib_path = rebuild_crate(state.crate_path)
@@ -209,6 +223,9 @@ function _reload_library_locked(state::HotReloadState)
             end
             RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
         end
+
+        # Update the shared handle so old module references see the new library
+        CRATE_LIB_HANDLES[new_lib_path] = lib_handle
 
         @info "Hot reload: Successfully reloaded $(state.lib_name)"
 
@@ -240,6 +257,28 @@ function _reload_library_locked(state::HotReloadState)
 end
 
 """
+    _expected_crate_lib_path(crate_path::String) -> Union{String, Nothing}
+
+Compute the expected library path for a crate without building.
+Returns nothing if Cargo.toml is missing or can't be parsed.
+"""
+function _expected_crate_lib_path(crate_path::String)
+    cargo_toml_path = joinpath(crate_path, "Cargo.toml")
+    if !isfile(cargo_toml_path)
+        return nothing
+    end
+    try
+        cargo_toml = TOML.parsefile(cargo_toml_path)
+        crate_name = cargo_toml["package"]["name"]
+        target_dir = joinpath(crate_path, "target", "release")
+        lib_name = _get_library_filename(crate_name)
+        return joinpath(target_dir, lib_name)
+    catch
+        return nothing
+    end
+end
+
+"""
     rebuild_crate(crate_path::String) -> String
 
 Rebuild a Rust crate and return the path to the compiled library.
@@ -261,7 +300,7 @@ function rebuild_crate(crate_path::String)
     end
 
     # Build in release mode
-    cmd = `cargo build --release --manifest-path $cargo_toml_path`
+    cmd = `$(cargo()) build --release --manifest-path $cargo_toml_path`
     run(cmd)
 
     # Find the compiled library
