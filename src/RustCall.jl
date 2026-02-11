@@ -77,7 +77,21 @@ path variants (e.g. Windows short vs long path, or different separators).
 """
 function _normalize_crate_lib_path(path::String)
     p = normpath(path)
-    Sys.iswindows() && (p = lowercase(p))
+    if ispath(p)
+        try
+            # Canonicalize aliases such as Windows 8.3 short paths.
+            p = realpath(p)
+        catch
+            # Fall back to normpath when realpath fails.
+        end
+    end
+    if Sys.iswindows()
+        # Normalize case and strip Windows extended-length prefix.
+        p = lowercase(p)
+        if startswith(p, "\\\\?\\")
+            p = p[5:end]
+        end
+    end
     return p
 end
 

@@ -312,7 +312,9 @@ end
 
             # After refresh, add(1,2) should be 103. Use invokelatest so we dispatch to the
             # re-eval'd module (avoids Julia 1.12+ world age / "binding in prior world").
-            after = Base.invokelatest(Mod.add, Int32(1), Int32(2))
+            Mod_latest = Base.invokelatest(getfield, Main, Symbol(mod_name))
+            add_fn = Base.invokelatest(getproperty, Mod_latest, :add)
+            after = Base.invokelatest(add_fn, Int32(1), Int32(2))
             @test after == before + 100
         finally
             RustCall.disable_all_hot_reload()
