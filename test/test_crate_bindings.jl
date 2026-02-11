@@ -2,6 +2,7 @@
 
 using Test
 using RustCall
+using RustToolChain: cargo
 
 # Path to the sample crate
 const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
@@ -173,7 +174,7 @@ end
 
     # Check if cargo is available
     try
-        run(pipeline(`cargo --version`, devnull))
+        run(pipeline(`$(cargo()) --version`, devnull))
     catch
         @warn "Cargo not available, skipping integration tests"
         return
@@ -360,7 +361,7 @@ end
 
     # Check if cargo is available
     try
-        run(pipeline(`cargo --version`, devnull))
+        run(pipeline(`$(cargo()) --version`, devnull))
     catch
         @warn "Cargo not available, skipping precompilation tests"
         return
