@@ -56,6 +56,12 @@ end
 Build the Rust helpers library and return the path to the compiled library.
 Throws an error if the build fails.
 """
+function clean_rust_helpers(cargo_toml::String)
+    println("  Running: $(cargo()) clean --manifest-path $cargo_toml")
+    run(`$(cargo()) clean --manifest-path $cargo_toml`)
+    println("  ✓ Cargo clean completed successfully")
+end
+
 function build_rust_helpers()
     deps_dir = @__DIR__
     helpers_dir = joinpath(deps_dir, "rust_helpers")
@@ -72,6 +78,19 @@ function build_rust_helpers()
     println("Building Rust helpers library...")
     println("  Directory: $helpers_dir")
     println("  Cargo.toml: $cargo_toml")
+
+    # Clean first so Pkg.build() always performs a fresh Cargo rebuild.
+    try
+        clean_rust_helpers(cargo_toml)
+    catch e
+        error("""
+        Failed to clean Rust helpers build artifacts: $e
+
+        Try running manually:
+            cd $helpers_dir
+            cargo clean
+        """)
+    end
 
     # Build with cargo using RustToolChain.jl
     try
@@ -172,18 +191,17 @@ function main()
     end
     println()
 
-    # Check if library already exists
     existing_lib = get_rust_helpers_lib_path()
     if existing_lib !== nothing
-        println("✓ Rust helpers library already built: $existing_lib")
-        println("  To rebuild, delete the library and run this script again.")
+        println("Found existing Rust helpers library: $existing_lib")
+        println("Rebuilding from a clean Cargo state...")
         println()
-        return existing_lib
+    else
+        println("Building Rust helpers library...")
+        println()
     end
 
-    # Build the library
-    println("Building Rust helpers library...")
-    println()
+    # Build the library (always clean + rebuild)
     lib_path = build_rust_helpers()
     println()
     println("=" ^ 60)
