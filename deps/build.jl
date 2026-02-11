@@ -73,6 +73,15 @@ function build_rust_helpers()
     println("  Directory: $helpers_dir")
     println("  Cargo.toml: $cargo_toml")
 
+    # Clean so that Pkg.build() always produces a fresh library (avoids stale artifacts)
+    try
+        println("  Running: $(cargo()) clean --manifest-path $cargo_toml")
+        run(`$(cargo()) clean --manifest-path $cargo_toml`)
+        println("  ✓ Cargo clean completed")
+    catch e
+        error("Failed to run cargo clean: $e")
+    end
+
     # Build with cargo using RustToolChain.jl
     try
         println("  Running: $(cargo()) build --release --manifest-path $cargo_toml")
@@ -172,18 +181,7 @@ function main()
     end
     println()
 
-    # Check if library already exists
-    existing_lib = get_rust_helpers_lib_path()
-    if existing_lib !== nothing
-        println("✓ Rust helpers library already built: $existing_lib")
-        println("  To rebuild, delete the library and run this script again.")
-        println()
-        return existing_lib
-    end
-
-    # Build the library
-    println("Building Rust helpers library...")
-    println()
+    # Always clean and build so the library is never stale (e.g. after adding new symbols in lib.rs)
     lib_path = build_rust_helpers()
     println()
     println("=" ^ 60)
