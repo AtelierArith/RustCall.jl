@@ -528,11 +528,11 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
         function __init__()
             handle = Libdl.dlopen(_LIB_PATH, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
             _LIB_HANDLE[] = handle
-            RustCall.CRATE_LIB_HANDLES[_LIB_PATH] = handle
+            RustCall.CRATE_LIB_HANDLES[RustCall._normalize_crate_lib_path(_LIB_PATH)] = handle
         end
 
         function _get_func_ptr(name::String)
-            handle = Base.get(RustCall.CRATE_LIB_HANDLES, _LIB_PATH, C_NULL)
+            handle = Base.get(RustCall.CRATE_LIB_HANDLES, RustCall._normalize_crate_lib_path(_LIB_PATH), C_NULL)
             if handle == C_NULL
                 handle = _LIB_HANDLE[]
             end
@@ -1405,13 +1405,13 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "function __init__()")
     push!(lines, "    handle = Libdl.dlopen(_LIB_PATH, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)")
     push!(lines, "    _LIB_HANDLE[] = handle")
-    push!(lines, "    RustCall.CRATE_LIB_HANDLES[_LIB_PATH] = handle")
+    push!(lines, "    RustCall.CRATE_LIB_HANDLES[RustCall._normalize_crate_lib_path(_LIB_PATH)] = handle")
     push!(lines, "end")
     push!(lines, "")
 
     # Helper function
     push!(lines, "function _get_func_ptr(name::String)")
-    push!(lines, "    handle = Base.get(RustCall.CRATE_LIB_HANDLES, _LIB_PATH, C_NULL)")
+    push!(lines, "    handle = Base.get(RustCall.CRATE_LIB_HANDLES, RustCall._normalize_crate_lib_path(_LIB_PATH), C_NULL)")
     push!(lines, "    if handle == C_NULL")
     push!(lines, "        handle = _LIB_HANDLE[]")
     push!(lines, "    end")

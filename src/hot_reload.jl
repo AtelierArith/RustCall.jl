@@ -200,10 +200,11 @@ function _reload_library_locked(state::HotReloadState)
         # Compute the expected lib path before rebuilding.
         expected_lib_path = _expected_crate_lib_path(state.crate_path)
         if expected_lib_path !== nothing
-            old_handle = get(CRATE_LIB_HANDLES, expected_lib_path, C_NULL)
+            norm_key = _normalize_crate_lib_path(expected_lib_path)
+            old_handle = get(CRATE_LIB_HANDLES, norm_key, C_NULL)
             if old_handle != C_NULL
                 Libdl.dlclose(old_handle)
-                CRATE_LIB_HANDLES[expected_lib_path] = C_NULL
+                CRATE_LIB_HANDLES[norm_key] = C_NULL
             end
         end
 
@@ -225,7 +226,7 @@ function _reload_library_locked(state::HotReloadState)
         end
 
         # Update the shared handle so old module references see the new library
-        CRATE_LIB_HANDLES[new_lib_path] = lib_handle
+        CRATE_LIB_HANDLES[_normalize_crate_lib_path(new_lib_path)] = lib_handle
 
         @info "Hot reload: Successfully reloaded $(state.lib_name)"
 

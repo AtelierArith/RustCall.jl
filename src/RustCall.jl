@@ -69,6 +69,18 @@ include("julia_functions.jl")
 # can find the new library handle after hot reload.
 const CRATE_LIB_HANDLES = Dict{String, Ptr{Cvoid}}()
 
+"""
+    _normalize_crate_lib_path(path::String) -> String
+
+Return a canonical key for CRATE_LIB_HANDLES so lookups match across
+path variants (e.g. Windows short vs long path, or different separators).
+"""
+function _normalize_crate_lib_path(path::String)
+    p = normpath(path)
+    Sys.iswindows() && (p = lowercase(p))
+    return p
+end
+
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 

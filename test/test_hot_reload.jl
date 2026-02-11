@@ -299,14 +299,22 @@ end
             ok = RustCall.reload_library(state)
             @test ok
 
-            # After refresh, add(1,2) should be 103 (invokelatest in wrappers ensures we see new code)
-            after = Mod.add(Int32(1), Int32(2))
+            # After refresh, add(1,2) should be 103. Use invokelatest so we dispatch to the
+            # re-eval'd module (avoids Julia 1.12+ world age / "binding in prior world").
+            after = Base.invokelatest(Mod.add, Int32(1), Int32(2))
             @test after == before + 100
         finally
             RustCall.disable_all_hot_reload()
             sleep(0.1)
             empty!(RustCall.HOT_RELOAD_REGISTRY)
-            rm(crate_path; recursive=true, force=true)
+            try
+                rm(crate_path; recursive=true, force=true)
+            catch e
+                # On Windows the DLL may still be locked (ENOTEMPTY); ignore cleanup failure
+                if !(Sys.iswindows() && e isa Base.IOError)
+                    rethrow()
+                end
+            end
         end
     end
 
