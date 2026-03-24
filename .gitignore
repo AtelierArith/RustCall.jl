@@ -56,3 +56,7 @@ build
 *.log
 .worktree
 worktree
+
+extern
+external
+
