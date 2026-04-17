@@ -95,3 +95,10 @@ Two jobs in `.github/workflows/CI.yml`:
 - Add tests alongside new functionality; include regression coverage for macro/parsing changes
 - `Cxx.jl/` and `julia/` are vendored upstream trees — do not edit for RustCall features
 - **Minimal exports**: Only macros (`@rust`, `@rust_str`, `@irust`, `@irust_str`, `@rust_llvm`, `@rust_crate`) are exported. All other identifiers should be accessed via `RustCall.XXX` or `using RustCall: XXX`. Do not add new `export` statements unless the identifier is a macro intended for end-user use.
+
+## Git Workflow
+
+- Do not commit directly to `main` or `master`
+- Create a topic branch for any implementation or documentation change
+- Push the topic branch and open a draft PR for review-oriented sharing
+- If work is accidentally committed on `main`, move it onto a topic branch and reset local `main` back to `origin/main`
