@@ -996,8 +996,8 @@ creates a wrapper crate if needed, builds it, and generates Julia bindings.
 ```julia
 bindings = generate_bindings("/path/to/my_crate")
 eval(bindings)
-# Now MyCrate module is available
-MyCrate.add(1, 2)
+# The generated bindings are now available
+MyCrate.add(Int32(1), Int32(2))
 ```
 """
 function generate_bindings(crate_path::String;
@@ -1133,40 +1133,51 @@ function get_function_pointer_from_lib(lib_handle::Ptr{Cvoid}, func_name::String
     Libdl.dlsym(lib_handle, func_name)
 end
 
-struct CrateBindingsProxy
+"""
+    CrateBindings
+
+Runtime wrapper returned by `@rust_crate` and [`load_crate_bindings`](@ref).
+
+Property access preserves non-function exports such as types and constants,
+while exported functions are routed through a proxy so calls remain
+world-age-safe after dynamic loading.
+"""
+struct CrateBindings
     module_ref::Module
 end
 
-struct CrateBindingMemberProxy
-    bindings::CrateBindingsProxy
+struct CrateBindingMember
+    bindings::CrateBindings
     name::Symbol
 end
 
-struct CrateBindingObjectProxy
-    bindings::CrateBindingsProxy
+struct CrateBindingObject
+    bindings::CrateBindings
     value::Any
 end
 
 _unwrap_crate_binding_value(value) = value
-_unwrap_crate_binding_value(value::CrateBindingObjectProxy) = getfield(value, :value)
+_unwrap_crate_binding_value(value::CrateBindingObject) = getfield(value, :value)
 
-function _wrap_crate_binding_value(bindings::CrateBindingsProxy, value)
-    if value isa CrateBindingsProxy || value isa CrateBindingMemberProxy || value isa CrateBindingObjectProxy
+_should_proxy_crate_binding(value) = value isa Function
+
+function _wrap_crate_binding_value(bindings::CrateBindings, value)
+    if value isa CrateBindings || value isa CrateBindingMember || value isa CrateBindingObject
         return value
     end
 
     if value isa Module
-        return CrateBindingsProxy(value)
+        return CrateBindings(value)
     end
 
     if value !== nothing && parentmodule(typeof(value)) === getfield(bindings, :module_ref)
-        return CrateBindingObjectProxy(bindings, value)
+        return CrateBindingObject(bindings, value)
     end
 
     return value
 end
 
-function Base.getproperty(bindings::CrateBindingsProxy, name::Symbol)
+function Base.getproperty(bindings::CrateBindings, name::Symbol)
     if name === :module_ref
         return getfield(bindings, :module_ref)
     end
@@ -1176,12 +1187,17 @@ function Base.getproperty(bindings::CrateBindingsProxy, name::Symbol)
         error("module $(nameof(module_ref)) has no binding $name")
     end
 
-    return CrateBindingMemberProxy(bindings, name)
+    value = Base.invokelatest(getproperty, module_ref, name)
+    if _should_proxy_crate_binding(value)
+        return CrateBindingMember(bindings, name)
+    end
+
+    return _wrap_crate_binding_value(bindings, value)
 end
 
-Base.propertynames(bindings::CrateBindingsProxy, private::Bool=false) = names(getfield(bindings, :module_ref); all=private)
+Base.propertynames(bindings::CrateBindings, private::Bool=false) = names(getfield(bindings, :module_ref); all=private)
 
-function (member::CrateBindingMemberProxy)(args...)
+function (member::CrateBindingMember)(args...)
     bindings = getfield(member, :bindings)
     module_ref = getfield(bindings, :module_ref)
     binding_name = getfield(member, :name)
@@ -1190,7 +1206,7 @@ function (member::CrateBindingMemberProxy)(args...)
     return _wrap_crate_binding_value(bindings, result)
 end
 
-function Base.getproperty(proxy::CrateBindingObjectProxy, name::Symbol)
+function Base.getproperty(proxy::CrateBindingObject, name::Symbol)
     if name === :bindings || name === :value
         return getfield(proxy, name)
     end
@@ -1200,7 +1216,7 @@ function Base.getproperty(proxy::CrateBindingObjectProxy, name::Symbol)
     return _wrap_crate_binding_value(getfield(proxy, :bindings), result)
 end
 
-function Base.setproperty!(proxy::CrateBindingObjectProxy, name::Symbol, value)
+function Base.setproperty!(proxy::CrateBindingObject, name::Symbol, value)
     if name === :bindings || name === :value
         error("cannot set internal proxy field $name")
     end
@@ -1211,13 +1227,51 @@ function Base.setproperty!(proxy::CrateBindingObjectProxy, name::Symbol, value)
     return _wrap_crate_binding_value(getfield(proxy, :bindings), result)
 end
 
-function Base.propertynames(proxy::CrateBindingObjectProxy, private::Bool=false)
+function Base.propertynames(proxy::CrateBindingObject, private::Bool=false)
     Base.invokelatest(propertynames, getfield(proxy, :value), private)
 end
 
-Base.show(io::IO, bindings::CrateBindingsProxy) = print(io, "CrateBindingsProxy(", nameof(getfield(bindings, :module_ref)), ")")
-Base.show(io::IO, member::CrateBindingMemberProxy) = print(io, nameof(getfield(getfield(member, :bindings), :module_ref)), ".", getfield(member, :name))
-Base.show(io::IO, proxy::CrateBindingObjectProxy) = show(io, getfield(proxy, :value))
+Base.show(io::IO, bindings::CrateBindings) = print(io, "CrateBindings(", nameof(getfield(bindings, :module_ref)), ")")
+Base.show(io::IO, member::CrateBindingMember) = print(io, nameof(getfield(getfield(member, :bindings), :module_ref)), ".", getfield(member, :name))
+Base.show(io::IO, proxy::CrateBindingObject) = show(io, getfield(proxy, :value))
+
+function _instantiate_runtime_bindings(bindings_expr::Expr)
+    runtime_namespace = Module(gensym(:RustCallCrateRuntime))
+    return Base.invokelatest(Core.eval, runtime_namespace, bindings_expr)
+end
+
+"""
+    load_crate_bindings(crate_path::String; output_module_name=nothing, build_release=true, cache_enabled=true) -> CrateBindings
+
+Generate, load, and return explicit bindings for a Rust crate.
+
+Use the returned [`CrateBindings`](@ref) value directly:
+
+```julia
+const MyCrate = load_crate_bindings("/path/to/my_crate")
+MyCrate.add(Int32(1), Int32(2))
+p = MyCrate.Point(3.0, 4.0)
+p isa MyCrate.Point
+```
+
+`output_module_name` controls the generated runtime module name stored inside the
+returned bindings object; it does not inject a caller-visible module.
+"""
+function load_crate_bindings(crate_path::String;
+    output_module_name::Union{String, Nothing} = nothing,
+    build_release::Bool = true,
+    cache_enabled::Bool = true
+)
+    bindings_expr = generate_bindings(
+        crate_path;
+        output_module_name = output_module_name,
+        build_release = build_release,
+        cache_enabled = cache_enabled,
+    )
+
+    crate_module = _instantiate_runtime_bindings(bindings_expr)
+    return CrateBindings(crate_module)
+end
 
 # ============================================================================
 # @rust_crate Macro
@@ -1233,24 +1287,25 @@ Generate and load bindings for an external Rust crate.
 - `path`: Path to the Rust crate (string literal)
 
 # Options
-- `name="ModuleName"`: Override the generated module name
+- `name="ModuleName"`: Override the generated runtime module name used inside the returned bindings object
 - `release=true/false`: Build in release mode (default: true)
 - `cache=true/false`: Enable caching (default: true)
 
 # Example
 ```julia
 # Basic usage
-@rust_crate "/path/to/my_crate"
+const MyCrate = @rust_crate "/path/to/my_crate"
 
 # With options
-@rust_crate "/path/to/my_crate" name="MyBindings" release=true
+const MyBindings = @rust_crate "/path/to/my_crate" name="MyBindings" release=true
 
-# After loading, use the module
-MyCrate.add(1, 2)
+# After loading, use the returned bindings value directly
+MyCrate.add(Int32(1), Int32(2))
+p = MyCrate.Point(3.0, 4.0)
+MyCrate.distance(p)
 ```
 """
 macro rust_crate(path, options...)
-    # Parse options
     module_name = nothing
     release = true
     cache = true
@@ -1271,14 +1326,12 @@ macro rust_crate(path, options...)
     end
 
     quote
-        local bindings = generate_bindings(
-            $(esc(path)),
+        load_crate_bindings(
+            $(esc(path));
             output_module_name = $module_name,
             build_release = $release,
-            cache_enabled = $cache
+            cache_enabled = $cache,
         )
-        local crate_module = Base.invokelatest(Core.eval, $__module__, bindings)
-        CrateBindingsProxy(crate_module)
     end
 end
 

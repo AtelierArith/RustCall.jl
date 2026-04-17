@@ -7,6 +7,9 @@
 using Test
 using RustCall
 
+const DOCS_SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
+const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
+
 @testset "Documentation Examples" begin
     @testset "tutorial.md - Basic Usage" begin
         # Step 1: Define and Compile Rust Code
@@ -489,6 +492,23 @@ using RustCall
 
         result = @rust compute(2.0)::Float64
         @test abs(result - 5.0) < 0.001
+    end
+
+    @testset "crate_bindings.md - Explicit Binding" begin
+        if _DOCS_SAMPLE_CRATE_AVAILABLE
+            # @rust_crate should return a local bindings value, not inject a module into Main.
+            let DocsSampleCrate = @rust_crate DOCS_SAMPLE_CRATE_PATH name="DocsSampleCrateInjected"
+                @test DocsSampleCrate.add(Int32(1), Int32(2)) == Int32(3)
+                @test DocsSampleCrate.Point isa DataType
+                point = Base.invokelatest(DocsSampleCrate.Point, 3.0, 4.0)
+                @test point isa DocsSampleCrate.Point
+                @test DocsSampleCrate.distance_from_origin(point) == 5.0
+                @test Base.invokelatest(getproperty, point, :x) == 3.0
+                @test !isdefined(Main, :DocsSampleCrateInjected)
+            end
+        else
+            @test_skip "examples/sample_crate not available"
+        end
     end
 end
 

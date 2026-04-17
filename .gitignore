@@ -55,8 +55,8 @@ JuliaLocalPreferences.toml
 build
 *.log
 .worktree
+.worktrees/
 worktree
 
 extern
 external
-

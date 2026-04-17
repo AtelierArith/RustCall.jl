@@ -41,25 +41,21 @@ fn add(a: i32, b: i32) -> i32 {
 }
 
 #[julia]
-pub struct Counter {
-    pub value: i32,
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[julia]
-impl Counter {
+impl Point {
     #[julia]
-    pub fn new(initial: i32) -> Self {
-        Self { value: initial }
+    pub fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
     }
 
     #[julia]
-    pub fn increment(&mut self) {
-        self.value += 1;
-    }
-
-    #[julia]
-    pub fn get(&self) -> i32 {
-        self.value
+    pub fn distance(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
     }
 }
 ```
@@ -69,19 +65,11 @@ impl Counter {
 ```julia
 using RustCall
 
-# Generate and load bindings
-@rust_crate "/path/to/my_library"
+const MyLibrary = @rust_crate "/path/to/my_library"
 
-# Use the generated module
-result = MyLibrary.add(1, 2)  # => 3
-
-c = MyLibrary.Counter(0)
-MyLibrary.increment(c)
-MyLibrary.get(c)  # => 1
-
-# Struct fields support property access syntax
-c.value        # => 1 (calls get_value)
-c.value = 5    # calls set_value
+MyLibrary.add(Int32(1), Int32(2))  # => 3
+p = MyLibrary.Point(3.0, 4.0)
+MyLibrary.distance(p)  # => 5.0
 ```
 
 When loading a crate inside a function or other local scope, capture the return
@@ -90,9 +78,8 @@ value from `@rust_crate` and use that binding directly:
 ```julia
 function load_my_library(crate_path)
     bindings = @rust_crate crate_path name="MyLibrary"
-    c = bindings.Counter(Int32(0))
-    bindings.increment(c)
-    return bindings.get(c), c.value
+    p = bindings.Point(3.0, 4.0)
+    return bindings.add(Int32(1), Int32(2)), bindings.distance(p), p.x
 end
 ```
 
@@ -227,10 +214,10 @@ Macro form for easy one-line usage.
 
 ```julia
 # Basic usage
-@rust_crate "/path/to/crate"
+const MyCrate = @rust_crate "/path/to/crate"
 
 # With options
-@rust_crate "/path/to/crate" name="CustomName" release=true cache=true
+const MyBindings = @rust_crate "/path/to/crate" name="CustomName" release=true cache=true
 ```
 
 ## Type Definitions
@@ -356,10 +343,10 @@ fn fibonacci(n: u32) -> u64 {
 ```julia
 using RustCall
 
-@rust_crate "/path/to/my_math"
+const MyMath = @rust_crate "/path/to/my_math"
 
-factorial(UInt64(10))  # => 3628800
-fibonacci(UInt32(20))  # => 6765
+MyMath.factorial(UInt64(10))  # => 3628800
+MyMath.fibonacci(UInt32(20))  # => 6765
 ```
 
 ## Precompilation Support
