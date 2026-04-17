@@ -91,6 +91,12 @@ result = @rust multiply(Int32(5), Int32(7))::Int32
 println(result)  # => 35
 ```
 
+#### Why `@rust` here?
+
+`#[julia]` exposes a Rust function through a C-compatible ABI and also generates a Julia wrapper, so you can call `add(10, 20)` directly from Julia.
+
+By contrast, `#[no_mangle] pub extern "C"` only exports a symbol from the Rust library. Julia does not automatically get a function named `multiply`, so `@rust` is the bridge that finds the exported symbol, converts the arguments, and performs the call.
+
 ### Step 1: Define and Compile Rust Code
 
 Use the `rust""` string literal to define and compile Rust code:
