@@ -1133,6 +1133,92 @@ function get_function_pointer_from_lib(lib_handle::Ptr{Cvoid}, func_name::String
     Libdl.dlsym(lib_handle, func_name)
 end
 
+struct CrateBindingsProxy
+    module_ref::Module
+end
+
+struct CrateBindingMemberProxy
+    bindings::CrateBindingsProxy
+    name::Symbol
+end
+
+struct CrateBindingObjectProxy
+    bindings::CrateBindingsProxy
+    value::Any
+end
+
+_unwrap_crate_binding_value(value) = value
+_unwrap_crate_binding_value(value::CrateBindingObjectProxy) = getfield(value, :value)
+
+function _wrap_crate_binding_value(bindings::CrateBindingsProxy, value)
+    if value isa CrateBindingsProxy || value isa CrateBindingMemberProxy || value isa CrateBindingObjectProxy
+        return value
+    end
+
+    if value isa Module
+        return CrateBindingsProxy(value)
+    end
+
+    if value !== nothing && parentmodule(typeof(value)) === getfield(bindings, :module_ref)
+        return CrateBindingObjectProxy(bindings, value)
+    end
+
+    return value
+end
+
+function Base.getproperty(bindings::CrateBindingsProxy, name::Symbol)
+    if name === :module_ref
+        return getfield(bindings, :module_ref)
+    end
+
+    module_ref = getfield(bindings, :module_ref)
+    if !isdefined(module_ref, name)
+        error("module $(nameof(module_ref)) has no binding $name")
+    end
+
+    return CrateBindingMemberProxy(bindings, name)
+end
+
+Base.propertynames(bindings::CrateBindingsProxy, private::Bool=false) = names(getfield(bindings, :module_ref); all=private)
+
+function (member::CrateBindingMemberProxy)(args...)
+    bindings = getfield(member, :bindings)
+    module_ref = getfield(bindings, :module_ref)
+    binding_name = getfield(member, :name)
+    callable = Base.invokelatest(getproperty, module_ref, binding_name)
+    result = Base.invokelatest(callable, map(_unwrap_crate_binding_value, args)...)
+    return _wrap_crate_binding_value(bindings, result)
+end
+
+function Base.getproperty(proxy::CrateBindingObjectProxy, name::Symbol)
+    if name === :bindings || name === :value
+        return getfield(proxy, name)
+    end
+
+    value = getfield(proxy, :value)
+    result = Base.invokelatest(getproperty, value, name)
+    return _wrap_crate_binding_value(getfield(proxy, :bindings), result)
+end
+
+function Base.setproperty!(proxy::CrateBindingObjectProxy, name::Symbol, value)
+    if name === :bindings || name === :value
+        error("cannot set internal proxy field $name")
+    end
+
+    target = getfield(proxy, :value)
+    raw_value = _unwrap_crate_binding_value(value)
+    result = Base.invokelatest(setproperty!, target, name, raw_value)
+    return _wrap_crate_binding_value(getfield(proxy, :bindings), result)
+end
+
+function Base.propertynames(proxy::CrateBindingObjectProxy, private::Bool=false)
+    Base.invokelatest(propertynames, getfield(proxy, :value), private)
+end
+
+Base.show(io::IO, bindings::CrateBindingsProxy) = print(io, "CrateBindingsProxy(", nameof(getfield(bindings, :module_ref)), ")")
+Base.show(io::IO, member::CrateBindingMemberProxy) = print(io, nameof(getfield(getfield(member, :bindings), :module_ref)), ".", getfield(member, :name))
+Base.show(io::IO, proxy::CrateBindingObjectProxy) = show(io, getfield(proxy, :value))
+
 # ============================================================================
 # @rust_crate Macro
 # ============================================================================
@@ -1191,7 +1277,8 @@ macro rust_crate(path, options...)
             build_release = $release,
             cache_enabled = $cache
         )
-        Core.eval($__module__, bindings)
+        local crate_module = Base.invokelatest(Core.eval, $__module__, bindings)
+        CrateBindingsProxy(crate_module)
     end
 end
 

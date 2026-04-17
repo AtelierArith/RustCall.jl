@@ -353,6 +353,34 @@ end
     end
 end
 
+@testset "Function Scope Usage" begin
+    if !isdir(SAMPLE_CRATE_PATH)
+        @warn "Sample crate not found, skipping function scope usage tests"
+        return
+    end
+
+    try
+        run(pipeline(`$(cargo()) --version`, devnull))
+    catch
+        @warn "Cargo not available, skipping function scope usage tests"
+        return
+    end
+
+    function use_bindings_in_function(crate_path)
+        bindings = @rust_crate crate_path name="SampleCrateFunctionScope"
+
+        sum_result = bindings.add(Int32(2), Int32(3))
+        point = bindings.Point(3.0, 4.0)
+        distance = bindings.distance_from_origin(point)
+        original_x = point.x
+        point.x = 10.0
+
+        return (sum_result, distance, original_x, point.x)
+    end
+
+    @test use_bindings_in_function(SAMPLE_CRATE_PATH) == (Int32(5), 5.0, 3.0, 10.0)
+end
+
 @testset "Precompilation Support" begin
     if !isdir(SAMPLE_CRATE_PATH)
         @warn "Sample crate not found, skipping precompilation tests"

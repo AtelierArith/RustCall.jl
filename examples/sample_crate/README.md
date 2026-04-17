@@ -58,6 +58,26 @@ sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
 end
 ```
 
+### Usage in Functions
+
+```julia
+using RustCall
+
+function load_sample_crate()
+    sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
+    bindings = @rust_crate sample_crate_path name="SampleCrateFunctionScope"
+
+    p = bindings.Point(3.0, 4.0)
+    return (
+        bindings.add(Int32(2), Int32(3)),
+        bindings.distance_from_origin(p),
+        p.x,
+    )
+end
+
+load_sample_crate()  # => (5, 5.0, 3.0)
+```
+
 ## Included Features
 
 ### Simple Functions

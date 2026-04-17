@@ -294,6 +294,17 @@ p = MyCrate.Point(3.0, 4.0)
 MyCrate.distance(p)  # => 5.0
 ```
 
+Inside a function or other local scope, capture the return value from `@rust_crate`
+and call through that binding:
+
+```julia
+function load_my_crate(crate_path)
+    bindings = @rust_crate crate_path name="MyCrate"
+    p = bindings.Point(3.0, 4.0)
+    return bindings.add(Int32(1), Int32(2)), bindings.distance(p), p.x
+end
+```
+
 ## Type Mapping
 
 RustCall.jl automatically maps Rust types to Julia types:
