@@ -496,6 +496,7 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
 
     @testset "crate_bindings.md - Explicit Binding" begin
         if _DOCS_SAMPLE_CRATE_AVAILABLE
+            # @rust_crate should return a local bindings value, not inject a module into Main.
             let DocsSampleCrate = @rust_crate DOCS_SAMPLE_CRATE_PATH name="DocsSampleCrateInjected"
                 @test DocsSampleCrate.add(Int32(1), Int32(2)) == Int32(3)
                 point = DocsSampleCrate.Point(3.0, 4.0)

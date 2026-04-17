@@ -221,6 +221,13 @@ quadratic(1.0, 2.0, 1.0, 3.0)  # => 16.0 (x² + 2x + 1 at x=3)
 
 Process images using Rust for performance-critical operations:
 
+If you want to run this example locally, install `Images` first:
+
+```julia
+using Pkg
+Pkg.add("Images")
+```
+
 ```julia
 using RustCall
 using Images
@@ -285,11 +292,9 @@ impl Point {
 ```julia
 using RustCall
 
-# Generate bindings from external crate
-@rust_crate "/path/to/my_crate"
+const MyCrate = @rust_crate "/path/to/my_crate"
 
-# Use the generated module
-MyCrate.add(1, 2)  # => 3
+MyCrate.add(Int32(1), Int32(2))  # => 3
 p = MyCrate.Point(3.0, 4.0)
 MyCrate.distance(p)  # => 5.0
 ```

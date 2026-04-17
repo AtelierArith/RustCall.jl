@@ -242,6 +242,13 @@ println(arr)  # => [1, 2, 5, 8, 9]
 
 ### Julia vs Rust: Numerical Computation
 
+If you want to run this example locally, install `BenchmarkTools` first:
+
+```julia
+using Pkg
+Pkg.add("BenchmarkTools")
+```
+
 ```julia
 using BenchmarkTools
 
@@ -329,6 +336,13 @@ println("Hash: $hash_value")
 ### Image Processing (Simplified)
 
 This example demonstrates using Rust for image processing with visualization using Images.jl.
+
+If you want to run this example locally, install `Images` first:
+
+```julia
+using Pkg
+Pkg.add("Images")
+```
 
 ```@example imageprocessing
 using RustCall
@@ -456,12 +470,6 @@ comparison = [original_img grayscale_img]
 ```
 
 !!! note "Running this example"
-    To run this example locally, you need the Images package:
-    ```julia
-    using Pkg
-    Pkg.add("Images")
-    ```
-
     For `servedocs()`, make sure to run it from the docs environment:
     ```julia
     julia --project=docs -e 'using Pkg; Pkg.instantiate()'
@@ -641,6 +649,13 @@ end
 ### 3. Performance Optimization
 
 Benchmark to compare Julia and Rust performance:
+
+If you want to run this example locally, install `BenchmarkTools` first:
+
+```julia
+using Pkg
+Pkg.add("BenchmarkTools")
+```
 
 ```julia
 using BenchmarkTools

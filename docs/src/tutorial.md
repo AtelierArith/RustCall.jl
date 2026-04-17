@@ -21,7 +21,14 @@ This tutorial walks you through using RustCall.jl to call Rust code from Julia s
 
 ```julia
 using Pkg
-Pkg.add("RustCall")
+Pkg.add(url="https://github.com/atelierarith/RustCall.jl")
+```
+
+For contributor work or local edits:
+
+```julia
+using Pkg
+Pkg.develop(path="/path/to/RustCall.jl")
 ```
 
 ### Requirements

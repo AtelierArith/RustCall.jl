@@ -996,8 +996,8 @@ creates a wrapper crate if needed, builds it, and generates Julia bindings.
 ```julia
 bindings = generate_bindings("/path/to/my_crate")
 eval(bindings)
-# Now MyCrate module is available
-MyCrate.add(1, 2)
+# The generated bindings are now available
+MyCrate.add(Int32(1), Int32(2))
 ```
 """
 function generate_bindings(crate_path::String;
@@ -1266,8 +1266,10 @@ const MyCrate = @rust_crate "/path/to/my_crate"
 # With options
 const MyBindings = @rust_crate "/path/to/my_crate" name="MyBindings" release=true
 
-# After loading, use the returned bindings value
-MyCrate.add(1, 2)
+# After loading, use the returned bindings value directly
+MyCrate.add(Int32(1), Int32(2))
+p = MyCrate.Point(3.0, 4.0)
+MyCrate.distance(p)
 ```
 """
 macro rust_crate(path, options...)
