@@ -84,6 +84,18 @@ c.value        # => 1 (calls get_value)
 c.value = 5    # calls set_value
 ```
 
+When loading a crate inside a function or other local scope, capture the return
+value from `@rust_crate` and use that binding directly:
+
+```julia
+function load_my_library(crate_path)
+    bindings = @rust_crate crate_path name="MyLibrary"
+    c = bindings.Counter(Int32(0))
+    bindings.increment(c)
+    return bindings.get(c), c.value
+end
+```
+
 ## The `#[julia]` Attribute
 
 The `#[julia]` attribute simplifies FFI function definitions.
