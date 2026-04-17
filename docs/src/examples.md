@@ -611,22 +611,20 @@ Use error codes or Result types for safe error handling:
 ```julia
 rust"""
 #[no_mangle]
-pub extern "C" fn safe_divide(a: i32, b: i32, result: *mut i32) -> bool {
+pub extern "C" fn safe_divide(a: i32, b: i32) -> i32 {
     if b == 0 {
-        return false;  // Indicate error
+        return -1;  // Indicate error
     }
-    unsafe { *result = a / b; }
-    true  // Indicate success
+    a / b
 }
 """
 
 function divide_safely(a::Int32, b::Int32)
-    result = Ref{Int32}(0)
-    success = @rust safe_divide(a, b, result)::Bool
-    if !success
+    result = @rust safe_divide(a, b)::Int32
+    if result == -1
         throw(DomainError(b, "Division by zero"))
     end
-    return result[]
+    return result
 end
 
 # Test successful division
