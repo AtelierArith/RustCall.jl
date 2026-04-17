@@ -1261,12 +1261,12 @@ Generate and load bindings for an external Rust crate.
 # Example
 ```julia
 # Basic usage
-@rust_crate "/path/to/my_crate"
+const MyCrate = @rust_crate "/path/to/my_crate"
 
 # With options
-@rust_crate "/path/to/my_crate" name="MyBindings" release=true
+const MyBindings = @rust_crate "/path/to/my_crate" name="MyBindings" release=true
 
-# After loading, use the module
+# After loading, use the returned bindings value
 MyCrate.add(1, 2)
 ```
 """
