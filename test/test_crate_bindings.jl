@@ -357,6 +357,9 @@ function _run_top_level_explicit_binding_contract()
         @test SampleCrateContract.Point isa DataType
         point = SampleCrateContract.Point(3.0, 4.0)
         @test point isa SampleCrateContract.Point
+        point_display = sprint(show, point)
+        @test occursin("SampleCrateInjected.Point(", point_display)
+        @test !occursin("RustCallCrateRuntime", point_display)
         @test SampleCrateContract.distance_from_origin(point) == 5.0
         @test point.x == 3.0
         @test !isdefined(Main, :SampleCrateInjected)

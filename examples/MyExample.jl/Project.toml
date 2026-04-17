@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Your Name <your.email@example.com>"]
 
 [deps]
-RustCall = "84591b13-8127-4a16-8156-1f71d7525150"
+RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 
 [compat]
 julia = "1.10"
