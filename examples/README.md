@@ -52,9 +52,9 @@ If you're a Rust developer who wants to expose your code to Julia, start with **
 ```julia
 using RustCall
 
-# Load the sample crate
+# Load the sample crate and keep the returned bindings value
 sample_crate_path = joinpath(dirname(dirname(pathof(RustCall))), "examples", "sample_crate")
-@rust_crate sample_crate_path
+const SampleCrate = @rust_crate sample_crate_path
 
 # Call Rust functions
 SampleCrate.add(Int32(2), Int32(3))  # => 5
@@ -99,13 +99,14 @@ cargo build --release
 **How to use from Julia:**
 ```julia
 using RustCall
-@rust_crate "/path/to/examples/sample_crate"
+const SampleCrate = @rust_crate "/path/to/examples/sample_crate"
 
 # Functions
 SampleCrate.add(Int32(1), Int32(2))
 
 # Structs with property access
 p = SampleCrate.Point(3.0, 4.0)
+p isa SampleCrate.Point  # => true
 p.x  # => 3.0
 p.y  # => 4.0
 SampleCrate.distance_from_origin(p)  # => 5.0
@@ -137,7 +138,7 @@ maturin build --features python
 **How to use from Julia:**
 ```julia
 using RustCall
-@rust_crate "/path/to/examples/sample_crate_pyo3"
+const SampleCratePyo3 = @rust_crate "/path/to/examples/sample_crate_pyo3"
 
 SampleCratePyo3.add(Int32(2), Int32(3))  # => 5
 ```
@@ -189,13 +190,13 @@ clear_cache()
 
 ### Module name confusion
 
-When using `@rust_crate`, the generated module name is the crate name converted to PascalCase.
+When using `@rust_crate`, the returned bindings object wraps a generated runtime module whose default name is the crate name converted to PascalCase.
 
 Example: `sample_crate` → `SampleCrate`
 
-You can specify a custom name:
+You can override that internal runtime module name with `name=`, while still using the value returned by `@rust_crate`:
 ```julia
-@rust_crate "/path/to/crate" name="MyCustomName"
+const bindings = @rust_crate "/path/to/crate" name="MyCustomName"
 ```
 
 ## Additional Resources

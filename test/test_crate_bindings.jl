@@ -354,7 +354,9 @@ function _run_top_level_explicit_binding_contract()
         const SampleCrateContract = @rust_crate raw\"$(abspath(SAMPLE_CRATE_PATH))\" name=\"SampleCrateInjected\"
 
         @test SampleCrateContract.add(Int32(2), Int32(3)) == Int32(5)
+        @test SampleCrateContract.Point isa DataType
         point = SampleCrateContract.Point(3.0, 4.0)
+        @test point isa SampleCrateContract.Point
         @test SampleCrateContract.distance_from_origin(point) == 5.0
         @test point.x == 3.0
         @test !isdefined(Main, :SampleCrateInjected)
@@ -405,12 +407,13 @@ end
         bindings = @rust_crate crate_path name="SampleCrateFunctionScope"
 
         sum_result = bindings.add(Int32(2), Int32(3))
-        point = bindings.Point(3.0, 4.0)
+        point_type = bindings.Point
+        point = Base.invokelatest(point_type, 3.0, 4.0)
         distance = bindings.distance_from_origin(point)
-        original_x = point.x
-        point.x = 10.0
+        original_x = Base.invokelatest(getproperty, point, :x)
+        Base.invokelatest(setproperty!, point, :x, 10.0)
 
-        return (sum_result, distance, original_x, point.x)
+        return (sum_result, distance, original_x, Base.invokelatest(getproperty, point, :x))
     end
 
     @test use_bindings_in_function(SAMPLE_CRATE_PATH) == (Int32(5), 5.0, 3.0, 10.0)

@@ -1133,6 +1133,15 @@ function get_function_pointer_from_lib(lib_handle::Ptr{Cvoid}, func_name::String
     Libdl.dlsym(lib_handle, func_name)
 end
 
+"""
+    CrateBindings
+
+Runtime wrapper returned by `@rust_crate` and [`load_crate_bindings`](@ref).
+
+Property access preserves non-function exports such as types and constants,
+while exported functions are routed through a proxy so calls remain
+world-age-safe after dynamic loading.
+"""
 struct CrateBindings
     module_ref::Module
 end
@@ -1149,6 +1158,8 @@ end
 
 _unwrap_crate_binding_value(value) = value
 _unwrap_crate_binding_value(value::CrateBindingObject) = getfield(value, :value)
+
+_should_proxy_crate_binding(value) = value isa Function
 
 function _wrap_crate_binding_value(bindings::CrateBindings, value)
     if value isa CrateBindings || value isa CrateBindingMember || value isa CrateBindingObject
@@ -1176,7 +1187,12 @@ function Base.getproperty(bindings::CrateBindings, name::Symbol)
         error("module $(nameof(module_ref)) has no binding $name")
     end
 
-    return CrateBindingMember(bindings, name)
+    value = Base.invokelatest(getproperty, module_ref, name)
+    if _should_proxy_crate_binding(value)
+        return CrateBindingMember(bindings, name)
+    end
+
+    return _wrap_crate_binding_value(bindings, value)
 end
 
 Base.propertynames(bindings::CrateBindings, private::Bool=false) = names(getfield(bindings, :module_ref); all=private)
@@ -1224,6 +1240,23 @@ function _instantiate_runtime_bindings(bindings_expr::Expr)
     return Base.invokelatest(Core.eval, runtime_namespace, bindings_expr)
 end
 
+"""
+    load_crate_bindings(crate_path::String; output_module_name=nothing, build_release=true, cache_enabled=true) -> CrateBindings
+
+Generate, load, and return explicit bindings for a Rust crate.
+
+Use the returned [`CrateBindings`](@ref) value directly:
+
+```julia
+const MyCrate = load_crate_bindings("/path/to/my_crate")
+MyCrate.add(Int32(1), Int32(2))
+p = MyCrate.Point(3.0, 4.0)
+p isa MyCrate.Point
+```
+
+`output_module_name` controls the generated runtime module name stored inside the
+returned bindings object; it does not inject a caller-visible module.
+"""
 function load_crate_bindings(crate_path::String;
     output_module_name::Union{String, Nothing} = nothing,
     build_release::Bool = true,
@@ -1254,7 +1287,7 @@ Generate and load bindings for an external Rust crate.
 - `path`: Path to the Rust crate (string literal)
 
 # Options
-- `name="ModuleName"`: Override the generated module name
+- `name="ModuleName"`: Override the generated runtime module name used inside the returned bindings object
 - `release=true/false`: Build in release mode (default: true)
 - `cache=true/false`: Enable caching (default: true)
 

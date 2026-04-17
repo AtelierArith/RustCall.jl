@@ -92,7 +92,7 @@ maturin develop --features python
 ```julia
 using RustCall
 
-@rust_crate "/path/to/sample_crate_pyo3"
+const SampleCratePyo3 = @rust_crate "/path/to/sample_crate_pyo3"
 
 # Functions - same API as Python!
 SampleCratePyo3.add(2, 3)           # => 5
@@ -100,6 +100,7 @@ SampleCratePyo3.fibonacci(10)        # => 55
 
 # Point struct
 p = SampleCratePyo3.Point(3.0, 4.0)
+p isa SampleCratePyo3.Point          # => true
 p.x, p.y                             # => 3.0, 4.0
 SampleCratePyo3.distance_from_origin(p)  # => 5.0
 SampleCratePyo3.translate(p, 1.0, 2.0)

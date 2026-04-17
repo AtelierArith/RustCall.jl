@@ -499,9 +499,11 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
             # @rust_crate should return a local bindings value, not inject a module into Main.
             let DocsSampleCrate = @rust_crate DOCS_SAMPLE_CRATE_PATH name="DocsSampleCrateInjected"
                 @test DocsSampleCrate.add(Int32(1), Int32(2)) == Int32(3)
-                point = DocsSampleCrate.Point(3.0, 4.0)
+                @test DocsSampleCrate.Point isa DataType
+                point = Base.invokelatest(DocsSampleCrate.Point, 3.0, 4.0)
+                @test point isa DocsSampleCrate.Point
                 @test DocsSampleCrate.distance_from_origin(point) == 5.0
-                @test point.x == 3.0
+                @test Base.invokelatest(getproperty, point, :x) == 3.0
                 @test !isdefined(Main, :DocsSampleCrateInjected)
             end
         else

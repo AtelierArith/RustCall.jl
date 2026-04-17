@@ -203,9 +203,17 @@ RustCall.get_cargo_cache_size
 
 ## Crate Bindings
 
+The explicit-binding runtime contract is:
+
+- `@rust_crate` and `RustCall.load_crate_bindings` return a `RustCall.CrateBindings` value.
+- Property access preserves non-function bindings such as types and constants.
+- Callable exported functions remain proxy-backed so calls stay world-age-safe.
+
 ```@docs
+RustCall.CrateBindings
 RustCall.CrateInfo
 RustCall.CrateBindingOptions
+RustCall.load_crate_bindings
 RustCall.scan_crate
 RustCall.generate_bindings
 RustCall.write_bindings_to_file
@@ -350,8 +358,8 @@ Filter = t -> begin
         :parse_trait_bounds, :parse_single_trait, :parse_where_clause,
         :parse_inline_constraints, :parse_generic_function,
         :constraints_to_rust_string, :merge_constraints,
-        :CrateInfo, :CrateBindingOptions,
-        :scan_crate, :generate_bindings, :write_bindings_to_file,
+        :CrateBindings, :CrateInfo, :CrateBindingOptions,
+        :load_crate_bindings, :scan_crate, :generate_bindings, :write_bindings_to_file,
         :HotReloadState,
         :enable_hot_reload, :disable_hot_reload, :disable_all_hot_reload,
         :is_hot_reload_enabled, :list_hot_reload_crates,
