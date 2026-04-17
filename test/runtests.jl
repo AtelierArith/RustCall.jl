@@ -1,65 +1,70 @@
 using RustCall
-using Test
+using ParallelTestRunner
 
-# Include cache tests
-include("test_cache.jl")
+args = parse_args(ARGS)
+testsuite = find_tests(@__DIR__)
+serial_testsuite = Dict{String, Expr}()
+serial_test_names = ("test_cache", "test_core_api")
 
-# Include ownership tests
-include("test_ownership.jl")
+for test_name in collect(keys(testsuite))
+    basename = split(test_name, '/')[end]
+    if !startswith(basename, "test_")
+        delete!(testsuite, test_name)
+    end
+end
 
-# Include array/collection tests
-include("test_arrays.jl")
+if args.list !== nothing
+    println("Available tests:")
+    for test in sort(collect(keys(testsuite)))
+        println(" - $test")
+    end
+    exit(0)
+end
 
-# Include generics tests
-include("test_generics.jl")
+if filter_tests!(testsuite, args)
+    # Preserve the pre-migration default suite: test_phase4.jl was not in the old harness.
+    delete!(testsuite, "test_phase4")
+end
 
-# Include error handling tests
-include("test_error_handling.jl")
+for test_name in serial_test_names
+    if haskey(testsuite, test_name)
+        serial_testsuite[test_name] = pop!(testsuite, test_name)
+    end
+end
 
-# Include llvmcall tests
-include("test_llvmcall.jl")
+init_code = quote
+    using Test
+    using RustCall
+end
 
-# Include Rust helpers integration tests
-include("test_rust_helpers_integration.jl")
+parallel_error = Ref{Any}(nothing)
+serial_error = Ref{Any}(nothing)
 
-# Include documentation examples tests
-include("test_docs_examples.jl")
+if !isempty(testsuite)
+    try
+        runtests(RustCall, args; testsuite, init_code)
+    catch err
+        parallel_error[] = err
+    end
+end
 
-# Phase 3: External library integration tests
-include("test_dependencies.jl")
-include("test_cargo.jl")
-include("test_ndarray.jl")
-include("test_external_crates.jl")
+if !isempty(serial_testsuite)
+    serial_argv = String["--jobs=1"]
+    args.verbose !== nothing && push!(serial_argv, "--verbose")
+    args.quickfail !== nothing && push!(serial_argv, "--quickfail")
+    append!(serial_argv, args.positionals)
+    serial_args = parse_args(serial_argv)
+    try
+        runtests(RustCall, serial_args; testsuite=serial_testsuite, init_code)
+    catch err
+        serial_error[] = err
+    end
+end
 
-# Examples converted to tests
-include("test_basic_examples.jl")
-include("test_advanced_examples.jl")
-include("test_ownership_examples.jl")
-include("test_struct_examples.jl")
-include("test_phase4_ndarray.jl")
-include("test_phase4_pi.jl")
-include("test_generic_struct.jl")
-include("test_julia_to_rust_simple.jl")
-include("test_julia_to_rust_struct.jl")
-include("test_julia_to_rust_generic.jl")
-
-# Phase 5: #[julia] attribute tests
-include("test_julia_attribute.jl")
-
-# Phase 6: Crate bindings tests (Maturin-like feature)
-include("test_crate_bindings.jl")
-
-# Hot reload tests
-include("test_hot_reload.jl")
-
-# Types, memory, and safety fixes
-include("test_types_memory_safety.jl")
-
-# LLVM/Codegen bug fix tests
-include("test_llvm_fixes.jl")
-
-# Regression reproduction tests
-include("test_regressions.jl")
-
-# Parsing, generics, and hot-reload fixes (#168, #169, #170, #172, #173, #184, #185)
-include("test_parsing_generics_hotreload_fixes.jl")
+if parallel_error[] !== nothing && serial_error[] !== nothing
+    throw(CompositeException(Any[parallel_error[], serial_error[]]))
+elseif parallel_error[] !== nothing
+    throw(parallel_error[])
+elseif serial_error[] !== nothing
+    throw(serial_error[])
+end
