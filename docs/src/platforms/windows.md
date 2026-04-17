@@ -294,14 +294,14 @@ test:
   runs-on: ${{ matrix.os }}
   strategy:
     matrix:
-      os:
-        - ubuntu-latest
-        - windows-latest
+      os: [windows-latest]
   steps:
     - uses: actions/checkout@v6
     - uses: julia-actions/setup-julia@v2
     - uses: julia-actions/julia-buildpkg@v1
     - uses: julia-actions/julia-runtest@v1
+      with:
+        test_args: '--jobs=2'
 ```
 
 ### Caching for Windows Builds
