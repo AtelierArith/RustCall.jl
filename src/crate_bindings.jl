@@ -752,6 +752,16 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
             end
         end
         export $struct_name
+
+        function Base.show(io::IO, self::$struct_name)
+            print(io, nameof(@__MODULE__), ".", $struct_name_str, "(")
+            show(io, getfield(self, :ptr))
+            print(io, ")")
+        end
+
+        function Base.show(io::IO, ::MIME"text/plain", self::$struct_name)
+            Base.show(io, self)
+        end
     end)
 
     # Generate constructor and method wrappers
@@ -1233,7 +1243,22 @@ end
 
 Base.show(io::IO, bindings::CrateBindings) = print(io, "CrateBindings(", nameof(getfield(bindings, :module_ref)), ")")
 Base.show(io::IO, member::CrateBindingMember) = print(io, nameof(getfield(getfield(member, :bindings), :module_ref)), ".", getfield(member, :name))
-Base.show(io::IO, proxy::CrateBindingObject) = show(io, getfield(proxy, :value))
+
+function _show_crate_binding_object(io::IO, proxy::CrateBindingObject)
+    value = getfield(proxy, :value)
+    module_name = nameof(getfield(getfield(proxy, :bindings), :module_ref))
+    type_name = nameof(typeof(value))
+
+    print(io, module_name, ".", type_name, "(")
+    for (idx, field_name) in enumerate(fieldnames(typeof(value)))
+        idx > 1 && print(io, ", ")
+        show(io, getfield(value, field_name))
+    end
+    print(io, ")")
+end
+
+Base.show(io::IO, proxy::CrateBindingObject) = _show_crate_binding_object(io, proxy)
+Base.show(io::IO, ::MIME"text/plain", proxy::CrateBindingObject) = _show_crate_binding_object(io, proxy)
 
 function _instantiate_runtime_bindings(bindings_expr::Expr)
     runtime_namespace = Module(gensym(:RustCallCrateRuntime))
@@ -1685,6 +1710,14 @@ function _emit_struct_code(info::RustStructInfo)
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "export $struct_name")
+    push!(lines, "function Base.show(io::IO, self::$struct_name)")
+    push!(lines, "    print(io, nameof(@__MODULE__), \".$struct_name(\")")
+    push!(lines, "    show(io, getfield(self, :ptr))")
+    push!(lines, "    print(io, \")\")")
+    push!(lines, "end")
+    push!(lines, "function Base.show(io::IO, ::MIME\"text/plain\", self::$struct_name)")
+    push!(lines, "    Base.show(io, self)")
+    push!(lines, "end")
     push!(lines, "")
 
     # Method wrappers

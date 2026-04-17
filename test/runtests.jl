@@ -4,7 +4,7 @@ using ParallelTestRunner
 args = parse_args(ARGS)
 testsuite = find_tests(@__DIR__)
 serial_testsuite = Dict{String, Expr}()
-serial_test_names = ("test_cache", "test_core_api")
+serial_test_names = ("test_cache", "test_core_api", "test_cargo")
 
 for test_name in collect(keys(testsuite))
     basename = split(test_name, '/')[end]

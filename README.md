@@ -92,6 +92,13 @@ This will compile the Rust helpers library that provides FFI functions for owner
 
 ## Quick Start
 
+If you are running these examples from a source checkout of this repository, instantiate the project first:
+
+```julia
+using Pkg
+Pkg.instantiate()
+```
+
 ### 1. Define and Call Rust Functions (Simple Way)
 
 ```julia
@@ -156,6 +163,8 @@ pub extern "C" fn random_number() -> i32 {
 
 @rust random_number()::Int32  # => random number 1-100
 ```
+
+This path downloads crates from the Rust registry, so it requires network access the first time you run it.
 
 ### 5. Rust Structs as Julia Objects
 
