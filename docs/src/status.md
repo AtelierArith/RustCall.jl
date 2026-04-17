@@ -18,7 +18,7 @@ Last updated: 2026-04-17
 
 ## Codebase Snapshot
 
-Based on the repository state on 2026-02-07:
+Based on the repository state on 2026-02-07. Only the summary/test runner status above was refreshed on 2026-04-17; these inventory counts were not recomputed:
 
 | Area | Files | Approx. Lines |
 |------|-------|---------------|
