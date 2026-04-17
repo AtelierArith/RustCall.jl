@@ -610,7 +610,7 @@ result = @rust process_data(Int32(21))::Int32
 
 ## Rust Structs as Julia Objects (Phase 4)
 
-RustCall.jl automatically detects `pub struct` definitions and generates Julia wrappers, allowing you to use Rust objects as first-class Julia types.
+RustCall.jl generates Julia wrappers for Rust structs marked with `#[julia]`, allowing you to use Rust objects as first-class Julia types.
 
 ### Basic Struct Usage
 
@@ -619,6 +619,7 @@ using RustCall
 
 # Define a Rust struct with methods
 rust"""
+#[julia]
 pub struct Person {
     age: u32,
     height: f64,
@@ -656,6 +657,7 @@ height = get_height(person)
 using RustCall
 
 rust"""
+#[julia]
 pub struct Point<T> {
     x: T,
     y: T,
@@ -687,6 +689,7 @@ Rust structs are automatically managed with finalizers that call Rust's `Drop` i
 using RustCall
 
 rust"""
+#[julia]
 pub struct Resource {
     data: Vec<u8>,
 }
