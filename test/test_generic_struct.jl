@@ -35,9 +35,11 @@ using Test
 
         val = get_value(w)
         @test val == 42
+        @test w.value == 42
 
         set_value(w, Int32(100))
         val2 = get_value(w)
         @test val2 == 100
+        @test w.value == 100
     end
 end
