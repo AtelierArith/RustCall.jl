@@ -212,8 +212,9 @@ println(pair_float.first)   # => 3.14
 println(pair_float.second)  # => 2.71
 ```
 
-!!! note "Future Feature"
-    Generic struct support is planned for a future release.
+!!! note
+    Generic struct support works for examples like `Pair{Int32}` and `Pair{Float64}` shown above.
+    More complex patterns may still need additional testing.
 
 
 ## Memory Management
@@ -264,14 +265,21 @@ println(calc.get_value())  # => 0.0
 
 ## Static Methods
 
-Static methods (methods without `self`) are also supported:
+Static methods (methods without `self`) are supported on `#[derive(JuliaStruct)]`
+types with fields:
 
 ```julia
 rust"""
 #[derive(JuliaStruct)]
-pub struct MathUtils;
+pub struct MathUtils {
+    dummy: i32,
+}
 
 impl MathUtils {
+    pub fn new() -> Self {
+        MathUtils { dummy: 0 }
+    }
+
     pub fn add(a: f64, b: f64) -> f64 {
         a + b
     }
@@ -282,14 +290,15 @@ impl MathUtils {
 }
 """
 
-# Create an instance and call methods
+# Create an instance and call static methods
 utils = MathUtils()
-result1 = utils.add(3.0, 4.0)      # => 7.0
-result2 = utils.multiply(3.0, 4.0) # => 12.0
+result1 = add(3.0, 4.0)      # => 7.0
+result2 = multiply(3.0, 4.0) # => 12.0
 ```
 
-!!! note "Future Feature"
-    Unit struct (struct without fields) support is planned for a future release.
+!!! note
+    Unit struct support is still planned for a future release, so the example
+    above uses a regular struct.
 
 ## Best Practices
 
