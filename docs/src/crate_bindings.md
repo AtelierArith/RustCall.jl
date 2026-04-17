@@ -41,25 +41,21 @@ fn add(a: i32, b: i32) -> i32 {
 }
 
 #[julia]
-pub struct Counter {
-    pub value: i32,
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[julia]
-impl Counter {
+impl Point {
     #[julia]
-    pub fn new(initial: i32) -> Self {
-        Self { value: initial }
+    pub fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
     }
 
     #[julia]
-    pub fn increment(&mut self) {
-        self.value += 1;
-    }
-
-    #[julia]
-    pub fn get(&self) -> i32 {
-        self.value
+    pub fn distance(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
     }
 }
 ```
