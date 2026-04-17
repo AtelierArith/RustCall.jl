@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-02-07
+Last updated: 2026-04-17
 
 ## Summary
 
@@ -13,12 +13,12 @@ Last updated: 2026-02-07
 | `#[julia]` attribute support | ✅ Implemented |
 | External crate bindings (`@rust_crate`) | ✅ Implemented |
 | Hot reload support | ✅ Implemented |
-| Root Julia tests | ✅ Present (`test/runtests.jl`) |
-| CI (Julia + Rust proc-macro checks) | ✅ Configured |
+| Root Julia tests | ✅ Present (`test/runtests.jl`, `ParallelTestRunner.jl` over `test/test_*.jl`) |
+| CI (Julia + Rust proc-macro checks) | ✅ Configured (`julia-actions/julia-runtest@v1` with per-platform `test_args`) |
 
 ## Codebase Snapshot
 
-Based on the repository state on 2026-02-07:
+Based on the repository state on 2026-02-07. Only the summary/test runner status above was refreshed on 2026-04-17; these inventory counts were not recomputed:
 
 | Area | Files | Approx. Lines |
 |------|-------|---------------|
@@ -61,6 +61,7 @@ Based on the repository state on 2026-02-07:
 
 ### Julia tests
 - Root entry point: `test/runtests.jl`
+- Runner: `ParallelTestRunner.jl`, which discovers files matching `test/test_*.jl`
 - Coverage includes cache, ownership, arrays, generics, error handling, LLVM path, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
 
 ### Rust proc-macro tests

@@ -62,9 +62,18 @@ jobs:
         arch:
           - x64
         include:
+          - os: ubuntu-latest
+            arch: x64
+            version: '1'
+            test_args: --jobs=4
+          - os: windows-latest
+            arch: x64
+            version: '1'
+            test_args: --jobs=2
           - os: macos-latest
             arch: aarch64
             version: '1'
+            test_args: --jobs=2
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
@@ -74,3 +83,5 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+        with:
+          test_args: ${{ matrix.test_args }}
