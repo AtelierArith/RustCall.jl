@@ -912,18 +912,18 @@ const IRUST_FUNCTIONS = Dict{UInt64, Tuple{String, String}}()
 Execute Rust code at function scope.
 
 This macro compiles Rust code into a temporary function and calls it.
-Julia variables can be referenced using `\$var` syntax or passed as arguments.
+Julia variables can be referenced using `\\\$var` syntax or passed as arguments.
 
 # Features
-- Automatic variable binding with `\$var` syntax
+- Automatic variable binding with `\\\$var` syntax
 - Improved type inference from code
 - Better error messages
 
 # Examples
 ```julia
-# Using \$var syntax (recommended)
+# Using \\\$var syntax (recommended)
 function myfunc(x)
-    @irust("\$x * 2")
+    @irust("\\\$x * 2")
 end
 
 # Using explicit arguments (legacy, still supported)
@@ -933,7 +933,7 @@ end
 
 # Multiple variables
 function add_and_multiply(a, b, c)
-    @irust("\$a + \$b * \$c")
+    @irust("\\\$a + \\\$b * \\\$c")
 end
 ```
 
@@ -990,12 +990,12 @@ end
 """
     _parse_irust_variables(code::String) -> (Vector{Symbol}, String)
 
-Parse `\$var` syntax in irust code and extract variable names.
-Returns (list of variable symbols, processed code with \$var replaced by argN).
+Parse `\\\$var` syntax in irust code and extract variable names.
+Returns (list of variable symbols, processed code with `\\\$var` replaced by argN).
 
 # Example
 ```julia
-vars, code = _parse_irust_variables("\$x + \$y * 2")
+vars, code = _parse_irust_variables("\\\$x + \\\$y * 2")
 # vars = [:x, :y]
 # code = "arg1 + arg2 * 2"
 ```

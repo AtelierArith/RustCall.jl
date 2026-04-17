@@ -5,6 +5,9 @@ Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
 RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 RustToolChain = "e9dc52e2-edb8-4742-9783-5e542d30dbb5"
 
+[sources]
+RustCall = { path = ".." }
+
 [compat]
 Documenter = "1"
 RustToolChain = "0.1.1"

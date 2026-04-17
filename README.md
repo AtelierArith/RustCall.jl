@@ -394,31 +394,34 @@ using RustCall
 if RustCall.is_rust_helpers_available()
     # RustBox - heap-allocated value (single ownership)
     box = RustCall.RustBox(Int32(42))
-    @test RustCall.is_valid(box)
+    RustCall.is_valid(box)  # => true
     RustCall.drop!(box)  # Explicitly drop
-    @test RustCall.is_dropped(box)
+    RustCall.is_dropped(box)  # => true
 
     # RustRc - reference counting (single-threaded)
     rc1 = RustCall.RustRc(Int32(100))
     rc2 = RustCall.clone(rc1)  # Increment reference count
     RustCall.drop!(rc1)  # Still valid because rc2 holds a reference
-    @test RustCall.is_valid(rc2)
+    RustCall.is_valid(rc2)  # => true
     RustCall.drop!(rc2)
 
     # RustArc - atomic reference counting (thread-safe)
     arc1 = RustCall.RustArc(Int32(200))
     arc2 = RustCall.clone(arc1)  # Thread-safe clone
     RustCall.drop!(arc1)
-    @test RustCall.is_valid(arc2)
+    RustCall.is_valid(arc2)  # => true
     RustCall.drop!(arc2)
 
-    # RustVec - growable array
-    vec = RustCall.RustVec{Int32}(ptr, len, cap)
-    @test length(vec) == len
+    # RustVec - growable array backed by Rust-managed memory
+    vec = RustCall.create_rust_vec(Int32[1, 2, 3])
+    vec[1] = 42
+    collect(vec)  # => Int32[42, 2, 3]
+    RustCall.drop!(vec)
 
-    # RustSlice - slice view
-    slice = RustCall.RustSlice{Int32}(ptr, len)
-    @test length(slice) == len
+    # RustSlice - borrowed view into existing memory
+    julia_vec = Int32[10, 20, 30]
+    slice = RustCall.RustSlice{Int32}(pointer(julia_vec), UInt(length(julia_vec)))
+    slice[2]  # => 20
 end
 ```
 
