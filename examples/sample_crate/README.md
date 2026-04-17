@@ -14,13 +14,14 @@ This crate was created for testing and demonstrating the functionality of bindin
 using RustCall
 
 sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
-@rust_crate sample_crate_path
+const SampleCrate = @rust_crate sample_crate_path
 
-# Call functions through the generated module (SampleCrate)
+# Call functions through the returned bindings value
 SampleCrate.add(Int32(2), Int32(3))  # => 5
 
 # Using structs
 p = SampleCrate.Point(3.0, 4.0)
+p isa SampleCrate.Point  # => true
 SampleCrate.distance_from_origin(p)  # => 5.0
 
 # Property access
@@ -39,11 +40,12 @@ Pkg.activate(joinpath(@__DIR__, "..", ".."))
 using RustCall
 
 sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
-@rust_crate sample_crate_path
+const SampleCrate = @rust_crate sample_crate_path
 
 @testset "SampleCrate" begin
     @testset "Point" begin
         p = SampleCrate.Point(3.0, 4.0)
+        @test p isa SampleCrate.Point
         @test SampleCrate.distance_from_origin(p) == 5.0
         @test p.x == 3.0
         @test p.y == 4.0
@@ -67,11 +69,11 @@ function load_sample_crate()
     sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
     bindings = @rust_crate sample_crate_path name="SampleCrateFunctionScope"
 
-    p = bindings.Point(3.0, 4.0)
+    p = Base.invokelatest(bindings.Point, 3.0, 4.0)
     return (
         bindings.add(Int32(2), Int32(3)),
         bindings.distance_from_origin(p),
-        p.x,
+        Base.invokelatest(getproperty, p, :x),
     )
 end
 
@@ -154,9 +156,9 @@ Methods:
 
 - `@rust_crate` recommends using absolute paths or paths specified with `joinpath`
 - `pkgdir(RustCall)` can be used to get the package root directory
-- Generated modules are directly defined in the caller's scope
-- Module names are converted from crate names to PascalCase (e.g., `sample_crate` → `SampleCrate`)
-- Custom module names can be specified with the `name="CustomName"` option
+- `@rust_crate` returns a bindings value; keep it in a local variable or `const`
+- The generated runtime module name defaults to PascalCase from the crate name (for example, `sample_crate` → `SampleCrate`)
+- Custom runtime module names can be specified with the `name="CustomName"` option
 - Use specific types like `Int32` or `UInt32` for integer types
 
 ## Build

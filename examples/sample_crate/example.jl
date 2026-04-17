@@ -21,13 +21,13 @@ Pkg.activate(joinpath(@__DIR__, "..", ".."))
 using RustCall
 
 sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
-@rust_crate sample_crate_path
+const SampleCrate = @rust_crate sample_crate_path
 
 @testset "distance_from_origin" begin
     p = SampleCrate.Point(3.0, 4.0)
+    @test p isa SampleCrate.Point
     @test SampleCrate.distance_from_origin(p) == 5.0
     # Access fields using property access syntax
     @test p.x == 3.0
     @test p.y == 4.0
 end
-
