@@ -25,7 +25,6 @@ const SampleCrate = @rust_crate sample_crate_path
 
 @testset "distance_from_origin" begin
     p = SampleCrate.Point(3.0, 4.0)
-    @test p isa SampleCrate.Point
     @test SampleCrate.distance_from_origin(p) == 5.0
     # Access fields using property access syntax
     @test p.x == 3.0

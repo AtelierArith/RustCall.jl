@@ -206,8 +206,8 @@ RustCall.get_cargo_cache_size
 The explicit-binding runtime contract is:
 
 - `@rust_crate` and `RustCall.load_crate_bindings` return a `RustCall.CrateBindings` value.
-- Property access preserves non-function bindings such as types and constants.
-- Callable exported functions remain proxy-backed so calls stay world-age-safe.
+- Property access preserves non-callable bindings such as constants and modules.
+- Callable exports, including generated constructors, remain proxy-backed so calls stay world-age-safe.
 
 ```@docs
 RustCall.CrateBindings

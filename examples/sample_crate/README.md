@@ -21,7 +21,6 @@ SampleCrate.add(Int32(2), Int32(3))  # => 5
 
 # Using structs
 p = SampleCrate.Point(3.0, 4.0)
-p isa SampleCrate.Point  # => true
 SampleCrate.distance_from_origin(p)  # => 5.0
 
 # Property access
@@ -45,7 +44,6 @@ const SampleCrate = @rust_crate sample_crate_path
 @testset "SampleCrate" begin
     @testset "Point" begin
         p = SampleCrate.Point(3.0, 4.0)
-        @test p isa SampleCrate.Point
         @test SampleCrate.distance_from_origin(p) == 5.0
         @test p.x == 3.0
         @test p.y == 4.0

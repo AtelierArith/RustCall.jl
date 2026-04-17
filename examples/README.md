@@ -106,7 +106,6 @@ SampleCrate.add(Int32(1), Int32(2))
 
 # Structs with property access
 p = SampleCrate.Point(3.0, 4.0)
-p isa SampleCrate.Point  # => true
 p.x  # => 3.0
 p.y  # => 4.0
 SampleCrate.distance_from_origin(p)  # => 5.0

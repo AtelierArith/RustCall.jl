@@ -1138,9 +1138,9 @@ end
 
 Runtime wrapper returned by `@rust_crate` and [`load_crate_bindings`](@ref).
 
-Property access preserves non-function exports such as types and constants,
-while exported functions are routed through a proxy so calls remain
-world-age-safe after dynamic loading.
+Property access preserves non-callable exports such as constants and modules,
+while callable exports such as functions and constructors are routed through
+proxies so calls remain world-age-safe after dynamic loading.
 """
 struct CrateBindings
     module_ref::Module
@@ -1159,7 +1159,7 @@ end
 _unwrap_crate_binding_value(value) = value
 _unwrap_crate_binding_value(value::CrateBindingObject) = getfield(value, :value)
 
-_should_proxy_crate_binding(value) = value isa Function
+_should_proxy_crate_binding(value) = value isa Function || value isa Type
 
 function _wrap_crate_binding_value(bindings::CrateBindings, value)
     if value isa CrateBindings || value isa CrateBindingMember || value isa CrateBindingObject
@@ -1251,7 +1251,7 @@ Use the returned [`CrateBindings`](@ref) value directly:
 const MyCrate = load_crate_bindings("/path/to/my_crate")
 MyCrate.add(Int32(1), Int32(2))
 p = MyCrate.Point(3.0, 4.0)
-p isa MyCrate.Point
+p.x == 3.0
 ```
 
 `output_module_name` controls the generated runtime module name stored inside the
