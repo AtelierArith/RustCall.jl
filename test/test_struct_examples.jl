@@ -50,4 +50,27 @@ using Test
         height = get_details(p)
         @test height ≈ 178.0
     end
+
+    @testset "derive(JuliaStruct) String fields" begin
+        rust"""
+        #[derive(JuliaStruct)]
+        pub struct Label {
+            name: String,
+        }
+
+        impl Label {
+            pub fn new(name: String) -> Self {
+                Self { name }
+            }
+
+            pub fn get_name(&self) -> String {
+                self.name.clone()
+            }
+        }
+        """
+
+        label = Label("Alice")
+        @test label.name == "Alice"
+        @test get_name(label) == "Alice"
+    end
 end

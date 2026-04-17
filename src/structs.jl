@@ -663,6 +663,40 @@ function generate_struct_wrappers(info::RustStructInfo)
     println(io, "    }")
     println(io, "}\n")
 
+    needs_owned_string_helper =
+        any(field_type == "String" for (_, field_type) in info.fields if _is_ffi_compatible_field_type(field_type)) ||
+        any(m.return_type == "String" && !(m.name == "new" || m.return_type == "Self" || m.return_type == struct_name) for m in info.methods)
+    needs_borrowed_string_helper =
+        any(m.return_type == "&str" && !(m.name == "new" || m.return_type == "Self" || m.return_type == struct_name) for m in info.methods)
+
+    owned_string_helper = "$(struct_name)_RustCallOwnedString"
+    borrowed_string_helper = "$(struct_name)_RustCallBorrowedString"
+    owned_string_free_fn = "$(struct_name)_free_rust_string"
+
+    if needs_owned_string_helper
+        println(io, "#[repr(C)]")
+        println(io, "pub struct $(owned_string_helper) {")
+        println(io, "    ptr: *mut u8,")
+        println(io, "    len: usize,")
+        println(io, "    cap: usize,")
+        println(io, "}\n")
+
+        println(io, "#[no_mangle]")
+        println(io, "pub extern \"C\" fn $(owned_string_free_fn)(ptr: *mut u8, len: usize, cap: usize) {")
+        println(io, "    if !ptr.is_null() {")
+        println(io, "        unsafe { Vec::from_raw_parts(ptr, len, cap); }")
+        println(io, "    }")
+        println(io, "}\n")
+    end
+
+    if needs_borrowed_string_helper
+        println(io, "#[repr(C)]")
+        println(io, "pub struct $(borrowed_string_helper) {")
+        println(io, "    ptr: *const u8,")
+        println(io, "    len: usize,")
+        println(io, "}\n")
+    end
+
     # Generate field accessors if struct has fields and derive(JuliaStruct)
     if info.has_derive_julia_struct && !isempty(info.fields)
         # Get set of method wrapper names to avoid conflicts
@@ -685,12 +719,24 @@ function generate_struct_wrappers(info::RustStructInfo)
 
             # Getter - need to clone String and Vec types
             println(io, "#[no_mangle]")
-            println(io, "pub extern \"C\" fn $(struct_name)_get_$(field_name)(ptr: *const $struct_name) -> $field_type {")
-            # String and Vec types need clone(), Copy types can be returned directly
-            if occursin(r"String|Vec", field_type)
-                println(io, "    unsafe { (*ptr).$(field_name).clone() }")
+            if field_type == "String"
+                println(io, "pub extern \"C\" fn $(struct_name)_get_$(field_name)(ptr: *const $struct_name) -> $(owned_string_helper) {")
+                println(io, "    let mut rustcall_bytes = unsafe { (*ptr).$(field_name).clone().into_bytes() };")
+                println(io, "    let rustcall_ret = $(owned_string_helper) {")
+                println(io, "        ptr: rustcall_bytes.as_mut_ptr(),")
+                println(io, "        len: rustcall_bytes.len(),")
+                println(io, "        cap: rustcall_bytes.capacity(),")
+                println(io, "    };")
+                println(io, "    std::mem::forget(rustcall_bytes);")
+                println(io, "    rustcall_ret")
             else
-                println(io, "    unsafe { (*ptr).$(field_name) }")
+                println(io, "pub extern \"C\" fn $(struct_name)_get_$(field_name)(ptr: *const $struct_name) -> $field_type {")
+                # Vec types need clone(), Copy types can be returned directly
+                if occursin(r"Vec", field_type)
+                    println(io, "    unsafe { (*ptr).$(field_name).clone() }")
+                else
+                    println(io, "    unsafe { (*ptr).$(field_name) }")
+                end
             end
             println(io, "}\n")
 
@@ -776,17 +822,51 @@ function generate_struct_wrappers(info::RustStructInfo)
             end
             println(io, "    Box::into_raw(Box::new(obj))")
         else
-            ret_decl = m.return_type == "()" ? "" : " -> $(m.return_type)"
+            if m.return_type == "String"
+                ret_decl = " -> $(owned_string_helper)"
+            elseif m.return_type == "&str"
+                ret_decl = " -> $(borrowed_string_helper)"
+            else
+                ret_decl = m.return_type == "()" ? "" : " -> $(m.return_type)"
+            end
             println(io, "pub extern \"C\" fn $wrapper_name($args_str)$ret_decl {")
             # Add string conversions if any
             if !isempty(string_conversions)
                 println(io, conversions_str)
             end
-            if m.is_static
-                println(io, "    $struct_name::$(m.name)($(join(call_args, ", ")))")
+            if m.return_type == "String"
+                if m.is_static
+                    println(io, "    let rustcall_value = $struct_name::$(m.name)($(join(call_args, ", ")));")
+                else
+                    println(io, "    let self_obj = unsafe { &$(m.is_mutable ? "mut " : "") *ptr };")
+                    println(io, "    let rustcall_value = self_obj.$(m.name)($(join(call_args[2:end], ", ")));")
+                end
+                println(io, "    let mut rustcall_bytes = rustcall_value.into_bytes();")
+                println(io, "    let rustcall_ret = $(owned_string_helper) {")
+                println(io, "        ptr: rustcall_bytes.as_mut_ptr(),")
+                println(io, "        len: rustcall_bytes.len(),")
+                println(io, "        cap: rustcall_bytes.capacity(),")
+                println(io, "    };")
+                println(io, "    std::mem::forget(rustcall_bytes);")
+                println(io, "    rustcall_ret")
+            elseif m.return_type == "&str"
+                if m.is_static
+                    println(io, "    let rustcall_value = $struct_name::$(m.name)($(join(call_args, ", ")));")
+                else
+                    println(io, "    let self_obj = unsafe { &$(m.is_mutable ? "mut " : "") *ptr };")
+                    println(io, "    let rustcall_value = self_obj.$(m.name)($(join(call_args[2:end], ", ")));")
+                end
+                println(io, "    $(borrowed_string_helper) {")
+                println(io, "        ptr: rustcall_value.as_ptr(),")
+                println(io, "        len: rustcall_value.len(),")
+                println(io, "    }")
             else
-                println(io, "    let self_obj = unsafe { &$(m.is_mutable ? "mut " : "") *ptr };")
-                println(io, "    self_obj.$(m.name)($(join(call_args[2:end], ", ")))")
+                if m.is_static
+                    println(io, "    $struct_name::$(m.name)($(join(call_args, ", ")))")
+                else
+                    println(io, "    let self_obj = unsafe { &$(m.is_mutable ? "mut " : "") *ptr };")
+                    println(io, "    self_obj.$(m.name)($(join(call_args[2:end], ", ")))")
+                end
             end
         end
         println(io, "}\n")
@@ -884,7 +964,7 @@ function emit_julia_definitions(info::RustStructInfo)
         end
 
         # 3. Field and Method Accessors
-        field_getters = Dict{Symbol, Tuple{String, Symbol}}()
+        field_getters = Dict{Symbol, Tuple{String, String}}()
         field_setters = Dict{Symbol, String}()
         if info.has_derive_julia_struct && !isempty(info.fields)
             for (field_name, field_type) in info.fields
@@ -893,8 +973,7 @@ function emit_julia_definitions(info::RustStructInfo)
                     continue
                 end
                 field_sym = Symbol(field_name)
-                jl_field_type = rust_to_julia_type_sym(field_type)
-                field_getters[field_sym] = ("$(struct_name_str)_get_$(field_name)", jl_field_type)
+                field_getters[field_sym] = ("$(struct_name_str)_get_$(field_name)", field_type)
                 field_setters[field_sym] = "$(struct_name_str)_set_$(field_name)"
             end
         end
@@ -917,8 +996,9 @@ function emit_julia_definitions(info::RustStructInfo)
                 method_names_set = $(QuoteNode(method_names))
 
                 if haskey(field_info, field)
-                    getter_name, jl_field_type_sym = field_info[field]
-                    field_type = julia_sym_to_type(jl_field_type_sym)
+                    getter_name, rust_field_type = field_info[field]
+                    type_param_names = ($(map(name -> QuoteNode(name), info.type_params)...),)
+                    field_type = _resolve_generic_struct_field_type(rust_field_type, type_param_names, ($(esc_T_params...),))
                     return _call_generic_field(self.lib_name, getter_name, self.ptr, field_type, ($(esc_T_params...),))
                 elseif field in method_names_set
                     $(method_accessors...)
@@ -1000,34 +1080,66 @@ function emit_julia_definitions(info::RustStructInfo)
                     end
                 end)
             else
-                jl_ret_type = rust_to_julia_type_sym(m.return_type)
+                if m.return_type == "String"
+                    free_fn = struct_name_str * "_free_rust_string"
+                    push!(exprs, quote
+                        function $fname($(esc_args...))
+                            lib = get_current_library()
+                            return _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...))
+                        end
+                    end)
+                elseif m.return_type == "&str"
+                    push!(exprs, quote
+                        function $fname($(esc_args...))
+                            lib = get_current_library()
+                            return _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...))
+                        end
+                    end)
+                else
+                    jl_ret_type = rust_to_julia_type_sym(m.return_type)
+                    push!(exprs, quote
+                        function $fname($(esc_args...))
+                            lib = get_current_library()
+                            return _call_rust_method(lib, $wrapper_name, C_NULL, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
+                        end
+                    end)
+                end
+            end
+        else
+            if m.return_type == "String"
+                free_fn = struct_name_str * "_free_rust_string"
                 push!(exprs, quote
-                    function $fname($(esc_args...))
-                        lib = get_current_library()
-                        return _call_rust_method(lib, $wrapper_name, C_NULL, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
+                    function $fname(self::$esc_struct, $(esc_args...))
+                        return _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...))
+                    end
+                end)
+            elseif m.return_type == "&str"
+                push!(exprs, quote
+                    function $fname(self::$esc_struct, $(esc_args...))
+                        return _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...))
+                    end
+                end)
+            else
+                jl_ret_type = rust_to_julia_type_sym(m.return_type)
+                is_ctor_ret = m.return_type == "Self" || m.return_type == struct_name_str
+                push!(exprs, quote
+                    function $fname(self::$esc_struct, $(esc_args...))
+                        res = _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
+                        if $is_ctor_ret
+                            return $esc_struct(res, self.lib_name)
+                        else
+                            return res
+                        end
                     end
                 end)
             end
-        else
-        jl_ret_type = rust_to_julia_type_sym(m.return_type)
-        is_ctor_ret = m.return_type == "Self" || m.return_type == struct_name_str
-        push!(exprs, quote
-            function $fname(self::$esc_struct, $(esc_args...))
-                res = _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
-                if $is_ctor_ret
-                    return $esc_struct(res, self.lib_name)
-                else
-                    return res
-                end
-            end
-        end)
         end
     end
 
     # 3. Add field accessors if derive(JuliaStruct) is present
     if info.has_derive_julia_struct && !isempty(info.fields)
         # Build field accessor mappings
-        field_getters = Dict{Symbol, Tuple{String, Symbol}}()
+        field_getters = Dict{Symbol, Tuple{String, String}}()
         field_setters = Dict{Symbol, String}()
 
         for (field_name, field_type) in info.fields
@@ -1036,10 +1148,9 @@ function emit_julia_definitions(info::RustStructInfo)
                 continue
             end
             field_sym = Symbol(field_name)
-            jl_field_type = rust_to_julia_type_sym(field_type)
             getter_name = struct_name_str * "_get_" * field_name
             setter_name = struct_name_str * "_set_" * field_name
-            field_getters[field_sym] = (getter_name, jl_field_type)
+            field_getters[field_sym] = (getter_name, field_type)
             field_setters[field_sym] = setter_name
         end
 
@@ -1066,11 +1177,17 @@ function emit_julia_definitions(info::RustStructInfo)
 
                 # Check if it's a field
                 if haskey(field_info, field)
-                    getter_name, jl_field_type_sym = field_info[field]
+                    getter_name, rust_field_type = field_info[field]
                     lib = self.lib_name
-                    func_ptr = get_function_pointer(lib, getter_name)
-                    field_type = julia_sym_to_type(jl_field_type_sym)
-                    return call_rust_function(func_ptr, field_type, self.ptr)
+                    if rust_field_type == "String"
+                        return _call_rust_owned_string(lib, getter_name, $(struct_name_str * "_free_rust_string"), self.ptr)
+                    elseif rust_field_type == "&str"
+                        return _call_rust_borrowed_string(lib, getter_name, self.ptr)
+                    else
+                        func_ptr = get_function_pointer(lib, getter_name)
+                        field_type = julia_sym_to_type(rust_to_julia_type_sym(rust_field_type))
+                        return call_rust_function(func_ptr, field_type, self.ptr)
+                    end
                 # Check if it's a method
                 elseif field in method_names_set
                     $(method_accessors...)
@@ -1127,6 +1244,46 @@ end
 
 function _call_rust_constructor(lib_name::String, func_name::String, args...)
     return _rust_call_typed(lib_name, func_name, Ptr{Cvoid}, args...)
+end
+
+function _crust_string_to_julia(raw::CRustString)
+    if raw.ptr == C_NULL || raw.len == 0
+        return ""
+    end
+
+    bytes = Vector{UInt8}(undef, raw.len)
+    unsafe_copyto!(pointer(bytes), raw.ptr, raw.len)
+    return String(bytes)
+end
+
+function _crust_str_to_julia(raw::CRustStr)
+    if raw.ptr == C_NULL || raw.len == 0
+        return ""
+    end
+
+    bytes = Vector{UInt8}(undef, raw.len)
+    unsafe_copyto!(pointer(bytes), raw.ptr, raw.len)
+    return String(bytes)
+end
+
+function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...)
+    func_ptr = get_function_pointer(lib_name, func_name)
+    raw = call_rust_function(func_ptr, CRustString, args...)
+
+    try
+        return _crust_string_to_julia(raw)
+    finally
+        if raw.ptr != C_NULL
+            free_ptr = get_function_pointer(lib_name, free_func_name)
+            ccall(free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
+        end
+    end
+end
+
+function _call_rust_borrowed_string(lib_name::String, func_name::String, args...)
+    func_ptr = get_function_pointer(lib_name, func_name)
+    raw = call_rust_function(func_ptr, CRustStr, args...)
+    return _crust_str_to_julia(raw)
 end
 
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args...)
@@ -1189,6 +1346,18 @@ function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid
 
     info = monomorphize_function(func_name, type_params)
     return call_rust_function(info.func_ptr, ret_type, ptr)
+end
+
+function _resolve_generic_struct_field_type(field_type::String, type_param_names, type_param_values::Tuple)
+    stripped = strip(field_type)
+
+    for (name, value) in zip(type_param_names, type_param_values)
+        if stripped == String(name)
+            return value
+        end
+    end
+
+    return julia_sym_to_type(rust_to_julia_type_sym(stripped))
 end
 
 function _precompile_generic_free(func_name::String, types::Tuple)

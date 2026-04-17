@@ -247,5 +247,30 @@ using Test
             @test p.x ≈ 3.0
             @test p.y ≈ 4.0
         end
+
+        @testset "Integration: #[julia] struct with String fields" begin
+            rust"""
+            #[julia]
+            pub struct JuliaPerson {
+                name: String,
+                age: i32,
+            }
+
+            impl JuliaPerson {
+                pub fn new(name: String, age: i32) -> Self {
+                    Self { name, age }
+                }
+
+                pub fn get_name(&self) -> String {
+                    self.name.clone()
+                }
+            }
+            """
+
+            person = JuliaPerson("Alice", Int32(30))
+            @test person.age == Int32(30)
+            @test person.name == "Alice"
+            @test get_name(person) == "Alice"
+        end
     end
 end

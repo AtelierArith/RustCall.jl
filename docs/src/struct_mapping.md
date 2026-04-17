@@ -77,6 +77,8 @@ impl PersonInfo {
 
 # Create a person
 person = PersonInfo("Alice", 30)
+println(person.name)      # => "Alice"
+println(get_name(person)) # => "Alice"
 
 # Clone the person
 person2 = copy(person)  # Uses Rust's Clone trait
@@ -177,8 +179,8 @@ Field types are automatically mapped from Rust to Julia:
 | `f32` | `Float32` | |
 | `f64` | `Float64` | |
 | `bool` | `Bool` | |
-| `String` | `RustString` | Owned string |
-| `&str` | `RustStr` | String slice |
+| `String` | `String` | Returned as a copied Julia string |
+| `&str` | `String` | Method returns are copied to a Julia string |
 
 ## Generic Structs
 
