@@ -342,6 +342,32 @@ catch e
     @warn "Failed to run property access tests: $e"
 end
 
+function _run_top_level_explicit_binding_contract()
+    project_dir = dirname(@__DIR__)
+    test_script = joinpath(tempdir(), "crate_binding_contract_$(getpid()).jl")
+
+    open(test_script, "w") do io
+        println(io, """
+        using Test
+        using RustCall
+
+        const SampleCrateContract = @rust_crate raw\"$(abspath(SAMPLE_CRATE_PATH))\" name=\"SampleCrateInjected\"
+
+        @test SampleCrateContract.add(Int32(2), Int32(3)) == Int32(5)
+        point = SampleCrateContract.Point(3.0, 4.0)
+        @test SampleCrateContract.distance_from_origin(point) == 5.0
+        @test point.x == 3.0
+        @test !isdefined(Main, :SampleCrateInjected)
+        """)
+    end
+
+    try
+        return run(ignorestatus(`julia --project=$(project_dir) $(test_script)`), wait=true)
+    finally
+        rm(test_script, force=true)
+    end
+end
+
 @testset "Property Access Syntax" begin
     # Property access tests are run in a separate Julia process above
     # This testset just validates that they passed
@@ -350,6 +376,15 @@ end
     else
         @warn "Property access tests were not run or failed"
         @test_skip "Property access tests require successful binding generation"
+    end
+end
+
+@testset "Top-Level Explicit Binding" begin
+    if isdir(SAMPLE_CRATE_PATH)
+        proc = _run_top_level_explicit_binding_contract()
+        @test success(proc)
+    else
+        @test_skip "Top-level explicit binding test requires successful crate loading"
     end
 end
 
