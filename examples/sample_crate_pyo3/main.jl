@@ -13,7 +13,7 @@ println("Loading sample_crate_pyo3 with @rust_crate...")
 println("=" ^ 60)
 
 crate_path = @__DIR__
-@rust_crate crate_path
+const SampleCratePyo3 = @rust_crate crate_path
 
 println("\n✅ Crate loaded as module: SampleCratePyo3\n")
 

@@ -6,6 +6,7 @@ using RustToolChain: cargo
 
 # Path to the sample crate
 const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
+const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3")
 
 @testset "Crate Bindings" begin
 
@@ -393,6 +394,43 @@ end
     end
 end
 
+@testset "Result and Option Runtime Wrappers" begin
+    if !isdir(SAMPLE_CRATE_PATH)
+        @warn "Sample crate not found, skipping Result/Option wrapper tests"
+        return
+    end
+
+    try
+        run(pipeline(`$(cargo()) --version`, devnull))
+    catch
+        @warn "Cargo not available, skipping Result/Option wrapper tests"
+        return
+    end
+
+    let bindings = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateResultOption"
+        ok = bindings.safe_divide(10.0, 2.0)
+        err = bindings.safe_divide(10.0, 0.0)
+        some = bindings.safe_sqrt(4.0)
+        none = bindings.safe_sqrt(-1.0)
+
+        @test ok isa RustCall.RustResult{Float64, Int32}
+        @test RustCall.is_ok(ok)
+        @test RustCall.unwrap(ok) == 5.0
+
+        @test err isa RustCall.RustResult{Float64, Int32}
+        @test RustCall.is_err(err)
+        @test RustCall.unwrap_or(err, 0.0) == 0.0
+
+        @test some isa RustCall.RustOption{Float64}
+        @test RustCall.is_some(some)
+        @test RustCall.unwrap(some) == 2.0
+
+        @test none isa RustCall.RustOption{Float64}
+        @test RustCall.is_none(none)
+        @test RustCall.unwrap_or(none, 0.0) == 0.0
+    end
+end
+
 @testset "Function Scope Usage" begin
     if !isdir(SAMPLE_CRATE_PATH)
         @warn "Sample crate not found, skipping function scope usage tests"
@@ -420,6 +458,25 @@ end
     end
 
     @test use_bindings_in_function(SAMPLE_CRATE_PATH) == (Int32(5), 5.0, 3.0, 10.0)
+end
+
+@testset "sample_crate_pyo3 Julia Demo" begin
+    if !isdir(SAMPLE_CRATE_PYO3_PATH)
+        @warn "sample_crate_pyo3 not found, skipping Julia demo test"
+        return
+    end
+
+    try
+        run(pipeline(`$(cargo()) --version`, devnull))
+    catch
+        @warn "Cargo not available, skipping Julia demo test"
+        return
+    end
+
+    project_dir = dirname(@__DIR__)
+    cmd = Cmd(`julia --project=../.. main.jl`, dir=SAMPLE_CRATE_PYO3_PATH)
+    proc = run(ignorestatus(cmd), wait=true)
+    @test success(proc)
 end
 
 @testset "Precompilation Support" begin
