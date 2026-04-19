@@ -127,17 +127,18 @@ end
 Reverse a string using Rust.
 """
 function reverse_string(text::String)::String
-    input_len = length(text)
-    output_len = input_len + 1  # +1 for null terminator
+    output_len = ncodeunits(text) + 1  # +1 for null terminator
     output = Vector{UInt8}(undef, output_len)
 
-    input_ptr = pointer(text)
-    output_ptr = pointer(output)
+    GC.@preserve text output begin
+        input_ptr = pointer(text)
+        output_ptr = pointer(output)
 
-    @rust reverse_string(input_ptr, output_ptr, output_len)::Cvoid
+        @rust reverse_string(input_ptr, output_ptr, output_len)::Cvoid
 
-    # Convert back to Julia string
-    return unsafe_string(pointer(output))
+        # Convert back to Julia string while the buffer is preserved
+        return unsafe_string(pointer(output))
+    end
 end
 
 # ============================================================================

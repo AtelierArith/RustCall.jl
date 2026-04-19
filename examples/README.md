@@ -146,7 +146,7 @@ SampleCratePyo3.add(Int32(2), Int32(3))  # => 5
 **How to use from Python:**
 ```python
 import sample_crate_pyo3 as m
-m.py_add(2, 3)  # => 5
+m.add(2, 3)  # => 5
 ```
 
 ## Learning Progression
