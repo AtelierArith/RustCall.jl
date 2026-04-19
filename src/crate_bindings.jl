@@ -518,7 +518,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
 
     # Build the module body as a block
     module_body = quote
-        import RustCall: call_rust_function, get_function_pointer_from_lib, _check_not_freed
+        import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed
         import Libdl
 
         const _LIB_PATH = $lib_path
@@ -652,9 +652,9 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, result_i
             c_result = call_rust_function(func_ptr, $c_result_struct_name, $(converted_args...))
             # Convert to RustResult
             if c_result.is_ok == 1
-                RustCall.RustResult{$ok_julia_type, $err_julia_type}(true, c_result.ok_value)
+                RustResult{$ok_julia_type, $err_julia_type}(true, c_result.ok_value)
             else
-                RustCall.RustResult{$ok_julia_type, $err_julia_type}(false, c_result.err_value)
+                RustResult{$ok_julia_type, $err_julia_type}(false, c_result.err_value)
             end
         end
         export $func_name
@@ -693,9 +693,9 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, option_i
             c_option = call_rust_function(func_ptr, $c_option_struct_name, $(converted_args...))
             # Convert to RustOption
             if c_option.is_some == 1
-                RustCall.RustOption{$inner_julia_type}(true, c_option.value)
+                RustOption{$inner_julia_type}(true, c_option.value)
             else
-                RustCall.RustOption{$inner_julia_type}(false, nothing)
+                RustOption{$inner_julia_type}(false, nothing)
             end
         end
         export $func_name
