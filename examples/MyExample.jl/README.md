@@ -9,17 +9,20 @@ This package depends on RustCall.jl. To use this example package:
 ```julia
 using Pkg
 
+# Enter the example package directory first so relative paths are unambiguous
+cd("examples/MyExample.jl")
+
 # Activate this package's environment
-Pkg.activate("examples/MyExample.jl")
+Pkg.activate(".")
 
 # Add RustCall.jl as a dev dependency (since it's not yet registered)
-Pkg.develop(path="../../")  # Path relative to this package
+Pkg.develop(path="../..")  # Path relative to examples/MyExample.jl
 
 # Instantiate dependencies
 Pkg.instantiate()
 ```
 
-**Note**: Since RustCall.jl is not yet registered in the Julia package registry, you need to add it as a dev dependency using `Pkg.develop()`. The path `../../` assumes you're running from the `examples/MyExample.jl` directory and points to the root of the RustCall.jl repository.
+**Note**: Since RustCall.jl is not yet registered in the Julia package registry, you need to add it as a dev dependency using `Pkg.develop()`. After changing into `examples/MyExample.jl`, the path `../..` points to the root of the RustCall.jl repository.
 
 ## Usage
 

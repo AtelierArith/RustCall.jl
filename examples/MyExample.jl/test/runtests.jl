@@ -26,6 +26,7 @@ using Test
         @test reverse_string("") == ""
         @test reverse_string("a") == "a"
         @test reverse_string("racecar") == "racecar"  # Palindrome
+        @test reverse_string("世界") == "界世"
     end
 
     @testset "Array Operations" begin
