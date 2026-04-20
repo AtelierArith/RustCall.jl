@@ -67,6 +67,30 @@ using Test
         """
         sigs = RustCall.parse_julia_functions(code5)
         @test length(sigs) == 0
+
+        # Const expressions in types should not confuse argument splitting
+        code6 = """
+        #[julia]
+        fn foo(x: [u8; { if 1 < 2 { 3 } else { 4 } }], y: i32) {
+            let _ = x;
+            let _ = y;
+        }
+        """
+        sigs = RustCall.parse_julia_functions(code6)
+        @test length(sigs) == 1
+        @test sigs[1].arg_names == ["x", "y"]
+        @test sigs[1].arg_types == ["[u8; { if 1 < 2 { 3 } else { 4 } }]", "i32"]
+
+        # Return type parsing should skip nested const-expression braces
+        code7 = """
+        #[julia]
+        fn make_array() -> [u8; { if 1 < 2 { 3 } else { 4 } }] {
+            [0; 3]
+        }
+        """
+        sigs = RustCall.parse_julia_functions(code7)
+        @test length(sigs) == 1
+        @test sigs[1].return_type == "[u8; { if 1 < 2 { 3 } else { 4 } }]"
     end
 
     @testset "transform_julia_attribute" begin

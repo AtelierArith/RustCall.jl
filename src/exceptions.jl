@@ -556,8 +556,7 @@ function suggest_fix_for_error(stderr::String, source_code::String)
     if occursin("expected `}`, found", stderr_lower) || occursin("unclosed delimiter", stderr_lower)
         push!(suggestions, "Mismatched braces. Check that all opening `{` have matching closing `}`.")
         # Count braces
-        open_braces = count(c -> c == '{', source_code)
-        close_braces = count(c -> c == '}', source_code)
+        open_braces, close_braces = _count_braces_outside_strings(source_code)
         if open_braces > close_braces
             push!(suggestions, "Found $(open_braces - close_braces) more opening brace(s) than closing brace(s).")
         elseif close_braces > open_braces
@@ -599,6 +598,36 @@ function suggest_fix_for_error(stderr::String, source_code::String)
     end
 
     return unique(suggestions)
+end
+
+function _count_braces_outside_strings(source_code::AbstractString)
+    open_braces = 0
+    close_braces = 0
+    in_string = false
+    escaped = false
+
+    for c in source_code
+        if in_string
+            if escaped
+                escaped = false
+            elseif c == '\\'
+                escaped = true
+            elseif c == '"'
+                in_string = false
+            end
+            continue
+        end
+
+        if c == '"'
+            in_string = true
+        elseif c == '{'
+            open_braces += 1
+        elseif c == '}'
+            close_braces += 1
+        end
+    end
+
+    return open_braces, close_braces
 end
 
 """

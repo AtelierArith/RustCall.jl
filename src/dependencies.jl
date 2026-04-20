@@ -285,9 +285,12 @@ of backslashes (e.g., `\\"` is escaped, `\\\\"` is not).
 """
 function _count_trailing_backslashes(s::AbstractString)
     count = 0
-    for i in lastindex(s):-1:firstindex(s)
+    i = lastindex(s)
+    while i >= firstindex(s)
         s[i] == '\\' || break
         count += 1
+        i == firstindex(s) && break
+        i = prevind(s, i)
     end
     return count
 end

@@ -179,16 +179,32 @@ end
 Find the next '{' at bracket depth 0, starting from start_pos. Returns 0 if not found.
 """
 function _find_open_brace(s::AbstractString, start_pos::Int)
-    depth = 0
+    angle = 0
+    paren = 0
+    bracket = 0
+    curly = 0
     i = start_pos
     while i <= ncodeunits(s)
         c = s[i]
-        if c == '<'
-            depth += 1
-        elseif c == '>'
-            depth -= 1
-        elseif c == '{' && depth == 0
-            return i
+        if c == '<' && curly == 0
+            angle += 1
+        elseif c == '>' && curly == 0
+            angle = max(0, angle - 1)
+        elseif c == '('
+            paren += 1
+        elseif c == ')'
+            paren = max(0, paren - 1)
+        elseif c == '['
+            bracket += 1
+        elseif c == ']'
+            bracket = max(0, bracket - 1)
+        elseif c == '{'
+            if angle == 0 && paren == 0 && bracket == 0 && curly == 0
+                return i
+            end
+            curly += 1
+        elseif c == '}'
+            curly = max(0, curly - 1)
         end
         i = nextind(s, i)
     end
@@ -206,12 +222,13 @@ function _split_at_depth_zero(s::AbstractString, delimiter::Char)
     angle = 0
     paren = 0
     bracket = 0
+    curly = 0
 
     for c in s
-        if c == '<'
+        if c == '<' && curly == 0
             angle += 1
             write(current, c)
-        elseif c == '>'
+        elseif c == '>' && curly == 0
             angle = max(0, angle - 1)
             write(current, c)
         elseif c == '('
@@ -226,7 +243,13 @@ function _split_at_depth_zero(s::AbstractString, delimiter::Char)
         elseif c == ']'
             bracket = max(0, bracket - 1)
             write(current, c)
-        elseif c == delimiter && angle == 0 && paren == 0 && bracket == 0
+        elseif c == '{'
+            curly += 1
+            write(current, c)
+        elseif c == '}'
+            curly = max(0, curly - 1)
+            write(current, c)
+        elseif c == delimiter && angle == 0 && paren == 0 && bracket == 0 && curly == 0
             push!(parts, String(take!(current)))
         else
             write(current, c)
