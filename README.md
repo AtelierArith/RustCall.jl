@@ -99,6 +99,8 @@ using Pkg
 Pkg.instantiate()
 ```
 
+If you prefer VS Code Dev Containers, this repository now includes `.devcontainer/devcontainer.json`. Reopen the checkout in the container and the initial setup will install Rust, instantiate the Julia project, and run `Pkg.build("RustCall")`.
+
 ### 1. Define and Call Rust Functions (Simple Way)
 
 ```julia
