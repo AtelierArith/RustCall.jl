@@ -235,6 +235,7 @@ using Test
         @test RustCall._count_trailing_backslashes("hello\\\\") == 2
         @test RustCall._count_trailing_backslashes("hello\\\\\\") == 3
         @test RustCall._count_trailing_backslashes("\\") == 1
+        @test RustCall._count_trailing_backslashes("あ\\") == 1
     end
 
     @testset "split_cargo_deps handles escaped quotes" begin
