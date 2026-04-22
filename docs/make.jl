@@ -27,15 +27,10 @@ makedocs(
             "Troubleshooting" => "troubleshooting.md",
         ],
         "Reference" => [
+            "Project Guide" => "project_guide.md",
             "API Reference" => "api.md",
             "Project Status" => "status.md",
             "Developer Pitfalls" => "developer_pitfalls.md",
-        ],
-        "Design" => [
-            "Phase 1" => "design/Phase1.md",
-            "Phase 2" => "design/Phase2.md",
-            "Internal" => "design/INTERNAL.md",
-            "LLVM Call" => "design/LLVMCALL.md",
         ],
         "Platforms" => [
             "Windows" => "platforms/windows.md",

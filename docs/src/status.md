@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-04-17
+Last updated: 2026-04-22
 
 ## Summary
 
@@ -83,6 +83,23 @@ For ownership/runtime helper features, run:
 using Pkg
 Pkg.build("RustCall")
 ```
+
+## Current Limitations
+
+- The direct FFI path is centered on `extern "C"` entry points; it does not model Rust lifetimes or borrow-checker guarantees on the Julia side.
+- `@rust_llvm` is available but remains an experimental path compared with standard `@rust` calls.
+- Ownership helpers such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` depend on the helper library built by `Pkg.build("RustCall")`.
+- Generic structs and more advanced trait patterns still need explicit handling in some cases, especially for external bindings.
+- Cargo-backed workflows are cached, but first builds can be slow and some crates may still need platform-specific build configuration.
+
+## Delivered Milestones
+
+- Phase 1: direct `rust"""..."""`, `@rust`, `@irust`, type mapping, string support, and cache-backed compilation.
+- Phase 2: ownership/runtime helpers, generics support, and the experimental LLVM path.
+- Phase 3: Cargo dependency parsing and external crate use inside inline Rust code.
+- Phase 4: Rust struct and method mapping into Julia-facing objects.
+- Phase 5: `#[julia]`-driven wrapper generation.
+- Phase 6: external crate binding generation with `@rust_crate` and the `juliacall_macros` proc-macro crate.
 
 ## Near-Term Priorities
 

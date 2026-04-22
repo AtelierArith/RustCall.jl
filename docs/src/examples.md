@@ -8,9 +8,10 @@ This document provides practical examples of using RustCall.jl.
 1. [Numerical Computations](#numerical-computations)
 2. [String Processing](#string-processing)
 3. [Data Structures](#data-structures)
-4. [Performance Comparison](#performance-comparison)
-5. [Real-world Examples](#real-world-examples)
-6. [Best Practices](#best-practices)
+4. [Additional Reference Examples](#additional-reference-examples)
+5. [Performance Comparison](#performance-comparison)
+6. [Real-world Examples](#real-world-examples)
+7. [Best Practices](#best-practices)
 
 ## Numerical Computations
 
@@ -236,6 +237,364 @@ end
 arr = Int32[5, 2, 8, 1, 9]
 sort_in_place(arr)
 println(arr)  # => [1, 2, 5, 8, 9]
+```
+
+## Additional Reference Examples
+
+This section collects longer reference examples that previously lived in the top-level README.
+
+### Type Mapping Quick Reference
+
+| Rust Type | Julia Type |
+|-----------|------------|
+| `i8` | `Int8` |
+| `i16` | `Int16` |
+| `i32` | `Int32` |
+| `i64` | `Int64` |
+| `u8` | `UInt8` |
+| `u16` | `UInt16` |
+| `u32` | `UInt32` |
+| `u64` | `UInt64` |
+| `f32` | `Float32` |
+| `f64` | `Float64` |
+| `bool` | `Bool` |
+| `usize` | `UInt` |
+| `isize` | `Int` |
+| `()` | `Cvoid` |
+| `*const u8` | `Cstring` / `String` |
+| `*mut u8` | `Ptr{UInt8}` |
+
+### Result And Option Types
+
+```julia
+using RustCall
+
+# Result type
+ok_result = RustCall.RustResult{Int32, String}(true, Int32(42))
+RustCall.is_ok(ok_result)        # => true
+RustCall.unwrap(ok_result)       # => 42
+
+err_result = RustCall.RustResult{Int32, String}(false, "error")
+RustCall.is_err(err_result)      # => true
+RustCall.unwrap_or(err_result, Int32(0))  # => 0
+
+# Convert Result to exception
+try
+    RustCall.result_to_exception(err_result)
+catch e
+    println(e isa RustCall.RustError)      # => true
+end
+
+# Option type
+some_opt = RustCall.RustOption{Int32}(true, Int32(42))
+RustCall.is_some(some_opt)      # => true
+RustCall.unwrap(some_opt)       # => 42
+
+none_opt = RustCall.RustOption{Int32}(false, nothing)
+RustCall.is_none(none_opt)      # => true
+RustCall.unwrap_or(none_opt, Int32(0))    # => 0
+```
+
+### Ownership Types And Collections
+
+```julia
+using RustCall
+
+if RustCall.is_rust_helpers_available()
+    # RustBox - heap-allocated value (single ownership)
+    box = RustCall.RustBox(Int32(42))
+    RustCall.is_valid(box)       # => true
+    RustCall.drop!(box)
+    RustCall.is_dropped(box)     # => true
+
+    # RustRc - reference counting (single-threaded)
+    rc1 = RustCall.RustRc(Int32(100))
+    rc2 = RustCall.clone(rc1)
+    RustCall.drop!(rc1)
+    RustCall.is_valid(rc2)       # => true
+    RustCall.drop!(rc2)
+
+    # RustArc - atomic reference counting (thread-safe)
+    arc1 = RustCall.RustArc(Int32(200))
+    arc2 = RustCall.clone(arc1)
+    RustCall.drop!(arc1)
+    RustCall.is_valid(arc2)      # => true
+    RustCall.drop!(arc2)
+
+    # RustVec - growable array backed by Rust-managed memory
+    vec = RustCall.create_rust_vec(Int32[1, 2, 3])
+    vec[1] = 42
+    collect(vec)                 # => Int32[42, 2, 3]
+
+    # Bounds checking and iteration
+    try
+        vec[0]
+    catch e
+        println(e isa BoundsError)  # => true
+    end
+
+    for x in vec
+        println(x)
+    end
+
+    julia_vec = Vector(vec)      # or collect(vec)
+    println(julia_vec)
+
+    RustCall.drop!(vec)
+
+    # RustSlice - borrowed view into existing memory
+    backing = Int32[10, 20, 30]
+    slice = RustCall.RustSlice{Int32}(pointer(backing), UInt(length(backing)))
+    slice[2]                     # => 20
+
+    for x in slice
+        println(x)
+    end
+
+    Base.IteratorSize(RustCall.RustVec{Int32}) == Base.HasLength()
+    Base.eltype(RustCall.RustVec{Int32}) == Int32
+end
+```
+
+`RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` require the helper library built by `Pkg.build("RustCall")`.
+
+### Cargo-Backed External Libraries
+
+RustCall can build Cargo dependencies directly from inline Rust code.
+
+```julia
+using RustCall
+
+rust"""
+// cargo-deps: ndarray = "0.15"
+
+use ndarray::Array1;
+
+#[no_mangle]
+pub extern "C" fn compute_sum(data: *const f64, len: usize) -> f64 {
+    unsafe {
+        let slice = std::slice::from_raw_parts(data, len);
+        let arr = Array1::from_vec(slice.to_vec());
+        arr.sum()
+    }
+}
+"""
+
+data = [1.0, 2.0, 3.0, 4.0, 5.0]
+result = @rust compute_sum(pointer(data), length(data))::Float64
+println(result)  # => 15.0
+```
+
+Supported dependency declaration styles include:
+
+```rust
+// cargo-deps: serde = "1.0", serde_json = "1.0"
+```
+
+and:
+
+```rust
+//! ```cargo
+//! [dependencies]
+//! rand = "0.8"
+//! ```
+```
+
+You can also use structured Cargo dependency declarations:
+
+```julia
+using RustCall
+
+rust"""
+// cargo-deps: serde = { version = "1.0", features = ["derive"] }
+
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize)]
+pub struct Data {
+    value: i32,
+}
+
+#[no_mangle]
+pub extern "C" fn process_data(val: i32) -> i32 {
+    let data = Data { value: val };
+    data.value * 2
+}
+"""
+
+result = @rust process_data(Int32(21))::Int32
+```
+
+### Rust Structs As Julia Objects
+
+Rust structs marked with `#[julia]` can be used from Julia as generated wrapper types and functions.
+
+```julia
+using RustCall
+
+rust"""
+#[julia]
+pub struct Person {
+    age: u32,
+    height: f64,
+}
+
+impl Person {
+    pub fn new(age: u32, height: f64) -> Self {
+        Self { age, height }
+    }
+
+    pub fn greet(&self) {
+        println!("Hello, I am {} years old.", self.age);
+    }
+
+    pub fn have_birthday(&mut self) {
+        self.age += 1;
+    }
+
+    pub fn get_height(&self) -> f64 {
+        self.height
+    }
+}
+"""
+
+person = Person(30, 175.5)
+greet(person)
+have_birthday(person)
+height = get_height(person)
+```
+
+Generic structs can also be exposed:
+
+```julia
+using RustCall
+
+rust"""
+#[julia]
+pub struct Point<T> {
+    x: T,
+    y: T,
+}
+
+impl<T> Point<T> {
+    pub fn new(x: T, y: T) -> Self {
+        Self { x, y }
+    }
+}
+
+impl Point<f64> {
+    pub fn distance(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+"""
+
+point = Point{Float64}(3.0, 4.0)
+dist = distance(point)  # => 5.0
+```
+
+Automatic cleanup works through Rust `Drop` integration:
+
+```julia
+using RustCall
+
+rust"""
+#[julia]
+pub struct Resource {
+    data: Vec<u8>,
+}
+
+impl Resource {
+    pub fn new(size: usize) -> Self {
+        Self { data: vec![0; size] }
+    }
+}
+
+impl Drop for Resource {
+    fn drop(&mut self) {
+        println!("Rust: Dropping Resource");
+    }
+}
+"""
+
+function use_resource()
+    res = Resource(1000)
+    nothing
+end
+```
+
+### LLVM IR Integration
+
+The LLVM call path is experimental, but it can be useful for repeated hot paths.
+
+```julia
+using RustCall
+
+rust"""
+#[no_mangle]
+pub extern "C" fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+
+info = RustCall.compile_and_register_rust_function("""
+#[no_mangle]
+pub extern "C" fn add(a: i32, b: i32) -> i32 { a + b }
+""", "add")
+
+result = @rust_llvm add(Int32(10), Int32(20))  # => 30
+```
+
+Optimization configuration is exposed explicitly:
+
+```julia
+using RustCall
+
+rust_code = """
+#[no_mangle]
+pub extern "C" fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+
+wrapped_code = RustCall.wrap_rust_code(rust_code)
+compiler = RustCall.get_default_compiler()
+ir_path = RustCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
+rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped_code)
+llvm_mod = rust_mod.mod
+
+config = RustCall.OptimizationConfig(
+    level=3,
+    enable_vectorization=true,
+    inline_threshold=300,
+)
+
+RustCall.optimize_module!(llvm_mod; config=config)
+RustCall.optimize_for_speed!(llvm_mod)
+RustCall.optimize_for_size!(llvm_mod)
+```
+
+### Compilation Caching
+
+Compilation results are cached automatically for repeated Rust snippets.
+
+```julia
+using RustCall
+
+rust"""
+#[no_mangle]
+pub extern "C" fn test() -> i32 { 42 }
+"""
+
+rust"""
+#[no_mangle]
+pub extern "C" fn test() -> i32 { 42 }
+"""
+
+RustCall.clear_cache()
+RustCall.get_cache_size()
+RustCall.list_cached_libraries()
+RustCall.cleanup_old_cache(30)
 ```
 
 ## Performance Comparison
