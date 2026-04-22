@@ -1,0 +1,30 @@
+{
+    "name": "RustCall.jl",
+    "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/julialang/devcontainer-features/julia:1": {
+            "channel": "release"
+        }
+    },
+    "mounts": [
+        "source=rustcall-julia-depot,target=/home/vscode/.julia,type=volume",
+        "source=rustcall-cargo-registry,target=/home/vscode/.cargo/registry,type=volume",
+        "source=rustcall-cargo-git,target=/home/vscode/.cargo/git,type=volume"
+    ],
+    "postCreateCommand": "bash .devcontainer/post-create.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "julialang.language-julia",
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "mhutchie.git-graph"
+            ]
+        }
+    },
+    "remoteEnv": {
+        "JULIA_PROJECT": "@.",
+        "PATH": "/home/vscode/.cargo/bin:${containerEnv:PATH}"
+    }
+}

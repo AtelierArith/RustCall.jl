@@ -751,15 +751,34 @@ function _parse_fn_arg_types(code::AbstractString, func_name::AbstractString)
     types = String[]
 
     # Find the function signature: fn name<...>(...) or fn name(...)
-    # We need to find the parenthesized argument list
-    fn_pattern = Regex("fn\\s+$(func_name)\\s*(?:<[^{]*?>)?\\s*\\(")
-    m = match(fn_pattern, code)
+    # Use bracket-counting for the optional generic parameter list because
+    # const generics and bounds can contain braces.
+    prefix_pattern = Regex("fn\\s+$(func_name)\\s*")
+    m = match(prefix_pattern, code)
     if m === nothing
         return types
     end
 
+    pos = m.offset + length(m.match)
+
+    if pos <= ncodeunits(code) && code[pos] == '<'
+        close_pos = _find_matching_angle_bracket(code, pos)
+        if close_pos == 0
+            return types
+        end
+        pos = nextind(code, close_pos)
+    end
+
+    while pos <= ncodeunits(code) && isspace(code[pos])
+        pos = nextind(code, pos)
+    end
+
+    if pos > ncodeunits(code) || code[pos] != '('
+        return types
+    end
+
     # Find the matching closing parenthesis using bracket counting
-    paren_start = m.offset + length(m.match) - 1  # position of '('
+    paren_start = pos
     depth = 1
     i = nextind(code, paren_start)
     while i <= ncodeunits(code) && depth > 0

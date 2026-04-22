@@ -441,6 +441,20 @@ end
         @test type_params == Dict(:T => Float64)
     end
 
+    @testset "_parse_fn_arg_types handles braces in generic parameter lists" begin
+        types = RustCall._parse_fn_arg_types(
+            "fn foo<const N: usize = { 1 + 2 }, T>(x: T) -> T { x }",
+            "foo",
+        )
+        @test types == ["T"]
+
+        types = RustCall._parse_fn_arg_types(
+            "fn foo<T: Trait<{ 1 + 2 }>>(x: T) -> T { x }",
+            "foo",
+        )
+        @test types == ["T"]
+    end
+
     @testset "Code Specialization" begin
         # Test specializing generic code
         code = """

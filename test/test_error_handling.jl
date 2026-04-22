@@ -83,6 +83,11 @@ using Test
         @test !isempty(suggestions_brace)
         @test any(s -> occursin("brace", lowercase(s)), suggestions_brace)
 
+        stderr_string_brace = "error: unclosed delimiter"
+        source_string_brace = "fn foo() { let s = \"{\"; }"
+        suggestions_string_brace = RustCall.suggest_fix_for_error(stderr_string_brace, source_string_brace)
+        @test !any(s -> occursin("more opening brace", lowercase(s)), suggestions_string_brace)
+
         # Test missing #[no_mangle]
         stderr_ffi = "error: cannot find function `test`"
         source_ffi = "pub extern \"C\" fn test() -> i32 { 42 }"
