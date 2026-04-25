@@ -34,10 +34,12 @@
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/atelierarith/RustCall.jl")
+Pkg.add("RustCall")
 ```
 
-For contributor work or local edits:
+RustCall.jl is registered in Julia's General registry. `Pkg.add("RustCall")` installs the package and builds the helper library used by ownership-related features.
+
+For contributor work or local edits from a checkout:
 
 ```julia
 using Pkg
@@ -50,9 +52,9 @@ Pkg.develop(path="/path/to/RustCall.jl")
 
 To install Rust, visit [rustup.rs](https://rustup.rs/).
 
-### Building Rust Helpers Library
+### Rebuilding Rust Helpers Library
 
-For full functionality including ownership types (Box, Rc, Arc), you need to build the Rust helpers library:
+The Rust helpers library is built during package installation. If ownership types such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, or `RustSlice` are unavailable, rebuild it:
 
 ```julia
 using Pkg

@@ -361,6 +361,26 @@ using Test
                 @test custom_config.inline_threshold == 100
             end
 
+            @testset "LLVM parser fallback sanitizes unsupported attributes" begin
+                mktempdir() do dir
+                    ir_path = joinpath(dir, "unsupported_attr.ll")
+                    write(ir_path, """
+                    ; ModuleID = 'unsupported_attr'
+                    source_filename = "unsupported_attr"
+
+                    define i32 @unsupported_attr_test(i32 %x) #0 {
+                    entry:
+                      ret i32 %x
+                    }
+
+                    attributes #0 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }
+                    """)
+
+                    rust_mod = RustCall.load_llvm_ir(ir_path)
+                    @test haskey(rust_mod.functions, "unsupported_attr_test")
+                end
+            end
+
             @testset "Optimization passes are not no-ops" begin
                 # Verify that optimize_module! actually modifies IR (issue #95)
                 # Create unoptimized Rust IR with dead code that optimization should remove

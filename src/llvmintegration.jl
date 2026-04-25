@@ -22,6 +22,58 @@ const RUST_MODULES = Dict{String, RustModule}()
 # and LLVM_FUNCTION_REGISTRY in llvmcodegen.jl)
 const LLVM_REGISTRY_LOCK = ReentrantLock()
 
+const LLVM_IR_PARSE_UNSUPPORTED_ATTRIBUTES = Set([
+    "nocreateundeforpoison",
+])
+
+function sanitize_unsupported_llvm_ir_attributes(ir_content::String)
+    removed = String[]
+    lines = split(ir_content, '\n'; keepempty=true)
+
+    sanitized_lines = map(lines) do line
+        m = match(r"^(\s*attributes\s+#\d+\s*=\s*\{)(.*)(\}\s*)$", line)
+        m === nothing && return line
+
+        prefix, body, suffix = m.captures
+        tokens = split(body)
+        kept = String[]
+
+        for token in tokens
+            if token in LLVM_IR_PARSE_UNSUPPORTED_ATTRIBUTES
+                push!(removed, token)
+            else
+                push!(kept, token)
+            end
+        end
+
+        if isempty(kept)
+            return prefix * suffix
+        end
+        return prefix * " " * join(kept, " ") * " " * suffix
+    end
+
+    return join(sanitized_lines, "\n"), unique(removed)
+end
+
+function parse_llvm_module_with_fallback(ir_content::String)
+    try
+        return parse(LLVM.Module, ir_content), ir_content
+    catch original_error
+        sanitized_content, removed_attributes = sanitize_unsupported_llvm_ir_attributes(ir_content)
+        if isempty(removed_attributes) || sanitized_content == ir_content
+            rethrow(original_error)
+        end
+
+        try
+            mod = parse(LLVM.Module, sanitized_content)
+            @debug "Sanitized unsupported LLVM IR attributes before parsing" attributes = removed_attributes
+            return mod, sanitized_content
+        catch retry_error
+            error("Failed to parse LLVM IR after removing unsupported attributes $(removed_attributes): $retry_error; original error: $original_error")
+        end
+    end
+end
+
 """
     load_llvm_ir(ir_file::String) -> RustModule
 
@@ -35,8 +87,10 @@ function load_llvm_ir(ir_file::String; source_code::String = "")
     # This ensures the context and module share the same lifecycle.
     ctx = LLVM.Context()
     LLVM.activate(ctx)
+    parsed_ir_content = ir_content
     mod = try
-        parse(LLVM.Module, ir_content)
+        mod, parsed_ir_content = parse_llvm_module_with_fallback(ir_content)
+        mod
     catch e
         LLVM.deactivate(ctx)
         try
@@ -60,7 +114,7 @@ function load_llvm_ir(ir_file::String; source_code::String = "")
     rust_mod = RustModule(ctx, mod, source_code, functions, ir_file)
 
     # Register in the global registry using SHA256 of IR content to avoid hash collisions
-    mod_hash = bytes2hex(sha256(ir_content))
+    mod_hash = bytes2hex(sha256(parsed_ir_content))
     lock(LLVM_REGISTRY_LOCK) do
         RUST_MODULES[mod_hash] = rust_mod
     end

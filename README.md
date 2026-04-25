@@ -15,11 +15,17 @@ Requirements:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/atelierarith/RustCall.jl")
-Pkg.build("RustCall")
+Pkg.add("RustCall")
 ```
 
-`Pkg.build("RustCall")` builds the helper library used by ownership-related features such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice`.
+RustCall.jl is registered in Julia's General registry. `Pkg.add("RustCall")` installs the package and builds the helper library used by ownership-related features such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice`.
+
+If the helper library needs to be rebuilt, run:
+
+```julia
+using Pkg
+Pkg.build("RustCall")
+```
 
 ## Quick Start
 

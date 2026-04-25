@@ -21,10 +21,12 @@ This tutorial walks you through using RustCall.jl to call Rust code from Julia s
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/atelierarith/RustCall.jl")
+Pkg.add("RustCall")
 ```
 
-For contributor work or local edits:
+RustCall.jl is registered in Julia's General registry, so `Pkg.add("RustCall")` is the standard installation path.
+
+For contributor work or local edits from a checkout:
 
 ```julia
 using Pkg
@@ -38,9 +40,9 @@ Pkg.develop(path="/path/to/RustCall.jl")
 
 To install Rust, visit [rustup.rs](https://rustup.rs/).
 
-### Building Rust Helpers Library (Optional)
+### Rebuilding Rust Helpers Library
 
-To use ownership types (Box, Rc, Arc), you need to build the Rust helpers library:
+The Rust helpers library is built during package installation. If ownership types such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, or `RustSlice` are unavailable, rebuild it:
 
 ```julia
 using Pkg

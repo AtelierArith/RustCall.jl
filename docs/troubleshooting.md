@@ -79,7 +79,7 @@ Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work...
 
 **Solution:**
 
-1. Check Julia version (1.10+ required):
+1. Check Julia version (1.12+ required):
    ```julia
    VERSION
    ```

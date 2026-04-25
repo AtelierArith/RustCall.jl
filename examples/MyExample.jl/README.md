@@ -15,14 +15,11 @@ cd("examples/MyExample.jl")
 # Activate this package's environment
 Pkg.activate(".")
 
-# Add RustCall.jl as a dev dependency (since it's not yet registered)
-Pkg.develop(path="../..")  # Path relative to examples/MyExample.jl
-
 # Instantiate dependencies
 Pkg.instantiate()
 ```
 
-**Note**: Since RustCall.jl is not yet registered in the Julia package registry, you need to add it as a dev dependency using `Pkg.develop()`. After changing into `examples/MyExample.jl`, the path `../..` points to the root of the RustCall.jl repository.
+RustCall.jl is registered in Julia's General registry, so `Pkg.instantiate()` resolves it automatically. If you are testing local changes from this checkout, use `Pkg.develop(path="../..")` before `Pkg.instantiate()`.
 
 ## Usage
 
