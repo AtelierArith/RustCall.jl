@@ -356,7 +356,7 @@ if RustCall.is_rust_helpers_available()
 end
 ```
 
-`RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` require the helper library built by `Pkg.build("RustCall")`.
+`RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` require the helper library built during package installation. If the helper library is unavailable, run `Pkg.build("RustCall")` to rebuild it.
 
 ### Cargo-Backed External Libraries
 

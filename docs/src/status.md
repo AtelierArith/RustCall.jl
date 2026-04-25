@@ -13,6 +13,7 @@ Last updated: 2026-04-22
 | `#[julia]` attribute support | ✅ Implemented |
 | External crate bindings (`@rust_crate`) | ✅ Implemented |
 | Hot reload support | ✅ Implemented |
+| Julia General registry | ✅ Registered (`Pkg.add("RustCall")`) |
 | Root Julia tests | ✅ Present (`test/runtests.jl`, `ParallelTestRunner.jl` over `test/test_*.jl`) |
 | CI (Julia + Rust proc-macro checks) | ✅ Configured (`julia-actions/julia-runtest@v1` with per-platform `test_args`) |
 
@@ -77,7 +78,7 @@ Based on the repository state on 2026-02-07. Only the summary/test runner status
 - Julia `1.12+` (see `Project.toml` compat)
 - Rust toolchain (`rustc`, `cargo`)
 
-For ownership/runtime helper features, run:
+`Pkg.add("RustCall")` installs RustCall.jl from Julia's General registry and builds the ownership/runtime helper library. If the helper library needs to be rebuilt, run:
 
 ```julia
 using Pkg
@@ -88,7 +89,7 @@ Pkg.build("RustCall")
 
 - The direct FFI path is centered on `extern "C"` entry points; it does not model Rust lifetimes or borrow-checker guarantees on the Julia side.
 - `@rust_llvm` is available but remains an experimental path compared with standard `@rust` calls.
-- Ownership helpers such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` depend on the helper library built by `Pkg.build("RustCall")`.
+- Ownership helpers such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` depend on the helper library built during package installation.
 - Generic structs and more advanced trait patterns still need explicit handling in some cases, especially for external bindings.
 - Cargo-backed workflows are cached, but first builds can be slow and some crates may still need platform-specific build configuration.
 
@@ -105,4 +106,4 @@ Pkg.build("RustCall")
 
 - Stabilize and document `@rust_llvm` behavior across more type patterns.
 - Continue regression hardening for crate binding and hot reload workflows.
-- Prepare distribution tasks (Julia General registry flow, crates.io publication for proc-macro tooling).
+- Prepare distribution tasks for crates.io publication of proc-macro tooling.

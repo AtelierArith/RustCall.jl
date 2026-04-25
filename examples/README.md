@@ -13,7 +13,7 @@ Before running the examples, ensure you have:
    rustc --version
    cargo --version
    ```
-3. **RustCall.jl** available (either installed or developed locally)
+3. **RustCall.jl** installed with `Pkg.add("RustCall")` or developed locally from this checkout
 
 ## Available Examples
 
@@ -37,7 +37,6 @@ cd("examples/MyExample.jl")
 
 # Activate and set up the environment
 Pkg.activate(".")
-Pkg.develop(path="../../")  # Add RustCall.jl
 Pkg.instantiate()
 
 # Use the example
@@ -76,9 +75,11 @@ A Julia package that demonstrates using the `rust""` string literal to write Rus
 **How to run:**
 ```bash
 cd examples/MyExample.jl
-julia --project=. -e 'using Pkg; Pkg.develop(path="../../"); Pkg.instantiate()'
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
 julia --project=. test/runtests.jl
 ```
+
+For normal use, `Pkg.instantiate()` resolves RustCall.jl from Julia's General registry. Use `Pkg.develop(path="../../")` only when testing local changes from this checkout.
 
 ### sample_crate
 

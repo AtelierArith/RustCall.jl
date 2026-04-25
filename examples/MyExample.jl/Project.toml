@@ -7,7 +7,7 @@ authors = ["Your Name <your.email@example.com>"]
 RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 
 [compat]
-julia = "1.10"
+julia = "1.12"
 RustCall = "0.1"
 
 [extras]
