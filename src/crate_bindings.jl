@@ -1043,11 +1043,17 @@ so is the format of the file `write_bindings_to_file` emits; only the *value*
 changes, which means the first build after upgrading rebuilds.
 """
 function compute_crate_hash(info::CrateInfo; release::Bool = true)
+    # The dependency digest first, and deliberately so: resolving the graph
+    # lets Cargo write `Cargo.lock` into the crate directory (exactly as the
+    # build that follows would), and `Cargo.lock` is one of the files
+    # `crate_content_digest` hashes. Computing the content digest first would
+    # make the very first call disagree with every later one.
+    deps_digest = artifact_path_dependency_digest(info.path)
     return artifact_key(ArtifactId(
         kind = "crate",
         source = crate_content_digest(info.path),
         codegen = Pair{String, String}["profile" => (release ? "release" : "debug")],
-        dependencies = String[artifact_path_dependency_digest(info.path)],
+        dependencies = String[deps_digest],
         build_env = Pair{String, String}[
             "cargo-config" => _cargo_config_digest(ENV; dir = info.path)],
         extra = Pair{String, String}["name" => info.name, "version" => info.version],

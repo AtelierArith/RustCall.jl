@@ -541,6 +541,10 @@ A crate-relative path in the form that goes into a digest: forward slashes
 always, and case-folded on Windows, so the same crate keys identically whether
 its manifest, `cargo tree` or the walk spelled the path with `\\` or `/` and
 whatever case the case-insensitive filesystem returned.
+
+Used only for the bytes that are hashed. `crate_input_files` still reports the
+real relative names — lowercasing what callers read would be a lie about the
+filesystem, and it is `crate_content_digest` that needs the normal form.
 """
 function _hashed_relative_path(rel::AbstractString)::String
     normalized = replace(String(rel), '\\' => '/')
@@ -647,7 +651,9 @@ function crate_content_digest(dir::AbstractString)::String
     _netstring!(io, strategy)
     _netstring!(io, string(length(files)))
     for rel in files
-        _netstring!(io, rel)
+        # Normalized only *inside the digest*: `crate_input_files` keeps
+        # returning the real relative names, which is what callers read.
+        _netstring!(io, _hashed_relative_path(rel))
         f = joinpath(dir, rel)
         if isfile(f)
             _netstring!(io, "content")
@@ -713,7 +719,7 @@ function crate_input_files(dir::AbstractString)
             push!(files, relpath(joinpath(root, n), dir))
         end
     end
-    files = String[_hashed_relative_path(f) for f in files]
+    files = String[replace(f, '\\' => '/') for f in files]
     unique!(files)
     sort!(files)
     return "walk", files

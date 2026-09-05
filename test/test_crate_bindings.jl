@@ -180,6 +180,9 @@ const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_c
         end
 
         info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+        # A cold call may make Cargo write `Cargo.lock` into the crate, which is
+        # itself a hashed input; every call from then on agrees.
+        RustCall.compute_crate_hash(info)
         hash1 = RustCall.compute_crate_hash(info)
 
         # Hash should be deterministic
@@ -188,11 +191,12 @@ const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_c
 
         # A lookup key is the full digest: truncation is for names only (#278).
         @test length(hash1) == 64
+        deps_digest = RustCall.artifact_path_dependency_digest(info.path)
         @test hash1 == RustCall.artifact_key(RustCall.ArtifactId(
             kind = "crate",
             source = RustCall.crate_content_digest(info.path),
             codegen = ["profile" => "release"],
-            dependencies = [RustCall.artifact_path_dependency_digest(info.path)],
+            dependencies = [deps_digest],
             build_env = ["cargo-config" => RustCall._cargo_config_digest(ENV; dir = info.path)],
             extra = ["name" => info.name, "version" => info.version]))
 
