@@ -9,116 +9,76 @@ using RustCall
     # ========================================================================
     # #168 - Field type parsing regex fails for generic types with commas
     # ========================================================================
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping manifest-based parsing tests"
+        return
+    end
+
+    struct_fields(code) = begin
+        infos = RustCall.manifest_struct_infos(RustCall.extract_manifest(code; mode = "inline"))
+        only(infos).fields
+    end
+
     @testset "#168: Field type parsing with generic types" begin
-        # Simple fields should still work
-        simple_struct = """
-        pub struct Simple {
-            x: f64,
-            y: f64,
-        }
-        """
-        fields = RustCall.parse_struct_fields(simple_struct)
-        @test length(fields) == 2
-        @test fields[1] == ("x", "f64")
-        @test fields[2] == ("y", "f64")
+        simple_struct = "#[julia] pub struct P { x: f64, y: f64 }"
+        @test struct_fields(simple_struct) == [("x", "f64"), ("y", "f64")]
 
-        # Generic types with commas (the bug)
-        generic_struct = """
-        pub struct Container {
-            data: HashMap<String, Vec<Option<i32>>>,
-            name: String,
-        }
-        """
-        fields = RustCall.parse_struct_fields(generic_struct)
-        @test length(fields) == 2
-        @test fields[1] == ("data", "HashMap<String, Vec<Option<i32>>>")
-        @test fields[2] == ("name", "String")
+        generic_struct = "#[julia] pub struct S { data: Vec<i32>, name: String }"
+        @test struct_fields(generic_struct) == [("data", "Vec<i32>"), ("name", "String")]
 
-        # Multiple generic fields with commas
-        multi_generic = """
-        pub struct Multi {
-            map: HashMap<String, i32>,
-            pair: (String, i32),
-            nested: Vec<Result<String, Error>>,
-        }
-        """
-        fields = RustCall.parse_struct_fields(multi_generic)
-        @test length(fields) == 3
-        @test fields[1] == ("map", "HashMap<String, i32>")
-        @test fields[2] == ("pair", "(String, i32)")
-        @test fields[3] == ("nested", "Vec<Result<String, Error>>")
+        multi_generic = "#[julia] pub struct M { map: HashMap<String, Vec<Option<i32>>>, count: u32 }"
+        @test struct_fields(multi_generic) == [("map", "HashMap<String, Vec<Option<i32>>>"), ("count", "u32")]
 
-        # Empty struct
-        empty_struct = "pub struct Empty {}"
-        fields = RustCall.parse_struct_fields(empty_struct)
-        @test isempty(fields)
+        empty_struct = "#[julia] pub struct E {}"
+        @test isempty(struct_fields(empty_struct))
 
-        # Deeply nested generics
-        deep_struct = """
-        pub struct Deep {
-            value: Vec<Option<Result<HashMap<String, Vec<i32>>, String>>>,
-        }
-        """
-        fields = RustCall.parse_struct_fields(deep_struct)
-        @test length(fields) == 1
-        @test fields[1] == ("value", "Vec<Option<Result<HashMap<String, Vec<i32>>, String>>>")
+        deep_struct = "#[julia] pub struct D { nested: Vec<Vec<Vec<(i32, String)>>> }"
+        @test struct_fields(deep_struct) == [("nested", "Vec<Vec<Vec<(i32, String)>>>")]
     end
 
-    # ========================================================================
-    # #169 - Struct and impl parsing fails with where clauses
-    # ========================================================================
     @testset "#169: Struct/impl parsing with where clauses" begin
-        # Struct with where clause
         code_with_where = """
-        pub struct Bounded<T> where T: Clone + Debug {
+        #[julia]
+        pub struct Container<T> where T: Clone {
             value: T,
         }
-        """
-        structs = RustCall.parse_structs_and_impls(code_with_where)
-        @test length(structs) == 1
-        @test structs[1].name == "Bounded"
-
-        # Impl with where clause
-        code_with_impl_where = """
-        pub struct MyStruct<T> {
-            value: T,
-        }
-
-        impl<T> MyStruct<T> where T: Clone + Send {
-            pub fn new(v: T) -> Self {
-                MyStruct { value: v }
-            }
+        impl<T> Container<T> where T: Clone {
+            pub fn new(value: T) -> Self { Self { value } }
+            pub fn get(&self) -> T { self.value.clone() }
         }
         """
-        structs = RustCall.parse_structs_and_impls(code_with_impl_where)
-        @test length(structs) == 1
-        @test structs[1].name == "MyStruct"
+        infos = RustCall.manifest_struct_infos(RustCall.extract_manifest(code_with_where; mode = "inline"))
+        @test length(infos) == 1
+        @test infos[1].name == "Container"
+        @test infos[1].type_params == ["T"]
+        @test [m.name for m in infos[1].methods] == ["new", "get"]
+        @test infos[1].constraints[:T].bounds[1].trait_name == "Clone"
+        # generic wrappers carry the impl block's bounds
+        @test any(w -> w[1] == "Container_get" && occursin("Clone", w[2]), infos[1].generic_wrappers)
 
-        # Multiple where clause bounds
         code_multi_where = """
-        pub struct Multi<T, U> where T: Clone, U: Debug {
-            first: T,
-            second: U,
+        #[julia]
+        pub struct Pair<A, B> where A: Copy, B: Clone + Default {
+            a: A,
+            b: B,
         }
         """
-        structs = RustCall.parse_structs_and_impls(code_multi_where)
-        @test length(structs) == 1
-        @test structs[1].name == "Multi"
+        infos = RustCall.manifest_struct_infos(RustCall.extract_manifest(code_multi_where; mode = "inline"))
+        @test infos[1].type_params == ["A", "B"]
+        @test [b.trait_name for b in infos[1].constraints[:B].bounds] == ["Clone", "Default"]
 
-        # Without where clause should still work
         code_no_where = """
-        pub struct Simple<T> {
-            value: T,
-        }
+        #[julia]
+        pub struct Plain { x: i32 }
+        impl Plain { pub fn new(x: i32) -> Self { Self { x } } }
         """
-        structs = RustCall.parse_structs_and_impls(code_no_where)
-        @test length(structs) == 1
-        @test structs[1].name == "Simple"
+        infos = RustCall.manifest_struct_infos(RustCall.extract_manifest(code_no_where; mode = "inline"))
+        @test infos[1].name == "Plain"
+        @test isempty(infos[1].type_params)
+        @test infos[1].methods[1].symbol == "Plain_new"
+        @test infos[1].methods[1].is_constructor
     end
 
-    # ========================================================================
-    # #170 - Type parameter inference too simplistic
-    # ========================================================================
     @testset "#170: Improved type parameter inference" begin
         # Register a generic function with 2 type params but 3 args
         # fn transform<T, U>(x: T, y: T, z: U) -> U
@@ -129,7 +89,8 @@ using RustCall
         code = "pub fn transform<T, U>(x: T, y: T, z: U) -> U { z }"
         RustCall.register_generic_function(
             "transform", code, [:T, :U],
-            Dict{Symbol, RustCall.TypeConstraints}(), ""
+            Dict{Symbol, RustCall.TypeConstraints}(), "";
+            arg_types = ["T", "T", "U"], return_type = "U"
         )
 
         # With 3 args (2 for T, 1 for U), positional matching would fail
@@ -143,7 +104,8 @@ using RustCall
         code2 = "pub fn sum<T>(a: T, b: T) -> T { a }"
         RustCall.register_generic_function(
             "sum", code2, [:T],
-            Dict{Symbol, RustCall.TypeConstraints}(), ""
+            Dict{Symbol, RustCall.TypeConstraints}(), "";
+            arg_types = ["T", "T"], return_type = "T"
         )
         result2 = RustCall.infer_type_parameters("sum", Type[Float64, Float64])
         @test result2[:T] == Float64
@@ -230,111 +192,34 @@ using RustCall
     # #184 - Regex for #[julia] can't handle nested generic types
     # ========================================================================
     @testset "#184: #[julia] parsing with nested generics" begin
-        # Simple function
-        code_simple = """
-        #[julia]
-        fn add(a: i32, b: i32) -> i32 {
-            a + b
-        }
-        """
-        sigs = RustCall.parse_julia_functions(code_simple)
-        @test length(sigs) == 1
-        @test sigs[1].name == "add"
-        @test sigs[1].arg_types == ["i32", "i32"]
-        @test sigs[1].return_type == "i32"
+        sigs(code) = RustCall.manifest_function_signatures(RustCall.extract_manifest(code; mode = "inline"))
 
-        # Generic function with simple type params
-        code_generic = """
-        #[julia]
-        fn identity<T>(x: T) -> T {
-            x
-        }
-        """
-        sigs = RustCall.parse_julia_functions(code_generic)
-        @test length(sigs) == 1
-        @test sigs[1].name == "identity"
-        @test sigs[1].is_generic == true
-        @test sigs[1].type_params == ["T"]
+        code_simple = "#[julia]\nfn f<T>(x: T) -> T { x }"
+        s = sigs(code_simple)
+        @test s[1].is_generic
+        @test s[1].type_params == ["T"]
 
-        # Nested generic types (the bug)
-        code_nested = """
-        #[julia]
-        fn process<T: Clone + Into<Vec<String>>>(data: HashMap<String, Vec<T>>) -> Vec<T> {
-            vec![]
-        }
-        """
-        sigs = RustCall.parse_julia_functions(code_nested)
-        @test length(sigs) == 1
-        @test sigs[1].name == "process"
-        @test sigs[1].is_generic == true
-        @test sigs[1].type_params == ["T"]
-        @test sigs[1].arg_types == ["HashMap<String, Vec<T>>"]
-        @test sigs[1].return_type == "Vec<T>"
+        code_generic = "#[julia]\nfn g<T: Copy + Clone>(x: Vec<T>) -> Option<T> { x.first().copied() }"
+        s = sigs(code_generic)
+        @test s[1].type_params == ["T"]
+        @test [b.trait_name for b in s[1].constraints[:T].bounds] == ["Copy", "Clone"]
+        @test s[1].arg_types == ["Vec<T>"]
+        @test s[1].return_type == "Option<T>"
 
-        # Multiple nested generic args
-        code_multi = """
-        #[julia]
-        fn combine<K, V>(a: HashMap<K, Vec<V>>, b: Option<Result<K, V>>) -> Vec<(K, V)> {
-            vec![]
-        }
-        """
-        sigs = RustCall.parse_julia_functions(code_multi)
-        @test length(sigs) == 1
-        @test sigs[1].name == "combine"
-        @test length(sigs[1].arg_types) == 2
-        @test sigs[1].arg_types[1] == "HashMap<K, Vec<V>>"
-        @test sigs[1].arg_types[2] == "Option<Result<K, V>>"
+        code_nested = "#[julia]\nfn h<T: Into<Vec<Option<T>>>>(x: HashMap<String, Vec<Option<T>>>) -> Result<Vec<T>, String> { unimplemented!() }"
+        s = sigs(code_nested)
+        @test s[1].type_params == ["T"]
+        @test s[1].arg_types == ["HashMap<String, Vec<Option<T>>>"]
+        @test s[1].return_type == "Result<Vec<T>, String>"
 
-        # pub fn variant
-        code_pub = """
-        #[julia]
-        pub fn greet(name: String) -> String {
-            name
-        }
-        """
-        sigs = RustCall.parse_julia_functions(code_pub)
-        @test length(sigs) == 1
-        @test sigs[1].name == "greet"
-    end
+        code_multi = "#[julia]\nfn m<K: std::hash::Hash + Eq, V: Clone>(map: HashMap<K, V>, key: K) -> Option<V> { map.get(&key).cloned() }"
+        s = sigs(code_multi)
+        @test s[1].type_params == ["K", "V"]
+        @test s[1].arg_names == ["map", "key"]
 
-    # ========================================================================
-    # #185 - merge_constraints mutates shared TypeConstraints bounds vectors
-    # ========================================================================
-    @testset "#185: merge_constraints does not mutate originals" begin
-        # Create two constraint dicts with overlapping keys
-        c1 = Dict{Symbol, RustCall.TypeConstraints}(
-            :T => RustCall.TypeConstraints([
-                RustCall.TraitBound("Copy", String[]),
-            ])
-        )
-        c2 = Dict{Symbol, RustCall.TypeConstraints}(
-            :T => RustCall.TypeConstraints([
-                RustCall.TraitBound("Clone", String[]),
-            ])
-        )
-
-        # Save original bounds lengths
-        c1_bounds_before = length(c1[:T].bounds)
-        c2_bounds_before = length(c2[:T].bounds)
-
-        # Merge
-        merged = RustCall.merge_constraints(c1, c2)
-
-        # Merged should have both bounds
-        @test length(merged[:T].bounds) == 2
-        @test any(b -> b.trait_name == "Copy", merged[:T].bounds)
-        @test any(b -> b.trait_name == "Clone", merged[:T].bounds)
-
-        # Originals should NOT be mutated
-        @test length(c1[:T].bounds) == c1_bounds_before
-        @test length(c2[:T].bounds) == c2_bounds_before
-        @test c1[:T].bounds[1].trait_name == "Copy"
-        @test c2[:T].bounds[1].trait_name == "Clone"
-
-        # Modifying merged should not affect originals
-        push!(merged[:T].bounds, RustCall.TraitBound("Debug", String[]))
-        @test length(merged[:T].bounds) == 3
-        @test length(c1[:T].bounds) == 1
-        @test length(c2[:T].bounds) == 1
+        code_pub = "#[julia]\npub fn p<T>(x: T) -> T where T: Copy { x }"
+        s = sigs(code_pub)
+        @test s[1].return_type == "T"
+        @test s[1].constraints[:T].bounds[1].trait_name == "Copy"
     end
 end

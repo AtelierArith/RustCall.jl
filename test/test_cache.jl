@@ -43,7 +43,8 @@ using Test
         # Key must be deterministic (session-stable) — verify by computing expected SHA256
         using SHA
         rustc_ver = RustCall._get_rustc_version()
-        config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)"
+        pipeline = RustCall.toolchain_fingerprint()
+        config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)_$(pipeline)"
         expected_key = bytes2hex(sha256("$(code1)\n---\n$(config_str)"))
         @test key1 == expected_key
     end
@@ -250,7 +251,8 @@ using Test
             pub extern "C" fn validation_test() -> i32 { 100 }
             """
 
-            wrapped_code = RustCall.wrap_rust_code(code)
+            # The library is compiled from the extractor-expanded source
+            wrapped_code = RustCall.wrap_rust_code(RustCall.expand_inline(code).source)
             cache_key = RustCall.generate_cache_key(wrapped_code, compiler)
             @test RustCall.is_cache_valid(cache_key, wrapped_code, compiler)
         end

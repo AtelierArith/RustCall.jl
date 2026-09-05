@@ -86,39 +86,38 @@ const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_c
         @test any(f -> endswith(f, "lib.rs"), sources)
     end
 
-    @testset "parse_julia_structs_from_source" begin
-        code = """
-        #[julia]
-        pub struct TestStruct {
-            pub x: f64,
-            pub y: f64,
-        }
-
-        #[julia]
-        impl TestStruct {
-            #[julia]
-            pub fn new(x: f64, y: f64) -> Self {
-                TestStruct { x, y }
-            }
+    @testset "crate-mode manifest: #[julia] structs" begin
+        if !RustCall.check_rustc_available()
+            @warn "rustc not found, skipping"
+        else
+            code = """
+            use juliacall_macros::julia;
 
             #[julia]
-            pub fn get_sum(&self) -> f64 {
-                self.x + self.y
+            pub struct Counter { count: u32, name: String }
+
+            #[julia]
+            impl Counter {
+                #[julia]
+                pub fn new() -> Self { Self { count: 0, name: String::new() } }
+                #[julia]
+                pub fn increment(&mut self) { self.count += 1; }
+                pub fn not_wrapped(&self) {}
             }
-        }
-        """
-
-        structs = RustCall.parse_julia_structs_from_source(code)
-
-        @test length(structs) == 1
-        @test structs[1].name == "TestStruct"
-        @test length(structs[1].fields) == 2
-
-        field_names = [f[1] for f in structs[1].fields]
-        @test "x" in field_names
-        @test "y" in field_names
+            """
+            infos = RustCall.manifest_struct_infos(RustCall.extract_manifest(code; mode = "crate"))
+            @test length(infos) == 1
+            s = infos[1]
+            @test s.name == "Counter"
+            @test s.fields == [("count", "u32"), ("name", "String")]
+            @test s.field_getters["count"] == "Counter_get_count"
+            @test s.field_setters["count"] == "Counter_set_count"
+            @test [m.name for m in s.methods] == ["new", "increment"]
+            @test s.methods[1].is_constructor
+            @test s.methods[1].symbol == "Counter_new"
+            @test s.methods[2].is_mutable
+        end
     end
-
     @testset "create_wrapper_crate" begin
         if !isdir(SAMPLE_CRATE_PATH)
             @warn "Sample crate not found, skipping test"
@@ -196,80 +195,45 @@ end
 end
 
 @testset "Result and Option Type Parsing" begin
-    # Test Result<T, E> parsing
-    @testset "parse_result_type" begin
-        result_info = RustCall.parse_result_type("Result<f64, i32>")
-        @test result_info !== nothing
-        @test result_info.ok_type == "f64"
-        @test result_info.err_type == "i32"
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping"
+    else
+        sigs(code) = RustCall.manifest_function_signatures(RustCall.extract_manifest(code; mode = "crate"))
 
-        result_info2 = RustCall.parse_result_type("Result<u32, i32>")
-        @test result_info2 !== nothing
-        @test result_info2.ok_type == "u32"
-        @test result_info2.err_type == "i32"
+        @testset "Result return kinds from the manifest" begin
+            s = sigs("#[julia] fn a(x: f64) -> Result<f64, i32> { Ok(x) }")
+            @test s[1].return_kind == :result
+            @test (s[1].ok_type, s[1].err_type) == ("f64", "i32")
 
-        # Non-Result types should return nothing
-        @test RustCall.parse_result_type("i32") === nothing
-        @test RustCall.parse_result_type("Option<i32>") === nothing
+            s = sigs("#[julia] fn b(x: u32) -> Result<u32, i32> { Ok(x) }")
+            @test (s[1].ok_type, s[1].err_type) == ("u32", "i32")
 
-        # Nested generics (issue #92)
-        result_nested = RustCall.parse_result_type("Result<HashMap<String, i32>, Error>")
-        @test result_nested !== nothing
-        @test result_nested.ok_type == "HashMap<String, i32>"
-        @test result_nested.err_type == "Error"
+            s = sigs("#[julia] fn c(x: i32) -> i32 { x }")
+            @test s[1].return_kind == :plain
+            @test isempty(s[1].ok_type)
 
-        # Tuple inner types
-        result_tuple = RustCall.parse_result_type("Result<(i32, i32), String>")
-        @test result_tuple !== nothing
-        @test result_tuple.ok_type == "(i32, i32)"
-        @test result_tuple.err_type == "String"
+            s = sigs("#[julia] fn d() -> Result<(i32, i32), String> { Ok((1, 2)) }")
+            @test (s[1].ok_type, s[1].err_type) == ("(i32, i32)", "String")
 
-        # Deeply nested generics
-        result_deep = RustCall.parse_result_type("Result<Vec<Vec<i32>>, Box<dyn Error>>")
-        @test result_deep !== nothing
-        @test result_deep.ok_type == "Vec<Vec<i32>>"
-        @test result_deep.err_type == "Box<dyn Error>"
-    end
+            s = sigs("#[julia] fn e() -> Result<Vec<Vec<i32>>, Box<dyn Error>> { Ok(vec![]) }")
+            @test (s[1].ok_type, s[1].err_type) == ("Vec<Vec<i32>>", "Box<dyn Error>")
+        end
 
-    # Test Option<T> parsing
-    @testset "parse_option_type" begin
-        option_info = RustCall.parse_option_type("Option<f64>")
-        @test option_info !== nothing
-        @test option_info.inner_type == "f64"
+        @testset "Option return kinds from the manifest" begin
+            s = sigs("#[julia] fn a(x: f64) -> Option<f64> { Some(x) }")
+            @test s[1].return_kind == :option
+            @test s[1].inner_type == "f64"
 
-        option_info2 = RustCall.parse_option_type("Option<i32>")
-        @test option_info2 !== nothing
-        @test option_info2.inner_type == "i32"
+            s = sigs("#[julia] fn b(x: i32) -> Result<i32, i32> { Ok(x) }")
+            @test s[1].return_kind == :result
+            @test isempty(s[1].inner_type)
 
-        # Non-Option types should return nothing
-        @test RustCall.parse_option_type("i32") === nothing
-        @test RustCall.parse_option_type("Result<i32, i32>") === nothing
+            s = sigs("#[julia] fn c() -> Option<(i32, String)> { None }")
+            @test s[1].inner_type == "(i32, String)"
 
-        # Nested generics (issue #92)
-        option_nested = RustCall.parse_option_type("Option<Vec<i32>>")
-        @test option_nested !== nothing
-        @test option_nested.inner_type == "Vec<i32>"
-
-        # Option with tuple
-        option_tuple = RustCall.parse_option_type("Option<(i32, String)>")
-        @test option_tuple !== nothing
-        @test option_tuple.inner_type == "(i32, String)"
-
-        # Option with nested HashMap
-        option_map = RustCall.parse_option_type("Option<HashMap<String, Vec<i32>>>")
-        @test option_map !== nothing
-        @test option_map.inner_type == "HashMap<String, Vec<i32>>"
-    end
-
-    # Test is_result_type and is_option_type
-    @testset "type detection" begin
-        @test RustCall.is_result_type("Result<f64, i32>")
-        @test !RustCall.is_result_type("Option<f64>")
-        @test !RustCall.is_result_type("i32")
-
-        @test RustCall.is_option_type("Option<f64>")
-        @test !RustCall.is_option_type("Result<f64, i32>")
-        @test !RustCall.is_option_type("i32")
+            s = sigs("#[julia] fn d() -> Option<HashMap<String, Vec<i32>>> { None }")
+            @test s[1].inner_type == "HashMap<String, Vec<i32>>"
+        end
     end
 end
 

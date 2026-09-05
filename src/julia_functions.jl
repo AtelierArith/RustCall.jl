@@ -5,7 +5,19 @@
 """
     RustFunctionSignature
 
-Represents a parsed Rust function signature marked with #[julia].
+Signature of a Rust free function as recorded in the FFI manifest produced by
+`rustcall-extract` (see `src/manifest.jl`). Julia never derives this from
+source text.
+
+# Fields
+- `name`, `arg_names`, `arg_types`, `return_type`: as written in Rust
+- `is_generic`, `type_params`, `constraints`: generic parameters and their trait bounds
+- `symbol`: exported C symbol (equals `name` unless generic)
+- `attribute`: `:julia`, `:julia_pyo3` or `:none`
+- `exported`: whether the compiled library exports `symbol`
+- `return_kind`: `:plain`, `:unit`, `:result` or `:option`
+- `ok_type`/`err_type`/`inner_type`: components of `Result`/`Option` returns
+- `source`: function source (generic functions only), used for monomorphization
 """
 struct RustFunctionSignature
     name::String
@@ -14,333 +26,28 @@ struct RustFunctionSignature
     return_type::String
     is_generic::Bool
     type_params::Vector{String}
+    symbol::String
+    attribute::Symbol
+    exported::Bool
+    return_kind::Symbol
+    ok_type::String
+    err_type::String
+    inner_type::String
+    source::String
+    constraints::Dict{Symbol, TypeConstraints}
 end
 
-"""
-    parse_julia_functions(code::String) -> Vector{RustFunctionSignature}
-
-Parse Rust code and extract functions marked with `#[julia]` attribute.
-
-# Example
-```rust
-#[julia]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-```
-
-Returns a vector of `RustFunctionSignature` for each `#[julia]` marked function.
-"""
-function parse_julia_functions(code::String)
-    signatures = RustFunctionSignature[]
-
-    # Use a two-step approach:
-    # 1. Find #[julia] or #[julia_pyo3] markers with regex
-    # 2. Parse the function signature using bracket-counting for generics
-    #
-    # This handles nested generic types like HashMap<String, Vec<Option<i32>>>
-    # which regex alone cannot match correctly.
-    attr_pattern = r"#\[julia(?:_pyo3)?\]\s*(?:pub\s+)?fn\s+(\w+)\s*"
-
-    for m in eachmatch(attr_pattern, code)
-        func_name = String(m.captures[1])
-
-        # Position right after "fn name"
-        pos = m.offset + length(m.match)
-
-        # Check for generic parameters: <...>
-        type_params_str = nothing
-        is_generic = false
-        if pos <= ncodeunits(code) && code[pos] == '<'
-            close_pos = _find_matching_angle_bracket_jf(code, pos)
-            if close_pos > 0
-                type_params_str = code[nextind(code, pos):prevind(code, close_pos)]
-                pos = nextind(code, close_pos)
-                # Skip whitespace
-                while pos <= ncodeunits(code) && isspace(code[pos])
-                    pos = nextind(code, pos)
-                end
-            end
-        end
-
-        # Expect '('
-        if pos > ncodeunits(code) || code[pos] != '('
-            continue
-        end
-
-        # Find matching ')' using bracket counting
-        paren_close = _find_matching_paren(code, pos)
-        if paren_close == 0
-            continue
-        end
-        args_str = code[nextind(code, pos):prevind(code, paren_close)]
-
-        # Parse return type: look for -> ... {
-        return_type = "()"
-        rest_pos = nextind(code, paren_close)
-        # Skip whitespace
-        while rest_pos <= ncodeunits(code) && isspace(code[rest_pos])
-            rest_pos = nextind(code, rest_pos)
-        end
-        if rest_pos + 1 <= ncodeunits(code) && code[rest_pos] == '-' && code[nextind(code, rest_pos)] == '>'
-            # Found return type
-            ret_start = nextind(code, nextind(code, rest_pos))
-            # Find '{' at depth 0
-            brace_pos = _find_open_brace(code, ret_start)
-            if brace_pos > 0
-                return_type = strip(code[ret_start:prevind(code, brace_pos)])
-            end
-        end
-
-        # Parse type parameters
-        type_params = String[]
-        if type_params_str !== nothing && !isempty(strip(type_params_str))
-            is_generic = true
-            # Split by comma at depth 0
-            for param_str in _split_at_depth_zero(type_params_str, ',')
-                param = strip(param_str)
-                if startswith(param, "'")
-                    continue
-                end
-                if occursin(':', param)
-                    param = strip(split(param, ':')[1])
-                end
-                push!(type_params, param)
-            end
-        end
-
-        # Parse arguments
-        arg_names = String[]
-        arg_types = String[]
-
-        if !isempty(strip(args_str))
-            for arg_part in _split_at_depth_zero(args_str, ',')
-                _parse_single_arg!(arg_names, arg_types, strip(arg_part))
-            end
-        end
-
-        push!(signatures, RustFunctionSignature(
-            func_name, arg_names, arg_types, return_type, is_generic, type_params
-        ))
-    end
-
-    return signatures
-end
-
-"""
-    _find_matching_angle_bracket_jf(s, open_pos) -> Int
-
-Find the matching '>' for '<' at open_pos, handling nesting. Returns 0 if not found.
-"""
-function _find_matching_angle_bracket_jf(s::AbstractString, open_pos::Int)
-    depth = 0
-    i = open_pos
-    while i <= ncodeunits(s)
-        c = s[i]
-        if c == '<'
-            depth += 1
-        elseif c == '>'
-            depth -= 1
-            if depth == 0
-                return i
-            end
-        end
-        i = nextind(s, i)
-    end
-    return 0
-end
-
-"""
-    _find_matching_paren(s, open_pos) -> Int
-
-Find the matching ')' for '(' at open_pos, handling nesting. Returns 0 if not found.
-"""
-function _find_matching_paren(s::AbstractString, open_pos::Int)
-    depth = 0
-    i = open_pos
-    while i <= ncodeunits(s)
-        c = s[i]
-        if c == '('
-            depth += 1
-        elseif c == ')'
-            depth -= 1
-            if depth == 0
-                return i
-            end
-        end
-        i = nextind(s, i)
-    end
-    return 0
-end
-
-"""
-    _find_open_brace(s, start_pos) -> Int
-
-Find the next '{' at bracket depth 0, starting from start_pos. Returns 0 if not found.
-"""
-function _find_open_brace(s::AbstractString, start_pos::Int)
-    angle = 0
-    paren = 0
-    bracket = 0
-    curly = 0
-    i = start_pos
-    while i <= ncodeunits(s)
-        c = s[i]
-        if c == '<' && curly == 0
-            angle += 1
-        elseif c == '>' && curly == 0
-            angle = max(0, angle - 1)
-        elseif c == '('
-            paren += 1
-        elseif c == ')'
-            paren = max(0, paren - 1)
-        elseif c == '['
-            bracket += 1
-        elseif c == ']'
-            bracket = max(0, bracket - 1)
-        elseif c == '{'
-            if angle == 0 && paren == 0 && bracket == 0 && curly == 0
-                return i
-            end
-            curly += 1
-        elseif c == '}'
-            curly = max(0, curly - 1)
-        end
-        i = nextind(s, i)
-    end
-    return 0
-end
-
-"""
-    _split_at_depth_zero(s, delimiter) -> Vector{String}
-
-Split string by delimiter only when bracket depth (angle, paren, square) is zero.
-"""
-function _split_at_depth_zero(s::AbstractString, delimiter::Char)
-    parts = String[]
-    current = IOBuffer()
-    angle = 0
-    paren = 0
-    bracket = 0
-    curly = 0
-
-    for c in s
-        if c == '<' && curly == 0
-            angle += 1
-            write(current, c)
-        elseif c == '>' && curly == 0
-            angle = max(0, angle - 1)
-            write(current, c)
-        elseif c == '('
-            paren += 1
-            write(current, c)
-        elseif c == ')'
-            paren = max(0, paren - 1)
-            write(current, c)
-        elseif c == '['
-            bracket += 1
-            write(current, c)
-        elseif c == ']'
-            bracket = max(0, bracket - 1)
-            write(current, c)
-        elseif c == '{'
-            curly += 1
-            write(current, c)
-        elseif c == '}'
-            curly = max(0, curly - 1)
-            write(current, c)
-        elseif c == delimiter && angle == 0 && paren == 0 && bracket == 0 && curly == 0
-            push!(parts, String(take!(current)))
-        else
-            write(current, c)
-        end
-    end
-
-    last = String(take!(current))
-    if !isempty(strip(last))
-        push!(parts, last)
-    end
-
-    return parts
-end
-
-"""
-    _parse_single_arg!(names::Vector{String}, types::Vector{String}, arg::AbstractString)
-
-Parse a single function argument "name: type" and add to the vectors.
-"""
-function _parse_single_arg!(names::Vector{String}, types::Vector{String}, arg::AbstractString)
-    if isempty(arg)
-        return
-    end
-
-    # Skip self parameters
-    if arg in ["self", "&self", "&mut self"]
-        return
-    end
-
-    # Parse "name: type"
-    if occursin(':', arg)
-        parts = split(arg, ':', limit=2)
-        push!(names, strip(String(parts[1])))
-        push!(types, strip(String(parts[2])))
-    end
-end
-
-"""
-    transform_julia_attribute(code::String) -> String
-
-Transform `#[julia]` attributes in Rust code:
-- For functions: `#[julia] fn` → `#[no_mangle] pub extern "C" fn`
-- For structs: `#[julia] pub struct` → `#[derive(JuliaStruct)] pub struct`
-
-# Example
-Input:
-```rust
-#[julia]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-
-#[julia]
-pub struct Point {
-    x: f64,
-    y: f64,
-}
-```
-
-Output:
-```rust
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-
-#[derive(JuliaStruct)]
-pub struct Point {
-    x: f64,
-    y: f64,
-}
-```
-"""
-function transform_julia_attribute(code::String)
-    result = code
-
-    # Transform structs first (before functions to avoid conflicts)
-    # Pattern: #[julia] pub struct -> #[derive(JuliaStruct)] pub struct
-    result = replace(result, r"#\[julia\]\s*pub\s+struct\s+" => "#[derive(JuliaStruct)]\npub struct ")
-
-    # Pattern: #[julia] struct -> #[derive(JuliaStruct)] pub struct (make it pub)
-    result = replace(result, r"#\[julia\]\s*struct\s+" => "#[derive(JuliaStruct)]\npub struct ")
-
-    # Transform functions
-    # Pattern 1: #[julia] fn -> #[no_mangle] pub extern "C" fn
-    result = replace(result, r"#\[julia\]\s*fn\s+" => "#[no_mangle]\npub extern \"C\" fn ")
-
-    # Pattern 2: #[julia] pub fn -> #[no_mangle] pub extern "C" fn
-    result = replace(result, r"#\[julia\]\s*pub\s+fn\s+" => "#[no_mangle]\npub extern \"C\" fn ")
-
-    return result
+function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
+                               return_type::String, is_generic::Bool, type_params::Vector{String};
+                               symbol::String = name, attribute::Symbol = :julia,
+                               exported::Bool = !is_generic,
+                               return_kind::Symbol = return_type == "()" ? :unit : :plain,
+                               ok_type::String = "", err_type::String = "", inner_type::String = "",
+                               source::String = "",
+                               constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}())
+    RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
+                          symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
+                          source, constraints)
 end
 
 """
@@ -364,8 +71,8 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
 
     for sig in signatures
         if sig.is_generic
-            # Generic functions need special handling - skip for now
-            # They should be registered via the generics system
+            # Generic functions are registered for monomorphization at load time
+            # and called through `@rust`; no static wrapper is emitted.
             @debug "Skipping generic function wrapper generation for $(sig.name)"
             continue
         end
@@ -414,6 +121,12 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
         end
     end
 
+    if sig.return_kind == :result
+        return _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+    elseif sig.return_kind == :option
+        return _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+    end
+
     # Get Julia return type
     julia_ret_type = _rust_type_to_julia_type_symbol(sig.return_type)
     if julia_ret_type === nothing
@@ -427,6 +140,34 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
             lib_name = RustCall.get_current_library()
             func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
             RustCall.call_rust_function(func_ptr, $julia_ret_type, $(converted_args...))
+        end
+    end
+end
+
+# Result<T, E> / Option<T> returning #[julia] functions in inline blocks: the
+# extractor generates `CResult_<fn>` / `COption_<fn>` on the Rust side; the
+# wrapper reads that struct and converts it to RustResult / RustOption.
+function _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+    ok_t = something(_rust_type_to_julia_type_symbol(sig.ok_type), :Any)
+    err_t = something(_rust_type_to_julia_type_symbol(sig.err_type), :Any)
+    quote
+        function $func_name($(arg_syms...))
+            lib_name = RustCall.get_current_library()
+            func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
+            c = RustCall.call_rust_function(func_ptr, RustCall.CResultType{$ok_t, $err_t}, $(converted_args...))
+            RustCall.convert_c_result_to_rust_result(c, $ok_t, $err_t)
+        end
+    end
+end
+
+function _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+    inner_t = something(_rust_type_to_julia_type_symbol(sig.inner_type), :Any)
+    quote
+        function $func_name($(arg_syms...))
+            lib_name = RustCall.get_current_library()
+            func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
+            c = RustCall.call_rust_function(func_ptr, RustCall.COptionType{$inner_t}, $(converted_args...))
+            RustCall.convert_c_option_to_rust_option(c, $inner_t)
         end
     end
 end
@@ -488,114 +229,6 @@ end
 # ============================================================================
 # Result<T, E> and Option<T> Support
 # ============================================================================
-
-"""
-    ResultTypeInfo
-
-Parsed information about a Result<T, E> return type.
-"""
-struct ResultTypeInfo
-    ok_type::String
-    err_type::String
-end
-
-"""
-    OptionTypeInfo
-
-Parsed information about an Option<T> return type.
-"""
-struct OptionTypeInfo
-    inner_type::String
-end
-
-"""
-    parse_result_type(rust_type::String) -> Union{ResultTypeInfo, Nothing}
-
-Parse a Result<T, E> type string and extract T and E.
-Returns nothing if not a Result type.
-"""
-function parse_result_type(rust_type::String)
-    rust_type = strip(rust_type)
-
-    # Match the "Result<" prefix
-    m = match(r"^Result\s*<", rust_type)
-    if m === nothing
-        return nothing
-    end
-
-    # Extract the inner content between "Result<" and the final ">"
-    inner_start = m.offset + length(m.match)
-    # The last character must be '>'
-    if rust_type[end] != '>'
-        return nothing
-    end
-    inner = rust_type[inner_start:prevind(rust_type, lastindex(rust_type))]
-
-    # Find the comma that separates ok_type and err_type at bracket depth 0
-    depth = 0
-    for i in eachindex(inner)
-        c = inner[i]
-        if c in ('<', '(', '[')
-            depth += 1
-        elseif c in ('>', ')', ']')
-            depth -= 1
-        elseif c == ',' && depth == 0
-            ok_type = strip(inner[1:prevind(inner, i)])
-            err_type = strip(inner[nextind(inner, i):end])
-            return ResultTypeInfo(ok_type, err_type)
-        end
-    end
-
-    return nothing
-end
-
-"""
-    parse_option_type(rust_type::String) -> Union{OptionTypeInfo, Nothing}
-
-Parse an Option<T> type string and extract T.
-Returns nothing if not an Option type.
-"""
-function parse_option_type(rust_type::String)
-    rust_type = strip(rust_type)
-
-    # Match the "Option<" prefix
-    m = match(r"^Option\s*<", rust_type)
-    if m === nothing
-        return nothing
-    end
-
-    # Extract the inner content between "Option<" and the final ">"
-    inner_start = m.offset + length(m.match)
-    # The last character must be '>'
-    if rust_type[end] != '>'
-        return nothing
-    end
-    inner_type = strip(rust_type[inner_start:prevind(rust_type, lastindex(rust_type))])
-
-    if isempty(inner_type)
-        return nothing
-    end
-
-    return OptionTypeInfo(inner_type)
-end
-
-"""
-    is_result_type(rust_type::String) -> Bool
-
-Check if a Rust type is Result<T, E>.
-"""
-function is_result_type(rust_type::String)
-    return parse_result_type(rust_type) !== nothing
-end
-
-"""
-    is_option_type(rust_type::String) -> Bool
-
-Check if a Rust type is Option<T>.
-"""
-function is_option_type(rust_type::String)
-    return parse_option_type(rust_type) !== nothing
-end
 
 """
     CResultType{T, E}
@@ -675,13 +308,4 @@ function convert_c_option_to_rust_option(c_option, ::Type{T}) where {T}
     else
         RustOption{T}(false, nothing)
     end
-end
-
-"""
-    has_julia_attribute(code::String) -> Bool
-
-Check if the code contains any `#[julia]` or `#[julia_pyo3]` attributes.
-"""
-function has_julia_attribute(code::String)
-    return occursin(r"#\[julia(?:_pyo3)?\]", code)
 end

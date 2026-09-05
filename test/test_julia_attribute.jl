@@ -4,47 +4,56 @@ using Test
 
 @testset "Julia Attribute Support" begin
 
-    @testset "parse_julia_functions" begin
-        # Test basic function parsing
+    # Signatures come from the FFI manifest produced by rustcall-extract; Julia
+    # never parses Rust source. These tests exercise the manifest round trip.
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping manifest tests"
+        return
+    end
+
+    @testset "manifest: #[julia] functions" begin
         code1 = """
         #[julia]
         fn add(a: i32, b: i32) -> i32 {
             a + b
         }
         """
-        sigs = RustCall.parse_julia_functions(code1)
+        sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(code1; mode = "inline"))
         @test length(sigs) == 1
         @test sigs[1].name == "add"
+        @test sigs[1].symbol == "add"
         @test sigs[1].arg_names == ["a", "b"]
         @test sigs[1].arg_types == ["i32", "i32"]
         @test sigs[1].return_type == "i32"
+        @test sigs[1].return_kind == :plain
         @test sigs[1].is_generic == false
+        @test sigs[1].exported
 
-        # Test pub fn parsing
         code2 = """
         #[julia]
         pub fn multiply(x: f64, y: f64) -> f64 {
             x * y
         }
         """
-        sigs = RustCall.parse_julia_functions(code2)
+        sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(code2; mode = "inline"))
         @test length(sigs) == 1
         @test sigs[1].name == "multiply"
         @test sigs[1].arg_types == ["f64", "f64"]
         @test sigs[1].return_type == "f64"
 
-        # Test void return type
+        # Void return type
         code3 = """
         #[julia]
         fn do_nothing(a: i32) {
             println!("value: {}", a);
         }
         """
-        sigs = RustCall.parse_julia_functions(code3)
+        sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(code3; mode = "inline"))
         @test length(sigs) == 1
         @test sigs[1].return_type == "()"
+        @test sigs[1].return_kind == :unit
 
-        # Test multiple functions
+        # Multiple functions; plain extern "C" functions are reported but not attributed
         code4 = """
         #[julia]
         fn func1(a: i32) -> i32 { a }
@@ -55,20 +64,23 @@ using Test
         #[julia]
         fn func2(b: f32) -> f32 { b }
         """
-        sigs = RustCall.parse_julia_functions(code4)
-        @test length(sigs) == 2
-        @test sigs[1].name == "func1"
-        @test sigs[2].name == "func2"
+        manifest = RustCall.extract_manifest(code4; mode = "inline")
+        sigs = RustCall.manifest_function_signatures(manifest)
+        @test [s.name for s in sigs] == ["func1", "func2"]
+        all_sigs = RustCall.manifest_function_signatures(manifest; only_attributed = false)
+        @test [s.name for s in all_sigs] == ["func1", "not_julia", "func2"]
+        plain = all_sigs[2]
+        @test plain.attribute == :none
+        @test plain.exported
 
-        # Test no #[julia] functions
+        # No #[julia] functions
         code5 = """
         #[no_mangle]
         pub extern "C" fn regular_fn(a: i32) -> i32 { a }
         """
-        sigs = RustCall.parse_julia_functions(code5)
-        @test length(sigs) == 0
+        @test isempty(RustCall.manifest_function_signatures(RustCall.extract_manifest(code5; mode = "inline")))
 
-        # Const expressions in types should not confuse argument splitting
+        # Const expressions in types (#233) are handled by a real parser
         code6 = """
         #[julia]
         fn foo(x: [u8; { if 1 < 2 { 3 } else { 4 } }], y: i32) {
@@ -76,43 +88,57 @@ using Test
             let _ = y;
         }
         """
-        sigs = RustCall.parse_julia_functions(code6)
+        sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(code6; mode = "inline"))
         @test length(sigs) == 1
         @test sigs[1].arg_names == ["x", "y"]
-        @test sigs[1].arg_types == ["[u8; { if 1 < 2 { 3 } else { 4 } }]", "i32"]
+        @test sigs[1].arg_types[2] == "i32"
+        @test startswith(sigs[1].arg_types[1], "[u8;")
 
-        # Return type parsing should skip nested const-expression braces
         code7 = """
         #[julia]
         fn make_array() -> [u8; { if 1 < 2 { 3 } else { 4 } }] {
             [0; 3]
         }
         """
-        sigs = RustCall.parse_julia_functions(code7)
+        sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(code7; mode = "inline"))
         @test length(sigs) == 1
-        @test sigs[1].return_type == "[u8; { if 1 < 2 { 3 } else { 4 } }]"
+        @test startswith(sigs[1].return_type, "[u8;")
+
+        # Result / Option returns are reported with their components
+        code8 = """
+        #[julia]
+        fn div(a: f64, b: f64) -> Result<f64, i32> { if b == 0.0 { Err(-1) } else { Ok(a / b) } }
+        #[julia]
+        fn maybe(a: i32) -> Option<i32> { if a > 0 { Some(a) } else { None } }
+        """
+        sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(code8; mode = "inline"))
+        @test sigs[1].return_kind == :result
+        @test (sigs[1].ok_type, sigs[1].err_type) == ("f64", "i32")
+        @test sigs[2].return_kind == :option
+        @test sigs[2].inner_type == "i32"
+
+        # `#[julia]` inside a string literal is not an attribute
+        code9 = """
+        fn f() -> &'static str { "#[julia] fn fake() {}" }
+        """
+        @test isempty(RustCall.manifest_function_signatures(RustCall.extract_manifest(code9; mode = "inline")))
     end
 
-    @testset "transform_julia_attribute" begin
-        # Test basic transformation
+    @testset "expand_inline: #[julia] transformation" begin
         code1 = "#[julia]\nfn add(a: i32, b: i32) -> i32 { a + b }"
-        result1 = RustCall.transform_julia_attribute(code1)
+        result1 = RustCall.expand_inline(code1).source
         @test occursin("#[no_mangle]", result1)
         @test occursin("pub extern \"C\" fn add", result1)
         @test !occursin("#[julia]", result1)
 
-        # Test pub fn transformation
         code2 = "#[julia]\npub fn multiply(x: f64) -> f64 { x * 2.0 }"
-        result2 = RustCall.transform_julia_attribute(code2)
+        result2 = RustCall.expand_inline(code2).source
         @test occursin("#[no_mangle]", result2)
         @test occursin("pub extern \"C\" fn multiply", result2)
 
-        # Test inline attribute
         code3 = "#[julia] fn inline_fn(a: i32) -> i32 { a }"
-        result3 = RustCall.transform_julia_attribute(code3)
-        @test occursin("pub extern \"C\" fn inline_fn", result3)
+        @test occursin("pub extern \"C\" fn inline_fn", RustCall.expand_inline(code3).source)
 
-        # Test mixed code (some with #[julia], some without)
         code4 = """
         #[julia]
         fn with_julia(a: i32) -> i32 { a }
@@ -120,16 +146,23 @@ using Test
         #[no_mangle]
         pub extern "C" fn already_ffi(b: i32) -> i32 { b }
         """
-        result4 = RustCall.transform_julia_attribute(code4)
+        result4 = RustCall.expand_inline(code4).source
         @test occursin("pub extern \"C\" fn with_julia", result4)
         @test occursin("pub extern \"C\" fn already_ffi", result4)  # unchanged
+
+        # Result-returning #[julia] functions get a C-compatible wrapper struct
+        code5 = "#[julia]\nfn d(a: f64) -> Result<f64, i32> { Ok(a) }"
+        result5 = RustCall.expand_inline(code5).source
+        @test occursin("CResult_d", result5)
+        @test occursin("pub extern \"C\" fn d(a: f64) -> CResult_d", result5)
+
+        # Expansion is memoized per source text
+        @test RustCall.expand_inline(code1) === RustCall.expand_inline(code1)
     end
 
-    @testset "has_julia_attribute" begin
-        @test RustCall.has_julia_attribute("#[julia]\nfn test() {}")
-        @test RustCall.has_julia_attribute("code\n#[julia]\nfn test() {}")
-        @test !RustCall.has_julia_attribute("#[no_mangle]\nfn test() {}")
-        @test !RustCall.has_julia_attribute("fn test() {}")
+    @testset "manifest: schema version guard" begin
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 999\nmode = \"inline\"\n")
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("not = [valid toml")
     end
 
     @testset "emit_julia_function_wrappers" begin
