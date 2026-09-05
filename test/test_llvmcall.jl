@@ -233,6 +233,11 @@ using Test
     end
 end
 
+primitive type _Dep265Prim 8 end
+struct _Dep265Wrap
+    x::_Dep265Prim
+end
+
 @testset "LLVM path deprecation (#265)" begin
     # Every public entry point of the LLVM IR integration path emits a
     # deprecation warning but keeps working. `@test_deprecated` checks the
@@ -249,6 +254,14 @@ end
     @test_deprecated RustCall.set_default_opt_config(RustCall._optimization_config())
     @test_deprecated RustCall.get_registered_function("no_such_function_265")
     @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Int32)) == "i32"
+
+    # Downstream extensions of the public name still apply to nested conversions
+    # (tuple elements, struct fields) even though recursion goes through the
+    # private helper.
+    @eval RustCall.julia_type_to_llvm_ir_string(::Type{$(Symbol("_Dep265Prim"))}) = "i8"
+    @test RustCall._julia_type_to_llvm_ir_string(Tuple{_Dep265Prim}) == "{i8}"
+    @test RustCall._julia_type_to_llvm_ir_string(_Dep265Wrap) == "{i8}"
+    @test RustCall._julia_type_to_llvm_ir_string(Tuple{Int32, _Dep265Prim}) == "{i32, i8}"
 
     # Internal helpers used by @rust and by the deprecated wrappers stay silent.
     if Base.JLOptions().depwarn != 0

@@ -163,11 +163,26 @@ _julia_type_to_llvm_ir_string(t::Type{<:Tuple}) = _tuple_type_to_llvm_ir(t)
 
 # Struct types fallback (immutable structs)
 function _julia_type_to_llvm_ir_string(t::Type)
+    # Compatibility hook: downstream code may have extended the public
+    # (deprecated) name for a custom type. Nested conversions (tuple elements,
+    # struct fields) must keep dispatching to such methods, so consult them
+    # before the generic fallbacks.
+    if _has_public_llvm_ir_extension(t)
+        return julia_type_to_llvm_ir_string(t)
+    end
     if isstructtype(t) && !isabstracttype(t) && !isprimitivetype(t)
         return _struct_type_to_llvm_ir(t)
     else
         error("Unsupported Julia type for LLVM IR: $t. Supported types: basic numeric types, Ptr, Tuple, and immutable structs.")
     end
+end
+
+# The single method RustCall itself defines for the public name; any other
+# applicable method was added by downstream code.
+const _PUBLIC_LLVM_IR_FALLBACK = which(julia_type_to_llvm_ir_string, Tuple{Type})
+
+function _has_public_llvm_ir_extension(t::Type)
+    return which(julia_type_to_llvm_ir_string, Tuple{Type{t}}) !== _PUBLIC_LLVM_IR_FALLBACK
 end
 
 """
