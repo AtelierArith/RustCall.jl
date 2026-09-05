@@ -1,5 +1,8 @@
 # LLVM IR code generation using llvmcall
 # Phase 2: Direct LLVM IR integration
+#
+# DEPRECATED (#265): this whole path is scheduled for removal. Every public
+# entry point emits `Base.depwarn`; internal helpers are prefixed with `_`.
 
 using LLVM
 
@@ -38,6 +41,11 @@ end
     RustFunctionInfo
 
 Information about a compiled Rust function for llvmcall.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 struct RustFunctionInfo
     name::String
@@ -100,6 +108,11 @@ end
 
 Convert a Julia type to its LLVM IR string representation.
 Supports basic types, pointers, tuples, and structs.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function julia_type_to_llvm_ir_string end
 
@@ -232,12 +245,17 @@ end
     compile_and_register_rust_function(code::String, func_name::String)
 
 Compile Rust code and register the function for llvmcall usage.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function compile_and_register_rust_function(code::String, func_name::String)
+    _llvm_path_depwarn("compile_and_register_rust_function", :compile_and_register_rust_function)
+
     # Check if already registered
-    existing = lock(LLVM_REGISTRY_LOCK) do
-        get(LLVM_FUNCTION_REGISTRY, func_name, nothing)
-    end
+    existing = _get_registered_function(func_name)
     if existing !== nothing
         return existing
     end
@@ -247,8 +265,8 @@ function compile_and_register_rust_function(code::String, func_name::String)
     compiler = get_default_compiler()
 
     # Compile to LLVM IR for analysis
-    ir_path = compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
-    rust_mod = load_llvm_ir(ir_path; source_code=wrapped_code)
+    ir_path = _compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
+    rust_mod = _load_llvm_ir(ir_path; source_code=wrapped_code)
 
     # Get function signature
     fn = get_function(rust_mod, func_name)
@@ -256,7 +274,7 @@ function compile_and_register_rust_function(code::String, func_name::String)
         error("Function '$func_name' not found in compiled code")
     end
 
-    ret_type, arg_types = get_function_signature(fn)
+    ret_type, arg_types = _get_function_signature(fn)
 
     # Also compile to shared library for function pointer
     lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
@@ -279,8 +297,18 @@ end
     get_registered_function(func_name::String) -> Union{RustFunctionInfo, Nothing}
 
 Get a registered Rust function's information.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function get_registered_function(func_name::String)
+    _llvm_path_depwarn("get_registered_function", :get_registered_function)
+    return _get_registered_function(func_name)
+end
+
+function _get_registered_function(func_name::String)
     return lock(LLVM_REGISTRY_LOCK) do
         get(LLVM_FUNCTION_REGISTRY, func_name, nothing)
     end
@@ -294,7 +322,15 @@ end
     @rust_llvm func_name(args...)
 
 Call a Rust function using LLVM IR integration (Phase 2).
-This uses @generated functions to produce optimized code at compile time.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
+
+In practice the call goes through the same function-pointer `ccall` as
+`@rust`; unregistered functions fall back to `dlsym` on the current library.
+Migrate to `@rust name(args...)::ReturnType`.
 
 # Example
 ```julia
@@ -336,8 +372,10 @@ Falls back to ccall if llvmcall is not available.
 - `TypeError`: If argument types don't match expected signature
 """
 function _rust_llvm_call(func_name::String, args...)
+    _llvm_path_depwarn("@rust_llvm", :_rust_llvm_call)
+
     # Get function info
-    info = get_registered_function(func_name)
+    info = _get_registered_function(func_name)
 
     if info === nothing
         # Try to find it in the current library
@@ -426,7 +464,7 @@ The function name is encoded as a type parameter for compile-time dispatch.
     n = length(args)
 
     # Try to get function info at compile time
-    info = get_registered_function(func_name)
+    info = _get_registered_function(func_name)
 
     if info !== nothing && info.func_ptr !== nothing
         expected_arg_types = info.arg_types

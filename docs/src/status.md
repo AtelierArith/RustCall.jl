@@ -1,13 +1,13 @@
 # Project Status
 
-Last updated: 2026-04-22
+Last updated: 2026-09-05
 
 ## Summary
 
 | Item | Current State |
 |------|---------------|
 | Core FFI (`rust"""`, `@rust`, `@irust`) | ✅ Implemented |
-| LLVM integration (`@rust_llvm`) | ✅ Implemented (experimental path) |
+| LLVM integration (`@rust_llvm`) | ⚠️ Deprecated, scheduled for removal ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)) |
 | Cargo dependency integration | ✅ Implemented |
 | Struct/object mapping | ✅ Implemented |
 | `#[julia]` attribute support | ✅ Implemented |
@@ -39,7 +39,7 @@ Based on the repository state on 2026-02-07. Only the summary/test runner status
 ### Compilation and code generation
 - `src/compiler.jl`: rustc invocation and compile orchestration.
 - `src/codegen.jl`: `ccall` generation utilities.
-- `src/llvmintegration.jl`, `src/llvmcodegen.jl`, `src/llvmoptimization.jl`: LLVM path.
+- `src/llvmintegration.jl`, `src/llvmcodegen.jl`, `src/llvmoptimization.jl`: LLVM path (deprecated, #265).
 
 ### Type and runtime layer
 - `src/types.jl`: Rust wrapper types (`RustResult`, `RustOption`, ownership types).
@@ -88,7 +88,7 @@ Pkg.build("RustCall")
 ## Current Limitations
 
 - The direct FFI path is centered on `extern "C"` entry points; it does not model Rust lifetimes or borrow-checker guarantees on the Julia side.
-- `@rust_llvm` is available but remains an experimental path compared with standard `@rust` calls.
+- `@rust_llvm` and the LLVM optimization API are deprecated: the call path is equivalent to `@rust`, and rustc's LLVM IR cannot be parsed reliably by Julia's bundled LLVM. They emit deprecation warnings and will be removed in a future release.
 - Ownership helpers such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` depend on the helper library built during package installation.
 - Generic structs and more advanced trait patterns still need explicit handling in some cases, especially for external bindings.
 - Cargo-backed workflows are cached, but first builds can be slow and some crates may still need platform-specific build configuration.
@@ -96,7 +96,7 @@ Pkg.build("RustCall")
 ## Delivered Milestones
 
 - Phase 1: direct `rust"""..."""`, `@rust`, `@irust`, type mapping, string support, and cache-backed compilation.
-- Phase 2: ownership/runtime helpers, generics support, and the experimental LLVM path.
+- Phase 2: ownership/runtime helpers, generics support, and the experimental LLVM path (now deprecated).
 - Phase 3: Cargo dependency parsing and external crate use inside inline Rust code.
 - Phase 4: Rust struct and method mapping into Julia-facing objects.
 - Phase 5: `#[julia]`-driven wrapper generation.
@@ -104,6 +104,6 @@ Pkg.build("RustCall")
 
 ## Near-Term Priorities
 
-- Stabilize and document `@rust_llvm` behavior across more type patterns.
+- Remove the deprecated LLVM IR integration path and the `LLVM.jl` dependency (#265, Phase 2).
 - Continue regression hardening for crate binding and hot reload workflows.
 - Prepare distribution tasks for crates.io publication of proc-macro tooling.

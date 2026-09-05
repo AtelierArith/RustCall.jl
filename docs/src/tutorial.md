@@ -346,9 +346,17 @@ end
 
 ## LLVM IR Integration (Advanced)
 
+!!! warning "Deprecated"
+    `@rust_llvm` and the LLVM optimization API are deprecated and will be removed
+    in a future release ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)). `@rust_llvm` performs the same `ccall`
+    as `@rust`, and the LLVM IR emitted by current rustc versions cannot be parsed
+    by the LLVM bundled with Julia. Use `@rust` instead. The examples below are
+    kept for users migrating away from the path; each call emits a deprecation
+    warning.
+
 ### Using @rust_llvm Macro
 
-The `@rust_llvm` macro enables optimized calls via LLVM IR integration (experimental):
+The `@rust_llvm` macro was the entry point of the LLVM IR integration path:
 
 ```julia
 rust"""
@@ -364,11 +372,14 @@ info = RustCall.compile_and_register_rust_function("""
 pub extern "C" fn fast_add(a: i32, b: i32) -> i32 { a + b }
 """, "fast_add")
 
-# Call with @rust_llvm (potentially optimized)
+# Call with @rust_llvm (deprecated; same call mechanism as @rust)
 result = @rust_llvm fast_add(Int32(10), Int32(20))  # => 30
+
+# Equivalent, recommended form
+result = @rust fast_add(Int32(10), Int32(20))::Int32  # => 30
 ```
 
-### LLVM Optimization Settings
+### LLVM Optimization Settings (deprecated)
 
 ```julia
 using RustCall
@@ -438,7 +449,7 @@ To measure performance:
 julia --project benchmark/benchmarks.jl
 ```
 
-This compares performance of Julia native, `@rust`, and `@rust_llvm`.
+This compares performance of Julia native, `@rust`, and the deprecated `@rust_llvm`.
 
 ## Best Practices
 

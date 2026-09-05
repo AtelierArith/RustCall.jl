@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- The LLVM IR integration path is deprecated and will be removed in a future
+  breaking release ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+  Affected entry points emit `Base.depwarn` and keep working unchanged:
+  `@rust_llvm`, `compile_and_register_rust_function`, `get_registered_function`,
+  `compile_rust_to_llvm_ir`, `load_llvm_ir`, `get_function_signature`,
+  `get_or_compile_function`, `OptimizationConfig`, `set_default_opt_config`,
+  `optimize_module!`, `optimize_function!`, `optimize_for_speed!`,
+  `optimize_for_size!`, `optimize_balanced!`.
+  Reasons: `@rust_llvm` performs the same function-pointer `ccall` as `@rust`,
+  and rustc tracks a newer LLVM than the one bundled with Julia, so the emitted
+  IR cannot be parsed reliably. Use `@rust` instead.
+
+### Changed
+- Rust syntax is no longer parsed on the Julia side. `rust"""` blocks,
+  `@rust_crate` and generics go through the `rustcall-extract` CLI
+  (`deps/rustcall_core`, `deps/rustcall_extract`), which emits a TOML FFI
+  manifest ([#264](https://github.com/AtelierArith/RustCall.jl/issues/264),
+  [#266](https://github.com/AtelierArith/RustCall.jl/pull/266)).
+
 ### Added
 - CI/CD pipeline with GitHub Actions
 - Support for multiple Julia versions (1.10, 1.11, nightly)

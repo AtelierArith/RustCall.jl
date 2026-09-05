@@ -523,9 +523,12 @@ function use_resource()
 end
 ```
 
-### LLVM IR Integration
+### LLVM IR Integration (deprecated)
 
-The LLVM call path is experimental, but it can be useful for repeated hot paths.
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)). `@rust_llvm` uses the same `ccall` as `@rust`, so
+    use `@rust` for hot paths. The snippets below emit deprecation warnings.
 
 ```julia
 using RustCall
@@ -1048,7 +1051,7 @@ data = rand(10000)
 
 **Performance tips:**
 - Use `GC.@preserve` for large arrays to prevent garbage collection during Rust calls
-- Consider `@rust_llvm` for performance-critical code with LLVM optimizations
+- Let `rustc` optimize the Rust side (`-C opt-level`); `@rust_llvm` is deprecated and offers no speedup over `@rust`
 - Leverage caching to avoid recompilation (functions are cached automatically)
 - Always specify explicit types in `@rust` macro calls
 

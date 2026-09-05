@@ -232,3 +232,55 @@ using Test
         @warn "rustc not found, skipping LLVM integration tests"
     end
 end
+
+@testset "LLVM path deprecation (#265)" begin
+    # Every public entry point of the LLVM IR integration path emits a
+    # deprecation warning but keeps working. `@test_deprecated` checks the
+    # warning under --depwarn=yes (Pkg.test) and just runs the expression
+    # otherwise.
+    config = @test_deprecated RustCall.OptimizationConfig(level=1)
+    @test config isa RustCall.OptimizationConfig
+    @test config.level == 1
+
+    @test_deprecated RustCall.set_default_opt_config(RustCall._optimization_config())
+    @test_deprecated RustCall.get_registered_function("no_such_function_265")
+
+    # Internal helpers used by @rust and by the deprecated wrappers stay silent.
+    if Base.JLOptions().depwarn != 0
+        @test_logs RustCall._optimization_config()
+        @test_logs RustCall._get_registered_function("no_such_function_265")
+    end
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[no_mangle]
+        pub extern "C" fn dep265_add(a: i32, b: i32) -> i32 { a + b }
+        """
+        result = @test_deprecated @rust_llvm dep265_add(Int32(1), Int32(2))
+        @test result == Int32(3)
+        # The non-deprecated equivalent
+        @test (@rust dep265_add(Int32(1), Int32(2))::Int32) == Int32(3)
+
+        wrapped = RustCall.wrap_rust_code("""
+        #[no_mangle]
+        pub extern "C" fn dep265_mul(a: i32, b: i32) -> i32 { a * b }
+        """)
+        compiler = RustCall.get_default_compiler()
+        ir_path = @test_deprecated RustCall.compile_rust_to_llvm_ir(wrapped; compiler=compiler)
+        @test isfile(ir_path)
+        rust_mod = @test_deprecated RustCall.load_llvm_ir(ir_path; source_code=wrapped)
+        @test rust_mod isa RustCall.RustModule
+        fn = RustCall.get_function(rust_mod, "dep265_mul")
+        if fn !== nothing
+            sig = @test_deprecated RustCall.get_function_signature(fn)
+            @test sig == (Int32, [Int32, Int32])
+            @test_deprecated RustCall.optimize_module!(rust_mod.mod)
+            @test_deprecated RustCall.optimize_for_speed!(rust_mod.mod)
+        end
+        info = @test_deprecated RustCall.compile_and_register_rust_function("""
+        #[no_mangle]
+        pub extern "C" fn dep265_sub(a: i32, b: i32) -> i32 { a - b }
+        """, "dep265_sub")
+        @test info.name == "dep265_sub"
+    end
+end

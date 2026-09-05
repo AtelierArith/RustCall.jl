@@ -49,68 +49,40 @@ RustCall.clear_cache()
 
 ## LLVM Optimization
 
-RustCall.jl supports optimization at the LLVM IR level. Using the `@rust_llvm` macro enables more advanced optimizations.
+!!! warning "Deprecated"
+    The LLVM IR integration path (`@rust_llvm`, `compile_rust_to_llvm_ir`,
+    `load_llvm_ir`, `OptimizationConfig`, `optimize_module!` and friends) is
+    deprecated and will be removed in a future release. Every entry point now
+    emits a deprecation warning. See [#265](https://github.com/AtelierArith/RustCall.jl/issues/265).
 
-### Optimization Level Settings
+The path was an experiment inspired by Cxx.jl: load the LLVM IR that rustc emits
+into Julia's LLVM and optimize across the language boundary. It is being removed
+for two reasons.
 
-```julia
-using RustCall
+- **The call path is equivalent to `@rust`.** `@rust_llvm` calls the Rust
+  function through a function pointer with a plain `ccall`; no Rust IR is inlined
+  into Julia code, so there is no performance difference.
+- **rustc and Julia do not share an LLVM version.** rustc follows LLVM releases
+  every six weeks while Julia pins a major version per release (Julia 1.12 ships
+  LLVM 18, rustc 1.98 emits LLVM 22 IR). The textual IR format is not forward
+  compatible, so newer rustc output cannot be parsed reliably by Julia's LLVM.
 
-# Create optimization configuration
-config = RustCall.OptimizationConfig(
-    level=3,  # 0-3 (3 is most optimized)
-    enable_vectorization=true,
-    enable_loop_unrolling=true,
-    enable_licm=true
-)
-
-rust_code = """
-#[no_mangle]
-pub extern "C" fn compute(x: f64) -> f64 {
-    x * x + 1.0
-}
-"""
-
-# Compile Rust to LLVM IR and load module
-wrapped = RustCall.wrap_rust_code(rust_code)
-compiler = RustCall.get_default_compiler()
-ir_path = RustCall.compile_rust_to_llvm_ir(wrapped; compiler=compiler)
-rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped)
-mod = rust_mod.mod
-
-# Apply optimization
-RustCall.optimize_module!(mod; config=config)
-```
-
-### Optimization Presets
-
-```julia
-# Speed-optimized
-RustCall.optimize_for_speed!(mod)
-
-# Size-optimized
-RustCall.optimize_for_size!(mod)
-```
-
-### Optimization Level Selection
-
-- **Level 0**: No optimization (for debugging)
-- **Level 1**: Basic optimizations
-- **Level 2**: Standard optimizations (default)
-- **Level 3**: Maximum optimization (may take longer to compile)
+Use `@rust` for all calls. Optimization of the Rust code itself belongs to
+`rustc` (`-C opt-level`, see `RustCall.RustCompiler`).
 
 ## Function Call Optimization
 
 ### `@rust` vs `@rust_llvm`
 
-- **`@rust`**: Standard call via `ccall`. Highly stable, recommended for most cases
-- **`@rust_llvm`**: Call via LLVM IR integration (experimental). Has optimization potential but limitations with some types
+- **`@rust`**: Standard call via `ccall`. Highly stable, recommended for all cases
+- **`@rust_llvm`**: Deprecated (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)). Internally it performs the same
+  `ccall` as `@rust`, so it has no performance benefit, and it emits a deprecation warning
 
 ```julia
 # Standard call (recommended)
 result = @rust add(Int32(10), Int32(20))::Int32
 
-# LLVM integration call (experimental)
+# Deprecated: same call mechanism, plus a deprecation warning
 result = @rust_llvm add(Int32(10), Int32(20))
 ```
 
@@ -128,20 +100,10 @@ result = @rust add(Int32(10), Int32(20))::Int32
 
 ### Function Registration Optimization
 
-Frequently called functions can be optimized by registering them beforehand:
-
-```julia
-# Register function for LLVM path
-RustCall.compile_and_register_rust_function("""
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-""", "add")
-
-# Call through LLVM path
-result = @rust_llvm add(Int32(10), Int32(20))
-```
+`RustCall.compile_and_register_rust_function` registered a function for the
+deprecated LLVM path. It is no longer recommended: `rust"""..."""` blocks
+already compile once and are cached, so an explicit registration step buys
+nothing. Prefer `@rust` with explicit argument and return types.
 
 ## Memory Management
 
@@ -218,7 +180,9 @@ end
 
 ### Basic Operations
 
-The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS:
+The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS. The
+`@rust_llvm` column is kept for reference only; the macro is deprecated and uses the
+same call mechanism as `@rust`.
 
 | Operation | Julia Native | @rust | @rust_llvm |
 |-----------|-------------|-------|------------|
@@ -262,7 +226,7 @@ The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS:
 # Basic benchmarks
 julia --project benchmark/benchmarks.jl
 
-# LLVM integration benchmarks
+# LLVM integration benchmarks (deprecated path, emits deprecation warnings)
 julia --project benchmark/benchmarks_llvm.jl
 
 # Ownership type benchmarks

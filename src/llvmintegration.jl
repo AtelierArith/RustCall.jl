@@ -2,6 +2,34 @@
 
 using LLVM
 
+# ============================================================================
+# Deprecation of the LLVM IR integration path (#265)
+# ============================================================================
+
+const LLVM_PATH_DEPRECATION_ISSUE = "https://github.com/AtelierArith/RustCall.jl/issues/265"
+
+"""
+    _llvm_path_depwarn(name::AbstractString, funcsym::Symbol)
+
+Emit the deprecation warning shared by every entry point of the LLVM IR
+integration path (`@rust_llvm`, `compile_rust_to_llvm_ir`, `load_llvm_ir`,
+`OptimizationConfig`, ...). `name` is shown to the user; `funcsym` is the
+function whose caller is reported (see `Base.depwarn`).
+
+The path is deprecated because its call mechanism is equivalent to `@rust`
+(a `ccall` through a function pointer) and because rustc tracks a newer LLVM
+than the one bundled with Julia, so the emitted IR cannot be parsed reliably.
+"""
+function _llvm_path_depwarn(name::AbstractString, funcsym::Symbol)
+    Base.depwarn(
+        "`$name` belongs to the LLVM IR integration path, which is deprecated and will be " *
+        "removed in a future release. It has no performance benefit over `@rust`, and the " *
+        "LLVM IR emitted by rustc cannot be parsed reliably by the LLVM bundled with Julia. " *
+        "Use `@rust` instead. See $LLVM_PATH_DEPRECATION_ISSUE.",
+        funcsym,
+    )
+end
+
 """
     RustModule
 
@@ -78,8 +106,18 @@ end
     load_llvm_ir(ir_file::String) -> RustModule
 
 Load an LLVM IR file and create a RustModule.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function load_llvm_ir(ir_file::String; source_code::String = "")
+    _llvm_path_depwarn("load_llvm_ir", :load_llvm_ir)
+    return _load_llvm_ir(ir_file; source_code)
+end
+
+function _load_llvm_ir(ir_file::String; source_code::String = "")
     # Read the IR file
     ir_content = read(ir_file, String)
 
@@ -144,8 +182,18 @@ end
     get_function_signature(fn::LLVM.Function) -> Tuple{Type, Vector{Type}}
 
 Get the Julia return type and argument types for an LLVM function.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function get_function_signature(fn::LLVM.Function)
+    _llvm_path_depwarn("get_function_signature", :get_function_signature)
+    return _get_function_signature(fn)
+end
+
+function _get_function_signature(fn::LLVM.Function)
     fn_type = LLVM.function_type(fn)
 
     # Get return type
@@ -294,6 +342,11 @@ This function is a placeholder for future LLVM JIT compilation support.
 Currently, it raises an error indicating that direct LLVM JIT compilation
 is not yet implemented. Use the shared library approach instead.
 
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
+
 # Example
 ```julia
 mod = load_llvm_ir("path/to/file.ll")
@@ -302,6 +355,7 @@ mod = load_llvm_ir("path/to/file.ll")
 ```
 """
 function get_or_compile_function(mod::RustModule, name::String)
+    _llvm_path_depwarn("get_or_compile_function", :get_or_compile_function)
     fn = get_function(mod, name)
     if fn === nothing
         error("Function '$name' not found in module")

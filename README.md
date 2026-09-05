@@ -78,7 +78,7 @@ affine(Int32(2), Int32(10), Int32(3)) # 23
 - `@rust`: call exported functions through a C-compatible ABI
 - `@irust`: compile a small Rust expression with Julia variable capture
 - `@rust_crate`: build and load an external crate annotated with `#[julia]`
-- `@rust_llvm`: experimental LLVM-based call path
+- `@rust_llvm`: deprecated LLVM-based call path, scheduled for removal ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)); use `@rust`
 
 Rust dependencies can be declared inline with `// cargo-deps:` or fenced `cargo` blocks. The first build may need network access.
 

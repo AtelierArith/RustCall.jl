@@ -15,9 +15,9 @@
 - **String support**: Pass Julia strings to Rust functions expecting C strings
 - **Compilation caching**: SHA256-based caching system for compiled libraries
 
-### Phase 2: LLVM IR Integration ✅
-- **`@rust_llvm` macro**: Direct LLVM IR integration (experimental)
-- **LLVM optimization**: Configurable optimization passes
+### Phase 2: Runtime and Ownership ✅
+- **`@rust_llvm` macro**: Deprecated. The LLVM IR integration path is scheduled for removal because it has no benefit over `@rust` and rustc's LLVM IR no longer matches Julia's LLVM ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265))
+- **LLVM optimization**: Deprecated together with `@rust_llvm`
 - **Ownership types**: `RustBox`, `RustRc`, `RustArc`, `RustVec`, `RustSlice`
 - **Array operations**: Indexing, iteration, Julia ↔ Rust conversion
 - **Generics support**: Automatic monomorphization and type parameter inference

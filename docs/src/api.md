@@ -12,6 +12,9 @@ This page provides the API documentation for RustCall.jl.
 @rust_llvm
 ```
 
+`@rust_llvm` is deprecated and will be removed in a future release; use `@rust`
+instead (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+
 ## Types
 
 ### Result and Option Types
@@ -138,7 +141,12 @@ RustCall.list_cached_libraries
 RustCall.cleanup_old_cache
 ```
 
-## LLVM Optimization
+## LLVM Optimization (deprecated)
+
+The LLVM IR integration path is deprecated ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)). Every function in
+this section and the next, together with `compile_rust_to_llvm_ir` and
+`load_llvm_ir` above, emits a deprecation warning and will be removed in a future
+release.
 
 ```@docs
 RustCall.OptimizationConfig
@@ -147,7 +155,7 @@ RustCall.optimize_for_speed!
 RustCall.optimize_for_size!
 ```
 
-## LLVM Function Registration
+## LLVM Function Registration (deprecated)
 
 ```@docs
 RustCall.RustFunctionInfo
