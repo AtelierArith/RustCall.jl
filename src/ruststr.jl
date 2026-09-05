@@ -325,16 +325,14 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Wrap the code if needed
     wrapped_code = wrap_rust_code(expanded.source)
 
-    # Generate cache key
-    cache_key = generate_cache_key(wrapped_code, compiler)
-
-    # The in-memory library identity covers the compiler snapshot as well as
-    # the source: the same expanded source built at another opt-level, target
-    # or cfg set is another library (see `_rustc_block_identity`), so a lookup
-    # can never hand back a build made under a different configuration.
-    # Use stable_content_hash() — never hash() for persistent identifiers
-    code_hash = _rustc_block_identity(wrapped_code, compiler, cfg_text)[1:16]
-    lib_name = "rust_$(code_hash)"
+    # One identity for this block, used both as the disk cache key and as the
+    # in-memory library name (#278). It covers the compiler snapshot as well as
+    # the source: the same expanded source built at another opt-level, target or
+    # cfg set is another artifact, so a lookup can never hand back a build made
+    # under a different configuration — and the disk key and the registry name
+    # can no longer drift apart, because there is only one formula.
+    cache_key = _rustc_block_identity(wrapped_code, compiler, cfg_text)
+    lib_name = "rust_$(artifact_short_id(cache_key))"
 
     # Check if already compiled and loaded in memory
     is_in_memory = lock(REGISTRY_LOCK) do
@@ -352,7 +350,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
     # Check cache first
     cached_lib = get_cached_library(cache_key)
-    if cached_lib !== nothing && is_cache_valid(cache_key, wrapped_code, compiler)
+    if cached_lib !== nothing && is_cache_valid(cache_key, wrapped_code, compiler; cfg_text)
         # Load from cache
         lib_handle, _ = load_cached_library(cache_key)
 
@@ -584,31 +582,23 @@ function _cargo_block_identity(expanded_source::AbstractString, deps_hash::Abstr
                            "cargo-env" => String(cargo_env))
 end
 
-# Environment that changes what a direct `rustc` invocation produces: rustc
-# itself ignores `RUSTFLAGS`, but rustup's proxy honours `RUSTUP_TOOLCHAIN`,
-# and RUSTFLAGS is tracked so a user who sets it sees the same rebuild
-# behaviour as with Cargo-backed blocks. Same allowlist discipline as
-# `_is_cargo_env_key`: named variables only, never credentials.
-const _RUSTC_ENV_NAMES = ("RUSTFLAGS", "RUSTUP_TOOLCHAIN")
-
-_rustc_env_key() = join(("$k=$(ENV[k])" for k in _RUSTC_ENV_NAMES if haskey(ENV, k)), "\n")
-
 """
     _rustc_block_identity(wrapped_source, compiler, cfg_text) -> String
 
-Identity of a block built by `rustc` directly: wrapped source, the compiler
-snapshot it was expanded for (target, opt-level, debug info), the cfg text
-the wrappers were derived from and the rustc environment
-([`_rustc_env_key`]). `cfg_text === nothing` means the current strict
-snapshot, as in [`expand_inline`].
+Identity of a block built by `rustc` directly. A thin adapter over
+`generate_cache_key`, which is `artifact_key` of an `ArtifactId`: wrapped
+source, the compiler snapshot it was expanded for (target, opt-level, debug
+info), the cfg text the wrappers were derived from, the tracked rustc
+environment (`RUSTC_BUILD_ENV_NAMES`), the toolchain fingerprint and the
+identity of the compiler that runs. `cfg_text === nothing` means the current
+strict snapshot, as in `expand_inline`.
+
+Since #278 this is the *same value* as the on-disk cache key of the artifact:
+the library name is `artifact_short_id` of it, never a second digest.
 """
 function _rustc_block_identity(wrapped_source::AbstractString, compiler::RustCompiler,
                               cfg_text::Union{Nothing, AbstractString})
-    text = cfg_text === nothing ? _cfg_snapshot(:strict) : String(cfg_text)
-    return _block_identity(wrapped_source,
-                           "compiler" => "$(compiler.target_triple)_$(compiler.optimization_level)_$(compiler.emit_debug_info)",
-                           "cfg" => bytes2hex(sha256(text)),
-                           "rustc-env" => _rustc_env_key())
+    return generate_cache_key(wrapped_source, compiler; cfg_text = cfg_text)
 end
 
 """
