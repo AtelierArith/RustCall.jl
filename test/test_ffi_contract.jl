@@ -597,24 +597,32 @@ const ALL_SPELLINGS = vcat(
               "P::m(i32) -> ()"
     end
 
-    @testset "divergence: the return-type guess (#245 item 1)" begin
-        # `call_rust_function_infer` (src/codegen.jl:304) derives the RETURN
-        # type from the FIRST ARGUMENT, defaulting to `Int64`. Read out of the
-        # code the `@generated` body emits, so the guess is visible without
-        # calling into a library.
-        function guessed_return(argtype)
-            ci = Base.code_lowered(RustCall.call_rust_function_infer, (Ptr{Cvoid}, argtype))[1]
-            # `:(Core.tuple(_2, <ret_type>))`
-            return ci.code[2].args[end]
+    @testset "the return-type guess is gone (#245 item 1)" begin
+        # `call_rust_function_infer` derived the RETURN type from the FIRST
+        # ARGUMENT — `Float64` for `fn f(x: f64) -> i32`, `Cstring` for a string
+        # argument (the ABI-broken path of #246), and `Int64` for everything
+        # else. None of that is derivable from an argument, and reading a return
+        # slot at the wrong width is undefined behaviour, not a fallback. It now
+        # deprecation-warns and raises.
+        for arg in (1.0, Int32(1), true, C_NULL, "s")
+            @test_throws RustCall.RustError RustCall.call_rust_function_infer(C_NULL, arg)
         end
-        @test guessed_return(Float64) === Float64   # `fn f(x: f64) -> i32` read as Float64
-        @test guessed_return(Int32) === Int32
-        @test guessed_return(Bool) === Bool
-        @test guessed_return(Ptr{Cvoid}) === Int64  # the silent default
-        @test guessed_return(String) === Cstring    # the ABI-broken path of #246
+        @test_throws RustCall.RustError RustCall.call_rust_function_infer(C_NULL)
+        err = try
+            RustCall.call_rust_function_infer(C_NULL, 1.0)
+            nothing
+        catch e
+            e
+        end
+        @test occursin("Annotate the call site", sprint(showerror, err))
+
         # The contract has no such path: an unknown return type has no type.
         @test RustCall.ffi_return_contract("i32").ccall_types == Type[Int32]
         @test RustCall.ffi_return_contract("").known == false
+        # And `FFI_STRICT` now fails closed by default.
+        @test RustCall.FFI_STRICT[] === :error
+        @test_throws RustCall.RustError RustCall.ffi_return_symbol_or_throw(
+            "Vec<f64>", "", "f() -> Vec<f64>")
     end
 
     @testset "ownership: the contract names the symbol generated code calls" begin

@@ -434,28 +434,39 @@ end
 """
     call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
 
-Call a Rust function, inferring the return type from the first argument type.
-Uses @generated function for compile-time optimization based on argument types.
+!!! warning "Deprecated (#276)"
+    This function guessed the **return** type from the type of the **first
+    argument**, defaulting to `Int64` and reading a string argument as a
+    `Cstring` return. Neither is derivable from an argument, and reading a
+    return slot at the wrong width is undefined behaviour, not a fallback
+    (#245, #246). It now always raises.
+
+    Call `call_rust_function(func_ptr, T, args...)` with the return type, or
+    annotate the call site: `@rust f(x)::T`. A `#[julia]` function needs
+    neither — its return type comes from the manifest.
+
+Always throws a [`RustError`](@ref) naming the caller-visible fix.
 """
-@generated function call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
-    if length(args) == 0
-        return :(call_rust_function(func_ptr, Cvoid))
-    end
+function call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
+    Base.depwarn(
+        "call_rust_function_infer guesses the return type from the first " *
+        "argument and is deprecated (#276); pass the return type explicitly, " *
+        "e.g. call_rust_function(func_ptr, T, args...) or `@rust f(x)::T`.",
+        :call_rust_function_infer)
+    guessed = isempty(args) ? "Cvoid" : ffi_describe(juliatype_to_rust_or_name(typeof(first(args))))
+    throw(RustError(
+        "cannot call a Rust function without a return type: the return type " *
+        "was previously guessed from the first argument " *
+        "($(isempty(args) ? "no arguments" : guessed)), which is not " *
+        "derivable from it (#245, #246). Annotate the call site with " *
+        "`::T`, or call `call_rust_function(func_ptr, T, args...)`."))
+end
 
-    # Infer return type from first argument type at compile time
-    ret_type = if args[1] <: Integer
-        args[1]
-    elseif args[1] <: AbstractFloat
-        args[1]
-    elseif args[1] === Bool
-        Bool
-    elseif args[1] <: AbstractString || args[1] === Cstring
-        Cstring
-    else
-        Int64  # Default fallback
-    end
-
-    return :(call_rust_function(func_ptr, $ret_type, args...))
+# The Rust spelling of a Julia argument type, for the message above; falls back
+# to the Julia name when there is no Rust counterpart, so `ffi_describe` still
+# renders something useful.
+function juliatype_to_rust_or_name(::Type{T}) where {T}
+    return get(JULIA_TO_RUST_TYPE_MAP, T, string(nameof(T)))
 end
 
 """

@@ -919,7 +919,7 @@ is about — so `:warn` and `:none` exist only to get an existing crate compilin
 again while its unsupported types are dealt with. `write_bindings_to_file`
 binds this per call through its `strict` keyword.
 """
-const FFI_STRICT = Ref{Symbol}(:warn)
+const FFI_STRICT = Ref{Symbol}(:error)
 
 const _FFI_WARNED_CONTEXTS = Set{String}()
 

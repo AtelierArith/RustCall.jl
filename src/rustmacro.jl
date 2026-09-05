@@ -331,8 +331,15 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
         # Fall back to inference from arguments
     end
 
-    # Use inference from argument types
-    return call_rust_function_infer(func_ptr, args...)
+    # No last resort. Guessing the return type from the first argument was the
+    # #245 / #246 shape: the guess is not derivable from an argument, and a
+    # return slot read at the wrong width is undefined behaviour (#276).
+    throw(RustError(
+        "`@rust $func_name(...)` has no return type: the manifest records none " *
+        "for '$func_name' in library '$lib_name', and RustCall no longer " *
+        "guesses one from the arguments (#245, #246). Annotate the call — " *
+        "`@rust $func_name(...)::T` — or mark the Rust function `#[julia]` so " *
+        "the manifest reports its return type."))
 end
 
 """
