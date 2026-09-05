@@ -146,9 +146,11 @@ pub fn identity<T: Copy + Clone>(x: T) -> T {
 }
 """
 
-# Parse the generic function (constraints are automatically extracted)
-info = RustCall.parse_generic_function(code, "identity")
-println(info.constraints)  # Dict(:T => RustCall.TypeConstraints([Copy, Clone]))
+# Signatures and trait bounds come from the FFI manifest produced by the
+# Rust-side parser (rustcall-extract); Julia never parses the source itself.
+manifest = RustCall.extract_manifest(code; mode = "inline")
+sig = only(RustCall.manifest_function_signatures(manifest; only_attributed = false))
+println(sig.constraints)  # Dict(:T => RustCall.TypeConstraints([Copy, Clone]))
 ```
 
 

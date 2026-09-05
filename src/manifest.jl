@@ -247,16 +247,20 @@ function expand_inline(code::String)
 end
 
 """
-    extract_manifest(files::Vector{String}; mode::String) -> Dict
+    extract_manifest(files::Vector{String}; mode::String, skip_unparsable=false) -> Dict
 
 Run the extractor over source files (`mode` is `"inline"` or `"crate"`).
+With `skip_unparsable`, files that are not complete Rust modules (for example
+`include!("table.rs")` fragments) are skipped with a warning instead of failing.
 """
-function extract_manifest(files::Vector{String}; mode::String)
+function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
-    text = _run_extractor(vcat(["manifest", "--mode", mode], files))
+    args = ["manifest", "--mode", mode]
+    skip_unparsable && push!(args, "--skip-unparsable")
+    text = _run_extractor(vcat(args, files))
     return _parse_manifest(text)
 end
 

@@ -119,7 +119,9 @@ function scan_crate(crate_path::String)
 
     # The extractor reports every #[julia] item exactly as the proc-macro will
     # expand it (crate mode); Julia never reads the Rust source itself.
-    manifest = extract_manifest(source_files; mode = "crate")
+    # `.rs` files that are not complete modules (include!() fragments) are
+    # skipped; Cargo is the authority on whether the crate compiles.
+    manifest = extract_manifest(source_files; mode = "crate", skip_unparsable = true)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
 

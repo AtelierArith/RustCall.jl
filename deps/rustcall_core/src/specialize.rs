@@ -71,7 +71,68 @@ impl TypeSubst {
     }
 }
 
+impl TypeSubst {
+    /// Type parameters declared by an item that shadow outer bindings.
+    fn shadowed_by(&self, generics: &syn::Generics) -> Vec<(String, Type)> {
+        generics
+            .params
+            .iter()
+            .filter_map(|p| match p {
+                GenericParam::Type(tp) => {
+                    let name = tp.ident.to_string();
+                    self.map.get(&name).map(|t| (name, t.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn with_shadowed<F: FnOnce(&mut Self)>(&mut self, generics: &syn::Generics, f: F) {
+        let shadowed = self.shadowed_by(generics);
+        for (name, _) in &shadowed {
+            self.map.remove(name);
+        }
+        f(self);
+        for (name, ty) in shadowed {
+            self.map.insert(name, ty);
+        }
+    }
+}
+
+fn item_generics(item: &Item) -> Option<syn::Generics> {
+    match item {
+        Item::Fn(f) => Some(f.sig.generics.clone()),
+        Item::Impl(i) => Some(i.generics.clone()),
+        Item::Struct(s) => Some(s.generics.clone()),
+        Item::Enum(e) => Some(e.generics.clone()),
+        Item::Union(u) => Some(u.generics.clone()),
+        Item::Trait(t) => Some(t.generics.clone()),
+        Item::Type(t) => Some(t.generics.clone()),
+        _ => None,
+    }
+}
+
 impl VisitMut for TypeSubst {
+    /// Nested items (`fn inner<T>` inside the body, local structs, impls) may
+    /// redeclare an outer type parameter; their `T` is a different binding and
+    /// must not be substituted.
+    fn visit_item_mut(&mut self, item: &mut Item) {
+        match item_generics(item) {
+            Some(g) => self.with_shadowed(&g, |s| visit_mut::visit_item_mut(s, item)),
+            None => visit_mut::visit_item_mut(self, item),
+        }
+    }
+
+    fn visit_impl_item_fn_mut(&mut self, node: &mut syn::ImplItemFn) {
+        let g = node.sig.generics.clone();
+        self.with_shadowed(&g, |s| visit_mut::visit_impl_item_fn_mut(s, node));
+    }
+
+    fn visit_trait_item_fn_mut(&mut self, node: &mut syn::TraitItemFn) {
+        let g = node.sig.generics.clone();
+        self.with_shadowed(&g, |s| visit_mut::visit_trait_item_fn_mut(s, node));
+    }
+
     fn visit_type_mut(&mut self, ty: &mut Type) {
         if let Type::Path(tp) = ty {
             if tp.qself.is_none() && tp.path.segments.len() == 1 {
@@ -380,6 +441,21 @@ mod tests {
         let s_pos = out.source.find("fn f_i32").unwrap();
         let h_pos = out.source.find("fn helper").unwrap();
         assert!(f_pos < s_pos && s_pos < h_pos);
+    }
+
+    #[test]
+    fn nested_items_shadowing_a_parameter_are_left_alone() {
+        let src = "pub fn outer<T: Copy>(x: T) -> T { fn inner<T>(x: T) -> T { x } struct Local<T>(T); inner(x) }";
+        let out = specialize(src, "outer", &[("T".into(), "i32".into())], "outer_i32").unwrap();
+        assert!(out
+            .source
+            .contains("pub extern \"C\" fn outer_i32(x: i32) -> i32"));
+        assert!(out.source.contains("fn inner<T>(x: T) -> T"));
+        assert!(out.source.contains("struct Local<T>(T);"));
+        // A nested item that does not redeclare T still sees the substitution.
+        let src2 = "pub fn outer<T: Copy>(x: T) -> T { fn inner(y: T) -> T { y } inner(x) }";
+        let out2 = specialize(src2, "outer", &[("T".into(), "i32".into())], "outer_i32").unwrap();
+        assert!(out2.source.contains("fn inner(y: i32) -> i32"));
     }
 
     #[test]

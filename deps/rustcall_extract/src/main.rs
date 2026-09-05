@@ -1,7 +1,7 @@
 //! `rustcall-extract`: command-line front end over `rustcall_core`.
 //!
 //! ```text
-//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] FILE...
+//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--skip-unparsable] FILE...
 //! rustcall-extract expand     [--manifest FILE] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract schema-version
@@ -18,12 +18,14 @@ use std::process::ExitCode;
 use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 
 const USAGE: &str = "usage:
-  rustcall-extract manifest   --mode <inline|crate> [--out FILE] FILE...
+  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--skip-unparsable] FILE...
   rustcall-extract expand     [--manifest FILE] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract schema-version
 
-Use '-' as FILE to read from stdin.";
+Use '-' as FILE to read from stdin.
+--skip-unparsable: files that are not a complete Rust module (e.g. include!() fragments)
+are skipped with a warning instead of failing the run.";
 
 fn read_source(path: &str) -> Result<String, String> {
     if path == "-" {
@@ -59,10 +61,12 @@ fn take_value(args: &[String], i: &mut usize, flag: &str) -> Result<String, Stri
 fn cmd_manifest(args: &[String]) -> Result<(), String> {
     let mut mode: Option<Mode> = None;
     let mut out: Option<String> = None;
+    let mut skip_unparsable = false;
     let mut files: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--skip-unparsable" => skip_unparsable = true,
             "--mode" => {
                 let v = take_value(args, &mut i, "--mode")?;
                 mode = Some(Mode::parse(&v).ok_or_else(|| format!("unknown mode `{v}`"))?);
@@ -84,8 +88,13 @@ fn cmd_manifest(args: &[String]) -> Result<(), String> {
     let mut merged = Manifest::new(mode);
     for f in &files {
         let src = read_source(f)?;
-        let m = rustcall_core::extract::extract(&src, mode).map_err(|e| format!("{f}: {e}"))?;
-        merged.merge(m);
+        match rustcall_core::extract::extract(&src, mode) {
+            Ok(m) => merged.merge(m),
+            Err(e) if skip_unparsable => {
+                eprintln!("rustcall-extract: skipping {f}: not a complete Rust module ({e})");
+            }
+            Err(e) => return Err(format!("{f}: {e}")),
+        }
     }
     if files.len() > 1 {
         merged.sort();

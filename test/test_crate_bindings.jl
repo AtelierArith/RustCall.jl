@@ -86,6 +86,34 @@ const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_c
         @test any(f -> endswith(f, "lib.rs"), sources)
     end
 
+    @testset "scan_crate skips include!() fragments" begin
+        if !RustCall.check_rustc_available()
+            @warn "rustc not found, skipping"
+        else
+            mktempdir() do dir
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "frag_crate"
+                version = "0.1.0"
+                edition = "2021"
+                """)
+                write(joinpath(dir, "src", "table.rs"), "[1, 2, 3]\n")
+                write(joinpath(dir, "src", "lib.rs"), """
+                use juliacall_macros::julia;
+                const TABLE: [i32; 3] = include!("table.rs");
+                #[julia]
+                fn table_sum() -> i32 { TABLE.iter().sum() }
+                """)
+                info = RustCall.scan_crate(dir)
+                @test [f.name for f in info.julia_functions] == ["table_sum"]
+                # a genuinely broken module file is still an error without the flag
+                @test_throws RustCall.ExtractorError RustCall.extract_manifest(
+                    [joinpath(dir, "src", "table.rs")]; mode = "crate")
+            end
+        end
+    end
+
     @testset "crate-mode manifest: #[julia] structs" begin
         if !RustCall.check_rustc_available()
             @warn "rustc not found, skipping"
