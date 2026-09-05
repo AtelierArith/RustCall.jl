@@ -106,6 +106,22 @@ using TOML
         # Cache keys differ for the two views of the same source.
         @test RustCall.expand_inline(code; cfg = false).manifest != expanded.manifest
         @test RustCall.expand_inline(code) === expanded
+        # ... and for a different compiler configuration: at opt-level 0
+        # `debug_assertions` is set, so the same block expands differently.
+        dbg_code = """
+        #[cfg(debug_assertions)]
+        #[julia]
+        pub fn only_in_debug() -> i32 { 1 }
+        """
+        default_compiler = RustCall.get_default_compiler()
+        try
+            RustCall.set_default_compiler(RustCall.RustCompiler(optimization_level = 2))
+            @test isempty(RustCall.expand_inline(dbg_code).manifest["functions"])
+            RustCall.set_default_compiler(RustCall.RustCompiler(optimization_level = 0))
+            @test length(RustCall.expand_inline(dbg_code).manifest["functions"]) == 1
+        finally
+            RustCall.set_default_compiler(default_compiler)
+        end
 
         # The cfg file handed to the extractor is `rustc --print cfg` under the
         # flags of the actual compiler invocation, written once per flag set.

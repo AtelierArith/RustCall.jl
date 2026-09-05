@@ -217,7 +217,9 @@ struct ExpandedInline
     manifest::Dict{String, Any}
 end
 
-const _EXPANSION_CACHE = Dict{Tuple{String, Symbol}, ExpandedInline}()
+# Keyed by source, cfg mode and a digest of the cfg set actually used, so a
+# later `set_default_compiler` (other target / opt-level) re-expands.
+const _EXPANSION_CACHE = Dict{Tuple{String, Symbol, String}, ExpandedInline}()
 const _EXPANSION_LOCK = ReentrantLock()
 
 # `rustc --print cfg` output and the file handed to the extractor, keyed by the
@@ -275,6 +277,17 @@ _cfg_mode(cfg::Symbol) = cfg in (:strict, :lenient, :none) ? cfg :
 _cfg_mode(cfg::Bool) = cfg ? :strict : :none
 
 """
+    _cfg_digest(mode::Symbol) -> String
+
+Digest of the cfg text the extractor would receive for `mode` (empty for
+`:none`). Part of the expansion cache key.
+"""
+function _cfg_digest(mode::Symbol)
+    mode === :none && return ""
+    return bytes2hex(sha256(_rustc_cfg_text()))
+end
+
+"""
     _cfg_file_args(cfg) -> Vector{String}
 
 `--cfg-file FILE [--cfg-lenient]` for the extractor, so `#[cfg]`-disabled
@@ -316,7 +329,8 @@ compile, `:lenient` decides only target predicates (for blocks built by Cargo),
 `:none` keeps everything (golden corpus comparison).
 """
 function expand_inline(code::String; cfg = :strict)
-    key = (code, _cfg_mode(cfg))
+    mode = _cfg_mode(cfg)
+    key = (code, mode, _cfg_digest(mode))
     cached = lock(_EXPANSION_LOCK) do
         get(_EXPANSION_CACHE, key, nothing)
     end

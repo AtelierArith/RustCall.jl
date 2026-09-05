@@ -60,9 +60,29 @@ impl Truth {
     }
 }
 
-/// Whether a cfg name is decided by the compilation target alone.
+/// The built-in cfg names decided by the compilation target alone (rustc
+/// reference, "Set configuration options"). A build script may emit any other
+/// name, including `target_custom`, so the list is closed rather than a prefix.
+const TARGET_CFG_NAMES: &[&str] = &[
+    "unix",
+    "windows",
+    "target_abi",
+    "target_arch",
+    "target_endian",
+    "target_env",
+    "target_family",
+    "target_feature",
+    "target_has_atomic",
+    "target_has_atomic_equal_alignment",
+    "target_has_atomic_load_store",
+    "target_os",
+    "target_pointer_width",
+    "target_thread_local",
+    "target_vendor",
+];
+
 fn target_decided(name: &str) -> bool {
-    name == "unix" || name == "windows" || name.starts_with("target_")
+    TARGET_CFG_NAMES.contains(&name)
 }
 
 impl CfgSet {
@@ -459,6 +479,12 @@ mod tests {
         assert_eq!(
             set.eval3(&pred("not(feature = \"x\")")).unwrap(),
             Truth::Unknown
+        );
+        // Build scripts may emit arbitrary names, even with a `target_` prefix.
+        assert_eq!(set.eval3(&pred("target_custom")).unwrap(), Truth::Unknown);
+        assert_eq!(
+            set.eval3(&pred("target_os = \"linux\"")).unwrap(),
+            Truth::False
         );
         // Unknown keeps the item.
         assert!(set.eval(&pred("feature = \"x\"")).unwrap());
