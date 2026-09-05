@@ -36,7 +36,8 @@ RustCall.jl automatically caches compiled Rust libraries. This eliminates the ne
   distinct contents and the cost of being wrong is running machine code built
   from source that no longer exists. Only the resolved Cargo dependency graph is
   cached (that is the expensive part: a `cargo tree` process spawn), and it is
-  invalidated by a manifest change in *any* crate of that graph.
+  invalidated by a content change in *any* manifest that decides the graph —
+  every crate in it, plus the workspace root each crate belongs to.
 - **Truncation**: keys are never truncated. `RustCall.artifact_short_id` is the
   only truncation in the design and exists solely for names a human reads —
   library names, temporary Cargo project directories, log lines.
@@ -85,6 +86,11 @@ RustCall.cleanup_old_cache(30)
 
 # Clear cache completely
 RustCall.clear_cache()
+
+# Also remove loose files left by the pre-v2 cache layout. Off by default:
+# the cache root is Julia's own precompile directory for RustCall, so RustCall
+# only ever deletes files it can prove it wrote.
+RustCall.clear_cache(sweep_legacy = true)
 ```
 
 ### Cache Best Practices

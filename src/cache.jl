@@ -87,6 +87,20 @@ const CACHE_FORMAT_VERSION = 2
     _cache_format_root() -> String
 
 The parent directory holding one subdirectory per cache format version.
+
+!!! danger "This directory is not RustCall's to empty"
+    It is `\$(DEPOT_PATH[1])/compiled/vX.Y/RustCall` — **Julia's own package
+    precompile directory for RustCall**, where Julia writes `<slug>.ji` and
+    `<slug>.dylib`/`.so`/`.dll` native images (and `.dSYM` bundles beside them).
+    The root is kept here because `get_cache_dir()` has always been under it and
+    moving it would strand every existing cache, but the consequence is that
+    RustCall shares a directory with another program's data.
+
+    Nothing here may be deleted unless RustCall demonstrably wrote it: only its
+    own version subdirectories, and loose files matching the exact naming the
+    pre-#278 layout used (`_LEGACY_CACHE_FILE`). Removing a fresh `.ji` would
+    throw away Julia's precompilation output and can race a concurrent Julia
+    process writing it.
 """
 function _cache_format_root()
     return joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "RustCall")
@@ -106,14 +120,46 @@ function get_cache_dir()
 end
 
 """
+    _LEGACY_CACHE_DIRS
+
+Subdirectories the pre-#278 (unversioned) layout created directly under
+`_cache_format_root()`: `save_cached_library` wrote metadata to `metadata/` and
+`build_cargo_project_cached` wrote to `cargo/`. Both names are RustCall's own —
+Julia creates no directory there — so they are safe to remove.
+"""
+const _LEGACY_CACHE_DIRS = ("cargo", "metadata")
+
+"""
+    _LEGACY_CACHE_FILE
+
+The exact naming the pre-#278 layout used for loose files in
+`_cache_format_root()`, taken from the code that wrote them, not guessed:
+
+- `save_cached_library`  → `<cache_key><lib_ext>`
+- `_save_checksum`       → `<cache_key><lib_ext>.sha256`
+- `save_cached_llvm_ir`  → `<cache_key>.ll`
+
+`cache_key` was always a `stable_content_hash` digest, i.e. lowercase hex (64
+characters, or 32 for the Cargo-side keys). That is what makes the pattern safe
+to delete by: Julia's precompile images in the same directory are named after a
+package slug (`qLtCw_2ChqG.ji`, `qLtCw_2ChqG.dylib`) which contains uppercase
+letters and an underscore and therefore can never match, and anything else in
+the directory is by definition not ours.
+
+A file that does not match this is never removed, whatever it looks like.
+"""
+const _LEGACY_CACHE_FILE = r"^[0-9a-f]{32,64}(\.(dylib|so|dll)(\.sha256)?|\.ll)$"
+
+"""
     _stale_cache_format_dirs() -> Vector{String}
 
-Sibling cache trees written by an older `CACHE_FORMAT_VERSION`, plus the
-unversioned pre-#278 layout (loose files and the `metadata`/`cargo`
-subdirectories directly under `.../RustCall`).
+Cache *directories* under `_cache_format_root()` that RustCall wrote and can no
+longer read: version subdirectories older than `CACHE_FORMAT_VERSION`, plus the
+`_LEGACY_CACHE_DIRS` of the unversioned pre-#278 layout.
 
-Newer-versioned siblings are deliberately left alone: a future RustCall sharing
-the depot must keep its own cache.
+Newer-versioned siblings are deliberately left alone (a future RustCall sharing
+the depot keeps its own cache), and so is every other entry — see the warning on
+`_cache_format_root`.
 """
 function _stale_cache_format_dirs()
     root = _cache_format_root()
@@ -121,27 +167,51 @@ function _stale_cache_format_dirs()
     isdir(root) || return out
     for entry in readdir(root)
         path = joinpath(root, entry)
-        if isdir(path)
-            m = match(r"^v(\d+)$", entry)
-            if m !== nothing
-                parse(Int, m.captures[1]) < CACHE_FORMAT_VERSION && push!(out, path)
-            elseif entry in ("metadata", "cargo")
-                # The unversioned layout that predates CACHE_FORMAT_VERSION.
-                push!(out, path)
-            end
+        isdir(path) || continue
+        m = match(r"^v(\d+)$", entry)
+        if m !== nothing
+            parse(Int, m.captures[1]) < CACHE_FORMAT_VERSION && push!(out, path)
+        elseif entry in _LEGACY_CACHE_DIRS
+            push!(out, path)
         end
     end
     return out
 end
 
 """
-    sweep_stale_cache_formats() -> Int
+    _legacy_cache_files() -> Vector{String}
 
-Best-effort removal of cache trees left behind by older cache formats.
-Never throws: a locked or unreadable entry is skipped and simply stays on disk.
-Returns the number of entries removed.
+Loose files directly under `_cache_format_root()` that the pre-#278 layout
+wrote, identified by `_LEGACY_CACHE_FILE` and nothing else. Everything the
+pattern does not match — Julia's `.ji` and native images above all — is not
+RustCall's and is never returned.
 """
-function sweep_stale_cache_formats()
+function _legacy_cache_files()
+    root = _cache_format_root()
+    out = String[]
+    isdir(root) || return out
+    for entry in readdir(root)
+        path = joinpath(root, entry)
+        isfile(path) || continue
+        occursin(_LEGACY_CACHE_FILE, entry) && push!(out, path)
+    end
+    return out
+end
+
+"""
+    sweep_stale_cache_formats(; legacy_files::Bool = false) -> Int
+
+Best-effort removal of cache trees left behind by older cache formats. Returns
+the number of entries removed and never throws: a locked or unreadable entry is
+skipped and simply stays on disk.
+
+Directories are always swept — they are unambiguously RustCall's. Loose files
+from the unversioned pre-#278 layout are swept **only** when `legacy_files` is
+true, because they share a directory with Julia's own precompile output for
+RustCall; see the warning on `_cache_format_root`. Even then, only files
+matching `_LEGACY_CACHE_FILE` are touched.
+"""
+function sweep_stale_cache_formats(; legacy_files::Bool = false)
     removed = 0
     for path in _stale_cache_format_dirs()
         try
@@ -151,17 +221,13 @@ function sweep_stale_cache_formats()
             @debug "Could not remove stale cache format directory" path exception = e
         end
     end
-    # Loose files from the unversioned layout (`<key>.dylib`, `<key>.ll`, …).
-    root = _cache_format_root()
-    if isdir(root)
-        for entry in readdir(root)
-            path = joinpath(root, entry)
-            isfile(path) || continue
+    if legacy_files
+        for path in _legacy_cache_files()
             try
                 rm(path, force = true)
                 removed += 1
             catch e
-                @debug "Could not remove stale cache file" path exception = e
+                @debug "Could not remove legacy cache file" path exception = e
             end
         end
     end
@@ -510,22 +576,29 @@ function _load_cache_metadata_unlocked(cache_key::String)
 end
 
 """
-    clear_cache()
+    clear_cache(; sweep_legacy::Bool = false)
 
-Clear all cached libraries and metadata.
+Clear all cached libraries and metadata: the current format's tree, plus the
+directories older formats left behind.
+
+Loose files from the unversioned pre-#278 layout are removed only with
+`sweep_legacy = true`. They live in a directory RustCall shares with Julia's own
+precompile output (see `_cache_format_root`), so removing them is opt-in even
+though the naming pattern used is exact.
+
 On Windows, some files may be locked and cannot be deleted immediately.
 """
-function clear_cache()
+function clear_cache(; sweep_legacy::Bool = false)
     lock(CACHE_LOCK) do
-        _clear_cache_unlocked()
+        _clear_cache_unlocked(; sweep_legacy = sweep_legacy)
     end
 end
 
-function _clear_cache_unlocked()
-    # Clearing "the cache" means every format this RustCall can be responsible
-    # for, not just the current one, or a `clear_cache()` would leave the
-    # pre-#278 tree on disk forever.
-    sweep_stale_cache_formats()
+function _clear_cache_unlocked(; sweep_legacy::Bool = false)
+    # Clearing "the cache" means every format this RustCall is responsible for,
+    # not just the current one, or a `clear_cache()` would leave the pre-#278
+    # tree on disk forever.
+    sweep_stale_cache_formats(; legacy_files = sweep_legacy)
     cache_dir = get_cache_dir()
     if isdir(cache_dir)
         try
@@ -632,8 +705,12 @@ println("Removed \$count old cache entries")
 ```
 """
 function cleanup_old_cache(max_age_days::Int = 30)
-    # Entries written under an older cache format are unreachable by
-    # construction, whatever their age: sweep them first (best effort).
+    # Directories written under an older cache format are unreachable by
+    # construction, whatever their age: sweep them first (best effort). Loose
+    # legacy files are never swept from here — an age-based cleanup has no
+    # business deleting files in a directory RustCall shares with Julia's
+    # precompile output; `clear_cache(sweep_legacy = true)` is the explicit
+    # request for that.
     sweep_stale_cache_formats()
 
     cache_dir = get_cache_dir()

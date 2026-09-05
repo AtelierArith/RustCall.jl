@@ -92,10 +92,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call — file contents are never memoized, because a `(mtime, size)` stamp can
   alias distinct contents and the cost of being wrong is running the wrong
   machine code. What *is* memoized is the resolved dependency graph (the
-  `cargo tree` process spawn), validated against the `Cargo.toml`/`Cargo.lock`
-  stamps of **every** crate in it; and a block that declares no `path =`
-  dependency never resolves a graph at all, so a warm `rust"""` re-evaluation
-  spawns no `cargo tree`.
+  `cargo tree` process spawn), validated against the **content digests** of
+  every manifest that can decide the graph — each crate's `Cargo.toml` /
+  `Cargo.lock` *and* the workspace root each crate belongs to, since a member
+  can inherit a path from `[workspace.dependencies]` in a manifest that is not
+  a package at all. A block that declares no `path =` dependency never resolves
+  a graph, so a warm `rust"""` re-evaluation spawns no `cargo tree`.
+- `clear_cache` gains `sweep_legacy` (default `false`). RustCall's cache root is
+  `.../compiled/vX.Y/RustCall`, which is **Julia's own precompile directory for
+  RustCall** — its `.ji` and native images live there. The pre-#278 layout's
+  loose files are removed only on explicit request and only when they match the
+  exact naming that layout used; `cleanup_old_cache` never removes them at all,
+  and nothing else in that directory is ever touched.
 - `build_cargo_project_cached(project, id::ArtifactId; ...)` takes the artifact
   identity instead of a code-hash string.
 - `generate_cache_key` and `is_cache_valid` take a `cfg_text` keyword, so the

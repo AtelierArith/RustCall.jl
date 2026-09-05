@@ -948,6 +948,114 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
     end
 
+    @testset "A workspace manifest change re-resolves the graph (#287 review)" begin
+        # A member inherits `dep = { workspace = true }` from
+        # `[workspace.dependencies]` in the *workspace root* manifest — which,
+        # for a virtual workspace, is not a package and can never appear in the
+        # package list Cargo reports. Stamping only the crates in the graph
+        # therefore misses every edit to it.
+        root = mktempdir()
+        try
+            function member!(name, deps = "")
+                d = joinpath(root, name)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                      "\n[dependencies]\n" * deps)
+                write(joinpath(d, "src", "lib.rs"), "pub fn $(name)_f() -> i32 { 1 }\n")
+                return d
+            end
+            shared = member!("shared")
+            shared2 = member!("shared2")
+            app = member!("app", "shared = { workspace = true }\n")
+
+            workspace_manifest = joinpath(root, "Cargo.toml")
+            write(workspace_manifest,
+                  "[workspace]\nmembers = [\"app\", \"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared\" }\n")
+
+            # The workspace root is part of the validation set even though it is
+            # not a package in the graph.
+            @test RustCall._workspace_root_dir(app) == RustCall._canonical_dir(root) ||
+                  RustCall._canonical_dir(RustCall._workspace_root_dir(app)) ==
+                      RustCall._canonical_dir(root)
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(app)
+            stamped = first.(RustCall._graph_stamps(RustCall.local_path_dependency_dirs(app)[2]))
+            @test RustCall._canonical_dir(root) in stamped
+
+            # Warm: no re-resolution.
+            warm = RustCall.CARGO_TREE_INVOCATIONS[]
+            @test RustCall.artifact_path_dependency_digest(app) == key_before
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == warm
+
+            # Repoint the inherited dependency in the *workspace* manifest. The
+            # member's own manifest is untouched.
+            member_stamp = RustCall._graph_stamp(app)
+            write(workspace_manifest,
+                  "[workspace]\nmembers = [\"app\", \"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared2\" }\n")
+            @test RustCall._graph_stamp(app) == member_stamp
+
+            # ... which must still invalidate the cached graph.
+            @test RustCall.artifact_path_dependency_digest(app) != key_before
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
+    @testset "A same-length manifest edit under an unchanged mtime re-resolves (#287 review)" begin
+        # Manifests were stat-stamped, which is the same aliasing this file
+        # refuses to accept for sources: a same-length `Cargo.toml` edit under a
+        # preserved timestamp would swap a path dependency with no
+        # re-resolution. They are hashed now — a manifest is a few hundred
+        # bytes, so there is nothing to trade.
+        root = mktempdir()
+        try
+            for name in ("one", "two")
+                d = joinpath(root, name)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+                write(joinpath(d, "src", "lib.rs"), "pub fn f() -> i32 { $(name == "one" ? 1 : 2) }\n")
+            end
+            parent = joinpath(root, "parent")
+            mkpath(joinpath(parent, "src"))
+            write(joinpath(parent, "src", "lib.rs"), "pub fn p() -> i32 { 0 }\n")
+            manifest = joinpath(parent, "Cargo.toml")
+            header = "[package]\nname = \"parent\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n"
+            # The two bodies differ only in one character, so they are the same
+            # length by construction.
+            write(manifest, header * "dep = { path = \"../one\" }\n")
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(parent)
+            _, dirs_before = RustCall.local_path_dependency_dirs(parent)
+            @test any(d -> basename(rstrip(RustCall._canonical_dir(d), '/')) == "one", dirs_before)
+
+            reference = joinpath(root, "mtime_reference")
+            write(reference, "")
+            can_restore = !Sys.iswindows() && Sys.which("touch") !== nothing &&
+                success(pipeline(`touch -r $(manifest) $(reference)`; stderr = devnull))
+            before_stat = (mtime(manifest), filesize(manifest))
+
+            write(manifest, header * "dep = { path = \"../two\" }\n")
+            @test filesize(manifest) == before_stat[2]      # same length
+            if can_restore
+                run(pipeline(`touch -r $(reference) $(manifest)`; stderr = devnull))
+                @test (mtime(manifest), filesize(manifest)) == before_stat   # stat-identical
+            end
+
+            # Re-resolved anyway, and the swapped crate is what is hashed now.
+            _, dirs_after = RustCall.local_path_dependency_dirs(parent)
+            @test any(d -> basename(rstrip(RustCall._canonical_dir(d), '/')) == "two", dirs_after)
+            @test RustCall.artifact_path_dependency_digest(parent) != key_before
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
     @testset "Hashed relative paths are normalized" begin
         # A `\\`-spelled path and a `/`-spelled one are the same input; on
         # Windows so are two spellings that differ only in case.

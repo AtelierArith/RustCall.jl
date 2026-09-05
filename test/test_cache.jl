@@ -33,11 +33,9 @@ using Test
         root = RustCall._cache_format_root()
         old_dir = joinpath(root, "v1")
         new_dir = joinpath(root, "v$(RustCall.CACHE_FORMAT_VERSION + 1)")
-        legacy_file = joinpath(root, "deadbeef.stale")
         mkpath(old_dir)
         mkpath(new_dir)
         write(joinpath(old_dir, "x.txt"), "old")
-        write(legacy_file, "loose pre-v2 artifact")
         try
             stale = RustCall._stale_cache_format_dirs()
             @test old_dir in stale
@@ -46,13 +44,76 @@ using Test
 
             RustCall.sweep_stale_cache_formats()
             @test !isdir(old_dir)
-            @test !isfile(legacy_file)
             @test isdir(new_dir)      # a future format's cache is not ours to delete
             @test isdir(cache_dir)
         finally
             rm(new_dir; recursive = true, force = true)
             rm(old_dir; recursive = true, force = true)
-            rm(legacy_file; force = true)
+        end
+    end
+
+    @testset "The sweep never deletes what RustCall did not write (#287 review)" begin
+        # `_cache_format_root()` is `.../compiled/vX.Y/RustCall` — *Julia's own*
+        # package precompile directory for RustCall, where it keeps `<slug>.ji`
+        # and `<slug>.dylib` native images. Deleting every regular file there
+        # would throw away fresh precompilation output and could race another
+        # Julia process writing it.
+        root = RustCall._cache_format_root()
+        mkpath(root)
+
+        # Named exactly as Julia names them (a package slug: mixed case and an
+        # underscore, so `_LEGACY_CACHE_FILE` cannot match).
+        julia_ji = joinpath(root, "qLtCw_2ChqG.ji")
+        julia_img = joinpath(root, "qLtCw_2ChqG." * (Sys.iswindows() ? "dll" :
+                                                     Sys.isapple() ? "dylib" : "so"))
+        unrelated = joinpath(root, "notes.txt")
+        # ... and a genuine v1 artifact: a `stable_content_hash` key plus the
+        # library extension, which is all v1 ever wrote loose in this directory.
+        v1_key = RustCall.stable_content_hash("a v1 cache entry")
+        legacy_lib = joinpath(root, v1_key * RustCall.get_library_extension())
+        legacy_sum = legacy_lib * ".sha256"
+        legacy_ir = joinpath(root, v1_key * ".ll")
+
+        for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
+            write(f, "x")
+        end
+        try
+            # The classifier is the safety property: only ours match.
+            listed = RustCall._legacy_cache_files()
+            @test legacy_lib in listed
+            @test legacy_sum in listed
+            @test legacy_ir in listed
+            @test !(julia_ji in listed)
+            @test !(julia_img in listed)
+            @test !(unrelated in listed)
+
+            # Off by default: a plain sweep touches no loose file at all, and
+            # neither does an age-based cleanup.
+            RustCall.sweep_stale_cache_formats()
+            @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
+            RustCall.cleanup_old_cache(0)
+            @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
+
+            # Explicitly requested: only the RustCall artifacts go.
+            RustCall.sweep_stale_cache_formats(; legacy_files = true)
+            @test !isfile(legacy_lib)
+            @test !isfile(legacy_sum)
+            @test !isfile(legacy_ir)
+            @test isfile(julia_ji)      # Julia's precompile output survives
+            @test isfile(julia_img)
+            @test isfile(unrelated)
+        finally
+            for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
+                rm(f; force = true)
+            end
+        end
+
+        # The pattern itself, stated directly.
+        @test occursin(RustCall._LEGACY_CACHE_FILE, "$(RustCall.stable_content_hash("k")).ll")
+        for name in ("qLtCw_2ChqG.ji", "qLtCw_2ChqG.dylib", "qLtCw_2ChqG.so",
+                     "notes.txt", "Manifest.toml", "ABCDEF0123456789.dylib",
+                     "deadbeef.stale", "libfoo.dylib")
+            @test !occursin(RustCall._LEGACY_CACHE_FILE, name)
         end
     end
 

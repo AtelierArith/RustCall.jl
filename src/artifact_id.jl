@@ -463,12 +463,24 @@ end
 # of milliseconds a `cargo tree` spawn costs, which is what §8 of #278 was
 # actually about.
 #
-# The graph cache is validated against the `Cargo.toml` / `Cargo.lock` stamps of
-# **every** crate in the cached graph, not only the root's: a transitive local
-# crate that grows a new path dependency changes its own manifest while the
-# root's files stay untouched, and missing that would drop a crate from the key
-# permanently. A stamp is only ever a *rebuild trigger* here — re-resolving a
-# graph that had not really changed costs one process spawn.
+# The graph cache is validated against every manifest that can *decide* the
+# graph, and by content rather than by stat:
+#
+#   * every crate in the cached graph, not only the root's — a transitive local
+#     crate that grows a path dependency changes its own manifest while the
+#     root's files stay untouched, and missing that drops a crate from the key
+#     permanently;
+#   * the **workspace root** each of those crates belongs to — a member inherits
+#     `dep = { workspace = true }` from `[workspace.dependencies]` in a manifest
+#     that is not in the package list at all, and for a *virtual* workspace that
+#     manifest is not a package to begin with;
+#   * hashed, not stat'd. A `(mtime, size)` pair aliases a same-length
+#     `Cargo.toml` edit under a preserved timestamp — exactly the failure this
+#     file refuses to accept for sources, and a manifest is a few hundred bytes,
+#     so there is nothing to trade.
+#
+# A stamp is only ever a *rebuild trigger* here: re-resolving a graph that had
+# not really changed costs one process spawn.
 #
 # The whole computation is skipped when a block declares no `path =` dependency:
 # `artifact_dependency_strings` only asks for a digest when a spec carries one.
@@ -501,34 +513,66 @@ function _artifact_reset_digest_caches!()
     return nothing
 end
 
-# Stat tuple of one file; total, and distinguishable from any real file.
-function _file_stamp(path::AbstractString)::Tuple{Float64, Int64}
-    try
-        isfile(path) || return (0.0, Int64(-1))
-        return (Float64(mtime(path)), Int64(filesize(path)))
-    catch
-        return (0.0, Int64(-2))
-    end
-end
+# Content digest of one manifest, or a marker when it is not there. Hashed
+# rather than stat'd: see the note above on same-length edits.
+_manifest_digest(path::AbstractString) =
+    isfile(path) ? _file_content_digest(path) : "absent"
 
 # What decides one crate's contribution to a resolved local-dependency graph.
 _graph_stamp(dir::AbstractString) =
-    (_file_stamp(joinpath(String(dir), "Cargo.toml")),
-     _file_stamp(joinpath(String(dir), "Cargo.lock")))
+    (_manifest_digest(joinpath(String(dir), "Cargo.toml")),
+     _manifest_digest(joinpath(String(dir), "Cargo.lock")))
 
-# The manifest stamps of *every* crate in a resolved graph, canonical-keyed and
-# sorted so the comparison ignores the order Cargo reported them in. Stamping
-# only the root would miss a transitive crate that grows a path dependency: its
-# own `Cargo.toml` changes while the root's files do not, so the cached list
-# would keep omitting the new crate and edits to it would never reach the key.
+"""
+    _workspace_root_dir(dir) -> Union{String, Nothing}
+
+The directory of the nearest manifest at or above `dir` that declares a
+`[workspace]` table, or `nothing` when `dir` belongs to no workspace.
+
+That manifest decides the graph without appearing in it: a member writing
+`dep = { workspace = true }` takes the path from `[workspace.dependencies]`
+there, and a *virtual* workspace root is not a package at all, so it can never
+show up in the package list `cargo tree` reports.
+"""
+function _workspace_root_dir(dir::AbstractString)
+    current = try
+        abspath(String(dir))
+    catch
+        String(dir)
+    end
+    while true
+        manifest = joinpath(current, "Cargo.toml")
+        if isfile(manifest)
+            parsed = try
+                TOML.parsefile(manifest)
+            catch
+                nothing
+            end
+            if parsed isa AbstractDict && get(parsed, "workspace", nothing) isa AbstractDict
+                return current
+            end
+        end
+        parent = dirname(current)
+        (isempty(parent) || parent == current) && return nothing
+        current = parent
+    end
+end
+
+# The manifest stamps of every crate in a resolved graph *and* of the workspace
+# root each one belongs to, canonical-keyed and sorted so the comparison ignores
+# the order Cargo reported them in. See the note at the top of this section for
+# why both halves are needed.
 function _graph_stamps(dirs)
     out = Pair{String, Any}[]
     seen = Set{String}()
     for d in dirs
-        canonical = _canonical_dir(d)
-        canonical in seen && continue
-        push!(seen, canonical)
-        push!(out, canonical => _graph_stamp(d))
+        for candidate in (String(d), _workspace_root_dir(d))
+            candidate === nothing && continue
+            canonical = _canonical_dir(candidate)
+            canonical in seen && continue
+            push!(seen, canonical)
+            push!(out, canonical => _graph_stamp(candidate))
+        end
     end
     sort!(out; by = first)
     return out
