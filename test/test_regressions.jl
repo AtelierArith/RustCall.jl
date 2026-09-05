@@ -843,3 +843,138 @@ end
         foreach(Libdl.dlclose, handles)
     end
 end
+
+# #279 follow-up: `_alias_reloaded_library` deliberately leaves one handle in
+# `RUST_LIBRARIES` under two names. The cross-library fallback must not count
+# that as two candidates, or every multi-block precompiled module raises the
+# ambiguity error after any identity change.
+@testset "#279: an aliased handle is one candidate, not an ambiguity" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping alias ambiguity test"
+        return
+    end
+
+    expanded_one = RustCall.expand_inline("""
+    #[julia]
+    pub fn aliased_block_fn(x: i32) -> i32 { x * 2 }
+    """)
+    expanded_two = RustCall.expand_inline("""
+    #[julia]
+    pub fn sibling_block_fn(x: i32) -> i32 { x + 3 }
+    """)
+    path_one = RustCall.compile_rust_to_shared_lib(expanded_one.source)
+    path_two = RustCall.compile_rust_to_shared_lib(expanded_two.source)
+    actual = "test279_amb_actual_" * string(hash(path_one), base = 16)
+    stored = "test279_amb_stored_" * string(hash(path_one), base = 16)
+    sibling = "test279_amb_sibling_" * string(hash(path_two), base = 16)
+    handle_one = Libdl.dlopen(path_one, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+    handle_two = Libdl.dlopen(path_two, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+
+    try
+        RustCall._register_manifest(expanded_one, actual; handle = handle_one, set_current = false)
+        RustCall._register_manifest(expanded_two, sibling; handle = handle_two, set_current = false)
+        # The reload path: one handle, two names.
+        RustCall._alias_reloaded_library(Main, stored, actual)
+        @test RustCall.RUST_LIBRARIES[stored][1] == RustCall.RUST_LIBRARIES[actual][1]
+
+        # Looking the aliased block's function up from the *sibling* block has
+        # to fall back across libraries and finds it twice, through the same
+        # handle. That is one function, not a conflict.
+        ptr_via_sibling = RustCall.get_function_pointer(sibling, "aliased_block_fn")
+        ptr_direct = RustCall.get_function_pointer(actual, "aliased_block_fn")
+        ptr_via_alias = RustCall.get_function_pointer(stored, "aliased_block_fn")
+        @test ptr_via_sibling == ptr_direct == ptr_via_alias
+        @test RustCall.call_rust_function(ptr_via_sibling, Int32, Int32(4)) == Int32(8)
+
+        # And the other block's function still resolves from the aliased names.
+        ptr_sibling_fn = RustCall.get_function_pointer(stored, "sibling_block_fn")
+        @test RustCall.call_rust_function(ptr_sibling_fn, Int32, Int32(4)) == Int32(7)
+
+        # Two genuinely different libraries exporting one name are still refused.
+        expanded_clash = RustCall.expand_inline("""
+        #[julia]
+        pub fn aliased_block_fn(x: i32) -> i32 { x * 5 }
+        """)
+        path_clash = RustCall.compile_rust_to_shared_lib(expanded_clash.source)
+        clash = "test279_amb_clash_" * string(hash(path_clash), base = 16)
+        handle_clash = Libdl.dlopen(path_clash, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        try
+            RustCall._register_manifest(expanded_clash, clash; handle = handle_clash, set_current = false)
+            @test_throws ErrorException RustCall.get_function_pointer(sibling, "aliased_block_fn")
+        finally
+            haskey(RustCall.RUST_LIBRARIES, clash) && RustCall.unload_library(clash)
+            RustCall.clear_library_metadata!(clash)
+            Libdl.dlclose(handle_clash)
+        end
+    finally
+        for name in (stored, actual, sibling)
+            haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name)
+            RustCall.clear_library_metadata!(name)
+        end
+        Libdl.dlclose(handle_one)
+        Libdl.dlclose(handle_two)
+    end
+end
+
+# #279 follow-up: the pointer and the return type must come from the same
+# library. A library whose `f` returns `Result` records no hint on purpose;
+# another library's primitive hint for the same name would call it with the
+# wrong ABI.
+@testset "#279: a return-type hint is never borrowed across libraries" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping cross-library ABI test"
+        return
+    end
+
+    # A: `Result` return, so no hint is registered at all.
+    expanded_a = RustCall.expand_inline("""
+    #[julia]
+    pub fn abi_probe(x: i32) -> Result<i32, i32> { Ok(x) }
+    """)
+    # B: a plain f64 return, which does register a hint.
+    expanded_b = RustCall.expand_inline("""
+    #[julia]
+    pub fn abi_probe(x: i32) -> f64 { x as f64 }
+    """)
+    path_a = RustCall.compile_rust_to_shared_lib(expanded_a.source)
+    path_b = RustCall.compile_rust_to_shared_lib(expanded_b.source)
+    lib_a = "test279_abi_a_" * string(hash(path_a), base = 16)
+    lib_b = "test279_abi_b_" * string(hash(path_b), base = 16)
+    handle_a = Libdl.dlopen(path_a, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+    handle_b = Libdl.dlopen(path_b, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+
+    try
+        RustCall._register_manifest(expanded_a, lib_a; handle = handle_a, set_current = false)
+        RustCall._register_manifest(expanded_b, lib_b; handle = handle_b, set_current = false)
+
+        # A records nothing; B's Float64 must not leak into A.
+        @test RustCall.get_function_return_type(lib_a, "abi_probe") === nothing
+        @test RustCall.get_function_return_type(lib_b, "abi_probe") === Float64
+
+        # The pointer and the owning library agree, for each library.
+        ptr_a, owner_a = RustCall._resolve_call(lib_a, "abi_probe")
+        ptr_b, owner_b = RustCall._resolve_call(lib_b, "abi_probe")
+        @test owner_a == lib_a && owner_b == lib_b
+        @test ptr_a != ptr_b
+
+        # An untyped call into B uses B's own hint.
+        @test RustCall._rust_call_dynamic(lib_b, "abi_probe", Int32(3)) == 3.0
+
+        # An untyped call into A must not come back as B's `Float64`: with no
+        # hint it falls through to inference, which for a `CResult_abi_probe`
+        # return cannot produce a Float64.
+        untyped_a = try
+            RustCall._rust_call_dynamic(lib_a, "abi_probe", Int32(3))
+        catch error
+            error
+        end
+        @test !(untyped_a isa Float64)
+    finally
+        for name in (lib_a, lib_b)
+            haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name)
+            RustCall.clear_library_metadata!(name)
+        end
+        Libdl.dlclose(handle_a)
+        Libdl.dlclose(handle_b)
+    end
+end

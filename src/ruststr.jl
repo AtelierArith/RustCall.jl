@@ -51,23 +51,29 @@ function get_library_handle(name::String)
 end
 
 """
-    get_function_pointer(lib_name::String, func_name::String) -> Ptr{Cvoid}
+    _resolve_call(lib_name::String, func_name::String) -> (Ptr{Cvoid}, String)
 
-Get a function pointer from a loaded library.
+The function pointer for `func_name` **and the library it came from**.
 
-If the function is not found in the specified library, searches all other
-loaded libraries as a fallback. This enables using functions from multiple
-`rust\"\"\"` blocks.
+`lib_name` is tried first; failing that, every other loaded library is searched
+as a fallback, which is what lets one `rust\"\"\"` block call another's
+functions. Each library resolves the name through its own symbol mapping
+(`#[julia]` is additive, so `f` may be exported as `rustcall_f`, #279).
+
+Candidates are deduplicated **by pointer**: one loaded handle may legitimately
+sit in `RUST_LIBRARIES` under two names — `_alias_reloaded_library` registers a
+reloaded library under the identity a precompiled module stored as well as the
+one the reload derived — and finding the same function twice through the same
+handle is not an ambiguity. Genuinely different functions of the same name in
+different libraries still are, and are refused rather than guessed.
+
+Returning the owning library is the point of this function: the caller needs
+the pointer and the return-type hint to come from the *same* library, or a
+`Result`-returning `f` in one library gets typed by a primitive-returning `f`
+in another.
 """
-function get_function_pointer(lib_name::String, func_name::String)
+function _resolve_call(lib_name::String, func_name::String)
     lock(REGISTRY_LOCK) do
-        # `#[julia]` is additive (#279): a Rust item named `add` may be exported
-        # as `rustcall_add`. The name-to-symbol mapping is per library, so it is
-        # resolved separately for every library searched below — one library's
-        # `#[julia] fn f` must never redirect the lookup of another library's
-        # plain `#[no_mangle] fn f`. A library with no entry for the name looks
-        # it up as given.
-
         # First, try the specified library
         if haskey(RUST_LIBRARIES, lib_name)
             symbol = exported_symbol(lib_name, func_name)
@@ -75,7 +81,7 @@ function get_function_pointer(lib_name::String, func_name::String)
 
             # Check cache first
             if haskey(func_cache, symbol)
-                return func_cache[symbol]
+                return (func_cache[symbol], lib_name)
             end
 
             # Look up the function
@@ -83,14 +89,12 @@ function get_function_pointer(lib_name::String, func_name::String)
             if func_ptr !== nothing && func_ptr != C_NULL
                 # Cache it
                 func_cache[symbol] = func_ptr
-                return func_ptr
+                return (func_ptr, lib_name)
             end
         end
 
         # Fallback: search all other loaded libraries
-        found_libs = String[]
-        found_ptr = C_NULL
-
+        candidates = Tuple{String, Ptr{Cvoid}}[]
         for (other_lib_name, (other_lib_handle, other_func_cache)) in RUST_LIBRARIES
             if other_lib_name == lib_name
                 continue  # Already checked
@@ -98,29 +102,28 @@ function get_function_pointer(lib_name::String, func_name::String)
             symbol = exported_symbol(other_lib_name, func_name)
 
             # Check cache first
-            if haskey(other_func_cache, symbol)
-                push!(found_libs, other_lib_name)
-                found_ptr = other_func_cache[symbol]
-                continue
-            end
-
-            # Look up the function
-            func_ptr = Libdl.dlsym(other_lib_handle, symbol; throw_error=false)
-            if func_ptr !== nothing && func_ptr != C_NULL
+            ptr = get(other_func_cache, symbol, C_NULL)
+            if ptr == C_NULL
+                # Look up the function
+                found = Libdl.dlsym(other_lib_handle, symbol; throw_error=false)
+                (found === nothing || found == C_NULL) && continue
                 # Cache it
-                other_func_cache[symbol] = func_ptr
-                push!(found_libs, other_lib_name)
-                found_ptr = func_ptr
+                other_func_cache[symbol] = found
+                ptr = found
             end
+            push!(candidates, (other_lib_name, ptr))
         end
 
-        if length(found_libs) == 1
-            # Found in exactly one other library - use it
-            @debug "Function '$func_name' found in library '$(found_libs[1])' (fallback search)"
-            return found_ptr
-        elseif length(found_libs) > 1
-            # Ambiguous - found in multiple libraries
-            error("Function '$func_name' found in multiple libraries: $(join(found_libs, ", ")). Please use a unique function name.")
+        # Two names for one handle resolve to one pointer, and that is one
+        # candidate, not a conflict.
+        distinct = unique(last, candidates)
+        if length(distinct) == 1
+            owner, ptr = first(distinct)
+            @debug "Function '$func_name' found in library '$owner' (fallback search)"
+            return (ptr, owner)
+        elseif length(distinct) > 1
+            # Ambiguous - found in genuinely different libraries
+            error("Function '$func_name' found in multiple libraries: $(join(first.(candidates), ", ")). Please use a unique function name.")
         else
             # Not found anywhere
             if haskey(RUST_LIBRARIES, lib_name)
@@ -131,6 +134,19 @@ function get_function_pointer(lib_name::String, func_name::String)
         end
     end
 end
+
+"""
+    get_function_pointer(lib_name::String, func_name::String) -> Ptr{Cvoid}
+
+Get a function pointer from a loaded library.
+
+If the function is not found in the specified library, searches all other
+loaded libraries as a fallback. This enables using functions from multiple
+`rust\"\"\"` blocks. See `_resolve_call`, which a caller that also needs the
+return type should use instead so that both come from the same library.
+"""
+get_function_pointer(lib_name::String, func_name::String) =
+    first(_resolve_call(lib_name, func_name))
 
 """
     @rust_str(code)

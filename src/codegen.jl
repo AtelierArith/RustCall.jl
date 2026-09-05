@@ -39,13 +39,13 @@ const FUNCTION_REGISTRY_BY_LIB = Dict{Tuple{String, String}, FunctionInfo}()
 Registry for function return types (for functions without full signature
 registration), keyed by `(library name, function name)`.
 
-There is deliberately **no** name-only fallback table. A name-keyed hint
-outlives the library that wrote it: clearing or reloading that library would
-leave its return type answering for every other library's function of the same
-name, and a rebuilt library that no longer declares the function that way would
-be typed by the stale value (#279). Every lookup has a library — `CURRENT_LIB`
-or an explicit one — so `get_function_return_type` resolves the same way
-`get_function_pointer` does instead.
+There is deliberately **no** name-only fallback table, and no cross-library
+search. A name-keyed hint outlives the library that wrote it: clearing or
+reloading that library would leave its return type answering for every other
+library's function of the same name, and a rebuilt library that no longer
+declares the function that way would be typed by the stale value (#279).
+Lookups go through the library `_resolve_call` took the pointer from, so a
+call's pointer and its ABI always come from the same build.
 
 Guarded by `REGISTRY_LOCK`.
 """
@@ -196,36 +196,23 @@ end
 """
     get_function_return_type(lib_name::String, func_name::String) -> Union{Type, Nothing}
 
-The registered return type of `func_name` as seen from `lib_name`, or `nothing`
-when nothing applies.
+The return type `lib_name` itself registered for `func_name`, or `nothing`.
 
-Resolution mirrors `get_function_pointer` so that a call's pointer and
-its return type always come from the same library: `lib_name` first, then the
-other **loaded** libraries. A name declared by exactly one of them answers; a
-name declared by several is ambiguous and yields `nothing`, leaving the caller
-to infer or to demand an explicit `::T` — the same situation in which
-`get_function_pointer` refuses to guess.
+**Only that library's own entry is consulted.** No name-only fallback, and no
+search of the other libraries: a hint must never describe a function in a
+library other than the one the call actually reaches. `lib_name` here is the
+*owning* library — the one `_resolve_call` took the pointer from — so the
+pointer and the ABI it is called with always come from the same build.
 
-There is no name-only fallback: a hint keyed by name alone outlives the library
-that wrote it and would type a call into a *different* library, or into a
-rebuilt one that no longer declares the function that way (#279).
+Borrowing would be worse than having no hint: a library whose `f` returns
+`Result<i32, i32>` deliberately records nothing (the wrapper returns a
+`CResult_f` struct, and `@rust` callers must be explicit), so any hint found
+elsewhere for the name `f` is not merely unrelated but the wrong ABI. Absent a
+hint the caller infers from the arguments or demands an explicit `::T` (#279).
 """
 function get_function_return_type(lib_name::String, func_name::String)
     lock(REGISTRY_LOCK) do
-        by_lib = get(FUNCTION_RETURN_TYPES_BY_LIB, (lib_name, func_name), nothing)
-        by_lib === nothing || return by_lib
-
-        found = nothing
-        for other_lib_name in keys(RUST_LIBRARIES)
-            other_lib_name == lib_name && continue
-            hint = get(FUNCTION_RETURN_TYPES_BY_LIB, (other_lib_name, func_name), nothing)
-            hint === nothing && continue
-            # Declared by more than one other library: ambiguous, exactly as
-            # the pointer lookup would be.
-            found === nothing || return nothing
-            found = hint
-        end
-        return found
+        get(FUNCTION_RETURN_TYPES_BY_LIB, (lib_name, func_name), nothing)
     end
 end
 
