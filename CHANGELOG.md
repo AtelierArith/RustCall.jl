@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`fn f(a: i32, #[cfg(any())] b: i32)`) are pruned like items, so the manifest
   and the generated wrapper match the C ABI rustc actually compiles
   (follow-up of #264).
+- Crate-level `#![cfg(...)]` / `#![cfg_attr(...)]` is evaluated before the
+  items: a block or crate disabled at file level compiles to nothing, so
+  nothing is reported instead of emitting bindings for symbols that never
+  exist (follow-up of #264).
 - The `CResult_<fn>` / `COption_<fn>` wrappers store the inactive payload as
   `MaybeUninit<T>`, so zero-filling it is no longer undefined behaviour for
   types with invalid zero bit patterns (`NonZeroU32`, references). The C
@@ -49,7 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ok()`, `err()` and `some()` accessors instead of the raw fields
   (follow-up of #264).
 - `#[julia]` functions returning `Result`/`Option` keep their `#[cfg]`
-  attributes on every generated item (wrapper struct, inner fn, extern fn).
+  attributes on every generated item (wrapper struct, inner fn, extern fn),
+  including the `#[cfg_attr(pred, cfg(...))]` form, which decides whether the
+  function is compiled just like a direct `#[cfg]`.
 - `rustcall-extract` reads its arguments as `OsString`, so non-UTF-8 file
   paths work on Windows (follow-up of #264).
 

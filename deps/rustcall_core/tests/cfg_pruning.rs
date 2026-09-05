@@ -255,3 +255,117 @@ fn unevaluable_parameter_predicate_fails_closed() {
     .expect("unevaluable parameter predicate must be an error");
     assert!(err.to_string().contains("cannot evaluate #[cfg]"), "{err}");
 }
+
+/// A crate-level `#![cfg(...)]` decides the whole file: rustc keeps the
+/// attribute and compiles nothing, so no item may be reported either.
+#[test]
+fn crate_level_cfg_disables_every_item() {
+    let src = r#"
+#![cfg(any())]
+#[julia]
+pub fn f() -> i32 { 1 }
+#[julia]
+pub struct S { pub x: i32 }
+"#;
+    let set = CfgSet::default().with_name("unix");
+
+    let e = expand_with_cfg(src, Some(&set)).unwrap();
+    assert!(
+        e.manifest.functions.is_empty(),
+        "{:?}",
+        e.manifest.functions
+    );
+    assert!(e.manifest.structs.is_empty(), "{:?}", e.manifest.structs);
+    assert!(!e.source.contains("fn f"), "{}", e.source);
+    assert!(!e.source.contains("struct S"), "{}", e.source);
+
+    let m = extract_with_cfg(src, Mode::Crate, Some(&set)).unwrap();
+    assert!(m.functions.is_empty() && m.structs.is_empty());
+
+    // An indirectly disabled crate (`cfg_attr`) is dropped just the same.
+    let indirect = "#![cfg_attr(unix, cfg(any()))]\n#[julia]\npub fn f() -> i32 { 1 }\n";
+    assert!(expand_with_cfg(indirect, Some(&set))
+        .unwrap()
+        .manifest
+        .functions
+        .is_empty());
+}
+
+#[test]
+fn crate_level_cfg_that_holds_keeps_the_items() {
+    let set = CfgSet::default().with_name("unix");
+    let e = expand_with_cfg(
+        "#![cfg(unix)]\n#[julia]\npub fn f() -> i32 { 1 }\n",
+        Some(&set),
+    )
+    .unwrap();
+    assert_eq!(names(&e.manifest), vec!["f"]);
+    // The decided predicate is stripped, so a later rustc run cannot flip it.
+    assert!(!e.source.contains("cfg(unix)"), "{}", e.source);
+
+    // Undecided leniently (an external crate's feature): the items stay and
+    // the crate attribute is preserved for rustc.
+    let lenient = CfgSet::default().with_name("unix").lenient();
+    let e = expand_with_cfg(
+        "#![cfg(feature = \"x\")]\n#[julia]\npub fn f() -> i32 { 1 }\n",
+        Some(&lenient),
+    )
+    .unwrap();
+    assert_eq!(names(&e.manifest), vec!["f"]);
+    assert!(e.source.contains("feature = \"x\""), "{}", e.source);
+}
+
+#[test]
+fn unevaluable_crate_level_predicate_fails_closed() {
+    let err = expand_with_cfg(
+        "#![cfg(version(\"1.80\"))]\n#[julia]\npub fn f() -> i32 { 1 }\n",
+        Some(&CfgSet::default()),
+    )
+    .err()
+    .expect("unevaluable crate predicate must be an error");
+    assert!(err.to_string().contains("cannot evaluate #[cfg]"), "{err}");
+}
+
+/// `#[cfg_attr(pred, cfg(...))]` decides whether a function is compiled just
+/// like a direct `#[cfg]`, so every generated item must carry it: otherwise the
+/// helper type and the inner fn stay unconditional while the exported symbol
+/// disappears, and the Julia binding fails at symbol lookup.
+#[test]
+fn generated_items_propagate_cfg_attr() {
+    let src = r#"
+#[julia]
+#[cfg_attr(not(feature = "ffi"), cfg(any()))]
+pub fn r() -> Result<i32, i32> { Ok(1) }
+
+#[julia]
+#[cfg_attr(not(feature = "ffi"), cfg(any()))]
+pub fn o() -> Option<i32> { None }
+"#;
+    let e = expand(src).unwrap();
+    // CResult/COption struct + accessor impl + inner fn + extern fn, twice.
+    let gated = e.source.matches("cfg_attr(not(feature = \"ffi\")").count();
+    assert_eq!(gated, 8, "{}", e.source);
+
+    // Only the `cfg`-producing part is copied onto the generated items; an
+    // unrelated attribute stays on the exported function alone.
+    let mixed = r#"
+#[julia]
+#[cfg_attr(not(feature = "ffi"), cfg(any()), allow(dead_code))]
+pub fn r() -> Result<i32, i32> { Ok(1) }
+"#;
+    let e = expand(mixed).unwrap();
+    assert_eq!(
+        e.source
+            .matches("cfg_attr(not(feature = \"ffi\"), cfg(any()))")
+            .count(),
+        3,
+        "{}",
+        e.source
+    );
+    assert_eq!(
+        e.source.matches("allow(dead_code)").count(),
+        1,
+        "{}",
+        e.source
+    );
+}

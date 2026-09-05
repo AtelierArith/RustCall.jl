@@ -424,6 +424,47 @@ impl CfgSet {
         });
         errors
     }
+
+    /// Evaluate the crate-level inner attributes of a file (`#![cfg(...)]`,
+    /// `#![cfg_attr(...)]`). `Ok(false)` means the whole crate is disabled, so
+    /// rustc compiles nothing and nothing may be reported. `cfg_attr` is
+    /// expanded first and predicates decided to be true are stripped, exactly
+    /// as for items. Unevaluable predicates are returned (fail closed).
+    pub fn file_active(&self, attrs: &mut Vec<Attribute>) -> Result<bool, Vec<String>> {
+        let errors = self.expand_cfg_attrs(attrs);
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        match self.attrs_active(attrs) {
+            Ok(true) => {
+                self.strip_decided_cfgs(attrs);
+                Ok(true)
+            }
+            Ok(false) => Ok(false),
+            Err(e) => Err(vec![e]),
+        }
+    }
+}
+
+/// Evaluate a file's crate-level `#[cfg]` before pruning its items: a crate
+/// disabled by `#![cfg(...)]` compiles to nothing, so its items must be
+/// dropped instead of reported as exported.
+pub fn prune_file_or_error(set: &CfgSet, file: &mut syn::File) -> Result<(), syn::Error> {
+    match set.file_active(&mut file.attrs) {
+        Ok(true) => prune_or_error(set, &mut file.items),
+        Ok(false) => {
+            file.items.clear();
+            Ok(())
+        }
+        Err(errors) => Err(cfg_error(&errors)),
+    }
+}
+
+fn cfg_error(errors: &[String]) -> syn::Error {
+    syn::Error::new(
+        proc_macro2::Span::call_site(),
+        format!("cannot evaluate #[cfg] predicate: {}", errors.join("; ")),
+    )
 }
 
 /// Prune `items` and turn unevaluable predicates into a `syn::Error` so the
@@ -433,10 +474,7 @@ pub fn prune_or_error(set: &CfgSet, items: &mut Vec<Item>) -> Result<(), syn::Er
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(syn::Error::new(
-            proc_macro2::Span::call_site(),
-            format!("cannot evaluate #[cfg] predicate: {}", errors.join("; ")),
-        ))
+        Err(cfg_error(&errors))
     }
 }
 
@@ -467,13 +505,51 @@ pub fn cfg_predicate(attr: &Attribute) -> Option<Meta> {
     }
 }
 
-/// All `#[cfg(...)]` attributes of an item.
+/// The attributes that decide whether an item is compiled: its `#[cfg(...)]`
+/// attributes and the `#[cfg_attr(...)]` attributes that can expand to one.
+///
+/// Code generation copies these onto every item it derives from a function
+/// (the `CResult`/`COption` type, its accessor impl, the inner fn), so all of
+/// them appear or disappear together. A `cfg_attr` counts only for the part
+/// that produces a `cfg`: `#[cfg_attr(p, cfg(any()), allow(dead_code))]`
+/// contributes `#[cfg_attr(p, cfg(any()))]`, so unrelated attributes are not
+/// duplicated onto the generated items.
 pub fn cfg_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
     attrs
         .iter()
-        .filter(|a| a.path().is_ident("cfg"))
-        .cloned()
+        .filter_map(|a| {
+            if a.path().is_ident("cfg") {
+                return Some(a.clone());
+            }
+            let meta = cfg_producing_meta(&a.meta)?;
+            Some(syn::parse_quote!(#[#meta]))
+        })
         .collect()
+}
+
+/// The part of a `cfg_attr(...)` meta that can expand to a `#[cfg(...)]`,
+/// with the attributes that cannot dropped. `None` when there is none (or the
+/// meta is not a `cfg_attr`).
+fn cfg_producing_meta(meta: &Meta) -> Option<Meta> {
+    let Meta::List(list) = meta else {
+        return None;
+    };
+    if list.path.is_ident("cfg") {
+        return Some(meta.clone());
+    }
+    if !list.path.is_ident("cfg_attr") {
+        return None;
+    }
+    let nested = list
+        .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        .ok()?;
+    let mut iter = nested.into_iter();
+    let pred = iter.next()?;
+    let kept: Vec<Meta> = iter.filter_map(|m| cfg_producing_meta(&m)).collect();
+    if kept.is_empty() {
+        return None;
+    }
+    Some(syn::parse_quote!(cfg_attr(#pred, #(#kept),*)))
 }
 
 /// The combined predicate text of an item's `#[cfg(...)]` attributes

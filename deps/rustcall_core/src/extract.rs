@@ -139,7 +139,7 @@ pub fn extract_crate(source: &str) -> Result<Manifest, syn::Error> {
 pub fn extract_crate_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Manifest, syn::Error> {
     let mut file = syn::parse_file(source)?;
     if let Some(set) = cfg {
-        crate::cfg::prune_or_error(set, &mut file.items)?;
+        crate::cfg::prune_file_or_error(set, &mut file)?;
     }
     let mut manifest = Manifest::new(Mode::Crate);
     extract_crate_items(&file.items, &mut manifest);

@@ -60,7 +60,9 @@ pub fn expand(source: &str) -> Result<Expanded, syn::Error> {
 pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, syn::Error> {
     let mut file = syn::parse_file(source)?;
     if let Some(set) = cfg {
-        crate::cfg::prune_or_error(set, &mut file.items)?;
+        // Crate-level `#![cfg(...)]` first: a disabled crate compiles to
+        // nothing, so none of its items may be reported.
+        crate::cfg::prune_file_or_error(set, &mut file)?;
     }
     let mut manifest = Manifest::new(Mode::Inline);
     let out = expand_items(&file.items, &mut manifest, &[])?;
