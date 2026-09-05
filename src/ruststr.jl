@@ -349,11 +349,14 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     manifest = expanded.manifest
     augmented_code = expanded.source
 
-    # Generate hashes for caching based on the code to be compiled, the
-    # dependency set and the toolchain/pipeline fingerprint.
+    # The library identity covers the code to be compiled, the dependency set
+    # and the toolchain/pipeline fingerprint. The dependency comments are gone
+    # from the expanded source, so the dependency hash must be part of the
+    # identity itself, or two blocks with identical items but different
+    # `// cargo-deps:` would share one in-memory library.
     # Use stable_content_hash() — never hash() for persistent identifiers
-    code_hash = stable_content_hash(augmented_code * "\n---\n" * toolchain_fingerprint())
     deps_hash = hash_dependencies(dependencies)
+    code_hash = _cargo_block_identity(augmented_code, deps_hash)
 
     # Project and library names
     project_name = "rustcall_$(code_hash[1:12])"
@@ -444,6 +447,18 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     return lib_name
 end
 
+
+"""
+    _cargo_block_identity(expanded_source, deps_hash) -> String
+
+Stable identity of a Cargo-backed inline block: expanded source, dependency
+hash and toolchain fingerprint. Used for the in-memory library name, the
+temporary project name and the disk cache key.
+"""
+function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString)
+    return stable_content_hash(string(expanded_source, "\n---deps---\n", deps_hash,
+                                      "\n---toolchain---\n", toolchain_fingerprint()))
+end
 
 """
     _register_manifest(expanded::ExpandedInline, lib_name::String)

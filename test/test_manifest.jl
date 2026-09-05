@@ -70,6 +70,16 @@ using TOML
         @test length(RustCall.manifest_function_signatures(RustCall.expand_inline(good).manifest)) == 1
     end
 
+    @testset "Cargo block identity includes the dependency set" begin
+        src = "#[no_mangle] pub extern \"C\" fn dep_probe() -> i32 { 1 }"
+        d1 = RustCall.hash_dependencies([RustCall.DependencySpec("rand", version = "0.8")])
+        d2 = RustCall.hash_dependencies([RustCall.DependencySpec("rand", version = "0.9")])
+        d3 = RustCall.hash_dependencies([RustCall.DependencySpec("rand", version = "0.8", features = ["small_rng"])])
+        @test RustCall._cargo_block_identity(src, d1) == RustCall._cargo_block_identity(src, d1)
+        @test RustCall._cargo_block_identity(src, d1) != RustCall._cargo_block_identity(src, d2)
+        @test RustCall._cargo_block_identity(src, d1) != RustCall._cargo_block_identity(src, d3)
+    end
+
     @testset "cache keys include the toolchain fingerprint" begin
         compiler = RustCall.get_default_compiler()
         code = "#[no_mangle] pub extern \"C\" fn fp_probe() -> i32 { 1 }"
