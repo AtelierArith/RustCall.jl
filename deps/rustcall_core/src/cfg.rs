@@ -84,6 +84,10 @@ const TARGET_CFG_NAMES: &[&str] = &[
     "target_vendor",
 ];
 
+/// Safety net for [`CfgSet::expand_cfg_attrs`]: `cfg_attr` nested deeper than
+/// this is rejected rather than partially expanded.
+const CFG_ATTR_MAX_DEPTH: usize = 64;
+
 fn target_decided(name: &str) -> bool {
     TARGET_CFG_NAMES.contains(&name)
 }
@@ -252,10 +256,21 @@ impl CfgSet {
     /// replaced by its attributes (recursively), a false one is dropped, an
     /// unknown one is kept verbatim (its item is neither pruned nor changed;
     /// rustc decides). Returns predicates that could not be evaluated.
+    ///
+    /// Expansion repeats until a pass changes nothing, so any nesting depth is
+    /// handled. A hard limit remains as a safety net; reaching it is an error
+    /// (fail closed), never a silent partial expansion that would leave a
+    /// `cfg_attr` unseen by [`CfgSet::attrs_active`].
     pub fn expand_cfg_attrs(&self, attrs: &mut Vec<Attribute>) -> Vec<String> {
         let mut errors = Vec::new();
-        // Bounded: each round removes at least one `cfg_attr` level.
-        for _ in 0..8 {
+        // Each round removes at least one `cfg_attr` level.
+        for round in 0..=CFG_ATTR_MAX_DEPTH {
+            if round == CFG_ATTR_MAX_DEPTH {
+                errors.push(format!(
+                    "`cfg_attr` nested deeper than {CFG_ATTR_MAX_DEPTH} levels"
+                ));
+                break;
+            }
             let mut changed = false;
             let mut out: Vec<Attribute> = Vec::with_capacity(attrs.len());
             for attr in attrs.drain(..) {

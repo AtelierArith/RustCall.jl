@@ -270,12 +270,19 @@ const _CARGO_CFG_ENV_PREFIXES = ("CARGO_PROFILE_", "CARGO_BUILD_", "CARGO_CFG_",
                                  "CARGO_ENCODED_RUSTFLAGS")
 const _CARGO_CFG_ENV_NAMES = ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTDOCFLAGS",
                               "RUSTUP_TOOLCHAIN")
+# Per-target settings, `CARGO_TARGET_<TRIPLE>_<SETTING>`: `_RUSTFLAGS` carries
+# `--cfg` and codegen flags like `RUSTFLAGS` does, `_LINKER` decides what links
+# the cdylib. `_RUNNER` only wraps `cargo run`/`cargo test` and cannot change
+# the artifact, so it is not tracked; neither is `CARGO_TARGET_DIR`.
+const _CARGO_TARGET_ENV_SUFFIXES = ("_RUSTFLAGS", "_LINKER")
 const _SECRET_ENV_FRAGMENTS = ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "KEY")
 
 function _is_cargo_env_key(k::AbstractString)
     up = uppercase(String(k))
     any(f -> occursin(f, up), _SECRET_ENV_FRAGMENTS) && return false
-    return up in _CARGO_CFG_ENV_NAMES || any(p -> startswith(up, p), _CARGO_CFG_ENV_PREFIXES)
+    up in _CARGO_CFG_ENV_NAMES && return true
+    any(p -> startswith(up, p), _CARGO_CFG_ENV_PREFIXES) && return true
+    return startswith(up, "CARGO_TARGET_") && any(s -> endswith(up, s), _CARGO_TARGET_ENV_SUFFIXES)
 end
 
 function _cargo_cfg_env_key()
@@ -298,6 +305,23 @@ function _cargo_build_env(snapshot::AbstractString)
         env[String(k)] = String(v)
     end
     return env
+end
+
+"""
+    _cargo_build_env_for(cargo_env) -> (env, key)
+
+The environment a Cargo-backed block is built under and the snapshot text that
+identifies it. `cargo_env === nothing` means no snapshot was recorded (a
+reload of a block stored by an older RustCall): build under the current
+environment. A `String` is the snapshot recorded at macro-expansion time and
+is authoritative even when empty: `""` means *no* tracked Cargo variable was
+set then, so any `RUSTFLAGS` / profile override present now is cleared rather
+than inherited — the wrappers were generated for the configuration without it.
+"""
+function _cargo_build_env_for(cargo_env::Union{Nothing, AbstractString})
+    cargo_env === nothing && return (nothing, _cargo_cfg_env_key())
+    snapshot = String(cargo_env)
+    return (_cargo_build_env(snapshot), snapshot)
 end
 
 """

@@ -153,8 +153,10 @@ macro rust_str(code)
     cfg_text = _cfg_snapshot(cfg_mode)
     snapshot_compiler = get_default_compiler()
     # Cargo-backed blocks also record the Cargo/RUSTFLAGS environment that
-    # produced `cfg_text`, so a reload can rebuild under it.
-    cargo_env = cfg_mode === :cargo ? _cargo_cfg_env_key() : ""
+    # produced `cfg_text`, so a reload can rebuild under it. An empty snapshot
+    # is a real snapshot ("nothing was set"); `nothing` marks direct rustc
+    # blocks, which have no Cargo environment.
+    cargo_env = cfg_mode === :cargo ? _cargo_cfg_env_key() : nothing
     expanded = expand_inline(code_str; cfg = cfg_mode, cfg_text = cfg_text)
     struct_infos = manifest_struct_infos(expanded.manifest)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
@@ -214,11 +216,14 @@ struct RustBlockSnapshot
     cfg_text::String
     compiler_target::String
     compiler_level::Int
-    cargo_env::String   # `_cargo_cfg_env_key()` for Cargo-backed blocks, else ""
+    # `_cargo_cfg_env_key()` for Cargo-backed blocks — possibly "" when no
+    # tracked variable was set, which is still a snapshot to restore — and
+    # `nothing` for direct rustc blocks.
+    cargo_env::Union{Nothing, String}
 end
 
 RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level) =
-    RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level, "")
+    RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level, nothing)
 
 """
     ensure_loaded(lib_name::String, block) -> String
@@ -399,9 +404,10 @@ Phase 3: Supports rustscript-style dependency specifications.
 function _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int;
                                            cfg_text::Union{Nothing, AbstractString} = nothing,
                                            cargo_env::Union{Nothing, AbstractString} = nothing)
-    # The Cargo/RUSTFLAGS environment the block was expanded under (see
-    # `_cargo_build_env`); an empty snapshot means "the current environment".
-    build_env = (cargo_env === nothing || isempty(cargo_env)) ? nothing : _cargo_build_env(cargo_env)
+    # The Cargo/RUSTFLAGS environment the block was expanded under and the
+    # text identifying it (see `_cargo_build_env_for`). An empty snapshot is
+    # not "the current environment": it clears every tracked variable.
+    build_env, build_env_key = _cargo_build_env_for(cargo_env)
     # Parse dependencies from the code
     dependencies = parse_dependencies_from_code(code)
 
@@ -439,9 +445,8 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # `// cargo-deps:` would share one in-memory library.
     # Use stable_content_hash() — never hash() for persistent identifiers
     deps_hash = hash_dependencies(dependencies)
-    # The environment the build will actually run under: the snapshot recorded
-    # by the macro, or the current one.
-    build_env_key = (cargo_env === nothing || isempty(cargo_env)) ? _cargo_cfg_env_key() : String(cargo_env)
+    # `build_env_key` is the environment the build actually runs under: the
+    # snapshot recorded by the macro, or the current one.
     code_hash = _cargo_block_identity(augmented_code, deps_hash, build_env_key)
 
     # Project and library names

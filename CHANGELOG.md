@@ -46,6 +46,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   items: a block or crate disabled at file level compiles to nothing, so
   nothing is reported instead of emitting bindings for symbols that never
   exist (follow-up of #264).
+- `cfg_attr` expansion runs until nothing changes, so any nesting depth
+  reaches its `cfg`; the remaining safety limit (64 levels) is an error, never
+  a partial expansion (follow-up of #264).
+- Cargo-backed `rust"""` blocks record the tracked Cargo environment as a
+  snapshot that is authoritative even when empty: a build or precompiled
+  reload clears a `RUSTFLAGS` / profile override that was not set at
+  expansion time instead of inheriting it. `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`
+  and `CARGO_TARGET_<TRIPLE>_LINKER` are now tracked as well (credential-like
+  names stay excluded).
 - The `CResult_<fn>` / `COption_<fn>` wrappers store the inactive payload as
   `MaybeUninit<T>`, so zero-filling it is no longer undefined behaviour for
   types with invalid zero bit patterns (`NonZeroU32`, references). The C

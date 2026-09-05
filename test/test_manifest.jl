@@ -223,6 +223,54 @@ using TOML
                 @test !RustCall._is_cargo_env_key("PATH")
             end
 
+            # Per-target flags (`CARGO_TARGET_<TRIPLE>_RUSTFLAGS`) carry `--cfg`
+            # and codegen options like RUSTFLAGS; the linker decides how the
+            # cdylib is linked. Both are tracked; runner, target dir and
+            # anything credential-like are not.
+            @test RustCall._is_cargo_env_key("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS")
+            @test RustCall._is_cargo_env_key("CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER")
+            @test RustCall._is_cargo_env_key("cargo_target_x86_64_unknown_linux_gnu_rustflags")
+            @test !RustCall._is_cargo_env_key("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER")
+            @test !RustCall._is_cargo_env_key("CARGO_TARGET_DIR")
+            @test !RustCall._is_cargo_env_key("CARGO_TARGET_X_AUTH_TOKEN")
+            @test !RustCall._is_cargo_env_key("CARGO_TARGET_X_TOKEN_RUSTFLAGS")
+            @test !RustCall._is_cargo_env_key("CARGO_TARGET_X_SECRET_LINKER")
+            withenv("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS" => "--cfg foo",
+                    "CARGO_TARGET_X_AUTH_TOKEN" => "s3cret") do
+                key = RustCall._cargo_cfg_env_key()
+                @test occursin("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=--cfg foo", key)
+                @test !occursin("s3cret", key) && !occursin("AUTH_TOKEN", key)
+                # ... and it is part of the library identity.
+                @test RustCall._cargo_block_identity("fn f() {}", "deps", key) !=
+                      RustCall._cargo_block_identity("fn f() {}", "deps", "")
+            end
+
+            # An empty snapshot is a snapshot: the block was expanded with no
+            # tracked variable set, so a RUSTFLAGS present at build time must
+            # be cleared, not inherited (the wrappers were generated without it).
+            withenv("RUSTFLAGS" => "--cfg foo", "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => "true",
+                    "CARGO_TERM_COLOR" => "never") do
+                env, key = RustCall._cargo_build_env_for("")
+                @test key == ""
+                @test env isa Dict{String, String}
+                @test !haskey(env, "RUSTFLAGS")
+                @test !haskey(env, "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS")
+                @test env["CARGO_TERM_COLOR"] == "never"
+                @test haskey(env, "PATH")
+                # Only `nothing` (no snapshot recorded) means the current environment.
+                env, key = RustCall._cargo_build_env_for(nothing)
+                @test env === nothing
+                @test occursin("RUSTFLAGS=--cfg foo", key)
+                # A non-empty snapshot restores exactly what it records.
+                env, key = RustCall._cargo_build_env_for("RUSTFLAGS=-C panic=abort")
+                @test env["RUSTFLAGS"] == "-C panic=abort" && key == "RUSTFLAGS=-C panic=abort"
+                @test !haskey(env, "CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS")
+            end
+            # The macro records a real (possibly empty) snapshot for Cargo-backed
+            # blocks and `nothing` for direct rustc ones.
+            @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2).cargo_env === nothing
+            @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2, "").cargo_env == ""
+
             # The Cargo environment is part of the library identity, so a build
             # under different flags cannot hit the cache of another one.
             id_a = RustCall._cargo_block_identity("fn f() {}", "deps", "RUSTFLAGS=-C panic=abort")
@@ -280,7 +328,7 @@ using TOML
             @test RustCall.ensure_loaded(reloaded, block) == reloaded
             @test (@__MODULE__).__RUSTCALL_LIBS isa Dict{String, Any}
             @test all(v -> v isa RustCall.RustBlockSnapshot, values((@__MODULE__).__RUSTCALL_LIBS))
-            @test all(v -> v.cargo_env == "", values((@__MODULE__).__RUSTCALL_LIBS))   # direct rustc blocks
+            @test all(v -> v.cargo_env === nothing, values((@__MODULE__).__RUSTCALL_LIBS))   # direct rustc blocks
 
             # Generic functions keep the compiler they were expanded for: the
             # lazy specialization below runs while the default compiler is at

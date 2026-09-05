@@ -326,6 +326,51 @@ fn unevaluable_crate_level_predicate_fails_closed() {
     assert!(err.to_string().contains("cannot evaluate #[cfg]"), "{err}");
 }
 
+/// `#[cfg_attr(unix, cfg_attr(unix, ... cfg(any())))]` nested `depth` times.
+fn nested_cfg_attr(depth: usize) -> String {
+    let mut s = "cfg(any())".to_string();
+    for _ in 0..depth {
+        s = format!("cfg_attr(unix, {s})");
+    }
+    format!("#[{s}]\n#[julia]\npub fn deep() -> i32 {{ 1 }}\n")
+}
+
+/// Expansion runs until nothing changes, so a `cfg_attr` nested deeper than
+/// the old fixed number of rounds still reaches its false `cfg`.
+#[test]
+fn deeply_nested_cfg_attr_is_fully_expanded() {
+    let set = CfgSet::default().with_name("unix");
+    for depth in [1usize, 8, 10, 32] {
+        let e = expand_with_cfg(&nested_cfg_attr(depth), Some(&set)).unwrap();
+        assert!(
+            e.manifest.functions.is_empty(),
+            "depth {depth}: {:?}",
+            e.manifest.functions
+        );
+        assert!(!e.source.contains("deep"), "depth {depth}: {}", e.source);
+    }
+    // A true chain is expanded away entirely.
+    let src = "#[cfg_attr(unix, cfg_attr(unix, cfg_attr(unix, cfg(all()))))]\n#[julia]\npub fn deep() -> i32 { 1 }\n";
+    let e = expand_with_cfg(src, Some(&set)).unwrap();
+    assert_eq!(names(&e.manifest), vec!["deep"]);
+    assert!(!e.source.contains("cfg"), "{}", e.source);
+}
+
+/// The remaining depth limit is a safety net: exceeding it is an error, never
+/// a partial expansion that hides a false predicate.
+#[test]
+fn absurdly_nested_cfg_attr_fails_closed() {
+    let set = CfgSet::default().with_name("unix");
+    let err = expand_with_cfg(&nested_cfg_attr(100), Some(&set))
+        .err()
+        .expect("nesting past the limit must be an error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cannot evaluate #[cfg]") && msg.contains("nested deeper"),
+        "{msg}"
+    );
+}
+
 /// `#[cfg_attr(pred, cfg(...))]` decides whether a function is compiled just
 /// like a direct `#[cfg]`, so every generated item must carry it: otherwise the
 /// helper type and the inner fn stay unconditional while the exported symbol
