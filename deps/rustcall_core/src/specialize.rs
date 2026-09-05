@@ -1,11 +1,12 @@
 //! AST-level generic instantiation.
 //!
 //! Given a source file, the name of a generic free function in it, and a set of
-//! `TypeParam = concrete type` bindings, produce a copy of the file in which
-//! that function is replaced by a `#[no_mangle] pub extern "C"` instantiation
-//! with the type parameters substituted by the concrete types. Every other
-//! item is kept unchanged so that struct definitions and impl blocks the
-//! wrapper depends on remain available.
+//! `TypeParam = concrete type` bindings, produce a copy of the file with a
+//! `#[no_mangle] pub extern "C"` instantiation inserted right after the
+//! generic function, with the type parameters substituted by the concrete
+//! types. The generic original and every other item are kept unchanged, so
+//! struct definitions, impl blocks and other callers of the generic function
+//! keep compiling.
 //!
 //! This replaces the historical Julia-side regex substitution
 //! (`specialize_generic_code`).
@@ -214,7 +215,7 @@ pub fn specialize(
     let mut entry = function_entry(&func);
     entry.module_path = module_path.iter().map(|s| s.to_string()).collect();
     let items = locate_items(&mut file.items, module_path).expect("module path resolved above");
-    items[position] = Item::Fn(func);
+    items.insert(position + 1, Item::Fn(func));
 
     let mut manifest = Manifest::new(Mode::Inline);
     manifest.functions.push(entry);
@@ -302,8 +303,8 @@ mod tests {
             .contains("pub extern \"C\" fn identity_i32(x: i32) -> i32"));
         assert!(!out.source.contains("identity_i32<"));
         assert!(out.source.contains("let y: i32 = x;"));
-        // The generic original is replaced by the instantiation.
-        assert!(!out.source.contains("pub fn identity<T: Copy>"));
+        // The generic original stays next to the instantiation.
+        assert!(out.source.contains("pub fn identity<T: Copy>"));
         let f = &out.manifest.functions[0];
         assert_eq!(f.name, "identity_i32");
         assert_eq!(f.return_type, "i32");
@@ -354,7 +355,7 @@ mod tests {
         assert!(out
             .source
             .contains("pub extern \"C\" fn f_i32(x: i32) -> i32"));
-        assert!(!out.source.contains("pub fn f<T>"));
+        assert!(out.source.contains("pub fn f<T>"));
         assert_eq!(out.manifest.functions[0].module_path, vec!["api"]);
         assert!(matches!(
             specialize(src, "api::nope", &[], "n").unwrap_err(),
@@ -364,6 +365,21 @@ mod tests {
             specialize(src, "other::f", &[], "n").unwrap_err(),
             SpecializeError::FunctionNotFound(_)
         ));
+    }
+
+    #[test]
+    fn keeps_generic_original_for_other_callers() {
+        let src = "pub fn f<T: Copy>(x: T) -> T { x }\nfn helper() -> i32 { f(1) }";
+        let out = specialize(src, "f", &[("T".into(), "i32".into())], "f_i32").unwrap();
+        assert!(out.source.contains("pub fn f<T: Copy>(x: T) -> T"));
+        assert!(out
+            .source
+            .contains("pub extern \"C\" fn f_i32(x: i32) -> i32"));
+        assert!(out.source.contains("fn helper() -> i32 {"));
+        let f_pos = out.source.find("pub fn f<T: Copy>").unwrap();
+        let s_pos = out.source.find("fn f_i32").unwrap();
+        let h_pos = out.source.find("fn helper").unwrap();
+        assert!(f_pos < s_pos && s_pos < h_pos);
     }
 
     #[test]

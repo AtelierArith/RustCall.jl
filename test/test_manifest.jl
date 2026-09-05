@@ -154,6 +154,7 @@ using TOML
             use std::ops::Add;
             fn offset() -> i32 { 100 }
             pub fn mod_twice<T: Add<Output = T> + Copy>(x: T) -> T { x + x }
+            fn uses_twice() -> i32 { mod_twice(2) }
             pub fn mod_offset<T: Into<i32>>(x: T) -> i32 { let v: i32 = x.into(); v + offset() }
 
             #[julia]
