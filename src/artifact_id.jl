@@ -390,58 +390,95 @@ end
 """
     artifact_path_dependency_digest(path::AbstractString) -> String
 
-Deterministic SHA-256 digest of the *inputs* of a local path dependency: every
-file Cargo considers part of the package, by sorted relative path with
-contents, recursing into the path dependencies that `Cargo.toml` itself
-declares.
-
-The file set comes from `crate_input_files`, which asks Cargo
-(`cargo package --list`) rather than assuming a layout, so a `build.rs`, a
-`[lib] path` or `[[bin]] path` outside `src/`, a `#[path = "..."]` module and
-`Cargo.lock` all reach the digest; the strategy that produced the set is hashed
-alongside it.
+Deterministic SHA-256 digest of the *inputs* of a local path dependency: the
+contents of the crate directory, plus the contents of every other local crate
+reachable from it through Cargo's resolved dependency graph.
 
 Only content is hashed — never the absolute location — so an identical crate in
 a differently named directory yields the same digest and a checkout move does
-not invalidate the cache. `target/` is skipped. A path that does not exist, or a
-`Cargo.toml` that cannot be parsed, is recorded as such rather than silently
-ignored, and dependency cycles terminate at the first repeat.
+not invalidate the cache. Crates are folded in as a sorted set of per-crate
+digests for the same reason: the order Cargo happens to report them in, and the
+directory names they happen to live under, must not reach the key.
 
-Without this, a `path = "..."` dependency is identified by its path text alone
-and editing its sources leaves the artifact key unchanged.
+The file set of each crate comes from `crate_input_files` (a directory walk),
+and the set of local crates from `local_path_dependency_dirs` (Cargo's resolved
+graph). Both name the strategy they used, and both strategy names are hashed, so
+results obtained different ways can never collide.
+
+!!! warning "The remaining gap is unfixable here by construction"
+    Only inputs that live *inside* a package directory are captured. A
+    `#[path = "../../elsewhere/mod.rs"]` module, an `include_str!("../data")` or
+    an `include_bytes!` of a file above the package root is compiled into the
+    binary and will **not** change this digest. The only complete answer is
+    Cargo's own fingerprint, which this cannot reimplement. Phase B of #278 must
+    therefore treat this digest as a *rebuild* trigger and never as a proof of
+    freshness: a change means stale, but no change does not by itself license
+    reuse.
+
+A path that does not exist is recorded as such rather than silently ignored, and
+the function never throws.
 """
 function artifact_path_dependency_digest(path::AbstractString)::String
     io = IOBuffer()
-    _hash_path_crate!(io, String(path), Set{String}())
-    return bytes2hex(sha256(take!(io)))
-end
-
-function _hash_path_crate!(io::IO, path::AbstractString, seen::Set{String})
-    dir = try
+    root = try
         abspath(String(path))
     catch
         String(path)
     end
+
+    if !isdir(root)
+        _netstring!(io, "missing-crate")
+        _netstring!(io, String(path))
+        return bytes2hex(sha256(take!(io)))
+    end
+
+    graph_strategy, dirs = local_path_dependency_dirs(root)
+    _netstring!(io, "graph-strategy")
+    _netstring!(io, graph_strategy)
+
+    root_canonical = _canonical_dir(root)
+    _netstring!(io, "root")
+    _netstring!(io, crate_content_digest(root))
+
+    # Every other local crate contributes its content digest. Sorting the
+    # digests keeps the result independent of both report order and location.
+    others = String[]
+    for d in dirs
+        _canonical_dir(d) == root_canonical && continue
+        push!(others, crate_content_digest(d))
+    end
+    unique!(others)
+    sort!(others)
+    _netstring!(io, "local-deps")
+    _netstrings!(io, others)
+
+    return bytes2hex(sha256(take!(io)))
+end
+
+function _canonical_dir(dir::AbstractString)::String
+    try
+        return realpath(String(dir))
+    catch
+        return String(dir)
+    end
+end
+
+"""
+    crate_content_digest(dir::AbstractString) -> String
+
+SHA-256 over one crate directory: the sorted relative path and full contents of
+every file `crate_input_files` reports, netstring-framed. Location independent;
+see `artifact_path_dependency_digest`.
+"""
+function crate_content_digest(dir::AbstractString)::String
+    io = IOBuffer()
+    dir = String(dir)
     if !isdir(dir)
         _netstring!(io, "missing-crate")
-        return nothing
+        return bytes2hex(sha256(take!(io)))
     end
-    canonical = try
-        realpath(dir)
-    catch
-        dir
-    end
-    if canonical in seen
-        _netstring!(io, "cycle")
-        return nothing
-    end
-    push!(seen, canonical)
-
-    _netstring!(io, "crate")
     strategy, files = crate_input_files(dir)
-    # The strategy is part of the digest: a file set found by asking Cargo and
-    # one found by walking the directory must never be able to collide.
-    _netstring!(io, "strategy")
+    _netstring!(io, "file-strategy")
     _netstring!(io, strategy)
     _netstring!(io, string(length(files)))
     for rel in files
@@ -454,26 +491,17 @@ function _hash_path_crate!(io::IO, path::AbstractString, seen::Set{String})
                 _netstring!(io, "unreadable")
             end
         else
-            # `cargo package --list` also names files it would synthesize
-            # (Cargo.toml.orig, .cargo_vcs_info.json); record their absence.
             _netstring!(io, "not-on-disk")
         end
     end
-
-    # Recurse into the path dependencies this crate declares itself.
-    for child in _declared_path_dependencies(joinpath(dir, "Cargo.toml"))
-        _netstring!(io, "path-dep")
-        _netstring!(io, child)
-        _hash_path_crate!(io, joinpath(dir, child), seen)
-    end
-    return nothing
+    return bytes2hex(sha256(take!(io)))
 end
 
 """
     CRATE_INPUT_VCS_DIRS
 
-Directories never treated as crate inputs by the directory-walk fallback of
-`crate_input_files`: build output and version-control metadata.
+Directories never treated as crate inputs: build output and version-control
+metadata. Everything else under a package directory is an input.
 """
 const CRATE_INPUT_VCS_DIRS = String[
     ".bzr", ".git", ".hg", ".jj", ".pijul", ".svn", "target",
@@ -482,79 +510,220 @@ const CRATE_INPUT_VCS_DIRS = String[
 """
     crate_input_files(dir::AbstractString) -> (strategy::String, files::Vector{String})
 
-The set of files that make up a crate, as relative `/`-separated paths, sorted,
-together with the name of the strategy that produced it.
+Every regular file under the package directory, as relative `/`-separated
+paths, sorted, excluding `CRATE_INPUT_VCS_DIRS`.
 
-Cargo already knows exactly which files are package inputs — it honours
-`include`/`exclude`, `build = "..."`, `[lib] path`, `[[bin]] path`, modules
-pulled in by `#[path = "..."]` and everything else outside `src/` — so ask it:
+The walk is deliberately the only strategy. `cargo package --list` was tried
+here first and is *weaker*: it enumerates the **distributable** package, not
+what a local build reads, so a `#[path = "../ignored/mod.rs"]` module, an
+`include_str!` of a gitignored file, or anything removed by an `exclude` key is
+compiled but never listed — and a successful listing would suppress a walk that
+would have caught them. A walk of the package directory is a superset of the
+package list for everything inside that directory, and costs no process spawn.
+`Cargo.lock` is therefore included whenever it exists, like any other file.
 
-1. `cargo package --list --offline --allow-dirty` (no build, no network).
-2. If that fails (manifest is a bare workspace, no lockfile resolvable offline,
-   Cargo unavailable), fall back to walking the package directory for every
-   regular file, skipping `CRATE_INPUT_VCS_DIRS`.
-
-`Cargo.lock` is added whenever it exists, since `cargo package --list` omits it
-for a library crate while it still pins what gets built.
-
-The strategy name is returned, and hashed, so a file set obtained one way can
-never collide with one obtained the other way.
+The strategy name is returned so callers can fold it into a digest.
 """
 function crate_input_files(dir::AbstractString)
     dir = String(dir)
-    manifest = joinpath(dir, "Cargo.toml")
     files = String[]
-    strategy = "walk"
-
-    if isfile(manifest)
-        listed = try
-            cmd = `$(cargo()) package --list --offline --allow-dirty --manifest-path $(manifest)`
-            read(pipeline(cmd; stderr = devnull), String)
-        catch
-            ""
-        end
-        entries = String[strip(l) for l in split(listed, '\n') if !isempty(strip(l))]
-        if !isempty(entries)
-            files = entries
-            strategy = "cargo-package-list"
+    for (root, dirs, names) in walkdir(dir)
+        filter!(d -> !(d in CRATE_INPUT_VCS_DIRS), dirs)
+        for n in names
+            push!(files, relpath(joinpath(root, n), dir))
         end
     end
-
-    if strategy == "walk"
-        for (root, dirs, names) in walkdir(dir)
-            filter!(d -> !(d in CRATE_INPUT_VCS_DIRS), dirs)
-            for n in names
-                push!(files, relpath(joinpath(root, n), dir))
-            end
-        end
-    end
-
-    isfile(joinpath(dir, "Cargo.lock")) && push!(files, "Cargo.lock")
-
     files = String[replace(f, '\\' => '/') for f in files]
     unique!(files)
     sort!(files)
-    return strategy, files
+    return "walk", files
 end
 
+"""
+    local_path_dependency_dirs(root::AbstractString) -> (strategy::String, dirs::Vector{String})
+
+Directories of every local (path) crate reachable from the crate at `root`,
+including `root` itself.
+
+Cargo's **resolved graph** is the source of truth, so the answer covers path
+dependencies declared anywhere — `[dependencies]`, `[dev-dependencies]`,
+`[build-dependencies]`, target-specific `[target.'cfg(unix)'.dependencies]`, and
+workspace-inherited `{ workspace = true }` entries — at any depth:
+
+1. `cargo tree --offline --target all --edges normal,build,dev --prefix none
+   --format {p}` names every package in the resolved graph and prints the
+   directory of the local ones in parentheses. (`cargo metadata` reports the
+   same graph, but only as JSON, and RustCall.jl has no JSON dependency; the
+   tree output is line-oriented and needs no parser. Registry packages print
+   without a directory and git ones print a URL, so both are filtered out by the
+   `isdir` test.)
+2. If that fails — no network and nothing resolvable offline, a bare workspace
+   manifest, cargo unavailable — fall back to reading the manifests directly,
+   traversing every dependency table including target-specific ones and
+   resolving `workspace = true` against the nearest `[workspace.dependencies]`.
+
+The strategy name is returned and hashed by callers, so a set found one way can
+never collide with one found the other.
+"""
+function local_path_dependency_dirs(root::AbstractString)
+    root = String(root)
+    manifest = joinpath(root, "Cargo.toml")
+    dirs = String[root]
+
+    if isfile(manifest)
+        # `--locked` first: that variant never writes to the crate directory.
+        # Only if the crate has no usable lockfile do we let Cargo resolve (and
+        # therefore write `Cargo.lock`, exactly as any cargo command — including
+        # the build that follows — would).
+        listed = _cargo_tree(manifest, true)
+        isempty(listed) && (listed = _cargo_tree(manifest, false))
+        found = String[]
+        for line in split(listed, '\n')
+            d = _crate_dir_from_tree_line(line)
+            d === nothing || push!(found, d)
+        end
+        if !isempty(found)
+            append!(dirs, found)
+            unique!(dirs)
+            return "cargo-tree", dirs
+        end
+    end
+
+    _collect_manifest_path_deps!(dirs, root, Set{String}())
+    unique!(dirs)
+    return "manifest-toml", dirs
+end
+
+function _cargo_tree(manifest::AbstractString, locked::Bool)::String
+    fmt = "{p}"   # a Cmd literal cannot carry braces unquoted
+    args = String["tree", "--offline", "--target", "all",
+                  "--edges", "normal,build,dev", "--prefix", "none",
+                  "--format", fmt, "--manifest-path", String(manifest)]
+    locked && push!(args, "--locked")
+    return try
+        read(pipeline(`$(cargo()) $(args)`; stderr = devnull), String)
+    catch
+        ""
+    end
+end
+
+# `cargo tree --prefix none --format {p}` prints e.g.
+#   parent v0.1.0 (/abs/path/parent)
+#   serde v1.0.100
+#   thing v0.1.0 (https://github.com/x/y#abcdef)
+# Only an existing directory in the trailing parentheses is a local crate.
+function _crate_dir_from_tree_line(line::AbstractString)
+    s = strip(line)
+    (endswith(s, ")") && occursin('(', s)) || return nothing
+    open_idx = findlast('(', s)
+    open_idx === nothing && return nothing
+    inner = String(s[nextind(s, open_idx):prevind(s, lastindex(s))])
+    isempty(inner) && return nothing
+    return isdir(inner) ? inner : nothing
+end
+
+function _collect_manifest_path_deps!(dirs::Vector{String}, dir::AbstractString, seen::Set{String})
+    canonical = _canonical_dir(dir)
+    canonical in seen && return nothing
+    push!(seen, canonical)
+    manifest = joinpath(String(dir), "Cargo.toml")
+    for child in _declared_path_dependencies(manifest)
+        child_dir = joinpath(String(dir), child)
+        isdir(child_dir) || continue
+        push!(dirs, child_dir)
+        _collect_manifest_path_deps!(dirs, child_dir, seen)
+    end
+    return nothing
+end
+
+"""
+    _declared_path_dependencies(manifest::AbstractString) -> Vector{String}
+
+Fallback manifest traversal: the `path = "..."` values of every dependency
+table in `manifest`, including target-specific tables
+(`[target.<key>.dependencies]` and its `dev-`/`build-` variants) and
+`{ workspace = true }` entries resolved against the nearest
+`[workspace.dependencies]`, searched in this manifest and then upwards.
+
+Used only when `cargo tree` cannot answer; see `local_path_dependency_dirs`.
+"""
 function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
     isfile(manifest) || return String[]
     parsed = try
-        TOML.parsefile(manifest)
+        TOML.parsefile(String(manifest))
     catch
         return String["unparsable-manifest"]
     end
     out = String[]
-    for section in ("dependencies", "dev-dependencies", "build-dependencies")
-        table = get(parsed, section, nothing)
-        table isa AbstractDict || continue
-        for (_, spec) in table
+    dir = dirname(abspath(String(manifest)))
+    workspace_deps = _workspace_dependency_table(parsed, dir)
+
+    function harvest!(table)
+        table isa AbstractDict || return
+        for (name, spec) in table
             spec isa AbstractDict || continue
             p = get(spec, "path", nothing)
-            p isa AbstractString && push!(out, String(p))
+            if p isa AbstractString
+                push!(out, String(p))
+                continue
+            end
+            # `dep = { workspace = true }`: the path lives in the workspace table.
+            if get(spec, "workspace", false) === true
+                inherited = get(workspace_deps, String(name), nothing)
+                if inherited isa AbstractDict
+                    ip = get(inherited, "path", nothing)
+                    ip isa AbstractString && push!(out, String(ip))
+                end
+            end
+        end
+    end
+
+    for section in ("dependencies", "dev-dependencies", "build-dependencies")
+        harvest!(get(parsed, section, nothing))
+    end
+    # [target.<key>.dependencies] and friends, for every target key.
+    targets = get(parsed, "target", nothing)
+    if targets isa AbstractDict
+        for (_, per_target) in targets
+            per_target isa AbstractDict || continue
+            for section in ("dependencies", "dev-dependencies", "build-dependencies")
+                harvest!(get(per_target, section, nothing))
+            end
         end
     end
     return sort!(unique!(out))
+end
+
+# `[workspace.dependencies]` of this manifest, else of the nearest ancestor
+# manifest that declares a workspace. Paths there are relative to *that*
+# manifest, which is why only same-directory workspaces are resolved; anything
+# further is left to the `cargo tree` strategy.
+function _workspace_dependency_table(parsed::AbstractDict, dir::AbstractString)
+    ws = get(parsed, "workspace", nothing)
+    if ws isa AbstractDict
+        deps = get(ws, "dependencies", nothing)
+        deps isa AbstractDict && return deps
+    end
+    parent = dirname(String(dir))
+    while !isempty(parent) && parent != dirname(parent)
+        candidate = joinpath(parent, "Cargo.toml")
+        if isfile(candidate)
+            other = try
+                TOML.parsefile(candidate)
+            catch
+                nothing
+            end
+            if other isa AbstractDict
+                ws2 = get(other, "workspace", nothing)
+                if ws2 isa AbstractDict
+                    deps2 = get(ws2, "dependencies", nothing)
+                    deps2 isa AbstractDict && return deps2
+                end
+            end
+        end
+        parent = dirname(parent)
+    end
+    return Dict{String, Any}()
 end
 
 """

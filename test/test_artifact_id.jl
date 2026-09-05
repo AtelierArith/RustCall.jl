@@ -293,15 +293,20 @@ _id(; kwargs...) = RustCall.ArtifactId(;
             write(joinpath(outside, "lib", "entry.rs"), "pub fn f() -> i32 { 2 }")
             @test RustCall.artifact_path_dependency_digest(outside) != dig_out  # outside src/
 
-            # Cargo.lock is always included when present.
-            dig_lock = RustCall.artifact_path_dependency_digest(outside)
+            # Cargo.lock is an input like any other file. Asserted through the
+            # pure helpers: `artifact_path_dependency_digest` may ask Cargo to
+            # resolve, and Cargo rewrites the lockfile when it does.
             write(joinpath(outside, "Cargo.lock"), "version = 3\n")
-            @test RustCall.artifact_path_dependency_digest(outside) != dig_lock
             strategy_lock, files_lock = RustCall.crate_input_files(outside)
+            @test strategy_lock == "walk"
             @test "Cargo.lock" in files_lock
+            lock_dig = RustCall.crate_content_digest(outside)
+            write(joinpath(outside, "Cargo.lock"), "version = 4\n")
+            @test RustCall.crate_content_digest(outside) != lock_dig
 
-            # Both strategies are exercised. A bare workspace manifest has no
-            # package, so `cargo package --list` fails and the walk takes over.
+            # The walk is the only file strategy, and it sees everything under
+            # the package directory — including files `cargo package --list`
+            # would never report.
             ws = mktempdir()
             write(joinpath(ws, "Cargo.toml"), "[workspace]\nmembers = []\n")
             mkpath(joinpath(ws, "odd"))
@@ -323,20 +328,128 @@ _id(; kwargs...) = RustCall.ArtifactId(;
             @test !any(f -> startswith(f, "target/") || startswith(f, ".git/"), ws_files2)
             @test "target" in RustCall.CRATE_INPUT_VCS_DIRS
             @test ".git" in RustCall.CRATE_INPUT_VCS_DIRS
-
-            # The strategy is hashed, so the two file sets can never collide.
-            strategy_bs, _ = RustCall.crate_input_files(bs)
-            if strategy_bs == "cargo-package-list"
-                # cargo is available: the real strategy differs from the fallback.
-                @test strategy_bs != ws_strategy
-            else
-                @info "cargo package --list unavailable; only the walk strategy exercised"
-            end
             rm(ws; force = true, recursive = true)
+
+            # Review finding (1) of the third round: files that a *distributable
+            # package* omits are still compiled, so they must still count.
+            #
+            # (a) a gitignored module pulled in with #[path].
+            ignored = crate_with(mktempdir();
+                files = Dict("src/lib.rs" => "#[path = \"generated.rs\"] mod generated;",
+                             "src/generated.rs" => "pub fn gen() -> i32 { 1 }",
+                             ".gitignore" => "src/generated.rs\n"))
+            dig_ignored = RustCall.artifact_path_dependency_digest(ignored)
+            write(joinpath(ignored, "src", "generated.rs"), "pub fn gen() -> i32 { 2 }")
+            @test RustCall.artifact_path_dependency_digest(ignored) != dig_ignored
+            _, ignored_files = RustCall.crate_input_files(ignored)
+            @test "src/generated.rs" in ignored_files
+
+            # (b) a file removed from the package by `exclude`.
+            excluded = crate_with(mktempdir();
+                manifest_extra = "exclude = [\"notes/*\"]\n",
+                files = Dict("src/lib.rs" => "pub fn f() {}",
+                             "notes/design.md" => "v1"))
+            dig_excluded = RustCall.artifact_path_dependency_digest(excluded)
+            write(joinpath(excluded, "notes", "design.md"), "v2")
+            @test RustCall.artifact_path_dependency_digest(excluded) != dig_excluded
+            _, excluded_files = RustCall.crate_input_files(excluded)
+            @test "notes/design.md" in excluded_files
+
+            rm(ignored; force = true, recursive = true)
+            rm(excluded; force = true, recursive = true)
         finally
             for d in (bs, outside)
                 rm(d; force = true, recursive = true)
             end
+        end
+    end
+
+    @testset "Local crates come from Cargo's resolved graph" begin
+        # Review finding (2) of the third round: parsing only the three
+        # root-level dependency tables misses [target.'cfg(...)'.dependencies]
+        # and workspace-inherited deps.
+        function crate(dir, name, body; manifest_extra = "")
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"),
+                "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n$(manifest_extra)")
+            write(joinpath(dir, "src", "lib.rs"), body)
+            return dir
+        end
+
+        root = mktempdir()
+        try
+            grand = crate(joinpath(root, "grand"), "grand", "pub fn g() {}")
+            child = crate(joinpath(root, "child"), "child", "pub fn c() {}";
+                manifest_extra = "\n[dependencies]\ngrand = { path = \"../grand\" }\n")
+            parent = crate(joinpath(root, "parent"), "parent", "pub fn p() {}";
+                manifest_extra = "\n[target.'cfg(unix)'.dependencies]\nchild = { path = \"../child\" }\n")
+
+            strategy, dirs = RustCall.local_path_dependency_dirs(parent)
+            canon = Set(realpath.(dirs))
+
+            # A cfg-gated dependency is found ...
+            @test realpath(child) in canon
+            # ... and so is a dependency of that dependency.
+            @test realpath(grand) in canon
+
+            # Editing either one changes the key.
+            dig0 = RustCall.artifact_path_dependency_digest(parent)
+            write(joinpath(child, "src", "lib.rs"), "pub fn c() -> i32 { 9 }")
+            dig1 = RustCall.artifact_path_dependency_digest(parent)
+            @test dig1 != dig0
+            write(joinpath(grand, "src", "lib.rs"), "pub fn g() -> i32 { 9 }")
+            @test RustCall.artifact_path_dependency_digest(parent) != dig1
+
+            # The strategy is recorded and reaches the digest.
+            @test strategy in ("cargo-tree", "manifest-toml")
+            if strategy != "cargo-tree"
+                @info "cargo tree unavailable; only the manifest fallback exercised"
+            end
+
+            # The fallback finds the same cfg-gated and transitive crates.
+            fb_dirs = String[parent]
+            RustCall._collect_manifest_path_deps!(fb_dirs, parent, Set{String}())
+            fb_canon = Set(realpath.(fb_dirs))
+            @test realpath(child) in fb_canon
+            @test realpath(grand) in fb_canon
+
+            # Target-specific and workspace-inherited tables are both traversed
+            # by the fallback manifest reader.
+            @test "../child" in RustCall._declared_path_dependencies(joinpath(parent, "Cargo.toml"))
+
+            wsroot = mktempdir()
+            member = crate(joinpath(wsroot, "member"), "member", "pub fn m() {}";
+                manifest_extra = "\n[dependencies]\nshared = { workspace = true }\n")
+            crate(joinpath(wsroot, "shared"), "shared", "pub fn s() {}")
+            write(joinpath(wsroot, "Cargo.toml"),
+                "[workspace]\nmembers = [\"member\", \"shared\"]\n" *
+                "\n[workspace.dependencies]\nshared = { path = \"shared\" }\n")
+            inherited = RustCall._declared_path_dependencies(joinpath(member, "Cargo.toml"))
+            @test "shared" in inherited          # resolved through [workspace.dependencies]
+            rm(wsroot; force = true, recursive = true)
+
+            # Metadata failure is exercised: a directory with no manifest at all
+            # cannot be resolved by cargo, so the fallback answers.
+            bare = mktempdir()
+            write(joinpath(bare, "notes.txt"), "no manifest here")
+            bare_strategy, bare_dirs = RustCall.local_path_dependency_dirs(bare)
+            @test bare_strategy == "manifest-toml"
+            @test length(bare_dirs) == 1
+            rm(bare; force = true, recursive = true)
+
+            # A dependency cycle terminates.
+            cyc = mktempdir()
+            x = crate(joinpath(cyc, "x"), "x", "pub fn x() {}";
+                manifest_extra = "\n[dependencies]\ny = { path = \"../y\" }\n")
+            crate(joinpath(cyc, "y"), "y", "pub fn y() {}";
+                manifest_extra = "\n[dependencies]\nx = { path = \"../x\" }\n")
+            cyc_dirs = String[x]
+            RustCall._collect_manifest_path_deps!(cyc_dirs, x, Set{String}())
+            @test length(unique(realpath.(cyc_dirs))) == 2
+            @test length(RustCall.artifact_path_dependency_digest(x)) == 64
+            rm(cyc; force = true, recursive = true)
+        finally
+            rm(root; force = true, recursive = true)
         end
     end
 
