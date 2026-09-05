@@ -63,7 +63,7 @@ handle via dlsym is RTLD_LOCAL.\
 One explicit record of the load/compile policy for a single compiled artifact.
 
 Construct one through a named constructor (see `inline_rustc_policy`,
-`inline_cargo_policy`, `crate_policy`, `helper_library_policy`, and the rest of
+`inline_cargo_policy`, `crate_direct_policy`, `helper_library_policy`, and the rest of
 `ALL_LOAD_POLICIES`) rather than calling this constructor directly, so that
 every front door keeps a name.
 
@@ -282,40 +282,74 @@ inline_cargo_policy() = LoadPolicy("inline-cargo";
             "and loads RTLD_GLOBAL where the rustc path loads RTLD_LOCAL.")
 
 """
-    crate_policy() -> LoadPolicy
+    crate_direct_policy() -> LoadPolicy
 
-`@rust_crate` bindings, both the in-memory module (`src/crate_bindings.jl:344`)
-and the emitted bindings file template (`src/crate_bindings.jl:1360`).
+`@rust_crate` for a crate that already declares `crate-type = ["cdylib"]`, so
+RustCall builds it in place: `src/crate_bindings.jl:852` calls
+`build_crate_directly`, which points a `CargoProject` at `info.path` and runs
+Cargo there (`:914-925`).  The Cargo root is then the **user's** manifest, so
+their `[profile.release] panic = "abort"`, a workspace profile,
+`.cargo/config.toml` or `CARGO_PROFILE_RELEASE_PANIC` all decide — hence
+`:crate_profile`, which `effective_panic_strategy` deliberately leaves
+unresolved.  Phase B must read the effective profile (`cargo metadata` /
+`cargo config get`) or force the strategy explicitly (#244).
 
-The handle lives in a module-local `_LIB_HANDLE` `Ref`, not in `RUST_LIBRARIES`,
-so `RustCall`-level unload never sees it.  Crate structs *do* free in their
-finalizer (`src/crate_bindings.jl:550`), the opposite of inline structs (#249).
-
-Panic strategy is `:crate_profile`, not `:unwind`: `build_crate_directly`
-(`src/crate_bindings.jl:914-925`) points a `CargoProject` at the user's own
-crate directory and runs Cargo there, so the effective profile is the user's —
-a `[profile.release] panic = "abort"` in their `Cargo.toml`, a workspace
-profile, `.cargo/config.toml`, or `CARGO_PROFILE_RELEASE_PANIC` are all
-honoured, and RustCall neither sets nor reads it.  Phase B must either read the
-effective profile (`cargo metadata` / `cargo config get`) or force the strategy
-explicitly on the command line before it can promise one panic policy across
-doors (#244).
+Loading and ownership are shared with `crate_wrapper_policy`: the handle lives
+in a module-local `_LIB_HANDLE` `Ref` (`src/crate_bindings.jl:344`, and the
+emitted bindings-file template at `:1360`), not in `RUST_LIBRARIES`, so
+`RustCall`-level unload never sees it; crate structs *do* free in their
+finalizer (`:550`), the opposite of inline structs (#249).
 """
-crate_policy() = LoadPolicy("rust-crate";
+crate_direct_policy() = LoadPolicy("rust-crate-direct";
     dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
     panic_strategy = :crate_profile,
+    cargo_profile = :release,
     boundary_catches_panics = false,
     registry = :module_local,
     registry_key_kind = :none,
     sets_current_lib = false,
     finalizer_frees = true,
     call_sites = ["src/crate_bindings.jl:344", "src/crate_bindings.jl:550",
-                  "src/crate_bindings.jl:914-925", "src/crate_bindings.jl:1360"],
+                  "src/crate_bindings.jl:852", "src/crate_bindings.jl:914-925",
+                  "src/crate_bindings.jl:1360"],
     issues = [244, 249, 250],
-    notes = "Only front door whose struct finalizers free; handle is not in " *
-            "RUST_LIBRARIES so it cannot be unloaded through the registry; " *
-            "and Cargo runs in the user's crate, so the panic strategy is " *
-            "whatever their effective profile says.")
+    notes = "Cargo runs with the user's manifest as the root, so the panic " *
+            "strategy is whatever their effective profile says; struct " *
+            "finalizers free, and the handle is not in RUST_LIBRARIES.")
+
+"""
+    crate_wrapper_policy() -> LoadPolicy
+
+`@rust_crate` for a crate without `cdylib`, where RustCall generates a wrapper
+crate around it and builds *that* (`src/crate_bindings.jl:854-868`).  The Cargo
+root is then RustCall's own generated manifest, whose `[profile.release]` sets
+only `opt-level`/`lto` (`src/crate_bindings.jl:266-269`) and pins no `panic` —
+so this door is `:cargo_default`, exactly like `inline_cargo_policy`: Cargo's
+release default unless `CARGO_PROFILE_RELEASE_PANIC` is set in the inherited
+environment.  Resolve with `effective_panic_strategy`; Phase B should pin
+`panic` in the generated wrapper manifest.
+
+The two `@rust_crate` build paths therefore have different panic semantics for
+the same user-visible macro, chosen by `crate_has_cdylib` (#244).  Everything
+else — `RTLD_GLOBAL`, the module-local handle, freeing finalizers — matches
+`crate_direct_policy`.
+"""
+crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
+    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    panic_strategy = :cargo_default,
+    cargo_profile = :release,
+    boundary_catches_panics = false,
+    registry = :module_local,
+    registry_key_kind = :none,
+    sets_current_lib = false,
+    finalizer_frees = true,
+    call_sites = ["src/crate_bindings.jl:266-269", "src/crate_bindings.jl:344",
+                  "src/crate_bindings.jl:550", "src/crate_bindings.jl:854-868",
+                  "src/crate_bindings.jl:1360"],
+    issues = [244, 249, 250],
+    notes = "RustCall's generated wrapper manifest is the Cargo root and pins " *
+            "no panic, so this @rust_crate path takes Cargo's default while " *
+            "the direct-cdylib path takes the user's profile.")
 
 """
     helper_library_policy() -> LoadPolicy
@@ -413,7 +447,7 @@ Hot reload of a `@rust_crate` crate (`src/hot_reload.jl:205`, re-registered at
 `:210`).  The rebuild happens outside `REGISTRY_LOCK`, and a failed rebuild
 currently leaves the registry without the previous entry (#255).
 
-Like `crate_policy`, the panic strategy is `:crate_profile`: `rebuild_crate`
+Like `crate_direct_policy`, the panic strategy is `:crate_profile`: `rebuild_crate`
 runs `cargo build --release --manifest-path <user crate>` against their crate
 (`src/hot_reload.jl:264`), so their profile decides.
 """
@@ -460,7 +494,8 @@ Used by `test/test_loadpolicy.jl` to pin down the current divergences.
 const ALL_LOAD_POLICIES = (
     inline_rustc_policy,
     inline_cargo_policy,
-    crate_policy,
+    crate_direct_policy,
+    crate_wrapper_policy,
     helper_library_policy,
     generics_policy,
     irust_policy,
@@ -536,23 +571,42 @@ cargo_panic_env_var(policy::LoadPolicy) =
 
 """
     effective_panic_strategy(policy::LoadPolicy; env = ENV) -> Symbol
+    effective_panic_strategy(policy::LoadPolicy, snapshot_env) -> Symbol
 
 Resolve `policy.panic_strategy` against the environment a build would inherit.
 
 - `:abort` and `:unwind` are pinned by RustCall and returned unchanged.
 - `:cargo_default` is resolved by reading `cargo_panic_env_var(policy)` out of
-  `env`: `"abort"` gives `:abort`, `"unwind"` gives `:unwind`, and anything
-  else — unset, empty, unrecognised — gives `:unwind`, Cargo's default for the
-  `release` profile.  Both doors that carry `:cargo_default` run Cargo without
-  `setenv` (`src/cargobuild.jl:25-67`, `deps/build.jl:97-98`), so the Julia
-  process environment reaches the build and `CARGO_PROFILE_RELEASE_PANIC=abort`
-  really does change the artifact.
+  the environment: `"abort"` gives `:abort`, `"unwind"` gives `:unwind`, and
+  anything else — unset, empty, unrecognised — gives `:unwind`, Cargo's default
+  for the `release` profile.  Both doors that carry `:cargo_default` run Cargo
+  without `setenv` (`src/cargobuild.jl:25-67`, `deps/build.jl:97-98`), so the
+  Julia process environment reaches the build and
+  `CARGO_PROFILE_RELEASE_PANIC=abort` really does change the artifact.
 - `:crate_profile` is returned unchanged: the environment is only one of the
   inputs there, and the user's manifest — which Phase A does not read — can
-  pin `panic` and win over the default (though not over the environment
-  variable).  Still unknowable without reading it.
+  pin `panic`.  Still unknowable without reading it.
 
-Pass `env` explicitly to reason about a build other than this process's.
+# Which environment
+
+**The `env = ENV` default answers for an artifact built in *this* process, and
+only for that.**  A cached or reloaded artifact was built under the environment
+that was live at *build* time, which may differ from the current one, so
+resolving it against `ENV` can report the opposite strategy from what the `.so`
+on disk actually does.  For those, the caller MUST pass the environment
+captured at build time — PR #272 records it on `RustBlockSnapshot.cargo_env` as
+serialized `KEY=VALUE` text, one entry per line — using the second method:
+
+    effective_panic_strategy(policy, snapshot.cargo_env)
+
+which accepts that text (parsed by `parse_cargo_env_snapshot`) or any
+`AbstractDict`.  Never resolve a cached artifact against the live `ENV`.
+
+The related cache-*identity* problem — the Cargo cache key at
+`src/ruststr.jl:380-386` not covering the panic setting, so two artifacts built
+under different `CARGO_PROFILE_*` values share a key — is closed by #272 adding
+the `CARGO_PROFILE_` allowlist to `_cargo_block_identity`; the structural fix is
+tracked in #278.  Phase A only models the resolution, not the key.
 """
 function effective_panic_strategy(policy::LoadPolicy; env = ENV)
     policy.panic_strategy === :cargo_default || return policy.panic_strategy
@@ -560,6 +614,37 @@ function effective_panic_strategy(policy::LoadPolicy; env = ENV)
     value = lowercase(strip(String(raw)))
     value == "abort" && return :abort
     return :unwind
+end
+
+effective_panic_strategy(policy::LoadPolicy, snapshot_env::Union{AbstractDict, AbstractString}) =
+    effective_panic_strategy(policy; env = _as_env(snapshot_env))
+
+"""
+    parse_cargo_env_snapshot(text::AbstractString) -> Dict{String, String}
+
+Parse a serialized build-time environment snapshot — one `KEY=VALUE` per line,
+the shape PR #272 stores in `RustBlockSnapshot.cargo_env` — into a dictionary
+suitable as the `env` of `effective_panic_strategy`.
+
+Blank lines and lines without `=` are skipped; the value keeps everything after
+the first `=`, so `KEY=a=b` yields `"a=b"`.  Surrounding whitespace is trimmed
+from the key only, since a value's whitespace can be significant.
+"""
+_as_env(env::AbstractDict) = env
+_as_env(env::AbstractString) = parse_cargo_env_snapshot(env)
+
+function parse_cargo_env_snapshot(text::AbstractString)
+    out = Dict{String, String}()
+    for line in eachsplit(text, '\n')
+        entry = strip(line)
+        isempty(entry) && continue
+        sep = findfirst(isequal('='), entry)
+        sep === nothing && continue
+        key = strip(entry[1:prevind(entry, sep)])
+        isempty(key) && continue
+        out[String(key)] = String(entry[nextind(entry, sep):end])
+    end
+    return out
 end
 
 """
@@ -584,6 +669,11 @@ function requires_catch_unwind_boundary(policy::LoadPolicy; env = ENV)
     return strategy === :unwind
 end
 
+# Same build-time-snapshot contract as effective_panic_strategy: pass the
+# captured environment for a cached or reloaded artifact, never the live ENV.
+requires_catch_unwind_boundary(policy::LoadPolicy, snapshot_env::Union{AbstractDict, AbstractString}) =
+    requires_catch_unwind_boundary(policy; env = _as_env(snapshot_env))
+
 """
     must_assume_unwind(policy::LoadPolicy; env = ENV) -> Bool
 
@@ -597,6 +687,9 @@ function must_assume_unwind(policy::LoadPolicy; env = ENV)
     policy.boundary_catches_panics && return false
     return effective_panic_strategy(policy; env) !== :abort
 end
+
+must_assume_unwind(policy::LoadPolicy, snapshot_env::Union{AbstractDict, AbstractString}) =
+    must_assume_unwind(policy; env = _as_env(snapshot_env))
 
 """
     registers_in_rust_libraries(policy::LoadPolicy) -> Bool

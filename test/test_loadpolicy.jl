@@ -117,7 +117,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     end
 
     @testset "named constructors cover every front door" begin
-        @test length(RustCall.ALL_LOAD_POLICIES) == 8
+        @test length(RustCall.ALL_LOAD_POLICIES) == 9
         names = String[]
         for ctor in RustCall.ALL_LOAD_POLICIES
             p = ctor()
@@ -131,8 +131,8 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         # The doors Phase B swaps over first. There is deliberately no
         # separate "cache hit" policy: the cache state does not change any of
         # the four decisions (see the #250 testset below).
-        @test Set(["inline-rustc", "inline-cargo", "rust-crate",
-                   "helper-library"]) ⊆ Set(names)
+        @test Set(["inline-rustc", "inline-cargo", "rust-crate-direct",
+                   "rust-crate-wrapper", "helper-library"]) ⊆ Set(names)
         @test !("cache-hit" in names)
         @test !isdefined(RustCall, :cache_hit_policy)
     end
@@ -188,7 +188,8 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         # ...and the rule is inverted: the helper library, the one library
         # other artifacts could resolve against, is the LOCAL one.
         @test !RustCall.uses_global_symbols(RustCall.helper_library_policy())
-        @test RustCall.uses_global_symbols(RustCall.crate_policy())
+        @test RustCall.uses_global_symbols(RustCall.crate_direct_policy())
+        @test RustCall.uses_global_symbols(RustCall.crate_wrapper_policy())
         @test occursin("RTLD_GLOBAL", RustCall.SYMBOL_VISIBILITY_RULE)
     end
 
@@ -248,19 +249,41 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         # Both cargo-backed doors really do build --release.
         @test occursin("release=true", _src("ruststr.jl"))
 
-        # @rust_crate and hot reload run Cargo in the USER's crate
-        # (src/crate_bindings.jl:914-925, src/hot_reload.jl:264), so a
-        # `[profile.release] panic = "abort"` there is honoured and RustCall
-        # cannot claim a strategy. Recorded as :crate_profile, resolved
-        # conservatively by must_assume_unwind (#244).
-        @test occursin("build_cargo_project(project, release=release)",
-                       _src("crate_bindings.jl"))
+        # @rust_crate has TWO build paths with different panic semantics,
+        # chosen by crate_has_cdylib: the direct build runs Cargo with the
+        # USER's manifest as the root (src/crate_bindings.jl:852, :914-925), so
+        # their [profile.release] wins -> :crate_profile; the wrapper build
+        # (:854-868) makes RustCall's generated manifest the root, and that one
+        # sets only opt-level/lto (:266-269) -> :cargo_default. Hot reload
+        # rebuilds the user's manifest (src/hot_reload.jl:264) -> :crate_profile.
+        crate_src = _src("crate_bindings.jl")
+        @test occursin("build_cargo_project(project, release=release)", crate_src)
+        @test occursin("build_cargo_project(wrapper_project, release=build_release)", crate_src)
+        @test occursin("\"[profile.release]\"", crate_src)
+        @test !occursin("panic", crate_src)
         @test occursin("cargo build --release --manifest-path", _src("hot_reload.jl"))
-        @test RustCall.crate_policy().panic_strategy === :crate_profile
+
+        @test RustCall.crate_direct_policy().panic_strategy === :crate_profile
+        @test RustCall.crate_wrapper_policy().panic_strategy === :cargo_default
         @test RustCall.hot_reload_policy().panic_strategy === :crate_profile
-        @test RustCall.requires_catch_unwind_boundary(RustCall.crate_policy()) === missing
-        @test RustCall.must_assume_unwind(RustCall.crate_policy())
+        @test RustCall.requires_catch_unwind_boundary(
+            RustCall.crate_direct_policy()) === missing
+        @test RustCall.requires_catch_unwind_boundary(
+            RustCall.crate_wrapper_policy(); env = Dict()) === true
+        @test RustCall.effective_panic_strategy(
+            RustCall.crate_wrapper_policy();
+            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :abort
+        @test RustCall.must_assume_unwind(RustCall.crate_direct_policy())
         @test RustCall.must_assume_unwind(RustCall.hot_reload_policy())
+        # The two @rust_crate doors disagree with each other (#244).
+        @test RustCall.crate_direct_policy().panic_strategy !==
+              RustCall.crate_wrapper_policy().panic_strategy
+        # Everything except the panic strategy is shared between them.
+        for f in (:dlopen_flags, :registry, :registry_key_kind, :registration_mode,
+                  :sets_current_lib, :finalizer_frees)
+            @test getfield(RustCall.crate_direct_policy(), f) ==
+                  getfield(RustCall.crate_wrapper_policy(), f)
+        end
 
         # Fourth unwinding path: the ownership helper library. deps/build.jl
         # builds it with a plain `cargo build --release` and
@@ -315,7 +338,8 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
         # Two doors bypass RUST_LIBRARIES entirely, so registry-level unload
         # cannot see them (#250).
-        @test !RustCall.registers_in_rust_libraries(RustCall.crate_policy())
+        @test !RustCall.registers_in_rust_libraries(RustCall.crate_direct_policy())
+        @test !RustCall.registers_in_rust_libraries(RustCall.crate_wrapper_policy())
         @test !RustCall.registers_in_rust_libraries(RustCall.helper_library_policy())
         @test !RustCall.registers_in_rust_libraries(RustCall.llvm_policy())
 
@@ -359,9 +383,9 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
             # Policies that do not use RUST_LIBRARIES are a no-op, so a Phase B
             # call site may call register_library! unconditionally.
-            @test RustCall.register_library!(RustCall.crate_policy(), name, handle) == name
+            @test RustCall.register_library!(RustCall.crate_direct_policy(), name, handle) == name
             @test !haskey(RustCall.RUST_LIBRARIES, name)
-            @test !RustCall.unregister_library!(RustCall.crate_policy(), name)
+            @test !RustCall.unregister_library!(RustCall.crate_direct_policy(), name)
 
             # :insert_only keeps the existing handle and its function-pointer
             # cache; :replace overwrites both (#250, src/generics.jl:250-253).
@@ -417,9 +441,10 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
         @test !RustCall.finalizer_frees(RustCall.inline_rustc_policy())
         @test !RustCall.finalizer_frees(RustCall.inline_cargo_policy())
-        @test RustCall.finalizer_frees(RustCall.crate_policy())
+        @test RustCall.finalizer_frees(RustCall.crate_direct_policy())
+        @test RustCall.finalizer_frees(RustCall.crate_wrapper_policy())
         @test RustCall.finalizer_frees(RustCall.inline_rustc_policy()) !==
-              RustCall.finalizer_frees(RustCall.crate_policy())
+              RustCall.finalizer_frees(RustCall.crate_direct_policy())
     end
 
     @testset "Phase A is additive: no call site migrated yet" begin
