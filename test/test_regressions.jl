@@ -16,20 +16,23 @@ signature_for(code, name; mode = "inline") = only(
 
 @testset "Known Regressions" begin
     @testset "Library-scoped return type metadata" begin
-        empty!(RustCall.FUNCTION_RETURN_TYPES)
         empty!(RustCall.FUNCTION_RETURN_TYPES_BY_LIB)
 
         code_i32 = "#[no_mangle] pub extern \"C\" fn same_name() -> i32 { 1 }"
         code_f64 = "#[no_mangle] pub extern \"C\" fn same_name() -> f64 { 1.0 }"
 
         RustCall._register_manifest(RustCall.expand_inline(code_i32), "lib_i32")
-        @test RustCall.FUNCTION_RETURN_TYPES["same_name"] == Int32
+        @test RustCall.FUNCTION_RETURN_TYPES_BY_LIB[("lib_i32", "same_name")] == Int32
         @test RustCall.get_function_return_type("lib_i32", "same_name") == Int32
 
         RustCall._register_manifest(RustCall.expand_inline(code_f64), "lib_f64")
-        @test RustCall.FUNCTION_RETURN_TYPES["same_name"] == Float64
+        @test RustCall.FUNCTION_RETURN_TYPES_BY_LIB[("lib_f64", "same_name")] == Float64
         @test RustCall.get_function_return_type("lib_i32", "same_name") == Int32
         @test RustCall.get_function_return_type("lib_f64", "same_name") == Float64
+        # Neither library answers for a third one: registering `same_name`
+        # twice makes the cross-library hint ambiguous, and there is no
+        # name-only table that could pick a winner (#279).
+        @test RustCall.get_function_return_type("lib_other", "same_name") === nothing
     end
 
     @testset "Library-scoped return type is used by dynamic calls" begin
@@ -677,8 +680,8 @@ end
 
 # #279 follow-up: the alias must carry the return-type hints too, not just the
 # symbol mappings. Otherwise an untyped `@rust f(...)` through the stored name
-# misses the library-scoped entry and takes the unscoped fallback, which holds
-# whatever *another* block last registered for that name.
+# misses the library-scoped entry and either takes another library's answer or
+# none at all, instead of the type the aliased block declared.
 @testset "#279: an aliased library keeps its return-type hints" begin
     if !RustCall.check_rustc_available()
         @warn "rustc not found, skipping alias return-type test"
@@ -704,14 +707,15 @@ end
 
     try
         RustCall._register_manifest(expanded_i32, lib_i32; handle = handle_i32, set_current = false)
-        # Registered second, so the unscoped fallback now says Float64.
         RustCall._register_manifest(expanded_f64, lib_f64; handle = handle_f64, set_current = false)
         @test RustCall.get_function_return_type(lib_i32, "alias_typed") === Int32
         @test RustCall.get_function_return_type(lib_f64, "alias_typed") === Float64
-        @test RustCall.get_function_return_type("test279_ret_unknown", "alias_typed") === Float64
+        # Two libraries declare the name, so a third gets no answer at all
+        # rather than an arbitrary one.
+        @test RustCall.get_function_return_type("test279_ret_unknown", "alias_typed") === nothing
 
-        # Aliasing the i32 block must give the alias *its* type, not the
-        # fallback the f64 block left behind.
+        # Aliasing the i32 block must give the alias *its* type, not the other
+        # block's and not nothing.
         RustCall._alias_reloaded_library(Main, stored, lib_i32)
         @test RustCall.get_function_return_type(stored, "alias_typed") === Int32
         @test RustCall.exported_symbol(stored, "alias_typed") == "rustcall_alias_typed"
@@ -773,5 +777,69 @@ end
             RustCall.clear_library_metadata!(lib_name)
             RustCall.CURRENT_LIB[] = previous_current
         end
+    end
+end
+
+# #279 follow-up: a return-type hint must never outlive the library that
+# registered it. There is no name-only table, so clearing or rebuilding a
+# library cannot leave its type answering for anyone else's function of the
+# same name.
+@testset "#279: return-type hints do not outlive their library" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping stale return-type test"
+        return
+    end
+
+    expanded_a = RustCall.expand_inline("""
+    #[julia]
+    pub fn stale_probe(x: i32) -> i32 { x }
+    """)
+    expanded_b = RustCall.expand_inline("""
+    #[julia]
+    pub fn stale_probe(x: i32) -> f64 { x as f64 }
+    """)
+    # The rebuilt A returns `Result`, for which no hint is recorded at all:
+    # an untyped call must fall through to inference, never to A's old `Int32`.
+    expanded_a2 = RustCall.expand_inline("""
+    #[julia]
+    pub fn stale_probe(x: i32) -> Result<i32, i32> { Ok(x) }
+    """)
+
+    path_a = RustCall.compile_rust_to_shared_lib(expanded_a.source)
+    path_b = RustCall.compile_rust_to_shared_lib(expanded_b.source)
+    path_a2 = RustCall.compile_rust_to_shared_lib(expanded_a2.source)
+    lib_a = "test279_stale_a_" * string(hash(path_a), base = 16)
+    lib_b = "test279_stale_b_" * string(hash(path_b), base = 16)
+    handles = [Libdl.dlopen(p, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+               for p in (path_a, path_b, path_a2)]
+
+    try
+        RustCall._register_manifest(expanded_a, lib_a; handle = handles[1], set_current = false)
+        RustCall._register_manifest(expanded_b, lib_b; handle = handles[2], set_current = false)
+        @test RustCall.get_function_return_type(lib_a, "stale_probe") === Int32
+        @test RustCall.get_function_return_type(lib_b, "stale_probe") === Float64
+
+        # Clearing A leaves B answering for itself, and A answering for nobody.
+        RustCall.unload_library(lib_a)
+        @test RustCall.get_function_return_type(lib_b, "stale_probe") === Float64
+        @test RustCall.get_function_return_type(lib_a, "stale_probe") === Float64 ||
+              RustCall.get_function_return_type(lib_a, "stale_probe") === nothing
+
+        # A comes back declaring `Result`, so it records no hint. The old
+        # `Int32` must be gone: what answers is B's own type or nothing, never
+        # the value A itself last wrote.
+        RustCall._register_manifest(expanded_a2, lib_a; handle = handles[3], set_current = false)
+        @test RustCall.get_function_return_type(lib_a, "stale_probe") !== Int32
+        @test RustCall.get_function_return_type(lib_b, "stale_probe") === Float64
+
+        # And with B gone too, nothing is left to answer at all.
+        RustCall.unload_library(lib_b)
+        @test RustCall.get_function_return_type(lib_a, "stale_probe") === nothing
+    finally
+        for name in (lib_a, lib_b)
+            haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name)
+            RustCall.clear_library_metadata!(name)
+        end
+        foreach(Libdl.dlclose, handles)
     end
 end

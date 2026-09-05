@@ -36,14 +36,18 @@ Maps (library name, function name) to FunctionInfo.
 const FUNCTION_REGISTRY_BY_LIB = Dict{Tuple{String, String}, FunctionInfo}()
 
 """
-Registry for function return types (for functions without full signature registration).
-Maps function name to return type.
-"""
-const FUNCTION_RETURN_TYPES = Dict{String, Type}()
+Registry for function return types (for functions without full signature
+registration), keyed by `(library name, function name)`.
 
-"""
-Library-scoped registry for function return types.
-Maps (library name, function name) to return type.
+There is deliberately **no** name-only fallback table. A name-keyed hint
+outlives the library that wrote it: clearing or reloading that library would
+leave its return type answering for every other library's function of the same
+name, and a rebuilt library that no longer declares the function that way would
+be typed by the stale value (#279). Every lookup has a library — `CURRENT_LIB`
+or an explicit one — so `get_function_return_type` resolves the same way
+`get_function_pointer` does instead.
+
+Guarded by `REGISTRY_LOCK`.
 """
 const FUNCTION_RETURN_TYPES_BY_LIB = Dict{Tuple{String, String}, Type}()
 
@@ -111,25 +115,17 @@ a stale hint would type a call to a function the rebuilt library no longer
 declares that way — so the two must go together, in the same transaction that
 removes the handle (#279).
 
-The unscoped `FUNCTION_RETURN_TYPES` fallback is pruned as well, but only for
-names no *other* library still declares.
+Both registries are keyed by library, so dropping a library's rows is all there
+is to it: nothing it recorded can outlive it under a name-only key.
 """
 function clear_library_metadata!(lib_name::AbstractString)
     name = String(lib_name)
     lock(REGISTRY_LOCK) do
-        orphaned = String[]
         for key in collect(keys(FUNCTION_SYMBOLS_BY_LIB))
             first(key) == name && delete!(FUNCTION_SYMBOLS_BY_LIB, key)
         end
         for key in collect(keys(FUNCTION_RETURN_TYPES_BY_LIB))
-            if first(key) == name
-                delete!(FUNCTION_RETURN_TYPES_BY_LIB, key)
-                push!(orphaned, last(key))
-            end
-        end
-        for func_name in orphaned
-            any(k -> last(k) == func_name, keys(FUNCTION_RETURN_TYPES_BY_LIB)) && continue
-            delete!(FUNCTION_RETURN_TYPES, func_name)
+            first(key) == name && delete!(FUNCTION_RETURN_TYPES_BY_LIB, key)
         end
     end
     return nothing
@@ -200,15 +196,37 @@ end
 """
     get_function_return_type(lib_name::String, func_name::String) -> Union{Type, Nothing}
 
-Get a registered return type for a function in a specific library.
-Falls back to global function-name mapping for backward compatibility.
+The registered return type of `func_name` as seen from `lib_name`, or `nothing`
+when nothing applies.
+
+Resolution mirrors `get_function_pointer` so that a call's pointer and
+its return type always come from the same library: `lib_name` first, then the
+other **loaded** libraries. A name declared by exactly one of them answers; a
+name declared by several is ambiguous and yields `nothing`, leaving the caller
+to infer or to demand an explicit `::T` — the same situation in which
+`get_function_pointer` refuses to guess.
+
+There is no name-only fallback: a hint keyed by name alone outlives the library
+that wrote it and would type a call into a *different* library, or into a
+rebuilt one that no longer declares the function that way (#279).
 """
 function get_function_return_type(lib_name::String, func_name::String)
-    by_lib = get(FUNCTION_RETURN_TYPES_BY_LIB, (lib_name, func_name), nothing)
-    if by_lib !== nothing
-        return by_lib
+    lock(REGISTRY_LOCK) do
+        by_lib = get(FUNCTION_RETURN_TYPES_BY_LIB, (lib_name, func_name), nothing)
+        by_lib === nothing || return by_lib
+
+        found = nothing
+        for other_lib_name in keys(RUST_LIBRARIES)
+            other_lib_name == lib_name && continue
+            hint = get(FUNCTION_RETURN_TYPES_BY_LIB, (other_lib_name, func_name), nothing)
+            hint === nothing && continue
+            # Declared by more than one other library: ambiguous, exactly as
+            # the pointer lookup would be.
+            found === nothing || return nothing
+            found = hint
+        end
+        return found
     end
-    return get(FUNCTION_RETURN_TYPES, func_name, nothing)
 end
 
 """

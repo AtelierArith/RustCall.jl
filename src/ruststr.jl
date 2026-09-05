@@ -732,11 +732,10 @@ function _register_return_type(sig, lib_name::String)
     ret_type === nothing && return nothing
     # Recorded under both the Rust name and the exported symbol: `@rust f(...)`
     # names the function, while a caller that already resolved the symbol (or a
-    # generated wrapper) asks for `rustcall_f`. Unlike the symbol mapping, this
-    # is only a type hint, so the pre-#279 unscoped name key stays.
+    # generated wrapper) asks for `rustcall_f`. Both keys are library-scoped —
+    # a name-only hint would outlive this library (#279).
     for key in unique((sig.name, sig.symbol))
         FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, key)] = ret_type
-        FUNCTION_RETURN_TYPES[key] = ret_type
     end
     @debug "Registered return type for function: $(sig.name) (symbol $(sig.symbol)) => $ret_type (library: $lib_name)"
     return nothing

@@ -219,7 +219,6 @@ end
             lock(RustCall.REGISTRY_LOCK) do
                 RustCall.FUNCTION_SYMBOLS_BY_LIB[(lib_name, "ghost_fn")] = "rustcall_ghost_fn"
                 RustCall.FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, "ghost_fn")] = Int32
-                RustCall.FUNCTION_RETURN_TYPES["ghost_fn"] = Int32
                 # A stale hint for a function that *does* still exist, under a
                 # type the crate never declared.
                 RustCall.FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, sig.name)] = Bool
@@ -229,8 +228,7 @@ end
             # mappings in place next to the new handle.
             RustCall.trigger_reload(lib_name)
 
-            # The stale entries are gone, including the unscoped fallback that
-            # no other library claims.
+            # The stale entries are gone.
             @test RustCall.exported_symbol(lib_name, "ghost_fn") == "ghost_fn"
             @test RustCall.get_function_return_type(lib_name, "ghost_fn") === nothing
             # ... and the surviving function's hint was rebuilt, not kept.
