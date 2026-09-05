@@ -836,11 +836,13 @@ end
         RustCall.unload_library(lib_b)
         @test RustCall.get_function_return_type(lib_a, "stale_probe") === nothing
     finally
+        # Every handle here was published into RUST_LIBRARIES, and
+        # `unload_library` dlcloses what it removes — closing them again here
+        # would be a double close.
         for name in (lib_a, lib_b)
             haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name)
             RustCall.clear_library_metadata!(name)
         end
-        foreach(Libdl.dlclose, handles)
     end
 end
 
@@ -904,15 +906,19 @@ end
         finally
             haskey(RustCall.RUST_LIBRARIES, clash) && RustCall.unload_library(clash)
             RustCall.clear_library_metadata!(clash)
-            Libdl.dlclose(handle_clash)
         end
     finally
-        for name in (stored, actual, sibling)
+        # `stored` and `actual` are two names for one handle: drop the alias
+        # without unloading, so the handle is dlclosed exactly once (by
+        # `unload_library(actual)`), and never again here.
+        lock(RustCall.REGISTRY_LOCK) do
+            delete!(RustCall.RUST_LIBRARIES, stored)
+        end
+        RustCall.clear_library_metadata!(stored)
+        for name in (actual, sibling)
             haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name)
             RustCall.clear_library_metadata!(name)
         end
-        Libdl.dlclose(handle_one)
-        Libdl.dlclose(handle_two)
     end
 end
 
@@ -970,11 +976,83 @@ end
         end
         @test !(untyped_a isa Float64)
     finally
+        # `unload_library` dlcloses both handles; do not close them again.
         for name in (lib_a, lib_b)
             haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name)
             RustCall.clear_library_metadata!(name)
         end
-        Libdl.dlclose(handle_a)
-        Libdl.dlclose(handle_b)
+    end
+end
+
+# #279 follow-up: an external crate is scanned leniently — only target
+# predicates are decided, because its own features and build script are not
+# RustCall's to evaluate — so mutually exclusive `#[cfg(feature = ...)]`
+# variants of one `#[julia] fn` both reach the registry. Source order is not
+# evidence of which one was built, so no return type may be registered for
+# them; a wrong primitive hint would be a wrong ABI. (Deciding the crate's
+# features exactly belongs to #277 Phase B.)
+@testset "#279: ambiguous cfg variants register no return type" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping ambiguous cfg variant test"
+        return
+    end
+
+    mktempdir() do dir
+        mkpath(joinpath(dir, "src"))
+        write(joinpath(dir, "Cargo.toml"), """
+        [package]
+        name = "cfg_variant_probe"
+        version = "0.0.0"
+        edition = "2021"
+
+        [features]
+        a = []
+
+        [lib]
+        crate-type = ["cdylib"]
+        """)
+        write(joinpath(dir, "src", "lib.rs"), """
+        use juliacall_macros::julia;
+
+        #[cfg(feature = "a")]
+        #[julia]
+        pub fn variant_probe() -> i32 { 1 }
+
+        #[cfg(not(feature = "a"))]
+        #[julia]
+        pub fn variant_probe() -> f64 { 1.0 }
+
+        #[julia]
+        pub fn unambiguous_probe() -> i32 { 2 }
+        """)
+
+        # The lenient scan the crate paths use keeps both variants.
+        info = RustCall.scan_crate(dir)
+        variants = filter(f -> f.name == "variant_probe", info.julia_functions)
+        @test length(variants) == 2
+        @test Set(f.return_type for f in variants) == Set(["i32", "f64"])
+        @test all(f -> f.symbol == "rustcall_variant_probe", variants)
+
+        lib_name = "test279_cfg_variant"
+        try
+            lock(RustCall.REGISTRY_LOCK) do
+                RustCall._register_exported_symbols!(info.julia_functions, lib_name)
+            end
+
+            # The symbol is unambiguous, so it is recorded ...
+            @test RustCall.exported_symbol(lib_name, "variant_probe") ==
+                  "rustcall_variant_probe"
+            # ... but neither variant's return type is, so an untyped call
+            # falls through to inference rather than to the wrong ABI.
+            @test RustCall.get_function_return_type(lib_name, "variant_probe") === nothing
+            @test RustCall.get_function_return_type(lib_name, "rustcall_variant_probe") === nothing
+
+            # A function with only one variant is unaffected.
+            @test RustCall.exported_symbol(lib_name, "unambiguous_probe") ==
+                  "rustcall_unambiguous_probe"
+            @test RustCall.get_function_return_type(lib_name, "unambiguous_probe") === Int32
+        finally
+            RustCall.clear_library_metadata!(lib_name)
+        end
     end
 end

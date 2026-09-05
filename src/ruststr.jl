@@ -713,13 +713,30 @@ longer defines or now declares differently.
 Identity mappings are recorded too, so a plain `#[no_mangle] fn f` is
 explicitly `f => f` for this library and cannot pick up another library's
 `f => rustcall_f`.
+
+A manifest may report one symbol twice. `@rust_crate` and the hot reload scan
+an external crate leniently — only target predicates are decided, because the
+crate's own features and build script are not RustCall's to evaluate — so
+mutually exclusive `#[cfg(feature = ...)]` variants of one `#[julia] fn` both
+survive. The symbol mapping is the same either way and is recorded, but the
+**return type is not**: source order is not evidence of which variant was
+built, and a wrong primitive hint is a wrong ABI. Such a call falls through to
+inference or an explicit `::T` instead. Deciding an external crate's features
+exactly needs the crate's own build configuration, which #277 Phase B owns.
 """
 function _register_exported_symbols!(signatures, lib_name::String)
     clear_library_metadata!(lib_name)
-    for sig in signatures
-        sig.is_generic && continue
-        sig.exported || continue
+    exported = [sig for sig in signatures if !sig.is_generic && sig.exported]
+    occurrences = Dict{String, Int}()
+    for sig in exported
+        occurrences[sig.symbol] = get(occurrences, sig.symbol, 0) + 1
+    end
+    for sig in exported
         register_function_symbol(lib_name, sig.name, sig.symbol)
+        if occurrences[sig.symbol] > 1
+            @debug "Ambiguous manifest entry: not registering a return type" symbol = sig.symbol lib_name
+            continue
+        end
         _register_return_type(sig, lib_name)
     end
     return nothing
