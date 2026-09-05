@@ -268,8 +268,10 @@ The environment that can change Cargo's effective rustc configuration.
 # end up in a snapshot embedded in generated code or a precompile cache.
 const _CARGO_CFG_ENV_PREFIXES = ("CARGO_PROFILE_", "CARGO_BUILD_", "CARGO_CFG_",
                                  "CARGO_ENCODED_RUSTFLAGS")
+# `CARGO_HOME` is a path, not a secret: it selects the Cargo configuration
+# (`$CARGO_HOME/config.toml`, e.g. `[build] rustflags`) the cfg probe observes.
 const _CARGO_CFG_ENV_NAMES = ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTDOCFLAGS",
-                              "RUSTUP_TOOLCHAIN")
+                              "RUSTUP_TOOLCHAIN", "CARGO_HOME")
 # Per-target settings, `CARGO_TARGET_<TRIPLE>_<SETTING>`: `_RUSTFLAGS` carries
 # `--cfg` and codegen flags like `RUSTFLAGS` does, `_LINKER` decides what links
 # the cdylib. `_RUNNER` only wraps `cargo run`/`cargo test` and cannot change
@@ -285,9 +287,34 @@ function _is_cargo_env_key(k::AbstractString)
     return startswith(up, "CARGO_TARGET_") && any(s -> endswith(up, s), _CARGO_TARGET_ENV_SUFFIXES)
 end
 
+"""
+    _cargo_config_digest(env = ENV) -> String
+
+Digest of the effective Cargo home configuration file
+(`\$CARGO_HOME/config.toml`, falling back to `config`; `~/.cargo` when
+`CARGO_HOME` is unset), or `"absent"`. The file can set `[build] rustflags`
+and friends, which the cfg probe observes, so its content is part of the
+environment snapshot: the same `CARGO_HOME` with an edited config is a
+different configuration.
+"""
+function _cargo_config_digest(env = ENV)
+    home = get(env, "CARGO_HOME", joinpath(homedir(), ".cargo"))
+    for name in ("config.toml", "config")
+        path = joinpath(home, name)
+        isfile(path) && return bytes2hex(sha256(read(path)))
+    end
+    return "absent"
+end
+
+# The environment snapshot is `NAME=value` lines; lines starting with `#` are
+# metadata that describes the environment without being a variable.
+const _CARGO_CONFIG_LINE = "#cargo-config="
+
 function _cargo_cfg_env_key()
     keys = sort!(filter(_is_cargo_env_key, collect(Base.keys(ENV))))
-    return join(("$k=$(ENV[k])" for k in keys), "\n")
+    lines = String["$k=$(ENV[k])" for k in keys]
+    push!(lines, _CARGO_CONFIG_LINE * _cargo_config_digest())
+    return join(lines, "\n")
 end
 
 """
@@ -301,6 +328,7 @@ absent from the snapshot are removed, recorded ones restored. Used to build a
 function _cargo_build_env(snapshot::AbstractString)
     env = Dict{String, String}(k => v for (k, v) in ENV if !_is_cargo_env_key(k))
     for line in split(snapshot, '\n'; keepempty = false)
+        startswith(line, '#') && continue   # metadata, not a variable
         k, v = split(line, '='; limit = 2)
         env[String(k)] = String(v)
     end
@@ -636,6 +664,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             source = _mstr(f, "source"),
             constraints = manifest_constraints(f),
             module_path = String[String(m) for m in _mvec(f, "module_path")],
+            body_has_cfg = _mbool(f, "body_has_cfg"),
         ))
     end
     return sigs

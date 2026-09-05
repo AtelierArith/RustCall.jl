@@ -395,6 +395,59 @@ fn unevaluable_generic_parameter_predicate_fails_closed() {
     assert!(err.to_string().contains("cannot evaluate #[cfg]"), "{err}");
 }
 
+/// Item-level pruning cannot resolve `#[cfg]` / `cfg!` inside a body, so the
+/// manifest reports their presence for callers that would compile the source
+/// under another configuration (lazy specialization of a Cargo-backed block).
+#[test]
+fn reports_cfg_inside_function_bodies() {
+    let src = r#"
+#[julia]
+pub fn plain<T: Copy>(x: T) -> T { x }
+
+#[julia]
+pub fn uses_macro<T: Copy>(x: T) -> T { if cfg!(panic = "unwind") { x } else { x } }
+
+#[julia]
+pub fn uses_attr<T: Copy>(x: T) -> T {
+    #[cfg(debug_assertions)]
+    let _y = 1;
+    x
+}
+
+#[julia]
+pub fn uses_cfg_attr<T: Copy>(x: T) -> T {
+    #[cfg_attr(unix, allow(unused))]
+    let _y = 1;
+    x
+}
+
+#[julia]
+pub fn nested_item<T: Copy>(x: T) -> T {
+    fn helper() -> i32 { std::cfg!(unix) as i32 }
+    let _ = helper();
+    x
+}
+
+#[julia]
+pub fn not_generic() -> i32 { cfg!(unix) as i32 }
+"#;
+    let e = expand(src).unwrap();
+    let has = |n: &str| {
+        e.manifest
+            .functions
+            .iter()
+            .find(|f| f.name == n)
+            .unwrap()
+            .body_has_cfg
+    };
+    assert!(!has("plain"));
+    assert!(has("uses_macro"));
+    assert!(has("uses_attr"));
+    assert!(has("uses_cfg_attr"));
+    assert!(has("nested_item"));
+    assert!(has("not_generic"));
+}
+
 /// `#[cfg_attr(unix, cfg_attr(unix, ... cfg(any())))]` nested `depth` times.
 fn nested_cfg_attr(depth: usize) -> String {
     let mut s = "cfg(any())".to_string();

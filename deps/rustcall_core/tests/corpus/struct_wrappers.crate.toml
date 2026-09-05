@@ -16,6 +16,7 @@ ok_type = "i32"
 err_type = "i32"
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 25
 module_path = []
 
@@ -37,6 +38,7 @@ ok_type = ""
 err_type = ""
 inner_type = "i32"
 source = ""
+body_has_cfg = false
 line = 30
 module_path = []
 

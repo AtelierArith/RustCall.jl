@@ -71,6 +71,12 @@ struct GenericFunctionInfo
     return_type::String  # Rust return type as recorded in the manifest
     path::String  # Qualified name inside `code` (`api::deep::f`); equals `name` at the file root
     compiler::Union{Nothing, RustCompiler}  # compiler the block was expanded for (nothing: default)
+    # Non-empty when the function cannot be specialized lazily: the reason,
+    # raised as a `RustError` by `monomorphize_function`. Set for generics of a
+    # Cargo-backed block whose body contains `#[cfg]`/`cfg!`, because the
+    # lazy specialization is a direct `rustc` build under another
+    # configuration than the Cargo build the block was expanded for.
+    blocked::String
 end
 
 """
@@ -203,6 +209,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         if generic_info === nothing
             error("Function '$func_name' is not registered as a generic function")
         end
+        isempty(generic_info.blocked) || throw(RustError(generic_info.blocked))
 
         # Generate a unique name for the monomorphized function
         # Create a type suffix from the type parameters
@@ -319,7 +326,8 @@ function register_generic_function(
     arg_types::Vector{String}=String[],
     return_type::String="",
     path::String=func_name,
-    compiler::Union{Nothing, RustCompiler}=nothing
+    compiler::Union{Nothing, RustCompiler}=nothing,
+    blocked::String=""
 )
     # Manual registrations usually pass only the source. Recover the argument
     # and return types (and, when not given, the trait bounds) from the
@@ -334,7 +342,7 @@ function register_generic_function(
         end
     end
     lock(REGISTRY_LOCK) do
-        info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types, return_type, path, compiler)
+        info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types, return_type, path, compiler, blocked)
         GENERIC_FUNCTION_REGISTRY[func_name] = info
         return info
     end

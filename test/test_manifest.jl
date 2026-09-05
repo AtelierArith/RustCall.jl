@@ -245,6 +245,46 @@ using TOML
                       RustCall._cargo_block_identity("fn f() {}", "deps", "")
             end
 
+            # CARGO_HOME selects the Cargo configuration the probe observes
+            # (`[build] rustflags`): the variable is tracked, and so is the
+            # content of that configuration file.
+            @test RustCall._is_cargo_env_key("CARGO_HOME")
+            @test !RustCall._is_cargo_env_key("CARGO_HOME_TOKEN")
+            mktempdir() do home
+                write(joinpath(home, "config.toml"),
+                      "[build]\nrustflags = [\"--cfg\", \"rustcall_custom_probe\"]\n")
+                key_default = RustCall._cargo_cfg_env_key()
+                withenv("CARGO_HOME" => home, "RUSTFLAGS" => nothing, "CARGO_ENCODED_RUSTFLAGS" => nothing) do
+                    key_home = RustCall._cargo_cfg_env_key()
+                    @test key_home != key_default
+                    @test occursin("CARGO_HOME=$home", key_home)
+                    digest = RustCall._cargo_config_digest()
+                    @test digest != "absent"
+                    @test occursin(RustCall._CARGO_CONFIG_LINE * digest, key_home)
+                    @test RustCall._cargo_block_identity("fn f() {}", "deps", key_home) !=
+                          RustCall._cargo_block_identity("fn f() {}", "deps", key_default)
+                    # The probe sees the config's `--cfg`, so the block identity
+                    # and the cfg text follow CARGO_HOME.
+                    probe = RustCall._cargo_cfg_text()
+                    @test occursin("rustcall_custom_probe", probe)
+                    custom_code = "#[cfg(rustcall_custom_probe)]\n#[julia]\npub fn custom_on() -> i32 { 1 }\n"
+                    @test names(RustCall.extract_manifest(custom_code; mode = "inline", cfg = :cargo)) == ["custom_on"]
+                    # Editing the config changes the snapshot even under the same CARGO_HOME.
+                    write(joinpath(home, "config.toml"), "[build]\nrustflags = []\n")
+                    @test RustCall._cargo_cfg_env_key() != key_home
+                    @test RustCall._cargo_config_digest() != digest
+                    # The replayed build environment restores CARGO_HOME; the
+                    # metadata line is not a variable.
+                    env = RustCall._cargo_build_env(key_home)
+                    @test env["CARGO_HOME"] == home
+                    @test !any(k -> startswith(k, "#"), keys(env))
+                end
+                @test isempty(names(RustCall.extract_manifest("#[cfg(rustcall_custom_probe)]\n#[julia]\npub fn custom_on() -> i32 { 1 }\n"; mode = "inline", cfg = :cargo)))
+                # Cleared when the snapshot has none.
+                @test !haskey(withenv(() -> RustCall._cargo_build_env(""), "CARGO_HOME" => home), "CARGO_HOME")
+                @test RustCall._cargo_config_digest(Dict("CARGO_HOME" => joinpath(home, "nowhere"))) == "absent"
+            end
+
             # An empty snapshot is a snapshot: the block was expanded with no
             # tracked variable set, so a RUSTFLAGS present at build time must
             # be cleared, not inherited (the wrappers were generated without it).
@@ -353,6 +393,86 @@ using TOML
             @test id_plain != id_flags
             @test RustCall._block_identity("x", "a" => "1") != RustCall._block_identity("x", "a" => "2")
             @test RustCall._cargo_block_identity("x", "d", "e") == RustCall._block_identity("x", "deps" => "d", "cargo-env" => "e")
+
+            # A reload that derives another library name than the one a
+            # precompiled module stored (toolchain fingerprint, compiler snapshot
+            # or cfg text changed) is aliased under the stored name: the next
+            # call resolves through the registry instead of reloading, and the
+            # stored name looks symbols up in this library directly.
+            stale_name = "rust_stale0123456789ab"
+            stale_code = "#[no_mangle]\npub extern \"C\" fn stale_alias_value() -> i32 { 42 }\n"
+            stale_mod = Module(:StaleLibReload)
+            Core.eval(stale_mod, :(const __RUSTCALL_LIBS = Dict{String, Any}(
+                $stale_name => $(RustCall.RustBlockSnapshot(stale_code, snapshot_o0, o0.target_triple, 0)))))
+            Core.eval(stale_mod, :(const __RUSTCALL_ACTIVE_LIB = Ref($stale_name)))
+            resolved = RustCall._resolve_lib(stale_mod, "")
+            @test resolved != stale_name
+            @test haskey(RustCall.RUST_LIBRARIES, resolved) && haskey(RustCall.RUST_LIBRARIES, stale_name)
+            @test RustCall.RUST_LIBRARIES[stale_name] === RustCall.RUST_LIBRARIES[resolved]
+            @test stale_mod.__RUSTCALL_ACTIVE_LIB[] == resolved
+            # The stored key now short-circuits `ensure_loaded` (no second reload) ...
+            @test RustCall.ensure_loaded(stale_name, stale_mod.__RUSTCALL_LIBS[stale_name]) == stale_name
+            @test RustCall._resolve_lib(stale_mod, "") == resolved
+            @test RustCall._resolve_lib(stale_mod, stale_name) == stale_name
+            # ... and both names reach the symbol without the global fallback search.
+            @test ccall(RustCall.get_function_pointer(stale_name, "stale_alias_value"), Int32, ()) == 42
+            @test ccall(RustCall.get_function_pointer(resolved, "stale_alias_value"), Int32, ()) == 42
+
+            # A generic whose body contains `#[cfg]`/`cfg!` is reported as such;
+            # from a Cargo-backed block its lazy specialization (a direct rustc
+            # build under another configuration) is refused with a clear error.
+            cfg_body = """
+            #[julia]
+            pub fn cfg_body_generic<T: Copy>(x: T) -> T { if cfg!(panic = "unwind") { x } else { x } }
+            #[julia]
+            pub fn plain_generic<T: Copy>(x: T) -> T { x }
+            """
+            sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(cfg_body; mode = "inline"))
+            @test Dict(s.name => s.body_has_cfg for s in sigs) == Dict("cfg_body_generic" => true, "plain_generic" => false)
+            expanded_cfg_body = RustCall.expand_inline(cfg_body; cfg = :cargo)
+            RustCall._register_manifest(expanded_cfg_body, "rust_cargo_fake_lib"; cargo_backed = true)
+            @test isempty(RustCall.GENERIC_FUNCTION_REGISTRY["plain_generic"].blocked)
+            @test !isempty(RustCall.GENERIC_FUNCTION_REGISTRY["cfg_body_generic"].blocked)
+            @test_throws RustCall.RustError RustCall.monomorphize_function("cfg_body_generic", Dict{Symbol, Type}(:T => Int32))
+            blocked_err = try
+                RustCall.monomorphize_function("cfg_body_generic", Dict{Symbol, Type}(:T => Int32))
+                nothing
+            catch e
+                e
+            end
+            @test blocked_err isa RustCall.RustError
+            @test occursin("cfg_body_generic", blocked_err.message) && occursin("cargo-deps", blocked_err.message)
+            # Direct rustc blocks are unaffected: the specialization is built by
+            # the same compiler under the same cfg snapshot.
+            RustCall._register_manifest(expanded_cfg_body, "rust_fake_lib"; compiler = o0)
+            @test isempty(RustCall.GENERIC_FUNCTION_REGISTRY["cfg_body_generic"].blocked)
+            @test RustCall.monomorphize_function("cfg_body_generic", Dict{Symbol, Type}(:T => Int32)) !== nothing
+
+            # End to end through `@rust` on a `// cargo-deps:` block (a local
+            # path dependency, so no network is needed).
+            if success(pipeline(`$(RustCall.cargo()) --version`; stdout = devnull, stderr = devnull))
+                mktempdir() do dep
+                    mkpath(joinpath(dep, "src"))
+                    write(joinpath(dep, "Cargo.toml"),
+                          "[package]\nname = \"rustcall_cfg_dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+                    write(joinpath(dep, "src", "lib.rs"), "pub fn one() -> i32 { 1 }\n")
+                    dep_path = replace(dep, "\\" => "/")
+                    block = """
+                    // cargo-deps: rustcall_cfg_dep = { path = "$dep_path" }
+                    #[julia]
+                    pub fn cfg_dep_plain(x: i32) -> i32 { x + rustcall_cfg_dep::one() }
+                    #[julia]
+                    pub fn cfg_dep_generic<T: Copy>(x: T) -> T { if cfg!(panic = "unwind") { x } else { x } }
+                    """
+                    dep_mod = Module(:CfgDepBlock)
+                    Core.eval(dep_mod, :(using RustCall))
+                    Core.eval(dep_mod, Expr(:macrocall, GlobalRef(RustCall, Symbol("@rust_str")),
+                                            LineNumberNode(1, :cfgdep), block))
+                    @test Core.eval(dep_mod, :(cfg_dep_plain(Int32(1)))) == Int32(2)
+                    @test !isempty(RustCall.GENERIC_FUNCTION_REGISTRY["cfg_dep_generic"].blocked)
+                    @test_throws RustCall.RustError Core.eval(dep_mod, :(RustCall.@rust cfg_dep_generic(Int32(3))))
+                end
+            end
 
             @test RustCall._snapshot_compiler(nothing, nothing) === RustCall.get_default_compiler()
             @test RustCall._snapshot_compiler(o0.target_triple, 0).optimization_level == 0

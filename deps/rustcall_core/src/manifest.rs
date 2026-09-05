@@ -120,6 +120,14 @@ pub struct Function {
     /// runtime monomorphization via `specialize`.
     #[serde(default)]
     pub source: String,
+    /// Whether the body contains a `#[cfg(...)]` / `#[cfg_attr(...)]`
+    /// attribute or a `cfg!(...)` macro. Item-level pruning never resolves
+    /// those, so the body still depends on the configuration it is compiled
+    /// under; a caller that later compiles the (specialized) source under
+    /// another configuration than the one the item was extracted for must
+    /// refuse rather than guess.
+    #[serde(default)]
+    pub body_has_cfg: bool,
     /// 1-based line of the item in the input file.
     pub line: usize,
     /// Enclosing inline modules (`mod api { mod deep { fn f } }` -> `["api", "deep"]`).

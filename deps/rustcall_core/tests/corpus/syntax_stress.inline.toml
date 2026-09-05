@@ -24,6 +24,7 @@ where
     value.len()
 }
 """
+body_has_cfg = false
 line = 5
 module_path = []
 
@@ -56,6 +57,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 16
 module_path = []
 
@@ -78,6 +80,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 20
 module_path = []
 
@@ -96,6 +99,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 26
 module_path = []
 
@@ -113,6 +117,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 30
 module_path = []
 
@@ -139,5 +144,6 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 35
 module_path = []

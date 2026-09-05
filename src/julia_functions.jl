@@ -37,6 +37,9 @@ struct RustFunctionSignature
     source::String
     constraints::Dict{Symbol, TypeConstraints}
     module_path::Vector{String}
+    # The body contains `#[cfg]`/`cfg!`, so it still depends on the build
+    # configuration after item-level pruning (see `Function::body_has_cfg`).
+    body_has_cfg::Bool
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -47,10 +50,11 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                ok_type::String = "", err_type::String = "", inner_type::String = "",
                                source::String = "",
                                constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
-                               module_path::Vector{String} = String[])
+                               module_path::Vector{String} = String[],
+                               body_has_cfg::Bool = false)
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
-                          source, constraints, module_path)
+                          source, constraints, module_path, body_has_cfg)
 end
 
 """

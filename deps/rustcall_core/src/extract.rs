@@ -10,7 +10,7 @@ use syn::spanned::Spanned;
 use syn::{FnArg, Item, ItemFn, Pat, ReturnType};
 
 use crate::attrs::{has_no_mangle, rustcall_attribute};
-use crate::cfg::{predicate_string, CfgSet};
+use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
 use crate::codegen::returns_boxed_struct;
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
@@ -126,6 +126,7 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         } else {
             String::new()
         },
+        body_has_cfg: body_has_cfg(&func.block),
         line: func.span().start().line,
         module_path: Vec::new(),
     }

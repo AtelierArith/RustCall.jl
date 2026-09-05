@@ -466,7 +466,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         end
         @debug "Using cached Cargo library from memory" lib_name=lib_name
 
-        _register_manifest(expanded, lib_name)
+        _register_manifest(expanded, lib_name; cargo_backed = true)
 
         return lib_name
     end
@@ -485,7 +485,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             end
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
 
-            _register_manifest(expanded, lib_name)
+            _register_manifest(expanded, lib_name; cargo_backed = true)
 
             return lib_name
         end
@@ -523,7 +523,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
 
-        _register_manifest(expanded, lib_name)
+        _register_manifest(expanded, lib_name; cargo_backed = true)
     finally
         # Clean up temporary project (keep for debugging if debug mode is enabled)
         compiler = get_default_compiler()
@@ -615,7 +615,7 @@ Register everything the manifest of a compiled block tells us:
   in place with sibling items, imports and `super::` paths intact.
 - return types of exported functions, so `@rust f(...)` works without `::T`
 """
-function _register_manifest(expanded, lib_name::String; compiler = nothing)
+function _register_manifest(expanded, lib_name::String; compiler = nothing, cargo_backed::Bool = false)
     manifest = expanded.manifest
     for info in manifest_struct_infos(manifest)
         register_generic_struct_wrappers(info, expanded.source; compiler)
@@ -625,9 +625,22 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing)
             # Generic functions are compiled lazily; keep the compiler they were
             # expanded for so a later `set_default_compiler` cannot drop
             # #[cfg]-gated items from the specialization.
+            #
+            # A lazy specialization is a direct `rustc` build. For a Cargo-backed
+            # block that is a different configuration (profile, `panic`,
+            # RUSTFLAGS `--cfg`s) from the one the block was expanded and built
+            # under. Item-level pruning has resolved the `#[cfg]`s on items and
+            # signatures, but a `#[cfg]` statement or `cfg!` inside the body
+            # would be decided anew by rustc: refuse such a generic rather than
+            # build it under the wrong configuration.
+            blocked = cargo_backed && sig.body_has_cfg ?
+                "generic function `$(sig.name)` comes from a `// cargo-deps:` block and its body " *
+                "contains `#[cfg]` or `cfg!`, which the lazy specialization (a direct rustc build) " *
+                "would evaluate under a different configuration than the Cargo build; move the " *
+                "configuration-dependent code out of the generic body or into a non-generic helper" : ""
             register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
                                       arg_types = sig.arg_types, return_type = sig.return_type,
-                                      path = qualified_name(sig.module_path, sig.name), compiler)
+                                      path = qualified_name(sig.module_path, sig.name), compiler, blocked)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         elseif sig.exported
             _register_return_type(sig, lib_name)

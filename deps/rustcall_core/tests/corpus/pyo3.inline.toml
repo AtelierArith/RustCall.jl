@@ -15,6 +15,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 2
 module_path = []
 

@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use syn::visit_mut::{self, VisitMut};
 use syn::{GenericParam, Item, ItemFn, Path, PathArguments, Type, WherePredicate};
 
+use crate::cfg::body_has_cfg;
 use crate::manifest::{Arg, Attribute, Function, Manifest, Mode, ReturnKind};
 use crate::types::{return_type_to_string, type_to_string};
 
@@ -373,6 +374,7 @@ fn function_entry(func: &ItemFn) -> Function {
         err_type: String::new(),
         inner_type: String::new(),
         source: String::new(),
+        body_has_cfg: body_has_cfg(&func.block),
         line: 0,
         module_path: Vec::new(),
     }

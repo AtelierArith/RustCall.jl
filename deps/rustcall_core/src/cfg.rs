@@ -536,6 +536,33 @@ pub fn prune_or_error(set: &CfgSet, items: &mut Vec<Item>) -> Result<(), syn::Er
     }
 }
 
+/// Whether a function body contains a `#[cfg(...)]` / `#[cfg_attr(...)]`
+/// attribute (on a statement, expression, local, nested item, ...) or a
+/// `cfg!(...)` macro. Such a body still depends on the configuration it is
+/// compiled under even after item-level pruning (see `Function::body_has_cfg`).
+pub fn body_has_cfg(block: &syn::Block) -> bool {
+    struct Finder {
+        found: bool,
+    }
+    impl<'ast> syn::visit::Visit<'ast> for Finder {
+        fn visit_attribute(&mut self, attr: &'ast Attribute) {
+            if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
+                self.found = true;
+            }
+            syn::visit::visit_attribute(self, attr);
+        }
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            if mac.path.segments.last().is_some_and(|s| s.ident == "cfg") {
+                self.found = true;
+            }
+            syn::visit::visit_macro(self, mac);
+        }
+    }
+    let mut finder = Finder { found: false };
+    syn::visit::Visit::visit_block(&mut finder, block);
+    finder.found
+}
+
 /// `(predicate, attributes)` of a `#[cfg_attr(pred, a, b)]` attribute.
 pub fn cfg_attr_parts(attr: &Attribute) -> Option<(Meta, Vec<Meta>)> {
     if !attr.path().is_ident("cfg_attr") {

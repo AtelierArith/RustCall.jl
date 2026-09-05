@@ -21,6 +21,7 @@ where
     value
 }
 """
+body_has_cfg = false
 line = 1
 module_path = []
 
@@ -49,6 +50,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 38
 module_path = []
 

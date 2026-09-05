@@ -67,6 +67,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--cfg-file` values are parsed as Rust string literals and unescaped exactly
   once, so `custom="\"quoted\""` is no longer conflated with
   `custom="quoted"`; a malformed value is an error.
+- `CARGO_HOME` is part of the tracked Cargo environment, together with a
+  digest of the effective `$CARGO_HOME/config.toml` (whose `[build] rustflags`
+  the cfg probe observes), so a block precompiled under one Cargo home is
+  rebuilt rather than reused under another.
+- Generic functions of a `// cargo-deps:` block whose body contains `#[cfg]`
+  or `cfg!` (reported by the new `body_has_cfg` manifest field) refuse lazy
+  specialization with a `RustError`: the specialization is a direct `rustc`
+  build under a different configuration than the Cargo build, so the body
+  could take another branch. Move such code out of the generic body.
+- After a reload that derives a new library name (toolchain or snapshot
+  changed since precompilation), the loaded handle is aliased under the
+  stored name and the module's active library is updated, so later calls no
+  longer reload on every call or fall back to the global symbol search.
 - The `CResult_<fn>` / `COption_<fn>` wrappers store the inactive payload as
   `MaybeUninit<T>`, so zero-filling it is no longer undefined behaviour for
   types with invalid zero bit patterns (`NonZeroU32`, references). The C

@@ -15,6 +15,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 5
 module_path = []
 
@@ -37,6 +38,7 @@ ok_type = "u32"
 err_type = "i32"
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 11
 module_path = []
 
@@ -54,6 +56,7 @@ ok_type = ""
 err_type = ""
 inner_type = "f64"
 source = ""
+body_has_cfg = false
 line = 18
 module_path = []
 
@@ -76,6 +79,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 44
 module_path = ["extra"]
 
