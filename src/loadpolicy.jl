@@ -5,13 +5,15 @@
 #   1. the `dlopen` flag set (`RTLD_LOCAL` vs `RTLD_GLOBAL`)          — 12 sites
 #   2. the panic strategy of the produced artifact (`abort` vs `unwind`)
 #      and what the generated `extern "C"` boundary does about it
-#   3. whether the loaded handle is registered in `RUST_LIBRARIES`,
-#      under what kind of key, and whether `CURRENT_LIB` moves        — 7 sites
+#   3. whether the loaded handle is registered in `RUST_LIBRARIES`, under what
+#      kind of key, whether an existing entry is replaced or kept, and whether
+#      `CURRENT_LIB` moves                                            — 7 sites
 #   4. the finalizer / ownership policy of the types the artifact produces
 #
 # Because the policy lives at the call site, the same user-visible construct
-# behaves differently depending on which door it came through — or even on
-# whether the cache hit (#250).  This file introduces one record that names
+# behaves differently depending on which door it came through — an inline
+# `rust"""` block is RTLD_LOCAL without `// cargo-deps:` and RTLD_GLOBAL with
+# it (#250).  This file introduces one record that names
 # those four decisions, plus one named constructor per existing front door, so
 # that Phase B can move call sites onto the shared loader one at a time without
 # having to agree on the target policy first.
@@ -44,7 +46,10 @@ shadow one another in the process-global namespace.
 
 Note that the helper library is one of the few loaded `RTLD_LOCAL` today, and
 the leaf artifacts are mostly loaded `RTLD_GLOBAL` — i.e. current `main` has
-the rule exactly inverted.  Phase A only records this; it changes nothing.
+the rule exactly inverted.  The split among inline blocks runs along the
+dependency axis and is stable across cache states: no `// cargo-deps:` means
+`RTLD_LOCAL` on both a cache hit and a miss, `// cargo-deps:` means
+`RTLD_GLOBAL` on both.  Phase A only records this; it changes nothing.
 """
 const SYMBOL_VISIBILITY_RULE = """
 RTLD_GLOBAL is for libraries whose symbols other libraries resolve against \
@@ -58,9 +63,9 @@ handle via dlsym is RTLD_LOCAL.\
 One explicit record of the load/compile policy for a single compiled artifact.
 
 Construct one through a named constructor (see `inline_rustc_policy`,
-`inline_cargo_policy`, `crate_policy`,
-`helper_library_policy`, `cache_hit_policy`) rather than
-calling this constructor directly, so that every front door keeps a name.
+`inline_cargo_policy`, `crate_policy`, `helper_library_policy`, and the rest of
+`ALL_LOAD_POLICIES`) rather than calling this constructor directly, so that
+every front door keeps a name.
 
 # Fields
 
@@ -73,10 +78,18 @@ calling this constructor directly, so that every front door keeps a name.
   whether this artifact publishes its symbols into the process-global
   namespace.  See `SYMBOL_VISIBILITY_RULE` for when that is legitimate.
 
-- `panic_strategy::Symbol` — `:abort` or `:unwind`, the panic strategy the
-  artifact is *compiled* with.  `:abort` corresponds to `-C panic=abort`
-  (`src/compiler.jl:219`, `:381`); `:unwind` is the Cargo path, whose generated
-  `[profile.release]` sets only `opt-level`/`lto` (`src/cargoproject.jl:126-128`).
+- `panic_strategy::Symbol` — the panic strategy the artifact is *compiled*
+  with, one of:
+    * `:abort` — RustCall passes `-C panic=abort` (`src/compiler.jl:219`, `:381`);
+    * `:unwind` — RustCall controls the build and does not set a panic mode, so
+      Cargo's `unwind` default applies (the generated `[profile.release]` at
+      `src/cargoproject.jl:126-128` writes only `opt-level`/`lto`);
+    * `:crate_profile` — RustCall does **not** control the build: Cargo runs in
+      the *user's* crate, so the effective profile (the crate's own
+      `[profile.release]`, a workspace profile, `.cargo/config.toml`, or
+      `CARGO_PROFILE_RELEASE_PANIC`) decides, and `panic = "abort"` there is
+      honoured.  Unknown to Phase A, hence a separate value rather than a
+      guess.
 
 - `boundary_catches_panics::Bool` — whether the generated `extern "C"` wrapper
   is expected to wrap the user body in `std::panic::catch_unwind`.  There are
@@ -93,6 +106,14 @@ calling this constructor directly, so that every front door keeps a name.
   `:rust_libraries`: `:content_hash` (`rust_<hash>` from the inline paths),
   `:lib_basename` (generics), `:irust_hash` (`irust_<hash>`),
   `:crate_lib_name` (hot reload), or `:none`.
+
+- `registration_mode::Symbol` — `:replace` (assign unconditionally, as the
+  five `src/ruststr.jl` sites do) or `:insert_only` (keep an existing entry, as
+  `src/generics.jl:250-253` deliberately does behind `if !haskey(...)`).  The
+  distinction matters because `_unique_source_name` (`src/compiler.jl:68-72`)
+  gives every non-debug compilation the same `rust_code` basename, so the
+  generics key collides across instantiations and an unconditional assignment
+  would drop the live handle together with its function-pointer cache.
 
 - `sets_current_lib::Bool` — whether the site also moves `CURRENT_LIB[]`.
 
@@ -117,6 +138,7 @@ struct LoadPolicy
     boundary_catches_panics::Bool
     registry::Symbol
     registry_key_kind::Symbol
+    registration_mode::Symbol
     sets_current_lib::Bool
     finalizer_frees::Bool
     call_sites::Vector{String}
@@ -124,16 +146,18 @@ struct LoadPolicy
     notes::String
 end
 
-const _VALID_PANIC_STRATEGIES = (:abort, :unwind)
+const _VALID_PANIC_STRATEGIES = (:abort, :unwind, :crate_profile)
 const _VALID_REGISTRIES = (:rust_libraries, :module_local, :helper_slot, :none)
 const _VALID_KEY_KINDS = (:content_hash, :lib_basename, :irust_hash, :crate_lib_name, :none)
+const _VALID_REGISTRATION_MODES = (:replace, :insert_only)
 
 """
     LoadPolicy(name; kwargs...) -> LoadPolicy
 
 Keyword constructor with the conservative defaults Phase B should converge on:
 `RTLD_LOCAL | RTLD_NOW`, `panic=abort`, registration in `RUST_LIBRARIES` under
-a content hash, `CURRENT_LIB` untouched, and finalizers that free.
+a content hash replacing any previous entry, `CURRENT_LIB` untouched, and
+finalizers that free.
 
 Every named constructor below overrides whatever its call sites do differently.
 """
@@ -143,6 +167,7 @@ function LoadPolicy(name::AbstractString;
                     boundary_catches_panics::Bool = false,
                     registry::Symbol = :rust_libraries,
                     registry_key_kind::Symbol = :content_hash,
+                    registration_mode::Symbol = :replace,
                     sets_current_lib::Bool = false,
                     finalizer_frees::Bool = true,
                     call_sites::AbstractVector{<:AbstractString} = String[],
@@ -154,6 +179,8 @@ function LoadPolicy(name::AbstractString;
         throw(ArgumentError("invalid registry $(registry); expected one of $(_VALID_REGISTRIES)"))
     registry_key_kind in _VALID_KEY_KINDS ||
         throw(ArgumentError("invalid registry_key_kind $(registry_key_kind); expected one of $(_VALID_KEY_KINDS)"))
+    registration_mode in _VALID_REGISTRATION_MODES ||
+        throw(ArgumentError("invalid registration_mode $(registration_mode); expected one of $(_VALID_REGISTRATION_MODES)"))
     if registry !== :rust_libraries && registry_key_kind !== :none
         throw(ArgumentError("registry_key_kind must be :none unless registry is :rust_libraries"))
     end
@@ -161,7 +188,7 @@ function LoadPolicy(name::AbstractString;
     return LoadPolicy(String(name), flags,
                       (flags & UInt32(Libdl.RTLD_GLOBAL)) != 0,
                       panic_strategy, boundary_catches_panics,
-                      registry, registry_key_kind, sets_current_lib,
+                      registry, registry_key_kind, registration_mode, sets_current_lib,
                       finalizer_frees,
                       String[String(s) for s in call_sites],
                       Int[Int(i) for i in issues],
@@ -177,15 +204,17 @@ end
 """
     inline_rustc_policy() -> LoadPolicy
 
-Inline `rust\"\"\"...\"\"\"` block with no `// cargo-deps:`, compiled straight by
-`rustc` and loaded on a cache **miss**.
+Inline `rust\"\"\"...\"\"\"` block with **no** `// cargo-deps:`, compiled straight by
+`rustc`.  Covers the path on both cache states — a disk-cache hit
+(`src/cache.jl:270`, registered at `src/ruststr.jl:251`) and a cache miss
+(`src/ruststr.jl:284`, registered at `:291`) both load `RTLD_LOCAL`, so
+visibility does **not** depend on the cache.  Compiled with `-C panic=abort`
+(`src/compiler.jl:381`).
 
-Subsumes `src/ruststr.jl:284` (dlopen, `RTLD_LOCAL`) and the registration at
-`src/ruststr.jl:291`.  Compiled with `-C panic=abort` (`src/compiler.jl:381`).
-
-Diverges from `cache_hit_policy` — which is the *same block* on a cache
-hit — only in the direction of the divergence being invisible to the user
-(#250).
+The visibility divergence runs along the *dependency* axis, not the cache axis:
+this door is `RTLD_LOCAL` while `inline_cargo_policy` — the same `rust\"\"\"`
+construct that happens to declare `// cargo-deps:` — is `RTLD_GLOBAL` on both
+of its cache states (#250).
 """
 inline_rustc_policy() = LoadPolicy("inline-rustc";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
@@ -193,13 +222,15 @@ inline_rustc_policy() = LoadPolicy("inline-rustc";
     boundary_catches_panics = false,
     registry = :rust_libraries,
     registry_key_kind = :content_hash,
+    registration_mode = :replace,
     sets_current_lib = true,
     finalizer_frees = false,
-    call_sites = ["src/ruststr.jl:284", "src/ruststr.jl:291",
+    call_sites = ["src/cache.jl:270", "src/ruststr.jl:251",
+                  "src/ruststr.jl:284", "src/ruststr.jl:291",
                   "src/compiler.jl:381", "src/structs.jl:282-285"],
     issues = [244, 249, 250],
-    notes = "RTLD_LOCAL here but RTLD_GLOBAL for the same block on a cache " *
-            "hit (src/ruststr.jl:386) and on the Cargo path; inline #[julia] " *
+    notes = "RTLD_LOCAL on both cache states, while the same construct with " *
+            "// cargo-deps: is RTLD_GLOBAL on both of its; inline #[julia] " *
             "struct finalizers do not free.")
 
 """
@@ -208,8 +239,11 @@ inline_rustc_policy() = LoadPolicy("inline-rustc";
 Inline `rust\"\"\"...\"\"\"` block carrying `// cargo-deps:`, built through a
 generated Cargo project.
 
-Subsumes `src/ruststr.jl:419` (build) and `src/ruststr.jl:386` (Cargo cache
-hit), both `RTLD_GLOBAL`, with registration at `:426` / `:389`.
+Covers both cache states: the Cargo cache hit (`src/ruststr.jl:386`,
+registered at `:389`) and the fresh build (`:419`, registered at `:426`) both
+load `RTLD_GLOBAL`, so — as with `inline_rustc_policy` — visibility does not
+depend on the cache.  The axis along which visibility differs is whether the
+block declares `// cargo-deps:` (#250).
 
 The generated `Cargo.toml` writes only `opt-level`/`lto`
 (`src/cargoproject.jl:126-128`), so the artifact **unwinds** while the direct
@@ -239,21 +273,32 @@ and the emitted bindings file template (`src/crate_bindings.jl:1360`).
 The handle lives in a module-local `_LIB_HANDLE` `Ref`, not in `RUST_LIBRARIES`,
 so `RustCall`-level unload never sees it.  Crate structs *do* free in their
 finalizer (`src/crate_bindings.jl:550`), the opposite of inline structs (#249).
-Built by Cargo, hence `:unwind`.
+
+Panic strategy is `:crate_profile`, not `:unwind`: `build_crate_directly`
+(`src/crate_bindings.jl:914-925`) points a `CargoProject` at the user's own
+crate directory and runs Cargo there, so the effective profile is the user's —
+a `[profile.release] panic = "abort"` in their `Cargo.toml`, a workspace
+profile, `.cargo/config.toml`, or `CARGO_PROFILE_RELEASE_PANIC` are all
+honoured, and RustCall neither sets nor reads it.  Phase B must either read the
+effective profile (`cargo metadata` / `cargo config get`) or force the strategy
+explicitly on the command line before it can promise one panic policy across
+doors (#244).
 """
 crate_policy() = LoadPolicy("rust-crate";
     dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
-    panic_strategy = :unwind,
+    panic_strategy = :crate_profile,
     boundary_catches_panics = false,
     registry = :module_local,
     registry_key_kind = :none,
     sets_current_lib = false,
     finalizer_frees = true,
     call_sites = ["src/crate_bindings.jl:344", "src/crate_bindings.jl:550",
-                  "src/crate_bindings.jl:1360"],
-    issues = [249, 250],
+                  "src/crate_bindings.jl:914-925", "src/crate_bindings.jl:1360"],
+    issues = [244, 249, 250],
     notes = "Only front door whose struct finalizers free; handle is not in " *
-            "RUST_LIBRARIES so it cannot be unloaded through the registry.")
+            "RUST_LIBRARIES so it cannot be unloaded through the registry; " *
+            "and Cargo runs in the user's crate, so the panic strategy is " *
+            "whatever their effective profile says.")
 
 """
     helper_library_policy() -> LoadPolicy
@@ -290,34 +335,22 @@ helper_library_policy() = LoadPolicy("helper-library";
             "unwinds like the other Cargo-backed artifacts.")
 
 """
-    cache_hit_policy() -> LoadPolicy
-
-An inline block served from the artifact cache: `load_cached_library`
-(`src/cache.jl:270`, `RTLD_LOCAL`) with registration at `src/ruststr.jl:251`.
-
-Identical source to `inline_rustc_policy`; the pair
-`src/ruststr.jl:284` (miss) versus `src/ruststr.jl:386` (Cargo hit) is the
-concrete instance of #250 where symbol visibility depends on cache state.
-"""
-cache_hit_policy() = LoadPolicy("cache-hit";
-    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :abort,
-    boundary_catches_panics = false,
-    registry = :rust_libraries,
-    registry_key_kind = :content_hash,
-    sets_current_lib = true,
-    finalizer_frees = false,
-    call_sites = ["src/cache.jl:270", "src/ruststr.jl:251"],
-    issues = [250],
-    notes = "Same block as inline-rustc; whether the process-global namespace " *
-            "gains the symbols depends on whether a file was in the cache.")
-
-"""
     generics_policy() -> LoadPolicy
 
 Monomorphized generic instantiation (`src/generics.jl:243`, registered at
 `:252` under the library *basename* rather than a content hash, and never
 touching `CURRENT_LIB`).
+
+Registration mode is `:insert_only`: `src/generics.jl:250-253` writes the entry
+only `if !haskey(RUST_LIBRARIES, lib_name)`, and that guard is load-bearing.
+`_unique_source_name` (`src/compiler.jl:68-72`) returns the fixed base name
+`rust_code` whenever debug mode is off, so every instantiation compiled into
+its own temp directory yields the same `librust_code` basename — the registry
+key collides across instantiations.  Replacing the entry would swap the live
+handle and throw away the accumulated function-pointer cache that
+`src/generics.jl:267` fills, so Phase B must preserve the insert-only
+behaviour (or key these libraries by content, which is a behaviour change and
+therefore not Phase A).
 """
 generics_policy() = LoadPolicy("generics-monomorphization";
     dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
@@ -325,11 +358,14 @@ generics_policy() = LoadPolicy("generics-monomorphization";
     boundary_catches_panics = false,
     registry = :rust_libraries,
     registry_key_kind = :lib_basename,
+    registration_mode = :insert_only,
     sets_current_lib = false,
     finalizer_frees = false,
-    call_sites = ["src/generics.jl:243", "src/generics.jl:252"],
+    call_sites = ["src/compiler.jl:68-72", "src/generics.jl:243",
+                  "src/generics.jl:250-253", "src/generics.jl:267"],
     issues = [250],
-    notes = "Registers under a basename key, unlike every other RUST_LIBRARIES writer.")
+    notes = "Registers under a colliding basename key and only when absent, " *
+            "unlike every other RUST_LIBRARIES writer.")
 
 """
     irust_policy() -> LoadPolicy
@@ -356,17 +392,23 @@ irust_policy() = LoadPolicy("irust";
 Hot reload of a `@rust_crate` crate (`src/hot_reload.jl:205`, re-registered at
 `:210`).  The rebuild happens outside `REGISTRY_LOCK`, and a failed rebuild
 currently leaves the registry without the previous entry (#255).
+
+Like `crate_policy`, the panic strategy is `:crate_profile`: `rebuild_crate`
+runs `cargo build --release --manifest-path <user crate>` against their crate
+(`src/hot_reload.jl:264`), so their profile decides.
 """
 hot_reload_policy() = LoadPolicy("hot-reload";
     dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
-    panic_strategy = :unwind,
+    panic_strategy = :crate_profile,
     boundary_catches_panics = false,
     registry = :rust_libraries,
     registry_key_kind = :crate_lib_name,
+    registration_mode = :replace,
     sets_current_lib = false,
     finalizer_frees = true,
-    call_sites = ["src/hot_reload.jl:205", "src/hot_reload.jl:210"],
-    issues = [250, 255],
+    call_sites = ["src/hot_reload.jl:205", "src/hot_reload.jl:210",
+                  "src/hot_reload.jl:264"],
+    issues = [244, 250, 255],
     notes = "Registration is not transactional with the rebuild, so a failed " *
             "rebuild can leave the registry without the previous entry.")
 
@@ -397,7 +439,6 @@ Used by `test/test_loadpolicy.jl` to pin down the current divergences.
 """
 const ALL_LOAD_POLICIES = (
     inline_rustc_policy,
-    cache_hit_policy,
     inline_cargo_policy,
     crate_policy,
     helper_library_policy,
@@ -429,11 +470,15 @@ uses_global_symbols(policy::LoadPolicy) = policy.global_symbols
     rustc_panic_flags(policy::LoadPolicy) -> Vector{String}
 
 The `rustc` arguments implied by the policy's panic strategy — `["-C",
-"panic=abort"]` for `:abort`, empty for `:unwind` (rustc's default).
+"panic=abort"]` for `:abort`, empty for `:unwind` (rustc's default), and
+`missing` for `:crate_profile`, where the build is Cargo's inside the user's
+crate and RustCall does not drive `rustc` at all.
 Mirrors `src/compiler.jl:219`, `:381`.
 """
-rustc_panic_flags(policy::LoadPolicy) =
-    policy.panic_strategy === :abort ? ["-C", "panic=abort"] : String[]
+function rustc_panic_flags(policy::LoadPolicy)
+    policy.panic_strategy === :crate_profile && return missing
+    return policy.panic_strategy === :abort ? ["-C", "panic=abort"] : String[]
+end
 
 """
     cargo_profile_panic_line(policy::LoadPolicy) -> Union{String, Nothing}
@@ -442,20 +487,49 @@ The line the generated `[profile.release]` section needs to honour the policy's
 panic strategy, or `nothing` when the Cargo default already matches.
 `src/cargoproject.jl` emits no such line today, which is why the Cargo path
 unwinds (#244).
+
+Returns `missing` for `:crate_profile`: RustCall generates no `Cargo.toml` for
+those doors — the manifest is the user's — so there is no line for it to write,
+and Phase B has to read the effective profile (`cargo metadata` /
+`cargo config get`) or force the strategy on the command line instead.
 """
-cargo_profile_panic_line(policy::LoadPolicy) =
-    policy.panic_strategy === :abort ? "panic = \"abort\"" : nothing
+function cargo_profile_panic_line(policy::LoadPolicy)
+    policy.panic_strategy === :crate_profile && return missing
+    return policy.panic_strategy === :abort ? "panic = \"abort\"" : nothing
+end
 
 """
     requires_catch_unwind_boundary(policy::LoadPolicy) -> Bool
 
 Whether a generated `extern "C"` wrapper for this artifact must wrap the user
 body in `std::panic::catch_unwind` to keep a panic from crossing the FFI
-boundary.  True exactly when the artifact unwinds and the boundary does not
-already catch — i.e. on every Cargo-backed path today (#244).
+boundary.  `true` exactly when the artifact unwinds and the boundary does not
+already catch — i.e. on every path RustCall builds with Cargo today (#244).
+
+Returns **`missing`** for `:crate_profile`: whether those artifacts unwind is
+decided by the user's Cargo profile, which Phase A does not read.  Callers that
+need a decision rather than a fact should use `must_assume_unwind`, which
+resolves the unknown conservatively.
 """
-requires_catch_unwind_boundary(policy::LoadPolicy) =
-    policy.panic_strategy === :unwind && !policy.boundary_catches_panics
+function requires_catch_unwind_boundary(policy::LoadPolicy)
+    policy.boundary_catches_panics && return false
+    policy.panic_strategy === :crate_profile && return missing
+    return policy.panic_strategy === :unwind
+end
+
+"""
+    must_assume_unwind(policy::LoadPolicy) -> Bool
+
+The conservative resolution of `requires_catch_unwind_boundary`: `true` unless
+the artifact is known to abort or the boundary already catches.  An unknown
+(`:crate_profile`) strategy resolves to `true`, because a boundary that catches
+a panic that cannot happen is merely redundant, while a missing boundary on an
+unwinding artifact is undefined behaviour (#244).
+"""
+function must_assume_unwind(policy::LoadPolicy)
+    policy.boundary_catches_panics && return false
+    return policy.panic_strategy !== :abort
+end
 
 """
     registers_in_rust_libraries(policy::LoadPolicy) -> Bool
@@ -485,6 +559,12 @@ Record a loaded handle according to `policy`, as one transaction under
 and (when `policy.sets_current_lib`) `CURRENT_LIB[]` are installed together, so
 no other task can observe a half-registered library.
 
+`policy.registration_mode` decides what happens when the key is already taken:
+`:replace` overwrites the entry (what the five `src/ruststr.jl` sites do),
+`:insert_only` leaves the existing handle and its function-pointer cache
+untouched (what `src/generics.jl:250-253` does behind `if !haskey(...)`, which
+matters because the generics key collides — see `generics_policy`).
+
 Returns `lib_name`.  A no-op returning `lib_name` for policies that do not use
 `RUST_LIBRARIES` (`:module_local`, `:helper_slot`, `:none`), so a Phase B call
 site can call it unconditionally.
@@ -500,6 +580,10 @@ function register_library!(policy::LoadPolicy, lib_name::AbstractString, handle:
     end
     handle == C_NULL && throw(ArgumentError("refusing to register a NULL handle for $(name)"))
     lock(REGISTRY_LOCK) do
+        if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
+            @debug "register_library!: keeping the existing entry" lib_name=name policy=policy.name
+            return
+        end
         RUST_LIBRARIES[name] = (handle, Dict{String, Ptr{Cvoid}}())
         if policy.sets_current_lib
             CURRENT_LIB[] = name
@@ -536,5 +620,6 @@ function Base.show(io::IO, policy::LoadPolicy)
     print(io, "LoadPolicy(", policy.name, ": ", vis,
           ", panic=", policy.panic_strategy,
           ", registry=", policy.registry,
+          "/", policy.registration_mode,
           ", finalizer_frees=", policy.finalizer_frees, ")")
 end
