@@ -276,6 +276,10 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
     push!(lines, "[profile.release]")
     push!(lines, "opt-level = 3")
     push!(lines, "lto = true")
+    # Pinned, for the same reason as the inline Cargo manifest: the generated
+    # `catch_unwind` boundary can only catch a panic that unwinds (#244).
+    panic_line = cargo_profile_panic_line(crate_wrapper_policy())
+    panic_line === nothing || push!(lines, panic_line)
 
     join(lines, "\n")
 end
@@ -963,7 +967,8 @@ function generate_bindings(crate_path::String;
             )
 
             try
-                lib_path = build_cargo_project(wrapper_project, release=build_release)
+                lib_path = build_cargo_project(wrapper_project, release=build_release,
+                                               policy=crate_wrapper_policy())
             finally
                 cleanup_cargo_project(wrapper_project)
             end
@@ -1019,7 +1024,9 @@ function build_crate_directly(info::CrateInfo, release::Bool)
         info.path
     )
 
-    build_cargo_project(project, release=release)
+    # The Cargo root here is the *user's* manifest, so the policy pins nothing
+    # and their profile decides (`crate_direct_policy`, #244).
+    build_cargo_project(project, release=release, policy=crate_direct_policy())
 end
 
 """
@@ -1390,7 +1397,8 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         )
 
         try
-            build_cargo_project(wrapper_project, release=build_release)
+            build_cargo_project(wrapper_project, release=build_release,
+                                policy=crate_wrapper_policy())
         finally
             cleanup_cargo_project(wrapper_project)
         end

@@ -319,23 +319,34 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     @debug "Calling function '$func_name' from library '$owning_lib'"
 
     # Try to get type info from registered function info
+    # Every call through a generated wrapper is followed by a read of that
+    # wrapper's panic channel: a `#[julia]` function that panicked returned a
+    # sentinel, and `guard_rust_panic` turns it into a `RustPanicError` rather
+    # than letting the caller use it (#244). The symbol is the one the pointer
+    # was resolved from, so the channel belongs to the same wrapper.
+    symbol = exported_symbol(owning_lib, func_name)
+
     func_info = get_function_info(owning_lib, func_name)
     if func_info !== nothing && func_info.return_type !== Any
-        return call_rust_function(func_ptr, func_info.return_type, args...)
+        return guard_rust_panic(call_rust_function(func_ptr, func_info.return_type, args...),
+                                owning_lib, symbol, func_name)
     end
 
     # Try to get the return type the owning library registered
     ret_type = get_function_return_type(owning_lib, func_name)
     if ret_type !== nothing
         @debug "Using registered return type for $func_name: $ret_type"
-        return call_rust_function(func_ptr, ret_type, args...)
+        return guard_rust_panic(call_rust_function(func_ptr, ret_type, args...),
+                                owning_lib, symbol, func_name)
     end
 
     # Try to get type info from LLVM analysis
     try
         ret_type, expected_arg_types = infer_function_types(lib_name, func_name)
-        return call_rust_function(func_ptr, ret_type, args...)
-    catch
+        return guard_rust_panic(call_rust_function(func_ptr, ret_type, args...),
+                                owning_lib, symbol, func_name)
+    catch e
+        e isa RustPanicError && rethrow()
         # Fall back to inference from arguments
     end
 
@@ -357,8 +368,9 @@ Call a Rust function with explicit return type.
 """
 function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, args...)
     local func_ptr
+    local owning_lib
     try
-        func_ptr = get_function_pointer(lib_name, func_name)
+        func_ptr, owning_lib = _resolve_call(lib_name, func_name)
     catch e
         # If not found, check if it's a generic function that needs monomorphization
         if is_generic_function(func_name)
@@ -370,7 +382,9 @@ function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, a
         end
     end
 
-    return call_rust_function(func_ptr, ret_type, args...)
+    # ...and the panic channel of the wrapper the pointer came from (#244).
+    return guard_rust_panic(call_rust_function(func_ptr, ret_type, args...),
+                            owning_lib, exported_symbol(owning_lib, func_name), func_name)
 end
 
 """

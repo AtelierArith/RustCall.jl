@@ -126,6 +126,13 @@ function generate_cargo_toml(name::String, deps::Vector{DependencySpec}, edition
     push!(lines, "[profile.release]")
     push!(lines, "opt-level = 3")
     push!(lines, "lto = true")
+    # The panic strategy is pinned, not inherited (#244). Cargo's release
+    # default happens to match today, but `CARGO_PROFILE_RELEASE_PANIC=abort`
+    # in the caller's environment would otherwise silently produce a library
+    # whose `catch_unwind` boundary can never fire — the same source, a
+    # different failure mode, decided by an environment variable.
+    panic_line = cargo_profile_panic_line(inline_cargo_policy())
+    panic_line === nothing || push!(lines, panic_line)
 
     join(lines, "\n")
 end

@@ -131,8 +131,9 @@ fn result_wrappers_keep_cfg_attributes() {
     let src = "#[julia]\n#[cfg(windows)]\npub fn r() -> Result<i32, i32> { Ok(1) }\n#[julia]\n#[cfg(windows)]\npub fn o() -> Option<i32> { None }";
     let e = expand(src).unwrap();
     let gated = e.source.matches("#[cfg(windows)]").count();
-    // CResult struct + accessor impl + inner fn + extern fn, twice.
-    assert_eq!(gated, 8, "{}", e.source);
+    // CResult struct + accessor impl + inner fn + extern fn + the panic
+    // channel's two items (#244), twice.
+    assert_eq!(gated, 12, "{}", e.source);
 }
 
 #[test]
@@ -509,9 +510,10 @@ pub fn r() -> Result<i32, i32> { Ok(1) }
 pub fn o() -> Option<i32> { None }
 "#;
     let e = expand(src).unwrap();
-    // CResult/COption struct + accessor impl + inner fn + extern fn, twice.
+    // CResult/COption struct + accessor impl + inner fn + extern fn + the two
+    // items of the panic channel (thread-local slot and reader, #244), twice.
     let gated = e.source.matches("cfg_attr(not(feature = \"ffi\")").count();
-    assert_eq!(gated, 8, "{}", e.source);
+    assert_eq!(gated, 12, "{}", e.source);
 
     // Only the `cfg`-producing part is copied onto the generated items; an
     // unrelated attribute stays on the exported function alone.
@@ -525,7 +527,7 @@ pub fn r() -> Result<i32, i32> { Ok(1) }
         e.source
             .matches("cfg_attr(not(feature = \"ffi\"), cfg(any()))")
             .count(),
-        3,
+        5,
         "{}",
         e.source
     );

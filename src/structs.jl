@@ -588,6 +588,11 @@ end
 function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...)
     func_ptr = get_function_pointer(lib_name, func_name)
     raw = call_rust_function(func_ptr, CRustString, args...)
+    # A panic returns the empty buffer sentinel, which would decode to `""`.
+    # Read the channel before the buffer, so a panicked call raises instead of
+    # quietly producing an empty string (#244). Nothing needs freeing on that
+    # path: the sentinel owns no allocation.
+    check_rust_panic(lib_name, func_name)
 
     try
         return _crust_string_to_julia(raw)
@@ -602,6 +607,7 @@ end
 function _call_rust_borrowed_string(lib_name::String, func_name::String, args...)
     func_ptr = get_function_pointer(lib_name, func_name)
     raw = call_rust_function(func_ptr, CRustStr, args...)
+    check_rust_panic(lib_name, func_name)
     return _crust_str_to_julia(raw)
 end
 

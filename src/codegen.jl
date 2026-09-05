@@ -127,8 +127,124 @@ function clear_library_metadata!(lib_name::AbstractString)
         for key in collect(keys(FUNCTION_RETURN_TYPES_BY_LIB))
             first(key) == name && delete!(FUNCTION_RETURN_TYPES_BY_LIB, key)
         end
+        # A panic-channel pointer points *into the image*. A library replaced
+        # under the same name — a re-run block, a hot reload — is a different
+        # image, so the pointer must be resolved again rather than called into
+        # the one that was closed (#244).
+        for key in collect(keys(PANIC_CHANNELS))
+            first(key) == name && delete!(PANIC_CHANNELS, key)
+        end
     end
     return nothing
+end
+
+"""
+    PANIC_CHANNELS
+
+`(library name, wrapper symbol)` → the pointer to that wrapper's panic-channel
+reader, or `C_NULL` when the library exports none.
+
+A `#[julia]` wrapper catches the panic, records the message in a thread-local
+slot and exports `<symbol>_take_panic` to read it (#244). Julia has to look
+that symbol up once per wrapper — a `dlsym` per call would cost more than the
+call — and remember the answer, including the negative one: an artifact built
+before #244, or a raw `#[no_mangle]` function the user wrote themselves, has no
+channel and must not be probed again.
+
+Entries are dropped with their library (`purge_library_state!`), so a reloaded
+library re-resolves against the image that is actually mapped rather than
+calling a pointer into a `dlclose`d one.
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const PANIC_CHANNELS = Dict{Tuple{String, String}, Ptr{Cvoid}}()
+
+# Buffer for one panic message. Panic text is short; a message longer than this
+# is fetched again with an exact-size buffer (the channel keeps it until it has
+# been read whole).
+const _PANIC_BUFFER_BYTES = 4096
+
+"""
+    panic_channel_pointer(lib_name, symbol) -> Ptr{Cvoid}
+
+The panic-channel reader of `symbol` in `lib_name`, resolved once and cached
+(`C_NULL` when the library has none).
+"""
+function panic_channel_pointer(lib_name::AbstractString, symbol::AbstractString)
+    lib = String(lib_name)
+    sym = String(symbol)
+    lock(REGISTRY_LOCK) do
+        cached = get(PANIC_CHANNELS, (lib, sym), nothing)
+        cached === nothing || return cached
+        entry = get(RUST_LIBRARIES, lib, nothing)
+        ptr = C_NULL
+        if entry !== nothing
+            found = Libdl.dlsym(entry[1], ffi_panic_symbol(sym); throw_error = false)
+            (found === nothing || found == C_NULL) || (ptr = found)
+        end
+        PANIC_CHANNELS[(lib, sym)] = ptr
+        return ptr
+    end
+end
+
+"""
+    take_rust_panic(channel::Ptr{Cvoid}) -> Union{String, Nothing}
+
+Read and clear the pending panic message of one wrapper, or `nothing` when it
+did not panic. `channel` is a pointer obtained from `panic_channel_pointer`.
+
+Two calls at most: the first with a fixed buffer, and — only if the message was
+longer — a second with a buffer of exactly the length the channel reported. The
+channel deliberately keeps a message it could not deliver whole, so nothing is
+truncated and nothing is lost.
+"""
+function take_rust_panic(channel::Ptr{Cvoid})
+    channel == C_NULL && return nothing
+    buffer = Vector{UInt8}(undef, _PANIC_BUFFER_BYTES)
+    len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), buffer, length(buffer))
+    len == 0 && return nothing
+    if len > length(buffer)
+        buffer = Vector{UInt8}(undef, len)
+        len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), buffer, length(buffer))
+        len == 0 && return nothing
+    end
+    return String(@view buffer[1:Int(len)])
+end
+
+"""
+    check_rust_panic(lib_name, symbol, func_name = symbol)
+
+Raise `RustPanicError` when the wrapper `symbol` of `lib_name` recorded a panic
+during the call that just returned.
+
+Called immediately after every ccall that goes through a generated wrapper. The
+cost on the common path is one dictionary lookup plus one ccall into a
+thread-local read that returns 0; a library with no channel costs the lookup
+alone (#244).
+"""
+function check_rust_panic(lib_name::AbstractString, symbol::AbstractString,
+                          func_name::AbstractString = symbol)
+    channel = panic_channel_pointer(lib_name, symbol)
+    channel == C_NULL && return nothing
+    message = take_rust_panic(channel)
+    message === nothing && return nothing
+    throw(RustPanicError(String(func_name), message))
+end
+
+"""
+    guard_rust_panic(value, lib_name, symbol, func_name = symbol)
+
+`value`, unless the wrapper `symbol` panicked — in which case the sentinel
+`value` the wrapper returned is discarded and `RustPanicError` is raised.
+
+The call-site shape: `guard_rust_panic(call_rust_function(ptr, T, args...),
+lib, symbol)`. Evaluating `value` first is the point — the channel is only
+meaningful after the call has returned.
+"""
+function guard_rust_panic(value, lib_name::AbstractString, symbol::AbstractString,
+                          func_name::AbstractString = symbol)
+    check_rust_panic(lib_name, symbol, func_name)
+    return value
 end
 
 """

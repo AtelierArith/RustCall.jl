@@ -6,6 +6,32 @@ using Dates
 using RustToolChain: cargo
 
 """
+    _cargo_panic_env(policy, env, release) -> Union{Nothing, Dict{String, String}}
+
+The environment to run Cargo under: `env` (a captured build-time snapshot, or
+the inherited environment when it is `nothing`) with
+`CARGO_PROFILE_<PROFILE>_PANIC` pinned to the policy's strategy.
+
+`nothing` when the policy pins nothing (`:crate_profile`: the manifest is the
+user's, and forcing their profile from the outside would silently change how
+their crate is built) and there is no snapshot to replay.
+
+The profile name follows `release`, not `policy.cargo_profile` alone: a debug
+build reads `CARGO_PROFILE_DEV_PANIC`.
+"""
+function _cargo_panic_env(policy::LoadPolicy, env::Union{Nothing, AbstractDict},
+                          release::Bool)
+    strategy = policy.panic_strategy
+    if strategy in (:crate_profile, :cargo_default)
+        return env
+    end
+    variable = "CARGO_PROFILE_$(uppercase(release ? "release" : "dev"))_PANIC"
+    out = Dict{String, String}(env === nothing ? ENV : env)
+    out[variable] = String(strategy)
+    return out
+end
+
+"""
     build_cargo_project(project::CargoProject; release::Bool = true) -> String
 
 Build a Cargo project and return the path to the compiled library.
@@ -23,7 +49,8 @@ Build a Cargo project and return the path to the compiled library.
 - `CargoBuildError` if the build fails
 """
 function build_cargo_project(project::CargoProject; release::Bool = true,
-                             env::Union{Nothing, AbstractDict} = nothing)
+                             env::Union{Nothing, AbstractDict} = nothing,
+                             policy::LoadPolicy = inline_cargo_policy())
     # Build command
     cargo_cmd = cargo()
     build_args = ["build"]
@@ -31,6 +58,16 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     if release
         push!(build_args, "--release")
     end
+
+    # The panic strategy is pinned twice: in the generated manifest and here,
+    # in the environment Cargo runs under (#244). The manifest key already
+    # beats an inherited `CARGO_PROFILE_RELEASE_PANIC`, but a *dependency*
+    # resolved from a workspace, or a future Cargo that reads the variable
+    # differently, should not be able to turn unwinding off — the generated
+    # `catch_unwind` boundary can only catch a panic that unwinds. Setting it
+    # explicitly makes the intent part of the invocation rather than a property
+    # of whatever the Julia process inherited.
+    build_env = _cargo_panic_env(policy, env, release)
 
     # Run cargo build
     cd(project.path) do
@@ -40,8 +77,9 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
 
             cmd = `$cargo_cmd $build_args`
             # A recorded Cargo environment (precompiled block reload) replaces
-            # the inherited one so profile overrides and RUSTFLAGS match.
-            env === nothing || (cmd = setenv(cmd, env))
+            # the inherited one so profile overrides and RUSTFLAGS match; the
+            # pinned panic strategy is applied on top of either.
+            build_env === nothing || (cmd = setenv(cmd, build_env))
             proc = run(pipeline(cmd, stdout=stdout_io, stderr=stderr_io), wait=false)
             wait(proc)
 

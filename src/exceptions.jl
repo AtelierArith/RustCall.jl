@@ -21,6 +21,58 @@ struct RustError <: Exception
 end
 
 """
+    RustPanicError <: Exception
+
+A Rust `panic!` that was caught at the FFI boundary (#244).
+
+Every `extern "C"` wrapper RustCall generates runs the user's body inside
+`std::panic::catch_unwind`. On a panic the wrapper records the message in its
+own thread-local channel, returns a sentinel, and the Julia side raises this
+exception instead of letting the unwind reach the boundary — where, since Rust
+1.81, it would abort the whole process. So a `panic!`, a failed `assert!`, an
+`unwrap()` on `None` or an out-of-bounds index in Rust is now a catchable Julia
+exception and the session survives.
+
+# Fields
+
+- `func_name::String` — the Julia-facing name of the function that panicked.
+- `message::String` — the panic payload, as Rust formatted it. `panic!` with a
+  literal or with arguments both carry text; a `panic_any` of some other type
+  reports `Box<dyn Any>`.
+
+# What is *not* caught
+
+- A raw `#[no_mangle] extern "C" fn` the user writes inside `rust\"\"\"`. RustCall
+  generates no wrapper for it, so there is no boundary to catch at, and the
+  process aborts. Annotate the function with `#[julia]` to get the boundary.
+- A crate built under `panic = "abort"` (its own profile, or
+  `CARGO_PROFILE_RELEASE_PANIC=abort`). `catch_unwind` cannot catch what does
+  not unwind. RustCall pins `panic = "unwind"` in every manifest it writes and
+  in the environment it passes to Cargo; a `@rust_crate` pointing at a crate
+  that pins `abort` itself is the user's decision.
+- A panic inside a `Drop` implementation run by a destructor, and a panic in a
+  generated field accessor.
+
+See `docs/src/panics.md` for the full semantics matrix.
+
+!!! note
+    `RustError` is a concrete `struct`, so this cannot be a subtype of it.
+    Catch `RustPanicError` by name, or `Exception` for both.
+"""
+struct RustPanicError <: Exception
+    func_name::String
+    message::String
+end
+
+function Base.showerror(io::IO, e::RustPanicError)
+    print(io, "RustPanicError: ", e.message)
+    if !isempty(e.func_name)
+        print(io, "\n  in Rust function: ", e.func_name)
+    end
+    print(io, "\n  The panic was caught at the FFI boundary; the Julia session is intact.")
+end
+
+"""
     CompilationError <: Exception
 
 Exception type for Rust compilation errors.

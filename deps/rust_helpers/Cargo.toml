@@ -7,3 +7,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+
+# The panic strategy is pinned, not inherited (#244). Cargo's release default
+# happens to match, but an inherited `CARGO_PROFILE_RELEASE_PANIC=abort` would
+# otherwise change what this library does on a panic without changing a line of
+# its source. A manifest key beats the environment variable.
+[profile.release]
+panic = "unwind"

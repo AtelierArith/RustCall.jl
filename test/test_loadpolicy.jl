@@ -52,10 +52,14 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     @testset "panic accessors" begin
         abort = RustCall.LoadPolicy("a"; panic_strategy = :abort)
         unwind = RustCall.LoadPolicy("u"; panic_strategy = :unwind)
+        # Both pinned strategies state themselves, at the compile site and in
+        # the manifest: `unwind` is Cargo's and rustc's default, but a default
+        # is not a pin, and an inherited CARGO_PROFILE_RELEASE_PANIC would
+        # otherwise decide it (#244).
         @test RustCall.rustc_panic_flags(abort) == ["-C", "panic=abort"]
-        @test isempty(RustCall.rustc_panic_flags(unwind))
+        @test RustCall.rustc_panic_flags(unwind) == ["-C", "panic=unwind"]
         @test RustCall.cargo_profile_panic_line(abort) == "panic = \"abort\""
-        @test RustCall.cargo_profile_panic_line(unwind) === nothing
+        @test RustCall.cargo_profile_panic_line(unwind) == "panic = \"unwind\""
         @test !RustCall.requires_catch_unwind_boundary(abort)
         @test RustCall.requires_catch_unwind_boundary(unwind)
         @test !RustCall.requires_catch_unwind_boundary(
@@ -254,120 +258,105 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     end
 
     # -----------------------------------------------------------------
-    # Divergence 2: panic strategy and the missing boundary (#244)
+    # #244: one panic strategy, and a boundary that catches.
     #
-    # `-C panic=abort` is passed on the direct-rustc path only; the generated
-    # Cargo project sets no panic mode, and there is no catch_unwind anywhere,
-    # so a panic crossing extern "C" on the Cargo path is undefined behaviour.
+    # Before B3 the direct-rustc path passed `-C panic=abort` (a panic killed
+    # the session outright), the Cargo path took Cargo's default and could be
+    # flipped by an environment variable, and there was no `catch_unwind`
+    # anywhere. Now every door RustCall owns is pinned to `unwind` — twice: in
+    # the manifest and in the environment Cargo runs under — and the single
+    # wrapper generator catches, records the message in a per-wrapper channel
+    # and returns a sentinel, so Julia raises `RustPanicError`.
     # -----------------------------------------------------------------
-    @testset "divergence: panic strategy (#244)" begin
-        @test _count_in("compiler.jl", r"panic=abort") == 2
-        @test !occursin("panic", _src("cargoproject.jl"))
+    @testset "panic: pinned unwind and a catching boundary (#244)" begin
+        # The rustc path no longer hard-codes a strategy: it asks the policy.
+        @test _count_in("compiler.jl", r"panic=abort") == 0
+        @test _count_in("compiler.jl", r"rustc_panic_flags\(inline_rustc_policy\(\)\)") == 2
 
-        repo = dirname(_SRC_DIR)
-        catch_unwind_hits = String[]
-        for root in (joinpath(repo, "src"), joinpath(repo, "deps"))
-            isdir(root) || continue
-            for (dir, _, files) in walkdir(root)
-                occursin(Base.Filesystem.path_separator * "target" *
-                         Base.Filesystem.path_separator, dir * Base.Filesystem.path_separator) && continue
-                for f in files
-                    (endswith(f, ".jl") || endswith(f, ".rs")) || continue
-                    f == "loadpolicy.jl" && continue   # this file only names the fix
-                    path = joinpath(dir, f)
-                    occursin("catch_unwind", read(path, String)) && push!(catch_unwind_hits, path)
-                end
-            end
-        end
-        # No FFI boundary contains a panic today (#244).
-        @test isempty(catch_unwind_hits)
-
-        @test RustCall.inline_rustc_policy().panic_strategy === :abort
-
-        # The two Cargo-backed doors RustCall itself drives pin no `panic`, so
-        # they take Cargo's release default — and the CARGO_PROFILE_RELEASE_PANIC
-        # override. src/cargobuild.jl runs `cargo build` with the inherited
-        # environment unless a captured snapshot is replayed (#272 added the
-        # `env === nothing || setenv` branch); deps/build.jl always inherits.
-        # Same source, different artifact depending on the caller's env (#244).
-        @test occursin("env === nothing || (cmd = setenv(cmd, env))", _src("cargobuild.jl"))
-        for policy in (RustCall.inline_cargo_policy(), RustCall.helper_library_policy())
-            @test policy.panic_strategy === :cargo_default
-            @test policy.cargo_profile === :release
-            @test RustCall.cargo_panic_env_var(policy) == "CARGO_PROFILE_RELEASE_PANIC"
-            @test RustCall.effective_panic_strategy(policy; env = Dict()) === :unwind
+        # Every RustCall-owned door: pinned unwind, boundary catches.
+        owned = (RustCall.inline_rustc_policy(), RustCall.inline_cargo_policy(),
+                 RustCall.crate_wrapper_policy(), RustCall.helper_library_policy(),
+                 RustCall.generics_policy())
+        for policy in owned
+            @test policy.panic_strategy === :unwind
+            @test RustCall.effective_panic_strategy(policy) === :unwind
+            # ...and an inherited CARGO_PROFILE_RELEASE_PANIC cannot change it.
             @test RustCall.effective_panic_strategy(
-                policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :abort
-            @test RustCall.must_assume_unwind(policy; env = Dict())
+                policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :unwind
         end
-        # ...while the direct-rustc door pins -C panic=abort and is unaffected.
-        @test RustCall.effective_panic_strategy(
-            RustCall.inline_rustc_policy();
-            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind")) === :abort
-        @test !RustCall.must_assume_unwind(
-            RustCall.inline_rustc_policy();
-            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind"))
-        # Both cargo-backed doors really do build --release.
-        @test occursin("release=true", _src("ruststr.jl"))
-
-        # @rust_crate has TWO build paths with different panic semantics,
-        # chosen by crate_has_cdylib: the direct build runs Cargo with the
-        # USER's manifest as the root (src/crate_bindings.jl:852, :914-925), so
-        # their [profile.release] wins -> :crate_profile; the wrapper build
-        # (:854-868) makes RustCall's generated manifest the root, and that one
-        # sets only opt-level/lto (:266-269) -> :cargo_default. Hot reload
-        # rebuilds the user's manifest (src/hot_reload.jl:264) -> :crate_profile.
-        crate_src = _src("crate_bindings.jl")
-        @test occursin("build_cargo_project(project, release=release)", crate_src)
-        @test occursin("build_cargo_project(wrapper_project, release=build_release)", crate_src)
-        @test occursin("\"[profile.release]\"", crate_src)
-        @test !occursin("panic", crate_src)
-        @test occursin("cargo build --release --manifest-path", _src("hot_reload.jl"))
-
-        @test RustCall.crate_direct_policy().panic_strategy === :crate_profile
-        @test RustCall.crate_wrapper_policy().panic_strategy === :cargo_default
-        @test RustCall.hot_reload_policy().panic_strategy === :crate_profile
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.crate_direct_policy()) === missing
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.crate_wrapper_policy(); env = Dict()) === true
-        @test RustCall.effective_panic_strategy(
-            RustCall.crate_wrapper_policy();
-            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :abort
-        @test RustCall.must_assume_unwind(RustCall.crate_direct_policy())
-        @test RustCall.must_assume_unwind(RustCall.hot_reload_policy())
-        # The two @rust_crate doors disagree with each other (#244).
-        @test RustCall.crate_direct_policy().panic_strategy !==
-              RustCall.crate_wrapper_policy().panic_strategy
-        # Everything except the panic strategy is shared between them.
-        for f in (:dlopen_flags, :registry, :registry_key_kind, :registration_mode,
-                  :sets_current_lib, :finalizer_frees)
-            @test getfield(RustCall.crate_direct_policy(), f) ==
-                  getfield(RustCall.crate_wrapper_policy(), f)
+        for policy in owned
+            policy.name == "irust" && continue
+            @test policy.boundary_catches_panics
+            @test !RustCall.requires_catch_unwind_boundary(policy)
+            @test !RustCall.must_assume_unwind(policy)
         end
 
-        # Fourth unwinding path: the ownership helper library. deps/build.jl
-        # builds it with a plain `cargo build --release` and
-        # deps/rust_helpers/Cargo.toml declares no [profile.release] / panic
-        # key, so Cargo's unwind default applies (#244).
+        # PARITY: the two inline doors agree, which is the acceptance criterion
+        # "panic behavior is identical regardless of which compile path
+        # produced the library".
+        rustc_policy = RustCall.inline_rustc_policy()
+        cargo_policy = RustCall.inline_cargo_policy()
+        @test rustc_policy.panic_strategy === cargo_policy.panic_strategy
+        @test RustCall.rustc_panic_flags(rustc_policy) ==
+              RustCall.rustc_panic_flags(cargo_policy)
+        @test RustCall.cargo_profile_panic_line(rustc_policy) ==
+              RustCall.cargo_profile_panic_line(cargo_policy)
+        @test RustCall.effective_panic_strategy(rustc_policy; env = Dict()) ===
+              RustCall.effective_panic_strategy(cargo_policy; env = Dict())
+        @test rustc_policy.boundary_catches_panics ==
+              cargo_policy.boundary_catches_panics
+
+        # The manifests RustCall writes pin it; the environment it passes to
+        # Cargo pins it again.
+        @test occursin("cargo_profile_panic_line(inline_cargo_policy())",
+                       _src("cargoproject.jl"))
+        @test occursin("cargo_profile_panic_line(crate_wrapper_policy())",
+                       _src("crate_bindings.jl"))
+        @test occursin("_cargo_panic_env", _src("cargobuild.jl"))
+        @test occursin("build_env === nothing || (cmd = setenv(cmd, build_env))",
+                       _src("cargobuild.jl"))
+        env = RustCall._cargo_panic_env(cargo_policy, Dict("A" => "b"), true)
+        @test env["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"
+        @test env["A"] == "b"
+        @test RustCall._cargo_panic_env(cargo_policy, Dict{String, String}(), false)[
+            "CARGO_PROFILE_DEV_PANIC"] == "unwind"
+        # A user crate's own profile is not overridden from the outside.
+        @test RustCall._cargo_panic_env(RustCall.crate_direct_policy(), nothing, true) === nothing
+
         repo_root = dirname(_SRC_DIR)
         build_jl = read(joinpath(repo_root, "deps", "build.jl"), String)
         helpers_toml = read(joinpath(repo_root, "deps", "rust_helpers", "Cargo.toml"), String)
-        @test occursin("build --release --manifest-path", build_jl)
-        @test !occursin("panic", build_jl)
-        @test !occursin("panic", helpers_toml)
-        @test !occursin("[profile", helpers_toml)
-        @test RustCall.helper_library_policy().panic_strategy === :cargo_default
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.helper_library_policy(); env = Dict())
-        # The two inline doors disagree, which is exactly what #244 asks to fix.
-        @test RustCall.effective_panic_strategy(RustCall.inline_rustc_policy();
-                                                env = Dict()) !==
-              RustCall.effective_panic_strategy(RustCall.inline_cargo_policy();
-                                                env = Dict())
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.inline_cargo_policy(); env = Dict())
-        @test !RustCall.requires_catch_unwind_boundary(RustCall.inline_rustc_policy())
+        @test occursin("CARGO_PROFILE_RELEASE_PANIC", build_jl)
+        @test occursin("panic = \"unwind\"", helpers_toml)
+
+        # The two @rust_crate build paths now agree on everything the panic
+        # boundary depends on; only the *strategy* of a user crate stays
+        # unknown, because their manifest decides it.
+        @test RustCall.crate_direct_policy().panic_strategy === :crate_profile
+        @test RustCall.hot_reload_policy().panic_strategy === :crate_profile
+        for p in (RustCall.crate_direct_policy(), RustCall.hot_reload_policy())
+            @test p.boundary_catches_panics
+            @test RustCall.requires_catch_unwind_boundary(p) === false
+            @test !RustCall.must_assume_unwind(p)
+        end
+
+        # The boundary exists: exactly one generator emits it, and it emits the
+        # channel next to it.
+        codegen_rs = read(joinpath(repo_root, "deps", "rustcall_core", "src", "codegen.rs"), String)
+        @test occursin("catch_unwind", codegen_rs)
+        @test occursin("AssertUnwindSafe", codegen_rs)
+        @test occursin("PANIC_SYMBOL_SUFFIX", codegen_rs)
+        # ...in `generate_wrapper`, and nowhere else in src/.
+        @test _count_in("codegen.jl", r"catch_unwind") == 0
+
+        # The Julia half of the channel.
+        @test RustCall.ffi_panic_symbol("rustcall_f") == "rustcall_f_take_panic"
+        @test RustCall.take_rust_panic(C_NULL) === nothing
+        @test RustCall.check_rust_panic("no_such_lib", "no_such_symbol") === nothing
+        e = RustCall.RustPanicError("f", "boom")
+        @test e isa Exception
+        @test occursin("boom", sprint(showerror, e))
+        @test occursin("f", sprint(showerror, e))
     end
 
     # -----------------------------------------------------------------

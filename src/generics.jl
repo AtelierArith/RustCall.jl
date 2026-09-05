@@ -514,8 +514,10 @@ non-generic `#[julia]` functions do.
 """
 function _call_monomorphized(info::FunctionInfo, args...)
     if info.string_return === :none && !any(_is_string_abi, info.arg_abis)
-        return call_rust_function(info.func_ptr, info.return_type,
-                                  _monomorphized_call_args(info, args)...)
+        return guard_rust_panic(
+            call_rust_function(info.func_ptr, info.return_type,
+                               _monomorphized_call_args(info, args)...),
+            info.lib_name, info.name)
     end
     if length(info.arg_abis) != length(args)
         error("Function '$(info.name)' takes $(length(info.arg_abis)) argument(s) but $(length(args)) were given")
@@ -534,14 +536,18 @@ function _call_monomorphized(info::FunctionInfo, args...)
             push!(call_args, _monomorphized_arg(info, i, arg))
         end
     end
+    # A specialization is a wrapper like any other, so its panic channel is
+    # read after the call (#244). `info.name` is the exported symbol of the
+    # instantiation, which is what the channel is named after.
     GC.@preserve strings begin
-        if info.string_return === :owned
+        result = if info.string_return === :owned
             _call_rust_owned_string_ptr(info.func_ptr, info.free_ptr, call_args...)
         elseif info.string_return === :borrowed
             _call_rust_borrowed_string_ptr(info.func_ptr, call_args...)
         else
             call_rust_function(info.func_ptr, info.return_type, call_args...)
         end
+        guard_rust_panic(result, info.lib_name, info.name)
     end
 end
 

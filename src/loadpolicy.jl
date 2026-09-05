@@ -247,8 +247,8 @@ of its cache states (#250).
 """
 inline_rustc_policy() = LoadPolicy("inline-rustc";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :abort,
-    boundary_catches_panics = false,
+    panic_strategy = :unwind,
+    boundary_catches_panics = true,
     registry = :rust_libraries,
     registry_key_kind = :content_hash,
     registration_mode = :replace,
@@ -284,9 +284,9 @@ resolve it; Phase B should pin `panic` in the generated manifest.
 """
 inline_cargo_policy() = LoadPolicy("inline-cargo";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :cargo_default,
+    panic_strategy = :unwind,
     cargo_profile = :release,
-    boundary_catches_panics = false,
+    boundary_catches_panics = true,
     registry = :rust_libraries,
     registry_key_kind = :content_hash,
     sets_current_lib = true,
@@ -322,7 +322,7 @@ crate_direct_policy() = LoadPolicy("rust-crate-direct";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :crate_profile,
     cargo_profile = :release,
-    boundary_catches_panics = false,
+    boundary_catches_panics = true,
     registry = :module_local,
     registry_key_kind = :none,
     sets_current_lib = false,
@@ -354,9 +354,9 @@ else — `RTLD_GLOBAL`, the module-local handle, freeing finalizers — matches
 """
 crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :cargo_default,
+    panic_strategy = :unwind,
     cargo_profile = :release,
-    boundary_catches_panics = false,
+    boundary_catches_panics = true,
     registry = :module_local,
     registry_key_kind = :none,
     sets_current_lib = false,
@@ -394,9 +394,9 @@ an aborting artifact.  Either way no `catch_unwind` boundary contains it (#244);
 """
 helper_library_policy() = LoadPolicy("helper-library";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :cargo_default,
+    panic_strategy = :unwind,
     cargo_profile = :release,
-    boundary_catches_panics = false,
+    boundary_catches_panics = true,
     registry = :helper_slot,
     registry_key_kind = :none,
     sets_current_lib = false,
@@ -431,8 +431,8 @@ and throw away the accumulated function-pointer cache.
 """
 generics_policy() = LoadPolicy("generics-monomorphization";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :abort,
-    boundary_catches_panics = false,
+    panic_strategy = :unwind,
+    boundary_catches_panics = true,
     registry = :rust_libraries,
     registry_key_kind = :content_hash,
     registration_mode = :insert_only,
@@ -453,7 +453,7 @@ is compiled for; it used to be Julia's session-randomized `hash`.
 """
 irust_policy() = LoadPolicy("irust";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :abort,
+    panic_strategy = :unwind,
     boundary_catches_panics = false,
     registry = :rust_libraries,
     registry_key_kind = :irust_hash,
@@ -479,7 +479,7 @@ runs `cargo build --release --manifest-path <user crate>` against their crate
 hot_reload_policy() = LoadPolicy("hot-reload";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :crate_profile,
-    boundary_catches_panics = false,
+    boundary_catches_panics = true,
     registry = :rust_libraries,
     registry_key_kind = :crate_lib_name,
     registration_mode = :replace,
@@ -606,15 +606,19 @@ uses_global_symbols(policy::LoadPolicy) = policy.global_symbols
 """
     rustc_panic_flags(policy::LoadPolicy) -> Vector{String}
 
-The `rustc` arguments implied by the policy's panic strategy — `["-C",
-"panic=abort"]` for `:abort`, empty for `:unwind` (rustc's default), and
+The `rustc` arguments implied by the policy's panic strategy: `["-C",
+"panic=abort"]` for `:abort`, `["-C", "panic=unwind"]` for `:unwind`, and
 `missing` for `:cargo_default` and `:crate_profile`, where Cargo drives the
 build and RustCall does not invoke `rustc` itself.
-Mirrors `src/compiler.jl:219`, `:381`.
+
+`:unwind` is passed explicitly rather than left to rustc's default so that the
+strategy is stated at every compile site, and so that the flag list of a policy
+is evidence of what was built (the panic parity test compares the two inline
+doors through this function).
 """
 function rustc_panic_flags(policy::LoadPolicy)
     policy.panic_strategy in (:crate_profile, :cargo_default) && return missing
-    return policy.panic_strategy === :abort ? ["-C", "panic=abort"] : String[]
+    return ["-C", "panic=$(policy.panic_strategy)"]
 end
 
 """
@@ -625,20 +629,26 @@ panic strategy, or `nothing` when the Cargo default already matches.
 `src/cargoproject.jl` emits no such line today, which is why the Cargo path
 unwinds (#244).
 
-Returns `nothing` for `:cargo_default`, which is precisely today's bug: RustCall
-writes the manifest and pins nothing, leaving the strategy to Cargo's default
-and to `CARGO_PROFILE_<PROFILE>_PANIC`.  Phase B should emit a line here so the
-environment cannot change the policy silently.
+`:unwind` and `:abort` are both **pinned**, so both produce a line.  Writing
+`panic = "unwind"` explicitly even though it is Cargo's release default is the
+point: without it, `CARGO_PROFILE_RELEASE_PANIC=abort` in the caller's
+environment silently produces a library whose `catch_unwind` boundary can never
+fire, and the same source aborts the Julia session instead of raising
+`RustPanicError` (#244).  A manifest key beats the environment variable.
+
+Returns `nothing` for `:cargo_default` — "whatever Cargo decides" is by
+definition not a line to write, and no RustCall-owned door carries that value
+any more.
 
 Returns `missing` for `:crate_profile`: RustCall generates no `Cargo.toml` for
-those doors — the manifest is the user's — so there is no line for it to write,
-and Phase B has to read the effective profile (`cargo metadata` /
-`cargo config get`) or force the strategy on the command line instead.
+those doors — the manifest is the user's — so there is no line for it to write.
+A crate that pins `panic = "abort"` itself aborts on a panic, which is the
+user's decision and is documented as such.
 """
 function cargo_profile_panic_line(policy::LoadPolicy)
     policy.panic_strategy === :crate_profile && return missing
     policy.panic_strategy === :cargo_default && return nothing
-    return policy.panic_strategy === :abort ? "panic = \"abort\"" : nothing
+    return "panic = \"$(policy.panic_strategy)\""
 end
 
 """
