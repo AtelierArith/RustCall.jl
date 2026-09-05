@@ -317,22 +317,76 @@ function _is_cargo_env_key(k::AbstractString)
 end
 
 """
-    _cargo_config_digest(env = ENV) -> String
+    _cargo_config_digest(env = ENV; dir = nothing) -> String
 
-Digest of the effective Cargo home configuration file
-(`\$CARGO_HOME/config.toml`, falling back to `config`; `~/.cargo` when
-`CARGO_HOME` is unset), or `"absent"`. The file can set `[build] rustflags`
-and friends, which the cfg probe observes, so its content is part of the
-environment snapshot: the same `CARGO_HOME` with an edited config is a
+Digest of the **effective** Cargo configuration, or `"absent"` when there is
+none: the file can set `[build] rustflags` and friends, which the cfg probe
+observes and which change what is produced, so its content belongs in the
+environment snapshot — the same `CARGO_HOME` with an edited config is a
 different configuration.
+
+Two sources, in Cargo's own order:
+
+1. the project-local chain, when `dir` names the directory a build runs in:
+   `<dir>/.cargo/config.toml`, then the same file in every ancestor directory,
+   as Cargo searches it (#278, deferred from #272);
+2. the Cargo home file (`\$CARGO_HOME/config.toml`, falling back to `config`;
+   `~/.cargo` when `CARGO_HOME` is unset).
+
+Only the *depth* of a project-local file and its content reach the digest,
+never its absolute path, so moving a checkout does not invalidate anything.
+With `dir = nothing` (the default, used by `_cargo_cfg_env_key`, which runs
+before any project directory exists) only the home file is considered.
 """
-function _cargo_config_digest(env = ENV)
+function _cargo_config_digest(env = ENV; dir::Union{Nothing, AbstractString} = nothing)
+    io = IOBuffer()
+    found = false
+
+    if dir !== nothing
+        for (depth, d) in enumerate(_cargo_config_search_dirs(dir))
+            for name in ("config.toml", "config")
+                path = joinpath(d, ".cargo", name)
+                isfile(path) || continue
+                print(io, "project:", depth, "=", bytes2hex(sha256(read(path))), "\n")
+                found = true
+                break
+            end
+        end
+    end
+
     home = get(env, "CARGO_HOME", joinpath(homedir(), ".cargo"))
     for name in ("config.toml", "config")
         path = joinpath(home, name)
-        isfile(path) && return bytes2hex(sha256(read(path)))
+        isfile(path) || continue
+        home_digest = bytes2hex(sha256(read(path)))
+        # With no project-local file this is the whole digest, which keeps the
+        # pre-#278 value shape for the `#cargo-config=` snapshot line.
+        found || return home_digest
+        print(io, "home=", home_digest, "\n")
+        found = true
+        break
     end
-    return "absent"
+
+    found || return "absent"
+    return bytes2hex(sha256(take!(io)))
+end
+
+# `dir` and each of its ancestors, nearest first — where Cargo looks for
+# `.cargo/config.toml`.
+function _cargo_config_search_dirs(dir::AbstractString)
+    out = String[]
+    current = try
+        abspath(String(dir))
+    catch
+        String(dir)
+    end
+    while true
+        push!(out, current)
+        parent = dirname(current)
+        (isempty(parent) || parent == current) && break
+        current = parent
+    end
+    return out
 end
 
 # The environment snapshot is `NAME=value` lines; lines starting with `#` are

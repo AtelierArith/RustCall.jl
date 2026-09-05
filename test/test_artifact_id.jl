@@ -749,16 +749,99 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         @test RustCall._TOOLCHAIN_COMPILER_UNIDENTIFIED != "unknown"
     end
 
-    @testset "DEFECT: existing key sites truncate inconsistently" begin
-        # Inventory of the truncation lengths currently in use (issue #278).
-        # The new function truncates in one place only, and never for lookup.
+    @testset "FIXED: truncation happens in exactly one place" begin
+        # No src/ site truncates below ARTIFACT_SHORT_ID_LEN and no truncated
+        # value is a lookup key. The grep-style enforcement of that rule lives
+        # in scripts/lint_artifact_identity.sh; here we assert the properties of
+        # the one truncation function, and that the lookup keys are full length.
         code = "fn f() -> i32 { 1 }"
+        key = RustCall.artifact_key(_id(kind = "rustc", source = code))
 
-        @test length(RustCall.stable_content_hash(code)[1:16]) == 16   # src/ruststr.jl:227
-        @test length(bytes2hex(sha256("$(code)_deps_release"))[1:32]) == 32  # src/ruststr.jl:381
+        @test length(key) == 64
+        @test length(RustCall.artifact_short_id(key)) == RustCall.ARTIFACT_SHORT_ID_LEN
+        @test RustCall.artifact_short_id(key) == first(key, RustCall.ARTIFACT_SHORT_ID_LEN)
+        # Names may ask for fewer characters explicitly; lookups never do.
+        @test length(RustCall.artifact_short_id(key, 12)) == 12
+        @test_throws ArgumentError RustCall.artifact_short_id(key, 0)
+        @test_throws ArgumentError RustCall.artifact_short_id(key, 65)
 
-        # artifact_key is full length; only artifact_short_id truncates.
-        @test length(RustCall.artifact_key(_id(kind = "rustc", source = code))) == 64
+        # The migrated adapters all return the full digest.
+        compiler = RustCall.RustCompiler(optimization_level = 2)
+        for k in (RustCall._cargo_block_identity("fn f() {}", "deps", ""),
+                  RustCall.artifact_key(RustCall._cargo_block_id("fn f() {}",
+                                                                 RustCall.DependencySpec[], "")))
+            @test length(k) == 64
+        end
+        if RustCall.check_rustc_available()
+            @test length(RustCall.generate_cache_key("fn f() {}", compiler)) == 64
+            @test length(RustCall._rustc_block_identity("fn f() {}", compiler, "")) == 64
+        end
+    end
+
+    @testset "Path-dependency digests are memoized (#278 §8)" begin
+        # `artifact_path_dependency_digest` shells out to `cargo tree` and reads
+        # every file of every local crate. Paying that on a warm re-evaluation
+        # would add hundreds of milliseconds to a no-op, so the resolved graph is
+        # memoized on the crate's Cargo.toml / Cargo.lock stats and file contents
+        # on `(path, mtime, size)`.
+        dir = mktempdir()
+        try
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"),
+                  "[package]\nname = \"memo_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+            write(joinpath(dir, "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
+
+            RustCall._artifact_reset_digest_caches!()
+            before = RustCall.CARGO_TREE_INVOCATIONS[]
+            d1 = RustCall.artifact_path_dependency_digest(dir)
+            after_cold = RustCall.CARGO_TREE_INVOCATIONS[]
+
+            # The warm call resolves no graph again.
+            d2 = RustCall.artifact_path_dependency_digest(dir)
+            @test d1 == d2
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == after_cold
+            # (When cargo is unavailable the cold call spawns nothing either;
+            #  what matters is that the warm one adds no invocation.)
+            @test after_cold >= before
+
+            # An edited source still changes the digest: only *unchanged* files
+            # skip the re-read, and the walk always happens.
+            sleep(0.01)
+            write(joinpath(dir, "src", "lib.rs"), "pub fn f() -> i32 { 2 }\n")
+            RustCall._artifact_reset_digest_caches!()
+            @test RustCall.artifact_path_dependency_digest(dir) != d1
+
+            # A new file changes it too.
+            d3 = RustCall.artifact_path_dependency_digest(dir)
+            write(joinpath(dir, "src", "extra.rs"), "// new input\n")
+            RustCall._artifact_reset_digest_caches!()
+            @test RustCall.artifact_path_dependency_digest(dir) != d3
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "Hashed relative paths are normalized" begin
+        # A `\\`-spelled path and a `/`-spelled one are the same input; on
+        # Windows so are two spellings that differ only in case.
+        @test RustCall._hashed_relative_path("src\\lib.rs") == "src/lib.rs"
+        @test RustCall._hashed_relative_path("src/lib.rs") == "src/lib.rs"
+        if Sys.iswindows()
+            @test RustCall._hashed_relative_path("SRC/Lib.rs") == "src/lib.rs"
+        else
+            @test RustCall._hashed_relative_path("SRC/Lib.rs") == "SRC/Lib.rs"
+        end
+    end
+
+    @testset "artifact_derive replaces only what it is given" begin
+        base = _id(kind = "cargo", source = "fn f() {}",
+                   codegen = ["profile" => "release"], dependencies = ["serde"])
+        same = RustCall.artifact_derive(base)
+        @test RustCall.artifact_key(same) == RustCall.artifact_key(base)
+        debug = RustCall.artifact_derive(base;
+            codegen = vcat(base.codegen, ["profile" => "debug"]))
+        @test RustCall.artifact_key(debug) != RustCall.artifact_key(base)
+        @test debug.source == base.source && debug.dependencies == base.dependencies
     end
 
     @testset "toolchain_fingerprint() is folded in by default" begin

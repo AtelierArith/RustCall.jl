@@ -141,6 +141,36 @@ function ArtifactId(;
     )
 end
 
+"""
+    artifact_derive(id::ArtifactId; kwargs...) -> ArtifactId
+
+Copy of `id` with the named fields replaced. For a stage that adds identity
+components to a record it was handed — the build profile a Cargo build settles
+on, the dependency set the generated project actually declares — without
+re-stating the fields it does not touch, and without inventing a second key
+formula for the extension.
+"""
+function artifact_derive(id::ArtifactId;
+    kind = id.kind,
+    source = id.source,
+    type_params = id.type_params,
+    target_triple = id.target_triple,
+    codegen = id.codegen,
+    cfg = id.cfg,
+    dependencies = id.dependencies,
+    features = id.features,
+    build_env = id.build_env,
+    toolchain = id.toolchain,
+    compiler = id.compiler,
+    extra = id.extra,
+)
+    return ArtifactId(
+        String(kind), String(source), _pairs(type_params), String(target_triple),
+        _pairs(codegen), _strings(cfg), _strings(dependencies), _strings(features),
+        _pairs(build_env), String(toolchain), String(compiler), _pairs(extra),
+    )
+end
+
 _strings(xs) = String[string(x) for x in xs]
 
 function _pairs(xs)
@@ -398,6 +428,111 @@ function artifact_dependency_strings(deps)::Vector{String}
     return sort!(out)
 end
 
+# ----------------------------------------------------------------------------
+# Memoization (issue #278 §8)
+#
+# `artifact_path_dependency_digest` is on the hot path of every Cargo-backed
+# `rust"""` evaluation, and it both spawns `cargo tree` and reads every file of
+# every local crate. A warm no-op re-evaluation must pay neither.
+#
+# Two caches, both stat-validated so an edit is still noticed:
+#
+#   * the resolved *graph* (`local_path_dependency_dirs`) is keyed on the
+#     crate's `Cargo.toml` and `Cargo.lock` stats — the two files that decide
+#     it. This is what removes the `cargo tree` process spawn.
+#   * per-file *contents* are keyed on `(path, mtime, size)`. The directory walk
+#     and its stat calls still happen on every call, so editing a source file of
+#     any local crate still changes the digest; only re-reading unchanged bytes
+#     is avoided.
+#
+# The whole computation is skipped when a block declares no `path =` dependency:
+# `artifact_dependency_strings` only asks for a digest when a spec carries one.
+# ----------------------------------------------------------------------------
+
+const _ARTIFACT_DIGEST_LOCK = ReentrantLock()
+
+# canonical crate dir => (stamp, (strategy, dirs))
+const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}()
+# file path => ((mtime, size), sha-256 of the contents)
+const _FILE_CONTENT_DIGEST_CACHE = Dict{String, Tuple{Tuple{Float64, Int64}, String}}()
+
+"""
+    CARGO_TREE_INVOCATIONS
+
+How many times `cargo tree` has been spawned this session. A test hook for the
+performance requirement of #278: a warm `rust\"\"\"` re-evaluation must not
+shell out to Cargo.
+"""
+const CARGO_TREE_INVOCATIONS = Ref(0)
+
+"""
+    _artifact_reset_digest_caches!()
+
+Forget the memoized dependency graphs and file digests. For tests that mutate a
+crate directory faster than the filesystem's timestamp resolution can show.
+"""
+function _artifact_reset_digest_caches!()
+    lock(_ARTIFACT_DIGEST_LOCK) do
+        empty!(_PATH_DEP_GRAPH_CACHE)
+        empty!(_FILE_CONTENT_DIGEST_CACHE)
+    end
+    return nothing
+end
+
+# Stat tuple of one file; total, and distinguishable from any real file.
+function _file_stamp(path::AbstractString)::Tuple{Float64, Int64}
+    try
+        isfile(path) || return (0.0, Int64(-1))
+        return (Float64(mtime(path)), Int64(filesize(path)))
+    catch
+        return (0.0, Int64(-2))
+    end
+end
+
+# What decides a crate's resolved local-dependency graph.
+_graph_stamp(dir::AbstractString) =
+    (_file_stamp(joinpath(String(dir), "Cargo.toml")),
+     _file_stamp(joinpath(String(dir), "Cargo.lock")))
+
+"""
+    _file_content_digest(path::AbstractString) -> String
+
+SHA-256 of one file's contents, memoized on `(path, mtime, size)`. An
+unreadable file gets a marker digest rather than an exception, so a crate whose
+permissions changed still produces a (different) key.
+"""
+function _file_content_digest(path::AbstractString)::String
+    path = String(path)
+    stamp = _file_stamp(path)
+    hit = lock(_ARTIFACT_DIGEST_LOCK) do
+        entry = get(_FILE_CONTENT_DIGEST_CACHE, path, nothing)
+        entry !== nothing && entry[1] == stamp ? entry[2] : nothing
+    end
+    hit === nothing || return hit
+    digest = try
+        bytes2hex(open(sha256, path))
+    catch
+        "unreadable"
+    end
+    lock(_ARTIFACT_DIGEST_LOCK) do
+        _FILE_CONTENT_DIGEST_CACHE[path] = (stamp, digest)
+    end
+    return digest
+end
+
+"""
+    _hashed_relative_path(rel::AbstractString) -> String
+
+A crate-relative path in the form that goes into a digest: forward slashes
+always, and case-folded on Windows, so the same crate keys identically whether
+its manifest, `cargo tree` or the walk spelled the path with `\\` or `/` and
+whatever case the case-insensitive filesystem returned.
+"""
+function _hashed_relative_path(rel::AbstractString)::String
+    normalized = replace(String(rel), '\\' => '/')
+    return Sys.iswindows() ? lowercase(normalized) : normalized
+end
+
 """
     artifact_path_dependency_digest(path::AbstractString) -> String
 
@@ -477,9 +612,15 @@ end
 """
     crate_content_digest(dir::AbstractString) -> String
 
-SHA-256 over one crate directory: the sorted relative path and full contents of
-every file `crate_input_files` reports, netstring-framed. Location independent;
-see `artifact_path_dependency_digest`.
+SHA-256 over one crate directory: the sorted relative path and a content digest
+of every file `crate_input_files` reports, netstring-framed. Location
+independent; see `artifact_path_dependency_digest`.
+
+Per-file *digests* rather than raw bytes, so the result is memoizable
+(`_file_content_digest` re-reads a file only when its `(mtime, size)` changed)
+and the intermediate buffer stays small for a large crate. The digest of a file
+is netstring-framed exactly like the contents were, so the encoding remains
+injective.
 """
 function crate_content_digest(dir::AbstractString)::String
     io = IOBuffer()
@@ -496,11 +637,8 @@ function crate_content_digest(dir::AbstractString)::String
         _netstring!(io, rel)
         f = joinpath(dir, rel)
         if isfile(f)
-            try
-                _netstring_bytes!(io, read(f))
-            catch
-                _netstring!(io, "unreadable")
-            end
+            _netstring!(io, "content")
+            _netstring!(io, _file_content_digest(f))
         else
             _netstring!(io, "not-on-disk")
         end
@@ -562,7 +700,7 @@ function crate_input_files(dir::AbstractString)
             push!(files, relpath(joinpath(root, n), dir))
         end
     end
-    files = String[replace(f, '\\' => '/') for f in files]
+    files = String[_hashed_relative_path(f) for f in files]
     unique!(files)
     sort!(files)
     return "walk", files
@@ -596,6 +734,27 @@ never collide with one found the other.
 """
 function local_path_dependency_dirs(root::AbstractString)
     root = String(root)
+    # Memoized on the two files that decide the resolved graph, so a warm
+    # re-evaluation spawns no `cargo tree` (#278 §8).
+    canonical = _canonical_dir(root)
+    stamp = _graph_stamp(root)
+    hit = lock(_ARTIFACT_DIGEST_LOCK) do
+        entry = get(_PATH_DEP_GRAPH_CACHE, canonical, nothing)
+        entry !== nothing && entry[1] == stamp ? entry[2] : nothing
+    end
+    hit === nothing || return hit
+    result = _local_path_dependency_dirs_uncached(root)
+    # Stamped *after* resolution on purpose: resolving may itself write
+    # `Cargo.lock` (that is what `cargo tree` without `--locked` does, exactly
+    # as the build that follows would), and stamping before would invalidate the
+    # entry we just filled on every single call.
+    lock(_ARTIFACT_DIGEST_LOCK) do
+        _PATH_DEP_GRAPH_CACHE[canonical] = (_graph_stamp(root), result)
+    end
+    return result
+end
+
+function _local_path_dependency_dirs_uncached(root::String)
     manifest = joinpath(root, "Cargo.toml")
     dirs = String[root]
 
@@ -629,6 +788,7 @@ function _cargo_tree(manifest::AbstractString, locked::Bool)::String
                   "--edges", "normal,build,dev", "--prefix", "none",
                   "--format", fmt, "--manifest-path", String(manifest)]
     locked && push!(args, "--locked")
+    CARGO_TREE_INVOCATIONS[] += 1
     return try
         read(pipeline(`$(cargo()) $(args)`; stderr = devnull), String)
     catch

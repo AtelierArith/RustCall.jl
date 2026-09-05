@@ -462,15 +462,16 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # from the expanded source, so the dependency hash must be part of the
     # identity itself, or two blocks with identical items but different
     # `// cargo-deps:` would share one in-memory library.
-    # Use stable_content_hash() — never hash() for persistent identifiers
-    deps_hash = hash_dependencies(dependencies)
     # `build_env_key` is the environment the build actually runs under: the
-    # snapshot recorded by the macro, or the current one.
-    code_hash = _cargo_block_identity(augmented_code, deps_hash, build_env_key)
+    # snapshot recorded by the macro, or the current one. Local path
+    # dependencies contribute their *content*, so editing one rebuilds.
+    cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key)
+    code_hash = artifact_key(cargo_id)
 
-    # Project and library names
-    project_name = "rustcall_$(code_hash[1:12])"
-    lib_name = "rust_cargo_$(code_hash[1:16])"
+    # Project and library names. `artifact_short_id` is the only truncation in
+    # the design and is never a lookup key (#278).
+    project_name = "rustcall_$(artifact_short_id(code_hash, 12))"
+    lib_name = "rust_cargo_$(artifact_short_id(code_hash, 16))"
 
     # Check if already compiled and loaded in memory
     is_in_memory = lock(REGISTRY_LOCK) do
@@ -485,8 +486,10 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         return lib_name
     end
 
-    cache_key_data = "$(code_hash)_$(deps_hash)_release_$(bytes2hex(sha256(build_env_key)))"
-    cache_key = bytes2hex(sha256(cache_key_data))[1:32]
+    # The block identity *is* the cache key: re-mixing already-mixed material
+    # under a second, hand-rolled formula (and truncating it to 32 characters)
+    # was the Cargo half of #278.
+    cache_key = code_hash
 
     cached_lib = get_cargo_cached_library(cache_key)
     if !isnothing(cached_lib) && isfile(cached_lib)
@@ -494,7 +497,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         if lib_handle != C_NULL
             _register_manifest(expanded, lib_name; cargo_backed = true, handle = lib_handle)
-            @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
+            @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=artifact_short_id(cache_key, 8)
 
             return lib_name
         end
@@ -509,7 +512,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # Ensure the code with wrappers is written to the project
         write_rust_code_to_project(project, augmented_code)
 
-        lib_path = build_cargo_project_cached(project, code_hash, release=true, env=build_env)
+        lib_path = build_cargo_project_cached(project, cargo_id, release=true, env=build_env)
 
         # Cache the built library (if it wasn't already in cache)
         try
@@ -548,38 +551,50 @@ end
 
 
 """
-    _block_identity(expanded_source, (name => value)...) -> String
+    _cargo_block_id(expanded_source, dependencies, cargo_env = "") -> ArtifactId
 
-Stable identity of an inline block: the expanded source, the named sections
-describing the configuration it is built under, and the toolchain
-fingerprint. Both the direct-rustc and the Cargo path derive their library
-names from it ([`_rustc_block_identity`], [`_cargo_block_identity`]), so two
-builds of the same source under different configurations are different
-libraries and a registry lookup never aliases one to the other.
+Identity of a Cargo-backed block, as an `ArtifactId`: expanded source, the
+dependency set (`artifact_dependency_strings`, which folds a *local path*
+dependency in by content rather than by location, so editing one rebuilds), the
+Cargo/RUSTFLAGS environment the build runs under (`cargo_env`, see
+`_cargo_cfg_env_key`), the release profile, and — new in #278 — the toolchain
+fingerprint and the identity of the compiler that runs, both defaulted by
+`ArtifactId`.
+
+`artifact_key` of this record is the in-memory library name, the temporary
+project name and the disk cache key. One value, one formula: the Cargo path
+used to hash the block once, then re-mix that digest with the dependency hash
+and the environment under a second formula for the cache key (#278).
 """
-function _block_identity(expanded_source::AbstractString, sections::Pair{String, String}...)
-    io = IOBuffer()
-    write(io, expanded_source)
-    for (name, value) in sections
-        write(io, "\n---", name, "---\n", value)
-    end
-    write(io, "\n---toolchain---\n", toolchain_fingerprint())
-    # Use stable_content_hash() — never hash() for persistent identifiers
-    return stable_content_hash(String(take!(io)))
+function _cargo_block_id(expanded_source::AbstractString, dependencies,
+                         cargo_env::AbstractString = "")
+    return ArtifactId(
+        kind = "cargo",
+        source = String(expanded_source),
+        codegen = Pair{String, String}["profile" => "release"],
+        dependencies = artifact_dependency_strings(dependencies),
+        build_env = Pair{String, String}["cargo-env" => String(cargo_env)],
+    )
 end
 
 """
     _cargo_block_identity(expanded_source, deps_hash, cargo_env = "") -> String
 
-Identity of a Cargo-backed block: expanded source, dependency hash and the
-Cargo/RUSTFLAGS environment the build runs under (`cargo_env`, see
-`_cargo_cfg_env_key`). Used for the in-memory library name, the temporary
-project name and the disk cache key.
+The `artifact_key` of a Cargo-backed block described by an opaque dependency
+digest (`hash_dependencies`) rather than by the specs themselves. Kept for
+callers — and tests — that only have the digest; `_cargo_block_id` is the
+richer form the compile path uses, and the two deliberately produce different
+keys because they describe the dependency set differently.
 """
 function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString,
                               cargo_env::AbstractString = "")
-    return _block_identity(expanded_source, "deps" => String(deps_hash),
-                           "cargo-env" => String(cargo_env))
+    return artifact_key(ArtifactId(
+        kind = "cargo",
+        source = String(expanded_source),
+        codegen = Pair{String, String}["profile" => "release"],
+        dependencies = String[String(deps_hash)],
+        build_env = Pair{String, String}["cargo-env" => String(cargo_env)],
+    ))
 end
 
 """

@@ -163,45 +163,51 @@ function hash_dependencies(deps::Vector{DependencySpec})
 end
 
 """
-    build_cargo_project_cached(
-        project::CargoProject,
-        code_hash::UInt64;
-        release::Bool = true
-    ) -> String
+    build_cargo_project_cached(project::CargoProject, id::ArtifactId;
+                               release = true, env = nothing) -> String
 
 Build a Cargo project with caching support.
 
-If a cached library exists with matching code and dependency hashes, returns
-the cached library path. Otherwise, builds the project and caches the result.
+If a cached library exists for this artifact, returns its path. Otherwise builds
+the project and caches the result.
 
 # Arguments
 - `project::CargoProject`: The Cargo project to build
-- `code_hash::AbstractString`: SHA256 hex digest of the Rust source code
+- `id::ArtifactId`: identity of what is being built (source, dependency set,
+  build environment, toolchain). The cache key is `artifact_key` of that record
+  extended with the build profile and this project's own dependency set and
+  effective Cargo configuration — never a second hand-rolled digest (#278).
 
 # Keyword Arguments
 - `release::Bool`: Build in release mode (default: true)
+- `env`: environment override for the `cargo` invocation
 
 # Returns
 - `String`: Path to the compiled shared library (may be cached)
 """
 function build_cargo_project_cached(
     project::CargoProject,
-    code_hash::AbstractString;
+    id::ArtifactId;
     release::Bool = true,
     env::Union{Nothing, AbstractDict} = nothing
 )
-    # Generate cache key from code hash, dependency hash, and build mode
-    deps_hash = hash_dependencies(project.dependencies)
     mode_str = release ? "release" : "debug"
-
-    # Combine hashes for cache key
-    cache_key_data = "$(code_hash)_$(deps_hash)_$(mode_str)"
-    cache_key = bytes2hex(sha256(cache_key_data))[1:32]  # Use first 32 chars
+    # The build profile and the project's own view of its dependencies and
+    # Cargo configuration extend the caller's identity; everything else (source,
+    # toolchain, compiler, build environment) is already in `id`.
+    cache_key = artifact_key(artifact_derive(id;
+        codegen = vcat(id.codegen, Pair{String, String}["profile" => mode_str]),
+        dependencies = vcat(id.dependencies,
+                            String[hash_dependencies(project.dependencies)]),
+        build_env = vcat(id.build_env,
+                         Pair{String, String}[
+                             "cargo-config" => _cargo_config_digest(ENV; dir = project.path)]),
+    ))
 
     # Check cache
     cached_lib = get_cargo_cached_library(cache_key)
     if !isnothing(cached_lib) && isfile(cached_lib)
-        @debug "Using cached Cargo library" cache_key=cache_key[1:8]
+        @debug "Using cached Cargo library" cache_key=artifact_short_id(cache_key, 8)
         return cached_lib
     end
 
@@ -267,7 +273,7 @@ function save_cargo_cached_library(cache_key::String, lib_path::String)
     # Copy library to cache
     cp(lib_path, cached_path, force=true)
 
-    @debug "Cached Cargo library" cache_key=cache_key[1:8] path=cached_path
+    @debug "Cached Cargo library" cache_key=artifact_short_id(cache_key, 8) path=cached_path
 end
 
 """

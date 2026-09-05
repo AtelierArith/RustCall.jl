@@ -291,4 +291,28 @@ const RUN_UUID_TESTS = get(ENV, "RUSTCALL_RUN_UUID_TESTS", "true") == "true"
         @test @rust(chrono_is_leap_year(Int32(1900))::Bool) == false
     end
 
+
+    # ============================================================================
+    # #278 §8: a warm Cargo-backed block must not pay for dependency-graph
+    # resolution it does not need. A block whose `// cargo-deps:` declares only
+    # registry crates has no local path dependency, so building its identity
+    # spawns no `cargo tree` at all — cold or warm.
+    # ============================================================================
+    @testset "A warm rust block does not shell out to cargo tree (#278)" begin
+        block = """
+        // cargo-deps: itoa="1.0"
+
+        #[no_mangle]
+        pub extern "C" fn rc278_warm_probe(x: i32) -> i32 { x + 1 }
+        """
+        # First evaluation: builds (or hits the Cargo cache).
+        RustCall._compile_and_load_rust(block, "warm-probe", 0)
+        before = RustCall.CARGO_TREE_INVOCATIONS[]
+        # Warm re-evaluation of the very same block.
+        lib = RustCall._compile_and_load_rust(block, "warm-probe", 0)
+        @test RustCall.CARGO_TREE_INVOCATIONS[] == before
+        @test startswith(lib, "rust_cargo_")
+        @test @rust(rc278_warm_probe(Int32(41))::Int32) == Int32(42)
+    end
+
 end
