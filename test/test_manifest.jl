@@ -18,6 +18,12 @@ using TOML
         @test length(RustCall.toolchain_fingerprint()) == 64
     end
 
+    # Golden files may be checked out with CRLF on Windows; compare with LF only.
+    _lf(x::AbstractString) = replace(String(x), "\r\n" => "\n")
+    _lf(x::AbstractDict) = Dict{String, Any}(k => _lf(v) for (k, v) in x)
+    _lf(x::AbstractVector) = Any[_lf(v) for v in x]
+    _lf(x) = x
+
     @testset "CLI output matches the golden corpus" begin
         # The corpus is the Rust-side golden test; the CLI must produce exactly
         # the same manifests so the two front ends cannot drift apart.
@@ -30,14 +36,14 @@ using TOML
             for mode in ("inline", "crate")
                 golden = joinpath(corpus, "$name.$mode.toml")
                 isfile(golden) || continue
-                got = RustCall.extract_manifest([path]; mode = mode)
-                want = TOML.parsefile(golden)
+                got = _lf(RustCall.extract_manifest([path]; mode = mode))
+                want = _lf(TOML.parsefile(golden))
                 @test got == want
             end
             expanded_golden = joinpath(corpus, "$name.expanded.rs")
             if isfile(expanded_golden)
-                got = RustCall.expand_inline(read(path, String)).source
-                @test replace(got, "\r\n" => "\n") == replace(read(expanded_golden, String), "\r\n" => "\n")
+                got = RustCall.expand_inline(_lf(read(path, String))).source
+                @test _lf(got) == _lf(read(expanded_golden, String))
             end
         end
     end

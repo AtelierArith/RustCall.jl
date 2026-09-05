@@ -1,0 +1,2 @@
+# Golden corpus is compared byte-for-byte by rustcall_core tests and test_manifest.jl
+deps/rustcall_core/tests/corpus/** text eol=lf
