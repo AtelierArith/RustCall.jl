@@ -40,6 +40,12 @@ include("llvmintegration.jl")
 include("codegen.jl")
 include("exceptions.jl")
 include("cache.jl")
+
+# Explicit load/compile policy object (#277, Phase A). Additive: not yet used
+# by any call site. Functions here reference RUST_LIBRARIES / CURRENT_LIB from
+# ruststr.jl, which is resolved at call time, so it can sit right after cache.jl.
+include("loadpolicy.jl")
+
 include("memory.jl")
 
 # Phase 3: External library integration
