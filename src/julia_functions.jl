@@ -199,6 +199,27 @@ _ffi_context(sig::RustFunctionSignature) =
 _ffi_context(m::RustMethod, owner::AbstractString) =
     ffi_signature_context(m.name, m.arg_types, m.return_type; owner = owner)
 
+"""
+    _ffi_function_return(sig) -> FFIContract
+
+The return contract of a free function, with the owner set: the string helpers
+are named after the Rust item, so `<fn>_free_rust_string` comes out of the
+contract rather than being spelled at the call site (#246, #249).
+"""
+_ffi_function_return(sig::RustFunctionSignature) =
+    ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.name)
+
+"""
+    _ffi_field_return(info, field_name, field_type) -> FFIContract
+
+The return contract of a struct field getter. `Field.abi` (manifest schema 4)
+says whether the getter hands back an owned buffer, and the struct owns the
+`<Struct>_free_rust_string` that releases it — on both wrapper flavours.
+"""
+_ffi_field_return(info, field_name::AbstractString, field_type::AbstractString) =
+    ffi_return_contract(field_type; abi = get(info.field_abis, field_name, ""),
+                        owner = info.name)
+
 # A field getter reads as `Struct::field -> T`.
 _ffi_field_context(info, field_name::AbstractString, field_type::AbstractString) =
     string(info.name, "::", field_name, " -> ", field_type)
@@ -210,8 +231,12 @@ Whether the wrapper of `sig` needs the string ABI (string arguments or a
 `String` / `&str` return).
 """
 function _uses_string_ffi(sig::RustFunctionSignature)
-    return sig.has_owned_string_helper || sig.has_borrowed_string_helper ||
-           any(_is_string_abi, sig.arg_abis)
+    ffi_return_contract(sig.return_type; abi = sig.return_abi).aggregate_type === nothing ||
+        return true
+    return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
+        c = ffi_argument_contract(rust_type; abi = abi)
+        c.abi === :ptr_len || c.abi === :ptr_len_cap
+    end
 end
 
 """
@@ -311,11 +336,15 @@ end
 function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     bindings, preserved, call_args = _string_arg_plan(sig, esc)
     lib_sym = _generated_local("lib_name", sig.arg_names)
-    call = if sig.has_owned_string_helper
-        # The string helpers are named after the Rust item, not the symbol.
-        free_name = ffi_free_symbol(sig.name)
+    # The string helpers are named after the Rust item, not the symbol, so the
+    # owner is the function name; the contract turns that into `free_symbol`.
+    c = ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.name)
+    call = if ffi_owned_string_return(c)
+        # The release stays indirect — the symbol is resolved inside the
+        # allocating library, which is the #249 half (#277 swaps the mechanism).
+        free_name = c.free_symbol
         :(RustCall._call_rust_owned_string($lib_sym, $symbol_str, $free_name, $(call_args...)))
-    elseif sig.has_borrowed_string_helper
+    elseif ffi_borrowed_string_return(c)
         :(RustCall._call_rust_borrowed_string($lib_sym, $symbol_str, $(call_args...)))
     else
         ret = ffi_return_symbol_or_throw(sig.return_type, sig.return_abi, _ffi_context(sig))

@@ -1010,6 +1010,21 @@ function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback)
 end
 
 """
+    ffi_owned_string_return(c) -> Bool
+    ffi_borrowed_string_return(c) -> Bool
+
+Whether a return contract describes a lowered **owned** (`CRustString`,
+`(ptr, len, cap)`) or **borrowed** (`CRustStr`, `(ptr, len)`) string buffer.
+
+Every generator branches on these rather than on `return_abi == "string"`, on
+`has_owned_string_helper`, or on the Rust spelling — the three vocabularies
+#276 collapses. An owned contract also carries the `free_symbol` that releases
+it, which is the half #246 and #249 are about.
+"""
+ffi_owned_string_return(c::FFIContract) = c.aggregate_type === CRustString
+ffi_borrowed_string_return(c::FFIContract) = c.aggregate_type === CRustStr
+
+"""
     ffi_signature_context(name, arg_types, return_type; owner = nothing) -> String
 
 The human-readable signature an unsupported type is reported against:

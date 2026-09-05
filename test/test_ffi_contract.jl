@@ -497,16 +497,34 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.rusttype_to_julia("String") === RustCall.RustString
         @test RustCall.rusttype_to_julia("str") === Cstring
         # The contract says what neither of them says: the shape and the owner
-        # — but only once the manifest says the wrapper lowered the string.
-        # `main`'s free-function wrapper does NOT lower it
-        # (`transform_simple_function`, deps/rustcall_core/src/codegen.rs:53-58,
-        # only adds `extern "C"`), so Phase B must not assume the lowering
-        # until #274 lands; the contract fails closed in the meantime.
+        # — but only once the manifest says the wrapper lowered the string, so a
+        # bare spelling still fails closed.
         @test RustCall.ffi_return_contract("String").known == false
         @test RustCall.ffi_return_contract("String"; abi = "string").abi === :ptr_len_cap
         @test RustCall.ffi_return_contract("String"; abi = "string",
                                            owner = "shout").ownership === :owned_by_rust
         @test RustCall.ffi_return_contract("&str"; abi = "str").ownership === :borrowed
+
+        # All four generators — the inline and crate `Expr` flavours and their
+        # two source-text counterparts — take the SAME branch, because they all
+        # ask these two predicates rather than comparing `return_abi` strings,
+        # reading `has_owned_string_helper`, or matching the Rust spelling.
+        owned = RustCall.ffi_return_contract("String"; abi = "string", owner = "shout")
+        borrowed = RustCall.ffi_return_contract("&str"; abi = "str", owner = "shout")
+        @test RustCall.ffi_owned_string_return(owned)
+        @test !RustCall.ffi_borrowed_string_return(owned)
+        @test RustCall.ffi_borrowed_string_return(borrowed)
+        @test !RustCall.ffi_owned_string_return(borrowed)
+        @test owned.aggregate_type === RustCall.CRustString
+        @test borrowed.aggregate_type === RustCall.CRustStr
+        # A non-string return takes neither.
+        plain = RustCall.ffi_return_contract("i32")
+        @test !RustCall.ffi_owned_string_return(plain)
+        @test !RustCall.ffi_borrowed_string_return(plain)
+        # `Cstring` is gone from the string path: there is no `julia_to_c_type`
+        # lowering of `RustString` / `RustStr` to a NUL-terminated pointer left.
+        @test RustCall.julia_to_c_type(RustCall.RustString) !== Cstring
+        @test RustCall.julia_to_c_type(RustCall.RustStr) !== Cstring
     end
 
     @testset "divergence: raw pointers (#245 item 2)" begin
@@ -599,12 +617,19 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_return_contract("").known == false
     end
 
-    @testset "divergence: ownership is unrepresented (#246, #249)" begin
-        # None of the five tables carries an ownership column at all: each maps
-        # a spelling to a bare Julia type, so nothing in the pipeline records
-        # who frees a returned buffer. That absence is why `String` returns leak
-        # (#246) and why the drop symbol is chosen from the Julia-side type tag
-        # rather than from the allocating library (#249).
+    @testset "ownership: the contract names the symbol generated code calls" begin
+        # None of the five tables carried an ownership column at all, so nothing
+        # in the pipeline recorded who frees a returned buffer: that is why
+        # `String` returns leaked (#246) and why the drop symbol was chosen from
+        # the Julia-side type tag rather than from the allocating library
+        # (#249). The `owner`-derived `free_symbol` is now exactly the symbol
+        # the generated wrapper passes to `_call_rust_owned_string`.
+        @test RustCall.ffi_return_contract("String"; abi = "string",
+                                           owner = "shout").free_symbol ==
+              "shout_free_rust_string"
+        @test RustCall.ffi_return_contract("String"; abi = "string",
+                                           owner = "Point").free_symbol ==
+              "Point_free_rust_string"
         @test RustCall.ffi_return_contract("String"; abi = "string",
                                            owner = "shout").ownership === :owned_by_rust
         @test RustCall.ffi_argument_contract("String"; abi = "string").ownership ===

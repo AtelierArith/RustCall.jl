@@ -254,8 +254,11 @@ julia_to_c_type(::Type{Bool}) = Bool
 julia_to_c_type(::Type{T}) where {T<:Ptr} = Ptr{Cvoid}
 julia_to_c_type(::Type{String}) = Cstring
 julia_to_c_type(::Type{Cstring}) = Cstring
-julia_to_c_type(::Type{RustString}) = Cstring
-julia_to_c_type(::Type{RustStr}) = Cstring
+# `RustString` / `RustStr` deliberately have NO `Cstring` lowering: a Rust
+# `String` is a `(ptr, len, cap)` buffer and a `&str` a `(ptr, len)` view,
+# neither of which is a NUL-terminated C string. That coercion was the wrong
+# shape #246 is about, and since #276 every string position is described by
+# `ffi_return_contract` / `ffi_argument_contract` instead.
 julia_to_c_type(::Type{T}) where {T<:AbstractString} = Cstring
 
 # Helper functions for ccall type handling (using multiple dispatch)

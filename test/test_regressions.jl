@@ -1056,3 +1056,206 @@ end
         end
     end
 end
+
+# ---------------------------------------------------------------------------
+# #276 Phase B: the FFI contract is the only type decision. These are the
+# regression tests for the three bugs that came out of having five of them.
+# ---------------------------------------------------------------------------
+
+# #245: `rustcall_core` accepts `i128`, `u128` and `char`, and generates a
+# wrapper for them — but every Julia table stopped at 13 primitives, so the
+# generated `ccall` slot was `Any` (or the `Int64` guess). Same for a `u16`
+# struct field, which `src/structs.jl` read as `Any` while a free function read
+# it as `UInt16`.
+@testset "#245: every type rustcall_core accepts crosses correctly" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        rust"""
+        #[julia]
+        pub fn rc245_add_i128(a: i128, b: i128) -> i128 { a + b }
+        #[julia]
+        pub fn rc245_add_u128(a: u128, b: u128) -> u128 { a + b }
+        #[julia]
+        pub fn rc245_upper(c: char) -> char { c.to_ascii_uppercase() }
+        #[julia]
+        pub struct Rc245Small { a: u16, b: i8, c: usize }
+        impl Rc245Small {
+            pub fn new(a: u16, b: i8, c: usize) -> Self { Self { a, b, c } }
+        }
+        """
+
+        # 128-bit integers survive the boundary intact, which they cannot do
+        # through an `Any` or `Int64` slot.
+        @test rc245_add_i128(Int128(1) << 100, Int128(3)) === (Int128(1) << 100) + 3
+        @test rc245_add_u128(UInt128(1) << 120, UInt128(7)) === (UInt128(1) << 120) + 7
+
+        # Rust `char` travels as its C slot, a `UInt32` code point. It is
+        # converted, never reinterpreted from Julia's left-aligned UTF-8 `Char`.
+        @test rc245_upper('a') === UInt32('A')
+        @test Char(rc245_upper('q')) === 'Q'
+        @test RustCall.ffi_ccall_type("char") === UInt32
+        @test RustCall.ffi_surface_type("char") === Char
+
+        # Small integer and platform-sized struct fields read as themselves.
+        small = Rc245Small(UInt16(65535), Int8(-3), UInt(9))
+        @test small.a === UInt16(65535)
+        @test small.b === Int8(-3)
+        @test small.c === Csize_t(9)
+    end
+end
+
+@testset "#245: an unannotated usize return is not the Int64 guess" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        code = "#[no_mangle] pub extern \"C\" fn rc245_usize_len() -> usize { 7 }"
+        lib = RustCall._compile_and_load_rust(code, "test_regressions", 0)
+        value = RustCall._rust_call_dynamic(lib, "rc245_usize_len")
+        @test value === Csize_t(7)
+        @test RustCall.get_function_return_type(lib, "rc245_usize_len") === Csize_t
+    end
+end
+
+# #246: a returned Rust `String` is a `(ptr, len, cap)` buffer the caller must
+# hand back to the library that allocated it. It was read as a `Cstring` (the
+# wrong shape) or as `Any` (no shape at all), and never released.
+@testset "#246: a String field is an owned buffer on both wrapper flavours" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        info = only(RustCall.manifest_struct_infos(RustCall.extract_manifest("""
+        use juliacall_macros::julia;
+        #[julia]
+        pub struct Rc246Counter { count: u32, name: String }
+        """; mode = "crate")))
+
+        # The manifest, not the spelling, says the getter is lowered.
+        @test info.field_abis["name"] == "string"
+        c = RustCall._ffi_field_return(info, "name", "String")
+        @test RustCall.ffi_owned_string_return(c)
+        @test c.ownership === :owned_by_rust
+        @test c.free_symbol == "Rc246Counter_free_rust_string"
+
+        # Both crate-path generators read it through the owned-buffer helper and
+        # release it through the contract's symbol. On `main` this branch read
+        # `call_rust_function(ptr, Any, ...)` and leaked.
+        emitted = RustCall._emit_struct_code(info)
+        @test occursin("_call_rust_owned_string_ptr", emitted)
+        @test occursin("Rc246Counter_free_rust_string", emitted)
+        @test !occursin("call_rust_function(func_ptr, Any", emitted)
+
+        generated = string(RustCall._generate_property_accessors(info))
+        @test occursin("_call_rust_owned_string_ptr", generated)
+        @test occursin("Rc246Counter_free_rust_string", generated)
+
+        # A plain field is unaffected.
+        @test info.field_abis["count"] == ""
+        @test RustCall.ffi_return_symbol_or_throw("u32", "", "Rc246Counter::count") === :UInt32
+    end
+end
+
+@testset "#246: a String return is released, not leaked" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        rust"""
+        #[julia]
+        pub struct Rc246Buf { n: usize }
+        impl Rc246Buf {
+            pub fn new(n: usize) -> Self { Self { n } }
+            pub fn make(&self) -> String { "x".repeat(self.n) }
+        }
+        """
+        buf = Rc246Buf(UInt(65536))
+        @test length(make(buf)) == 65536
+
+        # 10^4 calls allocate 640 MB of Rust buffers in total. If the wrapper
+        # did not hand each one back to `Rc246Buf_free_rust_string`, the
+        # high-water mark would grow by that much; releasing keeps it flat.
+        GC.gc()
+        before = Sys.maxrss()
+        total = 0
+        for _ in 1:10_000
+            total += length(make(buf))
+        end
+        GC.gc()
+        growth = Sys.maxrss() - before
+        @test total == 10_000 * 65536
+        @test growth < 200 * 1024 * 1024
+
+        # And the release really is the contract's symbol, resolved inside the
+        # allocating library rather than spelled at the call site.
+        m = only(mm for mm in RustCall.manifest_struct_infos(RustCall.expand_inline("""
+        #[julia]
+        pub struct Rc246Buf { n: usize }
+        impl Rc246Buf {
+            pub fn make(&self) -> String { "x".repeat(self.n) }
+        }
+        """).manifest)[1].methods if mm.name == "make")
+        c = RustCall.ffi_return_contract(m.return_type; abi = m.return_abi, owner = "Rc246Buf")
+        @test c.free_symbol == "Rc246Buf_free_rust_string"
+        @test c.ownership === :owned_by_rust
+    end
+end
+
+# #249: the free symbol is per-owner, so two libraries can both export
+# `X_free_rust_string`. Picking it by name from a global table frees a buffer
+# through the wrong allocator; it must be resolved inside the library that
+# allocated the value.
+@testset "#249: the free symbol is resolved inside the allocating library" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping per-library free-symbol test"
+    else
+        source = n -> """
+        #[julia]
+        pub struct Rc249X { }
+        impl Rc249X {
+            pub fn new() -> Self { Self { } }
+            pub fn label(&self) -> String { "$n".to_string() }
+        }
+        """
+        expanded_a = RustCall.expand_inline(source("alpha"))
+        expanded_b = RustCall.expand_inline(source("beta"))
+        path_a = RustCall.compile_rust_to_shared_lib(expanded_a.source)
+        path_b = RustCall.compile_rust_to_shared_lib(expanded_b.source)
+        lib_a = "test249_a_" * string(hash(path_a), base = 16)
+        lib_b = "test249_b_" * string(hash(path_b), base = 16)
+        handle_a = Libdl.dlopen(path_a, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        handle_b = Libdl.dlopen(path_b, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        try
+            lock(RustCall.REGISTRY_LOCK) do
+                RustCall.RUST_LIBRARIES[lib_a] = (handle_a, Dict{String, Ptr{Cvoid}}())
+                RustCall.RUST_LIBRARIES[lib_b] = (handle_b, Dict{String, Ptr{Cvoid}}())
+            end
+            RustCall._register_manifest(expanded_a, lib_a)
+            RustCall._register_manifest(expanded_b, lib_b)
+
+            # Both libraries export the same free symbol — the name alone
+            # cannot say which allocator owns a buffer.
+            free_a = RustCall.get_function_pointer(lib_a, "Rc249X_free_rust_string")
+            free_b = RustCall.get_function_pointer(lib_b, "Rc249X_free_rust_string")
+            @test free_a != free_b
+
+            # The generated call passes the *library* alongside the symbol, so
+            # each buffer is released by the library that allocated it.
+            info_a = only(RustCall.manifest_struct_infos(expanded_a.manifest))
+            m = only(mm for mm in info_a.methods if mm.name == "label")
+            c = RustCall.ffi_return_contract(m.return_type; abi = m.return_abi,
+                                             owner = info_a.name)
+            @test c.free_symbol == "Rc249X_free_rust_string"
+
+            ptr_a = RustCall.call_rust_function(
+                RustCall.get_function_pointer(lib_a, "rustcall_Rc249X_new"), Ptr{Cvoid})
+            ptr_b = RustCall.call_rust_function(
+                RustCall.get_function_pointer(lib_b, "rustcall_Rc249X_new"), Ptr{Cvoid})
+            @test RustCall._call_rust_owned_string(lib_a, "rustcall_Rc249X_label",
+                                                   c.free_symbol, ptr_a) == "alpha"
+            @test RustCall._call_rust_owned_string(lib_b, "rustcall_Rc249X_label",
+                                                   c.free_symbol, ptr_b) == "beta"
+        finally
+            RustCall.unload_library(lib_a)
+            RustCall.unload_library(lib_b)
+        end
+    end
+end

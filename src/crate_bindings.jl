@@ -440,10 +440,13 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
     bindings, preserved, call_args = _string_arg_plan(func, identity)
-    call = if func.has_owned_string_helper
-        free_name = ffi_free_symbol(func_name_str)
+    # The helper types stay named after the Rust item, so the owner is the
+    # function name and the contract derives `free_symbol` from it (#276).
+    c = ffi_return_contract(func.return_type; abi = func.return_abi, owner = func_name_str)
+    call = if ffi_owned_string_return(c)
+        free_name = c.free_symbol
         :(_call_rust_owned_string_ptr(_get_func_ptr($symbol_str), _get_func_ptr($free_name), $(call_args...)))
-    elseif func.has_borrowed_string_helper
+    elseif ffi_borrowed_string_return(c)
         :(_call_rust_borrowed_string_ptr(_get_func_ptr($symbol_str), $(call_args...)))
     else
         ret = ffi_return_symbol_or_throw(func.return_type, func.return_abi,
@@ -642,6 +645,47 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
 end
 
 """
+    _crate_field_read(info, field_name, field_type, ptr_expr, self_ptr_expr) -> Expr
+
+How a crate-mode field getter is *read*: the one decision, from
+`ffi_return_contract`. A field whose manifest `abi` is `"string"` comes back as
+an owned `<Struct>_RustCallOwnedString` buffer released through the contract's
+`free_symbol`; every other field is a single C slot.
+"""
+function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
+                           field_type::AbstractString, ptr_expr, self_ptr_expr)
+    c = _ffi_field_return(info, field_name, field_type)
+    if ffi_owned_string_return(c)
+        free_expr = :(_get_func_ptr($(c.free_symbol)))
+        return :(_call_rust_owned_string_ptr($ptr_expr, $free_expr, $self_ptr_expr))
+    elseif ffi_borrowed_string_return(c)
+        return :(_call_rust_borrowed_string_ptr($ptr_expr, $self_ptr_expr))
+    end
+    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+                                            _ffi_field_context(info, field_name, field_type))
+    return :(call_rust_function($ptr_expr, $julia_type, $self_ptr_expr))
+end
+
+"""
+    _crate_field_read_source(info, field_name, field_type, ptr_var, self_ptr) -> String
+
+Source-text counterpart of `_crate_field_read` for the file emitter.
+"""
+function _crate_field_read_source(info::RustStructInfo, field_name::AbstractString,
+                                  field_type::AbstractString, ptr_expr::String,
+                                  self_ptr::String)
+    c = _ffi_field_return(info, field_name, field_type)
+    if ffi_owned_string_return(c)
+        return "_call_rust_owned_string_ptr($ptr_expr, _get_func_ptr(\"$(c.free_symbol)\"), $self_ptr)"
+    elseif ffi_borrowed_string_return(c)
+        return "_call_rust_borrowed_string_ptr($ptr_expr, $self_ptr)"
+    end
+    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+                                            _ffi_field_context(info, field_name, field_type))
+    return "call_rust_function($ptr_expr, $julia_type, $self_ptr)"
+end
+
+"""
     _generate_property_accessors(info::RustStructInfo) -> Union{Expr, Nothing}
 
 Generate Base.getproperty and Base.setproperty! methods for natural field access.
@@ -663,13 +707,13 @@ function _generate_property_accessors(info::RustStructInfo)
     for (field_name, field_type) in compatible_fields
         field_sym = QuoteNode(Symbol(field_name))
         getter_fn = info.field_getters[field_name]
-        julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
-                                                _ffi_field_context(info, field_name, field_type))
-
+        # A `String` field getter hands back an owned buffer, on the crate path
+        # too since manifest schema 4 — it used to be read as `Any` (#246).
+        read = _crate_field_read(info, field_name, field_type, :(_get_func_ptr($getter_fn)),
+                                 :(getfield(self, :ptr)))
         push!(getprop_branches, quote
             if field === $field_sym
-                func_ptr = _get_func_ptr($getter_fn)
-                return call_rust_function(func_ptr, $julia_type, getfield(self, :ptr))
+                return $read
             end
         end)
     end
@@ -752,18 +796,18 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # Crate method wrappers return strings through per-method buffers:
     # `<Struct>_<method>_RustCallOwnedString`, released with
     # `<Struct>_<method>_free_rust_string` (see rustcall_core::codegen).
-    free_name = ffi_free_symbol(helper_owner)
+    c = ffi_return_contract(method.return_type; abi = method.return_abi, owner = helper_owner)
 
     all_args = Any[]
     method.is_static || push!(all_args, :(getfield(self, :ptr)))
     append!(all_args, converted_args)
 
-    call = if method.is_constructor
+    call = if method.returns_boxed_struct
         # Constructors and `Self`-returning methods get a boxed struct pointer
         :($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...))))
-    elseif method.return_abi == "string"
-        :(_call_rust_owned_string_ptr($ptr_sym, _get_func_ptr($free_name), $(all_args...)))
-    elseif method.return_abi == "str"
+    elseif ffi_owned_string_return(c)
+        :(_call_rust_owned_string_ptr($ptr_sym, _get_func_ptr($(c.free_symbol)), $(all_args...)))
+    elseif ffi_borrowed_string_return(c)
         :(_call_rust_borrowed_string_ptr($ptr_sym, $(all_args...)))
     else
         julia_ret_type = ffi_return_symbol_or_throw(method.return_type, method.return_abi,
@@ -811,8 +855,8 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     getter_name = info.field_getters[field_name]
     setter_name = get(info.field_setters, field_name, "$(struct_name_str)_set_$(field_name)")
 
-    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
-                                            _ffi_field_context(info, field_name, field_type))
+    read = _crate_field_read(info, field_name, field_type, :(_get_func_ptr($getter_name)),
+                             :(self.ptr))
 
     field_sym = Symbol(field_name)
 
@@ -820,8 +864,7 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     # For now, just generate get_field and set_field! functions
     quote
         function $(Symbol("get_$field_name"))(self::$struct_name)
-            func_ptr = _get_func_ptr($getter_name)
-            call_rust_function(func_ptr, $julia_type, self.ptr)
+            $read
         end
 
         function $(Symbol("set_$(field_name)!"))(self::$struct_name, value)
@@ -1486,13 +1529,13 @@ function _emit_function_code(func::RustFunctionSignature)
         return _emit_result_function_code(func, arg_syms, converted_args_str; prologue, preserve_str)
     elseif func.return_kind == :option
         return _emit_option_function_code(func, arg_syms, converted_args_str; prologue, preserve_str)
-    elseif func.has_owned_string_helper
+    elseif ffi_owned_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
-$(prologue)    GC.@preserve $preserve_str _call_rust_owned_string_ptr(_get_func_ptr("$sym"), _get_func_ptr("$(ffi_free_symbol(func_name))"), $converted_args_str)
+$(prologue)    GC.@preserve $preserve_str _call_rust_owned_string_ptr(_get_func_ptr("$sym"), _get_func_ptr("$(_ffi_function_return(func).free_symbol)"), $converted_args_str)
 end
 export $func_name"""
-    elseif func.has_borrowed_string_helper
+    elseif ffi_borrowed_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
 $(prologue)    GC.@preserve $preserve_str _call_rust_borrowed_string_ptr(_get_func_ptr("$sym"), $converted_args_str)
@@ -1631,13 +1674,12 @@ function _emit_struct_code(info::RustStructInfo)
         push!(lines, "    end")
         push!(lines, "    _check_not_freed(self, \"$struct_name\")")
         for (field_name, field_type) in compatible_fields
-            julia_type_str = string(ffi_return_symbol_or_throw(
-                field_type, get(info.field_abis, field_name, ""),
-                _ffi_field_context(info, field_name, field_type)))
             getter_fn = info.field_getters[field_name]
+            read = _crate_field_read_source(info, field_name, field_type,
+                                            "_get_func_ptr(\"$getter_fn\")",
+                                            "getfield(self, :ptr)")
             push!(lines, "    if field === :$field_name")
-            push!(lines, "        func_ptr = _get_func_ptr(\"$getter_fn\")")
-            push!(lines, "        return call_rust_function(func_ptr, $julia_type_str, getfield(self, :ptr))")
+            push!(lines, "        return $read")
             push!(lines, "    end")
         end
         push!(lines, "    error(\"type $struct_name has no field \$field\")")
@@ -1696,18 +1738,18 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
     # object, which the finalizer of a temporary could free mid-call.
     method.is_static || (preserve_str = strip("self " * preserve_str))
     ptr_var = _generated_local("func_ptr", method.arg_names)
-    free_name = ffi_free_symbol(helper_owner)
+    c = ffi_return_contract(method.return_type; abi = method.return_abi, owner = helper_owner)
 
     all_args = String[]
     method.is_static || push!(all_args, "getfield(self, :ptr)")
     isempty(converted_args_str) || push!(all_args, converted_args_str)
     args_str = join(all_args, ", ")
 
-    call = if method.is_constructor
+    call = if method.returns_boxed_struct
         "$struct_name(call_rust_function($ptr_var, Ptr{Cvoid}, $args_str))"
-    elseif method.return_abi == "string"
-        "_call_rust_owned_string_ptr($ptr_var, _get_func_ptr(\"$free_name\"), $args_str)"
-    elseif method.return_abi == "str"
+    elseif ffi_owned_string_return(c)
+        "_call_rust_owned_string_ptr($ptr_var, _get_func_ptr(\"$(c.free_symbol)\"), $args_str)"
+    elseif ffi_borrowed_string_return(c)
         "_call_rust_borrowed_string_ptr($ptr_var, $args_str)"
     else
         ret_type_str = string(ffi_return_symbol_or_throw(method.return_type, method.return_abi,

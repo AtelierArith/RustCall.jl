@@ -374,8 +374,10 @@ function emit_julia_definitions(info::RustStructInfo)
                     end
                 end)
             else
-                if m.return_abi == "string"
-                    free_fn = struct_name_str * "_free_rust_string"
+                mc = ffi_return_contract(m.return_type; abi = m.return_abi,
+                                         owner = struct_name_str)
+                if ffi_owned_string_return(mc)
+                    free_fn = mc.free_symbol
                     push!(exprs, quote
                         function $fname($(esc_args...))
                             $(bindings...)
@@ -383,7 +385,7 @@ function emit_julia_definitions(info::RustStructInfo)
                             return GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...))
                         end
                     end)
-                elseif m.return_abi == "str"
+                elseif ffi_borrowed_string_return(mc)
                     push!(exprs, quote
                         function $fname($(esc_args...))
                             $(bindings...)
@@ -407,15 +409,16 @@ function emit_julia_definitions(info::RustStructInfo)
                 end
             end
         else
-            if m.return_abi == "string"
-                free_fn = struct_name_str * "_free_rust_string"
+            mc = ffi_return_contract(m.return_type; abi = m.return_abi, owner = struct_name_str)
+            if ffi_owned_string_return(mc)
+                free_fn = mc.free_symbol
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
                         return GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...))
                     end
                 end)
-            elseif m.return_abi == "str"
+            elseif ffi_borrowed_string_return(mc)
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
@@ -447,17 +450,25 @@ function emit_julia_definitions(info::RustStructInfo)
     # 3. Add field accessors if derive(JuliaStruct) is present
     if info.has_derive_julia_struct && !isempty(info.fields)
         # Build field accessor mappings
-        field_getters = Dict{Symbol, Tuple{String, String, Type}}()
+        # `(getter symbol, how to read it, free symbol, C slot type)`. The
+        # read kind and the free symbol come from the contract, so nothing here
+        # re-derives them from the Rust spelling at run time (#246, #249).
+        field_getters = Dict{Symbol, Tuple{String, Symbol, String, Type}}()
         field_setters = Dict{Symbol, String}()
 
         for (field_name, field_type) in info.fields
             field_is_accessible(info, field_name) || continue
             field_sym = Symbol(field_name)
-            # The concrete Julia type is resolved once, here, from the contract.
-            julia_type = ffi_return_type_or_throw(
-                field_type, get(info.field_abis, field_name, ""),
-                _ffi_field_context(info, field_name, field_type))
-            field_getters[field_sym] = (info.field_getters[field_name], field_type, julia_type)
+            c = _ffi_field_return(info, field_name, field_type)
+            kind = ffi_owned_string_return(c) ? :owned_string :
+                   ffi_borrowed_string_return(c) ? :borrowed_string : :plain
+            julia_type = kind === :plain ?
+                ffi_return_type_or_throw(field_type, get(info.field_abis, field_name, ""),
+                                         _ffi_field_context(info, field_name, field_type)) :
+                Any
+            free_symbol = c.free_symbol === nothing ? "" : c.free_symbol
+            field_getters[field_sym] = (info.field_getters[field_name], kind, free_symbol,
+                                        julia_type)
             if haskey(info.field_setters, field_name)
                 field_setters[field_sym] = info.field_setters[field_name]
             end
@@ -486,11 +497,11 @@ function emit_julia_definitions(info::RustStructInfo)
 
                 # Check if it's a field
                 if haskey(field_info, field)
-                    getter_name, rust_field_type, field_type = field_info[field]
+                    getter_name, read_kind, free_symbol, field_type = field_info[field]
                     lib = self.lib_name
-                    if rust_field_type == "String"
-                        return GC.@preserve self _call_rust_owned_string(lib, getter_name, $(struct_name_str * "_free_rust_string"), self.ptr)
-                    elseif rust_field_type == "&str"
+                    if read_kind === :owned_string
+                        return GC.@preserve self _call_rust_owned_string(lib, getter_name, free_symbol, self.ptr)
+                    elseif read_kind === :borrowed_string
                         return GC.@preserve self _call_rust_borrowed_string(lib, getter_name, self.ptr)
                     else
                         func_ptr = get_function_pointer(lib, getter_name)
