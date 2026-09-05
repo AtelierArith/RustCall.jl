@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- The FFI manifest schema is now version 2 (`rustcall_core::manifest::SCHEMA_VERSION`,
+  `RustCall.MANIFEST_SCHEMA_VERSION`): the string ABI columns `abi`,
+  `return_abi` and the `has_owned_string_helper` / `has_borrowed_string_helper`
+  flags change how the exported symbols must be called, so a RustCall.jl that
+  expects schema 1 refuses a version-2 manifest and vice versa. Rebuild the
+  extractor with `Pkg.build("RustCall")` after updating.
+
 ### Deprecated
 - The LLVM IR integration path is deprecated and will be removed in a future
   breaking release ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).

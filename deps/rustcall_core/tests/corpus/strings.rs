@@ -42,6 +42,13 @@ pub fn paren_ref(s: &(str)) -> (usize) {
     s.len()
 }
 
+// Arguments named like the identifiers the wrapper generates (`s_ptr`,
+// `s_bytes`): the generated names step aside.
+#[julia]
+pub fn collide(s: String, s_ptr: usize) -> usize {
+    s.len() + s_ptr
+}
+
 // Struct methods with string arguments and returns: in crate mode the
 // wrappers use per-method buffer types (`Greeter_shout_RustCallOwnedString`).
 #[julia]

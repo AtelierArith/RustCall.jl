@@ -12,9 +12,10 @@ using SHA: sha256
 
 """
 Manifest schema version this version of RustCall.jl understands. Must match
-`rustcall_core::manifest::SCHEMA_VERSION`.
+`rustcall_core::manifest::SCHEMA_VERSION` (2: string ABI columns `abi`,
+`return_abi` and the string helper flags, #242).
 """
-const MANIFEST_SCHEMA_VERSION = 1
+const MANIFEST_SCHEMA_VERSION = 2
 
 """
     ExtractorError <: Exception

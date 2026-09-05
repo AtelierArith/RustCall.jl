@@ -13,7 +13,15 @@ use serde::{Deserialize, Serialize};
 
 /// Bump whenever a field is added, removed or changes meaning. Julia refuses to
 /// load a manifest whose `schema_version` it does not understand.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// History:
+/// * 1: initial manifest (#264).
+/// * 2: string ABI (#242): `Arg.abi`, `Method.return_abi` and the
+///   `has_owned_string_helper` / `has_borrowed_string_helper` flags decide
+///   how a consumer must call the exported symbols (`(ptr, len)` pairs and
+///   `<name>_RustCallOwnedString` buffers), so a version-1 consumer must not
+///   load a version-2 manifest, nor the reverse.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Which pipeline produced the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

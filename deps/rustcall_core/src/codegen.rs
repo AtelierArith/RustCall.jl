@@ -107,10 +107,75 @@ pub fn return_abi(sig: &syn::Signature) -> &'static str {
     }
 }
 
-/// Wrapper-side view of a function's arguments: `String` / `&str` become
-/// `(ptr, len)` byte pairs (`conversions` rebuild the Rust value, lossily for
-/// invalid UTF-8, never through `from_utf8_unchecked`), everything else is
-/// passed through.
+/// An identifier the generated wrapper introduces (`s_ptr`, `s_len`, `s_bytes`,
+/// `s_cow`, the receiver `ptr`, `self_obj`), chosen so that it never coincides
+/// with one of the function's own argument names (`taken`): a trailing
+/// underscore is appended until the name is free. `fn f(s: String, s_ptr:
+/// usize)` therefore gets `s_ptr_` / `s_len` and keeps the user's `s_ptr`.
+fn fresh_ident(base: &str, taken: &[String]) -> Ident {
+    let mut name = base.to_string();
+    while taken.iter().any(|t| t == &name) {
+        name.push('_');
+    }
+    format_ident!("{}", name)
+}
+
+/// Names of every typed argument of a signature (destructuring patterns
+/// rendered as `argN`, see [`normalize_arg_patterns`]).
+fn typed_arg_names(sig: &syn::Signature) -> Vec<Ident> {
+    sig.inputs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, arg)| match arg {
+            FnArg::Typed(pat_type) => Some(match pat_type.pat.as_ref() {
+                Pat::Ident(pi) => pi.ident.clone(),
+                _ => format_ident!("arg{}", i),
+            }),
+            FnArg::Receiver(_) => None,
+        })
+        .collect()
+}
+
+/// Wrapper-side view of one argument: `String` / `&str` become a
+/// `(ptr, len)` byte pair (`conversion` rebuilds the Rust value under the
+/// argument's own name, lossily for invalid UTF-8, never through
+/// `from_utf8_unchecked`); everything else is passed through.
+fn string_arg_conversion(
+    name: &Ident,
+    ty: &Type,
+    taken: &[String],
+) -> (Vec<TokenStream2>, Option<TokenStream2>) {
+    if is_string_type(ty) {
+        let p = fresh_ident(&format!("{name}_ptr"), taken);
+        let l = fresh_ident(&format!("{name}_len"), taken);
+        (
+            vec![quote! { #p: *const u8 }, quote! { #l: usize }],
+            Some(quote! {
+                let #name = unsafe {
+                    let slice = std::slice::from_raw_parts(#p, #l);
+                    String::from_utf8_lossy(slice).into_owned()
+                };
+            }),
+        )
+    } else if is_str_ref_type(ty) {
+        let p = fresh_ident(&format!("{name}_ptr"), taken);
+        let l = fresh_ident(&format!("{name}_len"), taken);
+        let b = fresh_ident(&format!("{name}_bytes"), taken);
+        let c = fresh_ident(&format!("{name}_cow"), taken);
+        (
+            vec![quote! { #p: *const u8 }, quote! { #l: usize }],
+            Some(quote! {
+                let #b = unsafe { std::slice::from_raw_parts(#p, #l) };
+                let #c = String::from_utf8_lossy(#b);
+                let #name: &str = &#c;
+            }),
+        )
+    } else {
+        (vec![quote! { #name: #ty }], None)
+    }
+}
+
+/// Wrapper-side view of a function's arguments (see [`string_arg_conversion`]).
 struct StringArgs {
     wrapper_args: Vec<TokenStream2>,
     conversions: Vec<TokenStream2>,
@@ -118,6 +183,7 @@ struct StringArgs {
 }
 
 fn string_arg_conversions(func: &ItemFn, names: &[Ident]) -> StringArgs {
+    let taken: Vec<String> = names.iter().map(ToString::to_string).collect();
     let mut wrapper_args: Vec<TokenStream2> = Vec::new();
     let mut conversions: Vec<TokenStream2> = Vec::new();
     let mut call_args: Vec<TokenStream2> = Vec::new();
@@ -125,33 +191,9 @@ fn string_arg_conversions(func: &ItemFn, names: &[Ident]) -> StringArgs {
         let FnArg::Typed(pat_type) = arg else {
             continue;
         };
-        let ty = &pat_type.ty;
-        if is_string_type(ty) {
-            let p = format_ident!("{}_ptr", name);
-            let l = format_ident!("{}_len", name);
-            wrapper_args.push(quote! { #p: *const u8 });
-            wrapper_args.push(quote! { #l: usize });
-            conversions.push(quote! {
-                let #name = unsafe {
-                    let slice = std::slice::from_raw_parts(#p, #l);
-                    String::from_utf8_lossy(slice).into_owned()
-                };
-            });
-        } else if is_str_ref_type(ty) {
-            let p = format_ident!("{}_ptr", name);
-            let l = format_ident!("{}_len", name);
-            let b = format_ident!("{}_bytes", name);
-            let c = format_ident!("{}_cow", name);
-            wrapper_args.push(quote! { #p: *const u8 });
-            wrapper_args.push(quote! { #l: usize });
-            conversions.push(quote! {
-                let #b = unsafe { std::slice::from_raw_parts(#p, #l) };
-                let #c = String::from_utf8_lossy(#b);
-                let #name: &str = &#c;
-            });
-        } else {
-            wrapper_args.push(quote! { #name: #ty });
-        }
+        let (args, conversion) = string_arg_conversion(name, &pat_type.ty, &taken);
+        wrapper_args.extend(args);
+        conversions.extend(conversion);
         call_args.push(quote! { #name });
     }
     StringArgs {
@@ -994,56 +1036,40 @@ fn inline_method_wrapper(
     let wrapper_name = format_ident!("{}_{}", struct_name, method_name);
     let returns_self = inline_method_is_ctor(struct_name, m);
 
+    // Generated identifiers (the receiver pointer, `self_obj`, `<arg>_ptr`,
+    // ...) must not coincide with the method's own argument names.
+    let names = typed_arg_names(&m.func.sig);
+    let taken: Vec<String> = names.iter().map(ToString::to_string).collect();
+    let ptr = fresh_ident("ptr", &taken);
+    let self_obj = fresh_ident("self_obj", &taken);
+
     let mut wrapper_args: Vec<TokenStream2> = Vec::new();
     let mut conversions: Vec<TokenStream2> = Vec::new();
     let mut call_args: Vec<TokenStream2> = Vec::new();
 
     if !m.is_static {
         if m.is_mutable {
-            wrapper_args.push(quote! { ptr: *mut #struct_name });
+            wrapper_args.push(quote! { #ptr: *mut #struct_name });
         } else {
-            wrapper_args.push(quote! { ptr: *const #struct_name });
+            wrapper_args.push(quote! { #ptr: *const #struct_name });
         }
     }
 
-    for (i, arg) in m.func.sig.inputs.iter().enumerate() {
+    for (arg, name) in m
+        .func
+        .sig
+        .inputs
+        .iter()
+        .filter(|a| matches!(a, FnArg::Typed(_)))
+        .zip(names.iter())
+    {
         let FnArg::Typed(pat_type) = arg else {
             continue;
         };
-        let ty = &pat_type.ty;
-        let name: Ident = match pat_type.pat.as_ref() {
-            Pat::Ident(pi) => pi.ident.clone(),
-            _ => format_ident!("arg{}", i),
-        };
-        if is_string_type(ty) {
-            let p = format_ident!("{}_ptr", name);
-            let l = format_ident!("{}_len", name);
-            wrapper_args.push(quote! { #p: *const u8 });
-            wrapper_args.push(quote! { #l: usize });
-            conversions.push(quote! {
-                let #name = unsafe {
-                    let slice = std::slice::from_raw_parts(#p, #l);
-                    String::from_utf8_lossy(slice).into_owned()
-                };
-            });
-            call_args.push(quote! { #name });
-        } else if is_str_ref_type(ty) {
-            let p = format_ident!("{}_ptr", name);
-            let l = format_ident!("{}_len", name);
-            let b = format_ident!("{}_bytes", name);
-            wrapper_args.push(quote! { #p: *const u8 });
-            wrapper_args.push(quote! { #l: usize });
-            let c = format_ident!("{}_cow", name);
-            conversions.push(quote! {
-                let #b = unsafe { std::slice::from_raw_parts(#p, #l) };
-                let #c = String::from_utf8_lossy(#b);
-                let #name: &str = &#c;
-            });
-            call_args.push(quote! { #name });
-        } else {
-            wrapper_args.push(quote! { #name: #ty });
-            call_args.push(quote! { #name });
-        }
+        let (args, conversion) = string_arg_conversion(name, &pat_type.ty, &taken);
+        wrapper_args.extend(args);
+        conversions.extend(conversion);
+        call_args.push(quote! { #name });
     }
 
     // A `&str` result of a method that takes string arguments may borrow from a
@@ -1053,14 +1079,14 @@ fn inline_method_wrapper(
     let self_binding = if m.is_static {
         quote! {}
     } else if m.is_mutable {
-        quote! { let self_obj = unsafe { &mut *ptr }; }
+        quote! { let #self_obj = unsafe { &mut *#ptr }; }
     } else {
-        quote! { let self_obj = unsafe { &*ptr }; }
+        quote! { let #self_obj = unsafe { &*#ptr }; }
     };
     let call = if m.is_static {
         quote! { #struct_name::#method_name(#(#call_args),*) }
     } else {
-        quote! { self_obj.#method_name(#(#call_args),*) }
+        quote! { #self_obj.#method_name(#(#call_args),*) }
     };
 
     if returns_self {

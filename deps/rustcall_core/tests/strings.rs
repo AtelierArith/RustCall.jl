@@ -166,6 +166,84 @@ pub fn paren_res(s: (String)) -> (Result<i32, i32>) { s.parse().map_err(|_| -1) 
 }
 
 #[test]
+fn generated_identifiers_never_collide_with_arguments() {
+    // The wrapper introduces `<arg>_ptr`, `<arg>_len`, `<arg>_bytes`,
+    // `<arg>_cow` (and, for methods, `ptr` / `self_obj`); a user argument may
+    // carry any of those names.
+    let src = r#"
+#[julia]
+pub fn f(s: String, s_ptr: usize) -> usize { s.len() + s_ptr }
+#[julia]
+pub fn g(s: &str, s_bytes: i32, s_cow: i32, s_len: i32) -> i32 { s.len() as i32 + s_bytes * 10 + s_cow * 100 + s_len * 1000 }
+#[julia]
+pub fn h(s_ptr_: u8, s: String) -> usize { s.len() + s_ptr_ as usize }
+#[julia]
+pub struct Holder { pub n: u32 }
+impl Holder {
+    pub fn m(&self, ptr: u32, self_obj: u32, s: &str, s_bytes: u32) -> u32 { self.n + ptr + self_obj + s.len() as u32 + s_bytes }
+}
+"#;
+    let e = expand(src).unwrap();
+    let source = flat(&e.source);
+    assert!(
+        source.contains(
+            "pub extern \"C\" fn f(s_ptr_: *const u8, s_len: usize, s_ptr: usize) -> usize"
+        ),
+        "{source}"
+    );
+    assert!(source.contains("fn f_inner(s: String, s_ptr: usize) -> usize"));
+    assert!(
+        source.contains("pub extern \"C\" fn g(s_ptr: *const u8, s_len_: usize, s_bytes: i32, s_cow: i32, s_len: i32) -> i32"),
+        "{source}"
+    );
+    assert!(
+        source.contains("let s_bytes_ = unsafe { std::slice::from_raw_parts(s_ptr, s_len_) };"),
+        "{source}"
+    );
+    assert!(
+        source.contains("let s_cow_ = String::from_utf8_lossy(s_bytes_);"),
+        "{source}"
+    );
+    assert!(
+        source.contains("g_inner(s, s_bytes, s_cow, s_len)"),
+        "{source}"
+    );
+    // The user owns `s_ptr_`; the generated `s_ptr` is free and keeps its name.
+    assert!(source.contains("h_inner(s_ptr_, s)"), "{source}");
+    assert!(
+        source
+            .contains("pub extern \"C\" fn h(s_ptr_: u8, s_ptr: *const u8, s_len: usize) -> usize"),
+        "{source}"
+    );
+    assert!(
+        source.contains("pub extern \"C\" fn Holder_m(ptr_: *const Holder, ptr: u32, self_obj: u32, s_ptr: *const u8, s_len: usize, s_bytes: u32) -> u32"),
+        "{source}"
+    );
+    assert!(
+        source.contains("let self_obj_ = unsafe { &*ptr_ };"),
+        "{source}"
+    );
+    assert!(
+        source.contains("self_obj_.m(ptr, self_obj, s, s_bytes)"),
+        "{source}"
+    );
+
+    // The manifest keeps the user's names and ABIs.
+    for mode in [Mode::Inline, Mode::Crate] {
+        let m = extract(src, mode).unwrap();
+        let f = m.functions.iter().find(|f| f.name == "f").unwrap();
+        assert_eq!(f.args[0].abi, "string");
+        assert_eq!(f.args[1].name, "s_ptr");
+        assert_eq!(f.args[1].abi, "");
+        let g = m.functions.iter().find(|f| f.name == "g").unwrap();
+        assert_eq!(
+            g.args.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            ["s", "s_bytes", "s_cow", "s_len"]
+        );
+    }
+}
+
+#[test]
 fn julia_pyo3_functions_report_no_string_abi() {
     // `#[julia_pyo3]` exports the signature as written (no string conversion,
     // see #275), so the manifest must not advertise the (ptr, len) ABI.

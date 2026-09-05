@@ -161,7 +161,21 @@ using Test
     end
 
     @testset "manifest: schema version guard" begin
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 2
+        @test RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")["schema_version"] == 2
+        # Schema 1 predates the string ABI columns (`abi`, `return_abi`, the
+        # helper flags); a consumer must not fall back to the one-word ABI.
+        err = try
+            RustCall._parse_manifest("schema_version = 1\nmode = \"inline\"\n")
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.ExtractorError
+        @test occursin("schema 1", sprint(showerror, err))
+        @test occursin("expects 2", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 999\nmode = \"inline\"\n")
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("mode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("not = [valid toml")
     end
 
@@ -486,6 +500,48 @@ end
         @test RustCall.is_none(shadow_first("", UInt32(0)))
         @test shadow_upper("ada", "!") == "ADA!"
         @test shadow_twice(Int32(21)) == Int32(42)
+    end
+end
+
+@testset "#[julia] arguments named like generated Rust identifiers (#242 review)" begin
+    # The Rust wrapper introduces `<arg>_ptr` / `<arg>_len` / `<arg>_bytes` /
+    # `<arg>_cow` (and `ptr` / `self_obj` for methods); user arguments with
+    # those names must keep their values.
+    code = """
+    #[julia]
+    pub fn f(s: String, s_ptr: usize) -> usize { s.len() + s_ptr }
+    """
+    expanded = RustCall.expand_inline(code)
+    @test occursin("s_ptr_: *const u8", expanded.source)
+    sig = only(RustCall.manifest_function_signatures(expanded.manifest))
+    @test sig.arg_names == ["s", "s_ptr"]
+    @test sig.arg_abis == ["string", ""]
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[julia]
+        pub fn collide_owned(s: String, s_ptr: usize) -> usize { s.len() + s_ptr }
+        #[julia]
+        pub fn collide_borrowed(s: &str, s_bytes: i32, s_cow: i32, s_len: i32) -> i32 {
+            s.len() as i32 + s_bytes * 10 + s_cow * 100 + s_len * 1000
+        }
+        #[julia]
+        pub fn collide_ret(s_ptr: u8, s: String) -> String { format!("{s}{s_ptr}") }
+
+        #[julia]
+        pub struct Holder { pub n: u32 }
+        impl Holder {
+            pub fn new(n: u32) -> Self { Self { n } }
+            pub fn m(&self, ptr: u32, self_obj: u32, s: &str, s_bytes: u32) -> u32 {
+                self.n + ptr + self_obj + s.len() as u32 + s_bytes
+            }
+        }
+        """
+        @test collide_owned("abc", UInt(4)) == 7
+        @test collide_borrowed("ab", Int32(1), Int32(2), Int32(3)) == 3212
+        @test collide_ret(UInt8(7), "v") == "v7"
+        h = Holder(UInt32(1))
+        @test m(h, UInt32(2), UInt32(3), "abcd", UInt32(5)) == 15
     end
 end
 

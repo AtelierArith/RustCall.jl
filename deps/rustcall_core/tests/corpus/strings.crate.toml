@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 mode = "crate"
 
 [[functions]]
@@ -175,6 +175,35 @@ name = "s"
 rust_type = "&(str)"
 abi = "str"
 
+[[functions]]
+name = "collide"
+symbol = "collide"
+attribute = "julia"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
+return_type = "usize"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+line = 47
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "String"
+abi = "string"
+
+[[functions.args]]
+name = "s_ptr"
+rust_type = "usize"
+abi = ""
+
 [[structs]]
 name = "Greeter"
 attribute = "julia"
@@ -186,7 +215,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
-line = 47
+line = 54
 module_path = []
 
 [[structs.fields]]

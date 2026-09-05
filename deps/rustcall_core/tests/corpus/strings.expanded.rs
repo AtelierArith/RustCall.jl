@@ -175,6 +175,18 @@ pub extern "C" fn paren_ref(s_ptr: *const u8, s_len: usize) -> (usize) {
     let s: &str = &s_cow;
     paren_ref_inner(s)
 }
+#[allow(clippy::ptr_arg)]
+fn collide_inner(s: String, s_ptr: usize) -> usize {
+    s.len() + s_ptr
+}
+#[no_mangle]
+pub extern "C" fn collide(s_ptr_: *const u8, s_len: usize, s_ptr: usize) -> usize {
+    let s = unsafe {
+        let slice = std::slice::from_raw_parts(s_ptr_, s_len);
+        String::from_utf8_lossy(slice).into_owned()
+    };
+    collide_inner(s, s_ptr)
+}
 pub struct Greeter {
     pub count: u32,
 }
