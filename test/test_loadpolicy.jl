@@ -20,7 +20,7 @@ _src(name) = read(joinpath(_SRC_DIR, name), String)
 """Number of non-overlapping occurrences of `needle` in the source of `name`."""
 _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
-@testset "LoadPolicy" begin
+@testset verbose=true "LoadPolicy" begin
 
     @testset "record and defaults" begin
         p = RustCall.LoadPolicy("example")
@@ -158,21 +158,21 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             local_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", src))
             global_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", src))
         end
-        # B0 moved the two inline doors (direct rustc and Cargo) onto
-        # `load_artifact!`, which reads the flags off the policy. What is left
-        # open-coded: @irust, generics, hot reload, the two @rust_crate
-        # templates, the helper library (2) and the deprecated LLVM path.
-        @test local_sites == 2
-        @test global_sites == 6
-        @test local_sites + global_sites == 8
-
-        # The inline doors no longer name a flag at all: cache.jl hands back a
-        # path and ruststr.jl calls the loader.
-        cache_src = _src("cache.jl")
-        @test !occursin(r"dlopen\(", cache_src)
-        ruststr_src = _src("ruststr.jl")
-        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", ruststr_src)) == 0
-        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", ruststr_src)) == 1
+        # B1 finished the migration: every door reads its flags off its
+        # policy. What is left open-coded outside loadpolicy.jl is the
+        # deprecated LLVM path (#265 Phase 2 deletes it) and the two
+        # @rust_crate module templates, whose dlopen runs in the *generated*
+        # module (B5 routes them through the loader too).
+        @test local_sites == 0
+        @test global_sites == 3
+        for file in ("cache.jl", "ruststr.jl", "generics.jl", "hot_reload.jl",
+                     "memory.jl", "rustmacro.jl")
+            @test !occursin(r"dlopen\(", _src(file))
+        end
+        # ...and scripts/lint_load_path.sh is what keeps it that way.
+        lint = read(joinpath(dirname(_SRC_DIR), "scripts", "lint_load_path.sh"), String)
+        @test occursin("Libdl", lint)
+        @test occursin("loadpolicy", lint)
 
         # One policy per axis value, each covering both cache states.
         rustc_policy = RustCall.inline_rustc_policy()
@@ -319,11 +319,9 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             writes += count(_ -> true,
                             eachmatch(r"RUST_LIBRARIES\[[^\]]*\]\s*=", _src(file)))
         end
-        # B0 moved `_register_manifest` onto `load_artifact!`, so the inline
-        # doors write nothing themselves. Four open-coded sites remain: the
-        # `@irust` loader in ruststr.jl, generics.jl, hot_reload.jl, and the
-        # reload alias that #272 added in rustmacro.jl.
-        @test writes == 4
+        # Every door goes through the loader now: nothing outside
+        # loadpolicy.jl writes RUST_LIBRARIES.
+        @test writes == 0
 
         # Each site decides for itself whether CURRENT_LIB moves and what the
         # key looks like; the policies record that disagreement.
@@ -345,17 +343,21 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test !RustCall.registers_in_rust_libraries(RustCall.helper_library_policy())
         @test !RustCall.registers_in_rust_libraries(RustCall.llvm_policy())
 
-        # The hot-reload rebuild happens outside REGISTRY_LOCK (#255).
-        @test occursin("outside REGISTRY_LOCK", _src("hot_reload.jl"))
+        # The hot-reload registry transaction is `load_artifact!`'s, and the
+        # rebuild that precedes it holds no registry lock — see the #255
+        # testset below.
 
         # Generics registers only when the key is absent, and that guard is
         # load-bearing: _unique_source_name returns the fixed base name
         # "rust_code" outside debug mode (src/compiler.jl:68-72), so every
-        # instantiation collides on the same librust_code basename. An
-        # unconditional assignment would swap the live handle and discard the
-        # function-pointer cache filled at src/generics.jl:267 (#250).
+        # instantiation compiles into its own temp directory under the same
+        # librust_code basename. An unconditional assignment would swap a live
+        # handle and discard the function-pointer cache (#250). Since B1 the
+        # guard is `generics_policy()`'s registration mode rather than an
+        # open-coded `if !haskey(...)`, and `load_artifact!` closes the loser's
+        # duplicate handle instead of leaking it.
         @test occursin("return \"rust_code\"", _src("compiler.jl"))
-        @test occursin("if !haskey(RUST_LIBRARIES, lib_name)", _src("generics.jl"))
+        @test occursin("generics_policy()", _src("generics.jl"))
         @test RustCall.generics_policy().registration_mode === :insert_only
         for ctor in RustCall.ALL_LOAD_POLICIES
             p = ctor()
@@ -457,21 +459,106 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     # `Libdl.dlopen` lint (scripts/lint_load_path.sh) is what keeps it that
     # way.
     # -----------------------------------------------------------------
-    @testset "Phase B: migrated doors go through loadpolicy.jl" begin
-        migrated = ("ruststr.jl", "cache.jl")
-        for file in readdir(_SRC_DIR)
-            endswith(file, ".jl") || continue
-            file in ("loadpolicy.jl", "RustCall.jl") && continue
-            src = _src(file)
-            if file in migrated
-                continue
-            end
-            @test !occursin("load_artifact!(", src)
-        end
-        # ...and the migrated ones really do.
-        @test occursin("load_artifact!(", _src("ruststr.jl"))
+    @testset "Phase B: every door goes through loadpolicy.jl" begin
+        # Each door still names its own policy — that is what makes a later
+        # change of policy one edit rather than a search.
         @test occursin("inline_rustc_policy()", _src("ruststr.jl"))
         @test occursin("inline_cargo_policy()", _src("ruststr.jl"))
+        @test occursin("irust_policy()", _src("ruststr.jl"))
+        @test occursin("generics_policy()", _src("generics.jl"))
+        @test occursin("hot_reload_policy()", _src("hot_reload.jl"))
+        @test occursin("helper_library_policy()", _src("memory.jl"))
+        @test occursin("alias_artifact!(", _src("rustmacro.jl"))
+        # unload_library / unload_all_libraries are wrappers now.
+        @test occursin("unload_artifact!(", _src("ruststr.jl"))
+    end
+
+    # -----------------------------------------------------------------
+    # `load_artifact!` under concurrency (#277 risk 1).
+    #
+    # `dlopen` is deliberately outside REGISTRY_LOCK, so two tasks loading the
+    # same path both open it. The registry transaction decides the winner and
+    # the loser's duplicate handle is closed rather than left mapped or
+    # swapped in over a live entry.
+    # -----------------------------------------------------------------
+    @testset "load_artifact! is safe under concurrency" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to build a library to load concurrently"
+        else
+            mktempdir() do dir
+                src = joinpath(dir, "conc.rs")
+                write(src, """
+                    #[no_mangle]
+                    pub extern "C" fn rustcall_conc_probe(a: i32) -> i32 { a + 1 }
+                    """)
+                lib = RustCall.compile_rust_to_shared_lib(read(src, String))
+
+                for (mode, expect_one_handle) in ((:insert_only, true), (:replace, false))
+                    name = "loadpolicy_conc_$(mode)_$(getpid())"
+                    policy = RustCall.LoadPolicy("test-conc-$(mode)";
+                                                 registration_mode = mode)
+                    try
+                        n = 8
+                        results = Vector{RustCall.LoadedArtifact}(undef, n)
+                        @sync for i in 1:n
+                            Threads.@spawn results[i] = RustCall.load_artifact!(
+                                policy, lib; lib_name = name,
+                                eager = ("rustcall_conc_probe",))
+                        end
+
+                        # Exactly one entry, and it is the handle every
+                        # :insert_only caller was handed.
+                        entry = lock(() -> RustCall.RUST_LIBRARIES[name],
+                                     RustCall.REGISTRY_LOCK)
+                        @test haskey(entry[2], "rustcall_conc_probe")
+                        if expect_one_handle
+                            @test all(r -> r.handle == entry[1], results)
+                            @test length(unique(r -> r.handle, results)) == 1
+                        else
+                            # :replace — the last writer wins, and every
+                            # artifact but the live one has been retired.
+                            @test count(r -> r.alive[], results) == 1
+                            @test any(r -> r.handle == entry[1], results)
+                        end
+
+                        # The function is callable through the registered entry.
+                        ptr = RustCall.get_function_pointer(name, "rustcall_conc_probe")
+                        @test RustCall.call_rust_function(ptr, Int32, Int32(41)) == Int32(42)
+
+                        RustCall.unload_artifact!(policy, name)
+                        @test all(r -> !r.alive[], results)
+                        @test !haskey(RustCall.RUST_LIBRARIES, name)
+                    finally
+                        lock(RustCall.REGISTRY_LOCK) do
+                            delete!(RustCall.RUST_LIBRARIES, name)
+                            delete!(RustCall.ARTIFACT_ALIVE, name)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # #255: a failed hot reload keeps the previous library.
+    #
+    # _reload_library_locked rebuilds, rescans and dlopens *before* anything is
+    # removed, and the swap is one load_artifact! with on_replace = :dlclose.
+    # There is no unload-first block left, and the rebuild no longer runs with
+    # the registry emptied.
+    # -----------------------------------------------------------------
+    @testset "hot reload rebuilds before it swaps (#255)" begin
+        src = _src("hot_reload.jl")
+        @test occursin("on_replace = :dlclose", src)
+        @test occursin("_source_stamps", src)          # rescan/build TOCTOU guard
+        @test occursin("_scan_crate_signatures", src)
+        @test !occursin("outside REGISTRY_LOCK", src)  # the old unload-first comment
+        # The rescan happens before the build, so the manifest describes the
+        # sources that were compiled.
+        scan_at = findfirst("_scan_crate_signatures(state.crate_path)", src)
+        build_at = findfirst("rebuild_crate(state.crate_path)", src)
+        @test scan_at !== nothing && build_at !== nothing
+        @test first(scan_at) < first(build_at)
     end
 
     @testset "load_artifact! / unload_artifact! / alias_artifact!" begin

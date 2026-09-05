@@ -100,7 +100,8 @@ info = scan_crate("/path/to/my_crate")
 println("Found \$(length(info.julia_functions)) Julia functions")
 ```
 """
-function scan_crate(crate_path::String)
+function scan_crate(crate_path::String; cfg = :lenient,
+                    cfg_text::Union{Nothing, AbstractString} = nothing)
     # Validate path
     if !isdir(crate_path)
         error("Crate path does not exist: $crate_path")
@@ -121,10 +122,15 @@ function scan_crate(crate_path::String)
     # expand it (crate mode); Julia never reads the Rust source itself.
     # `.rs` files that are not complete modules (include!() fragments) are
     # skipped; Cargo is the authority on whether the crate compiles.
-    # Cargo builds the crate with its own features and profile; prune only what
-    # the target decides (`unix`, `windows`, `target_*`).
+    # By default Cargo builds the crate with features and a profile RustCall
+    # does not know, so only what the target decides (`unix`, `windows`,
+    # `target_*`) is pruned. A caller that *does* know — it just built the
+    # crate and probed it with `_crate_build_cfg_text` — passes that text and
+    # `cfg = :cargo`, and then every `#[cfg]` is decided, which is what lets
+    # mutually exclusive feature variants of one `#[julia] fn` collapse to the
+    # one that exists (#277 Phase B).
     manifest = extract_manifest(source_files; mode = "crate", skip_unparsable = true,
-                                cfg = :lenient)
+                                cfg = cfg, cfg_text = cfg_text)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
 

@@ -161,21 +161,16 @@ library directly rather than the global fallback search. The module's active
 library moves to the actual name, under which the manifest was registered.
 """
 function _alias_reloaded_library(mod::Module, stored_name::String, actual_name::String)
-    lock(REGISTRY_LOCK) do
-        entry = get(RUST_LIBRARIES, actual_name, nothing)
-        if entry !== nothing
-            # Both registries are per library (#279), so the alias needs its
-            # own entries: without the symbol mappings a lookup through the
-            # stored name resolves `f` to `f`, misses the `rustcall_f` this
-            # library exports, and falls back to the cross-library search —
-            # which another block defining `f` would make ambiguous; without
-            # the return-type hints an untyped `@rust f(...)` through the alias
-            # would take the unscoped fallback and pick up whatever another
-            # block last registered for that name.
-            copy_library_metadata!(actual_name, stored_name)
-            RUST_LIBRARIES[stored_name] = entry
-        end
-    end
+    # `alias_artifact!` (src/loadpolicy.jl) owns the two-names-one-handle case:
+    # both registries are per library (#279), so the alias gets its own symbol
+    # mappings and return-type hints — without the mappings a lookup through
+    # the stored name resolves `f` to `f`, misses the `rustcall_f` this library
+    # exports and falls back to the cross-library search, which another block
+    # defining `f` would make ambiguous; without the hints an untyped
+    # `@rust f(...)` through the alias would pick up whatever another block
+    # last registered for that name. The alias also shares the library's
+    # liveness flag, so unloading either name retires both (#277 Phase B).
+    alias_artifact!(inline_rustc_policy(), actual_name, stored_name)
     if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
         active = getfield(mod, :__RUSTCALL_ACTIVE_LIB)
         active[] == stored_name && (active[] = actual_name)

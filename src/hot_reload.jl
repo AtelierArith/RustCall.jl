@@ -159,77 +159,134 @@ function reload_library(state::HotReloadState)
 end
 
 """
+    _source_stamps(crate_path) -> Vector{Tuple{String, Float64, Int}}
+
+`(path, mtime, size)` of every `.rs` file of the crate, sorted.
+
+Used to decide whether the sources a rescan described are still the sources
+that were built. It is a *change detector*, not an identity: it never decides
+what to compile (that is `src/artifact_id.jl`, which hashes content), only
+whether to trust a manifest that was produced a moment ago.
+"""
+function _source_stamps(crate_path::String)
+    stamps = Tuple{String, Float64, Int}[]
+    for f in sort(find_rust_source_files(crate_path))
+        st = try
+            stat(f)
+        catch
+            continue
+        end
+        push!(stamps, (f, st.mtime, Int(st.size)))
+    end
+    return stamps
+end
+
+"""
+    _scan_crate_signatures(crate_path) -> Union{Vector, Nothing}
+
+The `#[julia]` function signatures of a crate that RustCall has just built
+`--release`, scanned under **that crate's own build configuration**.
+
+`_crate_build_cfg_text` probes the crate in place (`cargo rustc --release --lib
+-- --print cfg`), so its features and its build script's `cargo:rustc-cfg`
+output decide the `#[cfg]` predicates. Two mutually exclusive
+`#[cfg(feature = ...)]` variants of one `#[julia] fn` then collapse to the one
+that exists, and its return type is registered instead of being suppressed as
+ambiguous (#279).
+
+When the probe comes back empty — cargo unavailable, a crate Cargo will not
+probe — the scan falls back to the lenient one, which decides only target
+predicates. That is the fail-safe: an ambiguous function keeps its symbol
+mapping and loses only its return-type hint, so the call falls through to
+inference or an explicit `::T` rather than to the wrong ABI.
+
+`nothing` when the scan itself fails; the caller then registers the library
+with no mappings rather than losing the rebuilt library.
+"""
+function _scan_crate_signatures(crate_path::String)
+    return try
+        cfg_text = _crate_build_cfg_text(crate_path)
+        if isempty(cfg_text)
+            @debug "Hot reload: no build cfg for $(crate_path); scanning leniently"
+            scan_crate(crate_path).julia_functions
+        else
+            scan_crate(crate_path; cfg = :cargo, cfg_text).julia_functions
+        end
+    catch error
+        @warn "Hot reload: could not rescan $(crate_path) for exported symbols" error
+        nothing
+    end
+end
+
+"""
     _reload_library_locked(state::HotReloadState) -> Bool
 
 Internal implementation of reload_library, called while holding the
 per-library lock.
+
+# Rebuild first, swap last (#255)
+
+Everything that can fail — the rescan, `cargo build`, the `dlopen` — completes
+**before** the previous library is touched. A failed rebuild therefore leaves
+the old library loaded, with its function-pointer cache, its symbol mappings,
+its monomorphizations and `CURRENT_LIB` intact, instead of emptying the registry
+and leaving the user with no library at all. The swap itself is one
+`load_artifact!` under `REGISTRY_LOCK`, which retires the old artifact (so
+objects it produced go inert), purges its rows and `dlclose`s the old handle
+after the lock.
+
+# Rescan before the build
+
+The scan describes the sources; the build compiles them. Scanning *after* the
+build would describe sources that may have changed in between and hand the
+freshly built library another build's symbol table. So the source files are
+stamped, scanned, built, and stamped again: if a stamp moved, the scan is
+discarded rather than trusted, and the library is registered with no symbol
+mappings (a `#[julia]` function is then reachable only by its exported symbol
+until the next reload).
 """
 function _reload_library_locked(state::HotReloadState)
     @info "Hot reload: Rebuilding $(state.lib_name)..."
 
     try
-        # Unload the old library and clear stale monomorphized functions
-        # atomically under REGISTRY_LOCK to prevent other threads from
-        # observing an inconsistent state between check and unload.
-        lock(REGISTRY_LOCK) do
-            if haskey(RUST_LIBRARIES, state.lib_name)
-                lib_handle, _ = RUST_LIBRARIES[state.lib_name]
-                delete!(RUST_LIBRARIES, state.lib_name)
-                # The rebuilt library re-registers its own mappings; a stale
-                # entry would redirect a lookup to the unloaded handle (#279).
-                clear_library_metadata!(state.lib_name)
-                if CURRENT_LIB[] == state.lib_name
-                    CURRENT_LIB[] = ""
-                end
-                Libdl.dlclose(lib_handle)
-            end
+        # Stamp the sources, then scan them. Scanning runs the extractor and
+        # must not hold REGISTRY_LOCK.
+        before = _source_stamps(state.crate_path)
+        signatures = _scan_crate_signatures(state.crate_path)
 
-            # Clear stale monomorphized function pointers that belonged to the
-            # unloaded library to prevent use-after-free (#73)
-            stale_keys = [k for (k, v) in MONOMORPHIZED_FUNCTIONS
-                          if v.lib_name == state.lib_name]
-            for k in stale_keys
-                delete!(MONOMORPHIZED_FUNCTIONS, k)
-            end
-            if !isempty(stale_keys)
-                @debug "Hot reload: Cleared $(length(stale_keys)) stale monomorphized functions"
-            end
-        end
-
-        # Rebuild the library (outside REGISTRY_LOCK — this takes significant
-        # time and must not block other library operations).
+        # Rebuild. No registry lock is held here — this takes significant
+        # time and must not block other library operations — and the old
+        # library stays loaded and usable throughout.
         new_lib_path = rebuild_crate(state.crate_path)
 
-        # Update state
-        state.lib_path = new_lib_path
-
-        # The rebuilt crate decides its own exported symbols, so the mappings
-        # the unload dropped are rebuilt from a fresh scan (#279). Scanning
-        # runs the extractor, so it happens before the lock is taken; a scan
-        # failure must not lose the rebuilt library, only its name-to-symbol
-        # mappings (a `#[julia]` function is then unreachable by its Rust name
-        # until the next successful reload).
-        signatures = try
-            scan_crate(state.crate_path).julia_functions
-        catch error
-            @warn "Hot reload: could not rescan $(state.crate_path) for exported symbols" error
-            nothing
+        # Did the sources move under the scan? Then the manifest is not
+        # evidence about what was just built.
+        after = _source_stamps(state.crate_path)
+        if signatures !== nothing && before != after
+            @warn "Hot reload: $(state.crate_path) changed while it was being rebuilt; " *
+                  "registering the new library without symbol mappings"
+            signatures = nothing
         end
 
-        # Re-register the library.  Check that nothing else has registered the
-        # same name during the rebuild window.
-        lib_handle = Libdl.dlopen(new_lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+        symbols, return_types = signatures === nothing ? ((), ()) :
+                                _manifest_registry_entries(signatures)
+
+        # The swap. `on_replace = :dlclose` closes the *previous* handle after
+        # the lock is released; a failure anywhere above never reaches here.
+        state.lib_path = new_lib_path
+        load_artifact!(hot_reload_policy(), new_lib_path;
+                       lib_name = state.lib_name, symbols, return_types,
+                       on_replace = :dlclose)
+        # Monomorphizations resolved against the previous image hold raw
+        # pointers into it (#73); they belong to the replaced artifact, not to
+        # the new one.
         lock(REGISTRY_LOCK) do
-            if haskey(RUST_LIBRARIES, state.lib_name)
-                @warn "Hot reload: Library $(state.lib_name) was re-registered during rebuild; overwriting"
+            stale = [k for (k, v) in MONOMORPHIZED_FUNCTIONS if v.lib_name == state.lib_name]
+            for k in stale
+                delete!(MONOMORPHIZED_FUNCTIONS, k)
             end
-            # Mappings first, handle last: the two must never be observable
-            # apart (#279).
-            if signatures !== nothing
-                install_library_metadata!(state.lib_name,
-                                          _manifest_registry_entries(signatures)...)
-            end
-            RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
+            isempty(stale) ||
+                @debug "Hot reload: Cleared $(length(stale)) stale monomorphized functions"
         end
 
         @info "Hot reload: Successfully reloaded $(state.lib_name)"

@@ -897,29 +897,22 @@ end
     unload_library(lib_name::String)
 
 Unload a Rust library and free its resources.
+
+A thin wrapper over `unload_artifact!` (`src/loadpolicy.jl`), which is the one
+place a library leaves the registry (#277 Phase B). Besides the handle and the
+`RUST_LIBRARIES` entry it drops everything the registries record about the
+library — its name-to-symbol mappings and return-type hints (a stale mapping
+would keep redirecting lookups to a symbol that is no longer loaded, #279), its
+`FUNCTION_REGISTRY` rows, the monomorphizations whose pointers point into it
+(#73) and its `@irust` memos — and flips the library's liveness flag, which is
+what keeps a finalizer of an object it produced from calling into the closed
+image (#249).
 """
 function unload_library(lib_name::String)
-    local lib_handle
-    found = lock(REGISTRY_LOCK) do
-        if !haskey(RUST_LIBRARIES, lib_name)
-            return false
-        end
-        lib_handle, _ = RUST_LIBRARIES[lib_name]
-        delete!(RUST_LIBRARIES, lib_name)
-        # A stale name-to-symbol mapping would keep redirecting lookups to a
-        # symbol that is no longer loaded (#279).
-        clear_library_metadata!(lib_name)
-        if CURRENT_LIB[] == lib_name
-            CURRENT_LIB[] = ""
-        end
-        return true
-    end
-    if !found
+    if !unload_artifact!(inline_rustc_policy(), lib_name)
         @warn "Library '$lib_name' not loaded"
-        return
     end
-
-    Libdl.dlclose(lib_handle)
+    return nothing
 end
 
 """
@@ -1152,23 +1145,13 @@ function _compile_and_call_irust(code::String, args...)
             """)
         end
 
-        # Load the library
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-        if lib_handle == C_NULL
-            error("""
-            Failed to load compiled Rust library for @irust.
-
-            Library path: $lib_path
-            Code: $code
-
-            This may indicate a linking issue or missing dependencies.
-            """)
-        end
-
-        # Generate a unique library name and register under lock
+        # Load and register the snippet through the one loader (#277 Phase B).
+        # `IRUST_FUNCTIONS` is written in the same critical section as the
+        # handle: a concurrent `@irust` that finds the memo must find the
+        # library it names.
         lib_name = "irust_$(artifact_short_id(code_hash))"
+        load_artifact!(irust_policy(), lib_path; lib_name, eager = (func_name,))
         lock(REGISTRY_LOCK) do
-            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
             IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
         end
 

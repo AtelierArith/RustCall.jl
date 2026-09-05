@@ -278,6 +278,11 @@ end
 # `.cargo/config` settings are reflected. Cached per session and environment.
 const _CARGO_CFG_TEXT = Dict{String, String}()
 
+# `rustc --print cfg` probed inside a *specific external crate*, keyed by
+# (crate path, profile, Cargo/RUSTFLAGS environment). See
+# `_crate_build_cfg_text`.
+const _CRATE_CFG_TEXT = Dict{String, String}()
+
 """
     _cargo_probe_profile() -> String
 
@@ -487,6 +492,50 @@ function _rustc_cfg_text(flags::Vector{String} = _cfg_rustc_flags())
 end
 
 """
+    _crate_build_cfg_text(crate_path; profile = "release") -> String
+
+`rustc --print cfg` **as Cargo runs it for that crate**: the crate's own
+features (its defaults and whatever its manifest enables), its build script's
+`cargo:rustc-cfg` output, its `[profile]` settings and the `.cargo/config.toml`
+chain above it all decide the result, because the probe runs Cargo *in the
+crate directory*:
+
+    cargo rustc -q --release --lib -- --print cfg
+
+That is the difference from `_cargo_cfg_text`, which probes a dependency-free
+crate RustCall generates and therefore knows nothing about another crate's
+features. It is what lets an external crate be scanned under the configuration
+it is actually built with, so two mutually exclusive `#[cfg(feature = ...)]`
+variants of one `#[julia] fn` collapse to the one that exists instead of
+staying ambiguous (`_manifest_registry_entries`, #279 / #277 Phase B).
+
+Empty when cargo is unavailable or the probe fails — a crate that does not
+build, or a workspace member Cargo refuses to probe. The caller must treat an
+empty result as "unknown" and fall back to the lenient scan; guessing a
+configuration is worse than not deciding one.
+
+Cached per `(crate path, profile, Cargo/RUSTFLAGS environment)`. `--print cfg`
+still resolves and builds the crate's dependencies, but every caller today has
+just built the crate anyway.
+"""
+function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release")
+    path = abspath(String(crate_path))
+    key = path * "\n" * String(profile) * "\n" * _cargo_cfg_env_key()
+    lock(_EXTRACTOR_LOCK) do
+        get!(_CRATE_CFG_TEXT, key) do
+            try
+                flag = profile == "release" ? `--release` : ``
+                out = read(setenv(`$(cargo()) rustc -q $flag --lib -- --print cfg`; dir = path), String)
+                join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
+            catch e
+                @debug "Could not probe the build cfg of $(path)" exception = e
+                ""
+            end
+        end
+    end
+end
+
+"""
     _cfg_mode(cfg) -> Symbol
 
 Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
@@ -597,14 +646,18 @@ With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
-                          cfg = :strict)
+                          cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
     args = ["manifest", "--mode", mode]
     skip_unparsable && push!(args, "--skip-unparsable")
-    append!(args, _cfg_file_args(cfg))
+    if cfg_text === nothing
+        append!(args, _cfg_file_args(cfg))
+    else
+        append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
+    end
     text = _run_extractor(vcat(args, files))
     return _parse_manifest(text)
 end

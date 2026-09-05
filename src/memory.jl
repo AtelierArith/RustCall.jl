@@ -212,12 +212,14 @@ function load_rust_helpers_lib(lib_path::String)
     end
 
     try
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
-        if lib_handle == C_NULL
-            error("Failed to load Rust helpers library: $lib_path (dlopen returned NULL)")
-        end
-        RUST_HELPERS_LIB[] = lib_handle
-        return lib_handle
+        # The flag set is the helper library's policy, not this call site's
+        # (#277 Phase B): `helper_library_policy()` decides it, and
+        # `load_artifact!` opens the image. The policy registers nowhere —
+        # the handle's home is `RUST_HELPERS_LIB` — so nothing else happens.
+        artifact = load_artifact!(helper_library_policy(), lib_path;
+                                  lib_name = "rust_helpers")
+        RUST_HELPERS_LIB[] = artifact.handle
+        return artifact.handle
     catch e
         error("Failed to load Rust helpers library from $lib_path: $e")
     end
@@ -318,11 +320,9 @@ function try_load_rust_helpers()
     end
 
     try
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
-        if lib_handle == C_NULL
-            @debug "Failed to load Rust helpers library: dlopen returned NULL for $lib_path"
-            return false
-        end
+        # Same policy as `load_rust_helpers_lib` (#277 Phase B).
+        lib_handle = load_artifact!(helper_library_policy(), lib_path;
+                                    lib_name = "rust_helpers").handle
 
         # Verify that required functions are available
         if !verify_rust_helpers_functions(lib_handle)

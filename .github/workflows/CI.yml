@@ -20,6 +20,8 @@ jobs:
         run: bash scripts/lint_rust_syntax_regex.sh src
       - name: Check that artifact identity goes through src/artifact_id.jl
         run: bash scripts/lint_artifact_identity.sh src
+      - name: Check that loading and registration go through src/loadpolicy.jl
+        run: bash scripts/lint_load_path.sh src
 
   rust-tests:
     name: Rust ${{ matrix.rust }} - ${{ matrix.os }} - ${{ matrix.crate }}

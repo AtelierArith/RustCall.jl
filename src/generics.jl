@@ -284,28 +284,25 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         wrapped_code = wrap_rust_code(specialized_code)
         lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
 
-        # Load the library
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-        if lib_handle == C_NULL
-            error("Failed to load monomorphized function library: $lib_path")
-        end
-
-        # Register the library under its artifact identity. `basename(lib_path)`
-        # used to be the key, but `_unique_source_name` returns the constant
-        # "rust_code" outside debug mode, so *every* instantiation collided on
-        # one RUST_LIBRARIES entry (the `:lib_basename` divergence recorded in
-        # src/loadpolicy.jl).
+        # Load and register the instantiation under its artifact identity.
+        # `basename(lib_path)` used to be the key, but `_unique_source_name`
+        # returns the constant "rust_code" outside debug mode, so *every*
+        # instantiation collided on one RUST_LIBRARIES entry (the
+        # `:lib_basename` divergence recorded in src/loadpolicy.jl).
+        #
+        # `generics_policy()` registers `:insert_only`: two tasks racing on the
+        # same instantiation both compile and both `dlopen`, and the loser's
+        # duplicate handle is closed by `load_artifact!` rather than replacing
+        # a live entry and discarding its function-pointer cache. The exported
+        # symbol is the additive wrapper the extractor emitted next to the
+        # instantiation, never the instantiation's own name (#279); resolving
+        # it eagerly puts it in the winner's cache inside the same transaction.
         lib_name = "rust_generic_$(artifact_short_id(cache_key))"
-        lock(REGISTRY_LOCK) do
-            if !haskey(RUST_LIBRARIES, lib_name)
-                RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-            end
-        end
-
-        # The exported symbol is the additive wrapper the extractor emitted
-        # next to the instantiation, never the instantiation's own name (#279).
         specialized_symbol = specialized.symbol
-        func_ptr = Libdl.dlsym(lib_handle, specialized_symbol; throw_error=false)
+        artifact = load_artifact!(generics_policy(), lib_path;
+                                  lib_name, eager = (specialized_symbol,))
+
+        func_ptr = Libdl.dlsym(artifact.handle, specialized_symbol; throw_error=false)
         if func_ptr === nothing || func_ptr == C_NULL
             error("""
             Function '$(specialized_symbol)' not found in library '$lib_path'.
@@ -313,11 +310,6 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             Specialized code was:
             $specialized_code
             """)
-        end
-
-        lock(REGISTRY_LOCK) do
-            _, func_cache = RUST_LIBRARIES[lib_name]
-            func_cache[specialized_symbol] = func_ptr
         end
 
         # Return and argument types come from the manifest of the specialized
@@ -337,7 +329,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             string_return = :owned
             # The string helpers keep the instantiation's own name (#279).
             free_name = ffi_free_symbol(specialized.name)
-            free_ptr = Libdl.dlsym(lib_handle, free_name; throw_error=false)
+            free_ptr = Libdl.dlsym(artifact.handle, free_name; throw_error=false)
             if free_ptr === nothing || free_ptr == C_NULL
                 error("Function '$free_name' not found in library '$lib_path'")
             end

@@ -83,9 +83,14 @@ signature_for(code, name; mode = "inline") = only(
             empty!(RustCall.IRUST_FUNCTIONS)
             RustCall.unload_all_libraries()
             @test RustCall._compile_and_call_irust("arg1 + 1", Int32(1)) == Int32(2)
+            @test !isempty(RustCall.IRUST_FUNCTIONS)
             RustCall.unload_all_libraries()
             @test isempty(RustCall.RUST_LIBRARIES)
-            @test !isempty(RustCall.IRUST_FUNCTIONS)
+            # Since #277 Phase B the memo goes with the library: unloading is
+            # one transaction that drops the handle and every registry row
+            # naming it, `IRUST_FUNCTIONS` included, so there is no stale entry
+            # left to detect. Recompiling transparently is still what happens.
+            @test isempty(RustCall.IRUST_FUNCTIONS)
             @test RustCall._compile_and_call_irust("arg1 + 1", Int32(2)) == Int32(3)
             empty!(RustCall.IRUST_FUNCTIONS)
             RustCall.unload_all_libraries()
