@@ -310,6 +310,43 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_lookup("core::primitive::Widget") === nothing
     end
 
+    @testset "julia_expr is a Julia AST, not a printed name" begin
+        # `Symbol("Ptr{Int32}")` would splice into generated code as
+        # `var"Ptr{Int32}"` — an undefined binding. Parametric types must be
+        # `Expr(:curly, ...)`.
+        @test RustCall.ffi_julia_symbol("*const *mut i32") == :(Ptr{Ptr{Int32}})
+        @test RustCall.ffi_julia_symbol("*const u8") == :(Ptr{UInt8})
+        @test RustCall.ffi_julia_symbol("*mut Point") == :(Ptr{Cvoid})
+        @test RustCall.ffi_julia_symbol("*mut *const *mut f64") ==
+              :(Ptr{Ptr{Ptr{Float64}}})
+        @test RustCall.ffi_julia_symbol("*const *mut i32") isa Expr
+        @test RustCall.ffi_julia_type("*const *mut i32") === Ptr{Ptr{Int32}}
+        @test RustCall.ffi_julia_type("*mut *const *mut f64") === Ptr{Ptr{Ptr{Float64}}}
+        @test RustCall.ffi_julia_type("Vec<f64>") === nothing
+
+        # Plain names stay plain `Symbol`s.
+        for s in ("i32", "usize", "()", "String", "char")
+            @test RustCall.ffi_julia_symbol(s) isa Symbol
+        end
+        @test RustCall.ffi_julia_symbol("i32") === :Int32
+        @test RustCall.ffi_julia_symbol("()") === :Cvoid
+
+        # Every spelling the contract knows must render to something that
+        # evaluates, in RustCall, to exactly its surface type.
+        for s in vcat(ALL_SPELLINGS, ["*const *mut i32", "core::primitive::u8"])
+            e = RustCall.ffi_julia_symbol(s)
+            e === nothing && continue
+            @test Core.eval(RustCall, e) === RustCall.ffi_julia_type(s)
+            @test Core.eval(RustCall, e) === RustCall.ffi_surface_type(s)
+        end
+
+        # And the renderer itself.
+        @test RustCall.ffi_type_expr(Int32) === :Int32
+        @test RustCall.ffi_type_expr(Cvoid) === :Cvoid       # not :Nothing
+        @test RustCall.ffi_type_expr(Ptr{Cvoid}) == :(Ptr{Cvoid})
+        @test RustCall.ffi_type_expr(Ptr{Ptr{UInt8}}) == :(Ptr{Ptr{UInt8}})
+    end
+
     @testset "nested raw pointers" begin
         @test RustCall.ffi_ccall_type("*const *mut i32") === Ptr{Ptr{Int32}}
         @test RustCall.ffi_ccall_type("*mut *mut u8") === Ptr{Ptr{UInt8}}
@@ -587,6 +624,32 @@ const ALL_SPELLINGS = vcat(
         end
         # And the sweep really does exercise the owned branch.
         @test any(c -> c.ownership === :owned_by_rust, cases)
+    end
+
+    @testset "ownership tags: both owned tags release through free_symbol" begin
+        # `:transferred_to_julia` does NOT mean "Julia frees it with its own
+        # allocator": a `Box::into_raw` handle must be released by calling the
+        # Rust export, so the Rust destructor runs on the allocating allocator
+        # (#249). The two owned tags differ in WHEN, not HOW:
+        #   :owned_by_rust        — released within the call (the wrapper copies,
+        #                           then frees; src/structs.jl:511-523)
+        #   :transferred_to_julia — the handle outlives the call and Julia frees
+        #                           it later, from a finalizer
+        @test :owned_by_rust in RustCall.FFI_OWNERSHIP_NEEDS_FREE
+        @test :transferred_to_julia in RustCall.FFI_OWNERSHIP_NEEDS_FREE
+        @test !(:borrowed in RustCall.FFI_OWNERSHIP_NEEDS_FREE)
+        @test !(:owned_by_julia in RustCall.FFI_OWNERSHIP_NEEDS_FREE)
+        @test !(:none in RustCall.FFI_OWNERSHIP_NEEDS_FREE)
+        for tag in RustCall.FFI_OWNERSHIP_NEEDS_FREE
+            @test tag in RustCall.FFI_OWNERSHIP_KINDS
+            # Both require the symbol, and both keep it.
+            @test_throws ArgumentError RustCall.ffi_return_contract("*mut Point";
+                                                                    ownership = tag)
+            c = RustCall.ffi_return_contract("*mut Point"; ownership = tag,
+                                             free_symbol = "Point_free")
+            @test c.ownership === tag
+            @test c.free_symbol == "Point_free"
+        end
     end
 
     @testset "no existing table was changed" begin

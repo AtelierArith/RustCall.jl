@@ -77,13 +77,32 @@ Who owns the memory a C slot refers to, and therefore who must release it.
 | `:none`                | nothing is owned; the value is a scalar passed by value |
 | `:borrowed`            | the pointee belongs to the other side and is only valid for the duration of the call |
 | `:owned_by_julia`      | Julia allocated the buffer; Julia frees it, and must keep it rooted (`GC.@preserve`) across the call |
-| `:owned_by_rust`       | Rust allocated the buffer; Julia must hand it back through `free_symbol` (#246) |
-| `:transferred_to_julia`| ownership moved to Julia, which frees it with its own allocator |
+| `:owned_by_rust`       | Rust allocated it; Julia releases it **within the call** by calling `free_symbol` (#246) |
+| `:transferred_to_julia`| the *responsibility* to release moved to Julia, which **must** do so by calling `free_symbol` — never through Julia's allocator |
 | `:unknown`             | the contract does not say — callers must fail rather than assume |
 
-`:owned_by_rust` is the tag whose missing `free_symbol` is the root of #246
-(leaked `String` returns) and #249 (the drop symbol picked from the Julia-side
-type tag instead of from the library that allocated the value).
+# `:owned_by_rust` vs `:transferred_to_julia`
+
+The release **mechanism is identical**: both call the Rust export named by
+`free_symbol`, so the Rust destructor runs on the allocator that allocated the
+value. Julia never frees Rust memory itself — not with `Libc.free`, not with its
+own GC. Freeing a `Box::into_raw` handle any other way skips `Drop` and, once a
+crate installs a `#[global_allocator]`, corrupts the heap (#249).
+
+What differs is **when**, and therefore who holds the pointer:
+
+* `:owned_by_rust` — the value does not outlive the call. The wrapper copies it
+  into Julia memory and calls `free_symbol` before returning, as
+  `_call_rust_owned_string` already does in a `finally`
+  (`src/structs.jl:511-523`). Julia never stores the raw pointer.
+* `:transferred_to_julia` — the value outlives the call. Julia keeps the handle
+  (a `Box::into_raw` pointer inside a struct wrapper, `codegen.rs:386-392`) and
+  is responsible for calling `free_symbol` later, from a finalizer.
+
+Both are in [`FFI_OWNERSHIP_NEEDS_FREE`], so both always name that symbol. A
+missing `free_symbol` on either is the root of #246 (leaked `String` returns)
+and #249 (the drop symbol picked from the Julia-side type tag instead of from
+the library that allocated the value).
 """
 const FFI_OWNERSHIP_KINDS =
     (:none, :borrowed, :owned_by_julia, :owned_by_rust, :transferred_to_julia, :unknown)
@@ -100,10 +119,13 @@ One row of the contract: what a Rust type spelling means at the boundary.
   leading pointer slot; use [`ffi_argument_contract`](@ref) /
   [`ffi_return_contract`](@ref) for the full slot list.
 - `surface_type::Type` — the type a Julia caller sees.
-- `julia_symbol::Symbol` — how the surface type is *spelled* in generated code.
-  Kept separate from `surface_type` because Julia aliases erase spellings:
-  `Cvoid === Nothing` and `Csize_t === UInt64`, and the existing generators emit
-  `:Cvoid` / `:Csize_t`.
+- `julia_expr::Union{Symbol,Expr}` — how the surface type is *spelled* in
+  generated code, as a Julia AST fragment ready to splice with `\$`: a `Symbol`
+  for a plain name (`:Int32`, `:Cvoid`, `:RustString`) and an `Expr` for a
+  parametric one (`:(Ptr{Ptr{Int32}})`). Kept separate from `surface_type`
+  because Julia aliases erase spellings: `Cvoid === Nothing` and
+  `Csize_t === UInt64`, and the existing generators emit `:Cvoid` / `:Csize_t`.
+  Evaluating it in the `RustCall` module yields `surface_type`.
 - `abi::Symbol` — one of [`FFI_ABI_KINDS`], the ABI when the type appears as a
   plain by-value argument or return.
 - `ownership::Symbol` — one of [`FFI_OWNERSHIP_KINDS`].
@@ -113,7 +135,7 @@ struct FFIType
     rust::String
     ccall_type::Type
     surface_type::Type
-    julia_symbol::Symbol
+    julia_expr::Union{Symbol, Expr}
     abi::Symbol
     ownership::Symbol
     note::String
@@ -175,8 +197,8 @@ end
 # The table
 # ============================================================================
 
-_ffi_row(rust, ccall_type, surface_type, julia_symbol, abi, ownership, note = "") =
-    FFIType(rust, ccall_type, surface_type, julia_symbol, abi, ownership, note)
+_ffi_row(rust, ccall_type, surface_type, julia_expr, abi, ownership, note = "") =
+    FFIType(rust, ccall_type, surface_type, julia_expr, abi, ownership, note)
 
 _ffi_scalar(rust, T, sym = Symbol(T)) = _ffi_row(rust, T, T, sym, :by_value, :none)
 
@@ -284,7 +306,7 @@ end
 #     must hand back to the library that allocated it, and `"str"` is a borrowed
 #     `(ptr, len)` view.
 #
-# The `surface_type` / `julia_symbol` columns stay meaningful regardless: they
+# The `surface_type` / `julia_expr` columns stay meaningful regardless: they
 # describe the Julia-visible type, not the calling convention.
 _ffi_register!(FFIType(
     "String", Ptr{UInt8}, RustString, :RustString, :unknown, :unknown,
@@ -401,7 +423,7 @@ function _ffi_pointer_row(key::AbstractString, pointee::AbstractString)
     # rejects as non-FFI anyway (`types.rs:104`). So the default is `:unknown`,
     # and a consumer that has the metadata states it: see
     # [`ffi_return_contract`](@ref)'s `ownership` / `free_symbol` keywords.
-    return FFIType(String(key), T, T, Symbol(T), :pointer, :unknown, note)
+    return FFIType(String(key), T, T, ffi_type_expr(T), :pointer, :unknown, note)
 end
 
 """
@@ -444,10 +466,24 @@ function ffi_surface_type(rust_type::AbstractString)
 end
 
 """
-    ffi_julia_symbol(rust_type::AbstractString) -> Union{Symbol, Nothing}
+    ffi_julia_symbol(rust_type::AbstractString) -> Union{Symbol, Expr, Nothing}
 
-How the surface type should be *spelled* in generated code (`:Cvoid`,
-`:Csize_t`, ...), or `nothing` when the type is unknown.
+How the surface type should be *spelled* in generated code, as a Julia AST
+fragment, or `nothing` when the type is unknown.
+
+A plain name comes back as a `Symbol` (`:Cvoid`, `:Csize_t`, `:RustString`); a
+parametric one comes back as an `Expr` (`:(Ptr{Ptr{Int32}})`), never as a
+`Symbol` of its printed form — `Symbol("Ptr{Int32}")` would splice into
+generated code as `var"Ptr{Int32}"`, an undefined binding. Both forms can be
+interpolated into a quote directly:
+
+```julia
+T = RustCall.ffi_julia_symbol("*const *mut i32")   # :(Ptr{Ptr{Int32}})
+:(x::\$T)
+```
+
+Use [`ffi_julia_type`](@ref) when you want the `Type` itself rather than its
+spelling.
 
 This is the replacement for `_rust_type_to_julia_type_symbol`
 (`src/julia_functions.jl:220`) and `rust_to_julia_type_sym`
@@ -456,7 +492,40 @@ types, while this answers `nothing` so the caller can fail closed.
 """
 function ffi_julia_symbol(rust_type::AbstractString)
     entry = ffi_lookup(rust_type)
-    return entry === nothing ? nothing : entry.julia_symbol
+    return entry === nothing ? nothing : entry.julia_expr
+end
+
+"""
+    ffi_julia_type(rust_type::AbstractString) -> Union{Type, Nothing}
+
+The `Type` that [`ffi_julia_symbol`](@ref)'s expression names — the surface type
+as a value, for callers that want to compare types without `eval`. `nothing`
+when the type is unknown.
+
+```julia
+RustCall.ffi_julia_type("*const *mut i32") === Ptr{Ptr{Int32}}
+```
+"""
+ffi_julia_type(rust_type::AbstractString) = ffi_surface_type(rust_type)
+
+"""
+    ffi_type_expr(T::Type) -> Union{Symbol, Expr}
+
+Render a Julia type as an AST fragment that names it: `:Int32`, `:Cvoid`,
+`:(Ptr{Ptr{Int32}})`. Parametric `Ptr`s are rendered recursively so the result
+is always valid Julia, never a `Symbol` of a printed type.
+
+`Cvoid` is spelled `:Cvoid` rather than `:Nothing`, matching what the existing
+generators emit.
+"""
+function ffi_type_expr(T::Type)
+    T === Cvoid && return :Cvoid
+    if T <: Ptr && T !== Ptr && isconcretetype(T)
+        return Expr(:curly, :Ptr, ffi_type_expr(eltype(T)))
+    end
+    # `nameof`, not `Symbol(T)`: the latter renders a module-qualified string for
+    # types outside `Base`, which is not a `Symbol` any generated code can use.
+    return T isa DataType ? nameof(T) : Symbol(T)
 end
 
 """
