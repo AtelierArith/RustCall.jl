@@ -435,6 +435,7 @@ end
         # the directory the product actually builds its key from — rather than
         # `sandbox`, which is what hid the problem the first time.
         redirect = ("TMPDIR" => sandbox, "TMP" => sandbox, "TEMP" => sandbox)
+        loaded = String[]
         try
             block = """
             // cargo-deps: itoa="1.0"
@@ -456,6 +457,7 @@ end
             else
                 value = withenv(redirect...) do
                     lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
+                    push!(loaded, lib)
                     ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
                 end
                 @test value == 0
@@ -467,12 +469,34 @@ end
                     # The config is genuinely on the chain the key is built from.
                     @test RustCall._cargo_config_digest(ENV; dir = tempdir()) != "absent"
                     lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
+                    push!(loaded, lib)
                     ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
                 end
                 @test value2 == 1     # rebuilt, and the new cfg is visible
+                @test length(unique(loaded)) == 2   # a different key, a different library
             end
         finally
-            rm(sandbox; recursive = true, force = true)
+            # The generated projects live *inside* the sandbox now, and their
+            # cdylibs are loaded into this process. Windows will not delete a
+            # mapped file, so drop the handles first and then treat the removal
+            # as best effort: a leftover temporary directory is not worth
+            # failing a test over, and `rm(force = true)` forgives a missing
+            # file, not a locked one.
+            for name in unique(loaded)
+                try
+                    RustCall.unload_library(name)
+                catch
+                end
+            end
+            try
+                rm(sandbox; recursive = true, force = true)
+            catch e
+                # Warned rather than silenced on every platform: on Windows a
+                # still-mapped image is the expected reason and the leftover is
+                # harmless, but the same failure on unix would mean something
+                # else and should not disappear.
+                @warn "Could not remove the Cargo config sandbox; leaving it behind" sandbox exception = e
+            end
         end
     end
 end

@@ -303,10 +303,25 @@ Clear all cached Cargo-built libraries.
 """
 function clear_cargo_cache()
     cache_dir = get_cargo_cache_dir()
-    if isdir(cache_dir)
-        rm(cache_dir, recursive=true, force=true)
-        mkpath(cache_dir)
+    isdir(cache_dir) || return nothing
+    # A cached cdylib that this session has loaded is mapped into the process,
+    # and Windows will not delete a mapped file — `force = true` forgives a
+    # missing file, not a locked one. Clearing the cache must not throw because
+    # of that, exactly as `_clear_cache_unlocked` already tolerates it for the
+    # rustc cache; whatever is still in use is simply left behind.
+    try
+        rm(cache_dir, recursive = true, force = true)
+    catch e
+        @debug "Could not fully clear the Cargo cache (files may be in use)" cache_dir exception = e
+        for entry in readdir(cache_dir; join = true)
+            try
+                rm(entry, recursive = true, force = true)
+            catch
+            end
+        end
     end
+    mkpath(cache_dir)
+    return nothing
 end
 
 """
