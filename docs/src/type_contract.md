@@ -110,6 +110,15 @@ Declaring an owned position without naming the symbol that releases it is an
 `ArgumentError`: an owned value with no way to free it is the shape of #246 and
 #249, and the contract refuses to record one.
 
+### 128-bit integers on Windows
+
+`i128` / `u128` are in the contract and map to `Int128` / `UInt128`, but they do
+**not** round-trip on `x86_64-pc-windows-msvc`: MSVC has no native 128-bit
+integer type, so Rust and Julia disagree on how to pass one across `extern "C"`
+there (rust-lang/rust#54341). This is a platform ABI mismatch, not a mapping
+choice — no Julia-side type can fix it. Split the value into two `u64`s, or pass
+it behind a pointer, if the code must run on Windows.
+
 ### Path qualifiers
 
 `core::primitive::i32` and `std::primitive::i32` resolve like `i32`, rooted

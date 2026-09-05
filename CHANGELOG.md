@@ -61,7 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boundary correctly in every position — free functions, methods, struct fields
   and monomorphized generics. `char` travels as its `UInt32` code point and is
   converted, never reinterpreted from Julia's left-aligned UTF-8 `Char`
-  ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)).
+  ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)). The one
+  exception is `i128` / `u128` on `x86_64-pc-windows-msvc`, where MSVC has no
+  native 128-bit integer and Rust and Julia disagree on how `extern "C"` passes
+  one (rust-lang/rust#54341) — a platform ABI mismatch no Julia-side mapping can
+  fix.
 - Small-integer and platform-sized struct fields (`u16`, `usize`, …) resolve to
   their own type instead of `Any`
   ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)).

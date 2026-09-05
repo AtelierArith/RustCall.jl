@@ -1087,8 +1087,18 @@ end
 
         # 128-bit integers survive the boundary intact, which they cannot do
         # through an `Any` or `Int64` slot.
-        @test rc245_add_i128(Int128(1) << 100, Int128(3)) === (Int128(1) << 100) + 3
-        @test rc245_add_u128(UInt128(1) << 120, UInt128(7)) === (UInt128(1) << 120) + 7
+        #
+        # Not on `x86_64-pc-windows-msvc`: MSVC has no native 128-bit integer,
+        # so Rust and Julia disagree on how to pass one across `extern "C"`
+        # there (rust-lang/rust#54341). The contract row is still right — the C
+        # slot is a 128-bit integer — but no amount of Julia-side mapping makes
+        # the two ABIs agree, so the round trip is only asserted where they do.
+        if Sys.iswindows()
+            @test_skip "i128 / u128 do not round-trip through the MSVC C ABI"
+        else
+            @test rc245_add_i128(Int128(1) << 100, Int128(3)) === (Int128(1) << 100) + 3
+            @test rc245_add_u128(UInt128(1) << 120, UInt128(7)) === (UInt128(1) << 120) + 7
+        end
 
         # Rust `char` travels as its C slot, a `UInt32` code point. It is
         # converted, never reinterpreted from Julia's left-aligned UTF-8 `Char`.

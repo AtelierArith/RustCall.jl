@@ -218,6 +218,11 @@ end
 # The `PRIMITIVES` list of `deps/rustcall_core/src/types.rs:12` in full. The
 # Julia-side tables stop at 13 of them; `i128`, `u128` and `char` are accepted
 # by the Rust side and map to `:Any` on the Julia side today (#245 item 2).
+# `i128` / `u128` do not round-trip on `x86_64-pc-windows-msvc`: MSVC has no
+# native 128-bit integer, so Rust and Julia disagree on how `extern "C"` passes
+# one (rust-lang/rust#54341). That is a platform ABI mismatch, not a mapping
+# choice — the row below is the only honest one, and no Julia-side type would
+# make the two agree.
 for (rust, T) in (
     ("i8", Int8),
     ("i16", Int16),
