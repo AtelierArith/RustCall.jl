@@ -686,6 +686,7 @@ function _manifest_method(m)
         is_constructor = _mbool(m, "is_constructor"),
         generic_wrapper = _mstr(m, "generic_wrapper"),
         arg_abis = String[_mstr(a, "abi") for a in args],
+        return_abi = _mstr(m, "return_abi"),
     )
 end
 

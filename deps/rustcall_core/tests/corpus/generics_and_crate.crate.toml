@@ -80,6 +80,7 @@ is_static = true
 is_mutable = false
 is_constructor = true
 return_type = "Self"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
@@ -100,4 +101,5 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "T"
+return_abi = ""
 generic_wrapper = ""

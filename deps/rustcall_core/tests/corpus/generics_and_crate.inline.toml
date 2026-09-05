@@ -126,6 +126,7 @@ is_static = true
 is_mutable = false
 is_constructor = true
 return_type = "Self"
+return_abi = ""
 generic_wrapper = """
 pub fn Pair_new<T>(left: T, right: T) -> *mut Pair<T>
 where
@@ -154,6 +155,7 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "T"
+return_abi = ""
 generic_wrapper = """
 pub fn Pair_first<T>(ptr: *const Pair<T>) -> T
 where
@@ -172,6 +174,7 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "T"
+return_abi = ""
 generic_wrapper = """
 pub fn Pair_inline_only<T>(ptr: *const Pair<T>) -> T
 where

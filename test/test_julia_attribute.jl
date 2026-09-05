@@ -361,7 +361,47 @@ end
     bindings, preserved, call_args = RustCall._string_arg_plan(by_name["join_repeat"], identity)
     @test length(bindings) == 3 && length(preserved) == 3 && length(call_args) == 7
 
+    # A temporary never shadows an argument that happens to use the prefix.
+    collide = RustCall.RustFunctionSignature("f", ["s", "__rustcall_str_s"], ["&str", "i32"], "usize",
+                                             false, String[]; arg_abis = ["str", ""])
+    _, preserved_c, call_args_c = RustCall._string_arg_plan(collide, identity)
+    @test preserved_c == [Symbol("__rustcall_str__s")]
+    @test call_args_c[end] == :(Int32(__rustcall_str_s))
+
     if RustCall.check_rustc_available()
+        # Struct methods use the same ABI decision: a `&str` return of a method
+        # that takes strings is copied into the owned representation.
+        rust"""
+        #[julia]
+        pub struct Greeter { pub name: String }
+
+        impl Greeter {
+            pub fn new(name: String) -> Self { Self { name } }
+            pub fn shout(&self, suffix: &str) -> String { format!("{}{}", self.name.to_uppercase(), suffix) }
+            pub fn echo<'a>(&self, s: &'a str) -> &'a str { s }
+            pub fn label(&self) -> &str { "greeter" }
+        }
+        """
+        infos = RustCall.manifest_struct_infos(RustCall.expand_inline("""
+        #[julia]
+        pub struct Greeter { pub name: String }
+
+        impl Greeter {
+            pub fn new(name: String) -> Self { Self { name } }
+            pub fn shout(&self, suffix: &str) -> String { format!("{}{}", self.name.to_uppercase(), suffix) }
+            pub fn echo<'a>(&self, s: &'a str) -> &'a str { s }
+            pub fn label(&self) -> &str { "greeter" }
+        }
+        """).manifest)
+        methods = Dict(m.name => m for m in only(infos).methods)
+        @test methods["shout"].return_abi == "string"
+        @test methods["echo"].return_abi == "string"   # copied: borrows from an argument
+        @test methods["label"].return_abi == "str"
+        g = Greeter("ada")
+        @test shout(g, "!") == "ADA!"
+        @test echo(g, "λ") == "λ"
+        @test label(g) == "greeter"
+
         rust"""
         #[julia]
         pub fn shout(input: String) -> String { input.to_uppercase() }

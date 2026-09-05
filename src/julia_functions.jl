@@ -100,10 +100,11 @@ function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
+    prefix = _string_temp_prefix(sig.arg_names)
     for (name, rust_type, abi) in zip(sig.arg_names, sig.arg_types, sig.arg_abis)
         arg_sym = escape(Symbol(name))
         if _is_string_abi(abi)
-            bytes = Symbol("__rustcall_str_", name)
+            bytes = Symbol(prefix, name)
             push!(bindings, :($bytes = String($arg_sym)))
             push!(preserved, bytes)
             push!(call_args, :(pointer($bytes)))
@@ -114,6 +115,20 @@ function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
         end
     end
     return bindings, preserved, call_args
+end
+
+"""
+    _string_temp_prefix(arg_names) -> String
+
+Prefix for the temporaries that hold the converted strings, chosen so that no
+temporary can collide with a Rust argument called, say, `__rustcall_str_s`.
+"""
+function _string_temp_prefix(arg_names)
+    prefix = "__rustcall_str_"
+    while any(startswith(n, prefix) for n in arg_names)
+        prefix *= "_"
+    end
+    return prefix
 end
 
 """

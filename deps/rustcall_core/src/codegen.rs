@@ -95,6 +95,18 @@ pub fn returns_copied_str(sig: &syn::Signature) -> bool {
     function_returns_str_ref(sig) && has_string_args(sig)
 }
 
+/// The manifest `return_abi` of a signature: `"string"` (owned buffer),
+/// `"str"` (borrowed view) or `""`.
+pub fn return_abi(sig: &syn::Signature) -> &'static str {
+    if function_returns_string(sig) || returns_copied_str(sig) {
+        "string"
+    } else if returns_borrowed_str(sig) {
+        "str"
+    } else {
+        ""
+    }
+}
+
 /// Wrapper-side view of a function's arguments: `String` / `&str` become
 /// `(ptr, len)` byte pairs (`conversions` rebuild the Rust value, lossily for
 /// invalid UTF-8, never through `from_utf8_unchecked`), everything else is

@@ -177,6 +177,12 @@ pub struct Method {
     #[serde(default)]
     pub args: Vec<Arg>,
     pub return_type: String,
+    /// How the wrapper returns the value: `""` as written, `"string"` for an
+    /// owned `<Struct>_RustCallOwnedString` (a `String`, or a `&str` copied
+    /// because it may borrow from a converted argument), `"str"` for a
+    /// borrowed `<Struct>_RustCallBorrowedString`.
+    #[serde(default)]
+    pub return_abi: String,
     /// For generic structs: the generic wrapper source registered for
     /// monomorphization. Empty otherwise.
     #[serde(default)]

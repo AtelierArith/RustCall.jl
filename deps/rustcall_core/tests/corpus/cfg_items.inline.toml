@@ -129,6 +129,7 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "i32"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods]]
@@ -139,4 +140,5 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "i32"
+return_abi = ""
 generic_wrapper = ""

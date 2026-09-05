@@ -86,6 +86,7 @@ is_static = true
 is_mutable = false
 is_constructor = true
 return_type = "Self"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
@@ -100,6 +101,7 @@ is_static = false
 is_mutable = true
 is_constructor = false
 return_type = "()"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
@@ -114,6 +116,7 @@ is_static = false
 is_mutable = false
 is_constructor = false
 return_type = "String"
+return_abi = "string"
 generic_wrapper = ""
 
 [[structs.methods.args]]
@@ -129,4 +132,5 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "&str"
+return_abi = "str"
 generic_wrapper = ""

@@ -25,15 +25,32 @@ struct RustMethod
     is_constructor::Bool
     generic_wrapper::String
     arg_abis::Vector{String}   # manifest `abi` per argument ("string", "str" or "")
+    return_abi::String         # "string" (owned buffer), "str" (borrowed) or ""
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
                     arg_types::Vector{String}, return_type::String;
                     symbol::String = "", is_constructor::Bool = (name == "new" || return_type == "Self"),
                     generic_wrapper::String = "",
-                    arg_abis::Vector{String} = _default_arg_abis(arg_types))
+                    arg_abis::Vector{String} = _default_arg_abis(arg_types),
+                    return_abi::String = _default_return_abi(return_type, arg_abis))
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
-               symbol, is_constructor, generic_wrapper, arg_abis)
+               symbol, is_constructor, generic_wrapper, arg_abis, return_abi)
+end
+
+"""
+    _default_return_abi(return_type, arg_abis) -> String
+
+The `return_abi` for methods constructed by hand: a `String` return is an
+owned buffer, a `&str` return is borrowed unless the method also takes string
+arguments, in which case the wrapper copies it (see
+`rustcall_core::codegen::return_abi`).
+"""
+function _default_return_abi(return_type::AbstractString, arg_abis)
+    rt = strip(return_type)
+    rt == "String" && return "string"
+    rt == "&str" && return any(_is_string_abi, arg_abis) ? "string" : "str"
+    return ""
 end
 
 """
@@ -327,7 +344,7 @@ function emit_julia_definitions(info::RustStructInfo)
                     end
                 end)
             else
-                if m.return_type == "String"
+                if m.return_abi == "string"
                     free_fn = struct_name_str * "_free_rust_string"
                     push!(exprs, quote
                         function $fname($(esc_args...))
@@ -335,7 +352,7 @@ function emit_julia_definitions(info::RustStructInfo)
                             return _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...))
                         end
                     end)
-                elseif m.return_type == "&str"
+                elseif m.return_abi == "str"
                     push!(exprs, quote
                         function $fname($(esc_args...))
                             lib = get_current_library()
@@ -353,14 +370,14 @@ function emit_julia_definitions(info::RustStructInfo)
                 end
             end
         else
-            if m.return_type == "String"
+            if m.return_abi == "string"
                 free_fn = struct_name_str * "_free_rust_string"
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         return _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...))
                     end
                 end)
-            elseif m.return_type == "&str"
+            elseif m.return_abi == "str"
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         return _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...))

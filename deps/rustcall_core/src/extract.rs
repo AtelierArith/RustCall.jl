@@ -14,6 +14,7 @@ use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
 use crate::codegen::{
     function_returns_string, returns_borrowed_str, returns_boxed_struct, returns_copied_str,
 };
+
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
 };
@@ -231,6 +232,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             is_constructor: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
+            return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
             generic_wrapper: String::new(),
         })
         .collect();
