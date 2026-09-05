@@ -417,10 +417,25 @@ end
         @test_skip "rustc/cargo are required for a Cargo-backed block"
     else
         sandbox = mktempdir()
+        # Generated projects are created with `mktempdir()`, whose default
+        # parent is `tempdir()`, so redirecting the temporary directory puts
+        # them under one whose `.cargo/` chain this test controls.
+        #
+        # Which variable does that is platform-dependent, and the sets barely
+        # overlap: `tempdir()` is libuv's `uv_os_tmpdir`, which reads
+        # TMPDIR, TMP, TEMP, TEMPDIR on unix but only TMP, TEMP, USERPROFILE on
+        # Windows. Setting `TMPDIR` alone therefore redirects on unix and is
+        # ignored on Windows — which is exactly how the first version of this
+        # test passed everywhere but Windows, where it silently exercised the
+        # real temp directory and then asserted a rebuild that had no reason to
+        # happen.
+        #
+        # So: set all three, and *verify* the redirect took effect instead of
+        # assuming it. The digest assertion below likewise names `tempdir()` —
+        # the directory the product actually builds its key from — rather than
+        # `sandbox`, which is what hid the problem the first time.
+        redirect = ("TMPDIR" => sandbox, "TMP" => sandbox, "TEMP" => sandbox)
         try
-            # Generated projects are created with `mktempdir()`, so pointing
-            # TMPDIR here puts them under a directory whose `.cargo/` chain we
-            # control.
             block = """
             // cargo-deps: itoa="1.0"
 
@@ -430,21 +445,32 @@ end
             config_dir = joinpath(sandbox, ".cargo")
             mkpath(config_dir)
 
-            value = withenv("TMPDIR" => sandbox) do
-                lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
-                ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
+            redirected = withenv(redirect...) do
+                realpath(tempdir()) == realpath(sandbox)
             end
-            @test value == 0
 
-            # Now the same block under a config that adds `--cfg rc287_flag`.
-            write(joinpath(config_dir, "config.toml"),
-                  "[build]\nrustflags = [\"--cfg\", \"rc287_flag\"]\n")
-            value2 = withenv("TMPDIR" => sandbox) do
-                @test RustCall._cargo_config_digest(ENV; dir = sandbox) != "absent"
-                lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
-                ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
+            if !redirected
+                @test_skip "cannot redirect tempdir() on this platform"
+                @info "Skipping Cargo config rebuild test: tempdir() is not redirectable" tempdir_seen =
+                    withenv(() -> tempdir(), redirect...)
+            else
+                value = withenv(redirect...) do
+                    lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
+                    ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
+                end
+                @test value == 0
+
+                # Now the same block under a config that adds `--cfg rc287_flag`.
+                write(joinpath(config_dir, "config.toml"),
+                      "[build]\nrustflags = [\"--cfg\", \"rc287_flag\"]\n")
+                value2 = withenv(redirect...) do
+                    # The config is genuinely on the chain the key is built from.
+                    @test RustCall._cargo_config_digest(ENV; dir = tempdir()) != "absent"
+                    lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
+                    ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
+                end
+                @test value2 == 1     # rebuilt, and the new cfg is visible
             end
-            @test value2 == 1     # rebuilt, and the new cfg is visible
         finally
             rm(sandbox; recursive = true, force = true)
         end
