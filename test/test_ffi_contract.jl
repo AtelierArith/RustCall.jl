@@ -30,21 +30,24 @@ const CORE_NON_FFI = ["String", "Vec", "Box", "Rc", "Arc", "HashMap", "HashSet",
 
 _is_ptr_spelling(s) = startswith(s, "*const ") || startswith(s, "*mut ")
 
-# `is_ffi_compatible_type`: a path type whose last segment is a primitive, the
-# empty tuple, or *any* raw pointer (`Type::Ptr(_) => true`).
+# `last_ident`: the final path segment of a path type, ignoring generic args.
+core_last_ident(s::AbstractString) = String(last(split(first(split(s, '<')), "::")))
+
+# `is_ffi_compatible_type`: a path type whose LAST SEGMENT is a primitive (so
+# `core::primitive::i32` and `mycrate::i32` both qualify), the empty tuple, or
+# *any* raw pointer (`Type::Ptr(_) => true`).
 function core_is_ffi_compatible(s::AbstractString)
     s == "()" && return true
     _is_ptr_spelling(s) && return true
     startswith(s, "&") && return false
-    head = first(split(s, '<'))
-    return head in CORE_PRIMITIVES
+    return core_last_ident(s) in CORE_PRIMITIVES
 end
 
-# `is_non_ffi_type`: the known container list, plus every reference.
+# `is_non_ffi_type`: the known container list (again by last segment), plus
+# every reference.
 function core_is_non_ffi(s::AbstractString)
     startswith(s, "&") && return true
-    head = first(split(s, '<'))
-    return head in CORE_NON_FFI
+    return core_last_ident(s) in CORE_NON_FFI
 end
 
 # Tables 2-5 are Julia functions and can be called directly.
@@ -108,6 +111,8 @@ const ALL_SPELLINGS = vcat(
         @test c.known == false
         @test c.abi === :unknown
         @test isempty(c.ccall_types)
+        @test c.aggregate_type === nothing
+        @test isempty(c.layout)
         @test c.ownership === :unknown
         @test occursin("not in the FFI contract", RustCall.ffi_describe("Vec<f64>"))
     end
@@ -124,23 +129,103 @@ const ALL_SPELLINGS = vcat(
     end
 
     @testset "strings: the ABI depends on direction" begin
+        # A `ccall` has exactly one return type, and the generated wrapper
+        # returns one `#[repr(C)]` aggregate
+        # (`<fn>_RustCallOwnedString { ptr, len, cap }`,
+        # deps/rustcall_core/src/codegen.rs:837-863), which the existing Julia
+        # path receives as `CRustString` (src/structs.jl:511-528). So the
+        # return contract carries the aggregate, not the word list.
         ret = RustCall.ffi_return_contract("String")
         @test ret.abi === :ptr_len_cap
-        @test ret.ccall_types == Type[Ptr{UInt8}, Csize_t, Csize_t]
+        @test ret.ccall_types == Type[RustCall.CRustString]
+        @test ret.aggregate_type === RustCall.CRustString
+        @test ret.layout == Type[Ptr{UInt8}, Csize_t, Csize_t]
+        @test fieldtypes(RustCall.CRustString) == (Ptr{UInt8}, UInt, UInt)
         @test ret.ownership === :owned_by_rust      # Julia must free it (#246)
         @test ret.surface_type === RustCall.RustString
+        @test RustCall.ffi_return_ccall_type("String") === RustCall.CRustString
 
+        # Arguments are the other half: the wrapper takes the words as separate
+        # parameters, so the argument contract expands them and has no
+        # aggregate.
         arg = RustCall.ffi_argument_contract("String")
         @test arg.abi === :ptr_len
         @test arg.ccall_types == Type[Ptr{UInt8}, Csize_t]
+        @test arg.aggregate_type === nothing
+        @test arg.layout == Type[Ptr{UInt8}, Csize_t]
         @test arg.ownership === :owned_by_julia
         @test arg.surface_type === String
 
         sref = RustCall.ffi_return_contract("&str")
         @test sref.abi === :ptr_len
-        @test sref.ccall_types == Type[Ptr{UInt8}, Csize_t]
+        @test sref.ccall_types == Type[RustCall.CRustStr]      # one return type
+        @test sref.aggregate_type === RustCall.CRustStr
+        @test sref.layout == Type[Ptr{UInt8}, Csize_t]
+        @test fieldtypes(RustCall.CRustStr) == (Ptr{UInt8}, UInt)
         @test sref.ownership === :borrowed
+        @test RustCall.ffi_return_ccall_type("&str") === RustCall.CRustStr
         @test RustCall.ffi_argument_contract("&str").ccall_types == Type[Ptr{UInt8}, Csize_t]
+        @test RustCall.ffi_argument_contract("&str").aggregate_type === nothing
+
+        # The free symbol is per-owner, so it appears only when the caller names
+        # the owner (`deps/rustcall_core/src/codegen.rs:633`).
+        @test RustCall.ffi_free_symbol("shout") == "shout_free_rust_string"
+        @test RustCall.ffi_return_contract("String"; owner = "shout").free_symbol ==
+              "shout_free_rust_string"
+        @test RustCall.ffi_return_contract("String").free_symbol === nothing
+        # Only an `:owned_by_rust` value has one.
+        @test RustCall.ffi_return_contract("&str"; owner = "peek").free_symbol === nothing
+        @test RustCall.ffi_return_contract("i32"; owner = "add").free_symbol === nothing
+
+        # Single-word positions carry no aggregate and no layout at all.
+        @test RustCall.ffi_return_contract("i32").aggregate_type === nothing
+        @test isempty(RustCall.ffi_return_contract("i32").layout)
+        @test RustCall.ffi_return_ccall_type("i32") === Int32
+        @test RustCall.ffi_return_ccall_type("()") === Cvoid
+        @test RustCall.ffi_return_ccall_type("Vec<f64>") === nothing
+    end
+
+    @testset "qualified primitive spellings" begin
+        # `type_to_string` keeps the qualified spelling in the manifest and
+        # `is_ffi_compatible_type` accepts it, so the contract must resolve it
+        # or a fail-closed migration would reject a wrapper the extractor
+        # deliberately generated.
+        @test RustCall.ffi_normalize_spelling("core::primitive::i32") == "i32"
+        @test RustCall.ffi_normalize_spelling("std::primitive::u8") == "u8"
+        @test RustCall.ffi_ccall_type("core::primitive::i32") === Int32
+        @test RustCall.ffi_ccall_type("std::primitive::u8") === UInt8
+        @test RustCall.ffi_julia_symbol("core::primitive::usize") === :Csize_t
+        @test RustCall.ffi_return_contract("std::primitive::f64").ccall_types == Type[Float64]
+        @test RustCall.ffi_ccall_type("*mut core::primitive::i32") === Ptr{Int32}
+        @test RustCall.ffi_ccall_type("  core::primitive::bool  ") === Bool
+
+        # Negative: only those two prefixes. `rustcall_core` is laxer — it
+        # matches on the last path segment alone, so it also accepts
+        # `mycrate::i32`, where `i32` may be a user alias with a different
+        # layout. The contract refuses to infer from an unqualified last
+        # segment and fails closed instead; see FFI_PRIMITIVE_PATH_PREFIXES.
+        @test core_is_ffi_compatible("mycrate::i32")     # `rustcall_core` says yes
+        @test RustCall.ffi_normalize_spelling("mycrate::i32") == "mycrate::i32"
+        @test RustCall.ffi_lookup("mycrate::i32") === nothing
+        @test RustCall.ffi_lookup("core::primitive::i32::Foo") === nothing
+        @test RustCall.ffi_normalize_spelling("core::primitive::foo::bar") ==
+              "core::primitive::foo::bar"
+        # A qualified spelling of a non-primitive is still not a primitive.
+        @test RustCall.ffi_lookup("core::primitive::Widget") === nothing
+    end
+
+    @testset "nested raw pointers" begin
+        @test RustCall.ffi_ccall_type("*const *mut i32") === Ptr{Ptr{Int32}}
+        @test RustCall.ffi_ccall_type("*mut *mut u8") === Ptr{Ptr{UInt8}}
+        @test RustCall.ffi_ccall_type("*mut *const *mut f64") === Ptr{Ptr{Ptr{Float64}}}
+        @test RustCall.ffi_surface_type("*const *mut i32") === Ptr{Ptr{Int32}}
+        @test RustCall.ffi_return_contract("*const *mut i32").ccall_types ==
+              Type[Ptr{Ptr{Int32}}]
+        @test RustCall.ffi_return_contract("*const *mut i32").abi === :pointer
+        # An opaque pointee still degrades, at whatever depth it appears.
+        @test RustCall.ffi_ccall_type("*mut *const Widget") === Ptr{Ptr{Cvoid}}
+        # A multi-word pointee has no single-word C form, so it degrades too.
+        @test RustCall.ffi_ccall_type("*const String") === Ptr{Cvoid}
     end
 
     @testset "void and scalar positions" begin
@@ -168,6 +253,12 @@ const ALL_SPELLINGS = vcat(
         @test c.known
         @test c.abi === :ptr_len_cap
         @test c.ownership === :owned_by_rust
+        # …including the aggregate shape of the return.
+        @test c.ccall_types == Type[RustCall.CRustString]
+        @test c.aggregate_type === RustCall.CRustString
+        @test c.layout == Type[Ptr{UInt8}, Csize_t, Csize_t]
+        @test RustCall.ffi_return_contract("MyAlias"; abi = "str").aggregate_type ===
+              RustCall.CRustStr
         @test RustCall.ffi_argument_contract("Cow<'a, str>"; abi = "str").ccall_types ==
               Type[Ptr{UInt8}, Csize_t]
         # And it agrees with the spelling when both are present.
@@ -182,6 +273,19 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_slots(:ptr_len_cap) == Type[Ptr{UInt8}, Csize_t, Csize_t]
         @test isempty(RustCall.ffi_slots(:void))
         @test_throws ArgumentError RustCall.ffi_slots(:by_value)
+    end
+
+    @testset "ffi_aggregate_type" begin
+        @test RustCall.ffi_aggregate_type(:ptr_len) === RustCall.CRustStr
+        @test RustCall.ffi_aggregate_type(:ptr_len_cap) === RustCall.CRustString
+        @test RustCall.ffi_aggregate_type(:by_value) === nothing
+        @test RustCall.ffi_aggregate_type(:pointer) === nothing
+        @test RustCall.ffi_aggregate_type(:void) === nothing
+        @test RustCall.ffi_aggregate_type(:unknown) === nothing
+        # The aggregates must match the word list they stand for.
+        @test collect(fieldtypes(RustCall.CRustStr)) ==
+              [Ptr{UInt8}, UInt] == [Ptr{UInt8}, Csize_t]
+        @test length(fieldtypes(RustCall.CRustString)) == length(RustCall.ffi_slots(:ptr_len_cap))
     end
 
     # ========================================================================

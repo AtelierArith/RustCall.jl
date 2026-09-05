@@ -51,9 +51,15 @@ The C ABI forms a Rust value can take when it crosses the boundary.
 | `:void`          | none                                 | the Rust unit type `()` |
 | `:by_value`      | one, the scalar itself               | primitives, `#[repr(C)]` aggregates |
 | `:pointer`       | one, `Ptr{T}`                        | raw pointers, opaque handles |
-| `:ptr_len`       | two, `Ptr{UInt8}` + `Csize_t`        | `&str` and `&[T]` slices |
-| `:ptr_len_cap`   | three, `Ptr{UInt8}` + 2 × `Csize_t`  | an owned Rust `String` / `Vec<T>` buffer |
+| `:ptr_len`       | `Ptr{UInt8}` + `Csize_t`             | `&str` and `&[T]` slices |
+| `:ptr_len_cap`   | `Ptr{UInt8}` + 2 × `Csize_t`         | an owned Rust `String` / `Vec<T>` buffer |
 | `:unknown`       | undefined                            | the type is not in the contract |
+
+The two multi-word kinds reach a `ccall` differently depending on direction:
+as **separate argument slots** in argument position, and as **one `#[repr(C)]`
+aggregate** (`CRustStr` / `CRustString`) in return position, since a `ccall` has
+exactly one return type. [`FFIContract`](@ref) records both — `ccall_types` for
+the calling convention, `layout` for the word list.
 
 `:unknown` exists so that callers can *fail closed* (issue #276 acceptance
 criterion 2) rather than fall back to a guess the way
@@ -124,14 +130,31 @@ for the manifest `abi` column.
 - `rust_type::String` — the Rust spelling this was resolved from.
 - `direction::Symbol` — `:argument` or `:return`.
 - `abi::Symbol` — the resolved [`FFI_ABI_KINDS`] entry.
-- `ccall_types::Vector{Type}` — the C slots, in order. Empty for a `:void`
-  return; one entry for `:by_value` / `:pointer`; two for `:ptr_len`; three for
-  `:ptr_len_cap`.
+- `ccall_types::Vector{Type}` — **what this position contributes to a `ccall`
+  signature**, which is direction-dependent for the multi-word ABIs:
+  * `:void` return — empty;
+  * `:by_value` / `:pointer` — one entry;
+  * `:ptr_len` / `:ptr_len_cap` as an *argument* — the two or three separate
+    argument slots the wrapper takes;
+  * `:ptr_len` / `:ptr_len_cap` as a *return* — exactly one entry, the
+    `#[repr(C)]` aggregate the wrapper returns, because a `ccall` has one
+    return type. See `aggregate_type`.
+- `aggregate_type::Union{Nothing,Type}` — the single `#[repr(C)]` struct the C
+  value *is*, when this position passes an aggregate. Set for `:ptr_len` /
+  `:ptr_len_cap` in return position (`CRustStr` / `CRustString`, matching
+  `<fn>_RustCallBorrowedString` / `<fn>_RustCallOwnedString` emitted by
+  `deps/rustcall_core/src/codegen.rs:837-863`), `nothing` otherwise — arguments
+  are expanded into separate slots, not passed as an aggregate.
+- `layout::Vector{Type}` — the C field layout of the value, in order, for the
+  multi-word ABIs (`[Ptr{UInt8}, Csize_t]` / `[Ptr{UInt8}, Csize_t, Csize_t]`).
+  Direction-independent: it describes the value, not the calling convention.
+  Empty for the single-word ABIs.
 - `surface_type::Type` — the Julia type the user sees at this position.
 - `ownership::Symbol` — one of [`FFI_OWNERSHIP_KINDS`].
 - `free_symbol::Union{Nothing,String}` — for `:owned_by_rust`, the name of the
-  symbol that releases the value, or `nothing` when the contract cannot name it
-  yet (it is per-function: `<fn>_free_rust_string`, see #242/#246).
+  symbol that releases the value. The name is per-owner
+  (`<fn|Struct>_free_rust_string`, `deps/rustcall_core/src/codegen.rs:633`), so
+  it is filled in only when the caller passes `owner`; `nothing` otherwise.
 - `known::Bool` — `false` when the Rust spelling is not in the contract. A
   caller that must fail closed checks this instead of inspecting the fallback.
 """
@@ -140,6 +163,8 @@ struct FFIContract
     direction::Symbol
     abi::Symbol
     ccall_types::Vector{Type}
+    aggregate_type::Union{Nothing, Type}
+    layout::Vector{Type}
     surface_type::Type
     ownership::Symbol
     free_symbol::Union{Nothing, String}
@@ -264,23 +289,62 @@ _ffi_register!(FFIType(
 const _FFI_PTR_CONST_PREFIX = "*const "
 const _FFI_PTR_MUT_PREFIX = "*mut "
 
+# The only path prefixes under which a trailing primitive segment is guaranteed
+# to *be* that primitive. `rustcall_core::types::is_ffi_compatible_type`
+# (`deps/rustcall_core/src/types.rs:85`) is laxer: it matches on `last_ident`
+# alone, so it also accepts `mycrate::i32`, where `i32` may be a user type
+# alias with a completely different layout. The contract deliberately does not
+# follow it that far — an unqualified last segment is not evidence — so
+# `mycrate::i32` stays unknown and fails closed. That gap is a recorded
+# divergence in `test/test_ffi_contract.jl`, and closing it needs the extractor
+# to resolve the path (#270), not a wider guess here.
+const FFI_PRIMITIVE_PATH_PREFIXES = ("core::primitive::", "std::primitive::")
+
+"""
+    ffi_normalize_spelling(rust_type::AbstractString) -> String
+
+The table key for a Rust type spelling: whitespace trimmed, and a
+`core::primitive::` / `std::primitive::` qualifier stripped so that
+`core::primitive::i32` resolves like `i32`.
+
+Only those two prefixes are stripped; see [`FFI_PRIMITIVE_PATH_PREFIXES`] for
+why an arbitrary `mycrate::i32` is not normalized even though
+`rustcall_core` accepts it.
+"""
+function ffi_normalize_spelling(rust_type::AbstractString)
+    key = String(strip(rust_type))
+    for prefix in FFI_PRIMITIVE_PATH_PREFIXES
+        if startswith(key, prefix)
+            tail = key[(length(prefix) + 1):end]
+            # Only a bare final segment: `core::primitive::i32`, never
+            # `core::primitive::foo::bar`.
+            occursin("::", tail) && return key
+            return tail
+        end
+    end
+    return key
+end
+
 """
     ffi_lookup(rust_type::AbstractString) -> Union{FFIType, Nothing}
 
 The contract row for a Rust type spelling, or `nothing` when the contract does
-not cover it. Leading and trailing whitespace is ignored.
+not cover it. The spelling is normalized with [`ffi_normalize_spelling`](@ref)
+first, so `core::primitive::u8` resolves like `u8`.
 
 Raw pointer spellings (`*const T`, `*mut T`) are synthesised on demand: they map
-to `Ptr{J}` where `J` is the pointee's Julia type, and to `Ptr{Cvoid}` when the
-pointee is not itself in the contract (an opaque handle). This mirrors
-`rustcall_core`'s `Type::Ptr => true` (`deps/rustcall_core/src/types.rs:91`),
-which accepts every pointer wholesale.
+to `Ptr{J}` where `J` is the pointee's Julia type. The pointee is resolved
+*recursively* through `ffi_lookup`, so `*const *mut i32` is `Ptr{Ptr{Int32}}`;
+only a pointee the contract genuinely cannot map (an opaque handle, or a
+multi-word type like `String` that has no single-word C form) degrades to
+`Ptr{Cvoid}`. This mirrors `rustcall_core`'s `Type::Ptr => true`
+(`deps/rustcall_core/src/types.rs:91`), which accepts every pointer wholesale.
 
 `nothing` is the fail-closed answer. Callers must not substitute a default for
 it; that is the guess this file exists to remove (#245 item 1).
 """
 function ffi_lookup(rust_type::AbstractString)
-    key = strip(rust_type)
+    key = ffi_normalize_spelling(rust_type)
     entry = get(FFI_TYPE_TABLE, key, nothing)
     entry === nothing || return entry
     return _ffi_pointer_row(key)
@@ -296,8 +360,9 @@ function _ffi_pointer_row(key::AbstractString)
 end
 
 function _ffi_pointer_row(key::AbstractString, pointee::AbstractString)
-    inner = get(FFI_TYPE_TABLE, pointee, nothing)
-    T = if inner === nothing || inner.abi != :by_value
+    # Recursive: the pointee may itself be a pointer spelling.
+    inner = ffi_lookup(pointee)
+    T = if inner === nothing || !(inner.abi === :by_value || inner.abi === :pointer)
         Ptr{Cvoid}
     else
         Ptr{inner.ccall_type}
@@ -405,9 +470,13 @@ end
 """
     ffi_slots(abi::Symbol) -> Vector{Type}
 
-The C slots an ABI kind occupies, for the pointer-carrying kinds. Scalar and
-pointer kinds depend on the concrete type and are filled in by
+The C field layout of a multi-word ABI kind, in order. Direction-independent:
+it describes the value, not the calling convention. For how those words reach a
+`ccall` — separate argument slots, or one aggregate return type — see
 [`ffi_argument_contract`](@ref) / [`ffi_return_contract`](@ref).
+
+Scalar and pointer kinds depend on the concrete type and have no fixed layout
+here.
 """
 function ffi_slots(abi::Symbol)
     if abi === :ptr_len
@@ -421,9 +490,38 @@ function ffi_slots(abi::Symbol)
 end
 
 """
+    ffi_aggregate_type(abi::Symbol) -> Union{Type, Nothing}
+
+The `#[repr(C)]` struct a multi-word ABI kind is returned as: `CRustStr` for
+`:ptr_len`, `CRustString` for `:ptr_len_cap`, `nothing` for every single-word
+kind.
+
+These mirror the `<fn>_RustCallBorrowedString { ptr, len }` and
+`<fn>_RustCallOwnedString { ptr, len, cap }` helpers the wrapper generator emits
+(`deps/rustcall_core/src/codegen.rs:837-863`) and that `_call_rust_owned_string`
+/ `_call_rust_borrowed_string` already receive (`src/structs.jl:511-528`).
+"""
+function ffi_aggregate_type(abi::Symbol)
+    abi === :ptr_len && return CRustStr
+    abi === :ptr_len_cap && return CRustString
+    return nothing
+end
+
+"""
+    ffi_free_symbol(owner::AbstractString) -> String
+
+The name of the symbol that releases an `:owned_by_rust` string produced by
+`owner` (a function or struct name): `<owner>_free_rust_string`, matching
+`deps/rustcall_core/src/codegen.rs:633`.
+"""
+ffi_free_symbol(owner::AbstractString) = string(owner, "_free_rust_string")
+
+"""
     ffi_argument_contract(rust_type; abi = "") -> FFIContract
 
-The contract for one argument position.
+The contract for one argument position. Multi-word values are **expanded into
+separate argument slots** here, because that is how the generated wrapper takes
+them.
 
 `abi` is the manifest `Arg.abi` column (PR #274); when non-empty it overrides
 the ABI derived from the Rust spelling, which is what makes the manifest
@@ -433,57 +531,76 @@ raise rather than substitute a default.
 
 ```julia
 c = RustCall.ffi_argument_contract("&str")
-c.ccall_types   # Type[Ptr{UInt8}, Csize_t]
-c.ownership     # :owned_by_julia  (Julia's buffer, rooted for the call)
+c.ccall_types     # Type[Ptr{UInt8}, Csize_t]  — two argument slots
+c.aggregate_type  # nothing
+c.ownership       # :owned_by_julia  (Julia's buffer, rooted for the call)
 ```
 """
 function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = "")
-    return _ffi_contract(rust_type, :argument, abi)
+    return _ffi_contract(rust_type, :argument, abi, nothing)
 end
 
 """
-    ffi_return_contract(rust_type; abi = "") -> FFIContract
+    ffi_return_contract(rust_type; abi = "", owner = nothing) -> FFIContract
 
 The contract for the return position. `abi` is the manifest `Method.return_abi`
 column (PR #274). See [`ffi_argument_contract`](@ref).
 
+A `ccall` has exactly one return type, so a multi-word value is **not** expanded
+here: `ccall_types` holds the single `#[repr(C)]` aggregate the wrapper returns
+(also available as `aggregate_type`), and `layout` holds its fields.
+
+`owner` is the function or struct name the wrapper belongs to; when given, an
+`:owned_by_rust` return also carries its [`ffi_free_symbol`](@ref).
+
 ```julia
-c = RustCall.ffi_return_contract("String")
-c.abi           # :ptr_len_cap
-c.ownership     # :owned_by_rust — Julia must free it through the owning library (#246)
+c = RustCall.ffi_return_contract("String"; owner = "shout")
+c.abi             # :ptr_len_cap
+c.ccall_types     # Type[CRustString]  — one return type
+c.layout          # Type[Ptr{UInt8}, Csize_t, Csize_t]
+c.ownership       # :owned_by_rust — Julia must free it through the owning library (#246)
+c.free_symbol     # "shout_free_rust_string"
 ```
 """
-function ffi_return_contract(rust_type::AbstractString; abi::AbstractString = "")
-    return _ffi_contract(rust_type, :return, abi)
+function ffi_return_contract(rust_type::AbstractString; abi::AbstractString = "",
+                             owner::Union{Nothing, AbstractString} = nothing)
+    return _ffi_contract(rust_type, :return, abi, owner)
 end
 
-function _ffi_contract(rust_type::AbstractString, direction::Symbol, abi::AbstractString)
+"""
+    ffi_return_ccall_type(rust_type; abi = "") -> Union{Type, Nothing}
+
+The single Julia type to put in the return slot of a `ccall` for this Rust type,
+or `nothing` when the contract does not cover it (`Cvoid` for `()`).
+"""
+function ffi_return_ccall_type(rust_type::AbstractString; abi::AbstractString = "")
+    c = ffi_return_contract(rust_type; abi = abi)
+    c.known || return nothing
+    c.abi === :void && return Cvoid
+    return only(c.ccall_types)
+end
+
+function _ffi_contract(rust_type::AbstractString, direction::Symbol, abi::AbstractString,
+                       owner::Union{Nothing, AbstractString})
     _ffi_check_direction(direction)
-    key = String(strip(rust_type))
+    key = ffi_normalize_spelling(rust_type)
     override = ffi_manifest_abi_kind(abi, direction)
     entry = ffi_lookup(key)
 
     if entry === nothing
         override === nothing && return FFIContract(
-            key, direction, :unknown, copy(_FFI_UNKNOWN_SLOTS), Any, :unknown, nothing, false,
+            key, direction, :unknown, copy(_FFI_UNKNOWN_SLOTS), nothing,
+            copy(_FFI_UNKNOWN_SLOTS), Any, :unknown, nothing, false,
         )
         # The manifest named the ABI even though the spelling is unknown to the
         # table: the manifest wins, which is the whole point of #270.
-        return FFIContract(
-            key, direction, override, ffi_slots(override),
-            direction === :argument ? String : (override === :ptr_len_cap ? RustString : RustStr),
-            _ffi_ownership_for(override, direction), nothing, true,
-        )
+        ownership = _ffi_ownership_for(override, direction)
+        surface = direction === :argument ? String :
+            (override === :ptr_len_cap ? RustString : RustStr)
+        return _ffi_positional(key, direction, override, surface, ownership, owner)
     end
 
     kind = override === nothing ? _ffi_directional_abi(entry, direction) : override
-    slots = if kind === :void
-        Type[]
-    elseif kind === :by_value || kind === :pointer
-        Type[entry.ccall_type]
-    else
-        ffi_slots(kind)
-    end
     ownership = if entry.abi === :by_value || entry.abi === :void || entry.abi === :pointer
         # Scalars own nothing; for a raw pointer the contract cannot know who
         # owns the pointee, so it stays `:borrowed` and the caller must say.
@@ -493,7 +610,28 @@ function _ffi_contract(rust_type::AbstractString, direction::Symbol, abi::Abstra
     end
     surface = direction === :argument && (kind === :ptr_len || kind === :ptr_len_cap) ?
         String : entry.surface_type
-    return FFIContract(key, direction, kind, slots, surface, ownership, nothing, true)
+    return _ffi_positional(key, direction, kind, surface, ownership, owner, entry.ccall_type)
+end
+
+# Turn an ABI kind into the ccall slots / aggregate / layout for one position.
+function _ffi_positional(key, direction, kind, surface, ownership, owner,
+                         scalar_type::Union{Nothing, Type} = nothing)
+    layout = kind === :ptr_len || kind === :ptr_len_cap ? ffi_slots(kind) : Type[]
+    aggregate = direction === :return ? ffi_aggregate_type(kind) : nothing
+    slots = if kind === :void
+        Type[]
+    elseif kind === :by_value || kind === :pointer
+        Type[scalar_type === nothing ? Ptr{Cvoid} : scalar_type]
+    elseif aggregate !== nothing
+        # One return type, not N words: `ccall` has a single return slot.
+        Type[aggregate]
+    else
+        copy(layout)
+    end
+    free_symbol = ownership === :owned_by_rust && owner !== nothing ?
+        ffi_free_symbol(owner) : nothing
+    return FFIContract(key, direction, kind, slots, aggregate, layout, surface,
+                       ownership, free_symbol, true)
 end
 
 # `String` and `&str` are `(ptr, len)` in argument position regardless of which
@@ -520,7 +658,7 @@ A one-line human-readable rendering of a contract, for error messages and for
 the documentation of the supported-type matrix (#245 item 4).
 """
 function ffi_describe(rust_type::AbstractString; direction::Symbol = :return, abi::AbstractString = "")
-    c = _ffi_contract(rust_type, direction, abi)
+    c = _ffi_contract(rust_type, direction, abi, nothing)
     c.known || return "$(c.rust_type): not in the FFI contract"
     slots = isempty(c.ccall_types) ? "no slots" : join(string.(c.ccall_types), ", ")
     return "$(c.rust_type) [$(c.direction)]: abi=$(c.abi), slots=($slots), surface=$(c.surface_type), ownership=$(c.ownership)"
