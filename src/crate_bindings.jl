@@ -930,7 +930,7 @@ function generate_bindings(crate_path::String;
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
 
     # Check cache
-    cache_key = compute_crate_hash(info)
+    cache_key = compute_crate_hash(info; release = build_release)
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
 
     lib_path = if cached_lib !== nothing && isfile(cached_lib)
@@ -1019,22 +1019,39 @@ end
 """
     compute_crate_hash(info::CrateInfo) -> String
 
-Compute a hash for caching based on crate contents.
+Identity of an external crate build: `artifact_key` of an `ArtifactId`, so the
+`@rust_crate` path answers "which artifact is this?" with the same function as
+every other path (#278).
+
+What it covers, and what the previous formula missed:
+
+- **the whole crate directory**, through `crate_content_digest`, not only the
+  `.rs` files the scan happened to list — so `Cargo.toml`, `Cargo.lock`,
+  `build.rs` and any `include_str!`ed data are inputs;
+- **local path dependencies**, by content, through
+  `artifact_path_dependency_digest`, so editing a sibling crate rebuilds;
+- **the effective Cargo configuration** of the crate directory
+  (`.cargo/config.toml` and the chain above it, plus the Cargo home file);
+- **the toolchain and the compiler that runs**, defaulted by `ArtifactId`;
+- the release profile, and the crate's name and version as before.
+
+Absolute paths are deliberately absent: an identical crate checked out
+elsewhere keys the same, so a cache hit survives a move.
+
+The name, the signature and the return type (a hex `String`) are unchanged, and
+so is the format of the file `write_bindings_to_file` emits; only the *value*
+changes, which means the first build after upgrading rebuilds.
 """
-function compute_crate_hash(info::CrateInfo)
-    # Hash the source files content
-    content = IOBuffer()
-
-    for src_file in sort(info.source_files)
-        print(content, src_file)
-        print(content, read(src_file, String))
-    end
-
-    # Include crate metadata
-    print(content, info.name)
-    print(content, info.version)
-
-    bytes2hex(sha256(take!(content)))[1:32]
+function compute_crate_hash(info::CrateInfo; release::Bool = true)
+    return artifact_key(ArtifactId(
+        kind = "crate",
+        source = crate_content_digest(info.path),
+        codegen = Pair{String, String}["profile" => (release ? "release" : "debug")],
+        dependencies = String[artifact_path_dependency_digest(info.path)],
+        build_env = Pair{String, String}[
+            "cargo-config" => _cargo_config_digest(ENV; dir = info.path)],
+        extra = Pair{String, String}["name" => info.name, "version" => info.version],
+    ))
 end
 
 """
