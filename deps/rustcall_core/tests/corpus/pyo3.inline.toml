@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 mode = "inline"
 
 [[functions]]
@@ -14,6 +14,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 2
@@ -22,10 +24,37 @@ module_path = []
 [[functions.args]]
 name = "left"
 rust_type = "i32"
+abi = ""
 
 [[functions.args]]
 name = "right"
 rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "dual_len"
+symbol = "dual_len"
+attribute = "julia_pyo3"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
+return_type = "usize"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 25
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "String"
+abi = "string"
 
 [[structs]]
 name = "DualCounter"
@@ -55,11 +84,13 @@ is_static = true
 is_mutable = false
 is_constructor = true
 return_type = "Self"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[structs.methods]]
 name = "increment"
@@ -68,8 +99,10 @@ is_static = false
 is_mutable = true
 is_constructor = false
 return_type = "()"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
 name = "amount"
 rust_type = "i32"
+abi = ""

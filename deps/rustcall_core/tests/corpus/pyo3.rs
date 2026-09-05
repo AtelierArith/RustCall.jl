@@ -18,3 +18,10 @@ impl DualCounter {
         self.value += amount;
     }
 }
+
+// Exported as written (no string conversion, see #275): the manifest reports
+// an empty `abi`.
+#[julia_pyo3]
+pub fn dual_len(s: String) -> usize {
+    s.len()
+}

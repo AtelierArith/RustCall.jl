@@ -20,6 +20,8 @@ pub const PRIMITIVES: &[&str] = &[
 /// canonical spelling. Multi-line output (const expressions in array types) is
 /// collapsed to a single line.
 pub fn type_to_string(ty: &Type) -> String {
+    // Outer parentheses carry no meaning (`(String)` is `String`).
+    let ty = unparen(ty);
     let alias: syn::ItemType = syn::parse_quote!(type __RustCallT = #ty;);
     let file = syn::File {
         shebang: None,
@@ -61,9 +63,23 @@ fn collapse_whitespace(s: &str) -> String {
     out
 }
 
+/// See through parentheses and invisible delimiters: `(String)`, `&(str)`
+/// and macro-produced groups are `Type::Paren` / `Type::Group` to `syn`, but
+/// they name the same type, so every classifier below looks at the wrapped
+/// type.
+pub fn unparen(mut ty: &Type) -> &Type {
+    loop {
+        match ty {
+            Type::Paren(p) => ty = &p.elem,
+            Type::Group(g) => ty = &g.elem,
+            _ => return ty,
+        }
+    }
+}
+
 /// Last path segment identifier of a path type, if any.
 pub fn last_ident(ty: &Type) -> Option<&Ident> {
-    match ty {
+    match unparen(ty) {
         Type::Path(tp) => tp.path.segments.last().map(|s| &s.ident),
         _ => None,
     }
@@ -72,7 +88,7 @@ pub fn last_ident(ty: &Type) -> Option<&Ident> {
 /// Whether the type is a bare single-segment path with no generic arguments
 /// whose identifier equals `name` (used for type-parameter detection).
 pub fn is_bare_ident(ty: &Type, name: &str) -> bool {
-    match ty {
+    match unparen(ty) {
         Type::Path(tp) if tp.qself.is_none() && tp.path.segments.len() == 1 => {
             let seg = &tp.path.segments[0];
             seg.ident == name && matches!(seg.arguments, PathArguments::None)
@@ -83,6 +99,7 @@ pub fn is_bare_ident(ty: &Type, name: &str) -> bool {
 
 /// Check if a type is FFI-compatible (primitive types that can be passed through C ABI).
 pub fn is_ffi_compatible_type(ty: &Type) -> bool {
+    let ty = unparen(ty);
     match ty {
         Type::Path(_) => last_ident(ty)
             .map(|id| PRIMITIVES.contains(&id.to_string().as_str()))
@@ -102,6 +119,7 @@ pub fn needs_clone_for_getter(ty: &Type) -> bool {
 
 /// Check if a type is a known non-FFI-compatible type (String, Vec<T>, Box<T>, references, ...).
 pub fn is_non_ffi_type(ty: &Type) -> bool {
+    let ty = unparen(ty);
     match ty {
         Type::Path(_) => last_ident(ty)
             .map(|id| {
@@ -131,7 +149,7 @@ pub fn is_non_ffi_type(ty: &Type) -> bool {
 /// pointers are accessible; references, known non-`Copy` containers and any other
 /// generic type are skipped; unknown non-generic user types are assumed accessible.
 pub fn is_inline_accessible_field_type(ty: &Type) -> bool {
-    match ty {
+    match unparen(ty) {
         Type::Ptr(_) => true,
         Type::Reference(_) => false,
         Type::Tuple(t) if t.elems.is_empty() => true,
@@ -167,14 +185,44 @@ pub fn is_inline_accessible_field_type(ty: &Type) -> bool {
     }
 }
 
+/// `String`, however it is spelled: bare, `std::string::String`,
+/// `::std::string::String`, `alloc::string::String`, `core::…`.
 pub fn is_string_type(ty: &Type) -> bool {
-    last_ident(ty).map(|id| id == "String").unwrap_or(false)
-        && matches!(ty, Type::Path(tp) if tp.path.segments.len() == 1)
+    let Type::Path(tp) = unparen(ty) else {
+        return false;
+    };
+    if tp.qself.is_some() {
+        return false;
+    }
+    let segments: Vec<String> = tp
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    if segments.last().map(String::as_str) != Some("String") {
+        return false;
+    }
+    if !matches!(
+        tp.path.segments.last().map(|s| &s.arguments),
+        Some(PathArguments::None)
+    ) {
+        return false;
+    }
+    match segments.len() {
+        1 => true,
+        3 => matches!(segments[0].as_str(), "std" | "alloc" | "core") && segments[1] == "string",
+        _ => false,
+    }
 }
 
+/// A shared `str` reference (`&str`, `&'a str`, `&std::primitive::str`).
+/// `&mut str` is not an FFI string argument.
 pub fn is_str_ref_type(ty: &Type) -> bool {
-    match ty {
-        Type::Reference(r) => last_ident(&r.elem).map(|id| id == "str").unwrap_or(false),
+    match unparen(ty) {
+        Type::Reference(r) if r.mutability.is_none() => {
+            last_ident(&r.elem).map(|id| id == "str").unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -185,7 +233,7 @@ pub fn is_vec_type(ty: &Type) -> bool {
 
 /// Check if a type is `Self` or the struct name.
 pub fn is_self_type(ty: &Type, struct_name: &Ident) -> bool {
-    match ty {
+    match unparen(ty) {
         Type::Path(tp) => tp
             .path
             .segments
@@ -208,7 +256,9 @@ pub struct OptionTypeInfo {
 }
 
 fn angle_args(ty: &Type, ident: &str) -> Option<Vec<Type>> {
-    let Type::Path(tp) = ty else { return None };
+    let Type::Path(tp) = unparen(ty) else {
+        return None;
+    };
     let seg = tp.path.segments.last()?;
     if seg.ident != ident {
         return None;

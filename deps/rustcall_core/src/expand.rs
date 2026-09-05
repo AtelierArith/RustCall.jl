@@ -212,6 +212,7 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
                 is_constructor: m.name() == "new" || returns_self,
                 args: fn_args(&m.func.sig),
                 return_type: return_type_to_string(&m.func.sig.output),
+                return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
                 generic_wrapper: String::new(),
             }
         })

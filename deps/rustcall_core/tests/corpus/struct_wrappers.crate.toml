@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 mode = "crate"
 structs = []
 
@@ -15,6 +15,8 @@ return_kind = "result"
 ok_type = "i32"
 err_type = "i32"
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 25
@@ -23,6 +25,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[functions]]
 name = "positive"
@@ -37,6 +40,8 @@ return_kind = "option"
 ok_type = ""
 err_type = ""
 inner_type = "i32"
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 30
@@ -45,3 +50,4 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""

@@ -12,9 +12,10 @@ using SHA: sha256
 
 """
 Manifest schema version this version of RustCall.jl understands. Must match
-`rustcall_core::manifest::SCHEMA_VERSION`.
+`rustcall_core::manifest::SCHEMA_VERSION` (2: string ABI columns `abi`,
+`return_abi` and the string helper flags, #242).
 """
-const MANIFEST_SCHEMA_VERSION = 1
+const MANIFEST_SCHEMA_VERSION = 2
 
 """
     ExtractorError <: Exception
@@ -549,6 +550,9 @@ struct SpecializedFunction
     name::String
     arg_types::Vector{String}
     return_type::String
+    arg_abis::Vector{String}          # manifest `abi` per argument ("string", "str" or "")
+    has_owned_string_helper::Bool     # returns `<name>_RustCallOwnedString`, freed by `<name>_free_rust_string`
+    has_borrowed_string_helper::Bool  # returns `<name>_RustCallBorrowedString`
 end
 
 """
@@ -573,11 +577,15 @@ function specialize_generic(source::String, fn_name::String,
         out = _run_extractor(args)
         manifest = _parse_manifest(read(manifest_path, String))
         fn = only(manifest["functions"])
+        args = get(fn, "args", Any[])
         SpecializedFunction(
             out,
             String(fn["name"]),
-            String[String(a["rust_type"]) for a in get(fn, "args", Any[])],
+            String[String(a["rust_type"]) for a in args],
             String(fn["return_type"]),
+            String[_mstr(a, "abi") for a in args],
+            _mbool(fn, "has_owned_string_helper"),
+            _mbool(fn, "has_borrowed_string_helper"),
         )
     end
 end
@@ -665,6 +673,9 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             constraints = manifest_constraints(f),
             module_path = String[String(m) for m in _mvec(f, "module_path")],
             body_has_cfg = _mbool(f, "body_has_cfg"),
+            has_owned_string_helper = _mbool(f, "has_owned_string_helper"),
+            has_borrowed_string_helper = _mbool(f, "has_borrowed_string_helper"),
+            arg_abis = String[_mstr(a, "abi") for a in args],
         ))
     end
     return sigs
@@ -682,6 +693,8 @@ function _manifest_method(m)
         symbol = _mstr(m, "symbol"),
         is_constructor = _mbool(m, "is_constructor"),
         generic_wrapper = _mstr(m, "generic_wrapper"),
+        arg_abis = String[_mstr(a, "abi") for a in args],
+        return_abi = _mstr(m, "return_abi"),
     )
 end
 

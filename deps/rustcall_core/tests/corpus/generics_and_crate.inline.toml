@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 mode = "inline"
 
 [[functions]]
@@ -13,6 +13,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = """
 pub fn generic_identity<T>(value: T) -> T
 where
@@ -35,6 +37,7 @@ type_params = []
 [[functions.args]]
 name = "value"
 rust_type = "T"
+abi = ""
 
 [[functions]]
 name = "raw_increment"
@@ -49,6 +52,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 38
@@ -57,6 +62,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "u32"
+abi = ""
 
 [[structs]]
 name = "Pair"
@@ -120,6 +126,7 @@ is_static = true
 is_mutable = false
 is_constructor = true
 return_type = "Self"
+return_abi = ""
 generic_wrapper = """
 pub fn Pair_new<T>(left: T, right: T) -> *mut Pair<T>
 where
@@ -133,10 +140,12 @@ where
 [[structs.methods.args]]
 name = "left"
 rust_type = "T"
+abi = ""
 
 [[structs.methods.args]]
 name = "right"
 rust_type = "T"
+abi = ""
 
 [[structs.methods]]
 name = "first"
@@ -146,6 +155,7 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "T"
+return_abi = ""
 generic_wrapper = """
 pub fn Pair_first<T>(ptr: *const Pair<T>) -> T
 where
@@ -164,6 +174,7 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "T"
+return_abi = ""
 generic_wrapper = """
 pub fn Pair_inline_only<T>(ptr: *const Pair<T>) -> T
 where

@@ -276,3 +276,125 @@ end
         end
     end
 end
+
+@testset "Generic functions with fixed String / &str parameters (#242 review)" begin
+    tag_code = "pub fn tag<T: std::fmt::Display>(x: T, label: String) -> String { format!(\"{label}{x}\") }"
+    # The specialization gets the (ptr, len) wrapper of a non-generic
+    # #[julia] function and the manifest reports the string ABI.
+    specialized = RustCall.specialize_generic(tag_code, "tag", ["T" => "i32"], "tag_i32")
+    @test specialized.arg_types == ["i32", "String"]
+    @test specialized.arg_abis == ["", "string"]
+    @test specialized.has_owned_string_helper
+    @test !specialized.has_borrowed_string_helper
+    @test occursin("tag_i32_free_rust_string", specialized.source)
+    @test occursin("tag_i32_inner", specialized.source)
+    borrowed = RustCall.specialize_generic("pub fn kind_of<T>(_x: T) -> &'static str { \"generic\" }",
+                                           "kind_of", ["T" => "i64"], "kind_of_i64")
+    @test borrowed.has_borrowed_string_helper && !borrowed.has_owned_string_helper
+    plain = RustCall.specialize_generic("pub fn id<T>(x: T) -> T { x }", "id", ["T" => "i32"], "id_i32")
+    @test plain.arg_abis == [""] && !plain.has_owned_string_helper
+
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required for monomorphization"
+    else
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        end
+
+        RustCall.register_generic_function("tag", tag_code, [:T])
+        mono = RustCall.monomorphize_function("tag", Dict(:T => Int32))
+        @test mono.return_type == String
+        @test mono.arg_abis == ["", "string"]
+        @test mono.string_return === :owned
+        @test mono.free_ptr != C_NULL
+        @test RustCall.call_generic_function("tag", Int32(4), "n=") == "n=4"
+        @test RustCall.call_generic_function("tag", 2.5, SubString("v=x", 1, 2)) == "v=2.5"
+        @test RustCall.call_generic_function("tag", Int32(1), "日本") == "日本1"
+        for _ in 1:200
+            @test RustCall.call_generic_function("tag", Int32(0), "k") == "k0"
+        end
+
+        RustCall.register_generic_function(
+            "count_with", "pub fn count_with<T: Copy>(_x: T, s: &str) -> usize { s.chars().count() }", [:T])
+        mono_c = RustCall.monomorphize_function("count_with", Dict(:T => Int32))
+        @test mono_c.string_return === :none
+        @test mono_c.arg_abis == ["", "str"]
+        @test RustCall.call_generic_function("count_with", Int32(0), "日本語") == 3
+
+        RustCall.register_generic_function(
+            "kind_of", "pub fn kind_of<T>(_x: T) -> &'static str { \"generic\" }", [:T])
+        @test RustCall.monomorphize_function("kind_of", Dict(:T => Int64)).string_return === :borrowed
+        @test RustCall.call_generic_function("kind_of", Int64(1)) == "generic"
+
+        # Registered from a rust\"\"\" block and called through @rust
+        rust"""
+        #[julia]
+        pub fn wrap_in<T: std::fmt::Display>(x: T, open: &str, close: String) -> String {
+            format!("{open}{x}{close}")
+        }
+        """
+        @test RustCall.is_generic_function("wrap_in")
+        @test RustCall.call_generic_function("wrap_in", Int32(7), "[", "]") == "[7]"
+
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        end
+    end
+end
+
+@testset "Generic structs with fixed String / &str parameters (#242 review)" begin
+    # The generic wrapper of an elided `&str` return names its lifetime so the
+    # wrapper compiles before and after specialization.
+    infos = RustCall.manifest_struct_infos(RustCall.expand_inline("""
+    #[julia]
+    pub struct Tagged<T> { tag: String, v: T }
+    impl<T: Copy + std::fmt::Display> Tagged<T> {
+        pub fn new(tag: String, v: T) -> Self { Self { tag, v } }
+        pub fn label(&self, suffix: &str) -> String { format!("{}{}{}", self.tag, self.v, suffix) }
+        pub fn tag_ref(&self) -> &str { &self.tag }
+    }
+    """).manifest)
+    wrappers = Dict(name => src for (name, src, _) in only(infos).generic_wrappers)
+    @test occursin("pub fn Tagged_tag_ref<'rustcall, T: Copy + std::fmt::Display + 'rustcall>", wrappers["Tagged_tag_ref"])
+    @test occursin("-> &'rustcall str", wrappers["Tagged_tag_ref"])
+    @test occursin("-> String", wrappers["Tagged_label"])
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[julia]
+        pub struct Tagged<T> { tag: String, v: T }
+
+        impl<T: Copy + std::fmt::Display> Tagged<T> {
+            pub fn new(tag: String, v: T) -> Self { Self { tag, v } }
+            pub fn label(&self, suffix: &str) -> String { format!("{}{}{}", self.tag, self.v, suffix) }
+            pub fn tag_ref(&self) -> &str { &self.tag }
+            pub fn tag_len(&self, extra: &str) -> usize { self.tag.len() + extra.len() }
+        }
+        """
+        a = Tagged{Int32}("n=", Int32(4))
+        b = Tagged{Float64}("x", 2.5)
+        @test label(a, "!") == "n=4!"
+        @test label(b, "?") == "x2.5?"
+        @test label(a, SubString("z;", 2)) == "n=4;"
+        @test tag_ref(a) == "n="
+        @test tag_ref(b) == "x"
+        @test tag_len(a, "日本") == 8
+        @test tag_len(b, "") == 1
+        # Monomorphized wrappers carry the string ABI
+        info_label = RustCall.get_monomorphized_function("Tagged_label", Dict(:T => Int32))
+        @test info_label !== nothing && info_label.string_return === :owned
+        @test info_label.arg_abis == ["", "str"]
+        info_ref = RustCall.get_monomorphized_function("Tagged_tag_ref", Dict(:T => Float64))
+        @test info_ref !== nothing && info_ref.string_return === :borrowed
+        info_new = RustCall.get_monomorphized_function("Tagged_new", Dict(:T => Int32))
+        @test info_new !== nothing && info_new.arg_abis == ["string", ""]
+        # Temporaries and GC pressure: `self` is preserved during the call
+        for i in 1:200
+            @test tag_ref(Tagged{Int32}("t$i", Int32(i))) == "t$i"
+            @test label(Tagged{Float64}("f", 1.5), "$i") == "f1.5$i"
+            i % 25 == 0 && GC.gc()
+        end
+    end
+end

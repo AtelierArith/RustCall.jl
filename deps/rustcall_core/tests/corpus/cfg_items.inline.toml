@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 mode = "inline"
 
 [[functions]]
@@ -14,6 +14,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 5
@@ -22,6 +24,7 @@ module_path = []
 [[functions.args]]
 name = "x"
 rust_type = "i32"
+abi = ""
 
 [[functions]]
 name = "windows_wide"
@@ -37,6 +40,8 @@ return_kind = "result"
 ok_type = "u32"
 err_type = "i32"
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 11
@@ -55,6 +60,8 @@ return_kind = "option"
 ok_type = ""
 err_type = ""
 inner_type = "f64"
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 18
@@ -63,6 +70,7 @@ module_path = []
 [[functions.args]]
 name = "x"
 rust_type = "f64"
+abi = ""
 
 [[functions]]
 name = "bonus"
@@ -78,6 +86,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 44
@@ -119,6 +129,7 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "i32"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods]]
@@ -129,4 +140,5 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "i32"
+return_abi = ""
 generic_wrapper = ""

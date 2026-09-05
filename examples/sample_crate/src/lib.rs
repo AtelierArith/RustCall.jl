@@ -21,6 +21,51 @@ fn multiply(a: f64, b: f64) -> f64 {
     a * b
 }
 
+/// Upper-case a string (String argument and return, #242)
+#[julia]
+fn shout(input: String) -> String {
+    input.to_uppercase()
+}
+
+/// Join two borrowed strings with a separator, `times` times
+#[julia]
+fn join_repeat(a: &str, b: &str, sep: &str, times: u32) -> String {
+    let piece = format!("{a}{sep}{b}");
+    std::iter::repeat_n(piece, times as usize)
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// Number of Unicode scalar values (not bytes) in the string
+#[julia]
+fn char_count(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// A static borrowed string
+#[julia]
+fn crate_greeting() -> &'static str {
+    "hello from sample_crate"
+}
+
+/// Parse an integer (Result with a string argument)
+#[julia]
+fn parse_int(s: &str) -> Result<i32, i32> {
+    s.trim().parse().map_err(|_| -1)
+}
+
+/// First Unicode scalar value (Option with a String argument)
+#[julia]
+fn first_char(s: String) -> Option<u32> {
+    s.chars().next().map(|c| c as u32)
+}
+
+/// Lifetime-qualified borrowed string in and out
+#[julia]
+fn identity_str<'a>(s: &'a str) -> &'a str {
+    s
+}
+
 /// Calculate the nth Fibonacci number
 #[julia]
 fn fibonacci(n: u32) -> u64 {
@@ -202,6 +247,56 @@ impl Counter {
 }
 
 // ============================================================================
+// Labeler Struct (methods with String / &str arguments and returns, #242)
+// ============================================================================
+
+/// Counts the labels it produced
+#[julia]
+pub struct Labeler {
+    pub count: u32,
+}
+
+#[julia]
+impl Labeler {
+    /// Create a labeler
+    #[julia]
+    pub fn new(count: u32) -> Self {
+        Labeler { count }
+    }
+
+    /// Owned `String` return built from a borrowed argument
+    #[julia]
+    pub fn label(&mut self, name: &str) -> String {
+        self.count += 1;
+        format!("{}#{}", name, self.count)
+    }
+
+    /// `String` argument, plain return
+    #[julia]
+    pub fn byte_len(&self, s: String) -> usize {
+        s.len()
+    }
+
+    /// Borrowed `&str` return (no string arguments)
+    #[julia]
+    pub fn kind(&self) -> &str {
+        "labeler"
+    }
+
+    /// `&str` return that may borrow from the argument: copied out
+    #[julia]
+    pub fn echo<'a>(&self, s: &'a str) -> &'a str {
+        s
+    }
+
+    /// Static method with a string argument
+    #[julia]
+    pub fn shout(s: &str) -> String {
+        s.to_uppercase()
+    }
+}
+
+// ============================================================================
 // Rectangle Struct (demonstrates computed properties)
 // ============================================================================
 
@@ -354,4 +449,33 @@ mod tests {
         let none_result = find_positive(-1, -2);
         assert_eq!(none_result.is_some, 0);
     }
+}
+
+// Regression coverage for the #[julia] wrapper generators (#242 review): a
+// Rust argument may be named like one of the locals the generated Julia
+// wrapper introduces (`func_ptr`, `lib_name`, `c_result`, `c_option`). The
+// wrappers must not shadow the argument with those locals.
+
+/// Plain return with arguments named after generated locals
+#[julia]
+fn shadow_str_len(func_ptr: &str, lib_name: String) -> usize {
+    func_ptr.len() + lib_name.len()
+}
+
+/// `Result` return with arguments named after generated locals
+#[julia]
+fn shadow_parse_int(func_ptr: &str, c_result: i32) -> Result<i32, i32> {
+    func_ptr.trim().parse().map_err(|_| c_result)
+}
+
+/// `Option` return with arguments named after generated locals
+#[julia]
+fn shadow_first_char(func_ptr: String, c_option: u32) -> Option<u32> {
+    func_ptr.chars().next().map(|c| c as u32 + c_option)
+}
+
+/// No strings involved, but still an argument named after a generated local
+#[julia]
+fn shadow_double(func_ptr: i32) -> i32 {
+    func_ptr * 2
 }

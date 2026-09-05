@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 mode = "inline"
 
 [[functions]]
@@ -14,6 +14,8 @@ return_kind = "result"
 ok_type = "i32"
 err_type = "i32"
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 26
@@ -22,6 +24,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[functions]]
 name = "positive"
@@ -36,6 +39,8 @@ return_kind = "option"
 ok_type = ""
 err_type = ""
 inner_type = "i32"
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 31
@@ -44,6 +49,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[structs]]
 name = "Greeter"
@@ -80,11 +86,13 @@ is_static = true
 is_mutable = false
 is_constructor = true
 return_type = "Self"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
 name = "name"
 rust_type = "String"
+abi = "string"
 
 [[structs.methods]]
 name = "rename"
@@ -93,11 +101,13 @@ is_static = false
 is_mutable = true
 is_constructor = false
 return_type = "()"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
 name = "name"
 rust_type = "String"
+abi = "string"
 
 [[structs.methods]]
 name = "greet"
@@ -106,11 +116,13 @@ is_static = false
 is_mutable = false
 is_constructor = false
 return_type = "String"
+return_abi = "string"
 generic_wrapper = ""
 
 [[structs.methods.args]]
 name = "prefix"
 rust_type = "&str"
+abi = "str"
 
 [[structs.methods]]
 name = "name"
@@ -120,4 +132,5 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "&str"
+return_abi = "str"
 generic_wrapper = ""

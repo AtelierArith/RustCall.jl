@@ -41,3 +41,15 @@ impl DualCounter {
         self.value += amount;
     }
 }
+#[allow(clippy::ptr_arg)]
+fn dual_len_inner(s: String) -> usize {
+    s.len()
+}
+#[no_mangle]
+pub extern "C" fn dual_len(s_ptr: *const u8, s_len: usize) -> usize {
+    let s = unsafe {
+        let slice = std::slice::from_raw_parts(s_ptr, s_len);
+        String::from_utf8_lossy(slice).into_owned()
+    };
+    dual_len_inner(s)
+}

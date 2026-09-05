@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 mode = "crate"
 
 [[functions]]
@@ -13,6 +13,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = """
 pub fn generic_identity<T>(value: T) -> T
 where
@@ -35,6 +37,7 @@ type_params = []
 [[functions.args]]
 name = "value"
 rust_type = "T"
+abi = ""
 
 [[structs]]
 name = "Pair"
@@ -77,15 +80,18 @@ is_static = true
 is_mutable = false
 is_constructor = true
 return_type = "Self"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
 name = "left"
 rust_type = "T"
+abi = ""
 
 [[structs.methods.args]]
 name = "right"
 rust_type = "T"
+abi = ""
 
 [[structs.methods]]
 name = "first"
@@ -95,4 +101,5 @@ is_mutable = false
 is_constructor = false
 args = []
 return_type = "T"
+return_abi = ""
 generic_wrapper = ""

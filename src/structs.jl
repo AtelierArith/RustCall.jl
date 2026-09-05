@@ -24,14 +24,33 @@ struct RustMethod
     symbol::String
     is_constructor::Bool
     generic_wrapper::String
+    arg_abis::Vector{String}   # manifest `abi` per argument ("string", "str" or "")
+    return_abi::String         # "string" (owned buffer), "str" (borrowed) or ""
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
                     arg_types::Vector{String}, return_type::String;
                     symbol::String = "", is_constructor::Bool = (name == "new" || return_type == "Self"),
-                    generic_wrapper::String = "")
+                    generic_wrapper::String = "",
+                    arg_abis::Vector{String} = _default_arg_abis(arg_types),
+                    return_abi::String = _default_return_abi(return_type, arg_abis))
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
-               symbol, is_constructor, generic_wrapper)
+               symbol, is_constructor, generic_wrapper, arg_abis, return_abi)
+end
+
+"""
+    _default_return_abi(return_type, arg_abis) -> String
+
+The `return_abi` for methods constructed by hand: a `String` return is an
+owned buffer, a `&str` return is borrowed unless the method also takes string
+arguments, in which case the wrapper copies it (see
+`rustcall_core::codegen::return_abi`).
+"""
+function _default_return_abi(return_type::AbstractString, arg_abis)
+    rt = strip(return_type)
+    rt == "String" && return "string"
+    rt == "&str" && return any(_is_string_abi, arg_abis) ? "string" : "str"
+    return ""
 end
 
 """
@@ -201,9 +220,13 @@ function emit_julia_definitions(info::RustStructInfo)
                      end)
                  end
             else
+                 # `self` stays alive for the whole call: a borrowed `&str`
+                 # result points into the Rust object (#242 review).
                  push!(exprs, quote
                      function $fname(self::$where_clause, $(esc_args...)) where {$(esc_T_params...)}
-                         _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),))
+                         GC.@preserve self begin
+                             _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),))
+                         end
                      end
                  end)
             end
@@ -301,67 +324,65 @@ function emit_julia_definitions(info::RustStructInfo)
         arg_names = [Symbol(an) for an in m.arg_names]
         esc_args = [esc(a) for a in arg_names]
 
-        # Build expanded arguments for String types
-        # String args need to be passed as (pointer, length) pairs
-        expanded_call_args = Expr[]
-        for (aname, atype) in zip(arg_names, m.arg_types)
-            esc_aname = esc(aname)
-            if atype == "String" || atype == "&str"
-                # Convert to (pointer, length) pair
-                push!(expanded_call_args, :(pointer($esc_aname)))
-                push!(expanded_call_args, :(sizeof($esc_aname)))
-            else
-                push!(expanded_call_args, esc_aname)
-            end
-        end
+        # String arguments become (ptr, len) pairs of temporaries kept alive
+        # with GC.@preserve (see `_string_arg_plan`); the temporaries are
+        # hygienic here, the user's arguments are escaped. `self` is preserved
+        # as well: a borrowed `&str` result points into the Rust object.
+        bindings, preserved, expanded_call_args = _string_arg_plan(m, esc)
 
         if m.is_static
             if is_ctor
                 push!(exprs, quote
                     function (::Type{$esc_struct})($(esc_args...))
+                        $(bindings...)
                         lib = get_current_library()
-                        ptr = _call_rust_constructor(lib, $wrapper_name, $(expanded_call_args...))
+                        ptr = GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $(expanded_call_args...))
                         return $esc_struct(ptr, lib)
                     end
                 end)
             else
-                if m.return_type == "String"
+                if m.return_abi == "string"
                     free_fn = struct_name_str * "_free_rust_string"
                     push!(exprs, quote
                         function $fname($(esc_args...))
+                            $(bindings...)
                             lib = get_current_library()
-                            return _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...))
+                            return GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...))
                         end
                     end)
-                elseif m.return_type == "&str"
+                elseif m.return_abi == "str"
                     push!(exprs, quote
                         function $fname($(esc_args...))
+                            $(bindings...)
                             lib = get_current_library()
-                            return _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...))
+                            return GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...))
                         end
                     end)
                 else
                     jl_ret_type = rust_to_julia_type_sym(m.return_type)
                     push!(exprs, quote
                         function $fname($(esc_args...))
+                            $(bindings...)
                             lib = get_current_library()
-                            return _call_rust_method(lib, $wrapper_name, C_NULL, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
+                            return GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
                         end
                     end)
                 end
             end
         else
-            if m.return_type == "String"
+            if m.return_abi == "string"
                 free_fn = struct_name_str * "_free_rust_string"
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
-                        return _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...))
+                        $(bindings...)
+                        return GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...))
                     end
                 end)
-            elseif m.return_type == "&str"
+            elseif m.return_abi == "str"
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
-                        return _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...))
+                        $(bindings...)
+                        return GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...))
                     end
                 end)
             else
@@ -369,7 +390,8 @@ function emit_julia_definitions(info::RustStructInfo)
                 is_ctor_ret = m.return_type == "Self" || m.return_type == struct_name_str
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
-                        res = _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
+                        $(bindings...)
+                        res = GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
                         if $is_ctor_ret
                             return $esc_struct(res, self.lib_name)
                         else
@@ -422,9 +444,9 @@ function emit_julia_definitions(info::RustStructInfo)
                     getter_name, rust_field_type = field_info[field]
                     lib = self.lib_name
                     if rust_field_type == "String"
-                        return _call_rust_owned_string(lib, getter_name, $(struct_name_str * "_free_rust_string"), self.ptr)
+                        return GC.@preserve self _call_rust_owned_string(lib, getter_name, $(struct_name_str * "_free_rust_string"), self.ptr)
                     elseif rust_field_type == "&str"
-                        return _call_rust_borrowed_string(lib, getter_name, self.ptr)
+                        return GC.@preserve self _call_rust_borrowed_string(lib, getter_name, self.ptr)
                     else
                         func_ptr = get_function_pointer(lib, getter_name)
                         field_type = julia_sym_to_type(rust_to_julia_type_sym(rust_field_type))
@@ -528,6 +550,24 @@ function _call_rust_borrowed_string(lib_name::String, func_name::String, args...
     return _crust_str_to_julia(raw)
 end
 
+# Function-pointer variants for bindings that resolve symbols themselves
+# (`@rust_crate` modules).
+function _call_rust_owned_string_ptr(func_ptr::Ptr{Cvoid}, free_ptr::Ptr{Cvoid}, args...)
+    raw = call_rust_function(func_ptr, CRustString, args...)
+    try
+        return _crust_string_to_julia(raw)
+    finally
+        if raw.ptr != C_NULL
+            ccall(free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
+        end
+    end
+end
+
+function _call_rust_borrowed_string_ptr(func_ptr::Ptr{Cvoid}, args...)
+    raw = call_rust_function(func_ptr, CRustStr, args...)
+    return _crust_str_to_julia(raw)
+end
+
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args...)
     ret_type = last(args)
     actual_args = args[1:end-1]
@@ -556,8 +596,9 @@ function _call_generic_constructor(func_name::String, args::Tuple, types::Tuple)
 
     info = monomorphize_function(func_name, type_params)
 
-    # args are in a tuple, need to splat
-    ptr = call_rust_function(info.func_ptr, info.return_type, args...)
+    # `_call_monomorphized` applies the string ABI of the specialized wrapper
+    # (fixed `String` / `&str` parameters travel as (ptr, len) pairs, #242).
+    ptr = _call_monomorphized(info, args...)
 
     return (ptr, info.lib_name)
 end
@@ -573,8 +614,10 @@ function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoi
 
     info = monomorphize_function(func_name, type_params)
 
-    # Method call: pass ptr (self) then args
-    return call_rust_function(info.func_ptr, info.return_type, ptr, args...)
+    # Method call: pass ptr (self) then args. The receiver is the wrapper's
+    # first parameter, so the string arg plan of `_call_monomorphized` lines
+    # up with `args` and a string result is decoded from its buffer.
+    return _call_monomorphized(info, ptr, args...)
 end
 
 function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple)
@@ -587,6 +630,9 @@ function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid
     end
 
     info = monomorphize_function(func_name, type_params)
+    # A `String` field getter returns an owned buffer (#242); other fields
+    # use the type resolved from the struct's parameters.
+    info.string_return === :none || return _call_monomorphized(info, ptr)
     return call_rust_function(info.func_ptr, ret_type, ptr)
 end
 

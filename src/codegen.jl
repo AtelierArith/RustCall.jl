@@ -11,7 +11,17 @@ struct FunctionInfo
     return_type::Type
     arg_types::Vector{Type}
     func_ptr::Ptr{Cvoid}
+    # String ABI of a monomorphized `#[julia]` function (#242): `arg_abis` is
+    # the manifest `abi` per argument ("string" / "str" arguments travel as
+    # `(ptr, len)` pairs), `string_return` is `:none`, `:owned` (released
+    # through `free_ptr`) or `:borrowed`.
+    arg_abis::Vector{String}
+    string_return::Symbol
+    free_ptr::Ptr{Cvoid}
 end
+
+FunctionInfo(name::String, lib_name::String, return_type::Type, arg_types::Vector{Type}, func_ptr::Ptr{Cvoid}) =
+    FunctionInfo(name, lib_name, return_type, arg_types, func_ptr, String[], :none, C_NULL)
 
 """
 Registry for function information.

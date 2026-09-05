@@ -11,15 +11,18 @@ use syn::{FnArg, Item, ItemFn, Pat, ReturnType};
 
 use crate::attrs::{has_no_mangle, rustcall_attribute};
 use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
-use crate::codegen::returns_boxed_struct;
+use crate::codegen::{
+    function_returns_string, returns_borrowed_str, returns_boxed_struct, returns_copied_str,
+};
+
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
 };
 use crate::model::{collect_struct_models_in, StructModel};
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
-    has_type_params, is_ffi_compatible_type, needs_clone_for_getter, return_type_to_string,
-    type_to_string,
+    has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type,
+    needs_clone_for_getter, return_type_to_string, type_to_string,
 };
 
 pub fn extract(source: &str, mode: Mode) -> Result<Manifest, syn::Error> {
@@ -49,10 +52,22 @@ pub fn fn_args(sig: &syn::Signature) -> Vec<Arg> {
                     other => quote::quote!(#other).to_string(),
                 },
                 rust_type: type_to_string(&pt.ty),
+                abi: arg_abi(&pt.ty).to_string(),
             }),
             FnArg::Receiver(_) => None,
         })
         .collect()
+}
+
+/// The manifest `abi` column of an argument type (see [`Arg::abi`]).
+pub fn arg_abi(ty: &syn::Type) -> &'static str {
+    if is_string_type(ty) {
+        "string"
+    } else if is_str_ref_type(ty) {
+        "str"
+    } else {
+        ""
+    }
 }
 
 fn item_fn_source(func: &ItemFn) -> String {
@@ -119,6 +134,10 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         ok_type,
         err_type,
         inner_type,
+        has_owned_string_helper: wrapped
+            && !is_generic
+            && (function_returns_string(&func.sig) || returns_copied_str(&func.sig)),
+        has_borrowed_string_helper: wrapped && !is_generic && returns_borrowed_str(&func.sig),
         source: if is_generic {
             let mut stripped = func.clone();
             crate::attrs::strip_rustcall_attrs(&mut stripped.attrs);
@@ -155,10 +174,16 @@ fn extract_crate_items(items: &[Item], manifest: &mut Manifest) {
                 let attribute = rustcall_attribute(&f.attrs);
                 match attribute {
                     Attribute::Julia => manifest.functions.push(function_entry(f, attribute, true)),
-                    // `#[julia_pyo3]` does not wrap Result/Option; report the raw signature.
+                    // `#[julia_pyo3]` exports the signature as written: no
+                    // Result/Option wrapping and no string conversion (the
+                    // attribute is not extended pending #275), so the manifest
+                    // must not advertise the `(ptr, len)` string ABI either.
                     Attribute::JuliaPyo3 => {
                         let mut entry = function_entry(f, attribute, false);
                         entry.exported = !entry.is_generic;
+                        for arg in &mut entry.args {
+                            arg.abi.clear();
+                        }
                         manifest.functions.push(entry);
                     }
                     _ => {}
@@ -213,6 +238,10 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             is_constructor: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
+            // Crate method wrappers (`generate_method_wrapper_crate`) use the
+            // same string ABI as inline ones, with per-method buffer types
+            // (`<Struct>_<method>_RustCallOwnedString` / `_free_rust_string`).
+            return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
             generic_wrapper: String::new(),
         })
         .collect();

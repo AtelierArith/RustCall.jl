@@ -685,3 +685,157 @@ end
         end
     end
 end
+
+@testset "Crate bindings: String / &str functions (#242)" begin
+    manifest = RustCall.extract_manifest([joinpath(SAMPLE_CRATE_PATH, "src", "lib.rs")]; mode = "crate")
+    sigs = Dict(s.name => s for s in RustCall.manifest_function_signatures(manifest))
+    @test sigs["shout"].has_owned_string_helper
+    @test sigs["crate_greeting"].has_borrowed_string_helper
+    @test sigs["char_count"].arg_types == ["&str"]
+
+    if RustCall.check_rustc_available()
+        let bindings = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateStrings"
+            @test bindings.shout("hello") == "HELLO"
+            @test bindings.join_repeat("a", "b", "-", UInt32(2)) == "a-b-a-b"
+            @test bindings.char_count("日本語") == 3
+            @test bindings.crate_greeting() == "hello from sample_crate"
+            @test RustCall.unwrap(bindings.parse_int(" 7 ")) == Int32(7)
+            @test RustCall.is_err(bindings.parse_int("seven"))
+            @test RustCall.unwrap(bindings.first_char("é")) == UInt32('é')
+            @test RustCall.is_none(bindings.first_char(""))
+            @test bindings.identity_str("λ") == "λ"
+            for _ in 1:200
+                @test bindings.shout("x") == "X"
+            end
+        end
+    end
+
+    # The source-file emitter (write_bindings_to_file) uses the same ABI.
+    info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+    code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
+    @test occursin("_call_rust_owned_string_ptr(_get_func_ptr(\"shout\"), _get_func_ptr(\"shout_free_rust_string\")", code)
+    @test occursin("__rustcall_str_input = String(input)", code)
+    @test occursin("GC.@preserve __rustcall_str_input", code)
+    @test occursin("_call_rust_borrowed_string_ptr(_get_func_ptr(\"crate_greeting\")", code)
+    @test occursin("GC.@preserve __rustcall_str_s call_rust_function(func_ptr, CResult_parse_int, pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve  call_rust_function(func_ptr, Int32, Int32(a), Int32(b))", code)
+    # and the emitted module parses
+    @test Meta.parse(code) isa Expr
+end
+
+@testset "Crate bindings: arguments named like generated locals (#242 review)" begin
+    # A Rust argument may be called `func_ptr` / `lib_name` / `c_result` /
+    # `c_option`; the generated wrapper must not shadow it with its own local.
+    info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+    code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
+
+    # Plain return, string arguments named func_ptr / lib_name
+    @test occursin("__rustcall_str_func_ptr = String(func_ptr)", code)
+    @test occursin("__rustcall_str_lib_name = String(lib_name)", code)
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_str_len\")", code)
+    @test occursin("call_rust_function(__rustcall_func_ptr, Csize_t, pointer(__rustcall_str_func_ptr)", code)
+    # The conversions come before the pointer lookup
+    @test findfirst("__rustcall_str_func_ptr = String(func_ptr)", code).start <
+          findfirst("__rustcall_func_ptr = _get_func_ptr(\"shadow_str_len\")", code).start
+
+    # Result return: func_ptr and c_result are both argument names
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_parse_int\")", code)
+    @test occursin("__rustcall_c_result = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, CResult_shadow_parse_int,", code)
+    @test occursin("if __rustcall_c_result.is_ok == 1", code)
+
+    # Option return: func_ptr and c_option are both argument names
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_first_char\")", code)
+    @test occursin("__rustcall_c_option = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, COption_shadow_first_char,", code)
+    @test occursin("if __rustcall_c_option.is_some == 1", code)
+
+    # No strings, but still a colliding argument name
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_double\")", code)
+    @test occursin("call_rust_function(__rustcall_func_ptr, Int32, Int32(func_ptr))", code)
+
+    # Names that do not collide keep their readable form
+    @test occursin("func_ptr = _get_func_ptr(\"parse_int\")", code)
+
+    @test Meta.parse(code) isa Expr
+
+    if RustCall.check_rustc_available()
+        let bindings = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateShadow"
+            @test bindings.shadow_str_len("abc", "de") == 5
+            @test RustCall.unwrap(bindings.shadow_parse_int(" 7 ", Int32(-1))) == Int32(7)
+            @test RustCall.is_err(bindings.shadow_parse_int("seven", Int32(-1)))
+            @test RustCall.unwrap(bindings.shadow_first_char("A", UInt32(0))) == UInt32('A')
+            @test RustCall.is_none(bindings.shadow_first_char("", UInt32(0)))
+            @test bindings.shadow_double(Int32(21)) == Int32(42)
+        end
+    end
+end
+
+@testset "Crate bindings: struct methods with String / &str (#242 review)" begin
+    manifest = RustCall.extract_manifest([joinpath(SAMPLE_CRATE_PATH, "src", "lib.rs")]; mode = "crate")
+    labeler = only(filter(s -> s.name == "Labeler", RustCall.manifest_struct_infos(manifest)))
+    methods = Dict(m.name => m for m in labeler.methods)
+    @test methods["label"].arg_abis == ["str"]
+    @test methods["label"].return_abi == "string"
+    @test methods["byte_len"].arg_abis == ["string"]
+    @test methods["byte_len"].return_abi == ""
+    @test methods["kind"].return_abi == "str"
+    @test methods["echo"].return_abi == "string"   # may borrow from the argument: copied
+    @test methods["shout"].is_static && methods["shout"].return_abi == "string"
+
+    # The source emitter passes (ptr, len) pairs and reads the per-method buffers
+    info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+    code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
+    @test occursin("__rustcall_str_name = String(name)", code)
+    # `self` is in the preserve list of every instance method: a borrowed
+    # `&str` points into the Rust object, which a temporary's finalizer could
+    # otherwise free mid-call.
+    @test occursin("GC.@preserve self __rustcall_str_name _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_label_free_rust_string\"), getfield(self, :ptr), pointer(__rustcall_str_name), sizeof(__rustcall_str_name) % Csize_t)", code)
+    @test occursin("GC.@preserve self _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", code)
+    @test occursin("GC.@preserve __rustcall_str_s _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_shout_free_rust_string\"), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve self __rustcall_str_s call_rust_function(func_ptr, Csize_t, getfield(self, :ptr), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve self call_rust_function(func_ptr, Float64, getfield(self, :ptr))", code)
+    # The in-memory wrapper preserves `self` too
+    labeler_info = only(filter(s -> s.name == "Labeler", info.julia_structs))
+    kind_method = only(filter(m -> m.name == "kind", labeler_info.methods))
+    kind_expr = string(RustCall._generate_crate_method_wrapper(labeler_info, kind_method))
+    @test occursin("GC.@preserve self _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", kind_expr)
+    label_method = only(filter(m -> m.name == "label", labeler_info.methods))
+    @test occursin("GC.@preserve self __rustcall_str_name _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
+    # Constructors still return the boxed struct
+    @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)))", code)
+    @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)))", code)
+    @test Meta.parse(code) isa Expr
+
+    if RustCall.check_rustc_available()
+        # The module is evaluated in this world; go through invokelatest for
+        # the struct wrappers (their outer constructors are newer methods).
+        let bindings = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateLabeler"
+            call(f, args...) = Base.invokelatest(f, args...)
+            l = call(bindings.Labeler, UInt32(0))
+            @test call(bindings.label, l, "x") == "x#1"
+            @test call(bindings.label, l, "日本") == "日本#2"
+            @test call(getproperty, l, :count) == 2
+            @test call(bindings.byte_len, l, "abc") == 3
+            @test call(bindings.byte_len, l, "日本語") == 9
+            @test call(bindings.byte_len, l, SubString("xabc", 2)) == 3
+            @test call(bindings.kind, l) == "labeler"
+            @test call(bindings.echo, l, "λ") == "λ"
+            @test call(bindings.shout, "hi") == "HI"
+            for _ in 1:200
+                @test call(bindings.label, l, "y") isa String
+            end
+            # A borrowed `&str` of a temporary: the wrapper object must stay
+            # alive until the bytes are copied, even under GC pressure.
+            for i in 1:300
+                @test call(bindings.kind, call(bindings.Labeler, UInt32(i))) == "labeler"
+                @test call(bindings.echo, call(bindings.Labeler, UInt32(i)), "tmp$i") == "tmp$i"
+                i % 25 == 0 && GC.gc()
+            end
+            # Non-string methods and constructors are unchanged
+            p = call(bindings.Point, 3.0, 4.0)
+            @test call(bindings.distance_from_origin, p) == 5.0
+            c = call(bindings.Counter, Int32(1))
+            call(bindings.add, c, Int32(4))
+            @test call(bindings.get, c) == Int32(5)
+        end
+    end
+end

@@ -17,6 +17,10 @@ use syn::visit_mut::{self, VisitMut};
 use syn::{GenericParam, Item, ItemFn, Path, PathArguments, Type, WherePredicate};
 
 use crate::cfg::body_has_cfg;
+use crate::codegen::{
+    function_returns_string, function_uses_strings, returns_borrowed_str, returns_copied_str,
+    transform_string_function,
+};
 use crate::manifest::{Arg, Attribute, Function, Manifest, Mode, ReturnKind};
 use crate::types::{return_type_to_string, type_to_string};
 
@@ -303,14 +307,30 @@ pub fn specialize(
 
     func.attrs
         .retain(|a| !a.path().is_ident("no_mangle") && !a.path().is_ident("julia"));
-    func.attrs.insert(0, syn::parse_quote!(#[no_mangle]));
-    func.vis = syn::Visibility::Public(Default::default());
-    func.sig.abi = Some(syn::parse_quote!(extern "C"));
 
     let mut entry = function_entry(&func);
     entry.module_path = module_path.iter().map(|s| s.to_string()).collect();
+
+    // Fixed `String` / `&str` parameters or returns get the same `(ptr, len)`
+    // wrapper as a non-generic `#[julia]` function (#242); the manifest
+    // records the helpers so the caller uses the string ABI.
+    let new_items: Vec<Item> = if function_uses_strings(&func.sig) {
+        entry.has_owned_string_helper =
+            function_returns_string(&func.sig) || returns_copied_str(&func.sig);
+        entry.has_borrowed_string_helper = returns_borrowed_str(&func.sig);
+        let file: syn::File = syn::parse2(transform_string_function(func))
+            .map_err(|e| SpecializeError::Parse(e.to_string()))?;
+        file.items
+    } else {
+        func.attrs.insert(0, syn::parse_quote!(#[no_mangle]));
+        func.vis = syn::Visibility::Public(Default::default());
+        func.sig.abi = Some(syn::parse_quote!(extern "C"));
+        vec![Item::Fn(func)]
+    };
     let items = locate_items(&mut file.items, module_path).expect("module path resolved above");
-    items.insert(position + 1, Item::Fn(func));
+    for (offset, item) in new_items.into_iter().enumerate() {
+        items.insert(position + 1 + offset, item);
+    }
 
     let mut manifest = Manifest::new(Mode::Inline);
     manifest.functions.push(entry);
@@ -350,6 +370,7 @@ fn function_entry(func: &ItemFn) -> Function {
                     other => quote::quote!(#other).to_string(),
                 },
                 rust_type: type_to_string(&pt.ty),
+                abi: crate::extract::arg_abi(&pt.ty).to_string(),
             }),
             syn::FnArg::Receiver(_) => None,
         })
@@ -376,6 +397,8 @@ fn function_entry(func: &ItemFn) -> Function {
         source: String::new(),
         body_has_cfg: body_has_cfg(&func.block),
         line: 0,
+        has_owned_string_helper: false,
+        has_borrowed_string_helper: false,
         module_path: Vec::new(),
     }
 }
@@ -512,6 +535,61 @@ mod tests {
         assert!(!out.source.contains("$i32"));
         assert!(out.source.contains("mk!(i32)"));
         assert!(out.source.contains("let _y: i32"));
+    }
+
+    /// Source without layout (prettyplease wraps long signatures).
+    fn flat(source: &str) -> String {
+        source
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace("( ", "(")
+            .replace(", )", ")")
+            .replace(" )", ")")
+    }
+
+    #[test]
+    fn fixed_string_parameters_get_the_string_wrapper() {
+        let src = "pub fn tag<T: std::fmt::Display>(x: T, label: String) -> String { format!(\"{label}{x}\") }";
+        let out = specialize(src, "tag", &[("T".into(), "i32".into())], "tag_i32").unwrap();
+        let source = flat(&out.source);
+        assert!(source.contains("fn tag_i32_inner(x: i32, label: String) -> String"));
+        assert!(
+            source.contains("pub extern \"C\" fn tag_i32(x: i32, label_ptr: *const u8, label_len: usize) -> tag_i32_RustCallOwnedString"),
+            "{source}"
+        );
+        assert!(source.contains("pub extern \"C\" fn tag_i32_free_rust_string("));
+        // The generic original is untouched.
+        assert!(source.contains("pub fn tag<T: std::fmt::Display>(x: T, label: String) -> String"));
+        let f = &out.manifest.functions[0];
+        assert!(f.has_owned_string_helper);
+        assert!(!f.has_borrowed_string_helper);
+        assert_eq!(f.args[1].abi, "string");
+        assert_eq!(f.return_type, "String");
+
+        let src = "pub fn count<T: Copy>(x: T, s: &str) -> usize { let _ = x; s.len() }";
+        let out = specialize(src, "count", &[("T".into(), "i32".into())], "count_i32").unwrap();
+        let source = flat(&out.source);
+        assert!(
+            source.contains(
+                "pub extern \"C\" fn count_i32(x: i32, s_ptr: *const u8, s_len: usize) -> usize"
+            ),
+            "{source}"
+        );
+        let f = &out.manifest.functions[0];
+        assert!(!f.has_owned_string_helper && !f.has_borrowed_string_helper);
+        assert_eq!(f.args[1].abi, "str");
+
+        let src = "pub fn label<T>(_x: T) -> &'static str { \"v\" }";
+        let out = specialize(src, "label", &[("T".into(), "i32".into())], "label_i32").unwrap();
+        let source = flat(&out.source);
+        assert!(
+            source.contains(
+                "pub extern \"C\" fn label_i32(_x: i32) -> label_i32_RustCallBorrowedString"
+            ),
+            "{source}"
+        );
+        assert!(out.manifest.functions[0].has_borrowed_string_helper);
     }
 
     #[test]

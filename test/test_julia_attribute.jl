@@ -161,7 +161,21 @@ using Test
     end
 
     @testset "manifest: schema version guard" begin
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 2
+        @test RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")["schema_version"] == 2
+        # Schema 1 predates the string ABI columns (`abi`, `return_abi`, the
+        # helper flags); a consumer must not fall back to the one-word ABI.
+        err = try
+            RustCall._parse_manifest("schema_version = 1\nmode = \"inline\"\n")
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.ExtractorError
+        @test occursin("schema 1", sprint(showerror, err))
+        @test occursin("expects 2", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 999\nmode = \"inline\"\n")
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("mode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("not = [valid toml")
     end
 
@@ -330,4 +344,261 @@ using Test
             @test get_name(person) == "Alice"
         end
     end
+end
+
+@testset "#[julia] String / &str functions (#242)" begin
+    code = """
+    #[julia]
+    pub fn shout(input: String) -> String { input.to_uppercase() }
+    #[julia]
+    pub fn join_repeat(a: &str, b: &str, sep: &str, times: u32) -> String {
+        let piece = format!("{a}{sep}{b}");
+        std::iter::repeat_n(piece, times as usize).collect::<Vec<_>>().join(sep)
+    }
+    #[julia]
+    pub fn char_count(s: &str) -> usize { s.chars().count() }
+    #[julia]
+    pub fn greeting() -> &'static str { "hello" }
+    #[julia]
+    pub fn with_nul(s: String) -> String { format!("{s}\\0{s}") }
+    """
+    sigs = RustCall.manifest_function_signatures(RustCall.expand_inline(code).manifest)
+    by_name = Dict(s.name => s for s in sigs)
+    @test by_name["shout"].has_owned_string_helper
+    @test !by_name["shout"].has_borrowed_string_helper
+    @test by_name["greeting"].has_borrowed_string_helper
+    @test !by_name["char_count"].has_owned_string_helper
+    @test RustCall._uses_string_ffi(by_name["char_count"])
+    @test RustCall._uses_string_ffi(by_name["shout"])
+    @test by_name["shout"].arg_abis == ["string"]
+    @test by_name["join_repeat"].arg_abis == ["str", "str", "str", ""]
+    bindings, preserved, call_args = RustCall._string_arg_plan(by_name["join_repeat"], identity)
+    @test length(bindings) == 3 && length(preserved) == 3 && length(call_args) == 7
+
+    # A temporary never shadows an argument that happens to use the prefix.
+    collide = RustCall.RustFunctionSignature("f", ["s", "__rustcall_str_s"], ["&str", "i32"], "usize",
+                                             false, String[]; arg_abis = ["str", ""])
+    _, preserved_c, call_args_c = RustCall._string_arg_plan(collide, identity)
+    @test preserved_c == [Symbol("__rustcall_str__s")]
+    @test call_args_c[end] == :(Int32(__rustcall_str_s))
+
+    if RustCall.check_rustc_available()
+        # Struct methods use the same ABI decision: a `&str` return of a method
+        # that takes strings is copied into the owned representation.
+        rust"""
+        #[julia]
+        pub struct Greeter { pub name: String }
+
+        impl Greeter {
+            pub fn new(name: String) -> Self { Self { name } }
+            pub fn shout(&self, suffix: &str) -> String { format!("{}{}", self.name.to_uppercase(), suffix) }
+            pub fn echo<'a>(&self, s: &'a str) -> &'a str { s }
+            pub fn label(&self) -> &str { "greeter" }
+        }
+        """
+        infos = RustCall.manifest_struct_infos(RustCall.expand_inline("""
+        #[julia]
+        pub struct Greeter { pub name: String }
+
+        impl Greeter {
+            pub fn new(name: String) -> Self { Self { name } }
+            pub fn shout(&self, suffix: &str) -> String { format!("{}{}", self.name.to_uppercase(), suffix) }
+            pub fn echo<'a>(&self, s: &'a str) -> &'a str { s }
+            pub fn label(&self) -> &str { "greeter" }
+        }
+        """).manifest)
+        methods = Dict(m.name => m for m in only(infos).methods)
+        @test methods["shout"].return_abi == "string"
+        @test methods["echo"].return_abi == "string"   # copied: borrows from an argument
+        @test methods["label"].return_abi == "str"
+        g = Greeter("ada")
+        @test shout(g, "!") == "ADA!"
+        @test echo(g, "λ") == "λ"
+        @test label(g) == "greeter"
+        @test shout(g, SubString("x!", 2)) == "ADA!"
+        # Borrowed `&str` of a temporary under GC pressure: the inline method
+        # wrapper preserves `self` (and the converted arguments) for the call.
+        for i in 1:300
+            @test label(Greeter("t$i")) == "greeter"
+            @test echo(Greeter("t$i"), "e$i") == "e$i"
+            i % 25 == 0 && GC.gc()
+        end
+
+        rust"""
+        #[julia]
+        pub fn shout(input: String) -> String { input.to_uppercase() }
+        #[julia]
+        pub fn join_repeat(a: &str, b: &str, sep: &str, times: u32) -> String {
+            let piece = format!("{a}{sep}{b}");
+            std::iter::repeat_n(piece, times as usize).collect::<Vec<_>>().join(sep)
+        }
+        #[julia]
+        pub fn char_count(s: &str) -> usize { s.chars().count() }
+        #[julia]
+        pub fn greeting() -> &'static str { "hello" }
+        #[julia]
+        pub fn with_nul(s: String) -> String { format!("{s}\0{s}") }
+        #[julia]
+        pub fn parse_num(s: &str) -> Result<i32, i32> { s.trim().parse().map_err(|_| -1) }
+        #[julia]
+        pub fn first_char(s: String) -> Option<u32> { s.chars().next().map(|c| c as u32) }
+        #[julia]
+        pub fn identity_str<'a>(s: &'a str) -> &'a str { s }
+        """
+        # Result / Option functions with string arguments
+        @test RustCall.unwrap(parse_num(" 42 ")) == Int32(42)
+        @test RustCall.is_err(parse_num("x"))
+        @test RustCall.unwrap(first_char("λx")) == UInt32('λ')
+        @test RustCall.is_none(first_char(""))
+        # Lifetime-qualified &str: the result may borrow from the converted
+        # argument, so it comes back as an owned copy (still a String in Julia).
+        @test identity_str("kept") == "kept"
+        @test identity_str(String(UInt8[0x41, 0xff])) == "A\ufffd"
+        # Invalid UTF-8 is replaced, never handed to Rust as an invalid &str
+        @test char_count(String(UInt8[0xff, 0x41])) == 2
+        @test shout(String(UInt8[0xc3, 0x28])) == "\ufffd("
+        @test shout("hello, wörld") == "HELLO, WÖRLD"
+        @test shout(SubString("xyz", 2)) == "YZ"
+        @test join_repeat("a", "b", "-", UInt32(2)) == "a-b-a-b"
+        @test join_repeat("日本", "語", "", 1) == "日本語"
+        @test char_count("日本語") == 3
+        @test char_count("") == 0
+        @test greeting() == "hello"
+        # Byte-exact round trip: embedded NUL survives the (ptr, len) ABI.
+        @test with_nul("ab") == "ab\0ab"
+        # Repeated calls do not leak or corrupt (owned strings are freed).
+        for i in 1:1000
+            @test shout("x") == "X"
+        end
+    end
+end
+
+@testset "#[julia] arguments named like generated locals (#242 review)" begin
+    # The wrappers introduce locals (`func_ptr`, `lib_name`, `c_result`,
+    # `c_option`); a Rust argument may carry any of those names and must not be
+    # shadowed by them.
+    @test RustCall._generated_local("func_ptr", ["s"]) === :func_ptr
+    @test RustCall._generated_local("func_ptr", ["func_ptr"]) === Symbol("__rustcall_func_ptr")
+    @test RustCall._generated_local("c_result", ["c_result", "__rustcall_x"]) ===
+          Symbol("__rustcall__c_result")
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[julia]
+        pub fn shadow_len(func_ptr: &str, lib_name: String) -> usize { func_ptr.len() + lib_name.len() }
+        #[julia]
+        pub fn shadow_parse(func_ptr: &str, c_result: i32) -> Result<i32, i32> {
+            func_ptr.trim().parse().map_err(|_| c_result)
+        }
+        #[julia]
+        pub fn shadow_first(func_ptr: String, c_option: u32) -> Option<u32> {
+            func_ptr.chars().next().map(|c| c as u32 + c_option)
+        }
+        #[julia]
+        pub fn shadow_upper(func_ptr: String, lib_name: &str) -> String {
+            format!("{}{}", func_ptr.to_uppercase(), lib_name)
+        }
+        #[julia]
+        pub fn shadow_twice(func_ptr: i32) -> i32 { func_ptr * 2 }
+        """
+        @test shadow_len("abc", "de") == 5
+        @test RustCall.unwrap(shadow_parse(" 7 ", Int32(-1))) == Int32(7)
+        @test RustCall.is_err(shadow_parse("seven", Int32(-1)))
+        @test RustCall.unwrap(shadow_first("A", UInt32(0))) == UInt32('A')
+        @test RustCall.is_none(shadow_first("", UInt32(0)))
+        @test shadow_upper("ada", "!") == "ADA!"
+        @test shadow_twice(Int32(21)) == Int32(42)
+    end
+end
+
+@testset "#[julia] arguments named like generated Rust identifiers (#242 review)" begin
+    # The Rust wrapper introduces `<arg>_ptr` / `<arg>_len` / `<arg>_bytes` /
+    # `<arg>_cow` (and `ptr` / `self_obj` for methods); user arguments with
+    # those names must keep their values.
+    code = """
+    #[julia]
+    pub fn f(s: String, s_ptr: usize) -> usize { s.len() + s_ptr }
+    """
+    expanded = RustCall.expand_inline(code)
+    @test occursin("s_ptr_: *const u8", expanded.source)
+    sig = only(RustCall.manifest_function_signatures(expanded.manifest))
+    @test sig.arg_names == ["s", "s_ptr"]
+    @test sig.arg_abis == ["string", ""]
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[julia]
+        pub fn collide_owned(s: String, s_ptr: usize) -> usize { s.len() + s_ptr }
+        #[julia]
+        pub fn collide_borrowed(s: &str, s_bytes: i32, s_cow: i32, s_len: i32) -> i32 {
+            s.len() as i32 + s_bytes * 10 + s_cow * 100 + s_len * 1000
+        }
+        #[julia]
+        pub fn collide_ret(s_ptr: u8, s: String) -> String { format!("{s}{s_ptr}") }
+
+        #[julia]
+        pub struct Holder { pub n: u32 }
+        impl Holder {
+            pub fn new(n: u32) -> Self { Self { n } }
+            pub fn m(&self, ptr: u32, self_obj: u32, s: &str, s_bytes: u32) -> u32 {
+                self.n + ptr + self_obj + s.len() as u32 + s_bytes
+            }
+        }
+        """
+        @test collide_owned("abc", UInt(4)) == 7
+        @test collide_borrowed("ab", Int32(1), Int32(2), Int32(3)) == 3212
+        @test collide_ret(UInt8(7), "v") == "v7"
+        h = Holder(UInt32(1))
+        @test m(h, UInt32(2), UInt32(3), "abcd", UInt32(5)) == 15
+    end
+end
+
+@testset "#[julia] parenthesized types and #[julia_pyo3] string ABI (#242 review)" begin
+    # `(String)` and `&(str)` are Type::Paren to syn; they name the same types.
+    code = """
+    #[julia]
+    pub fn consume(s: (String)) -> usize { s.len() }
+    #[julia]
+    pub fn paren_ref(s: &(str)) -> (usize) { s.chars().count() }
+    #[julia]
+    pub fn paren_ret(s: String) -> (String) { s.to_uppercase() }
+    """
+    sigs = Dict(s.name => s for s in RustCall.manifest_function_signatures(RustCall.expand_inline(code).manifest))
+    @test sigs["consume"].arg_abis == ["string"]
+    @test sigs["consume"].arg_types == ["String"]
+    @test sigs["paren_ref"].arg_abis == ["str"]
+    @test sigs["paren_ref"].return_type == "usize"
+    @test sigs["paren_ret"].has_owned_string_helper
+    @test sigs["paren_ret"].return_type == "String"
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #![allow(unused_parens)]
+        #[julia]
+        pub fn consume(s: (String)) -> usize { s.len() }
+        #[julia]
+        pub fn paren_ref(s: &(str)) -> (usize) { s.chars().count() }
+        #[julia]
+        pub fn paren_ret(s: String) -> (String) { s.to_uppercase() }
+        """
+        @test consume("abc") == 3
+        @test paren_ref("日本語") == 3
+        @test paren_ret("abc") == "ABC"
+    end
+
+    # `#[julia_pyo3]` free functions are exported as written (no string
+    # conversion, pending #275): the crate manifest reports an empty ABI so
+    # the Julia wrapper does not pass (ptr, len) to a function taking `String`.
+    pyo3 = RustCall.extract_manifest("""
+    #[julia_pyo3]
+    pub fn py_len(s: String) -> usize { s.len() }
+    #[julia_pyo3]
+    pub fn py_plain(x: i32) -> i32 { x }
+    """; mode = "crate")
+    py = Dict(s.name => s for s in RustCall.manifest_function_signatures(pyo3))
+    @test py["py_len"].arg_types == ["String"]
+    @test py["py_len"].arg_abis == [""]
+    @test !py["py_len"].has_owned_string_helper
+    @test !RustCall._uses_string_ffi(py["py_len"])
+    @test py["py_plain"].arg_abis == [""]
 end

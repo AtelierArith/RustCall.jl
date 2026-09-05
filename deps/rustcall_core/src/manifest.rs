@@ -13,7 +13,15 @@ use serde::{Deserialize, Serialize};
 
 /// Bump whenever a field is added, removed or changes meaning. Julia refuses to
 /// load a manifest whose `schema_version` it does not understand.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// History:
+/// * 1: initial manifest (#264).
+/// * 2: string ABI (#242): `Arg.abi`, `Method.return_abi` and the
+///   `has_owned_string_helper` / `has_borrowed_string_helper` flags decide
+///   how a consumer must call the exported symbols (`(ptr, len)` pairs and
+///   `<name>_RustCallOwnedString` buffers), so a version-1 consumer must not
+///   load a version-2 manifest, nor the reverse.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Which pipeline produced the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +77,11 @@ pub enum ReturnKind {
 pub struct Arg {
     pub name: String,
     pub rust_type: String,
+    /// How the wrapper receives the argument: `""` as written (`rust_type`),
+    /// `"string"` (`String`: `(ptr, len)` bytes copied into an owned String),
+    /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed).
+    #[serde(default)]
+    pub abi: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +129,15 @@ pub struct Function {
     /// `T` of `Option<T>`, empty otherwise.
     #[serde(default)]
     pub inner_type: String,
+    /// The function returns `String`: the wrapper returns
+    /// `<fn>_RustCallOwnedString { ptr, len, cap }`, released through
+    /// `<fn>_free_rust_string(ptr, len, cap)` (#242).
+    #[serde(default)]
+    pub has_owned_string_helper: bool,
+    /// The function returns `&str`: the wrapper returns
+    /// `<fn>_RustCallBorrowedString { ptr, len }` (#242).
+    #[serde(default)]
+    pub has_borrowed_string_helper: bool,
     /// Source of the function item (generic functions only), used for
     /// runtime monomorphization via `specialize`.
     #[serde(default)]
@@ -163,6 +185,12 @@ pub struct Method {
     #[serde(default)]
     pub args: Vec<Arg>,
     pub return_type: String,
+    /// How the wrapper returns the value: `""` as written, `"string"` for an
+    /// owned `<Struct>_RustCallOwnedString` (a `String`, or a `&str` copied
+    /// because it may borrow from a converted argument), `"str"` for a
+    /// borrowed `<Struct>_RustCallBorrowedString`.
+    #[serde(default)]
+    pub return_abi: String,
     /// For generic structs: the generic wrapper source registered for
     /// monomorphization. Empty otherwise.
     #[serde(default)]
