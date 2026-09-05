@@ -224,16 +224,15 @@ More complex inference (e.g., inferring from return type) is not yet supported.
 - `is_generic_function(func_name)` - Check if a function is generic
 - `call_generic_function(func_name, args...)` - Call a generic function (auto-monomorphizes)
 - `monomorphize_function(func_name, type_params)` - Explicitly monomorphize a function
-- `specialize_generic_code(code, type_params)` - Specialize generic code with type parameters
+- `specialize_generic(source, fn_name, bindings, new_name)` - Instantiate a generic function through the `rustcall-extract` CLI
 - `infer_type_parameters(func_name, arg_types)` - Infer type parameters from argument types
+- `julia_type_to_rust_string(T)` - Rust spelling of a Julia type used as a generic argument
 
-#### Trait Bounds Parsing
-- `parse_single_trait(trait_str)` - Parse a single trait bound string (e.g., `"Copy"`, `"Add<Output = T>"`)
-- `parse_trait_bounds(bounds_str)` - Parse multiple trait bounds (e.g., `"Copy + Clone"`)
-- `parse_inline_constraints(type_params_str)` - Parse inline type parameters with constraints
-- `parse_where_clause(code)` - Parse a where clause from Rust code
-- `parse_generic_function(code, func_name)` - Parse a generic function and extract type parameters with constraints
-- `merge_constraints(c1, c2)` - Merge two constraint dictionaries
+#### Trait Bounds
+Trait bounds (`T: Copy + Clone`, `where T: Add<Output = T>`) are read by the
+Rust-side parser and reported in the FFI manifest; Julia receives them as
+`TypeConstraints` on `GenericFunctionInfo.constraints` and never parses them
+from source text.
 - `constraints_to_rust_string(constraints)` - Convert constraints back to Rust syntax
 
 ### Registries
@@ -295,20 +294,29 @@ println("Result: $result")
 
 ### Code Specialization
 
-The `specialize_generic_code` function:
-1. Replaces type parameters (`T`, `U`, etc.) with concrete Rust types (`i32`, `f64`, etc.)
-2. Removes generic parameter lists (`<T>`)
-3. Preserves function structure and attributes
+Generic functions are instantiated by the `rustcall-extract specialize` command
+(`deps/rustcall_extract`, built by `Pkg.build("RustCall")`). Given the
+registered source, the function name and `T = i32`-style bindings it:
+
+1. parses the source with `syn` (a real Rust parser, so `where` clauses, nested
+   generics and comments are handled correctly),
+2. replaces the type parameters in the signature and body at the AST level,
+3. drops the bound generic parameters and their `where` predicates,
+4. renames the function (e.g. `identity_i32`) and marks it `#[no_mangle] pub extern "C"`,
+5. reports the resulting argument and return types in a manifest that Julia
+   uses to build the `ccall`.
+
+Struct definitions and impl blocks in the registered context are kept
+unchanged, so generic struct wrappers such as `Point_new<T>` become
+`Point_new_i32(x: i32) -> *mut Point<i32>` while `struct Point<T>` stays generic.
 
 ### Monomorphization Process
 
 1. Check cache for existing monomorphized instance
-2. If not cached, specialize the code
-3. Replace function name with specialized name (e.g., `identity_i32`)
-4. Ensure `#[no_mangle]` and `extern "C"` are present
-5. Compile the specialized function
-6. Load and cache the compiled library
-7. Return `FunctionInfo` for the monomorphized function
+2. If not cached, run `rustcall-extract specialize` on the registered source
+3. Compile the specialized function with `rustc`
+4. Load and cache the compiled library
+5. Return `FunctionInfo` for the monomorphized function
 
 ### Caching Strategy
 
