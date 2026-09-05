@@ -177,7 +177,9 @@ const _ARTIFACT_COMPILER_LOCK = ReentrantLock()
 
 Identity of the toolchain that actually compiles: the `--version` strings of
 `RustToolChain.rustc()` and `RustToolChain.cargo()` — the very commands
-`src/compiler.jl` and `src/cargobuild.jl` invoke.
+`src/compiler.jl` and `src/cargobuild.jl` invoke — together with any
+`RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` standing between Cargo and rustc,
+since a wrapper changes what is produced.
 
 This is deliberately *not* `_get_rustc_version()` in `src/cache.jl`, which
 shells out to a bare `rustc` from `PATH` and degrades to `"unknown"`; upgrading
@@ -192,7 +194,16 @@ function artifact_compiler_identity()::String
         if isempty(_ARTIFACT_COMPILER_IDENTITY[])
             rustc_ver = _tool_version(rustc, "rustc")
             cargo_ver = _tool_version(cargo, "cargo")
-            _ARTIFACT_COMPILER_IDENTITY[] = string("rustc=", rustc_ver, "\ncargo=", cargo_ver)
+            # A wrapper stands between Cargo and rustc and can change what is
+            # produced (sccache, clippy-driver, a custom shim), so it is part
+            # of the identity of the compiler that actually runs.
+            wrapper = get(ENV, "RUSTC_WRAPPER", "")
+            ws_wrapper = get(ENV, "RUSTC_WORKSPACE_WRAPPER", "")
+            _ARTIFACT_COMPILER_IDENTITY[] = string(
+                "rustc=", rustc_ver,
+                "\ncargo=", cargo_ver,
+                "\nrustc_wrapper=", wrapper,
+                "\nrustc_workspace_wrapper=", ws_wrapper)
         end
         return _ARTIFACT_COMPILER_IDENTITY[]
     end
@@ -498,14 +509,24 @@ function crate_content_digest(dir::AbstractString)::String
 end
 
 """
+    CRATE_INPUT_VCS_DIRS_ANY_LEVEL
+
+Version-control metadata directories, never a crate input at any depth.
+"""
+const CRATE_INPUT_VCS_DIRS_ANY_LEVEL = String[
+    ".bzr", ".git", ".hg", ".jj", ".pijul", ".svn",
+]
+
+"""
     CRATE_INPUT_VCS_DIRS
 
-Directories never treated as crate inputs: build output and version-control
-metadata. Everything else under a package directory is an input.
+Directories not treated as crate inputs: version-control metadata, plus
+Cargo's build output. `target` is excluded **only at the package root** —
+`src/target/mod.rs` is ordinary source, not build output — while the VCS
+directories are excluded at any depth. Everything else under a package
+directory is an input.
 """
-const CRATE_INPUT_VCS_DIRS = String[
-    ".bzr", ".git", ".hg", ".jj", ".pijul", ".svn", "target",
-]
+const CRATE_INPUT_VCS_DIRS = String[CRATE_INPUT_VCS_DIRS_ANY_LEVEL..., "target"]
 
 """
     crate_input_files(dir::AbstractString) -> (strategy::String, files::Vector{String})
@@ -528,7 +549,15 @@ function crate_input_files(dir::AbstractString)
     dir = String(dir)
     files = String[]
     for (root, dirs, names) in walkdir(dir)
-        filter!(d -> !(d in CRATE_INPUT_VCS_DIRS), dirs)
+        # `target/` is Cargo's build output only at the package root: a module
+        # directory named `src/target/` is ordinary source and must be hashed.
+        # VCS metadata, by contrast, is never an input at any depth.
+        at_root = _canonical_dir(root) == _canonical_dir(dir)
+        filter!(dirs) do d
+            d in CRATE_INPUT_VCS_DIRS_ANY_LEVEL && return false
+            at_root && d == "target" && return false
+            return true
+        end
         for n in names
             push!(files, relpath(joinpath(root, n), dir))
         end
@@ -645,6 +674,11 @@ table in `manifest`, including target-specific tables
 `{ workspace = true }` entries resolved against the nearest
 `[workspace.dependencies]`, searched in this manifest and then upwards.
 
+Returned paths are what the caller should join to the manifest's own directory.
+An inherited path is relative to the *workspace root manifest*, not to the
+member, so it is returned already resolved as an absolute path (`joinpath`
+against the member directory then leaves it unchanged).
+
 Used only when `cargo tree` cannot answer; see `local_path_dependency_dirs`.
 """
 function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
@@ -656,7 +690,7 @@ function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
     end
     out = String[]
     dir = dirname(abspath(String(manifest)))
-    workspace_deps = _workspace_dependency_table(parsed, dir)
+    workspace_deps, workspace_dir = _workspace_dependency_table(parsed, dir)
 
     function harvest!(table)
         table isa AbstractDict || return
@@ -672,7 +706,10 @@ function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
                 inherited = get(workspace_deps, String(name), nothing)
                 if inherited isa AbstractDict
                     ip = get(inherited, "path", nothing)
-                    ip isa AbstractString && push!(out, String(ip))
+                    # Relative to the manifest that declares the workspace
+                    # table, which is usually a directory above this member.
+                    ip isa AbstractString &&
+                        push!(out, abspath(joinpath(workspace_dir, String(ip))))
                 end
             end
         end
@@ -695,16 +732,17 @@ function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
 end
 
 # `[workspace.dependencies]` of this manifest, else of the nearest ancestor
-# manifest that declares a workspace. Paths there are relative to *that*
-# manifest, which is why only same-directory workspaces are resolved; anything
-# further is left to the `cargo tree` strategy.
+# manifest that declares a workspace. Returns the table together with the
+# directory of the manifest that declared it, because the `path` values inside
+# it are relative to *that* manifest, not to the member using them.
 function _workspace_dependency_table(parsed::AbstractDict, dir::AbstractString)
+    dir = String(dir)
     ws = get(parsed, "workspace", nothing)
     if ws isa AbstractDict
         deps = get(ws, "dependencies", nothing)
-        deps isa AbstractDict && return deps
+        deps isa AbstractDict && return deps, dir
     end
-    parent = dirname(String(dir))
+    parent = dirname(dir)
     while !isempty(parent) && parent != dirname(parent)
         candidate = joinpath(parent, "Cargo.toml")
         if isfile(candidate)
@@ -717,13 +755,13 @@ function _workspace_dependency_table(parsed::AbstractDict, dir::AbstractString)
                 ws2 = get(other, "workspace", nothing)
                 if ws2 isa AbstractDict
                     deps2 = get(ws2, "dependencies", nothing)
-                    deps2 isa AbstractDict && return deps2
+                    deps2 isa AbstractDict && return deps2, parent
                 end
             end
         end
         parent = dirname(parent)
     end
-    return Dict{String, Any}()
+    return Dict{String, Any}(), dir
 end
 
 """
@@ -798,6 +836,7 @@ const ARTIFACT_BUILD_ENV_PREFIXES = String[
 "See `ARTIFACT_BUILD_ENV_PREFIXES`."
 const ARTIFACT_BUILD_ENV_NAMES = String[
     "RUSTC",
+    "RUSTC_WORKSPACE_WRAPPER",
     "RUSTC_WRAPPER",
     "RUSTDOCFLAGS",
     "RUSTFLAGS",

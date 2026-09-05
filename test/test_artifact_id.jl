@@ -328,7 +328,34 @@ _id(; kwargs...) = RustCall.ArtifactId(;
             @test !any(f -> startswith(f, "target/") || startswith(f, ".git/"), ws_files2)
             @test "target" in RustCall.CRATE_INPUT_VCS_DIRS
             @test ".git" in RustCall.CRATE_INPUT_VCS_DIRS
+            # `target` is build output only at the package root; VCS metadata is
+            # excluded at every level.
+            @test !("target" in RustCall.CRATE_INPUT_VCS_DIRS_ANY_LEVEL)
+            @test ".git" in RustCall.CRATE_INPUT_VCS_DIRS_ANY_LEVEL
             rm(ws; force = true, recursive = true)
+
+            # Round-four review finding (1): a module directory named
+            # src/target/ is ordinary source and must not be pruned.
+            nested_target = crate_with(mktempdir();
+                files = Dict("src/lib.rs" => "mod target;",
+                             "src/target/mod.rs" => "pub fn t() -> i32 { 1 }"))
+            _, nt_files = RustCall.crate_input_files(nested_target)
+            @test "src/target/mod.rs" in nt_files
+            dig_nt = RustCall.crate_content_digest(nested_target)
+            write(joinpath(nested_target, "src", "target", "mod.rs"), "pub fn t() -> i32 { 2 }")
+            @test RustCall.crate_content_digest(nested_target) != dig_nt
+            @test RustCall.artifact_path_dependency_digest(nested_target) !=
+                  RustCall.artifact_path_dependency_digest(bs)
+            # The root target/ is still ignored ...
+            dig_nt2 = RustCall.crate_content_digest(nested_target)
+            mkpath(joinpath(nested_target, "target", "debug"))
+            write(joinpath(nested_target, "target", "debug", "junk"), "noise")
+            @test RustCall.crate_content_digest(nested_target) == dig_nt2
+            # ... and a .git anywhere is still ignored.
+            mkpath(joinpath(nested_target, "src", ".git"))
+            write(joinpath(nested_target, "src", ".git", "HEAD"), "ref")
+            @test RustCall.crate_content_digest(nested_target) == dig_nt2
+            rm(nested_target; force = true, recursive = true)
 
             # Review finding (1) of the third round: files that a *distributable
             # package* omits are still compiled, so they must still count.
@@ -417,15 +444,38 @@ _id(; kwargs...) = RustCall.ArtifactId(;
             # by the fallback manifest reader.
             @test "../child" in RustCall._declared_path_dependencies(joinpath(parent, "Cargo.toml"))
 
+            # Round-four review finding (2): an inherited `path` is relative to
+            # the manifest that declares [workspace.dependencies], not to the
+            # member that inherits it. Joining it to the member directory would
+            # look for `member/shared`, which does not exist.
             wsroot = mktempdir()
             member = crate(joinpath(wsroot, "member"), "member", "pub fn m() {}";
                 manifest_extra = "\n[dependencies]\nshared = { workspace = true }\n")
-            crate(joinpath(wsroot, "shared"), "shared", "pub fn s() {}")
+            shared = crate(joinpath(wsroot, "shared"), "shared", "pub fn s() {}")
             write(joinpath(wsroot, "Cargo.toml"),
                 "[workspace]\nmembers = [\"member\", \"shared\"]\n" *
                 "\n[workspace.dependencies]\nshared = { path = \"shared\" }\n")
+
             inherited = RustCall._declared_path_dependencies(joinpath(member, "Cargo.toml"))
-            @test "shared" in inherited          # resolved through [workspace.dependencies]
+            @test length(inherited) == 1
+            @test realpath(only(inherited)) == realpath(shared)
+            @test !isdir(joinpath(member, "shared"))     # the naive join would miss
+
+            # The fallback collector reaches the shared crate from the member ...
+            ws_fb = String[member]
+            RustCall._collect_manifest_path_deps!(ws_fb, member, Set{String}())
+            @test realpath(shared) in Set(realpath.(ws_fb))
+
+            # ... and, forcing the fallback (no cargo resolution for a bare
+            # member of a workspace whose lock cannot be produced offline is not
+            # guaranteed, so drive the digest through the collector's own
+            # crates), editing the shared crate changes what is hashed.
+            shared_dig = RustCall.crate_content_digest(shared)
+            write(joinpath(shared, "src", "lib.rs"), "pub fn s() -> i32 { 42 }")
+            @test RustCall.crate_content_digest(shared) != shared_dig
+            member_dig = RustCall.artifact_path_dependency_digest(member)
+            write(joinpath(shared, "src", "lib.rs"), "pub fn s() -> i32 { 43 }")
+            @test RustCall.artifact_path_dependency_digest(member) != member_dig
             rm(wsroot; force = true, recursive = true)
 
             # Metadata failure is exercised: a directory with no manifest at all
@@ -535,6 +585,7 @@ _id(; kwargs...) = RustCall.ArtifactId(;
                   "CARGO_PROFILE_DEV_OPT_LEVEL", "CARGO_BUILD_RUSTFLAGS",
                   "CARGO_BUILD_TARGET", "CARGO_CFG_TARGET_FEATURE",
                   "CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER",
+                  "RUSTC_WORKSPACE_WRAPPER",
                   "RUSTDOCFLAGS", "RUSTUP_TOOLCHAIN",
                   "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
                   "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER")
@@ -573,6 +624,23 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         @test first.(scanned) ==
               ["CARGO_BUILD_TARGET", "CARGO_PROFILE_RELEASE_OPT_LEVEL", "RUSTFLAGS"]
         @test scanned == RustCall.artifact_build_env(; env = scan_env)
+
+        # Round-four review finding (3): RUSTC_WORKSPACE_WRAPPER sits between
+        # Cargo and rustc exactly like RUSTC_WRAPPER and must be captured.
+        @test "RUSTC_WORKSPACE_WRAPPER" in RustCall.ARTIFACT_BUILD_ENV_NAMES
+        @test "RUSTC_WRAPPER" in RustCall.ARTIFACT_BUILD_ENV_NAMES
+        wrapper_env = Dict("RUSTC_WORKSPACE_WRAPPER" => "/usr/bin/sccache")
+        wrapper_snap = RustCall.artifact_build_env(; env = wrapper_env)
+        @test first.(wrapper_snap) == ["RUSTC_WORKSPACE_WRAPPER"]
+        @test RustCall.artifact_key(_id(kind = "cargo", build_env = wrapper_snap)) !=
+              RustCall.artifact_key(_id(kind = "cargo",
+                  build_env = RustCall.artifact_build_env(; env = Dict{String, String}())))
+        # ... and it is part of the identity of the compiler that runs, too.
+        if !occursin("rustc=unknown", (try RustCall.artifact_compiler_identity() catch; "rustc=unknown" end))
+            ident = RustCall.artifact_compiler_identity()
+            @test occursin("rustc_wrapper=", ident)
+            @test occursin("rustc_workspace_wrapper=", ident)
+        end
 
         # Changing any captured variable changes the key.
         base_env = Dict("RUSTFLAGS" => "-C opt-level=2")
