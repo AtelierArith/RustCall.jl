@@ -31,6 +31,7 @@ cd deps/juliacall_macros && cargo test --all-features
 # Lints run in CI
 bash scripts/lint_interpolation.sh src
 bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax with regexes
+bash scripts/lint_artifact_identity.sh src  # artifact identity only via src/artifact_id.jl
 ```
 
 ## Architecture
@@ -40,7 +41,7 @@ bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax 
 - `deps/rustcall_core` — `syn`-based core: FFI manifest model (`manifest.rs`), extraction (`extract.rs`), inline expansion of `#[julia]` items (`expand.rs`), wrapper codegen for both the proc-macro and inline flavours (`codegen.rs`), AST-level generic instantiation (`specialize.rs`). Golden tests in `tests/corpus/`.
 - `deps/rustcall_extract` — the `rustcall-extract` CLI (`manifest`, `expand`, `specialize` subcommands; `--cfg-file` takes `rustc --print cfg` so `#[cfg]`-disabled items are dropped). Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
 - `deps/juliacall_macros` — thin proc-macro wrapper over `rustcall_core::codegen` for `@rust_crate` crates.
-- `src/manifest.jl` — runs the CLI, validates `schema_version`, converts the TOML manifest into `RustFunctionSignature` / `RustStructInfo` / `RustMethod`, and computes `toolchain_fingerprint()` (extractor digest + core sources + rustc/cargo versions) that is part of every cache key.
+- `src/manifest.jl` — runs the CLI, validates `schema_version`, converts the TOML manifest into `RustFunctionSignature` / `RustStructInfo` / `RustMethod`, and computes `toolchain_fingerprint()` (extractor digest + core sources + `artifact_compiler_identity()`) that is part of every cache key.
 - Do not add regexes over Rust source in `src/`; `scripts/lint_rust_syntax_regex.sh` fails CI. Allowlisted: `$var` interpolation in `@irust` (`ruststr.jl`), the `// cargo-deps:` DSL (`dependencies.jl`), and the brace-count hint in `exceptions.jl` (diagnostics only).
 
 ### Compilation pipeline
@@ -49,7 +50,15 @@ bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax 
 2. `src/compiler.jl` invokes `rustc` to produce shared libraries or LLVM IR
 3. `src/codegen.jl` generates `ccall` expressions; `src/llvmcodegen.jl` / `src/llvmintegration.jl` handle the LLVM IR path (deprecated, see #265)
 4. `src/rustmacro.jl` expands `@rust` and `@irust` into the appropriate call mechanism
-5. `src/cache.jl` provides SHA256-based caching of compiled artifacts to avoid recompilation
+5. `src/cache.jl` provides caching of compiled artifacts, namespaced by `CACHE_FORMAT_VERSION` (`~/.julia/compiled/vX.Y/RustCall/v2`)
+
+### Artifact identity is computed in exactly one place (issue #278)
+
+- `src/artifact_id.jl` — `ArtifactId` (the exhaustive record) and `artifact_key` (its SHA-256 over a netstring-framed, injective encoding). Every cache key, library name and temporary project name in the package derives from it: `generate_cache_key` / `_rustc_block_identity` (direct rustc), `_cargo_block_id` / `_cargo_block_identity` / `build_cargo_project_cached` (Cargo), `_monomorphization_id` (generics), `compute_crate_hash` (`@rust_crate`), `@irust`.
+- `artifact_short_id` is the **only** truncation, and only for names a human reads. Lookup keys are the full 64-hex digest.
+- `artifact_compiler_identity()` names the `rustc`/`cargo` `RustToolChain` resolves — never a bare `rustc` on `PATH` — and raises when it cannot (#252). `toolchain_fingerprint()` stays total and folds it in.
+- Path dependencies are hashed by content, memoized on file stats; a block with no `path =` dependency never spawns `cargo tree`.
+- Do not concatenate key material, truncate a digest, or name an artifact with Julia's randomized `hash()` outside `src/artifact_id.jl`; `scripts/lint_artifact_identity.sh` fails CI.
 
 ### Type system and runtime
 

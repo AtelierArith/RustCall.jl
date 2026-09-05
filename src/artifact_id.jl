@@ -1,15 +1,27 @@
 # Artifact identity — one record, one hash function.
 #
 # Background: issue #278. "Which compiled artifact corresponds to this request?"
-# is currently answered independently at eight call sites, each with its own
-# component list, its own concatenation format and its own truncation. That is
+# used to be answered independently at twelve call sites, each with its own
+# component list, its own concatenation format and its own truncation. That was
 # the structural cause of #247 (lossy monomorphization key), #252 (the `rustc`
 # in the key is not the `rustc` that compiles) and of the repeated Cargo cache
 # patches (dependency set, then build environment).
 #
-# This file is Phase A of the fix and is deliberately ADDITIVE: it introduces
-# the record and the hash function, but no call site has been migrated yet.
-# Phase B replaces the eight ad-hoc formulas with `artifact_key`.
+# Since Phase B this file is the only place identity is computed. Every key,
+# library name and temporary project name in the package comes from
+# `artifact_key` / `artifact_short_id`:
+#
+#   direct rustc    `generate_cache_key`, `_rustc_block_identity` (src/cache.jl,
+#                   src/ruststr.jl) — one value for the disk key and the name
+#   Cargo           `_cargo_block_id`, `_cargo_block_identity`,
+#                   `build_cargo_project_cached`
+#   generics        `_monomorphization_id` (src/generics.jl)
+#   crate bindings  `compute_crate_hash` (src/crate_bindings.jl)
+#   @irust          `_compile_and_call_irust` (src/ruststr.jl)
+#
+# `scripts/lint_artifact_identity.sh` keeps it that way: no other file in src/
+# may concatenate key material, truncate a digest, or name an artifact with
+# Julia's session-randomized `hash()`.
 #
 # Design rules encoded here:
 #
@@ -211,11 +223,13 @@ Identity of the toolchain that actually compiles: the `--version` strings of
 `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` standing between Cargo and rustc,
 since a wrapper changes what is produced.
 
-This is deliberately *not* `_get_rustc_version()` in `src/cache.jl`, which
-shells out to a bare `rustc` from `PATH` and degrades to `"unknown"`; upgrading
-the real toolchain then need not invalidate anything (#252). Here a version that
-cannot be determined throws a `RustError` instead, because an
-unidentifiable compiler cannot produce a trustworthy cache key.
+This deliberately replaced `_get_rustc_version()` (deleted from `src/cache.jl`
+in #278 Phase B), which shelled out to a bare `rustc` from `PATH` and degraded
+to the string `"unknown"`, so upgrading the real toolchain need not invalidate
+anything (#252). Here a version that cannot be determined throws a `RustError`
+instead, because an unidentifiable compiler cannot produce a trustworthy cache
+key. `toolchain_fingerprint` catches that and stays total; the paths about to
+compile do not.
 
 The result is memoized for the session.
 """
@@ -390,10 +404,10 @@ distinct specs can never collapse onto the same string.
 # How each kind of dependency is identified
 
 - **Registry** dependencies: name, version requirement and feature set. The
-  *resolved* version from `Cargo.lock` is deliberately out of scope for Phase A
-  (see #256); folding lockfile resolution into the key is a Phase B item.
+  *resolved* version from `Cargo.lock` is deliberately out of scope (see #256);
+  folding lockfile resolution into the key is tracked there.
 - **Git** dependencies: name and the git URL (plus rev/branch/tag when the spec
-  carries them). Resolving a floating branch to a commit is likewise Phase B.
+  carries them). Resolving a floating branch to a commit is likewise #256.
 - **Local path** dependencies: a content digest of the crate's inputs (see
   `artifact_path_dependency_digest`), **not** the path text. Editing a
   local dependency's sources therefore changes the key, while moving the
@@ -556,10 +570,9 @@ results obtained different ways can never collide.
     `#[path = "../../elsewhere/mod.rs"]` module, an `include_str!("../data")` or
     an `include_bytes!` of a file above the package root is compiled into the
     binary and will **not** change this digest. The only complete answer is
-    Cargo's own fingerprint, which this cannot reimplement. Phase B of #278 must
-    therefore treat this digest as a *rebuild* trigger and never as a proof of
-    freshness: a change means stale, but no change does not by itself license
-    reuse.
+    Cargo's own fingerprint, which this cannot reimplement. This digest is
+    therefore a *rebuild* trigger and never a proof of freshness: a change means
+    stale, but no change does not by itself license reuse.
 
 A path that does not exist is recorded as such rather than silently ignored, and
 the function never throws.
@@ -930,10 +943,10 @@ end
 Build the `type_params` field from the **declared** parameter names and the
 concrete types bound to them, preserving declaration order.
 
-This is the ordered replacement for the sorted-values key at
-`src/generics.jl:191-193`: sorting the values discards which parameter got which
-type, so `Dict(:T => Int32, :U => Int64)` and `Dict(:T => Int64, :U => Int32)`
-produce the same monomorphization key today (#247).
+This is the ordered replacement for the sorted-values key `src/generics.jl` used
+before #278 Phase B: sorting the values discards which parameter got which type,
+so `Dict(:T => Int32, :U => Int64)` and `Dict(:T => Int64, :U => Int32)` produced
+the same monomorphization key (#247).
 """
 function artifact_type_params(names, types)::Vector{Pair{String, String}}
     names_v = collect(names)
@@ -982,9 +995,9 @@ cache directory name, or be logged.
 Build-script inputs (`CC`, `CFLAGS`, `PKG_CONFIG_PATH`, …) are a second,
 separately documented allowlist: see `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`.
 
-This mirrors the environment-capture design PR #272 introduces in
-`src/manifest.jl`. That PR is not on `main` yet, so the rule is implemented here
-independently; Phase B of #278 unifies the two into this one place.
+`src/manifest.jl` keeps its own, narrower `_is_cargo_env_key` allowlist for the
+*cfg probe* snapshot that is embedded in generated code and replayed for a
+rebuild; this list is the one that reaches artifact keys. Extend this one.
 """
 const ARTIFACT_BUILD_ENV_PREFIXES = String[
     "CARGO_BUILD_",
@@ -1031,10 +1044,9 @@ spelling, which `cc-rs` also accepts, is covered by the prefixes.
 !!! note "Best effort by construction"
     No allowlist can be complete: a build script may read any variable it
     likes, and the only exhaustive answer is Cargo's own fingerprint. This set
-    is therefore a safety net, not a proof. Phase B of #278 must treat a change
-    in the captured set as **rebuild**, never as grounds to reuse an artifact —
-    a captured variable that changed means "stale", while an unchanged captured
-    set does not by itself prove "fresh".
+    is therefore a safety net, not a proof: a change in the captured set means
+    **rebuild**, while an unchanged captured set does not by itself prove
+    "fresh".
 """
 const ARTIFACT_BUILD_SCRIPT_ENV_NAMES = String[
     "AR", "ASFLAGS", "CC", "CFLAGS", "CPPFLAGS", "CXX", "CXXFLAGS",

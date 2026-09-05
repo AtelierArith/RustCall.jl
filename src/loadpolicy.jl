@@ -425,8 +425,10 @@ generics_policy() = LoadPolicy("generics-monomorphization";
 """
     irust_policy() -> LoadPolicy
 
-`@irust` snippet compilation (`src/ruststr.jl:822`, registered at `:837` under
-an `irust_<hash>` key together with the `IRUST_FUNCTIONS` entry).
+`@irust` snippet compilation, registered under an `irust_<artifact_short_id>`
+key together with the `IRUST_FUNCTIONS` entry. Since #278 the snippet's identity
+is `artifact_key` of an `ArtifactId` over the source and the argument types it
+is compiled for; it used to be Julia's session-randomized `hash`.
 """
 irust_policy() = LoadPolicy("irust";
     dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
@@ -436,8 +438,8 @@ irust_policy() = LoadPolicy("irust";
     registry_key_kind = :irust_hash,
     sets_current_lib = false,
     finalizer_frees = false,
-    call_sites = ["src/ruststr.jl:822", "src/ruststr.jl:837"],
-    issues = [250],
+    call_sites = ["src/ruststr.jl (_compile_and_call_irust)"],
+    issues = [250, 278],
     notes = "RTLD_GLOBAL for a leaf artifact; IRUST_FUNCTIONS is updated in " *
             "the same locked block but is not part of any unload path.")
 

@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **One artifact identity** ([#278](https://github.com/AtelierArith/RustCall.jl/issues/278),
+  Phase B). Twelve places answered "which compiled artifact corresponds to this
+  request?", each with its own component list, its own concatenation format and
+  its own truncation. Every one of them now builds a `RustCall.ArtifactId` and
+  calls `artifact_key` (`src/artifact_id.jl`). Five user-visible consequences:
+
+  - **The cache directory is now `.../RustCall/v2`.** `CACHE_FORMAT_VERSION = 2`
+    namespaces the on-disk layout, and `get_metadata_dir()` /
+    `get_cargo_cache_dir()` nest under it. Nothing is silently served from the
+    old layout; `clear_cache()` and `cleanup_old_cache()` sweep older `v*`
+    siblings and the unversioned pre-#278 tree best effort. A *newer* sibling is
+    left alone.
+  - **Every on-disk key changes value**, so the first build after upgrading
+    recompiles. Keys are the full 64-hex digest now: truncation happens only in
+    `artifact_short_id`, and only for names a human reads (library names,
+    temporary Cargo project directories, log lines).
+  - **A missing toolchain is an error on compile paths.** `_get_rustc_version()`
+    (a bare `rustc` from `PATH`, degrading to the string `"unknown"`) and
+    `_get_cargo_version()` are deleted; keys name the compiler
+    `RustToolChain.rustc()` / `cargo()` resolves to
+    (`RustCall.artifact_compiler_identity()`), and an unidentifiable compiler
+    raises `RustError` instead of caching everything under one sentinel
+    ([#252](https://github.com/AtelierArith/RustCall.jl/issues/252)).
+    `toolchain_fingerprint()` itself stays total.
+  - **Monomorphized names changed.** A specialization is now
+    `<name>_<types in declaration order>_<8 hex>` and its library is
+    `rust_generic_<16 hex>`. The old key sorted the type *values*, so
+    `pair<T=i32, U=i64>` and `pair<T=i64, U=i32>` shared one cache entry and the
+    second call ran the first one's machine code
+    ([#247](https://github.com/AtelierArith/RustCall.jl/issues/247)); each
+    instantiation also used to register under one colliding `RUST_LIBRARIES`
+    key.
+  - **`RustBlockSnapshot` has an `artifact_schema` field** (defaulted by an
+    inner constructor). A snapshot from an older RustCall is recomputed and then
+    aliased, never an error.
+
 - **One FFI type contract** ([#276](https://github.com/AtelierArith/RustCall.jl/issues/276)).
   Five independent tables decided "what does this Rust type mean at the C
   boundary?", and they disagreed with each other. Every call site now reads
@@ -46,6 +82,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `<Struct>_free_rust_string`, as the inline path already did; it used to be
     read as `Any` and leaked
     ([#246](https://github.com/AtelierArith/RustCall.jl/issues/246)).
+
+### Changed
+- Cargo-backed blocks fold the **effective Cargo configuration** into the key:
+  the project-local `.cargo/config.toml` chain Cargo searches, not only
+  `$CARGO_HOME/config.toml` (`RustCall._cargo_config_digest(env; dir)`).
+- Local **path dependencies are identified by content**, so editing one rebuilds
+  while moving the checkout does not. The resolved dependency graph is memoized
+  on the crate's `Cargo.toml`/`Cargo.lock` stats and file contents on
+  `(path, mtime, size)`, and a block that declares no `path =` dependency never
+  resolves a graph at all — a warm `rust"""` re-evaluation spawns no
+  `cargo tree`.
+- `build_cargo_project_cached(project, id::ArtifactId; ...)` takes the artifact
+  identity instead of a code-hash string.
+- `generate_cache_key` and `is_cache_valid` take a `cfg_text` keyword, so the
+  disk key and the in-memory library name of a `rust"""` block are one value.
+- New CI lint: `scripts/lint_artifact_identity.sh` fails when Julia source
+  outside `src/artifact_id.jl` concatenates key material, truncates a digest, or
+  names an artifact with Julia's session-randomized `hash()`.
+
 
 ### Deprecated
 - `call_rust_function_infer` guessed the **return** type from the type of the

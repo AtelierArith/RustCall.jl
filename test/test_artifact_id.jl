@@ -1,14 +1,13 @@
-# Tests for the single artifact-identity function (issue #278, Phase A).
+# Tests for the single artifact-identity function (issue #278).
 #
 # Two kinds of tests live here:
 #
-# 1. Tests of the new `ArtifactId` / `artifact_key` machinery: injectivity,
-#    order sensitivity of type parameters, toolchain sensitivity.
-# 2. Tests that *document the current defects* of the eight ad-hoc cache-key
-#    sites. Those assert today's (wrong) behaviour on purpose, with the issue
-#    number in a comment, so that Phase B — which migrates the call sites onto
-#    `artifact_key` — turns them into regression tests by flipping the
-#    assertion. Nothing here changes existing behaviour.
+# 1. Tests of the `ArtifactId` / `artifact_key` machinery: injectivity, order
+#    sensitivity of type parameters, toolchain sensitivity, memoization.
+# 2. Regression tests for the defects the twelve ad-hoc key formulas caused.
+#    In Phase A these asserted the *wrong* behaviour on purpose, marked
+#    `DEFECT #<issue>`; Phase B migrated the call sites and flipped them, so
+#    they are named `FIXED #<issue>` and assert the property instead.
 
 using RustCall
 using SHA: sha256
@@ -764,6 +763,16 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         @test length(RustCall.artifact_short_id(key, 12)) == 12
         @test_throws ArgumentError RustCall.artifact_short_id(key, 0)
         @test_throws ArgumentError RustCall.artifact_short_id(key, 65)
+
+        # And the grep-style rule itself holds on this tree: no file outside
+        # src/artifact_id.jl concatenates key material, truncates a digest, or
+        # names an artifact with Julia's session-randomized `hash()`.
+        lint = joinpath(pkgdir(RustCall), "scripts", "lint_artifact_identity.sh")
+        @test isfile(lint)
+        if !Sys.iswindows() && Sys.which("bash") !== nothing
+            @test success(pipeline(`bash $lint $(joinpath(pkgdir(RustCall), "src"))`;
+                                   stdout = devnull, stderr = devnull))
+        end
 
         # The migrated adapters all return the full digest.
         compiler = RustCall.RustCompiler(optimization_level = 2)

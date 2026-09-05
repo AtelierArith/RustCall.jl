@@ -301,7 +301,7 @@ signature_for(code, name; mode = "inline") = only(
                 try
                     RustCall.is_generic_function("concurrent_$(t)_$(i)")
                     lock(RustCall.REGISTRY_LOCK) do
-                        haskey(RustCall.IRUST_FUNCTIONS, UInt64(t * 1000 + i))
+                        haskey(RustCall.IRUST_FUNCTIONS, "concurrent_$(t)_$(i)")
                     end
                 catch
                     Threads.atomic_add!(errors, 1)

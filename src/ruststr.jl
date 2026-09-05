@@ -10,7 +10,7 @@ const RUST_LIBRARIES = Dict{String, Tuple{Ptr{Cvoid}, Dict{String, Ptr{Cvoid}}}}
 Registry for loaded RustModules (LLVM IR).
 Maps code hash to RustModule.
 """
-const RUST_MODULE_REGISTRY = Dict{UInt64, RustModule}()
+const RUST_MODULE_REGISTRY = Dict{String, RustModule}()
 
 """
 Current active library name.
@@ -805,11 +805,35 @@ end
 """
     get_rust_module(code::String) -> Union{RustModule, Nothing}
 
-Get the RustModule for a given code string, if available.
+Get the `RustModule` recorded for a given code string, if available.
+
+Keyed by the library name the direct-`rustc` path derives for that source
+(`_rustc_block_identity` through `artifact_short_id`), so the registry and the
+libraries it describes agree. It used to be keyed by Julia's `hash`, which is
+randomized per session and could therefore never match the `rust_<short id>`
+names the compilation path produces.
 """
 function get_rust_module(code::String)
-    code_hash = hash(wrap_rust_code(code))
-    return get(RUST_MODULE_REGISTRY, code_hash, nothing)
+    key = try
+        _rust_module_key(code)
+    catch
+        return nothing
+    end
+    return lock(REGISTRY_LOCK) do
+        get(RUST_MODULE_REGISTRY, key, nothing)
+    end
+end
+
+"""
+    _rust_module_key(code::AbstractString) -> String
+
+The `RUST_MODULE_REGISTRY` key for a block of source: the same library name the
+direct-`rustc` path registers it under.
+"""
+function _rust_module_key(code::AbstractString)
+    compiler = get_default_compiler()
+    key = _rustc_block_identity(wrap_rust_code(String(code)), compiler, nothing)
+    return "rust_$(artifact_short_id(key))"
 end
 
 """
@@ -830,16 +854,11 @@ List all exported functions in a loaded library.
 Note: This uses the LLVM IR module if available, otherwise returns an empty list.
 """
 function list_library_functions(lib_name::String)
-    # Try to find the corresponding RustModule
-    for (hash, mod) in RUST_MODULE_REGISTRY
-        # Check if this module corresponds to the library
-        mod_lib_name = "rust_$(string(hash, base=16))"
-        if mod_lib_name == lib_name
-            return list_functions(mod)
-        end
+    mod = lock(REGISTRY_LOCK) do
+        get(RUST_MODULE_REGISTRY, lib_name, nothing)
     end
-
-    return String[]
+    mod === nothing && return String[]
+    return list_functions(mod)
 end
 
 """
@@ -891,7 +910,7 @@ end
 Registry for irust functions.
 Maps function hash to (library name, function name).
 """
-const IRUST_FUNCTIONS = Dict{UInt64, Tuple{String, String}}()
+const IRUST_FUNCTIONS = Dict{String, Tuple{String, String}}()
 
 """
     @irust(code, args...)
@@ -1034,10 +1053,21 @@ This function provides improved error messages for:
 """
 function _compile_and_call_irust(code::String, args...)
     try
-        # Generate a unique function name based on code and argument types
+        # The identity of this snippet: the source and the argument types it is
+        # being compiled for, through the one identity function (#278). Julia's
+        # `hash` is randomized per session, so a name derived from it could
+        # never be matched again — the rule at the top of src/cache.jl.
         arg_types = collect(map(typeof, args))  # Vector{Type}
-        code_hash = hash((code, Tuple(arg_types)))  # Use Tuple for hash consistency
-        func_name = "irust_func_$(string(code_hash, base=16))"
+        compiler = get_default_compiler()
+        code_hash = artifact_key(ArtifactId(
+            kind = "irust",
+            source = code,
+            type_params = artifact_type_params(
+                ["arg$(i)" for i in eachindex(arg_types)], arg_types),
+            target_triple = compiler.target_triple,
+            codegen = artifact_codegen_options(compiler),
+        ))
+        func_name = "irust_func_$(artifact_short_id(code_hash))"
 
         # Infer Rust types from Julia types (needed for both cached and new functions)
         rust_arg_types = collect(map(_julia_to_rust_type, arg_types))
@@ -1072,7 +1102,6 @@ function _compile_and_call_irust(code::String, args...)
 
         # Compile and load
         wrapped_code = wrap_rust_code(rust_func_code)
-        compiler = get_default_compiler()
 
         local lib_path
         try
@@ -1105,7 +1134,7 @@ function _compile_and_call_irust(code::String, args...)
         end
 
         # Generate a unique library name and register under lock
-        lib_name = "irust_$(string(code_hash, base=16))"
+        lib_name = "irust_$(artifact_short_id(code_hash))"
         lock(REGISTRY_LOCK) do
             RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
             IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)

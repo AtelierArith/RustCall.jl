@@ -13,7 +13,7 @@
 - **Type mapping**: Automatic conversion between Rust and Julia types
 - **Result/Option support**: Handle Rust's `Result<T, E>` and `Option<T>` types
 - **String support**: Pass Julia strings to Rust functions expecting C strings
-- **Compilation caching**: SHA256-based caching system for compiled libraries
+- **Compilation caching**: one artifact identity (`RustCall.ArtifactId` / `artifact_key`) keys every cached library, so a changed source, compiler, cfg set, dependency or toolchain rebuilds and nothing else does
 
 ### Phase 2: Runtime and Ownership ✅
 - **`@rust_llvm` macro**: Deprecated. The LLVM IR integration path is scheduled for removal because it has no benefit over `@rust` and rustc's LLVM IR no longer matches Julia's LLVM ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265))
