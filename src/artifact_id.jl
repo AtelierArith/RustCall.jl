@@ -446,18 +446,29 @@ end
 # Memoization (issue #278 §8)
 #
 # `artifact_path_dependency_digest` is on the hot path of every Cargo-backed
-# `rust"""` evaluation, and it both spawns `cargo tree` and reads every file of
-# every local crate. A warm no-op re-evaluation must pay neither.
+# `rust"""` evaluation, and it spawns `cargo tree`. A warm no-op re-evaluation
+# must not pay for that.
 #
-# Two caches, both stat-validated so an edit is still noticed:
+# Exactly one thing is cached, and it is the process spawn: the resolved
+# dependency *graph*. File contents are **never** cached — every call reads and
+# hashes every input byte.
 #
-#   * the resolved *graph* (`local_path_dependency_dirs`) is keyed on the
-#     crate's `Cargo.toml` and `Cargo.lock` stats — the two files that decide
-#     it. This is what removes the `cargo tree` process spawn.
-#   * per-file *contents* are keyed on `(path, mtime, size)`. The directory walk
-#     and its stat calls still happen on every call, so editing a source file of
-#     any local crate still changes the digest; only re-reading unchanged bytes
-#     is avoided.
+# That asymmetry is deliberate. A `(mtime, size)` stamp is a fine invalidation
+# hint and a terrible identity: a coarse-timestamp filesystem, a tool that
+# preserves metadata, or a same-length edit inside one timestamp tick all alias
+# distinct contents, and the consequence here is not a slow rebuild but running
+# machine code compiled from source that no longer exists. Measured on the
+# largest real crate tree to hand (142 files, 6 MB), reading and hashing every
+# byte costs ~13 ms against ~0.3 ms to stat them — nothing next to the hundreds
+# of milliseconds a `cargo tree` spawn costs, which is what §8 of #278 was
+# actually about.
+#
+# The graph cache is validated against the `Cargo.toml` / `Cargo.lock` stamps of
+# **every** crate in the cached graph, not only the root's: a transitive local
+# crate that grows a new path dependency changes its own manifest while the
+# root's files stay untouched, and missing that would drop a crate from the key
+# permanently. A stamp is only ever a *rebuild trigger* here — re-resolving a
+# graph that had not really changed costs one process spawn.
 #
 # The whole computation is skipped when a block declares no `path =` dependency:
 # `artifact_dependency_strings` only asks for a digest when a spec carries one.
@@ -465,30 +476,27 @@ end
 
 const _ARTIFACT_DIGEST_LOCK = ReentrantLock()
 
-# canonical crate dir => (stamp, (strategy, dirs))
+# canonical crate dir => (manifest stamps of every crate in the graph,
+#                          (strategy, dirs))
 const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}()
-# file path => ((mtime, size), sha-256 of the contents)
-const _FILE_CONTENT_DIGEST_CACHE = Dict{String, Tuple{Tuple{Float64, Int64}, String}}()
 
 """
     CARGO_TREE_INVOCATIONS
 
 How many times `cargo tree` has been spawned this session. A test hook for the
-performance requirement of #278: a warm `rust\"\"\"` re-evaluation must not
-shell out to Cargo.
+performance requirement of #278.
 """
 const CARGO_TREE_INVOCATIONS = Ref(0)
 
 """
     _artifact_reset_digest_caches!()
 
-Forget the memoized dependency graphs and file digests. For tests that mutate a
-crate directory faster than the filesystem's timestamp resolution can show.
+Forget the memoized dependency graphs. Nothing else is memoized, so this only
+ever forces a re-resolution.
 """
 function _artifact_reset_digest_caches!()
     lock(_ARTIFACT_DIGEST_LOCK) do
         empty!(_PATH_DEP_GRAPH_CACHE)
-        empty!(_FILE_CONTENT_DIGEST_CACHE)
     end
     return nothing
 end
@@ -503,48 +511,48 @@ function _file_stamp(path::AbstractString)::Tuple{Float64, Int64}
     end
 end
 
-# What decides a crate's resolved local-dependency graph.
+# What decides one crate's contribution to a resolved local-dependency graph.
 _graph_stamp(dir::AbstractString) =
     (_file_stamp(joinpath(String(dir), "Cargo.toml")),
      _file_stamp(joinpath(String(dir), "Cargo.lock")))
 
-"""
-    _file_content_digest(path::AbstractString) -> String
-
-SHA-256 of one file's contents, memoized on `(path, mtime, size)`. An
-unreadable file gets a marker digest rather than an exception, so a crate whose
-permissions changed still produces a (different) key.
-"""
-function _file_content_digest(path::AbstractString)::String
-    path = String(path)
-    stamp = _file_stamp(path)
-    hit = lock(_ARTIFACT_DIGEST_LOCK) do
-        entry = get(_FILE_CONTENT_DIGEST_CACHE, path, nothing)
-        entry !== nothing && entry[1] == stamp ? entry[2] : nothing
+# The manifest stamps of *every* crate in a resolved graph, canonical-keyed and
+# sorted so the comparison ignores the order Cargo reported them in. Stamping
+# only the root would miss a transitive crate that grows a path dependency: its
+# own `Cargo.toml` changes while the root's files do not, so the cached list
+# would keep omitting the new crate and edits to it would never reach the key.
+function _graph_stamps(dirs)
+    out = Pair{String, Any}[]
+    seen = Set{String}()
+    for d in dirs
+        canonical = _canonical_dir(d)
+        canonical in seen && continue
+        push!(seen, canonical)
+        push!(out, canonical => _graph_stamp(d))
     end
-    hit === nothing || return hit
-    digest = try
-        bytes2hex(open(sha256, path))
+    sort!(out; by = first)
+    return out
+end
+
+# SHA-256 of one file's contents: streamed, so hashing a large crate builds no
+# large intermediate buffer, and never memoized (see the section note above on
+# why a `(mtime, size)` stamp must not stand in for content). An unreadable file
+# gets a marker digest rather than an exception, so a crate whose permissions
+# changed still produces a different key.
+function _file_content_digest(path::AbstractString)::String
+    return try
+        bytes2hex(open(sha256, String(path)))
     catch
         "unreadable"
     end
-    lock(_ARTIFACT_DIGEST_LOCK) do
-        _FILE_CONTENT_DIGEST_CACHE[path] = (stamp, digest)
-    end
-    return digest
 end
 
 """
     _hashed_relative_path(rel::AbstractString) -> String
 
 A crate-relative path in the form that goes into a digest: forward slashes
-always, and case-folded on Windows, so the same crate keys identically whether
-its manifest, `cargo tree` or the walk spelled the path with `\\` or `/` and
-whatever case the case-insensitive filesystem returned.
-
-Used only for the bytes that are hashed. `crate_input_files` still reports the
-real relative names — lowercasing what callers read would be a lie about the
-filesystem, and it is `crate_content_digest` that needs the normal form.
+always, case-folded on Windows. Used only for hashed bytes;
+`crate_input_files` still reports the real relative names.
 """
 function _hashed_relative_path(rel::AbstractString)::String
     normalized = replace(String(rel), '\\' => '/')
@@ -633,11 +641,9 @@ SHA-256 over one crate directory: the sorted relative path and a content digest
 of every file `crate_input_files` reports, netstring-framed. Location
 independent; see `artifact_path_dependency_digest`.
 
-Per-file *digests* rather than raw bytes, so the result is memoizable
-(`_file_content_digest` re-reads a file only when its `(mtime, size)` changed)
-and the intermediate buffer stays small for a large crate. The digest of a file
-is netstring-framed exactly like the contents were, so the encoding remains
-injective.
+Per-file *digests* rather than raw bytes, netstring-framed exactly as the
+contents were, so the encoding stays injective and the intermediate buffer stays
+small. Every byte is read on every call; file contents are never memoized.
 """
 function crate_content_digest(dir::AbstractString)::String
     io = IOBuffer()
@@ -753,13 +759,15 @@ never collide with one found the other.
 """
 function local_path_dependency_dirs(root::AbstractString)
     root = String(root)
-    # Memoized on the two files that decide the resolved graph, so a warm
-    # re-evaluation spawns no `cargo tree` (#278 §8).
+    # Memoized so a warm re-evaluation spawns no `cargo tree` (#278 §8), and
+    # validated against the manifests of *every* crate in the cached graph, not
+    # only the root's — see `_graph_stamps`.
     canonical = _canonical_dir(root)
-    stamp = _graph_stamp(root)
     hit = lock(_ARTIFACT_DIGEST_LOCK) do
         entry = get(_PATH_DEP_GRAPH_CACHE, canonical, nothing)
-        entry !== nothing && entry[1] == stamp ? entry[2] : nothing
+        entry === nothing && return nothing
+        stamps, result = entry
+        stamps == _graph_stamps(result[2]) ? result : nothing
     end
     hit === nothing || return hit
     result = _local_path_dependency_dirs_uncached(root)
@@ -768,7 +776,7 @@ function local_path_dependency_dirs(root::AbstractString)
     # as the build that follows would), and stamping before would invalidate the
     # entry we just filled on every single call.
     lock(_ARTIFACT_DIGEST_LOCK) do
-        _PATH_DEP_GRAPH_CACHE[canonical] = (_graph_stamp(root), result)
+        _PATH_DEP_GRAPH_CACHE[canonical] = (_graph_stamps(result[2]), result)
     end
     return result
 end

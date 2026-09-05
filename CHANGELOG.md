@@ -88,11 +88,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the project-local `.cargo/config.toml` chain Cargo searches, not only
   `$CARGO_HOME/config.toml` (`RustCall._cargo_config_digest(env; dir)`).
 - Local **path dependencies are identified by content**, so editing one rebuilds
-  while moving the checkout does not. The resolved dependency graph is memoized
-  on the crate's `Cargo.toml`/`Cargo.lock` stats and file contents on
-  `(path, mtime, size)`, and a block that declares no `path =` dependency never
-  resolves a graph at all — a warm `rust"""` re-evaluation spawns no
-  `cargo tree`.
+  while moving the checkout does not. Every byte of every input is read on every
+  call — file contents are never memoized, because a `(mtime, size)` stamp can
+  alias distinct contents and the cost of being wrong is running the wrong
+  machine code. What *is* memoized is the resolved dependency graph (the
+  `cargo tree` process spawn), validated against the `Cargo.toml`/`Cargo.lock`
+  stamps of **every** crate in it; and a block that declares no `path =`
+  dependency never resolves a graph at all, so a warm `rust"""` re-evaluation
+  spawns no `cargo tree`.
 - `build_cargo_project_cached(project, id::ArtifactId; ...)` takes the artifact
   identity instead of a code-hash string.
 - `generate_cache_key` and `is_cache_valid` take a `cfg_text` keyword, so the

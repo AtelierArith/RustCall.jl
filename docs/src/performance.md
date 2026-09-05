@@ -31,6 +31,12 @@ RustCall.jl automatically caches compiled Rust libraries. This eliminates the ne
   tree rather than serving or deleting the old one, and
   `RustCall.sweep_stale_cache_formats()` (called by `clear_cache` and
   `cleanup_old_cache`) removes older siblings best effort.
+- **Cost**: every input byte is read and hashed on every key computation —
+  file contents are never memoized, because a `(mtime, size)` stamp can alias
+  distinct contents and the cost of being wrong is running machine code built
+  from source that no longer exists. Only the resolved Cargo dependency graph is
+  cached (that is the expensive part: a `cargo tree` process spawn), and it is
+  invalidated by a manifest change in *any* crate of that graph.
 - **Truncation**: keys are never truncated. `RustCall.artifact_short_id` is the
   only truncation in the design and exists solely for names a human reads —
   library names, temporary Cargo project directories, log lines.

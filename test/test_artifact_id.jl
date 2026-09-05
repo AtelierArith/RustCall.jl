@@ -830,6 +830,124 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
     end
 
+    @testset "A same-length edit under an unchanged mtime still rebuilds (#287 review)" begin
+        # A `(mtime, size)` stamp is a fine invalidation hint and a terrible
+        # identity: a coarse-timestamp filesystem, a metadata-preserving tool,
+        # or a same-length edit inside one timestamp tick all alias distinct
+        # contents. Here the consequence would be running machine code compiled
+        # from source that no longer exists, so file contents are never
+        # memoized — every call reads every byte.
+        dir = mktempdir()
+        try
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"),
+                  "[package]\nname = \"alias_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+            src = joinpath(dir, "src", "lib.rs")
+            original = "pub fn f() -> i32 { 1 }\n"
+            replacement = "pub fn f() -> i32 { 2 }\n"
+            @test length(original) == length(replacement)   # same size, by construction
+
+            # Nothing memoizes file contents, so nothing *can* alias them.
+            @test !isdefined(RustCall, :_FILE_CONTENT_DIGEST_CACHE)
+
+            write(src, original)
+            key_before = RustCall.artifact_path_dependency_digest(dir)
+            @test RustCall.artifact_path_dependency_digest(dir) == key_before
+            digest_before = RustCall._file_content_digest(src)
+
+            # A reference file carrying the *exact* original timestamp of `src`,
+            # so it can be copied back at full precision afterwards.
+            reference = joinpath(dir, "mtime_reference")
+            write(reference, "")
+            can_restore = !Sys.iswindows() && Sys.which("touch") !== nothing &&
+                success(pipeline(`touch -r $(src) $(reference)`; stderr = devnull))
+            before_stat = (mtime(src), filesize(src))
+
+            # Different bytes, same length; then the original mtime restored, so
+            # the `(mtime, size)` pair a stamp would see is byte-for-byte what
+            # it was — the exact aliasing Codex flagged.
+            write(src, replacement)
+            @test filesize(src) == before_stat[2]
+            if can_restore
+                run(pipeline(`touch -r $(reference) $(src)`; stderr = devnull))
+                @test (mtime(src), filesize(src)) == before_stat   # indistinguishable by stat
+            else
+                @info "same-length alias probe: cannot restore mtime here; " *
+                      "the contents assertion below still holds"
+            end
+
+            # The graph is still cached (no manifest changed) and no cache was
+            # reset — the *contents* are re-read regardless, so the key moves.
+            @test RustCall._file_content_digest(src) != digest_before
+            @test RustCall.artifact_path_dependency_digest(dir) != key_before
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "A transitive manifest change re-resolves the graph (#287 review)" begin
+        # The graph cache used to be validated against the root's Cargo.toml /
+        # Cargo.lock only. A crate *inside* the graph that grows a new path
+        # dependency changes its own manifest while the root's files stay
+        # untouched, so the cached directory list would keep omitting the new
+        # crate — and edits to it would never reach the key again.
+        root = mktempdir()
+        try
+            function crate!(name, deps = "")
+                d = joinpath(root, name)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                      "\n[dependencies]\n" * deps)
+                write(joinpath(d, "src", "lib.rs"), "pub fn $(name)_f() -> i32 { 1 }\n")
+                return d
+            end
+            grand = crate!("grand")
+            child = crate!("child")
+            parent = crate!("parent", "child = { path = \"../child\" }\n")
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(parent)
+            _, dirs_before = RustCall.local_path_dependency_dirs(parent)
+            @test any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(child), dirs_before)
+            @test !any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(grand), dirs_before)
+
+            # Warm: the graph is cached, no process spawn.
+            warm = RustCall.CARGO_TREE_INVOCATIONS[]
+            @test RustCall.artifact_path_dependency_digest(parent) == key_before
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == warm
+
+            # A *transitive* crate grows a path dependency. The root's manifest
+            # and lockfile are untouched.
+            root_stamp = RustCall._graph_stamp(parent)
+            write(joinpath(child, "Cargo.toml"),
+                  "[package]\nname = \"child\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                  "\n[dependencies]\ngrand = { path = \"../grand\" }\n")
+            @test RustCall._graph_stamp(parent) == root_stamp
+
+            # ... which invalidates the cached graph and costs a re-resolution.
+            before_resolve = RustCall.CARGO_TREE_INVOCATIONS[]
+            _, dirs_after = RustCall.local_path_dependency_dirs(parent)
+            @test RustCall.CARGO_TREE_INVOCATIONS[] > before_resolve
+            @test any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(grand), dirs_after)
+
+            key_after = RustCall.artifact_path_dependency_digest(parent)
+            @test key_after != key_before
+
+            # And the new crate is now a real input: editing it changes the key.
+            write(joinpath(grand, "src", "lib.rs"), "pub fn grand_f() -> i32 { 99 }\n")
+            @test RustCall.artifact_path_dependency_digest(parent) != key_after
+
+            # Removing it again is noticed too (the child's manifest changes).
+            write(joinpath(child, "Cargo.toml"),
+                  "[package]\nname = \"child\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n")
+            _, dirs_removed = RustCall.local_path_dependency_dirs(parent)
+            @test !any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(grand), dirs_removed)
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
     @testset "Hashed relative paths are normalized" begin
         # A `\\`-spelled path and a `/`-spelled one are the same input; on
         # Windows so are two spellings that differ only in case.
