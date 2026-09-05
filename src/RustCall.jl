@@ -47,6 +47,12 @@ include("cache.jl")
 # ruststr.jl, which is resolved at call time, so it can sit right after cache.jl.
 include("loadpolicy.jl")
 
+# Artifact identity (#278, Phase A). Also right after cache.jl: it is the
+# identity layer the cache sits on and it needs nothing beyond
+# exceptions.jl/compiler.jl (both already included) at load time;
+# toolchain_fingerprint() from manifest.jl is only called at run time.
+include("artifact_id.jl")
+
 include("memory.jl")
 
 # Phase 3: External library integration
