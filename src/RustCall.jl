@@ -35,6 +35,7 @@ const REGISTRY_LOCK = ReentrantLock()
 # Include submodules in order of dependency
 include("types.jl")
 include("typetranslation.jl")
+include("ffi_contract.jl")
 include("compiler.jl")
 include("llvmintegration.jl")
 include("codegen.jl")

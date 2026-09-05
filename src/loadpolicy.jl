@@ -7,7 +7,7 @@
 #      and what the generated `extern "C"` boundary does about it
 #   3. whether the loaded handle is registered in `RUST_LIBRARIES`, under what
 #      kind of key, whether an existing entry is replaced or kept, and whether
-#      `CURRENT_LIB` moves                                            — 7 sites
+#      `CURRENT_LIB` moves                                            — 8 sites
 #   4. the finalizer / ownership policy of the types the artifact produces
 #
 # Because the policy lives at the call site, the same user-visible construct
@@ -87,10 +87,11 @@ every front door keeps a name.
       (`src/cargoproject.jl:126-128`), and the helper library has no profile
       section at all, so the result is *Cargo's default for the profile,
       subject to `CARGO_PROFILE_<PROFILE>_PANIC` from the environment*.
-      `build_cargo_project` (`src/cargobuild.jl:25-67`) and `deps/build.jl`
-      both `run` Cargo without `setenv`, so the Julia process environment is
-      inherited and `CARGO_PROFILE_RELEASE_PANIC=abort` silently produces an
-      aborting artifact.  Resolve it with `effective_panic_strategy`;
+      `build_cargo_project` (`src/cargobuild.jl`) runs Cargo with the Julia
+      process environment unless a captured snapshot is replayed through
+      `setenv` (the `env` keyword, #272), and `deps/build.jl` always inherits,
+      so `CARGO_PROFILE_RELEASE_PANIC=abort` silently produces an aborting
+      artifact.  Resolve it with `effective_panic_strategy`;
     * `:crate_profile` — RustCall does **not** control the build: Cargo runs in
       the *user's* crate, so the effective profile (the crate's own
       `[profile.release]`, a workspace profile, `.cargo/config.toml`, or
@@ -258,8 +259,8 @@ The generated `Cargo.toml` writes only `opt-level`/`lto`
 (`src/cargoproject.jl:126-128`) and never pins `panic`, so the strategy is
 `:cargo_default`: Cargo's release default (`unwind`) *unless*
 `CARGO_PROFILE_RELEASE_PANIC` is set in the Julia process, which
-`build_cargo_project` inherits (`src/cargobuild.jl:25-67` runs Cargo with no
-`setenv`).  Either way the direct `rustc` path aborts and this one may not, and
+`build_cargo_project` inherits (`src/cargobuild.jl` runs Cargo with the
+process environment unless a snapshot `env` is replayed, #272).  Either way the direct `rustc` path aborts and this one may not, and
 no boundary catches an unwind (#244).  Use `effective_panic_strategy` to
 resolve it; Phase B should pin `panic` in the generated manifest.
 """
@@ -579,10 +580,11 @@ Resolve `policy.panic_strategy` against the environment a build would inherit.
 - `:cargo_default` is resolved by reading `cargo_panic_env_var(policy)` out of
   the environment: `"abort"` gives `:abort`, `"unwind"` gives `:unwind`, and
   anything else — unset, empty, unrecognised — gives `:unwind`, Cargo's default
-  for the `release` profile.  Both doors that carry `:cargo_default` run Cargo
-  without `setenv` (`src/cargobuild.jl:25-67`, `deps/build.jl:97-98`), so the
-  Julia process environment reaches the build and
-  `CARGO_PROFILE_RELEASE_PANIC=abort` really does change the artifact.
+  for the `release` profile.  Both doors that carry `:cargo_default` let the
+  Julia process environment reach the build (`src/cargobuild.jl` only calls
+  `setenv` to replay a captured snapshot, #272; `deps/build.jl:97-98` never
+  does), so `CARGO_PROFILE_RELEASE_PANIC=abort` really does change the
+  artifact.
 - `:crate_profile` is returned unchanged: the environment is only one of the
   inputs there, and the user's manifest — which Phase A does not read — can
   pin `panic`.  Still unknowable without reading it.
@@ -729,9 +731,9 @@ Returns `lib_name`.  A no-op returning `lib_name` for policies that do not use
 `RUST_LIBRARIES` (`:module_local`, `:helper_slot`, `:none`), so a Phase B call
 site can call it unconditionally.
 
-Subsumes the seven open-coded `RUST_LIBRARIES[...] = (handle, Dict())` sites:
-`src/ruststr.jl:251`, `:291`, `:389`, `:426`, `:837`, `src/generics.jl:252`,
-`src/hot_reload.jl:210`.  Not called from `src/` yet (Phase A is additive).
+Subsumes the eight open-coded `RUST_LIBRARIES[...] = ...` sites:
+`src/ruststr.jl:335`, `:375`, `:483`, `:520`, `:997`, `src/generics.jl:261`,
+`src/hot_reload.jl:210`, and the reload alias `src/rustmacro.jl:166` (#272).  Not called from `src/` yet (Phase A is additive).
 """
 function register_library!(policy::LoadPolicy, lib_name::AbstractString, handle::Ptr{Cvoid})
     name = String(lib_name)
