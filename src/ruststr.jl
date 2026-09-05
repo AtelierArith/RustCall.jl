@@ -139,17 +139,14 @@ pub extern "C" fn add(a: i32, b: i32) -> i32 {
 ```
 """
 macro rust_str(code)
-    # Phase 5: Transform #[julia] attributes FIRST for macro expansion
-    # This converts #[julia] pub struct -> #[derive(JuliaStruct)] pub struct
-    transformed_code = transform_julia_attribute(code)
-
-    # Phase 4: Detect structs and generate Julia-side wrappers at macro expansion time
-    # (after #[julia] transformation so #[julia] pub struct is detected)
-    struct_infos = parse_structs_and_impls(transformed_code)
+    # The extractor expands #[julia] items and reports every signature in a
+    # manifest. Julia definitions are emitted from that manifest at macro
+    # expansion time; the expanded Rust source is compiled at run time.
+    expanded = expand_inline(String(code))
+    struct_infos = manifest_struct_infos(expanded.manifest)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
 
-    # Phase 5: Detect #[julia] attributed functions and generate wrappers
-    julia_func_signatures = parse_julia_functions(code)
+    julia_func_signatures = manifest_function_signatures(expanded.manifest)
     julia_func_wrappers = emit_julia_function_wrappers(julia_func_signatures)
 
     return quote
@@ -213,26 +210,13 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         return _compile_and_load_rust_with_cargo(code, source_file, source_line)
     end
 
-    # Phase 5: Transform #[julia] attributes FIRST
-    # - #[julia] fn -> #[no_mangle] pub extern "C" fn
-    # - #[julia] pub struct -> #[derive(JuliaStruct)] pub struct
-    transformed_code = transform_julia_attribute(code)
+    # Expand #[julia] items (functions, structs, accessors, method wrappers)
+    # ahead of rustc. The manifest describes exactly what was generated.
+    expanded = expand_inline(code)
+    manifest = expanded.manifest
 
-    # Phase 4: Detect structs and generate wrappers (after #[julia] transformation)
-    struct_infos = parse_structs_and_impls(transformed_code)
-
-    # Remove #[derive(JuliaStruct)] attributes from code before compilation
-    # (JuliaStruct is not a real Rust macro, so it would cause compilation errors)
-    cleaned_code = remove_derive_julia_struct_attributes(transformed_code)
-
-    augmented_code = cleaned_code
-    for info in struct_infos
-        augmented_code *= generate_struct_wrappers(info)
-    end
-
-    # Original implementation for dependency-free code
     # Wrap the code if needed
-    wrapped_code = wrap_rust_code(augmented_code)
+    wrapped_code = wrap_rust_code(expanded.source)
 
     # Generate cache key
     compiler = get_default_compiler()
@@ -248,19 +232,9 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         if haskey(RUST_LIBRARIES, lib_name)
             CURRENT_LIB[] = lib_name
 
-            # Ensure generic functions are registered (dictionary is volatile)
-            try
-                _detect_and_register_generic_functions(wrapped_code, lib_name)
-            catch e
-                @debug "Failed to register generic functions from memory: $e"
-            end
-
-            # Register function signatures from memory
-            try
-                _register_function_signatures(code, lib_name)
-            catch e
-                @debug "Failed to register function signatures from memory: $e"
-            end
+            # Ensure generic functions and return types are registered
+            # (the registries are volatile)
+            _register_manifest(expanded, lib_name)
 
             return lib_name
         end
@@ -279,19 +253,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
         end
 
-        # Try to detect and register generic functions from the cached code
-        try
-            _detect_and_register_generic_functions(wrapped_code, lib_name)
-        catch e
-            @debug "Failed to detect generic functions from cache: $e"
-        end
-
-        # Register function signatures from cached code
-        try
-            _register_function_signatures(code, lib_name)
-        catch e
-            @debug "Failed to register function signatures from cache: $e"
-        end
+        _register_manifest(expanded, lib_name)
 
         return lib_name
     end
@@ -333,19 +295,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Temporarily disabled LLVM IR loading for stability
     # (LLVM IR is used for type inference and @rust_llvm)
 
-    # Detect and register generic functions
-    try
-        _detect_and_register_generic_functions(code, lib_name)
-    catch e
-        @debug "Failed to detect generic functions: $e"
-    end
-
-    # Register non-generic functions with their signatures
-    try
-        _register_function_signatures(code, lib_name)
-    catch e
-        @debug "Failed to register function signatures: $e"
-    end
+    _register_manifest(expanded, lib_name)
 
     return lib_name
 end
@@ -393,24 +343,20 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         throw(DependencyResolutionError("unknown", "Dependency validation failed: $e"))
     end
 
-    # Phase 5: Transform #[julia] attributes FIRST
-    transformed_code = transform_julia_attribute(code)
+    # Expand #[julia] items ahead of Cargo. The dependency comments are read
+    # from the original source above; the expanded source no longer needs them.
+    expanded = expand_inline(code)
+    manifest = expanded.manifest
+    augmented_code = expanded.source
 
-    # Phase 4: Detect structs and generate wrappers (after #[julia] transformation)
-    struct_infos = parse_structs_and_impls(transformed_code)
-
-    # Remove #[derive(JuliaStruct)] attributes from code before compilation
-    cleaned_code = remove_derive_julia_struct_attributes(transformed_code)
-
-    augmented_code = cleaned_code
-    for info in struct_infos
-        augmented_code *= generate_struct_wrappers(info)
-    end
-
-    # Generate hashes for caching based on the code to be compiled
+    # The library identity covers the code to be compiled, the dependency set
+    # and the toolchain/pipeline fingerprint. The dependency comments are gone
+    # from the expanded source, so the dependency hash must be part of the
+    # identity itself, or two blocks with identical items but different
+    # `// cargo-deps:` would share one in-memory library.
     # Use stable_content_hash() — never hash() for persistent identifiers
-    code_hash = stable_content_hash(augmented_code)
     deps_hash = hash_dependencies(dependencies)
+    code_hash = _cargo_block_identity(augmented_code, deps_hash)
 
     # Project and library names
     project_name = "rustcall_$(code_hash[1:12])"
@@ -426,20 +372,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         end
         @debug "Using cached Cargo library from memory" lib_name=lib_name
 
-        # Ensure generic functions are registered
-        try
-            clean_code = remove_dependency_comments(code)
-            _detect_and_register_generic_functions(clean_code, lib_name)
-        catch e
-            @debug "Failed to register generic functions from memory cache: $e"
-        end
-
-        # Register function signatures from memory cache
-        try
-            _register_function_signatures(code, lib_name)
-        catch e
-            @debug "Failed to register function signatures from memory cache: $e"
-        end
+        _register_manifest(expanded, lib_name)
 
         return lib_name
     end
@@ -458,20 +391,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             end
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
 
-            # Ensure generic functions are registered
-            try
-                clean_code = remove_dependency_comments(code)
-                _detect_and_register_generic_functions(clean_code, lib_name)
-            catch e
-                @debug "Failed to register generic functions from disk cache: $e"
-            end
-
-            # Register function signatures from disk cache
-            try
-                _register_function_signatures(code, lib_name)
-            catch e
-                @debug "Failed to register function signatures from disk cache: $e"
-            end
+            _register_manifest(expanded, lib_name)
 
             return lib_name
         end
@@ -509,20 +429,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
 
-        # Try to detect and register generic functions
-        clean_code = remove_dependency_comments(code)
-        try
-            _detect_and_register_generic_functions(clean_code, lib_name)
-        catch e
-            @debug "Failed to detect generic functions: $e"
-        end
-
-        # Register non-generic function signatures
-        try
-            _register_function_signatures(code, lib_name)
-        catch e
-            @debug "Failed to register function signatures: $e"
-        end
+        _register_manifest(expanded, lib_name)
     finally
         # Clean up temporary project (keep for debugging if debug mode is enabled)
         compiler = get_default_compiler()
@@ -542,280 +449,88 @@ end
 
 
 """
-    extract_function_code(code::String, func_name::String) -> Union{String, Nothing}
+    _cargo_block_identity(expanded_source, deps_hash) -> String
 
-Extract the full code for a function from Rust source code.
+Stable identity of a Cargo-backed inline block: expanded source, dependency
+hash and toolchain fingerprint. Used for the in-memory library name, the
+temporary project name and the disk cache key.
 """
-function extract_function_code(code::String, func_name::String)
-    # Find function start - handle async/unsafe/const/pub/extern modifiers
-    func_start_pattern = Regex("(?:(?:pub\\s+)?(?:async\\s+|unsafe\\s+|const\\s+)*)?(?:extern\\s+\"C\"\\s+)?fn\\s+$func_name.*?\\{", "s")
-    m = match(func_start_pattern, code)
+function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString)
+    return stable_content_hash(string(expanded_source, "\n---deps---\n", deps_hash,
+                                      "\n---toolchain---\n", toolchain_fingerprint()))
+end
 
-    if m === nothing
-        return nothing
+"""
+    _register_manifest(expanded::ExpandedInline, lib_name::String)
+
+Register everything the manifest of a compiled block tells us:
+
+- generic free functions and generic struct wrappers, for on-demand
+  monomorphization. The registered code is the whole expanded block and the
+  function is addressed by its qualified name, so `specialize` instantiates it
+  in place with sibling items, imports and `super::` paths intact.
+- return types of exported functions, so `@rust f(...)` works without `::T`
+"""
+function _register_manifest(expanded, lib_name::String)
+    manifest = expanded.manifest
+    for info in manifest_struct_infos(manifest)
+        register_generic_struct_wrappers(info, expanded.source)
     end
-
-    start_idx = m.offset
-    code_after_start = code[start_idx:end]
-
-    # Find matching closing brace with proper string/comment/escape handling
-    brace_count = 0
-    i = 1
-    len = ncodeunits(code_after_start)
-
-    while i <= len
-        c = code_after_start[i]
-
-        if c == 'r' && i < len
-            # Rust raw string literal: r"...", r#"..."#, r##"..."##, etc.
-            j = nextind(code_after_start, i)
-            hash_count = 0
-            while j <= len && code_after_start[j] == '#'
-                hash_count += 1
-                j = nextind(code_after_start, j)
-            end
-            if j <= len && code_after_start[j] == '"'
-                # This is a raw string — skip until closing "###
-                i = nextind(code_after_start, j)
-                closing = string('"', repeat('#', hash_count))
-                while i <= len
-                    if code_after_start[i] == '"'
-                        # Check if followed by the right number of hashes
-                        end_pos = i
-                        matched = true
-                        for _ in 1:hash_count
-                            end_pos = nextind(code_after_start, end_pos)
-                            if end_pos > len || code_after_start[end_pos] != '#'
-                                matched = false
-                                break
-                            end
-                        end
-                        if matched
-                            i = end_pos
-                            break
-                        end
-                    end
-                    i = nextind(code_after_start, i)
-                end
-                i = nextind(code_after_start, i)
-                continue
-            end
-            # Not a raw string, fall through to other handling
+    for sig in manifest_function_signatures(manifest; only_attributed = false)
+        if sig.is_generic
+            register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
+                                      arg_types = sig.arg_types, return_type = sig.return_type,
+                                      path = qualified_name(sig.module_path, sig.name))
+            @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
+        elseif sig.exported
+            _register_return_type(sig, lib_name)
         end
-
-        if c == '"'
-            # String literal — skip until unescaped closing quote
-            i = nextind(code_after_start, i)
-            while i <= len
-                sc = code_after_start[i]
-                if sc == '\\'
-                    # Skip escaped character
-                    i = nextind(code_after_start, i)
-                    if i <= len
-                        i = nextind(code_after_start, i)
-                    end
-                    continue
-                elseif sc == '"'
-                    break
-                end
-                i = nextind(code_after_start, i)
-            end
-        elseif c == '\''
-            # Distinguish Rust lifetime parameters ('a, 'static) from char literals ('x', '\n')
-            # Lifetimes: preceded by & or , or < or whitespace, followed by an identifier
-            # Char literals: 'x' or '\x' — always have a closing ' within a few characters
-            next_i = nextind(code_after_start, i)
-            if next_i <= len
-                next_c = code_after_start[next_i]
-                if isletter(next_c) || next_c == '_'
-                    # Check if this is a lifetime: identifier followed by non-quote
-                    # Scan forward to see if closing quote comes immediately after one char
-                    after_id = nextind(code_after_start, next_i)
-                    if after_id <= len && code_after_start[after_id] == '\''
-                        # Char literal like 'x' — skip the three characters
-                        i = after_id
-                    else
-                        # Lifetime like 'a — just skip the quote, let normal iteration handle the rest
-                    end
-                elseif next_c == '\\'
-                    # Escaped char literal like '\n', '\x00' — skip until closing '
-                    i = next_i
-                    while i <= len
-                        sc = code_after_start[i]
-                        if sc == '\''
-                            break
-                        end
-                        i = nextind(code_after_start, i)
-                    end
-                end
-            end
-        elseif c == '/' && i < len
-            next_c = code_after_start[nextind(code_after_start, i)]
-            if next_c == '/'
-                # Line comment — skip to end of line
-                while i <= len && code_after_start[i] != '\n'
-                    i = nextind(code_after_start, i)
-                end
-            elseif next_c == '*'
-                # Block comment — skip to */
-                i = nextind(code_after_start, i)  # skip /
-                i = nextind(code_after_start, i)  # skip *
-                while i <= len
-                    if code_after_start[i] == '*' && i < len &&
-                       code_after_start[nextind(code_after_start, i)] == '/'
-                        i = nextind(code_after_start, i)  # skip /
-                        break
-                    end
-                    i = nextind(code_after_start, i)
-                end
-            else
-                # Not a comment, just a slash — skip
-            end
-        elseif c == '{'
-            brace_count += 1
-        elseif c == '}'
-            brace_count -= 1
-            if brace_count == 0
-                return String(code_after_start[1:i])
-            end
-        end
-
-        i = nextind(code_after_start, i)
     end
-
     return nothing
 end
 
 """
-    _detect_and_register_generic_functions(code::String, lib_name::String)
+    _register_return_type(sig::RustFunctionSignature, lib_name::String)
 
-Detect generic functions in Rust code and register them for monomorphization.
+Record the Julia return type of an exported function for `@rust` calls that
+omit `::ReturnType`. Functions whose return type has no primitive Julia
+counterpart are skipped and must be called with an explicit return type.
 """
-function _detect_and_register_generic_functions(code::String, lib_name::String)
-    func_pattern = r"(?:#\[no_mangle\])?\s*(?:pub\s+)?(?:(?:async|unsafe|const)\s+)*(?:extern\s+\"C\"\s+)?fn\s+(\w+)\s*<(.+?)>\s*\("
-
-    for m in eachmatch(func_pattern, code)
-        func_name = String(m.captures[1])
-        type_params_str = m.captures[2]
-
-        # Check if this is a generic function
-        if type_params_str !== nothing && !isempty(type_params_str)
-            # Extract type parameters
-            type_params = Symbol[]
-            for param in split(type_params_str, ',', keepempty=false)
-                param = strip(param)
-                # Skip Rust lifetime parameters (e.g., 'a, 'static)
-                if startswith(param, "'")
-                    continue
-                end
-                # Handle trait bounds: T: Copy + Clone -> just T
-                if occursin(':', param)
-                    param = split(param, ':')[1]
-                end
-                push!(type_params, Symbol(strip(param)))
-            end
-
-            # Skip if only lifetime parameters were found (no type params to monomorphize)
-            if isempty(type_params)
-                continue
-            end
-
-            # Extract the full function code
-            func_code = extract_function_code(code, func_name)
-
-            if func_code === nothing
-                @warn "Failed to extract function '$(func_name)' from code block; " *
-                      "falling back to entire block. This may cause issues with generic specialization."
-                func_code = code
-            end
-
-            # Register as generic function
-            register_generic_function(func_name, func_code, type_params)
-            @info "Registered generic function: $func_name" type_params=type_params
-        end
-    end
-end
-
-
-"""
-    _parse_function_return_type(code::String, func_name::String) -> Union{Type, Nothing}
-
-Parse the return type of a function from Rust code.
-Returns the Julia type corresponding to the Rust return type, or nothing if not found.
-"""
-function _parse_function_return_type(code::String, func_name::String)
-    # Pattern to match: pub extern "C" fn func_name(...) -> return_type {
-    # or: #[no_mangle] pub extern "C" fn func_name(...) -> return_type {
-    pattern = Regex("(?:#\\[no_mangle\\]\\s*)?(?:pub\\s+)?(?:(?:async|unsafe|const)\\s+)*(?:extern\\s+\"C\"\\s+)?fn\\s+$func_name\\s*\\([^)]*\\)\\s*->\\s*([\\w:<>,\\s\\[\\]]+)", "s")
-    m = match(pattern, code)
-
-    if m === nothing
+function _register_return_type(sig, lib_name::String)
+    if haskey(FUNCTION_REGISTRY, sig.symbol) || is_generic_function(sig.symbol)
         return nothing
     end
-
-    ret_type_str = strip(m.captures[1])
-
-    # Map Rust type to Julia type
-    rust_to_julia = Dict(
-        "i8" => Int8, "i16" => Int16, "i32" => Int32, "i64" => Int64,
-        "u8" => UInt8, "u16" => UInt16, "u32" => UInt32, "u64" => UInt64,
-        "f32" => Float32, "f64" => Float64,
-        "bool" => Bool,
-        "()" => Cvoid,
-    )
-
-    # Remove generic parameters if present (e.g., "Box<T>" -> "Box")
-    if occursin('<', ret_type_str)
-        ret_type_str = split(ret_type_str, '<')[1]
+    ret_type = if sig.return_kind == :unit
+        Cvoid
+    elseif sig.return_kind == :plain
+        _rust_primitive_to_julia_type(sig.return_type)
+    else
+        # Result/Option wrappers return `CResult_<fn>`/`COption_<fn>` structs; the
+        # generated Julia wrapper handles them, `@rust` callers must be explicit.
+        nothing
     end
-
-    ret_type_str = strip(ret_type_str)
-
-    if haskey(rust_to_julia, ret_type_str)
-        return rust_to_julia[ret_type_str]
-    end
-
+    ret_type === nothing && return nothing
+    FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, sig.symbol)] = ret_type
+    FUNCTION_RETURN_TYPES[sig.symbol] = ret_type
+    @debug "Registered return type for function: $(sig.symbol) => $ret_type (library: $lib_name)"
     return nothing
 end
 
+const _RUST_PRIMITIVE_TO_JULIA = Dict{String, Type}(
+    "i8" => Int8, "i16" => Int16, "i32" => Int32, "i64" => Int64,
+    "u8" => UInt8, "u16" => UInt16, "u32" => UInt32, "u64" => UInt64,
+    "f32" => Float32, "f64" => Float64,
+    "bool" => Bool,
+    "usize" => Csize_t, "isize" => Cssize_t,
+    "()" => Cvoid,
+)
+
 """
-    _register_function_signatures(code::String, lib_name::String)
+    _rust_primitive_to_julia_type(rust_type::AbstractString) -> Union{Type, Nothing}
 
-Register function return types from Rust code for type inference.
+Julia type of a primitive Rust type name recorded in the manifest, or `nothing`.
 """
-function _register_function_signatures(code::String, lib_name::String)
-    # Pattern to match function definitions: pub extern "C" fn name(...) -> type {
-    # or: #[no_mangle] pub extern "C" fn name(...) -> type {
-    # Use a simpler pattern that matches the function signature more reliably
-    pattern = Regex("(?:#\\[no_mangle\\]\\s*)?(?:pub\\s+)?(?:(?:async|unsafe|const)\\s+)*(?:extern\\s+\"C\"\\s+)?fn\\s+(\\w+)\\s*\\([^)]*\\)(?:\\s*->\\s*([\\w:<>,\\s\\[\\]]+))?", "s")
-
-    for m in eachmatch(pattern, code)
-        func_name = String(m.captures[1])
-        ret_type_str = length(m.captures) >= 2 && m.captures[2] !== nothing ? String(m.captures[2]) : nothing
-
-        # Skip if already registered in FUNCTION_REGISTRY or is generic
-        if haskey(FUNCTION_REGISTRY, func_name) || is_generic_function(func_name)
-            continue
-        end
-
-        # Parse return type.
-        # Functions without an explicit return type in Rust default to `()`,
-        # which maps to `Cvoid` on the Julia FFI boundary.
-        ret_type = Cvoid
-        if ret_type_str !== nothing && !isempty(strip(ret_type_str))
-            parsed = _parse_function_return_type(code, func_name)
-            if parsed === nothing
-                continue
-            end
-            ret_type = parsed
-        end
-
-        # Update both library-scoped and global fallback registries.
-        FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, func_name)] = ret_type
-        FUNCTION_RETURN_TYPES[func_name] = ret_type
-        @debug "Registered return type for function: $func_name => $ret_type (library: $lib_name)"
-    end
-end
+_rust_primitive_to_julia_type(rust_type::AbstractString) = get(_RUST_PRIMITIVE_TO_JULIA, strip(rust_type), nothing)
 
 """
     get_rust_module(code::String) -> Union{RustModule, Nothing}

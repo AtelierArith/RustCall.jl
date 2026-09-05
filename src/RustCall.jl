@@ -64,6 +64,9 @@ include("structs.jl")
 # Phase 5: #[julia] attribute support
 include("julia_functions.jl")
 
+# FFI manifest consumption (rustcall-extract CLI); depends on the types above
+include("manifest.jl")
+
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 

@@ -1,0 +1,118 @@
+schema_version = 1
+mode = "inline"
+
+[[functions]]
+name = "checked_double"
+symbol = "checked_double"
+attribute = "julia"
+exported = true
+is_generic = false
+type_params = []
+return_type = "Result<i32, i32>"
+return_kind = "result"
+ok_type = "i32"
+err_type = "i32"
+inner_type = ""
+source = ""
+line = 26
+module_path = []
+
+[[functions.args]]
+name = "value"
+rust_type = "i32"
+
+[[functions]]
+name = "positive"
+symbol = "positive"
+attribute = "julia"
+exported = true
+is_generic = false
+type_params = []
+return_type = "Option<i32>"
+return_kind = "option"
+ok_type = ""
+err_type = ""
+inner_type = "i32"
+source = ""
+line = 31
+module_path = []
+
+[[functions.args]]
+name = "value"
+rust_type = "i32"
+
+[[structs]]
+name = "Greeter"
+attribute = "derive_julia_struct"
+type_params = []
+derives = ["Clone"]
+has_clone = true
+has_owned_string_helper = true
+has_borrowed_string_helper = true
+context_source = ""
+generic_wrappers = []
+line = 1
+module_path = []
+
+[[structs.fields]]
+name = "name"
+rust_type = "String"
+ffi_compatible = true
+getter = "Greeter_get_name"
+setter = "Greeter_set_name"
+
+[[structs.fields]]
+name = "visits"
+rust_type = "u32"
+ffi_compatible = true
+getter = "Greeter_get_visits"
+setter = "Greeter_set_visits"
+
+[[structs.methods]]
+name = "new"
+symbol = "Greeter_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+return_type = "Self"
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "name"
+rust_type = "String"
+
+[[structs.methods]]
+name = "rename"
+symbol = "Greeter_rename"
+is_static = false
+is_mutable = true
+is_constructor = false
+return_type = "()"
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "name"
+rust_type = "String"
+
+[[structs.methods]]
+name = "greet"
+symbol = "Greeter_greet"
+is_static = false
+is_mutable = false
+is_constructor = false
+return_type = "String"
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "prefix"
+rust_type = "&str"
+
+[[structs.methods]]
+name = "name"
+symbol = "Greeter_name"
+is_static = false
+is_mutable = false
+is_constructor = false
+args = []
+return_type = "&str"
+generic_wrapper = ""

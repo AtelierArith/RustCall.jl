@@ -1,0 +1,94 @@
+//! Attribute inspection helpers (`#[julia]`, `#[julia_pyo3]`, `#[derive(JuliaStruct)]`).
+
+use syn::{Attribute, Meta};
+
+use crate::manifest::Attribute as ManifestAttribute;
+
+pub fn is_julia_attr(attr: &Attribute) -> bool {
+    attr.path().is_ident("julia")
+}
+
+pub fn is_julia_pyo3_attr(attr: &Attribute) -> bool {
+    attr.path().is_ident("julia_pyo3")
+}
+
+pub fn is_rustcall_attr(attr: &Attribute) -> bool {
+    is_julia_attr(attr) || is_julia_pyo3_attr(attr)
+}
+
+/// Which RustCall attribute marks the item, if any.
+pub fn rustcall_attribute(attrs: &[Attribute]) -> ManifestAttribute {
+    if attrs.iter().any(is_julia_attr) {
+        ManifestAttribute::Julia
+    } else if attrs.iter().any(is_julia_pyo3_attr) {
+        ManifestAttribute::JuliaPyo3
+    } else if derive_list(attrs).iter().any(|d| d == "JuliaStruct") {
+        ManifestAttribute::DeriveJuliaStruct
+    } else {
+        ManifestAttribute::None
+    }
+}
+
+/// All identifiers appearing in `#[derive(...)]` attributes.
+pub fn derive_list(attrs: &[Attribute]) -> Vec<String> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        if let Meta::List(list) = &attr.meta {
+            let _ = list.parse_nested_meta(|meta| {
+                if let Some(id) = meta.path.get_ident() {
+                    out.push(id.to_string());
+                }
+                Ok(())
+            });
+        }
+    }
+    out
+}
+
+/// Remove `#[julia]` / `#[julia_pyo3]` attributes.
+pub fn strip_rustcall_attrs(attrs: &mut Vec<Attribute>) {
+    attrs.retain(|a| !is_rustcall_attr(a));
+}
+
+/// Remove `JuliaStruct` from every `#[derive(...)]`, dropping the attribute if it
+/// becomes empty. `JuliaStruct` is not a real derive macro in inline mode.
+pub fn strip_julia_struct_derive(attrs: &mut Vec<Attribute>) {
+    let mut rebuilt = Vec::with_capacity(attrs.len());
+    for attr in attrs.drain(..) {
+        if !attr.path().is_ident("derive") {
+            rebuilt.push(attr);
+            continue;
+        }
+        let Meta::List(list) = &attr.meta else {
+            rebuilt.push(attr);
+            continue;
+        };
+        let mut kept: Vec<syn::Path> = Vec::new();
+        let mut saw_julia_struct = false;
+        let _ = list.parse_nested_meta(|meta| {
+            if meta.path.is_ident("JuliaStruct") {
+                saw_julia_struct = true;
+            } else {
+                kept.push(meta.path.clone());
+            }
+            Ok(())
+        });
+        if !saw_julia_struct {
+            rebuilt.push(attr);
+        } else if !kept.is_empty() {
+            rebuilt.push(syn::parse_quote!(#[derive(#(#kept),*)]));
+        }
+    }
+    *attrs = rebuilt;
+}
+
+pub fn has_no_mangle(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        a.path().is_ident("no_mangle")
+            || (a.path().is_ident("unsafe")
+                && matches!(&a.meta, Meta::List(l) if l.tokens.to_string().contains("no_mangle")))
+    })
+}

@@ -1,0 +1,72 @@
+schema_version = 1
+mode = "crate"
+
+[[functions]]
+name = "dual_add"
+symbol = "dual_add"
+attribute = "julia_pyo3"
+exported = true
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+line = 1
+module_path = []
+
+[[functions.args]]
+name = "left"
+rust_type = "i32"
+
+[[functions.args]]
+name = "right"
+rust_type = "i32"
+
+[[structs]]
+name = "DualCounter"
+attribute = "julia_pyo3"
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 6
+module_path = []
+
+[[structs.fields]]
+name = "value"
+rust_type = "i32"
+ffi_compatible = true
+getter = "DualCounter_get_value"
+setter = "DualCounter_set_value"
+
+[[structs.methods]]
+name = "new"
+symbol = "DualCounter_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+return_type = "Self"
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "value"
+rust_type = "i32"
+
+[[structs.methods]]
+name = "increment"
+symbol = "DualCounter_increment"
+is_static = false
+is_mutable = true
+is_constructor = false
+return_type = "()"
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "amount"
+rust_type = "i32"

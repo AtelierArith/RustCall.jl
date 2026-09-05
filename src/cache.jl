@@ -113,7 +113,11 @@ and `rustc` version. Uses SHA256 for collision resistance.
 """
 function generate_cache_key(code::String, compiler::RustCompiler)
     rustc_ver = _get_rustc_version()
-    config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)"
+    # toolchain_fingerprint() covers the extractor binary, manifest schema and the
+    # rustcall_core/juliacall_macros sources, so regenerating wrappers invalidates
+    # cached libraries even when the user's code is unchanged.
+    pipeline = toolchain_fingerprint()
+    config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)_$(pipeline)"
     key_data = "$(code)\n---\n$(config_str)"
     return stable_content_hash(key_data)
 end

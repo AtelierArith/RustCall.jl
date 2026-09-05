@@ -600,6 +600,11 @@ function suggest_fix_for_error(stderr::String, source_code::String)
     return unique(suggestions)
 end
 
+# NOTE: best-effort diagnostics only. This scanner feeds the "unbalanced braces"
+# hint in compile-error messages; it is not a source of truth for anything the
+# FFI layer does (that is the manifest from rustcall-extract, see issue #264).
+# Known gaps (char literals like '{', raw strings, nested block comments) only
+# affect the hint text.
 function _count_braces_outside_strings(source_code::AbstractString)
     open_braces = 0
     close_braces = 0

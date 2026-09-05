@@ -1,0 +1,19 @@
+[package]
+name = "rustcall_core"
+version = "0.1.0"
+edition = "2021"
+description = "Shared Rust core for RustCall.jl: FFI manifest model, syn-based extraction, wrapper codegen, generic specialization"
+license = "MIT"
+repository = "https://github.com/atelierarith/RustCall.jl"
+
+[lib]
+name = "rustcall_core"
+path = "src/lib.rs"
+
+[dependencies]
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "parsing", "printing", "extra-traits", "visit", "visit-mut", "clone-impls"] }
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+prettyplease = "0.2"

@@ -22,19 +22,32 @@ julia --project test/test_cache.jl
 # Build documentation
 julia --project=docs docs/make.jl
 
-# Proc-macro crate (deps/juliacall_macros)
-cd deps/juliacall_macros && cargo fmt --check
-cd deps/juliacall_macros && cargo clippy --all-targets --all-features -- -D warnings
+# Rust crates (deps/rustcall_core, deps/rustcall_extract, deps/juliacall_macros)
+cd deps/rustcall_core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+UPDATE_GOLDEN=1 cargo test          # in deps/rustcall_core: regenerate tests/corpus/*.toml and *.expanded.rs
+cd deps/rustcall_extract && cargo build --release   # the CLI Julia calls; also built by Pkg.build
 cd deps/juliacall_macros && cargo test --all-features
+
+# Lints run in CI
+bash scripts/lint_interpolation.sh src
+bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax with regexes
 ```
 
 ## Architecture
 
+### Rust syntax is parsed only on the Rust side (issue #264)
+
+- `deps/rustcall_core` — `syn`-based core: FFI manifest model (`manifest.rs`), extraction (`extract.rs`), inline expansion of `#[julia]` items (`expand.rs`), wrapper codegen for both the proc-macro and inline flavours (`codegen.rs`), AST-level generic instantiation (`specialize.rs`). Golden tests in `tests/corpus/`.
+- `deps/rustcall_extract` — the `rustcall-extract` CLI (`manifest`, `expand`, `specialize` subcommands). Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
+- `deps/juliacall_macros` — thin proc-macro wrapper over `rustcall_core::codegen` for `@rust_crate` crates.
+- `src/manifest.jl` — runs the CLI, validates `schema_version`, converts the TOML manifest into `RustFunctionSignature` / `RustStructInfo` / `RustMethod`, and computes `toolchain_fingerprint()` (extractor digest + core sources + rustc/cargo versions) that is part of every cache key.
+- Do not add regexes over Rust source in `src/`; `scripts/lint_rust_syntax_regex.sh` fails CI. Allowlisted: `$var` interpolation in `@irust` (`ruststr.jl`), the `// cargo-deps:` DSL (`dependencies.jl`), and the brace-count hint in `exceptions.jl` (diagnostics only).
+
 ### Compilation pipeline
 
-1. `rust"""..."""` (`src/ruststr.jl`) parses Rust code, wraps it, and hands off to the compiler
+1. `rust"""..."""` (`src/ruststr.jl`) calls `expand_inline` (extractor) at macro-expansion time, emits Julia definitions from the manifest, and compiles the expanded source at run time (direct `rustc`, or a temporary Cargo project when `// cargo-deps:` is present)
 2. `src/compiler.jl` invokes `rustc` to produce shared libraries or LLVM IR
-3. `src/codegen.jl` generates `ccall` expressions; `src/llvmcodegen.jl` / `src/llvmintegration.jl` handle the LLVM IR path
+3. `src/codegen.jl` generates `ccall` expressions; `src/llvmcodegen.jl` / `src/llvmintegration.jl` handle the LLVM IR path (deprecated, see #265)
 4. `src/rustmacro.jl` expands `@rust` and `@irust` into the appropriate call mechanism
 5. `src/cache.jl` provides SHA256-based caching of compiled artifacts to avoid recompilation
 
@@ -49,13 +62,13 @@ cd deps/juliacall_macros && cargo test --all-features
 
 - `src/dependencies.jl` + `src/dependency_resolution.jl` — parse `// cargo-deps:` and `` //! ```cargo ``` `` formats
 - `src/cargoproject.jl` + `src/cargobuild.jl` — generate and build Cargo projects
-- `src/julia_functions.jl` — parse/transform `#[julia]` attributes into C-ABI wrappers
-- `src/crate_bindings.jl` — crate scanning, Julia wrapper generation, `@rust_crate` macro
+- `src/julia_functions.jl` — `RustFunctionSignature` and Julia wrappers for `#[julia]` functions (Result/Option aware)
+- `src/crate_bindings.jl` — crate scanning via the extractor (crate mode), Julia wrapper generation, `@rust_crate` macro
 
 ### Other modules
 
-- `src/generics.jl` — generic function monomorphization and registry
-- `src/structs.jl` — automatic `pub struct` detection and Julia type generation
+- `src/generics.jl` — generic function registry and monomorphization through `rustcall-extract specialize`
+- `src/structs.jl` — `RustStructInfo` / `RustMethod` and Julia type generation for `#[julia]` structs
 - `src/hot_reload.jl` — file watching and reload for crate workflows
 
 ### Include order

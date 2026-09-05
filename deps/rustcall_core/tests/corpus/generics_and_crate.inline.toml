@@ -1,0 +1,279 @@
+schema_version = 1
+mode = "inline"
+
+[[functions]]
+name = "generic_identity"
+symbol = "generic_identity"
+attribute = "julia"
+exported = false
+is_generic = true
+return_type = "T"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = """
+pub fn generic_identity<T>(value: T) -> T
+where
+    T: Clone,
+{
+    value
+}
+"""
+line = 1
+module_path = []
+
+[[functions.type_params]]
+name = "T"
+
+[[functions.type_params.bounds]]
+trait_name = "Clone"
+type_params = []
+
+[[functions.args]]
+name = "value"
+rust_type = "T"
+
+[[functions]]
+name = "raw_increment"
+symbol = "raw_increment"
+attribute = "none"
+exported = true
+is_generic = false
+type_params = []
+return_type = "u32"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+line = 38
+module_path = []
+
+[[functions.args]]
+name = "value"
+rust_type = "u32"
+
+[[structs]]
+name = "Pair"
+attribute = "julia"
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = """
+pub struct Pair<T>
+where
+    T: Clone,
+{
+    pub left: T,
+    pub right: T,
+}
+impl<T> Pair<T>
+where
+    T: Clone,
+{
+    pub fn new(left: T, right: T) -> Self {
+        Self { left, right }
+    }
+    pub fn first(&self) -> T {
+        self.left.clone()
+    }
+    pub fn inline_only(&self) -> T {
+        self.right.clone()
+    }
+}
+"""
+line = 1
+module_path = []
+
+[[structs.type_params]]
+name = "T"
+
+[[structs.type_params.bounds]]
+trait_name = "Clone"
+type_params = []
+
+[[structs.fields]]
+name = "left"
+rust_type = "T"
+ffi_compatible = true
+getter = "Pair_get_left"
+setter = "Pair_set_left"
+
+[[structs.fields]]
+name = "right"
+rust_type = "T"
+ffi_compatible = true
+getter = "Pair_get_right"
+setter = "Pair_set_right"
+
+[[structs.methods]]
+name = "new"
+symbol = ""
+is_static = true
+is_mutable = false
+is_constructor = true
+return_type = "Self"
+generic_wrapper = """
+pub fn Pair_new<T>(left: T, right: T) -> *mut Pair<T>
+where
+    T: Clone,
+{
+    let obj = Pair::new(left, right);
+    Box::into_raw(Box::new(obj))
+}
+"""
+
+[[structs.methods.args]]
+name = "left"
+rust_type = "T"
+
+[[structs.methods.args]]
+name = "right"
+rust_type = "T"
+
+[[structs.methods]]
+name = "first"
+symbol = ""
+is_static = false
+is_mutable = false
+is_constructor = false
+args = []
+return_type = "T"
+generic_wrapper = """
+pub fn Pair_first<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+{
+    let self_obj = unsafe { &*ptr };
+    self_obj.first()
+}
+"""
+
+[[structs.methods]]
+name = "inline_only"
+symbol = ""
+is_static = false
+is_mutable = false
+is_constructor = false
+args = []
+return_type = "T"
+generic_wrapper = """
+pub fn Pair_inline_only<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+{
+    let self_obj = unsafe { &*ptr };
+    self_obj.inline_only()
+}
+"""
+
+[[structs.generic_wrappers]]
+name = "Pair_new"
+source = """
+pub fn Pair_new<T>(left: T, right: T) -> *mut Pair<T>
+where
+    T: Clone,
+{
+    let obj = Pair::new(left, right);
+    Box::into_raw(Box::new(obj))
+}
+"""
+type_params = ["T"]
+
+[[structs.generic_wrappers]]
+name = "Pair_first"
+source = """
+pub fn Pair_first<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+{
+    let self_obj = unsafe { &*ptr };
+    self_obj.first()
+}
+"""
+type_params = ["T"]
+
+[[structs.generic_wrappers]]
+name = "Pair_inline_only"
+source = """
+pub fn Pair_inline_only<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+{
+    let self_obj = unsafe { &*ptr };
+    self_obj.inline_only()
+}
+"""
+type_params = ["T"]
+
+[[structs.generic_wrappers]]
+name = "Pair_get_left"
+source = """
+pub fn Pair_get_left<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+    T: Copy,
+{
+    unsafe { (*ptr).left }
+}
+"""
+type_params = ["T"]
+
+[[structs.generic_wrappers]]
+name = "Pair_set_left"
+source = """
+pub fn Pair_set_left<T>(ptr: *mut Pair<T>, value: T)
+where
+    T: Clone,
+{
+    unsafe {
+        (*ptr).left = value;
+    }
+}
+"""
+type_params = ["T"]
+
+[[structs.generic_wrappers]]
+name = "Pair_get_right"
+source = """
+pub fn Pair_get_right<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+    T: Copy,
+{
+    unsafe { (*ptr).right }
+}
+"""
+type_params = ["T"]
+
+[[structs.generic_wrappers]]
+name = "Pair_set_right"
+source = """
+pub fn Pair_set_right<T>(ptr: *mut Pair<T>, value: T)
+where
+    T: Clone,
+{
+    unsafe {
+        (*ptr).right = value;
+    }
+}
+"""
+type_params = ["T"]
+
+[[structs.generic_wrappers]]
+name = "Pair_free"
+source = """
+pub fn Pair_free<T>(ptr: *mut Pair<T>)
+where
+    T: Clone,
+{
+    if !ptr.is_null() {
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
+    }
+}
+"""
+type_params = ["T"]

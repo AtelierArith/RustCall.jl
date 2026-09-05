@@ -162,8 +162,27 @@ RustCall.register_generic_function
 RustCall.call_generic_function
 RustCall.is_generic_function
 RustCall.monomorphize_function
-RustCall.specialize_generic_code
 RustCall.infer_type_parameters
+RustCall.julia_type_to_rust_string
+```
+
+## FFI Manifest
+
+Julia never parses Rust source. Signatures, struct layouts and generic
+parameters come from the FFI manifest produced by the `rustcall-extract` CLI
+(`deps/rustcall_extract`), which shares its `syn`-based core
+(`deps/rustcall_core`) with the `juliacall_macros` proc-macro.
+
+```@docs
+RustCall.extract_manifest
+RustCall.expand_inline
+RustCall.manifest_function_signatures
+RustCall.manifest_struct_infos
+RustCall.specialize_generic
+RustCall.extractor_path
+RustCall.toolchain_fingerprint
+RustCall.ExtractorError
+RustCall.MANIFEST_SCHEMA_VERSION
 ```
 
 ## Generic Constraints
@@ -172,13 +191,6 @@ RustCall.infer_type_parameters
 RustCall.TraitBound
 RustCall.TypeConstraints
 RustCall.GenericFunctionInfo
-RustCall.parse_trait_bounds
-RustCall.parse_single_trait
-RustCall.parse_where_clause
-RustCall.parse_inline_constraints
-RustCall.parse_generic_function
-RustCall.constraints_to_rust_string
-RustCall.merge_constraints
 ```
 
 ## External Library Integration
@@ -349,15 +361,14 @@ Filter = t -> begin
         :optimize_module!, :optimize_for_speed!, :optimize_for_size!,
         :compile_and_register_rust_function,
         :register_generic_function, :call_generic_function, :is_generic_function,
-        :monomorphize_function, :specialize_generic_code, :infer_type_parameters,
+        :monomorphize_function, :specialize_generic, :infer_type_parameters, :julia_type_to_rust_string,
+        :extract_manifest, :expand_inline, :manifest_function_signatures, :manifest_struct_infos,
+        :extractor_path, :toolchain_fingerprint, :ExtractorError,
         :parse_dependencies_from_code, :has_dependencies,
         :create_cargo_project, :build_cargo_project,
         :clear_cargo_cache, :get_cargo_cache_size,
         :julia_type_to_llvm_ir_string,
         :TraitBound, :TypeConstraints, :GenericFunctionInfo,
-        :parse_trait_bounds, :parse_single_trait, :parse_where_clause,
-        :parse_inline_constraints, :parse_generic_function,
-        :constraints_to_rust_string, :merge_constraints,
         :CrateBindings, :CrateInfo, :CrateBindingOptions,
         :load_crate_bindings, :scan_crate, :generate_bindings, :write_bindings_to_file,
         :HotReloadState,

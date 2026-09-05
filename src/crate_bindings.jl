@@ -3,17 +3,17 @@
 # that use the #[julia] attribute from juliacall_macros.
 #
 # Dependencies (must be included before this file in RustCall.jl):
-#   - structs.jl: extract_block_at, parse_struct_fields, parse_methods_in_impl
-#   - julia_functions.jl: parse_julia_functions_from_source
+#   - structs.jl / julia_functions.jl: RustStructInfo, RustFunctionSignature, emitters
+#   - manifest.jl: extract_manifest, manifest_function_signatures, manifest_struct_infos
 
 using TOML
 using SHA
 
 # Validate that required dependencies are available at include time.
-# If structs.jl failed to load or was included after this file, catch it early
+# If manifest.jl failed to load or was included after this file, catch it early
 # rather than at runtime when @rust_crate is used.
-if !isdefined(@__MODULE__, :extract_block_at)
-    error("crate_bindings.jl requires extract_block_at from structs.jl — check include order in RustCall.jl")
+if !isdefined(@__MODULE__, :extract_manifest)
+    error("crate_bindings.jl requires extract_manifest from manifest.jl — check include order in RustCall.jl")
 end
 
 # ============================================================================
@@ -115,24 +115,15 @@ function scan_crate(crate_path::String)
     cargo_toml = parse_cargo_toml(cargo_toml_path)
 
     # Find all Rust source files
-    source_files = find_rust_sources(crate_path)
+    source_files = sort(find_rust_sources(crate_path))
 
-    # Scan each source file for #[julia] items
-    all_functions = RustFunctionSignature[]
-    all_structs = RustStructInfo[]
-
-    for src_file in source_files
-        code = read(src_file, String)
-
-        # Parse #[julia] functions
-        funcs = parse_julia_functions(code)
-        append!(all_functions, funcs)
-
-        # Parse #[julia] structs (detected as #[derive(JuliaStruct)] after transformation)
-        # But we also need to detect the original #[julia] pub struct pattern
-        structs = parse_julia_structs_from_source(code)
-        append!(all_structs, structs)
-    end
+    # The extractor reports every #[julia] item exactly as the proc-macro will
+    # expand it (crate mode); Julia never reads the Rust source itself.
+    # `.rs` files that are not complete modules (include!() fragments) are
+    # skipped; Cargo is the authority on whether the crate compiles.
+    manifest = extract_manifest(source_files; mode = "crate", skip_unparsable = true)
+    all_functions = manifest_function_signatures(manifest)
+    all_structs = manifest_struct_infos(manifest)
 
     # Extract dependencies from Cargo.toml
     dependencies = extract_crate_dependencies(cargo_toml)
@@ -180,181 +171,6 @@ function _find_rs_files_recursive!(sources::Vector{String}, dir::String)
         elseif isdir(entry)
             _find_rs_files_recursive!(sources, entry)
         end
-    end
-end
-
-"""
-    parse_julia_structs_from_source(code::String) -> Vector{RustStructInfo}
-
-Parse Rust source code and extract structs marked with #[julia] or #[julia_pyo3].
-"""
-function parse_julia_structs_from_source(code::String)
-    structs = RustStructInfo[]
-
-    # Pattern to match #[julia] or #[julia_pyo3] pub struct or struct
-    pattern = r"#\[julia(?:_pyo3)?\]\s*(?:pub\s+)?struct\s+([A-Z]\w*)\s*(?:<([^>]+)>)?\s*\{"
-
-    for m in eachmatch(pattern, code)
-        struct_name = String(m.captures[1])
-        type_params_str = m.captures[2]
-
-        # Parse type parameters
-        type_params = String[]
-        if type_params_str !== nothing && !isempty(type_params_str)
-            for p in split(type_params_str, ',')
-                p = strip(p)
-                # Skip Rust lifetime parameters (e.g., 'a, 'static)
-                if startswith(p, "'")
-                    continue
-                end
-                if occursin(':', p)
-                    p = strip(split(p, ':')[1])
-                end
-                push!(type_params, p)
-            end
-        end
-
-        # Extract struct definition block
-        struct_def = extract_block_at(code, m.offset)
-        context = struct_def !== nothing ? struct_def : ""
-
-        # Parse fields
-        fields = parse_struct_fields(context)
-
-        # Find impl blocks for this struct
-        methods = parse_impl_methods_for_struct(code, struct_name)
-
-        push!(structs, RustStructInfo(
-            struct_name,
-            type_params,
-            methods,
-            context,
-            fields,
-            true,  # has_derive_julia_struct
-            Dict{String, Bool}()
-        ))
-    end
-
-    return structs
-end
-
-"""
-    parse_impl_methods_for_struct(code::String, struct_name::String) -> Vector{RustMethod}
-
-Parse impl blocks for a struct and extract methods marked with #[julia] or #[julia_pyo3].
-If the impl block itself has #[julia_pyo3], all pub fn methods are captured.
-"""
-function parse_impl_methods_for_struct(code::String, struct_name::String)
-    methods = RustMethod[]
-
-    # Pattern to find impl blocks with #[julia_pyo3] attribute (captures ALL pub fn)
-    impl_pattern_pyo3 = Regex("#\\[julia_pyo3\\]\\s*impl(?:\\s*<[^>]+>)?\\s+$struct_name(?:\\s*<[^>]+>)?\\s*\\{")
-
-    # Pattern to find regular impl blocks (only captures #[julia] methods)
-    impl_pattern_regular = Regex("(?<!#\\[julia_pyo3\\]\\s)impl(?:\\s*<[^>]+>)?\\s+$struct_name(?:\\s*<[^>]+>)?\\s*\\{")
-
-    # First, process #[julia_pyo3] impl blocks - capture ALL pub fn methods
-    for impl_match in eachmatch(impl_pattern_pyo3, code)
-        impl_block = extract_block_at(code, impl_match.offset)
-        if impl_block === nothing
-            continue
-        end
-
-        # Match ALL pub fn methods in this impl block
-        method_pattern = r"pub\s+fn\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^\{]+))?\s*\{"
-
-        for method_match in eachmatch(method_pattern, impl_block)
-            method_name = String(method_match.captures[1])
-            args_str = method_match.captures[2] !== nothing ? String(method_match.captures[2]) : ""
-            return_type = method_match.captures[3] !== nothing ? strip(String(method_match.captures[3])) : "()"
-
-            is_static = !occursin("self", args_str)
-            is_mutable = occursin("&mut self", args_str)
-
-            arg_names = String[]
-            arg_types = String[]
-            _parse_method_args!(arg_names, arg_types, args_str)
-
-            push!(methods, RustMethod(method_name, is_static, is_mutable, arg_names, arg_types, return_type))
-        end
-    end
-
-    # Then, process regular impl blocks with #[julia] on individual methods
-    for impl_match in eachmatch(impl_pattern_regular, code)
-        impl_block = extract_block_at(code, impl_match.offset)
-        if impl_block === nothing
-            continue
-        end
-
-        # Only match methods with explicit #[julia] attribute
-        method_pattern = r"#\[julia\]\s*pub\s+fn\s+(\w+)\s*\(([^)]*)\)(?:\s*->\s*([^\{]+))?\s*\{"
-
-        for method_match in eachmatch(method_pattern, impl_block)
-            method_name = String(method_match.captures[1])
-            args_str = method_match.captures[2] !== nothing ? String(method_match.captures[2]) : ""
-            return_type = method_match.captures[3] !== nothing ? strip(String(method_match.captures[3])) : "()"
-
-            is_static = !occursin("self", args_str)
-            is_mutable = occursin("&mut self", args_str)
-
-            arg_names = String[]
-            arg_types = String[]
-            _parse_method_args!(arg_names, arg_types, args_str)
-
-            # Avoid duplicates
-            if !any(m -> m.name == method_name, methods)
-                push!(methods, RustMethod(method_name, is_static, is_mutable, arg_names, arg_types, return_type))
-            end
-        end
-    end
-
-    return methods
-end
-
-function _parse_method_args!(names::Vector{String}, types::Vector{String}, args_str::AbstractString)
-    if isempty(strip(args_str))
-        return
-    end
-
-    # Split by comma, handling nested brackets
-    current_arg = ""
-    bracket_level = 0
-
-    for char in args_str
-        if char in ['<', '(', '[']
-            bracket_level += 1
-            current_arg *= char
-        elseif char in ['>', ')', ']']
-            bracket_level -= 1
-            current_arg *= char
-        elseif char == ',' && bracket_level == 0
-            _parse_single_method_arg!(names, types, strip(current_arg))
-            current_arg = ""
-        else
-            current_arg *= char
-        end
-    end
-
-    if !isempty(strip(current_arg))
-        _parse_single_method_arg!(names, types, strip(current_arg))
-    end
-end
-
-function _parse_single_method_arg!(names::Vector{String}, types::Vector{String}, arg::AbstractString)
-    if isempty(arg)
-        return
-    end
-
-    # Skip self parameters
-    if arg in ["self", "&self", "&mut self"]
-        return
-    end
-
-    # Parse "name: type"
-    if occursin(':', arg)
-        parts = split(arg, ':', limit=2)
-        push!(names, strip(String(parts[1])))
-        push!(types, strip(String(parts[2])))
     end
 end
 
@@ -588,16 +404,11 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
         end
     end
 
-    # Check if return type is Result<T, E> or Option<T>
-    result_info = parse_result_type(func.return_type)
-    option_info = parse_option_type(func.return_type)
-
-    if result_info !== nothing
-        # Generate wrapper for Result<T, E> returning function
-        return _generate_result_function_wrapper(func, result_info, arg_syms, converted_args)
-    elseif option_info !== nothing
-        # Generate wrapper for Option<T> returning function
-        return _generate_option_function_wrapper(func, option_info, arg_syms, converted_args)
+    # Result<T, E> / Option<T> returns are reported by the manifest
+    if func.return_kind == :result
+        return _generate_result_function_wrapper(func, arg_syms, converted_args)
+    elseif func.return_kind == :option
+        return _generate_option_function_wrapper(func, arg_syms, converted_args)
     else
         # Standard function wrapper
         julia_ret_type = _rust_type_to_julia_type_symbol(func.return_type)
@@ -621,13 +432,13 @@ end
 Generate a Julia wrapper for a function that returns Result<T, E>.
 The wrapper will return RustResult{T, E}.
 """
-function _generate_result_function_wrapper(func::RustFunctionSignature, result_info::ResultTypeInfo, arg_syms::Vector{Symbol}, converted_args::Vector)
+function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol}, converted_args::Vector)
     func_name = Symbol(func.name)
     func_name_str = func.name
 
     # Get Julia types for ok and err
-    ok_julia_type = _rust_type_to_julia_type_symbol(result_info.ok_type)
-    err_julia_type = _rust_type_to_julia_type_symbol(result_info.err_type)
+    ok_julia_type = _rust_type_to_julia_type_symbol(func.ok_type)
+    err_julia_type = _rust_type_to_julia_type_symbol(func.err_type)
 
     if ok_julia_type === nothing
         ok_julia_type = :Any
@@ -667,12 +478,12 @@ end
 Generate a Julia wrapper for a function that returns Option<T>.
 The wrapper will return RustOption{T}.
 """
-function _generate_option_function_wrapper(func::RustFunctionSignature, option_info::OptionTypeInfo, arg_syms::Vector{Symbol}, converted_args::Vector)
+function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol}, converted_args::Vector)
     func_name = Symbol(func.name)
     func_name_str = func.name
 
     # Get Julia type for inner type
-    inner_julia_type = _rust_type_to_julia_type_symbol(option_info.inner_type)
+    inner_julia_type = _rust_type_to_julia_type_symbol(func.inner_type)
 
     if inner_julia_type === nothing
         inner_julia_type = :Any
@@ -772,7 +583,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
 
     # Generate field accessors (get_field, set_field! functions)
     for (field_name, field_type) in info.fields
-        if _is_ffi_compatible_field_type(field_type)
+        if field_is_accessible(info, field_name)
             accessor_wrapper = _generate_crate_field_accessor(info, field_name, field_type)
             push!(exprs, accessor_wrapper)
         end
@@ -798,7 +609,7 @@ function _generate_property_accessors(info::RustStructInfo)
     struct_name_str = info.name
 
     # Filter to FFI-compatible fields
-    compatible_fields = [(name, type) for (name, type) in info.fields if _is_ffi_compatible_field_type(type)]
+    compatible_fields = [(name, type) for (name, type) in info.fields if field_is_accessible(info, name)]
 
     if isempty(compatible_fields)
         return nothing
@@ -808,7 +619,7 @@ function _generate_property_accessors(info::RustStructInfo)
     getprop_branches = Expr[]
     for (field_name, field_type) in compatible_fields
         field_sym = QuoteNode(Symbol(field_name))
-        getter_fn = "$(struct_name_str)_get_$(field_name)"
+        getter_fn = info.field_getters[field_name]
         julia_type = _rust_type_to_julia_type_symbol(field_type)
         if julia_type === nothing
             julia_type = :Any
@@ -826,7 +637,7 @@ function _generate_property_accessors(info::RustStructInfo)
     setprop_branches = Expr[]
     for (field_name, field_type) in compatible_fields
         field_sym = QuoteNode(Symbol(field_name))
-        setter_fn = "$(struct_name_str)_set_$(field_name)"
+        setter_fn = get(info.field_setters, field_name, "$(struct_name_str)_set_$(field_name)")
 
         push!(setprop_branches, quote
             if field === $field_sym
@@ -893,7 +704,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     arg_julia_types = [t === nothing ? :Any : t for t in arg_julia_types]
 
     # Determine if it's a constructor
-    is_constructor = method.name == "new" || method.return_type == "Self" || method.return_type == struct_name_str
+    is_constructor = method.is_constructor
 
     if method.is_static
         if is_constructor
@@ -953,8 +764,8 @@ end
 function _generate_crate_field_accessor(info::RustStructInfo, field_name::String, field_type::String)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
-    getter_name = "$(struct_name_str)_get_$(field_name)"
-    setter_name = "$(struct_name_str)_set_$(field_name)"
+    getter_name = info.field_getters[field_name]
+    setter_name = get(info.field_setters, field_name, "$(struct_name_str)_set_$(field_name)")
 
     julia_type = _rust_type_to_julia_type_symbol(field_type)
     if julia_type === nothing
@@ -1605,14 +1416,11 @@ function _emit_function_code(func::RustFunctionSignature)
     end
     converted_args_str = join(converted_args, ", ")
 
-    # Check for Result/Option return types
-    result_info = parse_result_type(func.return_type)
-    option_info = parse_option_type(func.return_type)
-
-    if result_info !== nothing
-        return _emit_result_function_code(func, result_info, arg_syms, converted_args_str)
-    elseif option_info !== nothing
-        return _emit_option_function_code(func, option_info, arg_syms, converted_args_str)
+    # Result/Option return types are reported by the manifest
+    if func.return_kind == :result
+        return _emit_result_function_code(func, arg_syms, converted_args_str)
+    elseif func.return_kind == :option
+        return _emit_option_function_code(func, arg_syms, converted_args_str)
     else
         # Standard function
         julia_ret_type = _rust_type_to_julia_type_symbol(func.return_type)
@@ -1627,10 +1435,10 @@ export $func_name"""
     end
 end
 
-function _emit_result_function_code(func::RustFunctionSignature, result_info::ResultTypeInfo, arg_syms::String, converted_args_str::String)
+function _emit_result_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String)
     func_name = func.name
-    ok_julia_type = _rust_type_to_julia_type_symbol(result_info.ok_type)
-    err_julia_type = _rust_type_to_julia_type_symbol(result_info.err_type)
+    ok_julia_type = _rust_type_to_julia_type_symbol(func.ok_type)
+    err_julia_type = _rust_type_to_julia_type_symbol(func.err_type)
     ok_type_str = ok_julia_type !== nothing ? string(ok_julia_type) : "Any"
     err_type_str = err_julia_type !== nothing ? string(err_julia_type) : "Any"
     c_result_struct_name = "CResult_$func_name"
@@ -1654,9 +1462,9 @@ end
 export $func_name"""
 end
 
-function _emit_option_function_code(func::RustFunctionSignature, option_info::OptionTypeInfo, arg_syms::String, converted_args_str::String)
+function _emit_option_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String)
     func_name = func.name
-    inner_julia_type = _rust_type_to_julia_type_symbol(option_info.inner_type)
+    inner_julia_type = _rust_type_to_julia_type_symbol(func.inner_type)
     inner_type_str = inner_julia_type !== nothing ? string(inner_julia_type) : "Any"
     c_option_struct_name = "COption_$func_name"
 
@@ -1728,7 +1536,7 @@ function _emit_struct_code(info::RustStructInfo)
     end
 
     # Property access
-    compatible_fields = [(name, type) for (name, type) in info.fields if _is_ffi_compatible_field_type(type)]
+    compatible_fields = [(name, type) for (name, type) in info.fields if field_is_accessible(info, name)]
 
     if !isempty(compatible_fields)
         # getproperty
@@ -1740,7 +1548,7 @@ function _emit_struct_code(info::RustStructInfo)
         for (field_name, field_type) in compatible_fields
             julia_type = _rust_type_to_julia_type_symbol(field_type)
             julia_type_str = julia_type !== nothing ? string(julia_type) : "Any"
-            getter_fn = "$(struct_name)_get_$(field_name)"
+            getter_fn = info.field_getters[field_name]
             push!(lines, "    if field === :$field_name")
             push!(lines, "        func_ptr = _get_func_ptr(\"$getter_fn\")")
             push!(lines, "        return call_rust_function(func_ptr, $julia_type_str, getfield(self, :ptr))")
@@ -1757,7 +1565,7 @@ function _emit_struct_code(info::RustStructInfo)
         push!(lines, "    end")
         push!(lines, "    _check_not_freed(self, \"$struct_name\")")
         for (field_name, field_type) in compatible_fields
-            setter_fn = "$(struct_name)_set_$(field_name)"
+            setter_fn = get(info.field_setters, field_name, "$(struct_name)_set_$(field_name)")
             push!(lines, "    if field === :$field_name")
             push!(lines, "        func_ptr = _get_func_ptr(\"$setter_fn\")")
             push!(lines, "        call_rust_function(func_ptr, Cvoid, getfield(self, :ptr), value)")
@@ -1798,7 +1606,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
 
     arg_syms = join(arg_names, ", ")
 
-    is_constructor = method_name == "new" || method.return_type == "Self" || method.return_type == struct_name
+    is_constructor = method.is_constructor
 
     if method.is_static
         if is_constructor
