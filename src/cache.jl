@@ -63,15 +63,109 @@ struct CacheMetadata
 end
 
 """
+    CACHE_FORMAT_VERSION
+
+Version of the on-disk cache *layout*, and only of the layout: it names the
+directory every cached artifact lives under (`.../RustCall/v\$(CACHE_FORMAT_VERSION)`).
+
+Bump it whenever the meaning of the files under `get_cache_dir` changes in a way
+that makes older entries unreachable — as issue #278 Phase B does by routing
+every key through `artifact_key`. Namespacing rather than deleting means old
+trees stay on disk for rollback and for bisecting RustCall versions, and no
+intermediate state can serve a stale hit from the previous format.
+
+The identity *record* has its own version, `ARTIFACT_ID_SCHEMA_VERSION`, which is
+part of every key; this constant covers the directory layout only.
+
+Version history:
+- `1` — implicit, pre-#278: cache files directly under `.../RustCall`.
+- `2` — every key produced by `artifact_key` (#278 Phase B).
+"""
+const CACHE_FORMAT_VERSION = 2
+
+"""
+    _cache_format_root() -> String
+
+The parent directory holding one subdirectory per cache format version.
+"""
+function _cache_format_root()
+    return joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "RustCall")
+end
+
+"""
     get_cache_dir() -> String
 
 Get the cache directory for RustCall.jl compiled libraries.
-Uses Julia's standard cache directory structure.
+Uses Julia's standard cache directory structure, namespaced by
+`CACHE_FORMAT_VERSION`.
 """
 function get_cache_dir()
-    cache_root = joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "RustCall")
+    cache_root = joinpath(_cache_format_root(), "v$(CACHE_FORMAT_VERSION)")
     mkpath(cache_root)
     return cache_root
+end
+
+"""
+    _stale_cache_format_dirs() -> Vector{String}
+
+Sibling cache trees written by an older `CACHE_FORMAT_VERSION`, plus the
+unversioned pre-#278 layout (loose files and the `metadata`/`cargo`
+subdirectories directly under `.../RustCall`).
+
+Newer-versioned siblings are deliberately left alone: a future RustCall sharing
+the depot must keep its own cache.
+"""
+function _stale_cache_format_dirs()
+    root = _cache_format_root()
+    out = String[]
+    isdir(root) || return out
+    for entry in readdir(root)
+        path = joinpath(root, entry)
+        if isdir(path)
+            m = match(r"^v(\d+)$", entry)
+            if m !== nothing
+                parse(Int, m.captures[1]) < CACHE_FORMAT_VERSION && push!(out, path)
+            elseif entry in ("metadata", "cargo")
+                # The unversioned layout that predates CACHE_FORMAT_VERSION.
+                push!(out, path)
+            end
+        end
+    end
+    return out
+end
+
+"""
+    sweep_stale_cache_formats() -> Int
+
+Best-effort removal of cache trees left behind by older cache formats.
+Never throws: a locked or unreadable entry is skipped and simply stays on disk.
+Returns the number of entries removed.
+"""
+function sweep_stale_cache_formats()
+    removed = 0
+    for path in _stale_cache_format_dirs()
+        try
+            rm(path, recursive = true, force = true)
+            removed += 1
+        catch e
+            @debug "Could not remove stale cache format directory" path exception = e
+        end
+    end
+    # Loose files from the unversioned layout (`<key>.dylib`, `<key>.ll`, …).
+    root = _cache_format_root()
+    if isdir(root)
+        for entry in readdir(root)
+            path = joinpath(root, entry)
+            isfile(path) || continue
+            try
+                rm(path, force = true)
+                removed += 1
+            catch e
+                @debug "Could not remove stale cache file" path exception = e
+            end
+        end
+    end
+    return removed
 end
 
 """
@@ -410,6 +504,10 @@ function clear_cache()
 end
 
 function _clear_cache_unlocked()
+    # Clearing "the cache" means every format this RustCall can be responsible
+    # for, not just the current one, or a `clear_cache()` would leave the
+    # pre-#278 tree on disk forever.
+    sweep_stale_cache_formats()
     cache_dir = get_cache_dir()
     if isdir(cache_dir)
         try
@@ -516,6 +614,10 @@ println("Removed \$count old cache entries")
 ```
 """
 function cleanup_old_cache(max_age_days::Int = 30)
+    # Entries written under an older cache format are unreachable by
+    # construction, whatever their age: sweep them first (best effort).
+    sweep_stale_cache_formats()
+
     cache_dir = get_cache_dir()
     if !isdir(cache_dir)
         return nothing

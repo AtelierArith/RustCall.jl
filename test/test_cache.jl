@@ -16,6 +16,46 @@ using Test
         @test isdir(metadata_dir)
     end
 
+    @testset "Cache format namespace (#278)" begin
+        # Every cached artifact lives under a directory named for the on-disk
+        # cache format, so a key-formula change (#278 Phase B) cannot serve a
+        # hit written by the previous format.
+        cache_dir = RustCall.get_cache_dir()
+        @test basename(cache_dir) == "v$(RustCall.CACHE_FORMAT_VERSION)"
+        @test basename(RustCall._cache_format_root()) == "RustCall"
+        @test dirname(cache_dir) == RustCall._cache_format_root()
+
+        # The Cargo and metadata trees nest under the versioned directory.
+        @test startswith(RustCall.get_metadata_dir(), cache_dir)
+        @test startswith(RustCall.get_cargo_cache_dir(), cache_dir)
+
+        # Older siblings are swept best-effort; newer ones are left alone.
+        root = RustCall._cache_format_root()
+        old_dir = joinpath(root, "v1")
+        new_dir = joinpath(root, "v$(RustCall.CACHE_FORMAT_VERSION + 1)")
+        legacy_file = joinpath(root, "deadbeef.stale")
+        mkpath(old_dir)
+        mkpath(new_dir)
+        write(joinpath(old_dir, "x.txt"), "old")
+        write(legacy_file, "loose pre-v2 artifact")
+        try
+            stale = RustCall._stale_cache_format_dirs()
+            @test old_dir in stale
+            @test !(new_dir in stale)
+            @test !(cache_dir in stale)
+
+            RustCall.sweep_stale_cache_formats()
+            @test !isdir(old_dir)
+            @test !isfile(legacy_file)
+            @test isdir(new_dir)      # a future format's cache is not ours to delete
+            @test isdir(cache_dir)
+        finally
+            rm(new_dir; recursive = true, force = true)
+            rm(old_dir; recursive = true, force = true)
+            rm(legacy_file; force = true)
+        end
+    end
+
     @testset "Cache Key Generation" begin
         code1 = """
         #[no_mangle]
