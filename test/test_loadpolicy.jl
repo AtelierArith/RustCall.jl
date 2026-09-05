@@ -226,10 +226,11 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
         # The two Cargo-backed doors RustCall itself drives pin no `panic`, so
         # they take Cargo's release default — and the CARGO_PROFILE_RELEASE_PANIC
-        # override, because neither build calls setenv: src/cargobuild.jl runs
-        # `cargo build` with the inherited environment, as does deps/build.jl.
+        # override. src/cargobuild.jl runs `cargo build` with the inherited
+        # environment unless a captured snapshot is replayed (#272 added the
+        # `env === nothing || setenv` branch); deps/build.jl always inherits.
         # Same source, different artifact depending on the caller's env (#244).
-        @test !occursin("setenv", _src("cargobuild.jl"))
+        @test occursin("env === nothing || (cmd = setenv(cmd, env))", _src("cargobuild.jl"))
         for policy in (RustCall.inline_cargo_policy(), RustCall.helper_library_policy())
             @test policy.panic_strategy === :cargo_default
             @test policy.cargo_profile === :release
@@ -320,8 +321,10 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             writes += count(_ -> true,
                             eachmatch(r"RUST_LIBRARIES\[[^\]]*\]\s*=", _src(file)))
         end
-        # Seven open-coded registration sites on current main.
-        @test writes == 7
+        # Eight open-coded registration sites on current main: five in
+        # ruststr.jl, generics.jl, hot_reload.jl, and the reload alias that
+        # #272 added in rustmacro.jl (`_alias_reloaded_library`).
+        @test writes == 8
 
         # Each site decides for itself whether CURRENT_LIB moves and what the
         # key looks like; the policies record that disagreement.
