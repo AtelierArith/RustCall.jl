@@ -28,6 +28,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test p.dlopen_flags == UInt32(Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
         @test !RustCall.uses_global_symbols(p)
         @test p.panic_strategy === :abort
+        @test p.cargo_profile === :release
         @test RustCall.registers_in_rust_libraries(p)
         @test p.registry_key_kind === :content_hash
         @test p.registration_mode === :replace
@@ -62,12 +63,46 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                                 boundary_catches_panics = true))
         @test RustCall.must_assume_unwind(unwind)
         @test !RustCall.must_assume_unwind(abort)
+        @test RustCall.effective_panic_strategy(abort) === :abort
+        @test RustCall.effective_panic_strategy(unwind) === :unwind
+
+        # :cargo_default — RustCall drives Cargo but pins no `panic`, so the
+        # result is Cargo's profile default AND the CARGO_PROFILE_<P>_PANIC
+        # environment override, which the build inherits (#244).
+        cd_policy = RustCall.LoadPolicy("cd"; panic_strategy = :cargo_default)
+        @test RustCall.cargo_panic_env_var(cd_policy) == "CARGO_PROFILE_RELEASE_PANIC"
+        @test RustCall.effective_panic_strategy(cd_policy; env = Dict()) === :unwind
+        @test RustCall.effective_panic_strategy(
+            cd_policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :abort
+        @test RustCall.effective_panic_strategy(
+            cd_policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind")) === :unwind
+        @test RustCall.effective_panic_strategy(
+            cd_policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "")) === :unwind
+        @test RustCall.requires_catch_unwind_boundary(cd_policy; env = Dict())
+        @test !RustCall.requires_catch_unwind_boundary(
+            cd_policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort"))
+        @test RustCall.must_assume_unwind(cd_policy; env = Dict())
+        @test !RustCall.must_assume_unwind(
+            cd_policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort"))
+        @test RustCall.rustc_panic_flags(cd_policy) === missing
+        # The manifest pins nothing today — that is the bug Phase B fixes.
+        @test RustCall.cargo_profile_panic_line(cd_policy) === nothing
+
+        # A profile other than release picks the matching variable.
+        dbg = RustCall.LoadPolicy("dbg"; panic_strategy = :cargo_default,
+                                  cargo_profile = :dev)
+        @test RustCall.cargo_panic_env_var(dbg) == "CARGO_PROFILE_DEV_PANIC"
+        @test RustCall.effective_panic_strategy(
+            dbg; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :unwind
 
         # :crate_profile — RustCall does not control the build, so the answer
         # is unknown rather than a guess. Phase B must read the effective
         # profile (`cargo metadata` / `cargo config get`) or force it (#244).
         crate = RustCall.LoadPolicy("c"; panic_strategy = :crate_profile)
         @test crate.panic_strategy === :crate_profile
+        # Unchanged by the environment: the user's manifest can still pin it.
+        @test RustCall.effective_panic_strategy(
+            crate; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :crate_profile
         @test RustCall.rustc_panic_flags(crate) === missing
         @test RustCall.cargo_profile_panic_line(crate) === missing
         @test RustCall.requires_catch_unwind_boundary(crate) === missing
@@ -187,7 +222,31 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test isempty(catch_unwind_hits)
 
         @test RustCall.inline_rustc_policy().panic_strategy === :abort
-        @test RustCall.inline_cargo_policy().panic_strategy === :unwind
+
+        # The two Cargo-backed doors RustCall itself drives pin no `panic`, so
+        # they take Cargo's release default — and the CARGO_PROFILE_RELEASE_PANIC
+        # override, because neither build calls setenv: src/cargobuild.jl runs
+        # `cargo build` with the inherited environment, as does deps/build.jl.
+        # Same source, different artifact depending on the caller's env (#244).
+        @test !occursin("setenv", _src("cargobuild.jl"))
+        for policy in (RustCall.inline_cargo_policy(), RustCall.helper_library_policy())
+            @test policy.panic_strategy === :cargo_default
+            @test policy.cargo_profile === :release
+            @test RustCall.cargo_panic_env_var(policy) == "CARGO_PROFILE_RELEASE_PANIC"
+            @test RustCall.effective_panic_strategy(policy; env = Dict()) === :unwind
+            @test RustCall.effective_panic_strategy(
+                policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :abort
+            @test RustCall.must_assume_unwind(policy; env = Dict())
+        end
+        # ...while the direct-rustc door pins -C panic=abort and is unaffected.
+        @test RustCall.effective_panic_strategy(
+            RustCall.inline_rustc_policy();
+            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind")) === :abort
+        @test !RustCall.must_assume_unwind(
+            RustCall.inline_rustc_policy();
+            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind"))
+        # Both cargo-backed doors really do build --release.
+        @test occursin("release=true", _src("ruststr.jl"))
 
         # @rust_crate and hot reload run Cargo in the USER's crate
         # (src/crate_bindings.jl:914-925, src/hot_reload.jl:264), so a
@@ -214,12 +273,16 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test !occursin("panic", build_jl)
         @test !occursin("panic", helpers_toml)
         @test !occursin("[profile", helpers_toml)
-        @test RustCall.helper_library_policy().panic_strategy === :unwind
-        @test RustCall.requires_catch_unwind_boundary(RustCall.helper_library_policy())
+        @test RustCall.helper_library_policy().panic_strategy === :cargo_default
+        @test RustCall.requires_catch_unwind_boundary(
+            RustCall.helper_library_policy(); env = Dict())
         # The two inline doors disagree, which is exactly what #244 asks to fix.
-        @test RustCall.inline_rustc_policy().panic_strategy !==
-              RustCall.inline_cargo_policy().panic_strategy
-        @test RustCall.requires_catch_unwind_boundary(RustCall.inline_cargo_policy())
+        @test RustCall.effective_panic_strategy(RustCall.inline_rustc_policy();
+                                                env = Dict()) !==
+              RustCall.effective_panic_strategy(RustCall.inline_cargo_policy();
+                                                env = Dict())
+        @test RustCall.requires_catch_unwind_boundary(
+            RustCall.inline_cargo_policy(); env = Dict())
         @test !RustCall.requires_catch_unwind_boundary(RustCall.inline_rustc_policy())
     end
 

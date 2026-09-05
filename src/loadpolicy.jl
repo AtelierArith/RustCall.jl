@@ -81,9 +81,16 @@ every front door keeps a name.
 - `panic_strategy::Symbol` — the panic strategy the artifact is *compiled*
   with, one of:
     * `:abort` — RustCall passes `-C panic=abort` (`src/compiler.jl:219`, `:381`);
-    * `:unwind` — RustCall controls the build and does not set a panic mode, so
-      Cargo's `unwind` default applies (the generated `[profile.release]` at
-      `src/cargoproject.jl:126-128` writes only `opt-level`/`lto`);
+    * `:unwind` — the artifact is pinned to unwinding;
+    * `:cargo_default` — RustCall drives Cargo but pins nothing: the generated
+      `[profile.release]` writes only `opt-level`/`lto`
+      (`src/cargoproject.jl:126-128`), and the helper library has no profile
+      section at all, so the result is *Cargo's default for the profile,
+      subject to `CARGO_PROFILE_<PROFILE>_PANIC` from the environment*.
+      `build_cargo_project` (`src/cargobuild.jl:25-67`) and `deps/build.jl`
+      both `run` Cargo without `setenv`, so the Julia process environment is
+      inherited and `CARGO_PROFILE_RELEASE_PANIC=abort` silently produces an
+      aborting artifact.  Resolve it with `effective_panic_strategy`;
     * `:crate_profile` — RustCall does **not** control the build: Cargo runs in
       the *user's* crate, so the effective profile (the crate's own
       `[profile.release]`, a workspace profile, `.cargo/config.toml`, or
@@ -135,6 +142,7 @@ struct LoadPolicy
     dlopen_flags::UInt32
     global_symbols::Bool
     panic_strategy::Symbol
+    cargo_profile::Symbol
     boundary_catches_panics::Bool
     registry::Symbol
     registry_key_kind::Symbol
@@ -146,7 +154,7 @@ struct LoadPolicy
     notes::String
 end
 
-const _VALID_PANIC_STRATEGIES = (:abort, :unwind, :crate_profile)
+const _VALID_PANIC_STRATEGIES = (:abort, :unwind, :cargo_default, :crate_profile)
 const _VALID_REGISTRIES = (:rust_libraries, :module_local, :helper_slot, :none)
 const _VALID_KEY_KINDS = (:content_hash, :lib_basename, :irust_hash, :crate_lib_name, :none)
 const _VALID_REGISTRATION_MODES = (:replace, :insert_only)
@@ -164,6 +172,7 @@ Every named constructor below overrides whatever its call sites do differently.
 function LoadPolicy(name::AbstractString;
                     dlopen_flags::Integer = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
                     panic_strategy::Symbol = :abort,
+                    cargo_profile::Symbol = :release,
                     boundary_catches_panics::Bool = false,
                     registry::Symbol = :rust_libraries,
                     registry_key_kind::Symbol = :content_hash,
@@ -187,7 +196,7 @@ function LoadPolicy(name::AbstractString;
     flags = UInt32(dlopen_flags)
     return LoadPolicy(String(name), flags,
                       (flags & UInt32(Libdl.RTLD_GLOBAL)) != 0,
-                      panic_strategy, boundary_catches_panics,
+                      panic_strategy, cargo_profile, boundary_catches_panics,
                       registry, registry_key_kind, registration_mode, sets_current_lib,
                       finalizer_frees,
                       String[String(s) for s in call_sites],
@@ -246,23 +255,31 @@ depend on the cache.  The axis along which visibility differs is whether the
 block declares `// cargo-deps:` (#250).
 
 The generated `Cargo.toml` writes only `opt-level`/`lto`
-(`src/cargoproject.jl:126-128`), so the artifact **unwinds** while the direct
-`rustc` path aborts — and no boundary catches the unwind (#244).
+(`src/cargoproject.jl:126-128`) and never pins `panic`, so the strategy is
+`:cargo_default`: Cargo's release default (`unwind`) *unless*
+`CARGO_PROFILE_RELEASE_PANIC` is set in the Julia process, which
+`build_cargo_project` inherits (`src/cargobuild.jl:25-67` runs Cargo with no
+`setenv`).  Either way the direct `rustc` path aborts and this one may not, and
+no boundary catches an unwind (#244).  Use `effective_panic_strategy` to
+resolve it; Phase B should pin `panic` in the generated manifest.
 """
 inline_cargo_policy() = LoadPolicy("inline-cargo";
     dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
-    panic_strategy = :unwind,
+    panic_strategy = :cargo_default,
+    cargo_profile = :release,
     boundary_catches_panics = false,
     registry = :rust_libraries,
     registry_key_kind = :content_hash,
     sets_current_lib = true,
     finalizer_frees = false,
     call_sites = ["src/ruststr.jl:386", "src/ruststr.jl:389",
-                  "src/ruststr.jl:419", "src/ruststr.jl:426",
+                  "src/ruststr.jl:409", "src/ruststr.jl:419",
+                  "src/ruststr.jl:426", "src/cargobuild.jl:25-67",
                   "src/cargoproject.jl:126-128"],
     issues = [244, 250],
-    notes = "Cargo path unwinds while the rustc path aborts, and loads " *
-            "RTLD_GLOBAL where the rustc path loads RTLD_LOCAL.")
+    notes = "Cargo path takes Cargo's release default (unwind, or abort under " *
+            "CARGO_PROFILE_RELEASE_PANIC) while the rustc path always aborts, " *
+            "and loads RTLD_GLOBAL where the rustc path loads RTLD_LOCAL.")
 
 """
     crate_policy() -> LoadPolicy
@@ -310,17 +327,19 @@ This is the one library other artifacts could legitimately need to resolve
 symbols against (`SYMBOL_VISIBILITY_RULE`), yet it is the one loaded
 `RTLD_LOCAL` today.  Recorded as-is; Phase A changes nothing.
 
-Panic strategy is `:unwind`, not `:abort`: the helper library is built by
+Panic strategy is `:cargo_default`, not `:abort`: the helper library is built by
 `deps/build.jl:97-98` with a plain `cargo build --release --manifest-path ...`,
 and `deps/rust_helpers/Cargo.toml` (9 lines, `[package]`/`[lib]`/`[dependencies]`
 only) declares no `[profile.release]` and therefore no `panic` key, so Cargo's
-`unwind` default applies.  Together with the two Cargo-backed inline paths and
-`@rust_crate`, that makes the helper library a fourth unwinding artifact with no
-`catch_unwind` boundary (#244).
+release default (`unwind`) applies — unless `CARGO_PROFILE_RELEASE_PANIC` is set
+in the environment `Pkg.build` inherits, in which case the same source produces
+an aborting artifact.  Either way no `catch_unwind` boundary contains it (#244);
+`effective_panic_strategy` resolves the value.
 """
 helper_library_policy() = LoadPolicy("helper-library";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :unwind,
+    panic_strategy = :cargo_default,
+    cargo_profile = :release,
     boundary_catches_panics = false,
     registry = :helper_slot,
     registry_key_kind = :none,
@@ -332,7 +351,8 @@ helper_library_policy() = LoadPolicy("helper-library";
     notes = "RTLD_LOCAL despite being the only library whose symbols other " *
             "artifacts might resolve against — the visibility rule is " *
             "inverted; and built by plain `cargo build --release`, so it " *
-            "unwinds like the other Cargo-backed artifacts.")
+            "takes Cargo's release default like the other Cargo-backed " *
+            "artifacts, environment overrides included.")
 
 """
     generics_policy() -> LoadPolicy
@@ -471,12 +491,12 @@ uses_global_symbols(policy::LoadPolicy) = policy.global_symbols
 
 The `rustc` arguments implied by the policy's panic strategy — `["-C",
 "panic=abort"]` for `:abort`, empty for `:unwind` (rustc's default), and
-`missing` for `:crate_profile`, where the build is Cargo's inside the user's
-crate and RustCall does not drive `rustc` at all.
+`missing` for `:cargo_default` and `:crate_profile`, where Cargo drives the
+build and RustCall does not invoke `rustc` itself.
 Mirrors `src/compiler.jl:219`, `:381`.
 """
 function rustc_panic_flags(policy::LoadPolicy)
-    policy.panic_strategy === :crate_profile && return missing
+    policy.panic_strategy in (:crate_profile, :cargo_default) && return missing
     return policy.panic_strategy === :abort ? ["-C", "panic=abort"] : String[]
 end
 
@@ -488,6 +508,11 @@ panic strategy, or `nothing` when the Cargo default already matches.
 `src/cargoproject.jl` emits no such line today, which is why the Cargo path
 unwinds (#244).
 
+Returns `nothing` for `:cargo_default`, which is precisely today's bug: RustCall
+writes the manifest and pins nothing, leaving the strategy to Cargo's default
+and to `CARGO_PROFILE_<PROFILE>_PANIC`.  Phase B should emit a line here so the
+environment cannot change the policy silently.
+
 Returns `missing` for `:crate_profile`: RustCall generates no `Cargo.toml` for
 those doors — the manifest is the user's — so there is no line for it to write,
 and Phase B has to read the effective profile (`cargo metadata` /
@@ -495,30 +520,72 @@ and Phase B has to read the effective profile (`cargo metadata` /
 """
 function cargo_profile_panic_line(policy::LoadPolicy)
     policy.panic_strategy === :crate_profile && return missing
+    policy.panic_strategy === :cargo_default && return nothing
     return policy.panic_strategy === :abort ? "panic = \"abort\"" : nothing
 end
 
 """
-    requires_catch_unwind_boundary(policy::LoadPolicy) -> Bool
+    cargo_panic_env_var(policy::LoadPolicy) -> String
+
+The `CARGO_PROFILE_<PROFILE>_PANIC` variable that overrides this policy's panic
+strategy, derived from `policy.cargo_profile` — `CARGO_PROFILE_RELEASE_PANIC`
+for every Cargo-backed door today.
+"""
+cargo_panic_env_var(policy::LoadPolicy) =
+    "CARGO_PROFILE_$(uppercase(String(policy.cargo_profile)))_PANIC"
+
+"""
+    effective_panic_strategy(policy::LoadPolicy; env = ENV) -> Symbol
+
+Resolve `policy.panic_strategy` against the environment a build would inherit.
+
+- `:abort` and `:unwind` are pinned by RustCall and returned unchanged.
+- `:cargo_default` is resolved by reading `cargo_panic_env_var(policy)` out of
+  `env`: `"abort"` gives `:abort`, `"unwind"` gives `:unwind`, and anything
+  else — unset, empty, unrecognised — gives `:unwind`, Cargo's default for the
+  `release` profile.  Both doors that carry `:cargo_default` run Cargo without
+  `setenv` (`src/cargobuild.jl:25-67`, `deps/build.jl:97-98`), so the Julia
+  process environment reaches the build and `CARGO_PROFILE_RELEASE_PANIC=abort`
+  really does change the artifact.
+- `:crate_profile` is returned unchanged: the environment is only one of the
+  inputs there, and the user's manifest — which Phase A does not read — can
+  pin `panic` and win over the default (though not over the environment
+  variable).  Still unknowable without reading it.
+
+Pass `env` explicitly to reason about a build other than this process's.
+"""
+function effective_panic_strategy(policy::LoadPolicy; env = ENV)
+    policy.panic_strategy === :cargo_default || return policy.panic_strategy
+    raw = get(env, cargo_panic_env_var(policy), "")
+    value = lowercase(strip(String(raw)))
+    value == "abort" && return :abort
+    return :unwind
+end
+
+"""
+    requires_catch_unwind_boundary(policy::LoadPolicy; env = ENV) -> Union{Bool, Missing}
 
 Whether a generated `extern "C"` wrapper for this artifact must wrap the user
 body in `std::panic::catch_unwind` to keep a panic from crossing the FFI
 boundary.  `true` exactly when the artifact unwinds and the boundary does not
-already catch — i.e. on every path RustCall builds with Cargo today (#244).
+already catch — which, with no `CARGO_PROFILE_RELEASE_PANIC` set, is every path
+RustCall builds with Cargo today (#244).
 
-Returns **`missing`** for `:crate_profile`: whether those artifacts unwind is
-decided by the user's Cargo profile, which Phase A does not read.  Callers that
+Routes through `effective_panic_strategy`, so a `:cargo_default` policy answers
+`false` under `CARGO_PROFILE_RELEASE_PANIC=abort`.  Returns **`missing`** for
+`:crate_profile`, whose answer depends on the user's manifest.  Callers that
 need a decision rather than a fact should use `must_assume_unwind`, which
 resolves the unknown conservatively.
 """
-function requires_catch_unwind_boundary(policy::LoadPolicy)
+function requires_catch_unwind_boundary(policy::LoadPolicy; env = ENV)
     policy.boundary_catches_panics && return false
-    policy.panic_strategy === :crate_profile && return missing
-    return policy.panic_strategy === :unwind
+    strategy = effective_panic_strategy(policy; env)
+    strategy === :crate_profile && return missing
+    return strategy === :unwind
 end
 
 """
-    must_assume_unwind(policy::LoadPolicy) -> Bool
+    must_assume_unwind(policy::LoadPolicy; env = ENV) -> Bool
 
 The conservative resolution of `requires_catch_unwind_boundary`: `true` unless
 the artifact is known to abort or the boundary already catches.  An unknown
@@ -526,9 +593,9 @@ the artifact is known to abort or the boundary already catches.  An unknown
 a panic that cannot happen is merely redundant, while a missing boundary on an
 unwinding artifact is undefined behaviour (#244).
 """
-function must_assume_unwind(policy::LoadPolicy)
+function must_assume_unwind(policy::LoadPolicy; env = ENV)
     policy.boundary_catches_panics && return false
-    return policy.panic_strategy !== :abort
+    return effective_panic_strategy(policy; env) !== :abort
 end
 
 """
