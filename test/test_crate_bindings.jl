@@ -722,3 +722,49 @@ end
     # and the emitted module parses
     @test Meta.parse(code) isa Expr
 end
+
+@testset "Crate bindings: arguments named like generated locals (#242 review)" begin
+    # A Rust argument may be called `func_ptr` / `lib_name` / `c_result` /
+    # `c_option`; the generated wrapper must not shadow it with its own local.
+    info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+    code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
+
+    # Plain return, string arguments named func_ptr / lib_name
+    @test occursin("__rustcall_str_func_ptr = String(func_ptr)", code)
+    @test occursin("__rustcall_str_lib_name = String(lib_name)", code)
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_str_len\")", code)
+    @test occursin("call_rust_function(__rustcall_func_ptr, Csize_t, pointer(__rustcall_str_func_ptr)", code)
+    # The conversions come before the pointer lookup
+    @test findfirst("__rustcall_str_func_ptr = String(func_ptr)", code).start <
+          findfirst("__rustcall_func_ptr = _get_func_ptr(\"shadow_str_len\")", code).start
+
+    # Result return: func_ptr and c_result are both argument names
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_parse_int\")", code)
+    @test occursin("__rustcall_c_result = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, CResult_shadow_parse_int,", code)
+    @test occursin("if __rustcall_c_result.is_ok == 1", code)
+
+    # Option return: func_ptr and c_option are both argument names
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_first_char\")", code)
+    @test occursin("__rustcall_c_option = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, COption_shadow_first_char,", code)
+    @test occursin("if __rustcall_c_option.is_some == 1", code)
+
+    # No strings, but still a colliding argument name
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_double\")", code)
+    @test occursin("call_rust_function(__rustcall_func_ptr, Int32, Int32(func_ptr))", code)
+
+    # Names that do not collide keep their readable form
+    @test occursin("func_ptr = _get_func_ptr(\"parse_int\")", code)
+
+    @test Meta.parse(code) isa Expr
+
+    if RustCall.check_rustc_available()
+        let bindings = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateShadow"
+            @test bindings.shadow_str_len("abc", "de") == 5
+            @test RustCall.unwrap(bindings.shadow_parse_int(" 7 ", Int32(-1))) == Int32(7)
+            @test RustCall.is_err(bindings.shadow_parse_int("seven", Int32(-1)))
+            @test RustCall.unwrap(bindings.shadow_first_char("A", UInt32(0))) == UInt32('A')
+            @test RustCall.is_none(bindings.shadow_first_char("", UInt32(0)))
+            @test bindings.shadow_double(Int32(21)) == Int32(42)
+        end
+    end
+end

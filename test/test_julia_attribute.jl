@@ -450,3 +450,41 @@ end
         end
     end
 end
+
+@testset "#[julia] arguments named like generated locals (#242 review)" begin
+    # The wrappers introduce locals (`func_ptr`, `lib_name`, `c_result`,
+    # `c_option`); a Rust argument may carry any of those names and must not be
+    # shadowed by them.
+    @test RustCall._generated_local("func_ptr", ["s"]) === :func_ptr
+    @test RustCall._generated_local("func_ptr", ["func_ptr"]) === Symbol("__rustcall_func_ptr")
+    @test RustCall._generated_local("c_result", ["c_result", "__rustcall_x"]) ===
+          Symbol("__rustcall__c_result")
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[julia]
+        pub fn shadow_len(func_ptr: &str, lib_name: String) -> usize { func_ptr.len() + lib_name.len() }
+        #[julia]
+        pub fn shadow_parse(func_ptr: &str, c_result: i32) -> Result<i32, i32> {
+            func_ptr.trim().parse().map_err(|_| c_result)
+        }
+        #[julia]
+        pub fn shadow_first(func_ptr: String, c_option: u32) -> Option<u32> {
+            func_ptr.chars().next().map(|c| c as u32 + c_option)
+        }
+        #[julia]
+        pub fn shadow_upper(func_ptr: String, lib_name: &str) -> String {
+            format!("{}{}", func_ptr.to_uppercase(), lib_name)
+        }
+        #[julia]
+        pub fn shadow_twice(func_ptr: i32) -> i32 { func_ptr * 2 }
+        """
+        @test shadow_len("abc", "de") == 5
+        @test RustCall.unwrap(shadow_parse(" 7 ", Int32(-1))) == Int32(7)
+        @test RustCall.is_err(shadow_parse("seven", Int32(-1)))
+        @test RustCall.unwrap(shadow_first("A", UInt32(0))) == UInt32('A')
+        @test RustCall.is_none(shadow_first("", UInt32(0)))
+        @test shadow_upper("ada", "!") == "ADA!"
+        @test shadow_twice(Int32(21)) == Int32(42)
+    end
+end

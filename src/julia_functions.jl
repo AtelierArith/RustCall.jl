@@ -132,6 +132,24 @@ function _string_temp_prefix(arg_names)
 end
 
 """
+    _generated_local(base, arg_names) -> Symbol
+
+Name for a local the generated wrapper introduces (`func_ptr`, `lib_name`,
+`c_result`, ...). A Rust argument may legitimately be called `func_ptr`, and
+the wrapper must not shadow it, so the name is prefixed when — and only when —
+it would collide with one of `arg_names`. Without a collision the readable
+name is kept, so generated code is unchanged for the common case.
+"""
+function _generated_local(base::AbstractString, arg_names)
+    base in arg_names || return Symbol(base)
+    prefix = "__rustcall_"
+    while any(startswith(n, prefix) for n in arg_names)
+        prefix *= "_"
+    end
+    return Symbol(prefix, base)
+end
+
+"""
     _uses_string_ffi(sig) -> Bool
 
 Whether the wrapper of `sig` needs the string ABI (string arguments or a
@@ -220,11 +238,13 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
 
     # Generate the wrapper function using internal API directly
     # This avoids macro expansion issues
+    lib_sym = _generated_local("lib_name", sig.arg_names)
+    ptr_sym = _generated_local("func_ptr", sig.arg_names)
     return quote
         function $func_name($(arg_syms...))
-            lib_name = RustCall.get_current_library()
-            func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
-            RustCall.call_rust_function(func_ptr, $julia_ret_type, $(converted_args...))
+            $lib_sym = RustCall.get_current_library()
+            $ptr_sym = RustCall.get_function_pointer($lib_sym, $func_name_str)
+            RustCall.call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...))
         end
     end
 end
@@ -235,19 +255,20 @@ end
 # return a borrowed `<fn>_RustCallBorrowedString`.
 function _generate_inline_string_wrapper(sig, func_name, func_name_str, arg_syms)
     bindings, preserved, call_args = _string_arg_plan(sig, esc)
+    lib_sym = _generated_local("lib_name", sig.arg_names)
     call = if sig.has_owned_string_helper
         free_name = func_name_str * "_free_rust_string"
-        :(RustCall._call_rust_owned_string(lib_name, $func_name_str, $free_name, $(call_args...)))
+        :(RustCall._call_rust_owned_string($lib_sym, $func_name_str, $free_name, $(call_args...)))
     elseif sig.has_borrowed_string_helper
-        :(RustCall._call_rust_borrowed_string(lib_name, $func_name_str, $(call_args...)))
+        :(RustCall._call_rust_borrowed_string($lib_sym, $func_name_str, $(call_args...)))
     else
         ret = something(_rust_type_to_julia_type_symbol(sig.return_type), :Any)
-        :(RustCall.call_rust_function(RustCall.get_function_pointer(lib_name, $func_name_str), $ret, $(call_args...)))
+        :(RustCall.call_rust_function(RustCall.get_function_pointer($lib_sym, $func_name_str), $ret, $(call_args...)))
     end
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
-            lib_name = RustCall.get_current_library()
+            $lib_sym = RustCall.get_current_library()
             GC.@preserve $(preserved...) begin
                 $call
             end
@@ -261,26 +282,32 @@ end
 function _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, bindings, preserved, converted_args)
     ok_t = something(_rust_type_to_julia_type_symbol(sig.ok_type), :Any)
     err_t = something(_rust_type_to_julia_type_symbol(sig.err_type), :Any)
+    lib_sym = _generated_local("lib_name", sig.arg_names)
+    ptr_sym = _generated_local("func_ptr", sig.arg_names)
+    c_sym = _generated_local("c_result", sig.arg_names)
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
-            lib_name = RustCall.get_current_library()
-            func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
-            c = GC.@preserve $(preserved...) RustCall.call_rust_function(func_ptr, RustCall.CResultType{$ok_t, $err_t}, $(converted_args...))
-            RustCall.convert_c_result_to_rust_result(c, $ok_t, $err_t)
+            $lib_sym = RustCall.get_current_library()
+            $ptr_sym = RustCall.get_function_pointer($lib_sym, $func_name_str)
+            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.CResultType{$ok_t, $err_t}, $(converted_args...))
+            RustCall.convert_c_result_to_rust_result($c_sym, $ok_t, $err_t)
         end
     end
 end
 
 function _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, bindings, preserved, converted_args)
     inner_t = something(_rust_type_to_julia_type_symbol(sig.inner_type), :Any)
+    lib_sym = _generated_local("lib_name", sig.arg_names)
+    ptr_sym = _generated_local("func_ptr", sig.arg_names)
+    c_sym = _generated_local("c_option", sig.arg_names)
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
-            lib_name = RustCall.get_current_library()
-            func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
-            c = GC.@preserve $(preserved...) RustCall.call_rust_function(func_ptr, RustCall.COptionType{$inner_t}, $(converted_args...))
-            RustCall.convert_c_option_to_rust_option(c, $inner_t)
+            $lib_sym = RustCall.get_current_library()
+            $ptr_sym = RustCall.get_function_pointer($lib_sym, $func_name_str)
+            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.COptionType{$inner_t}, $(converted_args...))
+            RustCall.convert_c_option_to_rust_option($c_sym, $inner_t)
         end
     end
 end

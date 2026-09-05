@@ -400,3 +400,32 @@ mod tests {
         assert_eq!(none_result.is_some, 0);
     }
 }
+
+// Regression coverage for the #[julia] wrapper generators (#242 review): a
+// Rust argument may be named like one of the locals the generated Julia
+// wrapper introduces (`func_ptr`, `lib_name`, `c_result`, `c_option`). The
+// wrappers must not shadow the argument with those locals.
+
+/// Plain return with arguments named after generated locals
+#[julia]
+fn shadow_str_len(func_ptr: &str, lib_name: String) -> usize {
+    func_ptr.len() + lib_name.len()
+}
+
+/// `Result` return with arguments named after generated locals
+#[julia]
+fn shadow_parse_int(func_ptr: &str, c_result: i32) -> Result<i32, i32> {
+    func_ptr.trim().parse().map_err(|_| c_result)
+}
+
+/// `Option` return with arguments named after generated locals
+#[julia]
+fn shadow_first_char(func_ptr: String, c_option: u32) -> Option<u32> {
+    func_ptr.chars().next().map(|c| c as u32 + c_option)
+}
+
+/// No strings involved, but still an argument named after a generated local
+#[julia]
+fn shadow_double(func_ptr: i32) -> i32 {
+    func_ptr * 2
+}
