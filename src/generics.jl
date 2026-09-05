@@ -282,18 +282,19 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
 
         # Return and argument types come from the manifest of the specialized
         # function, never from scanning the generated source.
-        ret_type = _specialized_return_type(specialized.return_type)
         arg_types = Type[_specialized_arg_type(t, type_params) for t in specialized.arg_types]
 
         # Fixed `String` / `&str` parameters and returns use the string ABI
         # (#242): the specialized wrapper takes `(ptr, len)` pairs and returns
         # an owned buffer (released through `<name>_free_rust_string`) or a
-        # borrowed view; see `_call_monomorphized`.
+        # borrowed view; see `_call_monomorphized`. A lowered string return is
+        # decided here, *before* the plain return type is resolved: the buffer
+        # is not a single C slot and asking the contract for one would fail
+        # closed on a return the wrapper handles perfectly well.
         string_return = :none
         free_ptr = C_NULL
         if specialized.has_owned_string_helper
             string_return = :owned
-            ret_type = String
             # The string helpers keep the instantiation's own name (#279).
             free_name = ffi_free_symbol(specialized.name)
             free_ptr = Libdl.dlsym(lib_handle, free_name; throw_error=false)
@@ -302,7 +303,18 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             end
         elseif specialized.has_borrowed_string_helper
             string_return = :borrowed
-            ret_type = String
+        end
+
+        # Return type from the manifest of the specialized function, never from
+        # scanning the generated source. A fixed type the contract does not
+        # cover goes through `FFI_STRICT[]` like every other return site.
+        ret_type = if string_return === :none
+            _specialized_return_type(specialized.return_type,
+                                     ffi_signature_context(specialized.name,
+                                                           specialized.arg_types,
+                                                           specialized.return_type))
+        else
+            String
         end
 
         # Create FunctionInfo
@@ -405,20 +417,21 @@ function _manifest_signature_for(func_name::String, code::String)
 end
 
 """
-    _specialized_return_type(rust_type::String) -> Type
+    _specialized_return_type(rust_type::String, ctx::AbstractString) -> Type
 
 Julia return type of a monomorphized function, from the FFI contract
-(`src/ffi_contract.jl`): the single C slot the wrapper returns. A raw pointer
-keeps its pointee (`*mut i32` is `Ptr{Int32}`, an opaque pointee degrades to
-`Ptr{Cvoid}`); a spelling the contract does not cover stays `Any`, which
-`FFI_STRICT` turns into an error.
+(`src/ffi_contract.jl`). A raw pointer keeps its pointee (`*mut i32` is
+`Ptr{Int32}`, an opaque pointee degrades to `Ptr{Cvoid}`), and `char` is the
+surface `Char`, which `call_rust_function` reads out of its `UInt32` slot.
+
+A fixed type the contract does not cover goes through the same
+`ffi_return_type_or_throw` every other return site uses, so `FFI_STRICT[]`
+governs it: `:error` raises naming the specialized signature, `:warn` warns once
+and falls back to `Any`. It used to become `Any` silently, which is not a
+well-defined `ccall` return slot (#276).
 """
-function _specialized_return_type(rust_type::String)
-    c = ffi_return_contract(rust_type)
-    c.known || return Any
-    c.abi === :void && return Cvoid
-    (c.abi === :by_value || c.abi === :pointer) || return Any
-    return only(c.ccall_types)
+function _specialized_return_type(rust_type::String, ctx::AbstractString)
+    return ffi_return_type_or_throw(rust_type, "", ctx)
 end
 
 function _specialized_arg_type(rust_type::String, type_params::Dict{Symbol, <:Type})
@@ -469,7 +482,8 @@ non-generic `#[julia]` functions do.
 """
 function _call_monomorphized(info::FunctionInfo, args...)
     if info.string_return === :none && !any(_is_string_abi, info.arg_abis)
-        return call_rust_function(info.func_ptr, info.return_type, args...)
+        return call_rust_function(info.func_ptr, info.return_type,
+                                  _monomorphized_call_args(info, args)...)
     end
     if length(info.arg_abis) != length(args)
         error("Function '$(info.name)' takes $(length(info.arg_abis)) argument(s) but $(length(args)) were given")
@@ -478,14 +492,14 @@ function _call_monomorphized(info::FunctionInfo, args...)
     # GC.@preserve keeps alive (and, through it, every string).
     strings = String[]
     call_args = Any[]
-    for (arg, abi) in zip(args, info.arg_abis)
+    for (i, (arg, abi)) in enumerate(zip(args, info.arg_abis))
         if _is_string_abi(abi)
             s = String(arg)
             push!(strings, s)
             push!(call_args, pointer(s))
             push!(call_args, sizeof(s) % Csize_t)
         else
-            push!(call_args, arg)
+            push!(call_args, _monomorphized_arg(info, i, arg))
         end
     end
     GC.@preserve strings begin
@@ -497,6 +511,28 @@ function _call_monomorphized(info::FunctionInfo, args...)
             call_rust_function(info.func_ptr, info.return_type, call_args...)
         end
     end
+end
+
+"""
+    _monomorphized_call_args(info, args) -> Tuple
+
+Every argument converted to the C slot the manifest recorded for it
+(`info.arg_types`, resolved through the FFI contract at specialization time).
+
+Without this the `ccall` signature was derived from the *runtime* Julia types of
+the arguments, so `fn f<T>(x: T, c: char)` called with a Julia `Char` passed
+that `Char`'s left-aligned UTF-8 bit pattern where Rust expects a `UInt32` code
+point (#245, #276). A count mismatch is left alone: the receiver-passing paths
+build their own argument lists and the call itself reports the mismatch.
+"""
+function _monomorphized_call_args(info::FunctionInfo, args::Tuple)
+    length(info.arg_types) == length(args) || return args
+    return ntuple(i -> _monomorphized_arg(info, i, args[i]), length(args))
+end
+
+function _monomorphized_arg(info::FunctionInfo, i::Integer, arg)
+    i <= length(info.arg_types) || return arg
+    return ffi_slot_convert(info.arg_types[i], arg)
 end
 
 """

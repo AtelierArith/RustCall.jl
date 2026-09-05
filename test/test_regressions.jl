@@ -1102,10 +1102,15 @@ end
 
         # Rust `char` travels as its C slot, a `UInt32` code point. It is
         # converted, never reinterpreted from Julia's left-aligned UTF-8 `Char`.
-        @test rc245_upper('a') === UInt32('A')
-        @test Char(rc245_upper('q')) === 'Q'
+        @test rc245_upper('a') === 'A'
+        @test rc245_upper('q') === 'Q'
+        # The C slot is a `UInt32` code point and the surface value a `Char`;
+        # the wrapper converts, and the raw bits of a non-ASCII `Char` are not
+        # the code point, which is what made reinterpreting wrong.
         @test RustCall.ffi_ccall_type("char") === UInt32
         @test RustCall.ffi_surface_type("char") === Char
+        @test rc245_upper('π') === 'π'
+        @test reinterpret(UInt32, 'π') != RustCall.ffi_char_code_point('π')
 
         # Small integer and platform-sized struct fields read as themselves.
         small = Rc245Small(UInt16(65535), Int8(-3), UInt(9))
@@ -1267,5 +1272,151 @@ end
             RustCall.unload_library(lib_a)
             RustCall.unload_library(lib_b)
         end
+    end
+end
+
+# ---------------------------------------------------------------------------
+# #276 Phase B, Codex review follow-ups.
+# ---------------------------------------------------------------------------
+
+# The monomorphized call path derived its `ccall` signature from the *runtime*
+# Julia types of the arguments rather than from the slots the manifest recorded,
+# so a fixed `char` parameter of a generic function received Julia's
+# left-aligned UTF-8 `Char` bits where Rust expects a `UInt32` code point.
+@testset "#276: a monomorphized call converts to the recorded slots" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        rust"""
+        #[julia]
+        pub fn rc276_tag<T: std::fmt::Display>(value: T, sep: char) -> char {
+            let _ = format!("{}", value);
+            sep.to_ascii_uppercase()
+        }
+        #[julia]
+        pub fn rc276_shout_char(c: char) -> char { c.to_ascii_uppercase() }
+        """
+
+        # Non-generic: `char` in and `char` out, converted in both directions.
+        @test rc276_shout_char('a') === 'A'
+        @test rc276_shout_char('π') === 'π'
+        @test rc276_shout_char('𝄞') === '𝄞'
+
+        # Generic with a fixed `char` argument and a `char` return: the slot
+        # comes from the specialized manifest, not from `typeof(sep)`.
+        @test RustCall.call_generic_function("rc276_tag", Int32(1), 'q') === 'Q'
+        @test RustCall.call_generic_function("rc276_tag", Float64(2.5), 'π') === 'π'
+
+        # The recorded slot really is the code point, and the specialized
+        # return type really is the surface `Char`.
+        info = RustCall.monomorphize_function("rc276_tag", Dict{Symbol, Type}(:T => Int32))
+        @test info.return_type === Char
+        @test info.arg_types[2] === UInt32
+        @test RustCall.ffi_slot_convert(info.arg_types[2], 'π') === UInt32(0x3c0)
+    end
+end
+
+@testset "#276: a char slot that is not a scalar value is rejected" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        # A Rust `char` is always a Unicode scalar value, so a slot that is not
+        # one did not come from a `char`. Reading it as a `Char` anyway would
+        # construct an invalid one; the conversion refuses instead. The bad
+        # value is produced on the Rust side, through a symbol that returns a
+        # raw `u32` read back through the `char` surface type.
+        code = """
+        #[no_mangle]
+        pub extern "C" fn rc276_bad_char() -> u32 { 0x0011_0000 }
+        #[no_mangle]
+        pub extern "C" fn rc276_surrogate() -> u32 { 0x0000_d800 }
+        #[no_mangle]
+        pub extern "C" fn rc276_good_char() -> u32 { 0x0000_03c0 }
+        """
+        lib = RustCall._compile_and_load_rust(code, "test_regressions", 0)
+        good = RustCall.get_function_pointer(lib, "rc276_good_char")
+        @test RustCall.call_rust_function(good, Char) === 'π'
+        for sym in ("rc276_bad_char", "rc276_surrogate")
+            ptr = RustCall.get_function_pointer(lib, sym)
+            @test_throws RustCall.RustError RustCall.call_rust_function(ptr, Char)
+        end
+    end
+end
+
+# A specialized generic whose fixed return type the contract does not cover used
+# to become `Any` silently, bypassing `FFI_STRICT`.
+@testset "#276: an unsupported specialized return obeys FFI_STRICT" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        ctx = "rc276_boxed_i32(i32) -> Vec<f64>"
+        previous = RustCall.FFI_STRICT[]
+        try
+            RustCall.FFI_STRICT[] = :error
+            err = try
+                RustCall._specialized_return_type("Vec<f64>", ctx)
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.RustError
+            @test occursin(ctx, sprint(showerror, err))
+
+            RustCall.FFI_STRICT[] = :warn
+            @test RustCall._specialized_return_type("Vec<f64>", ctx) === Any
+            # A supported type is unaffected in either mode, and `char` comes
+            # back as the surface type.
+            @test RustCall._specialized_return_type("i32", ctx) === Int32
+            @test RustCall._specialized_return_type("char", ctx) === Char
+            @test RustCall._specialized_return_type("()", ctx) === Cvoid
+        finally
+            RustCall.FFI_STRICT[] = previous
+        end
+    end
+end
+
+# `write_bindings_to_file(...; strict)` used to set and restore the global
+# `FFI_STRICT[]` around emission, so two concurrent calls raced. `strict` is
+# threaded through the emitters instead.
+@testset "#276: strict is threaded, not stashed in a global" begin
+    unsupported = RustCall.RustFunctionSignature(
+        "rc276_histogram", ["n"], ["u32"], "Vec<f64>", false, String[])
+    info = RustCall.CrateInfo("rc276_crate", ".", "0.1.0", RustCall.DependencySpec[],
+                              [unsupported], RustCall.RustStructInfo[], String[])
+
+    previous = RustCall.FFI_STRICT[]
+    try
+        # Whatever the global says, each call answers by its own argument.
+        for global_setting in (:error, :warn, :none)
+            RustCall.FFI_STRICT[] = global_setting
+            @test_throws RustCall.RustError RustCall.emit_crate_module_code(
+                info, "libx.so"; strict = :error)
+            @test occursin("Any", RustCall.emit_crate_module_code(
+                info, "libx.so"; strict = :none))
+            @test RustCall.FFI_STRICT[] === global_setting
+        end
+
+        # Concurrently, with opposite settings: the strict one throws, the
+        # lenient one emits, and neither disturbs the global.
+        RustCall.FFI_STRICT[] = :none
+        results = Vector{Any}(undef, 2)
+        @sync begin
+            Threads.@spawn results[1] = try
+                RustCall.emit_crate_module_code(info, "libx.so"; strict = :error)
+            catch e
+                e
+            end
+            Threads.@spawn results[2] = try
+                RustCall.emit_crate_module_code(info, "libx.so"; strict = :none)
+            catch e
+                e
+            end
+        end
+        @test results[1] isa RustCall.RustError
+        @test results[2] isa String
+        @test occursin("Any", results[2])
+        @test RustCall.FFI_STRICT[] === :none
+    finally
+        RustCall.FFI_STRICT[] = previous
     end
 end

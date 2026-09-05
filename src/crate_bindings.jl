@@ -673,7 +673,7 @@ Source-text counterpart of `_crate_field_read` for the file emitter.
 """
 function _crate_field_read_source(info::RustStructInfo, field_name::AbstractString,
                                   field_type::AbstractString, ptr_expr::String,
-                                  self_ptr::String)
+                                  self_ptr::String; strict::Symbol = FFI_STRICT[])
     c = _ffi_field_return(info, field_name, field_type)
     if ffi_owned_string_return(c)
         return "_call_rust_owned_string_ptr($ptr_expr, _get_func_ptr(\"$(c.free_symbol)\"), $self_ptr)"
@@ -681,7 +681,8 @@ function _crate_field_read_source(info::RustStructInfo, field_name::AbstractStri
         return "_call_rust_borrowed_string_ptr($ptr_expr, $self_ptr)"
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
-                                            _ffi_field_context(info, field_name, field_type))
+                                            _ffi_field_context(info, field_name, field_type);
+                                            strict = strict)
     return "call_rust_function($ptr_expr, $julia_type, $self_ptr)"
 end
 
@@ -1379,19 +1380,14 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         lib_path_for_code = lib_path
     end
 
-    # Generate the module code as a string. `strict` is bound around the whole
-    # emission so every return decision in it — free functions, methods and
-    # field getters alike — answers the same way (#276).
-    previous_strict = FFI_STRICT[]
-    FFI_STRICT[] = strict
-    code = try
-        emit_crate_module_code(info, lib_path_for_code,
-            module_name = output_module_name,
-            use_relative_path = relative_lib_path !== nothing
-        )
-    finally
-        FFI_STRICT[] = previous_strict
-    end
+    # Generate the module code as a string. `strict` is threaded through the
+    # emitters rather than stashed in the global `FFI_STRICT[]`, so two
+    # concurrent calls with different settings cannot interfere (#276).
+    code = emit_crate_module_code(info, lib_path_for_code,
+        module_name = output_module_name,
+        use_relative_path = relative_lib_path !== nothing,
+        strict = strict,
+    )
 
     # Write to file
     mkpath(dirname(output_path))
@@ -1413,13 +1409,17 @@ Generate Julia module code as a string, suitable for writing to a file.
 # Keyword Arguments
 - `module_name::Union{String, Nothing}`: Name for the module
 - `use_relative_path::Bool`: If true, treat lib_path as relative to @__DIR__
+- `strict::Symbol`: how an unsupported return type is handled, see
+  [`FFI_STRICT`](@ref). Threaded through every emitter rather than set globally,
+  so concurrent calls do not interfere.
 
 # Returns
 - `String`: Julia source code for the module
 """
 function emit_crate_module_code(info::CrateInfo, lib_path::String;
     module_name::Union{String, Nothing} = nothing,
-    use_relative_path::Bool = false
+    use_relative_path::Bool = false,
+    strict::Symbol = FFI_STRICT[]
 )
     # Determine module name
     mod_name = if module_name !== nothing
@@ -1475,14 +1475,14 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
         if func.is_generic
             continue
         end
-        code = _emit_function_code(func)
+        code = _emit_function_code(func; strict = strict)
         push!(lines, code)
         push!(lines, "")
     end
 
     # Generate struct wrappers
     for s in info.julia_structs
-        code = _emit_struct_code(s)
+        code = _emit_struct_code(s; strict = strict)
         push!(lines, code)
         push!(lines, "")
     end
@@ -1512,7 +1512,7 @@ end
 
 Generate Julia code for a function wrapper as a string.
 """
-function _emit_function_code(func::RustFunctionSignature)
+function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_STRICT[])
     func_name = func.name
     # The generated Julia function keeps the Rust name; the symbol it looks up
     # is the additive wrapper `rustcall_<name>` (#279).
@@ -1526,9 +1526,9 @@ function _emit_function_code(func::RustFunctionSignature)
 
     # Result/Option return types are reported by the manifest
     if func.return_kind == :result
-        return _emit_result_function_code(func, arg_syms, converted_args_str; prologue, preserve_str)
+        return _emit_result_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict)
     elseif func.return_kind == :option
-        return _emit_option_function_code(func, arg_syms, converted_args_str; prologue, preserve_str)
+        return _emit_option_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict)
     elseif ffi_owned_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
@@ -1544,7 +1544,7 @@ export $func_name"""
     else
         # Standard function
         ret_type_str = string(ffi_return_symbol_or_throw(func.return_type, func.return_abi,
-                                                         _ffi_context(func)))
+                                                         _ffi_context(func); strict = strict))
 
         ptr_var = _generated_local("func_ptr", func.arg_names)
         return """
@@ -1557,11 +1557,12 @@ export $func_name"""
 end
 
 function _emit_result_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
-                                    prologue::String = "", preserve_str::String = "")
+                                    prologue::String = "", preserve_str::String = "",
+                                    strict::Symbol = FFI_STRICT[])
     func_name = func.name
     ctx = _ffi_context(func)
-    ok_type_str = string(ffi_return_symbol_or_throw(func.ok_type, "", ctx))
-    err_type_str = string(ffi_return_symbol_or_throw(func.err_type, "", ctx))
+    ok_type_str = string(ffi_return_symbol_or_throw(func.ok_type, "", ctx; strict = strict))
+    err_type_str = string(ffi_return_symbol_or_throw(func.err_type, "", ctx; strict = strict))
     sym = func.symbol
     c_result_struct_name = "CResult_$func_name"
     ptr_var = _generated_local("func_ptr", func.arg_names)
@@ -1587,10 +1588,11 @@ export $func_name"""
 end
 
 function _emit_option_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
-                                    prologue::String = "", preserve_str::String = "")
+                                    prologue::String = "", preserve_str::String = "",
+                                    strict::Symbol = FFI_STRICT[])
     func_name = func.name
     inner_type_str = string(ffi_return_symbol_or_throw(func.inner_type, "",
-                                                       _ffi_context(func)))
+                                                       _ffi_context(func); strict = strict))
     sym = func.symbol
     c_option_struct_name = "COption_$func_name"
     ptr_var = _generated_local("func_ptr", func.arg_names)
@@ -1619,7 +1621,7 @@ end
 
 Generate Julia code for a struct wrapper as a string.
 """
-function _emit_struct_code(info::RustStructInfo)
+function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
     struct_name = info.name
 
     lines = String[]
@@ -1658,7 +1660,7 @@ function _emit_struct_code(info::RustStructInfo)
 
     # Method wrappers
     for m in info.methods
-        code = _emit_method_code(info, m)
+        code = _emit_method_code(info, m; strict = strict)
         push!(lines, code)
         push!(lines, "")
     end
@@ -1677,7 +1679,7 @@ function _emit_struct_code(info::RustStructInfo)
             getter_fn = info.field_getters[field_name]
             read = _crate_field_read_source(info, field_name, field_type,
                                             "_get_func_ptr(\"$getter_fn\")",
-                                            "getfield(self, :ptr)")
+                                            "getfield(self, :ptr)"; strict = strict)
             push!(lines, "    if field === :$field_name")
             push!(lines, "        return $read")
             push!(lines, "    end")
@@ -1719,7 +1721,8 @@ end
 
 Generate Julia code for a method wrapper as a string.
 """
-function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
+function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
+                           strict::Symbol = FFI_STRICT[])
     struct_name = struct_info.name
     method_name = method.name
     # Exported symbol (`rustcall_<Struct>_<method>`, #279); the per-method
@@ -1753,7 +1756,8 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
         "_call_rust_borrowed_string_ptr($ptr_var, $args_str)"
     else
         ret_type_str = string(ffi_return_symbol_or_throw(method.return_type, method.return_abi,
-                                                         _ffi_context(method, struct_name)))
+                                                         _ffi_context(method, struct_name);
+                                                         strict = strict))
         "call_rust_function($ptr_var, $ret_type_str, $args_str)"
     end
     body = """

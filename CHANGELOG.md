@@ -34,8 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     cannot describe now stops wrapper generation with a message naming the
     signature. `RustCall.FFI_STRICT[]` selects `:error` (default), `:warn` (one
     warning per signature, then `Any` — the pre-#276 behaviour, kept for one
-    minor release) or `:none`; `write_bindings_to_file(...; strict = :warn)`
-    binds it per call. Generated crate bindings also change text: `usize` is
+    minor release) or `:none`. `write_bindings_to_file(...; strict = :warn)` and
+    `emit_crate_module_code(...; strict)` thread it explicitly, so concurrent
+    calls with different settings do not interfere. Monomorphized generic
+    returns obey it too; they used to become `Any` silently.
+    Generated crate bindings also change text: `usize` is
     spelled `Csize_t`, `*mut i32` is `Ptr{Int32}`, and a `String` field is read
     as an owned buffer rather than `Any`.
   - **A `String` field on the crate path is lowered.** Its getter returns an
@@ -59,8 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `i128`, `u128`, `char`, the `std::os::raw` aliases and raw pointers cross the
   boundary correctly in every position — free functions, methods, struct fields
-  and monomorphized generics. `char` travels as its `UInt32` code point and is
-  converted, never reinterpreted from Julia's left-aligned UTF-8 `Char`
+  and monomorphized generics. `char` crosses as its `UInt32` Unicode scalar
+  value and is converted back to a Julia `Char` — never reinterpreted from
+  Julia's left-aligned UTF-8 bit pattern — in both directions and on every path,
+  including monomorphized generics, whose `ccall` signature now comes from the
+  slots the manifest recorded rather than from the runtime Julia argument types.
+  A slot that is not a Unicode scalar value is refused rather than turned into
+  an invalid `Char`
   ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)). The one
   exception is `i128` / `u128` on `x86_64-pc-windows-msvc`, where MSVC has no
   native 128-bit integer and Rust and Julia disagree on how `extern "C"` passes

@@ -950,7 +950,12 @@ function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractStri
     if c.known
         c.abi === :void && return :Cvoid
         if c.abi === :by_value || c.abi === :pointer
-            return _ffi_slot_expr(rust_type, c)
+            # The **surface** spelling, not the raw C slot: `call_rust_function`
+            # lowers it to the slot and converts the value back
+            # (`ccall_return_type` / `convert_return` in `src/codegen.jl`), so
+            # the slot-to-surface conversion lives in one place instead of at
+            # every return site. Rust `char` is where the two differ.
+            return something(ffi_julia_symbol(rust_type), ffi_type_expr(c.surface_type))
         end
     end
     return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any)
@@ -971,11 +976,65 @@ function ffi_return_type_or_throw(rust_type::AbstractString, abi::AbstractString
     if c.known
         c.abi === :void && return Cvoid
         if c.abi === :by_value || c.abi === :pointer
-            return only(c.ccall_types)
+            # The surface type; see [`ffi_return_symbol_or_throw`](@ref).
+            return c.surface_type
         end
     end
     return _ffi_unsupported_return(rust_type, abi, ctx, strict, Any)
 end
+
+"""
+    ffi_char_code_point(c) -> UInt32
+
+The Unicode scalar value of a Julia `Char` (or of an integer already holding
+one), as it must reach a Rust `char` slot. Julia stores a `Char` as left-aligned
+UTF-8 code units, so its bit pattern is **not** the code point and
+reinterpreting it would hand Rust a different character (#245).
+
+Rejects anything that is not a Unicode scalar value: Rust's `char` has that as a
+validity invariant, and constructing one from a surrogate or an out-of-range
+value is undefined behaviour there.
+"""
+function ffi_char_code_point(c::AbstractChar)
+    isvalid(c) || throw(RustError(
+        "cannot pass $(repr(c)) to a Rust `char`: it is not a Unicode scalar value"))
+    return UInt32(c)
+end
+
+ffi_char_code_point(x::Integer) = _ffi_checked_code_point(UInt32(x))
+
+"""
+    ffi_char_from_code_point(value) -> Char
+
+The Julia `Char` a Rust `char` slot denotes — the inverse of
+[`ffi_char_code_point`](@ref), and equally strict. A Rust `char` is always a
+Unicode scalar value, so a slot that is not one did not come from a `char`; it
+is refused rather than turned into an invalid `Char`.
+"""
+ffi_char_from_code_point(value::Integer) = Char(_ffi_checked_code_point(UInt32(value)))
+
+function _ffi_checked_code_point(value::UInt32)
+    isvalid(Char, value) || throw(RustError(
+        "0x$(string(value, base = 16)) is not a Unicode scalar value and so is not a " *
+        "valid Rust `char`: code points above 0x10ffff and the surrogate range " *
+        "0xd800-0xdfff are excluded"))
+    return value
+end
+
+"""
+    ffi_slot_convert(::Type{T}, x)
+
+Convert a Julia value into the C slot type `T` the contract recorded for its
+position. Identity wherever the slot and the surface type agree; Rust `char`,
+whose slot is a `UInt32` code point, is the one case that differs.
+
+Used by the paths that convert at run time — monomorphized generics, which only
+learn their argument types after specialization. The generators splice the same
+conversion at macro-expansion time instead.
+"""
+ffi_slot_convert(::Type{UInt32}, x::AbstractChar) = ffi_char_code_point(x)
+ffi_slot_convert(::Type{Any}, x) = x
+ffi_slot_convert(::Type{T}, x) where {T} = convert(T, x)
 
 # The spelling of the single C slot: the contract's own spelling (`:Csize_t`)
 # when the slot and the surface type agree, the slot otherwise (`char`).

@@ -92,6 +92,18 @@ Declaring an owned position without naming the symbol that releases it is an
 `ArgumentError`: an owned value with no way to free it is the shape of #246 and
 #249, and the contract refuses to record one.
 
+### Slot and surface can differ
+
+The `ccall` slot is not always the type a caller sees. Rust `char` is the case
+in the table above: it crosses as a `UInt32` Unicode scalar value, while the
+Julia surface type is `Char` — whose bit pattern is left-aligned UTF-8 and
+therefore *not* the code point. RustCall converts, in one place
+(`ccall_return_type` / `convert_return` and their argument counterparts in
+`src/codegen.jl`), so no generated call site carries the conversion and no
+position can reinterpret one for the other. A slot that is not a Unicode scalar
+value — above `0x10FFFF`, or in the surrogate range — is refused rather than
+turned into an invalid `Char`.
+
 ### 128-bit integers on Windows
 
 `i128` / `u128` are in the contract and map to `Int128` / `UInt128`, but they do

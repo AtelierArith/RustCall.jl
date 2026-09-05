@@ -568,9 +568,12 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_return_symbol_or_throw("()", "", "f()") === :Cvoid
         @test RustCall.ffi_return_symbol_or_throw("i128", "", "f() -> i128") === :Int128
         @test RustCall.ffi_return_symbol_or_throw("*mut i32", "", "f()") == :(Ptr{Int32})
-        # `char` arrives as its C slot, never reinterpreted from Julia's
-        # left-aligned UTF-8 `Char`.
-        @test RustCall.ffi_return_symbol_or_throw("char", "", "f() -> char") === :UInt32
+        # A return site gets the SURFACE spelling; `call_rust_function` lowers
+        # it to the C slot and converts back, so the conversion lives in one
+        # place. Rust `char` is where slot and surface differ.
+        @test RustCall.ffi_return_symbol_or_throw("char", "", "f() -> char") === :Char
+        @test RustCall.ffi_return_type_or_throw("char", "", "f() -> char") === Char
+        @test RustCall.ccall_return_type(Char) === UInt32
 
         ctx = "mycrate::f(i32) -> Vec<f64>"
         # `:error` names the signature and the contract's verdict.
@@ -598,6 +601,44 @@ const ALL_SPELLINGS = vcat(
               "f(i32, String) -> u8"
         @test RustCall.ffi_signature_context("m", ["i32"], ""; owner = "P") ==
               "P::m(i32) -> ()"
+    end
+
+    @testset "char converts in both directions, in one place (#245)" begin
+        # Julia stores a `Char` as left-aligned UTF-8 code units, so its bit
+        # pattern is not the code point: reinterpreting either way hands the
+        # other side a different character.
+        @test RustCall.ffi_char_code_point('A') === UInt32(0x41)
+        @test RustCall.ffi_char_code_point('π') === UInt32(0x3c0)
+        @test RustCall.ffi_char_code_point(0x41) === UInt32(0x41)
+        @test RustCall.ffi_char_from_code_point(UInt32(0x3c0)) === 'π'
+        @test RustCall.ffi_char_from_code_point(0x41) === 'A'
+        # Round trip, including a non-BMP scalar.
+        for c in ('a', 'π', '☃', '𝄞')
+            @test RustCall.ffi_char_from_code_point(RustCall.ffi_char_code_point(c)) === c
+            # …and the raw bits really are not the code point, which is the bug.
+            c > '\x7f' && @test reinterpret(UInt32, c) != RustCall.ffi_char_code_point(c)
+        end
+
+        # A Rust `char` is always a Unicode scalar value; a slot that is not one
+        # is refused rather than turned into an invalid `Char`.
+        for bad in (0x110000, 0xd800, 0xdfff, 0xffffffff)
+            @test_throws RustCall.RustError RustCall.ffi_char_from_code_point(bad)
+        end
+        @test_throws RustCall.RustError RustCall.ffi_char_code_point(0xd800)
+
+        # One place: `ccall_return_type` / `convert_return` and their argument
+        # counterparts, so no generated call site carries the conversion.
+        @test RustCall.ccall_return_type(Char) === UInt32
+        @test RustCall.convert_return(Char, UInt32(0x3c0)) === 'π'
+        @test RustCall.ccall_arg_type(Char) === UInt32
+        @test RustCall.convert_arg(Char, 'π') === UInt32(0x3c0)
+        @test RustCall.is_supported_return_type(Char)
+        @test RustCall.is_supported_arg_type(Char)
+
+        # `ffi_slot_convert` is the run-time counterpart the generic path uses.
+        @test RustCall.ffi_slot_convert(UInt32, 'π') === UInt32(0x3c0)
+        @test RustCall.ffi_slot_convert(Int32, 7) === Int32(7)
+        @test RustCall.ffi_slot_convert(Any, "x") == "x"
     end
 
     @testset "the return-type guess is gone (#245 item 1)" begin
