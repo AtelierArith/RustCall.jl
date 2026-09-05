@@ -196,12 +196,15 @@ using TOML
             @test occursin("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true", env_key)
             @test occursin("RUSTFLAGS=-C panic=abort", env_key)
             restored = withenv("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => nothing, "RUSTFLAGS" => "-C opt-level=1",
-                               "CARGO_TERM_COLOR" => "never") do
+                               "CARGO_BUILD_RUSTC" => "other-rustc", "CARGO_TERM_COLOR" => "never") do
                 RustCall._cargo_build_env(env_key)
             end
             @test restored["CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS"] == "true"
             @test restored["RUSTFLAGS"] == "-C panic=abort"
-            @test !haskey(restored, "CARGO_TERM_COLOR")   # not in the snapshot: dropped
+            # cfg-affecting variables not in the snapshot are dropped ...
+            @test !haskey(restored, "CARGO_BUILD_RUSTC")
+            # ... unrelated ones are left alone.
+            @test restored["CARGO_TERM_COLOR"] == "never"
             @test haskey(restored, "PATH")
 
             # Credentials never enter the snapshot.

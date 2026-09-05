@@ -262,8 +262,21 @@ _cargo_probe_profile() = "[profile.release]\nopt-level = 3\nlto = true\n"
 
 The environment that can change Cargo's effective rustc configuration.
 """
-_is_cargo_env_key(k::AbstractString) =
-    startswith(k, "CARGO_") || k in ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN")
+# Environment variables that change rustc's configuration for a Cargo build.
+# Deliberately an allowlist: `CARGO_*` also holds registry credentials
+# (`CARGO_REGISTRIES_<name>_TOKEN`, `CARGO_REGISTRY_TOKEN`), which must never
+# end up in a snapshot embedded in generated code or a precompile cache.
+const _CARGO_CFG_ENV_PREFIXES = ("CARGO_PROFILE_", "CARGO_BUILD_", "CARGO_CFG_",
+                                 "CARGO_ENCODED_RUSTFLAGS")
+const _CARGO_CFG_ENV_NAMES = ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTDOCFLAGS",
+                              "RUSTUP_TOOLCHAIN")
+const _SECRET_ENV_FRAGMENTS = ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "KEY")
+
+function _is_cargo_env_key(k::AbstractString)
+    up = uppercase(String(k))
+    any(f -> occursin(f, up), _SECRET_ENV_FRAGMENTS) && return false
+    return up in _CARGO_CFG_ENV_NAMES || any(p -> startswith(up, p), _CARGO_CFG_ENV_PREFIXES)
+end
 
 function _cargo_cfg_env_key()
     keys = sort!(filter(_is_cargo_env_key, collect(Base.keys(ENV))))
