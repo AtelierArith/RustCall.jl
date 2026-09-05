@@ -154,3 +154,104 @@ fn specialize_keeps_predicate() {
     assert_eq!(sp.manifest.functions[0].cfg, "unix");
     assert!(sp.source.contains("#[cfg(unix)]"));
 }
+
+/// A parameter can carry its own `#[cfg]`; rustc removes it, so the manifest
+/// (and hence the generated wrapper's C ABI) must not report it either.
+const PARAM_SRC: &str = r#"
+#[julia]
+pub fn takes(a: i32, #[cfg(any())] b: i32, #[cfg(all())] c: i32) -> i32 { a + c }
+
+#[julia]
+pub fn maybe(a: i32, #[cfg(feature = "extra")] b: i32) -> Result<i32, i32> { Ok(a) }
+
+#[julia]
+pub struct Holder { pub v: i32 }
+
+impl Holder {
+    pub fn sum(&self, a: i32, #[cfg(windows)] b: i32) -> i32 { self.v + a }
+}
+"#;
+
+#[test]
+fn prunes_disabled_function_parameters() {
+    let set = CfgSet::default().with_name("unix");
+    let e = expand_with_cfg(PARAM_SRC, Some(&set)).unwrap();
+
+    let takes = e
+        .manifest
+        .functions
+        .iter()
+        .find(|f| f.name == "takes")
+        .unwrap();
+    let arg_names: Vec<&str> = takes.args.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(arg_names, vec!["a", "c"], "{:?}", takes.args);
+
+    // `feature = "extra"` is decided (strict set) and absent: the parameter goes.
+    let maybe = e
+        .manifest
+        .functions
+        .iter()
+        .find(|f| f.name == "maybe")
+        .unwrap();
+    let arg_names: Vec<&str> = maybe.args.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(arg_names, vec!["a"]);
+
+    let holder = e
+        .manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "Holder")
+        .unwrap();
+    let sum = holder.methods.iter().find(|m| m.name == "sum").unwrap();
+    let arg_names: Vec<&str> = sum.args.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(arg_names, vec!["a"], "{:?}", sum.args);
+
+    // The expanded source carries neither the removed parameters nor the
+    // predicates that were decided to be true.
+    assert!(!e.source.contains("#[cfg(any())]"), "{}", e.source);
+    assert!(!e.source.contains("#[cfg(all())]"), "{}", e.source);
+    assert!(!e.source.contains("#[cfg(windows)]"), "{}", e.source);
+}
+
+#[test]
+fn keeps_undecided_function_parameters_in_lenient_mode() {
+    let set = CfgSet::default().with_name("unix").lenient();
+    let e = expand_with_cfg(PARAM_SRC, Some(&set)).unwrap();
+
+    // A feature predicate is undecided under Cargo, so the parameter stays and
+    // its `#[cfg]` is preserved for rustc to decide.
+    let maybe = e
+        .manifest
+        .functions
+        .iter()
+        .find(|f| f.name == "maybe")
+        .unwrap();
+    let arg_names: Vec<&str> = maybe.args.iter().map(|a| a.name.as_str()).collect();
+    assert_eq!(arg_names, vec!["a", "b"], "{:?}", maybe.args);
+    assert!(e.source.contains("feature = \"extra\""), "{}", e.source);
+
+    // Target predicates are still decided, even leniently.
+    let holder = e
+        .manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "Holder")
+        .unwrap();
+    let sum = holder.methods.iter().find(|m| m.name == "sum").unwrap();
+    assert_eq!(
+        sum.args.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+        vec!["a"]
+    );
+}
+
+#[test]
+fn unevaluable_parameter_predicate_fails_closed() {
+    let set = CfgSet::default();
+    let err = expand_with_cfg(
+        "#[julia] pub fn f(a: i32, #[cfg(version(\"1.80\"))] b: i32) -> i32 { a }",
+        Some(&set),
+    )
+    .err()
+    .expect("unevaluable parameter predicate must be an error");
+    assert!(err.to_string().contains("cannot evaluate #[cfg]"), "{err}");
+}

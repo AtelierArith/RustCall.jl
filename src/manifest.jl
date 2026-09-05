@@ -356,12 +356,12 @@ end
 
 Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
 configuration of the actual compiler invocation), `:cargo` (Cargo projects
-RustCall generates for `// cargo-deps:` blocks: target and profile predicates
-are decided from Cargo's effective configuration, see [`_cargo_cfg_text`], and
-`feature = "..."` is decided too since the generated crate declares no
-features; build-script cfgs keep their items), `:lenient`
-(`@rust_crate`, whose own Cargo.toml may override the profile: only target
-predicates are decided, the cfg text still comes from Cargo) or `:none` (report everything, used for
+RustCall generates for `// cargo-deps:` blocks: also a full evaluation, but of
+Cargo's effective configuration, see [`_cargo_cfg_text`] — RustCall writes that
+project itself, so it has no build script and declares no features and the
+probe is authoritative), `:lenient` (`@rust_crate`, an external crate with its
+own features and possibly a build script: only target predicates are decided,
+the cfg text still comes from Cargo) or `:none` (report everything, used for
 the platform-independent golden corpus). `true`/`false` map to `:strict`/`:none`.
 """
 _cfg_mode(cfg::Symbol) = cfg in (:strict, :cargo, :lenient, :none) ? cfg :
@@ -409,9 +409,9 @@ function _cfg_file_args(cfg; cfg_text::AbstractString = _cfg_snapshot(cfg))
         existing
     end
     args = ["--cfg-file", path]
-    mode in (:lenient, :cargo) && push!(args, "--cfg-lenient")
-    # The generated Cargo project has a known profile and declares no features.
-    mode === :cargo && append!(args, ["--cfg-profile", "--cfg-features"])
+    # Only an external crate (`@rust_crate`) needs lenient evaluation; for a
+    # Cargo project RustCall generates the probe text is the whole truth.
+    mode === :lenient && push!(args, "--cfg-lenient")
     return args
 end
 

@@ -169,14 +169,17 @@ using TOML
         # profile predicates keep their items.
         lenient_names = names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))
         @test Set(lenient_names) == Set(["dbg_only", "abort_only", "feature_only"])
-        # Cargo projects RustCall generates use the release profile, so profile
-        # predicates are decided there; features stay unknown. The cfg text comes
-        # from Cargo itself (probe crate), so profile overrides in the environment
-        # and RUSTFLAGS are honoured.
+        # Cargo projects RustCall generates are fully described by the probe: no
+        # build script, no declared features, the release profile RustCall writes.
+        # So every predicate is decided there, against Cargo's effective
+        # configuration (profile overrides in the environment and RUSTFLAGS
+        # included), exactly as for a direct rustc build.
         cargo_names = names(RustCall.extract_manifest(profile_code; mode = "inline", cfg = :cargo))
         # unwind, no debug_assertions, and the generated crate has no features
         @test isempty(cargo_names)
-        @test RustCall._cfg_file_args(:cargo)[end-1:end] == ["--cfg-profile", "--cfg-features"]
+        cargo_args = RustCall._cfg_file_args(:cargo)
+        @test length(cargo_args) == 2 && cargo_args[1] == "--cfg-file"
+        @test read(cargo_args[2], String) == RustCall._cfg_snapshot(:cargo)
         @test Set(names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))) ==
               Set(["dbg_only", "abort_only", "feature_only"])
         cargo_cfg = RustCall._cfg_snapshot(:cargo)

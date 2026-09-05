@@ -184,8 +184,11 @@ parameters come from the FFI manifest produced by the `rustcall-extract` CLI
 Items disabled by `#[cfg(...)]` are dropped from manifests and expanded
 sources: the extractor evaluates the predicates against `rustc --print cfg`
 (passed as `--cfg-file`). Direct `rustc` builds query it with the real
-compilation flags (`cfg = :strict`); Cargo builds decide only target predicates
-(`cfg = :lenient`, `--cfg-lenient`) since features and profile belong to Cargo.
+compilation flags (`cfg = :strict`); Cargo projects RustCall generates itself
+(`// cargo-deps:` blocks) evaluate the same way against Cargo's effective
+configuration, obtained from a probe crate (`cfg = :cargo`). Only an external
+crate (`@rust_crate`), whose features and build script RustCall does not
+control, decides target predicates alone (`cfg = :lenient`, `--cfg-lenient`).
 The predicate of every reported item is recorded in its `cfg` field.
 
 ```@docs

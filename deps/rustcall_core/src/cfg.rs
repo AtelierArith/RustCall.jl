@@ -12,9 +12,11 @@
 //! A *lenient* set decides only the predicates that follow from the target
 //! (`unix`, `windows`, `target_*`); everything else (`feature = "..."`,
 //! build-script `--cfg`s, profile-dependent `debug_assertions`, `panic`) is
-//! unknown and keeps the item. Cargo builds (crate mode, `// cargo-deps:`
-//! blocks) use it because their cfg set is decided by Cargo, not by a bare
-//! `rustc --print cfg`.
+//! unknown and keeps the item. It is meant for an external crate whose own
+//! features and build script the caller does not control (`@rust_crate`).
+//! When the caller generates the crate itself and probes Cargo for the
+//! effective configuration, the probe is authoritative and the full (strict)
+//! set applies.
 
 use std::collections::HashSet;
 
@@ -27,17 +29,7 @@ pub struct CfgSet {
     pairs: HashSet<(String, String)>,
     /// Only target-derived predicates are decidable; others are unknown.
     lenient: bool,
-    /// In lenient mode, also decide the profile predicates (`debug_assertions`,
-    /// `overflow_checks`, `panic`) because the caller controls the Cargo profile.
-    profile: bool,
-    /// In lenient mode, also decide `feature = "..."` because the caller
-    /// generated the crate and knows it declares no features.
-    features: bool,
 }
-
-/// Predicates decided by the build profile (`[profile.*]`, `-C opt-level`,
-/// `-C debug-assertions`, `-C overflow-checks`, `-C panic`).
-const PROFILE_CFG_NAMES: &[&str] = &["debug_assertions", "overflow_checks", "panic"];
 
 /// Three-valued predicate result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,23 +132,8 @@ impl CfgSet {
         self.lenient
     }
 
-    /// In lenient mode, also decide profile predicates (see module docs).
-    pub fn with_profile(mut self) -> CfgSet {
-        self.profile = true;
-        self
-    }
-
-    /// In lenient mode, also decide `feature = "..."` predicates (see module docs).
-    pub fn with_features(mut self) -> CfgSet {
-        self.features = true;
-        self
-    }
-
     fn decided(&self, name: &str) -> bool {
-        !self.lenient
-            || target_decided(name)
-            || (self.profile && PROFILE_CFG_NAMES.contains(&name))
-            || (self.features && name == "feature")
+        !self.lenient || target_decided(name)
     }
 
     /// Evaluate one `cfg` predicate to a boolean; `Unknown` counts as true
@@ -321,6 +298,40 @@ impl CfgSet {
         });
     }
 
+    /// Remove the function parameters disabled under this configuration.
+    ///
+    /// A parameter carries its own attributes (`fn f(a: i32, #[cfg(any())] b: i32)`),
+    /// which rustc evaluates like any other `#[cfg]`. They must be pruned too:
+    /// otherwise the manifest reports an argument the compiled function does not
+    /// take and the generated wrapper has the wrong C ABI. `cfg_attr` is expanded
+    /// first and predicates decided to be true are stripped, exactly as for items.
+    /// Unevaluable predicates are pushed to `errors` (the caller fails closed).
+    fn prune_signature(&self, sig: &mut syn::Signature, errors: &mut Vec<String>) {
+        let mut kept: syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]> =
+            syn::punctuated::Punctuated::new();
+        for arg in sig.inputs.iter() {
+            let mut arg = arg.clone();
+            let attrs = match &mut arg {
+                syn::FnArg::Receiver(r) => &mut r.attrs,
+                syn::FnArg::Typed(t) => &mut t.attrs,
+            };
+            let errs = self.expand_cfg_attrs(attrs);
+            if !errs.is_empty() {
+                errors.extend(errs);
+                continue;
+            }
+            match self.attrs_active(attrs) {
+                Ok(true) => {
+                    self.strip_decided_cfgs(attrs);
+                    kept.push(arg);
+                }
+                Ok(false) => {}
+                Err(e) => errors.push(e),
+            }
+        }
+        sig.inputs = kept;
+    }
+
     /// Remove every item, impl item and named struct field disabled under this
     /// configuration, and drop the predicates that were decided to be true (see
     /// [`CfgSet::strip_decided_cfgs`]). Inline modules are pruned recursively.
@@ -349,6 +360,7 @@ impl CfgSet {
                 self.strip_decided_cfgs(attrs);
             }
             match item {
+                Item::Fn(f) => self.prune_signature(&mut f.sig, &mut errors),
                 Item::Mod(m) => {
                     if let Some((_, inner)) = &mut m.content {
                         errors.extend(self.prune_items(inner));
@@ -371,6 +383,9 @@ impl CfgSet {
                         match self.attrs_active(attrs) {
                             Ok(true) => {
                                 self.strip_decided_cfgs(attrs);
+                                if let syn::ImplItem::Fn(f) = ii {
+                                    self.prune_signature(&mut f.sig, &mut errors);
+                                }
                                 true
                             }
                             Ok(false) => false,
@@ -641,38 +656,6 @@ mod tests {
         // Unknown keeps the item.
         assert!(set.eval(&pred("feature = \"x\"")).unwrap());
         assert!(!set.eval(&pred("windows")).unwrap());
-    }
-
-    #[test]
-    fn lenient_with_profile_decides_profile_predicates() {
-        let set = CfgSet::parse("unix\npanic=\"unwind\"\n")
-            .lenient()
-            .with_profile();
-        assert_eq!(set.eval3(&pred("debug_assertions")).unwrap(), Truth::False);
-        assert_eq!(set.eval3(&pred("panic = \"unwind\"")).unwrap(), Truth::True);
-        assert_eq!(set.eval3(&pred("panic = \"abort\"")).unwrap(), Truth::False);
-        assert_eq!(set.eval3(&pred("feature = \"x\"")).unwrap(), Truth::Unknown);
-        assert_eq!(
-            set.eval3(&pred("target_feature = \"avx2\"")).unwrap(),
-            Truth::Unknown
-        );
-    }
-
-    #[test]
-    fn lenient_with_features_decides_feature_predicates() {
-        let set = CfgSet::parse("unix\nfeature=\"std\"\n")
-            .lenient()
-            .with_features();
-        assert_eq!(set.eval3(&pred("feature = \"std\"")).unwrap(), Truth::True);
-        assert_eq!(
-            set.eval3(&pred("feature = \"extra\"")).unwrap(),
-            Truth::False
-        );
-        assert_eq!(
-            set.eval3(&pred("debug_assertions")).unwrap(),
-            Truth::Unknown
-        );
-        assert_eq!(set.eval3(&pred("custom_cfg")).unwrap(), Truth::Unknown);
     }
 
     #[test]
