@@ -274,7 +274,7 @@ end
     _cargo_build_env(snapshot::AbstractString) -> Dict{String, String}
 
 The process environment with the Cargo/RUSTFLAGS settings replaced by those
-recorded in `snapshot` (a [`_cargo_cfg_env_key`](@ref) text): variables
+recorded in `snapshot` (a `_cargo_cfg_env_key` text): variables
 absent from the snapshot are removed, recorded ones restored. Used to build a
 `// cargo-deps:` block under the configuration its wrappers were generated for.
 """

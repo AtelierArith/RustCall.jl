@@ -70,16 +70,38 @@ fn generate_c_result_type(
         #(#cfg_attrs)*
         #[repr(C)]
         pub struct #result_type_name {
-            pub is_ok: u8,
+            // Private: the discriminant and the payloads must stay consistent,
+            // or `ok()` / `err()` would read uninitialized memory. The C layout
+            // (u8 followed by both payloads) is unchanged.
+            is_ok: u8,
             /// Only initialized when `is_ok == 1`. `MaybeUninit` keeps the
             /// inactive field free of validity invariants (e.g. `NonZeroU32`).
-            pub ok_value: ::std::mem::MaybeUninit<#ok_type>,
+            ok_value: ::std::mem::MaybeUninit<#ok_type>,
             /// Only initialized when `is_ok == 0`.
-            pub err_value: ::std::mem::MaybeUninit<#err_type>,
+            err_value: ::std::mem::MaybeUninit<#err_type>,
         }
 
         #(#cfg_attrs)*
         impl #result_type_name {
+            /// Wrap a `Result` in the C-compatible representation.
+            pub fn new(value: Result<#ok_type, #err_type>) -> Self {
+                match value {
+                    Ok(v) => Self {
+                        is_ok: 1,
+                        ok_value: ::std::mem::MaybeUninit::new(v),
+                        err_value: ::std::mem::MaybeUninit::zeroed(),
+                    },
+                    Err(e) => Self {
+                        is_ok: 0,
+                        ok_value: ::std::mem::MaybeUninit::zeroed(),
+                        err_value: ::std::mem::MaybeUninit::new(e),
+                    },
+                }
+            }
+            /// Whether the call succeeded.
+            pub fn is_ok(&self) -> bool {
+                self.is_ok == 1
+            }
             /// The `Ok` value, if any.
             pub fn ok(&self) -> Option<&#ok_type> {
                 if self.is_ok == 1 { Some(unsafe { self.ok_value.assume_init_ref() }) } else { None }
@@ -102,13 +124,32 @@ fn generate_c_option_type(
         #(#cfg_attrs)*
         #[repr(C)]
         pub struct #option_type_name {
-            pub is_some: u8,
+            // Private, see the CResult type: the discriminant guards a
+            // `MaybeUninit` payload. The C layout is unchanged.
+            is_some: u8,
             /// Only initialized when `is_some == 1`.
-            pub value: ::std::mem::MaybeUninit<#inner_type>,
+            value: ::std::mem::MaybeUninit<#inner_type>,
         }
 
         #(#cfg_attrs)*
         impl #option_type_name {
+            /// Wrap an `Option` in the C-compatible representation.
+            pub fn new(value: Option<#inner_type>) -> Self {
+                match value {
+                    Some(v) => Self {
+                        is_some: 1,
+                        value: ::std::mem::MaybeUninit::new(v),
+                    },
+                    None => Self {
+                        is_some: 0,
+                        value: ::std::mem::MaybeUninit::zeroed(),
+                    },
+                }
+            }
+            /// Whether a value is present.
+            pub fn is_some(&self) -> bool {
+                self.is_some == 1
+            }
             /// The `Some` value, if any.
             pub fn some(&self) -> Option<&#inner_type> {
                 if self.is_some == 1 { Some(unsafe { self.value.assume_init_ref() }) } else { None }
@@ -183,18 +224,7 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
         #(#outer_attrs)*
         #[no_mangle]
         pub extern "C" fn #func_name(#(#args),*) -> #result_type_name {
-            match #inner_fn_name(#(#names),*) {
-                Ok(value) => #result_type_name {
-                    is_ok: 1,
-                    ok_value: ::std::mem::MaybeUninit::new(value),
-                    err_value: ::std::mem::MaybeUninit::zeroed(),
-                },
-                Err(err) => #result_type_name {
-                    is_ok: 0,
-                    ok_value: ::std::mem::MaybeUninit::zeroed(),
-                    err_value: ::std::mem::MaybeUninit::new(err),
-                },
-            }
+            #result_type_name::new(#inner_fn_name(#(#names),*))
         }
     }
 }
@@ -234,16 +264,7 @@ fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> Token
         #(#outer_attrs)*
         #[no_mangle]
         pub extern "C" fn #func_name(#(#args),*) -> #option_type_name {
-            match #inner_fn_name(#(#names),*) {
-                Some(value) => #option_type_name {
-                    is_some: 1,
-                    value: ::std::mem::MaybeUninit::new(value),
-                },
-                None => #option_type_name {
-                    is_some: 0,
-                    value: ::std::mem::MaybeUninit::zeroed(),
-                },
-            }
+            #option_type_name::new(#inner_fn_name(#(#names),*))
         }
     }
 }

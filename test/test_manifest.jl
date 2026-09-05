@@ -203,6 +203,26 @@ using TOML
             @test restored["RUSTFLAGS"] == "-C panic=abort"
             @test !haskey(restored, "CARGO_TERM_COLOR")   # not in the snapshot: dropped
             @test haskey(restored, "PATH")
+
+            # Credentials never enter the snapshot.
+            withenv("CARGO_REGISTRIES_PRIVATE_TOKEN" => "s3cret", "CARGO_REGISTRY_TOKEN" => "s3cret",
+                    "CARGO_HTTP_CAINFO" => "/tmp/ca.pem") do
+                key = RustCall._cargo_cfg_env_key()
+                @test !occursin("s3cret", key)
+                @test !occursin("TOKEN", key)
+                @test !RustCall._is_cargo_env_key("CARGO_REGISTRIES_PRIVATE_TOKEN")
+                @test !RustCall._is_cargo_env_key("CARGO_REGISTRY_TOKEN")
+                @test RustCall._is_cargo_env_key("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS")
+                @test RustCall._is_cargo_env_key("RUSTFLAGS")
+                @test !RustCall._is_cargo_env_key("PATH")
+            end
+
+            # The Cargo environment is part of the library identity, so a build
+            # under different flags cannot hit the cache of another one.
+            id_a = RustCall._cargo_block_identity("fn f() {}", "deps", "RUSTFLAGS=-C panic=abort")
+            id_b = RustCall._cargo_block_identity("fn f() {}", "deps", "RUSTFLAGS=")
+            @test id_a != id_b
+            @test id_a == RustCall._cargo_block_identity("fn f() {}", "deps", "RUSTFLAGS=-C panic=abort")
         end
         @test RustCall._cargo_cfg_text() == cargo_cfg   # cache keyed by environment
         lenient_host = RustCall.extract_manifest(code; mode = "crate", cfg = :lenient)

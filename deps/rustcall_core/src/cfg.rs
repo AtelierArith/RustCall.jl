@@ -309,10 +309,23 @@ impl CfgSet {
         errors
     }
 
+    /// Drop the `#[cfg(...)]` attributes this configuration decided to be true.
+    /// The item stays, but its presence no longer depends on a predicate that
+    /// was already resolved, so the expanded source compiles the same way under
+    /// a different rustc invocation (a Cargo build, or the direct `rustc` run
+    /// that later instantiates a generic). Undecided predicates are kept.
+    fn strip_decided_cfgs(&self, attrs: &mut Vec<Attribute>) {
+        attrs.retain(|attr| match cfg_predicate(attr) {
+            Some(meta) => !matches!(self.eval3(&meta), Ok(Truth::True)),
+            None => true,
+        });
+    }
+
     /// Remove every item, impl item and named struct field disabled under this
-    /// configuration. Inline modules are pruned recursively. `cfg_attr` is
-    /// expanded first so indirectly disabled items are pruned too. Returns the
-    /// predicates that could not be evaluated (their items are removed).
+    /// configuration, and drop the predicates that were decided to be true (see
+    /// [`CfgSet::strip_decided_cfgs`]). Inline modules are pruned recursively.
+    /// `cfg_attr` is expanded first so indirectly disabled items are pruned too.
+    /// Returns the predicates that could not be evaluated (their items are removed).
     pub fn prune_items(&self, items: &mut Vec<Item>) -> Vec<String> {
         let mut errors = Vec::new();
         items.retain_mut(|item| {
@@ -331,6 +344,9 @@ impl CfgSet {
                     errors.push(e);
                     return false;
                 }
+            }
+            if let Some(attrs) = item_attrs_mut(item) {
+                self.strip_decided_cfgs(attrs);
             }
             match item {
                 Item::Mod(m) => {
@@ -353,7 +369,11 @@ impl CfgSet {
                             return false;
                         }
                         match self.attrs_active(attrs) {
-                            Ok(active) => active,
+                            Ok(true) => {
+                                self.strip_decided_cfgs(attrs);
+                                true
+                            }
+                            Ok(false) => false,
                             Err(e) => {
                                 errors.push(e);
                                 false
@@ -372,7 +392,10 @@ impl CfgSet {
                                 continue;
                             }
                             match self.attrs_active(&field.attrs) {
-                                Ok(true) => kept.push(field),
+                                Ok(true) => {
+                                    self.strip_decided_cfgs(&mut field.attrs);
+                                    kept.push(field)
+                                }
                                 Ok(false) => {}
                                 Err(e) => errors.push(e),
                             }
@@ -678,6 +701,8 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
         let text = prettyplease::unparse(&file);
         assert!(text.contains("fn keep"));
+        // The decided predicate is gone from the kept item.
+        assert!(!text.contains("#[cfg(unix)]"), "{text}");
         assert!(!text.contains("drop_me"));
         assert!(!text.contains("drop_two"));
         assert!(text.contains("a: i32"));
@@ -710,8 +735,10 @@ mod tests {
         assert!(!text.contains("indirectly_off"));
         assert!(text.contains("stays_on"));
         assert!(text.contains("on_with_attrs"));
-        assert!(text.contains("#[cfg(all())]") && text.contains("#[allow(dead_code)]"));
         assert!(text.contains("unknown_kept") && text.contains("cfg_attr(feature = \"x\""));
+        // A decided `cfg_attr` inlines its attributes; `cfg(all())` is decided
+        // true and therefore dropped, the other attribute stays.
+        assert!(text.contains("#[allow(dead_code)]") && !text.contains("#[cfg(all())]"));
         assert!(!text.contains("nested_off"));
         assert!(!text.contains("a: i32") && text.contains("b: i32"));
         assert!(!text.contains("fn m(") && text.contains("fn n("));

@@ -9,15 +9,38 @@ pub extern "C" fn unix_only(x: i32) -> i32 {
 #[cfg(all(windows, feature = "wide"))]
 #[repr(C)]
 pub struct CResult_windows_wide {
-    pub is_ok: u8,
+    is_ok: u8,
     /// Only initialized when `is_ok == 1`. `MaybeUninit` keeps the
     /// inactive field free of validity invariants (e.g. `NonZeroU32`).
-    pub ok_value: ::std::mem::MaybeUninit<u32>,
+    ok_value: ::std::mem::MaybeUninit<u32>,
     /// Only initialized when `is_ok == 0`.
-    pub err_value: ::std::mem::MaybeUninit<i32>,
+    err_value: ::std::mem::MaybeUninit<i32>,
 }
 #[cfg(all(windows, feature = "wide"))]
 impl CResult_windows_wide {
+    /// Wrap a `Result` in the C-compatible representation.
+    pub fn new(value: Result<u32, i32>) -> Self {
+        match value {
+            Ok(v) => {
+                Self {
+                    is_ok: 1,
+                    ok_value: ::std::mem::MaybeUninit::new(v),
+                    err_value: ::std::mem::MaybeUninit::zeroed(),
+                }
+            }
+            Err(e) => {
+                Self {
+                    is_ok: 0,
+                    ok_value: ::std::mem::MaybeUninit::zeroed(),
+                    err_value: ::std::mem::MaybeUninit::new(e),
+                }
+            }
+        }
+    }
+    /// Whether the call succeeded.
+    pub fn is_ok(&self) -> bool {
+        self.is_ok == 1
+    }
     /// The `Ok` value, if any.
     pub fn ok(&self) -> Option<&u32> {
         if self.is_ok == 1 {
@@ -42,32 +65,38 @@ fn windows_wide_inner() -> Result<u32, i32> {
 #[cfg(all(windows, feature = "wide"))]
 #[no_mangle]
 pub extern "C" fn windows_wide() -> CResult_windows_wide {
-    match windows_wide_inner() {
-        Ok(value) => {
-            CResult_windows_wide {
-                is_ok: 1,
-                ok_value: ::std::mem::MaybeUninit::new(value),
-                err_value: ::std::mem::MaybeUninit::zeroed(),
-            }
-        }
-        Err(err) => {
-            CResult_windows_wide {
-                is_ok: 0,
-                ok_value: ::std::mem::MaybeUninit::zeroed(),
-                err_value: ::std::mem::MaybeUninit::new(err),
-            }
-        }
-    }
+    CResult_windows_wide::new(windows_wide_inner())
 }
 #[cfg(not(target_os = "freebsd"))]
 #[repr(C)]
 pub struct COption_maybe {
-    pub is_some: u8,
+    is_some: u8,
     /// Only initialized when `is_some == 1`.
-    pub value: ::std::mem::MaybeUninit<f64>,
+    value: ::std::mem::MaybeUninit<f64>,
 }
 #[cfg(not(target_os = "freebsd"))]
 impl COption_maybe {
+    /// Wrap an `Option` in the C-compatible representation.
+    pub fn new(value: Option<f64>) -> Self {
+        match value {
+            Some(v) => {
+                Self {
+                    is_some: 1,
+                    value: ::std::mem::MaybeUninit::new(v),
+                }
+            }
+            None => {
+                Self {
+                    is_some: 0,
+                    value: ::std::mem::MaybeUninit::zeroed(),
+                }
+            }
+        }
+    }
+    /// Whether a value is present.
+    pub fn is_some(&self) -> bool {
+        self.is_some == 1
+    }
     /// The `Some` value, if any.
     pub fn some(&self) -> Option<&f64> {
         if self.is_some == 1 {
@@ -84,20 +113,7 @@ fn maybe_inner(x: f64) -> Option<f64> {
 #[cfg(not(target_os = "freebsd"))]
 #[no_mangle]
 pub extern "C" fn maybe(x: f64) -> COption_maybe {
-    match maybe_inner(x) {
-        Some(value) => {
-            COption_maybe {
-                is_some: 1,
-                value: ::std::mem::MaybeUninit::new(value),
-            }
-        }
-        None => {
-            COption_maybe {
-                is_some: 0,
-                value: ::std::mem::MaybeUninit::zeroed(),
-            }
-        }
-    }
+    COption_maybe::new(maybe_inner(x))
 }
 #[cfg(unix)]
 pub struct Handle {

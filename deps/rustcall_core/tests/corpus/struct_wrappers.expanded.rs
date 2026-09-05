@@ -127,14 +127,37 @@ impl Greeter {
 }
 #[repr(C)]
 pub struct CResult_checked_double {
-    pub is_ok: u8,
+    is_ok: u8,
     /// Only initialized when `is_ok == 1`. `MaybeUninit` keeps the
     /// inactive field free of validity invariants (e.g. `NonZeroU32`).
-    pub ok_value: ::std::mem::MaybeUninit<i32>,
+    ok_value: ::std::mem::MaybeUninit<i32>,
     /// Only initialized when `is_ok == 0`.
-    pub err_value: ::std::mem::MaybeUninit<i32>,
+    err_value: ::std::mem::MaybeUninit<i32>,
 }
 impl CResult_checked_double {
+    /// Wrap a `Result` in the C-compatible representation.
+    pub fn new(value: Result<i32, i32>) -> Self {
+        match value {
+            Ok(v) => {
+                Self {
+                    is_ok: 1,
+                    ok_value: ::std::mem::MaybeUninit::new(v),
+                    err_value: ::std::mem::MaybeUninit::zeroed(),
+                }
+            }
+            Err(e) => {
+                Self {
+                    is_ok: 0,
+                    ok_value: ::std::mem::MaybeUninit::zeroed(),
+                    err_value: ::std::mem::MaybeUninit::new(e),
+                }
+            }
+        }
+    }
+    /// Whether the call succeeded.
+    pub fn is_ok(&self) -> bool {
+        self.is_ok == 1
+    }
     /// The `Ok` value, if any.
     pub fn ok(&self) -> Option<&i32> {
         if self.is_ok == 1 {
@@ -157,30 +180,36 @@ fn checked_double_inner(value: i32) -> Result<i32, i32> {
 }
 #[no_mangle]
 pub extern "C" fn checked_double(value: i32) -> CResult_checked_double {
-    match checked_double_inner(value) {
-        Ok(value) => {
-            CResult_checked_double {
-                is_ok: 1,
-                ok_value: ::std::mem::MaybeUninit::new(value),
-                err_value: ::std::mem::MaybeUninit::zeroed(),
-            }
-        }
-        Err(err) => {
-            CResult_checked_double {
-                is_ok: 0,
-                ok_value: ::std::mem::MaybeUninit::zeroed(),
-                err_value: ::std::mem::MaybeUninit::new(err),
-            }
-        }
-    }
+    CResult_checked_double::new(checked_double_inner(value))
 }
 #[repr(C)]
 pub struct COption_positive {
-    pub is_some: u8,
+    is_some: u8,
     /// Only initialized when `is_some == 1`.
-    pub value: ::std::mem::MaybeUninit<i32>,
+    value: ::std::mem::MaybeUninit<i32>,
 }
 impl COption_positive {
+    /// Wrap an `Option` in the C-compatible representation.
+    pub fn new(value: Option<i32>) -> Self {
+        match value {
+            Some(v) => {
+                Self {
+                    is_some: 1,
+                    value: ::std::mem::MaybeUninit::new(v),
+                }
+            }
+            None => {
+                Self {
+                    is_some: 0,
+                    value: ::std::mem::MaybeUninit::zeroed(),
+                }
+            }
+        }
+    }
+    /// Whether a value is present.
+    pub fn is_some(&self) -> bool {
+        self.is_some == 1
+    }
     /// The `Some` value, if any.
     pub fn some(&self) -> Option<&i32> {
         if self.is_some == 1 {
@@ -195,18 +224,5 @@ fn positive_inner(value: i32) -> Option<i32> {
 }
 #[no_mangle]
 pub extern "C" fn positive(value: i32) -> COption_positive {
-    match positive_inner(value) {
-        Some(value) => {
-            COption_positive {
-                is_some: 1,
-                value: ::std::mem::MaybeUninit::new(value),
-            }
-        }
-        None => {
-            COption_positive {
-                is_some: 0,
-                value: ::std::mem::MaybeUninit::zeroed(),
-            }
-        }
-    }
+    COption_positive::new(positive_inner(value))
 }

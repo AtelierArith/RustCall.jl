@@ -98,8 +98,16 @@ fn inline_mode_drops_disabled_items() {
     assert!(!e.source.contains("WinPoint"));
     assert!(!e.source.contains("winmod"));
     assert!(!e.source.contains("win_only"));
-    // Enabled items keep their #[cfg] so rustc agrees with the manifest.
-    assert!(e.source.contains("#[cfg(unix)]"));
+    // Decided predicates are dropped from the kept items, so the source no
+    // longer depends on them; undecided ones (features) stay.
+    assert!(!e.source.contains("#[cfg(unix)]"), "{}", e.source);
+    assert!(!e.source.contains("#[cfg(not(windows))]"));
+
+    // In lenient mode a feature predicate is undecided and therefore kept.
+    let lenient = CfgSet::default().with_name("unix").lenient();
+    let el = expand_with_cfg(SRC, Some(&lenient)).unwrap();
+    assert!(el.source.contains("feature = \"extra\""), "{}", el.source);
+    assert!(!el.source.contains("#[cfg(unix)]"));
 
     let with_feature = set.clone().with_pair("feature", "extra");
     let e2 = expand_with_cfg(SRC, Some(&with_feature)).unwrap();

@@ -224,7 +224,7 @@ RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level) =
     ensure_loaded(lib_name::String, block) -> String
 
 Ensure that a Rust library is loaded in the current session; `block` is the
-[`RustBlockSnapshot`](@ref) stored by the macro (a plain source string is
+`RustBlockSnapshot` stored by the macro (a plain source string is
 accepted for modules precompiled by older versions, and is rebuilt under the
 current default compiler). Returns the name of the loaded library. Useful for
 precompiled modules that need to reload libraries at runtime.
@@ -439,7 +439,10 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # `// cargo-deps:` would share one in-memory library.
     # Use stable_content_hash() — never hash() for persistent identifiers
     deps_hash = hash_dependencies(dependencies)
-    code_hash = _cargo_block_identity(augmented_code, deps_hash)
+    # The environment the build will actually run under: the snapshot recorded
+    # by the macro, or the current one.
+    build_env_key = (cargo_env === nothing || isempty(cargo_env)) ? _cargo_cfg_env_key() : String(cargo_env)
+    code_hash = _cargo_block_identity(augmented_code, deps_hash, build_env_key)
 
     # Project and library names
     project_name = "rustcall_$(code_hash[1:12])"
@@ -460,7 +463,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         return lib_name
     end
 
-    cache_key_data = "$(code_hash)_$(deps_hash)_release"
+    cache_key_data = "$(code_hash)_$(deps_hash)_release_$(bytes2hex(sha256(build_env_key)))"
     cache_key = bytes2hex(sha256(cache_key_data))[1:32]
 
     cached_lib = get_cargo_cached_library(cache_key)
@@ -535,12 +538,16 @@ end
     _cargo_block_identity(expanded_source, deps_hash) -> String
 
 Stable identity of a Cargo-backed inline block: expanded source, dependency
-hash and toolchain fingerprint. Used for the in-memory library name, the
-temporary project name and the disk cache key.
+hash, toolchain fingerprint and the Cargo/RUSTFLAGS environment the build runs
+under (`cargo_env`, see `_cargo_cfg_env_key`) — two builds of the same source
+under different flags are different libraries. Used for the in-memory library
+name, the temporary project name and the disk cache key.
 """
-function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString)
+function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString,
+                              cargo_env::AbstractString = "")
     return stable_content_hash(string(expanded_source, "\n---deps---\n", deps_hash,
-                                      "\n---toolchain---\n", toolchain_fingerprint()))
+                                      "\n---toolchain---\n", toolchain_fingerprint(),
+                                      "\n---cargo-env---\n", cargo_env))
 end
 
 """
