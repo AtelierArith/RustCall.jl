@@ -1,4 +1,4 @@
-schema_version = 2
+schema_version = 3
 mode = "crate"
 structs = []
 
@@ -48,7 +48,7 @@ abi = ""
 
 [[functions]]
 name = "const_expression"
-symbol = "const_expression"
+symbol = "rustcall_const_expression"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -73,7 +73,7 @@ abi = ""
 
 [[functions]]
 name = "raw_braces"
-symbol = "raw_braces"
+symbol = "rustcall_raw_braces"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -94,7 +94,7 @@ module_path = []
 
 [[functions]]
 name = "cfg_disabled"
-symbol = "cfg_disabled"
+symbol = "rustcall_cfg_disabled"
 attribute = "julia"
 exported = true
 cfg = "any()"

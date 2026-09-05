@@ -95,7 +95,7 @@ println(result)  # => 35
 
 #### Why `@rust` here?
 
-`#[julia]` exposes a Rust function through a C-compatible ABI and also generates a Julia wrapper, so you can call `add(10, 20)` directly from Julia.
+`#[julia]` exposes a Rust function through a C-compatible ABI and also generates a Julia wrapper, so you can call `add(10, 20)` directly from Julia. The attribute is *additive*: your `fn add` is kept exactly as written and the C entry point is emitted next to it as `rustcall_add`, so the function still composes with other proc-macros (`#[pyfunction]`), in-crate callers and `#[test]`s.
 
 By contrast, `#[no_mangle] pub extern "C"` only exports a symbol from the Rust library. Julia does not automatically get a function named `multiply`, so `@rust` is the bridge that finds the exported symbol, converts the arguments, and performs the call.
 

@@ -98,7 +98,9 @@ RustCall.suggest_fix_for_error
 ### Strings in `#[julia]` functions
 
 `#[julia]` free functions may take `String` / `&str` arguments and return
-`String` / `&str` (#242). The generated `extern "C"` wrapper receives every
+`String` / `&str` (#242). The generated `extern "C"` wrapper — `rustcall_<fn>`,
+emitted next to the function, which is itself left untouched (#279) —
+receives every
 string as a `(ptr, len)` UTF-8 byte pair (no NUL terminator, embedded NULs
 allowed), returns `String` as an owned buffer that the Julia wrapper copies
 and releases through `<fn>_free_rust_string`, and returns `&str` as a

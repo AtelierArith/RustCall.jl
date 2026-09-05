@@ -187,7 +187,69 @@ fn expand_items(
         }
     }
 
+    for name in symbol_collisions(items, &out) {
+        let msg = format!(
+            "RustCall generates an item named `{name}` in this module, but the block already \
+             defines one. `#[julia]` keeps the annotated item and emits its `extern \"C\"` entry \
+             point next to it (`rustcall_<fn>`, `rustcall_<Struct>_<method>`, `<Struct>_free`, \
+             `<Struct>_get_<field>`, `CResult_<fn>`, `<fn>_RustCallOwnedString`, ...), so rename \
+             the conflicting item (#279)."
+        );
+        out.insert(0, syn::parse_quote! { compile_error!(#msg); });
+    }
+
     Ok(out)
+}
+
+/// Rust name-resolution namespace of an item: `struct Foo` and `fn Foo` may
+/// coexist, `fn Foo` and `const Foo` may not.
+fn item_key(item: &Item) -> Option<(u8, String)> {
+    const TYPE_NS: u8 = 0;
+    const VALUE_NS: u8 = 1;
+    match item {
+        Item::Fn(f) => Some((VALUE_NS, f.sig.ident.to_string())),
+        Item::Const(c) => Some((VALUE_NS, c.ident.to_string())),
+        Item::Static(s) => Some((VALUE_NS, s.ident.to_string())),
+        Item::Struct(s) => Some((TYPE_NS, s.ident.to_string())),
+        Item::Enum(e) => Some((TYPE_NS, e.ident.to_string())),
+        Item::Union(u) => Some((TYPE_NS, u.ident.to_string())),
+        Item::Trait(t) => Some((TYPE_NS, t.ident.to_string())),
+        Item::Type(t) => Some((TYPE_NS, t.ident.to_string())),
+        Item::Mod(m) => Some((TYPE_NS, m.ident.to_string())),
+        _ => None,
+    }
+}
+
+fn key_counts(items: &[Item]) -> std::collections::HashMap<(u8, String), usize> {
+    let mut counts = std::collections::HashMap::new();
+    for item in items {
+        if let Some(key) = item_key(item) {
+            *counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// Names that the wrappers generated for one module level would take away from
+/// an item the user wrote there.
+///
+/// `#[julia]` is additive (#279), so the exported symbols are chosen not to
+/// collide with the annotated items themselves (`rustcall_<fn>`); a *different*
+/// user item may still happen to carry a generated name. Inline expansion sees
+/// the whole module and can say so precisely, which is worth a clear error
+/// rather than a duplicate-definition diagnostic pointing at generated code.
+/// The proc-macro sees one item at a time and cannot make this check.
+fn symbol_collisions(original: &[Item], expanded: &[Item]) -> Vec<String> {
+    let before = key_counts(original);
+    let after = key_counts(expanded);
+    let mut clashes: Vec<String> = after
+        .iter()
+        .filter(|(key, count)| **count > before.get(*key).copied().unwrap_or(0))
+        .filter(|(key, _)| before.contains_key(*key))
+        .map(|((_, name), _)| name.clone())
+        .collect();
+    clashes.sort();
+    clashes
 }
 
 fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
@@ -203,7 +265,7 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
             Method {
                 name: m.name(),
                 symbol: if symbols {
-                    format!("{}_{}", struct_name, m.name())
+                    crate::codegen::method_symbol(&struct_name.to_string(), &m.name())
                 } else {
                     String::new()
                 },

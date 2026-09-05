@@ -8,7 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
-- The FFI manifest schema is now version 2 (`rustcall_core::manifest::SCHEMA_VERSION`,
+- `#[julia]` is **additive**: the annotated item is kept exactly as written
+  (minus the attribute itself) and the `extern "C"` entry point is emitted
+  *next to it* under a distinct symbol
+  ([#279](https://github.com/AtelierArith/RustCall.jl/issues/279)).
+  The export-symbol scheme, documented at the top of
+  `deps/rustcall_core/src/codegen.rs`, is:
+
+  | generated item | symbol |
+  |---|---|
+  | free function `f` | `rustcall_f` |
+  | method / constructor `Struct::m` | `rustcall_Struct_m` |
+  | specialized generic instantiation `f_i32` | `rustcall_f_i32` |
+  | destructor / accessors / clone | `Struct_free`, `Struct_get_x`, `Struct_set_x`, `Struct_clone` (unchanged) |
+  | `Result` / `Option` payloads | `CResult_f`, `COption_f` (unchanged) |
+  | string buffers | `<owner>_RustCallOwnedString`, `<owner>_free_rust_string`, `<owner>_RustCallBorrowedString` (unchanged) |
+
+  Nothing changes for Julia users: `add(1, 2)`, `@rust add(...)`, `@rust_crate`
+  and `write_bindings_to_file` all go through the manifest's `symbol` field.
+  What changes is that `fn shout(s: String) -> String` still *exists* in Rust
+  after expansion, so `#[julia]` now composes with `#[pyfunction]`, with
+  in-crate callers, with `#[test]`s and with `pub use` re-exports. Anyone who
+  `dlsym`ed the Rust name directly must switch to the `rustcall_`-prefixed
+  symbol, and any generated bindings (e.g. a `write_bindings_to_file` module)
+  must be regenerated.
+- The FFI manifest schema is now version 3
+  ([#279](https://github.com/AtelierArith/RustCall.jl/issues/279)):
+  `Function.symbol` and `Method.symbol` differ from `name` for *every* wrapped
+  item, not only for generic instantiations. A RustCall.jl expecting schema 2
+  refuses a version-3 manifest and vice versa. **Rebuild the extractor** with
+  `Pkg.build("RustCall")` after updating.
+- The FFI manifest schema was version 2 (`rustcall_core::manifest::SCHEMA_VERSION`,
   `RustCall.MANIFEST_SCHEMA_VERSION`): the string ABI columns `abi`,
   `return_abi` and the `has_owned_string_helper` / `has_borrowed_string_helper`
   flags change how the exported symbols must be called, so a RustCall.jl that

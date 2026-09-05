@@ -1,9 +1,9 @@
-schema_version = 2
+schema_version = 3
 mode = "inline"
 
 [[functions]]
 name = "checked_double"
-symbol = "checked_double"
+symbol = "rustcall_checked_double"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -28,7 +28,7 @@ abi = ""
 
 [[functions]]
 name = "positive"
-symbol = "positive"
+symbol = "rustcall_positive"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -81,7 +81,7 @@ setter = "Greeter_set_visits"
 
 [[structs.methods]]
 name = "new"
-symbol = "Greeter_new"
+symbol = "rustcall_Greeter_new"
 is_static = true
 is_mutable = false
 is_constructor = true
@@ -96,7 +96,7 @@ abi = "string"
 
 [[structs.methods]]
 name = "rename"
-symbol = "Greeter_rename"
+symbol = "rustcall_Greeter_rename"
 is_static = false
 is_mutable = true
 is_constructor = false
@@ -111,7 +111,7 @@ abi = "string"
 
 [[structs.methods]]
 name = "greet"
-symbol = "Greeter_greet"
+symbol = "rustcall_Greeter_greet"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -126,7 +126,7 @@ abi = "str"
 
 [[structs.methods]]
 name = "name"
-symbol = "Greeter_name"
+symbol = "rustcall_Greeter_name"
 is_static = false
 is_mutable = false
 is_constructor = false

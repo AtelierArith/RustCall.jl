@@ -1,6 +1,7 @@
 # Test cases for #[julia] attribute support (Phase 5)
 using RustCall
 using Test
+using Libdl
 
 @testset "Julia Attribute Support" begin
 
@@ -21,7 +22,7 @@ using Test
         sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest(code1; mode = "inline"))
         @test length(sigs) == 1
         @test sigs[1].name == "add"
-        @test sigs[1].symbol == "add"
+        @test sigs[1].symbol == "rustcall_add"
         @test sigs[1].arg_names == ["a", "b"]
         @test sigs[1].arg_types == ["i32", "i32"]
         @test sigs[1].return_type == "i32"
@@ -128,16 +129,19 @@ using Test
         code1 = "#[julia]\nfn add(a: i32, b: i32) -> i32 { a + b }"
         result1 = RustCall.expand_inline(code1).source
         @test occursin("#[no_mangle]", result1)
-        @test occursin("pub extern \"C\" fn add", result1)
+        # #[julia] is additive (#279): the item stays, the wrapper is added.
+        @test occursin("fn add(a: i32, b: i32) -> i32", result1)
+        @test occursin("pub extern \"C\" fn rustcall_add", result1)
         @test !occursin("#[julia]", result1)
 
         code2 = "#[julia]\npub fn multiply(x: f64) -> f64 { x * 2.0 }"
         result2 = RustCall.expand_inline(code2).source
         @test occursin("#[no_mangle]", result2)
-        @test occursin("pub extern \"C\" fn multiply", result2)
+        @test occursin("pub fn multiply(x: f64) -> f64", result2)
+        @test occursin("pub extern \"C\" fn rustcall_multiply", result2)
 
         code3 = "#[julia] fn inline_fn(a: i32) -> i32 { a }"
-        @test occursin("pub extern \"C\" fn inline_fn", RustCall.expand_inline(code3).source)
+        @test occursin("pub extern \"C\" fn rustcall_inline_fn", RustCall.expand_inline(code3).source)
 
         code4 = """
         #[julia]
@@ -147,24 +151,25 @@ using Test
         pub extern "C" fn already_ffi(b: i32) -> i32 { b }
         """
         result4 = RustCall.expand_inline(code4).source
-        @test occursin("pub extern \"C\" fn with_julia", result4)
+        @test occursin("pub extern \"C\" fn rustcall_with_julia", result4)
         @test occursin("pub extern \"C\" fn already_ffi", result4)  # unchanged
 
         # Result-returning #[julia] functions get a C-compatible wrapper struct
         code5 = "#[julia]\nfn d(a: f64) -> Result<f64, i32> { Ok(a) }"
         result5 = RustCall.expand_inline(code5).source
         @test occursin("CResult_d", result5)
-        @test occursin("pub extern \"C\" fn d(a: f64) -> CResult_d", result5)
+        @test occursin("pub extern \"C\" fn rustcall_d(a: f64) -> CResult_d", result5)
 
         # Expansion is memoized per source text
         @test RustCall.expand_inline(code1) === RustCall.expand_inline(code1)
     end
 
     @testset "manifest: schema version guard" begin
-        @test RustCall.MANIFEST_SCHEMA_VERSION == 2
-        @test RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")["schema_version"] == 2
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 3
+        @test RustCall._parse_manifest("schema_version = 3\nmode = \"inline\"\n")["schema_version"] == 3
         # Schema 1 predates the string ABI columns (`abi`, `return_abi`, the
-        # helper flags); a consumer must not fall back to the one-word ABI.
+        # helper flags) and schema 2 predates the additive `symbol` semantics
+        # (#279); a consumer must not fall back to either.
         err = try
             RustCall._parse_manifest("schema_version = 1\nmode = \"inline\"\n")
             nothing
@@ -173,7 +178,8 @@ using Test
         end
         @test err isa RustCall.ExtractorError
         @test occursin("schema 1", sprint(showerror, err))
-        @test occursin("expects 2", sprint(showerror, err))
+        @test occursin("expects 3", sprint(showerror, err))
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 999\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("mode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("not = [valid toml")
@@ -601,4 +607,38 @@ end
     @test !py["py_len"].has_owned_string_helper
     @test !RustCall._uses_string_ffi(py["py_len"])
     @test py["py_plain"].arg_abis == [""]
+
+    # #279: `#[julia]` is additive. The compiled block exports the wrapper
+    # `rustcall_<fn>`; the Rust name is *not* a C symbol any more, while the
+    # generated Julia function still goes by that name.
+    @testset "additive #[julia]: exported symbol is rustcall_<fn> (#279)" begin
+        code = """
+        #[julia]
+        pub fn additive_probe(x: i32) -> i32 { x + 1 }
+        """
+        expanded = RustCall.expand_inline(code)
+        sig = only(RustCall.manifest_function_signatures(expanded.manifest))
+        @test sig.name == "additive_probe"
+        @test sig.symbol == "rustcall_additive_probe"
+        # The annotated item survives verbatim next to the wrapper.
+        @test occursin("pub fn additive_probe(x: i32) -> i32", expanded.source)
+
+        lib_path = RustCall.compile_rust_to_shared_lib(expanded.source)
+        handle = Libdl.dlopen(lib_path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        try
+            @test Libdl.dlsym(handle, "rustcall_additive_probe"; throw_error = false) !== nothing
+            @test Libdl.dlsym(handle, "additive_probe"; throw_error = false) === nothing
+        finally
+            Libdl.dlclose(handle)
+        end
+
+        # End to end: the Julia wrapper keeps the Rust name and calls the
+        # prefixed symbol.
+        rust"""
+        #[julia]
+        pub fn additive_roundtrip(x: i32) -> i32 { x * 3 }
+        """
+        @test additive_roundtrip(Int32(4)) == 4 * 3
+        @test (@rust additive_roundtrip(Int32(5))::Int32) == 15
+    end
 end

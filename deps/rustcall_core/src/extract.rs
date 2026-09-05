@@ -120,9 +120,19 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
                 .map(|n| n.value() == "C")
                 .unwrap_or(false)
     };
+    let name = func.sig.ident.to_string();
+    // `#[julia]` / `#[julia_pyo3]` are additive: the item keeps its name and
+    // the exported entry point is the wrapper next to it (#279). A plain
+    // `#[no_mangle] extern "C"` function is exported under its own name.
+    let symbol = match attribute {
+        Attribute::Julia | Attribute::JuliaPyo3 if !is_generic => {
+            crate::codegen::function_symbol(&name)
+        }
+        _ => name.clone(),
+    };
     Function {
-        name: func.sig.ident.to_string(),
-        symbol: func.sig.ident.to_string(),
+        name,
+        symbol,
         attribute,
         exported,
         cfg: predicate_string(&func.attrs),
@@ -232,7 +242,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         .iter()
         .map(|m| Method {
             name: m.name(),
-            symbol: format!("{}_{}", struct_name, m.name()),
+            symbol: crate::codegen::method_symbol(&struct_name.to_string(), &m.name()),
             is_static: m.is_static,
             is_mutable: m.is_mutable,
             is_constructor: returns_boxed_struct(struct_name, &m.func),

@@ -1,10 +1,18 @@
 //! `#[cfg]` predicates are recorded in the manifest. Without a configuration
 //! (as here, in the golden run) every item is reported; the CLI with
 //! `--cfg-file` drops the inactive ones.
-#[no_mangle]
 #[cfg(unix)]
-pub extern "C" fn unix_only(x: i32) -> i32 {
+pub fn unix_only(x: i32) -> i32 {
     x + 1
+}
+#[cfg(unix)]
+#[no_mangle]
+pub extern "C" fn rustcall_unix_only(x: i32) -> i32 {
+    unix_only(x)
+}
+#[cfg(all(windows, feature = "wide"))]
+pub fn windows_wide() -> Result<u32, i32> {
+    Ok(1)
 }
 #[cfg(all(windows, feature = "wide"))]
 #[repr(C)]
@@ -59,13 +67,13 @@ impl CResult_windows_wide {
     }
 }
 #[cfg(all(windows, feature = "wide"))]
-fn windows_wide_inner() -> Result<u32, i32> {
-    Ok(1)
-}
-#[cfg(all(windows, feature = "wide"))]
 #[no_mangle]
-pub extern "C" fn windows_wide() -> CResult_windows_wide {
-    CResult_windows_wide::new(windows_wide_inner())
+pub extern "C" fn rustcall_windows_wide() -> CResult_windows_wide {
+    CResult_windows_wide::new(windows_wide())
+}
+#[cfg(not(target_os = "freebsd"))]
+pub fn maybe(x: f64) -> Option<f64> {
+    if x > 0.0 { Some(x) } else { None }
 }
 #[cfg(not(target_os = "freebsd"))]
 #[repr(C)]
@@ -107,13 +115,9 @@ impl COption_maybe {
     }
 }
 #[cfg(not(target_os = "freebsd"))]
-fn maybe_inner(x: f64) -> Option<f64> {
-    if x > 0.0 { Some(x) } else { None }
-}
-#[cfg(not(target_os = "freebsd"))]
 #[no_mangle]
-pub extern "C" fn maybe(x: f64) -> COption_maybe {
-    COption_maybe::new(maybe_inner(x))
+pub extern "C" fn rustcall_maybe(x: f64) -> COption_maybe {
+    COption_maybe::new(maybe(x))
 }
 #[cfg(unix)]
 pub struct Handle {
@@ -150,12 +154,13 @@ pub extern "C" fn Handle_set_epoll(ptr: *mut Handle, value: i32) {
     }
 }
 #[no_mangle]
-pub extern "C" fn Handle_fd(ptr: *const Handle) -> i32 {
+pub extern "C" fn rustcall_Handle_fd(ptr: *const Handle) -> i32 {
     let self_obj = unsafe { &*ptr };
     self_obj.fd()
 }
+#[cfg(target_os = "linux")]
 #[no_mangle]
-pub extern "C" fn Handle_epoll(ptr: *const Handle) -> i32 {
+pub extern "C" fn rustcall_Handle_epoll(ptr: *const Handle) -> i32 {
     let self_obj = unsafe { &*ptr };
     self_obj.epoll()
 }
@@ -170,8 +175,11 @@ impl Handle {
 }
 #[cfg(feature = "extra")]
 mod extra {
-    #[no_mangle]
-    pub extern "C" fn bonus() -> i32 {
+    pub fn bonus() -> i32 {
         42
+    }
+    #[no_mangle]
+    pub extern "C" fn rustcall_bonus() -> i32 {
+        bonus()
     }
 }

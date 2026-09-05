@@ -48,6 +48,75 @@ Maps (library name, function name) to return type.
 const FUNCTION_RETURN_TYPES_BY_LIB = Dict{Tuple{String, String}, Type}()
 
 """
+Rust item name to exported C symbol, keyed by `(library name, Rust name)`.
+
+`#[julia]` is additive since #279: the annotated function keeps its own name
+and the library exports the wrapper `rustcall_<name>` next to it. `@rust
+add(1, 2)` names the *Rust function*, so the lookup has to go through this
+mapping, which is filled from the manifest (`Function.symbol`) — never by
+string surgery on the name.
+
+The mapping is strictly **per library**, and identity mappings are recorded
+too. One library exporting `#[julia] fn f` as `rustcall_f` must not decide how
+`f` resolves in another library that exports a plain `#[no_mangle] fn f` under
+its own name; a library with no entry for a name resolves it to the name
+itself. Entries are dropped with the library (`clear_function_symbols!`), so an
+unloaded library cannot leave a stale mapping behind.
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const FUNCTION_SYMBOLS_BY_LIB = Dict{Tuple{String, String}, String}()
+
+"""
+    register_function_symbol(lib_name, name, symbol)
+
+Record that the Rust item `name` of `lib_name` is exported as `symbol`.
+Identity mappings are recorded as well: a plain `#[no_mangle] extern "C" fn f`
+is explicitly `f => f` for its own library, which is what keeps another
+library's `f => rustcall_f` from leaking into it.
+"""
+function register_function_symbol(lib_name::AbstractString, name::AbstractString,
+                                  symbol::AbstractString)
+    isempty(symbol) && return nothing
+    lock(REGISTRY_LOCK) do
+        FUNCTION_SYMBOLS_BY_LIB[(String(lib_name), String(name))] = String(symbol)
+    end
+    return nothing
+end
+
+"""
+    exported_symbol(lib_name, name) -> String
+
+The exported C symbol of the Rust item `name` **in `lib_name`**, or `name`
+itself when that library recorded nothing for it (a library loaded outside the
+manifest pipeline, or a `name` that is already the exported symbol). Never
+consults another library's mapping.
+"""
+function exported_symbol(lib_name::AbstractString, name::AbstractString)
+    lock(REGISTRY_LOCK) do
+        get(FUNCTION_SYMBOLS_BY_LIB, (String(lib_name), String(name)), String(name))
+    end
+end
+
+"""
+    clear_function_symbols!(lib_name)
+
+Drop every name-to-symbol mapping of `lib_name`. Called wherever a library
+leaves `RUST_LIBRARIES` or is replaced under the same name (unload, hot
+reload, re-registration of a `rust\"\"\"` block), so a stale mapping can never
+redirect a later lookup to a symbol that is no longer loaded.
+"""
+function clear_function_symbols!(lib_name::AbstractString)
+    name = String(lib_name)
+    lock(REGISTRY_LOCK) do
+        for key in collect(keys(FUNCTION_SYMBOLS_BY_LIB))
+            first(key) == name && delete!(FUNCTION_SYMBOLS_BY_LIB, key)
+        end
+    end
+    return nothing
+end
+
+"""
     register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
 
 Register a function with its type signature for later calling.

@@ -391,6 +391,9 @@ end
 function _generate_crate_function_wrapper(func::RustFunctionSignature)
     func_name = Symbol(func.name)
     func_name_str = func.name
+    # The Julia wrapper keeps the Rust name; the exported symbol it calls is
+    # `rustcall_<name>` since #279 (the helper types stay name-derived).
+    symbol_str = func.symbol
 
     # Build argument list
     arg_syms = [Symbol(name) for name in func.arg_names]
@@ -416,7 +419,7 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
         ptr_sym = _generated_local("func_ptr", func.arg_names)
         quote
             function $func_name($(arg_syms...))
-                $ptr_sym = _get_func_ptr($func_name_str)
+                $ptr_sym = _get_func_ptr($symbol_str)
                 call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...))
             end
             export $func_name
@@ -435,15 +438,18 @@ Wrapper for a `#[julia]` function with `String` / `&str` arguments or return
 function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol})
     func_name = Symbol(func.name)
     func_name_str = func.name
+    # The Julia wrapper keeps the Rust name; the exported symbol it calls is
+    # `rustcall_<name>` since #279 (the helper types stay name-derived).
+    symbol_str = func.symbol
     bindings, preserved, call_args = _string_arg_plan(func, identity)
     call = if func.has_owned_string_helper
-        free_name = func_name_str * "_free_rust_string"
-        :(_call_rust_owned_string_ptr(_get_func_ptr($func_name_str), _get_func_ptr($free_name), $(call_args...)))
+        free_name = ffi_free_symbol(func_name_str)
+        :(_call_rust_owned_string_ptr(_get_func_ptr($symbol_str), _get_func_ptr($free_name), $(call_args...)))
     elseif func.has_borrowed_string_helper
-        :(_call_rust_borrowed_string_ptr(_get_func_ptr($func_name_str), $(call_args...)))
+        :(_call_rust_borrowed_string_ptr(_get_func_ptr($symbol_str), $(call_args...)))
     else
         ret = something(_rust_type_to_julia_type_symbol(func.return_type), :Any)
-        :(call_rust_function(_get_func_ptr($func_name_str), $ret, $(call_args...)))
+        :(call_rust_function(_get_func_ptr($symbol_str), $ret, $(call_args...)))
     end
     quote
         function $func_name($(arg_syms...))
@@ -466,6 +472,9 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
                                            bindings::Vector, preserved::Vector, converted_args::Vector)
     func_name = Symbol(func.name)
     func_name_str = func.name
+    # The Julia wrapper keeps the Rust name; the exported symbol it calls is
+    # `rustcall_<name>` since #279 (the helper types stay name-derived).
+    symbol_str = func.symbol
 
     # Get Julia types for ok and err
     ok_julia_type = _rust_type_to_julia_type_symbol(func.ok_type)
@@ -495,7 +504,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
             # String arguments are converted first: an argument may be called
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
-            $ptr_sym = _get_func_ptr($func_name_str)
+            $ptr_sym = _get_func_ptr($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
             # Convert to RustResult
             if $c_sym.is_ok == 1
@@ -518,6 +527,9 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
                                            bindings::Vector, preserved::Vector, converted_args::Vector)
     func_name = Symbol(func.name)
     func_name_str = func.name
+    # The Julia wrapper keeps the Rust name; the exported symbol it calls is
+    # `rustcall_<name>` since #279 (the helper types stay name-derived).
+    symbol_str = func.symbol
 
     # Get Julia type for inner type
     inner_julia_type = _rust_type_to_julia_type_symbol(func.inner_type)
@@ -542,7 +554,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
             # String arguments are converted first: an argument may be called
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
-            $ptr_sym = _get_func_ptr($func_name_str)
+            $ptr_sym = _get_func_ptr($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...))
             # Convert to RustOption
             if $c_sym.is_some == 1
@@ -736,7 +748,10 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
-    wrapper_name = "$(struct_name_str)_$(method.name)"
+    # Exported symbol of the method wrapper (`rustcall_<Struct>_<method>`, #279);
+    # the per-method string buffers stay named after the method itself.
+    wrapper_name = method.symbol
+    helper_owner = "$(struct_name_str)_$(method.name)"
 
     arg_syms = [Symbol(name) for name in method.arg_names]
 
@@ -750,7 +765,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # Crate method wrappers return strings through per-method buffers:
     # `<Struct>_<method>_RustCallOwnedString`, released with
     # `<Struct>_<method>_free_rust_string` (see rustcall_core::codegen).
-    free_name = wrapper_name * "_free_rust_string"
+    free_name = ffi_free_symbol(helper_owner)
 
     all_args = Any[]
     method.is_static || push!(all_args, :(getfield(self, :ptr)))
@@ -1459,6 +1474,9 @@ Generate Julia code for a function wrapper as a string.
 """
 function _emit_function_code(func::RustFunctionSignature)
     func_name = func.name
+    # The generated Julia function keeps the Rust name; the symbol it looks up
+    # is the additive wrapper `rustcall_<name>` (#279).
+    sym = func.symbol
     arg_names = func.arg_names
 
     # Build argument conversions (string arguments become (ptr, len) pairs)
@@ -1474,13 +1492,13 @@ function _emit_function_code(func::RustFunctionSignature)
     elseif func.has_owned_string_helper
         return """
 function $func_name($arg_syms)
-$(prologue)    GC.@preserve $preserve_str _call_rust_owned_string_ptr(_get_func_ptr("$func_name"), _get_func_ptr("$(func_name)_free_rust_string"), $converted_args_str)
+$(prologue)    GC.@preserve $preserve_str _call_rust_owned_string_ptr(_get_func_ptr("$sym"), _get_func_ptr("$(ffi_free_symbol(func_name))"), $converted_args_str)
 end
 export $func_name"""
     elseif func.has_borrowed_string_helper
         return """
 function $func_name($arg_syms)
-$(prologue)    GC.@preserve $preserve_str _call_rust_borrowed_string_ptr(_get_func_ptr("$func_name"), $converted_args_str)
+$(prologue)    GC.@preserve $preserve_str _call_rust_borrowed_string_ptr(_get_func_ptr("$sym"), $converted_args_str)
 end
 export $func_name"""
     else
@@ -1491,7 +1509,7 @@ export $func_name"""
         ptr_var = _generated_local("func_ptr", func.arg_names)
         return """
 function $func_name($arg_syms)
-$(prologue)    $ptr_var = _get_func_ptr("$func_name")
+$(prologue)    $ptr_var = _get_func_ptr("$sym")
     GC.@preserve $preserve_str call_rust_function($ptr_var, $ret_type_str, $converted_args_str)
 end
 export $func_name"""
@@ -1505,6 +1523,7 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     err_julia_type = _rust_type_to_julia_type_symbol(func.err_type)
     ok_type_str = ok_julia_type !== nothing ? string(ok_julia_type) : "Any"
     err_type_str = err_julia_type !== nothing ? string(err_julia_type) : "Any"
+    sym = func.symbol
     c_result_struct_name = "CResult_$func_name"
     ptr_var = _generated_local("func_ptr", func.arg_names)
     c_var = _generated_local("c_result", func.arg_names)
@@ -1517,7 +1536,7 @@ struct $c_result_struct_name
 end
 
 function $func_name($arg_syms)
-$(prologue)    $ptr_var = _get_func_ptr("$func_name")
+$(prologue)    $ptr_var = _get_func_ptr("$sym")
     $c_var = GC.@preserve $preserve_str call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, $err_type_str}(true, $c_var.ok_value)
@@ -1533,6 +1552,7 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     func_name = func.name
     inner_julia_type = _rust_type_to_julia_type_symbol(func.inner_type)
     inner_type_str = inner_julia_type !== nothing ? string(inner_julia_type) : "Any"
+    sym = func.symbol
     c_option_struct_name = "COption_$func_name"
     ptr_var = _generated_local("func_ptr", func.arg_names)
     c_var = _generated_local("c_option", func.arg_names)
@@ -1544,7 +1564,7 @@ struct $c_option_struct_name
 end
 
 function $func_name($arg_syms)
-$(prologue)    $ptr_var = _get_func_ptr("$func_name")
+$(prologue)    $ptr_var = _get_func_ptr("$sym")
     $c_var = GC.@preserve $preserve_str call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)
     if $c_var.is_some == 1
         RustOption{$inner_type_str}(true, $c_var.value)
@@ -1663,7 +1683,10 @@ Generate Julia code for a method wrapper as a string.
 function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
     struct_name = struct_info.name
     method_name = method.name
-    wrapper_name = "$(struct_name)_$(method_name)"
+    # Exported symbol (`rustcall_<Struct>_<method>`, #279); the per-method
+    # string buffers stay named after the method itself.
+    wrapper_name = method.symbol
+    helper_owner = "$(struct_name)_$(method_name)"
 
     arg_syms = join(method.arg_names, ", ")
 
@@ -1676,7 +1699,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
     # object, which the finalizer of a temporary could free mid-call.
     method.is_static || (preserve_str = strip("self " * preserve_str))
     ptr_var = _generated_local("func_ptr", method.arg_names)
-    free_name = wrapper_name * "_free_rust_string"
+    free_name = ffi_free_symbol(helper_owner)
 
     all_args = String[]
     method.is_static || push!(all_args, "getfield(self, :ptr)")

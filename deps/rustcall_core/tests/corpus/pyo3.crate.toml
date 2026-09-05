@@ -1,9 +1,9 @@
-schema_version = 2
+schema_version = 3
 mode = "crate"
 
 [[functions]]
 name = "dual_add"
-symbol = "dual_add"
+symbol = "rustcall_dual_add"
 attribute = "julia_pyo3"
 exported = true
 cfg = ""
@@ -33,7 +33,7 @@ abi = ""
 
 [[functions]]
 name = "dual_len"
-symbol = "dual_len"
+symbol = "rustcall_dual_len"
 attribute = "julia_pyo3"
 exported = true
 cfg = ""
@@ -79,7 +79,7 @@ setter = "DualCounter_set_value"
 
 [[structs.methods]]
 name = "new"
-symbol = "DualCounter_new"
+symbol = "rustcall_DualCounter_new"
 is_static = true
 is_mutable = false
 is_constructor = true
@@ -94,7 +94,7 @@ abi = ""
 
 [[structs.methods]]
 name = "increment"
-symbol = "DualCounter_increment"
+symbol = "rustcall_DualCounter_increment"
 is_static = false
 is_mutable = true
 is_constructor = false

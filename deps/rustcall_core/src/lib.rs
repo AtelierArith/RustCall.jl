@@ -58,7 +58,7 @@ mod tests {
         assert_eq!(add.args.len(), 2);
         assert!(e
             .source
-            .contains("pub extern \"C\" fn add(a: i32, b: i32) -> i32"));
+            .contains("pub extern \"C\" fn rustcall_add(a: i32, b: i32) -> i32"));
 
         let div = m.functions.iter().find(|f| f.name == "safe_div").unwrap();
         assert_eq!(div.return_kind, manifest::ReturnKind::Option);
@@ -88,7 +88,7 @@ mod tests {
         assert_eq!(names, vec!["new", "norm"]);
         assert!(p.methods[0].is_constructor);
         assert!(e.source.contains("pub extern \"C\" fn Point_free"));
-        assert!(e.source.contains("pub extern \"C\" fn Point_new"));
+        assert!(e.source.contains("pub extern \"C\" fn rustcall_Point_new"));
         assert!(e.source.contains("pub extern \"C\" fn Point_get_x"));
         assert!(!e.source.contains("#[julia]"));
     }
@@ -170,7 +170,7 @@ mod tests {
         let c = &m.structs[0];
         let names: Vec<_> = c.methods.iter().map(|m| m.name.clone()).collect();
         assert_eq!(names, vec!["new", "increment"]);
-        assert_eq!(c.methods[0].symbol, "Counter_new");
+        assert_eq!(c.methods[0].symbol, "rustcall_Counter_new");
         assert!(c.fields.iter().all(|f| f.ffi_compatible));
     }
 
@@ -205,7 +205,7 @@ mod tests {
         .unwrap();
         assert!(sp
             .source
-            .contains("pub extern \"C\" fn Pair_first_i32(ptr: *const Pair<i32>) -> i32"));
+            .contains("pub extern \"C\" fn rustcall_Pair_first_i32(ptr: *const Pair<i32>) -> i32"));
 
         let full = format!("{}\n{}", s.context_source, s.generic_wrappers[0].source);
         let sp = specialize::specialize(
@@ -215,9 +215,9 @@ mod tests {
             "Pair_new_i32",
         )
         .unwrap();
-        assert!(sp
-            .source
-            .contains("pub extern \"C\" fn Pair_new_i32(a: i32, b: i32) -> *mut Pair<i32>"));
+        assert!(sp.source.contains(
+            "pub extern \"C\" fn rustcall_Pair_new_i32(a: i32, b: i32) -> *mut Pair<i32>"
+        ));
     }
 
     #[test]
@@ -244,8 +244,8 @@ mod tests {
         assert_eq!(e.manifest.functions[1].module_path, vec!["api", "deep"]);
         assert_eq!(e.manifest.structs[0].name, "P");
         assert_eq!(e.manifest.structs[0].module_path, vec!["api"]);
-        assert!(e.source.contains("pub extern \"C\" fn inner_add"));
-        assert!(e.source.contains("pub extern \"C\" fn P_new"));
+        assert!(e.source.contains("pub extern \"C\" fn rustcall_inner_add"));
+        assert!(e.source.contains("pub extern \"C\" fn rustcall_P_new"));
         assert!(!e.source.contains("#[julia]"));
         assert!(e.source.contains("mod external;"));
 

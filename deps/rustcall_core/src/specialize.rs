@@ -18,8 +18,8 @@ use syn::{GenericParam, Item, ItemFn, Path, PathArguments, Type, WherePredicate}
 
 use crate::cfg::body_has_cfg;
 use crate::codegen::{
-    function_returns_string, function_uses_strings, returns_borrowed_str, returns_copied_str,
-    transform_string_function,
+    function_returns_string, function_symbol, plain_function_wrapper, returns_borrowed_str,
+    returns_copied_str,
 };
 use crate::manifest::{Arg, Attribute, Function, Manifest, Mode, ReturnKind};
 use crate::types::{return_type_to_string, type_to_string};
@@ -311,21 +311,21 @@ pub fn specialize(
     let mut entry = function_entry(&func);
     entry.module_path = module_path.iter().map(|s| s.to_string()).collect();
 
-    // Fixed `String` / `&str` parameters or returns get the same `(ptr, len)`
-    // wrapper as a non-generic `#[julia]` function (#242); the manifest
-    // records the helpers so the caller uses the string ABI.
-    let new_items: Vec<Item> = if function_uses_strings(&func.sig) {
-        entry.has_owned_string_helper =
-            function_returns_string(&func.sig) || returns_copied_str(&func.sig);
-        entry.has_borrowed_string_helper = returns_borrowed_str(&func.sig);
-        let file: syn::File = syn::parse2(transform_string_function(func))
-            .map_err(|e| SpecializeError::Parse(e.to_string()))?;
-        file.items
-    } else {
-        func.attrs.insert(0, syn::parse_quote!(#[no_mangle]));
+    // The instantiation is emitted the same way `#[julia]` emits a function
+    // (#279): the plain Rust function under `new_name`, and the `extern "C"`
+    // entry point next to it under `rustcall_<new_name>`. Fixed `String` /
+    // `&str` parameters or returns get the `(ptr, len)` ABI (#242); the
+    // manifest records the helpers so the caller uses the string ABI.
+    entry.has_owned_string_helper =
+        function_returns_string(&func.sig) || returns_copied_str(&func.sig);
+    entry.has_borrowed_string_helper = returns_borrowed_str(&func.sig);
+    let new_items: Vec<Item> = {
         func.vis = syn::Visibility::Public(Default::default());
-        func.sig.abi = Some(syn::parse_quote!(extern "C"));
-        vec![Item::Fn(func)]
+        let wrapper: syn::File = syn::parse2(plain_function_wrapper(&func))
+            .map_err(|e| SpecializeError::Parse(e.to_string()))?;
+        let mut items = vec![Item::Fn(func)];
+        items.extend(wrapper.items);
+        items
     };
     let items = locate_items(&mut file.items, module_path).expect("module path resolved above");
     for (offset, item) in new_items.into_iter().enumerate() {
@@ -379,7 +379,9 @@ fn function_entry(func: &ItemFn) -> Function {
     Function {
         cfg: crate::cfg::predicate_string(&func.attrs),
         name: func.sig.ident.to_string(),
-        symbol: func.sig.ident.to_string(),
+        // The exported entry point is the additive wrapper, not the
+        // instantiation itself (#279).
+        symbol: function_symbol(&func.sig.ident.to_string()),
         attribute: Attribute::None,
         exported: true,
         is_generic: false,
@@ -420,7 +422,7 @@ mod tests {
         assert!(out.source.contains("#[no_mangle]"));
         assert!(out
             .source
-            .contains("pub extern \"C\" fn identity_i32(x: i32) -> i32"));
+            .contains("pub extern \"C\" fn rustcall_identity_i32(x: i32) -> i32"));
         assert!(!out.source.contains("identity_i32<"));
         assert!(out.source.contains("let y: i32 = x;"));
         // The generic original stays next to the instantiation.
@@ -457,7 +459,7 @@ mod tests {
         assert!(out.source.contains("pub struct Point<T>"));
         assert!(out
             .source
-            .contains("pub extern \"C\" fn Point_new_i64(x: i64) -> *mut Point<i64>"));
+            .contains("pub extern \"C\" fn rustcall_Point_new_i64(x: i64) -> *mut Point<i64>"));
     }
 
     #[test]
@@ -474,7 +476,7 @@ mod tests {
         assert!(out.source.contains("mod api {"));
         assert!(out
             .source
-            .contains("pub extern \"C\" fn f_i32(x: i32) -> i32"));
+            .contains("pub extern \"C\" fn rustcall_f_i32(x: i32) -> i32"));
         assert!(out.source.contains("pub fn f<T>"));
         assert_eq!(out.manifest.functions[0].module_path, vec!["api"]);
         assert!(matches!(
@@ -494,7 +496,7 @@ mod tests {
         assert!(out.source.contains("pub fn f<T: Copy>(x: T) -> T"));
         assert!(out
             .source
-            .contains("pub extern \"C\" fn f_i32(x: i32) -> i32"));
+            .contains("pub extern \"C\" fn rustcall_f_i32(x: i32) -> i32"));
         assert!(out.source.contains("fn helper() -> i32 {"));
         let f_pos = out.source.find("pub fn f<T: Copy>").unwrap();
         let s_pos = out.source.find("fn f_i32").unwrap();
@@ -508,7 +510,7 @@ mod tests {
         let out = specialize(src, "outer", &[("T".into(), "i32".into())], "outer_i32").unwrap();
         assert!(out
             .source
-            .contains("pub extern \"C\" fn outer_i32(x: i32) -> i32"));
+            .contains("pub extern \"C\" fn rustcall_outer_i32(x: i32) -> i32"));
         assert!(out.source.contains("fn inner<T>(x: T) -> T"));
         assert!(out.source.contains("struct Local<T>(T);"));
         // A nested item that does not redeclare T still sees the substitution.
@@ -553,9 +555,9 @@ mod tests {
         let src = "pub fn tag<T: std::fmt::Display>(x: T, label: String) -> String { format!(\"{label}{x}\") }";
         let out = specialize(src, "tag", &[("T".into(), "i32".into())], "tag_i32").unwrap();
         let source = flat(&out.source);
-        assert!(source.contains("fn tag_i32_inner(x: i32, label: String) -> String"));
+        assert!(source.contains("pub fn tag_i32(x: i32, label: String) -> String"));
         assert!(
-            source.contains("pub extern \"C\" fn tag_i32(x: i32, label_ptr: *const u8, label_len: usize) -> tag_i32_RustCallOwnedString"),
+            source.contains("pub extern \"C\" fn rustcall_tag_i32(x: i32, label_ptr: *const u8, label_len: usize) -> tag_i32_RustCallOwnedString"),
             "{source}"
         );
         assert!(source.contains("pub extern \"C\" fn tag_i32_free_rust_string("));
@@ -572,7 +574,7 @@ mod tests {
         let source = flat(&out.source);
         assert!(
             source.contains(
-                "pub extern \"C\" fn count_i32(x: i32, s_ptr: *const u8, s_len: usize) -> usize"
+                "pub extern \"C\" fn rustcall_count_i32(x: i32, s_ptr: *const u8, s_len: usize) -> usize"
             ),
             "{source}"
         );
@@ -585,7 +587,7 @@ mod tests {
         let source = flat(&out.source);
         assert!(
             source.contains(
-                "pub extern \"C\" fn label_i32(_x: i32) -> label_i32_RustCallBorrowedString"
+                "pub extern \"C\" fn rustcall_label_i32(_x: i32) -> label_i32_RustCallBorrowedString"
             ),
             "{source}"
         );

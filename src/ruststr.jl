@@ -61,20 +61,28 @@ loaded libraries as a fallback. This enables using functions from multiple
 """
 function get_function_pointer(lib_name::String, func_name::String)
     lock(REGISTRY_LOCK) do
+        # `#[julia]` is additive (#279): a Rust item named `add` may be exported
+        # as `rustcall_add`. The name-to-symbol mapping is per library, so it is
+        # resolved separately for every library searched below — one library's
+        # `#[julia] fn f` must never redirect the lookup of another library's
+        # plain `#[no_mangle] fn f`. A library with no entry for the name looks
+        # it up as given.
+
         # First, try the specified library
         if haskey(RUST_LIBRARIES, lib_name)
+            symbol = exported_symbol(lib_name, func_name)
             lib_handle, func_cache = RUST_LIBRARIES[lib_name]
 
             # Check cache first
-            if haskey(func_cache, func_name)
-                return func_cache[func_name]
+            if haskey(func_cache, symbol)
+                return func_cache[symbol]
             end
 
             # Look up the function
-            func_ptr = Libdl.dlsym(lib_handle, func_name; throw_error=false)
+            func_ptr = Libdl.dlsym(lib_handle, symbol; throw_error=false)
             if func_ptr !== nothing && func_ptr != C_NULL
                 # Cache it
-                func_cache[func_name] = func_ptr
+                func_cache[symbol] = func_ptr
                 return func_ptr
             end
         end
@@ -87,19 +95,20 @@ function get_function_pointer(lib_name::String, func_name::String)
             if other_lib_name == lib_name
                 continue  # Already checked
             end
+            symbol = exported_symbol(other_lib_name, func_name)
 
             # Check cache first
-            if haskey(other_func_cache, func_name)
+            if haskey(other_func_cache, symbol)
                 push!(found_libs, other_lib_name)
-                found_ptr = other_func_cache[func_name]
+                found_ptr = other_func_cache[symbol]
                 continue
             end
 
             # Look up the function
-            func_ptr = Libdl.dlsym(other_lib_handle, func_name; throw_error=false)
+            func_ptr = Libdl.dlsym(other_lib_handle, symbol; throw_error=false)
             if func_ptr !== nothing && func_ptr != C_NULL
                 # Cache it
-                other_func_cache[func_name] = func_ptr
+                other_func_cache[symbol] = func_ptr
                 push!(found_libs, other_lib_name)
                 found_ptr = func_ptr
             end
@@ -617,6 +626,10 @@ Register everything the manifest of a compiled block tells us:
 """
 function _register_manifest(expanded, lib_name::String; compiler = nothing, cargo_backed::Bool = false)
     manifest = expanded.manifest
+    # This library's name-to-symbol mappings are rebuilt from scratch: a block
+    # re-registered under the same library name must not keep the entries of
+    # functions it no longer defines (#279).
+    clear_function_symbols!(lib_name)
     for info in manifest_struct_infos(manifest)
         register_generic_struct_wrappers(info, expanded.source; compiler)
     end
@@ -643,6 +656,12 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing, carg
                                       path = qualified_name(sig.module_path, sig.name), compiler, blocked)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         elseif sig.exported
+            # `@rust f(...)` names the Rust function; the library exports the
+            # additive wrapper (#279), so record the mapping before anything
+            # tries to resolve it. Identity mappings are recorded too, so a
+            # plain `#[no_mangle] fn f` here is explicitly `f => f` for this
+            # library and cannot pick up another library's `f => rustcall_f`.
+            register_function_symbol(lib_name, sig.name, sig.symbol)
             _register_return_type(sig, lib_name)
         end
     end
@@ -670,9 +689,15 @@ function _register_return_type(sig, lib_name::String)
         nothing
     end
     ret_type === nothing && return nothing
-    FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, sig.symbol)] = ret_type
-    FUNCTION_RETURN_TYPES[sig.symbol] = ret_type
-    @debug "Registered return type for function: $(sig.symbol) => $ret_type (library: $lib_name)"
+    # Recorded under both the Rust name and the exported symbol: `@rust f(...)`
+    # names the function, while a caller that already resolved the symbol (or a
+    # generated wrapper) asks for `rustcall_f`. Unlike the symbol mapping, this
+    # is only a type hint, so the pre-#279 unscoped name key stays.
+    for key in unique((sig.name, sig.symbol))
+        FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, key)] = ret_type
+        FUNCTION_RETURN_TYPES[key] = ret_type
+    end
+    @debug "Registered return type for function: $(sig.name) (symbol $(sig.symbol)) => $ret_type (library: $lib_name)"
     return nothing
 end
 
@@ -745,6 +770,9 @@ function unload_library(lib_name::String)
         end
         lib_handle, _ = RUST_LIBRARIES[lib_name]
         delete!(RUST_LIBRARIES, lib_name)
+        # A stale name-to-symbol mapping would keep redirecting lookups to a
+        # symbol that is no longer loaded (#279).
+        clear_function_symbols!(lib_name)
         if CURRENT_LIB[] == lib_name
             CURRENT_LIB[] = ""
         end

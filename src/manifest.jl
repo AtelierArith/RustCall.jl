@@ -13,9 +13,10 @@ using SHA: sha256
 """
 Manifest schema version this version of RustCall.jl understands. Must match
 `rustcall_core::manifest::SCHEMA_VERSION` (2: string ABI columns `abi`,
-`return_abi` and the string helper flags, #242).
+`return_abi` and the string helper flags, #242; 3: `#[julia]` is additive, so
+`symbol` differs from `name` for every wrapped function and method, #279).
 """
-const MANIFEST_SCHEMA_VERSION = 2
+const MANIFEST_SCHEMA_VERSION = 3
 
 """
     ExtractorError <: Exception
@@ -548,6 +549,7 @@ Result of instantiating a generic function via `rustcall-extract specialize`.
 struct SpecializedFunction
     source::String
     name::String
+    symbol::String                    # exported C symbol, `rustcall_<name>` (#279)
     arg_types::Vector{String}
     return_type::String
     arg_abis::Vector{String}          # manifest `abi` per argument ("string", "str" or "")
@@ -581,6 +583,7 @@ function specialize_generic(source::String, fn_name::String,
         SpecializedFunction(
             out,
             String(fn["name"]),
+            _mstr(fn, "symbol"),
             String[String(a["rust_type"]) for a in args],
             String(fn["return_type"]),
             String[_mstr(a, "abi") for a in args],

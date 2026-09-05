@@ -291,6 +291,10 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     end
 
     # Regular function - use existing logic
+    # `@rust f(...)` names the Rust function; `#[julia]` exports the additive
+    # wrapper `rustcall_f` next to it (#279). `get_function_pointer` resolves
+    # that per library, and the return-type registry is keyed by both the name
+    # and the symbol, so the source-level name is what we pass around here.
     # Get function pointer
     @debug "Calling function '$func_name' from library '$lib_name'"
     func_ptr = get_function_pointer(lib_name, func_name)

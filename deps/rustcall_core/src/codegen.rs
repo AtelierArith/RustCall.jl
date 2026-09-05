@@ -8,9 +8,46 @@
 //! * **inline** codegen, used by the extractor CLI's `expand` command for
 //!   `rust"""` blocks (`inline_struct_wrappers`, `inline_generic_wrappers`).
 //!
-//! `transform_function` is common to both flavours, so `#[julia] fn` behaves
-//! identically in inline blocks and in crates (including the C-compatible
-//! `Result`/`Option` wrappers).
+//! Every `extern "C"` entry point — inline function, crate function,
+//! specialized generic instantiation, inline method, crate method,
+//! `julia_pyo3` function — is produced by the one generator
+//! [`generate_wrapper`]; the public `transform_*` functions are thin adapters
+//! that fill in a [`WrapperSpec`]. Adding a flavour therefore cannot lose the
+//! string ABI, the `#[cfg]` propagation or the receiver handling again (#279).
+//!
+//! # `#[julia]` is additive (#279)
+//!
+//! The annotated item is kept **byte-for-byte**, minus the `#[julia]`
+//! attribute itself, and the FFI entry point is emitted *next to it* under a
+//! distinct symbol. Every in-crate caller, `#[test]`, `pub use` re-export and
+//! other proc-macro (notably `#[pyfunction]`) therefore still sees the Rust
+//! signature that was written.
+//!
+//! # Export-symbol scheme
+//!
+//! | generated item | symbol |
+//! |---|---|
+//! | free function `f` | `rustcall_f` |
+//! | method / constructor `Struct::m` | `rustcall_Struct_m` |
+//! | specialized generic instantiation `f_i32` | `rustcall_f_i32` |
+//! | struct destructor | `Struct_free` |
+//! | field accessors | `Struct_get_x` / `Struct_set_x` |
+//! | clone | `Struct_clone` |
+//! | `Result` / `Option` payload | `CResult_f` / `COption_f` |
+//! | owned string buffer / release | `<owner>_RustCallOwnedString` / `<owner>_free_rust_string` |
+//! | borrowed string view | `<owner>_RustCallBorrowedString` |
+//!
+//! Only the first three wrap a user-written item and so must step aside from
+//! its name; `<owner>` is the free function, `<Struct>_<method>` or `<Struct>`
+//! the buffer belongs to. The remaining items are purely generated and keep
+//! the names they have always had.
+//!
+//! The scheme is stable and part of artifact identity: the manifest carries it
+//! in `Function.symbol` / `Method.symbol` (schema 3) and every Julia-side
+//! `ccall` / `dlsym` goes through those fields, never through the Rust name.
+//! Inline expansion additionally refuses a block in which a user item already
+//! owns a generated symbol (see `crate::expand::symbol_collisions`); the
+//! proc-macro sees one item at a time and cannot make that check.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -24,36 +61,29 @@ use crate::model::{MethodModel, StructModel};
 use crate::types::{
     extract_option_type, extract_result_type, is_ffi_compatible_type,
     is_inline_accessible_field_type, is_non_ffi_type, is_self_type, is_str_ref_type,
-    is_string_type, is_vec_type, needs_clone_for_getter, unparen, OptionTypeInfo, ResultTypeInfo,
+    is_string_type, is_vec_type, needs_clone_for_getter, unparen,
 };
 
 // ============================================================================
-// Functions (shared)
+// Export-symbol scheme (#279)
 // ============================================================================
 
-/// Transform a `#[julia]` function to FFI-compatible form.
-pub fn transform_function(func: ItemFn) -> TokenStream2 {
-    if func.sig.unsafety.is_some() {
-        return quote! {
-            compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
-        };
-    }
+/// Prefix of every exported symbol that stands in for a user-written item.
+pub const SYMBOL_PREFIX: &str = "rustcall_";
 
-    if let ReturnType::Type(_, ref ret_type) = func.sig.output {
-        if let Some(result_info) = extract_result_type(ret_type) {
-            return transform_result_function(func, result_info);
-        }
-        if let Some(option_info) = extract_option_type(ret_type) {
-            return transform_option_function(func, option_info);
-        }
-    }
-
-    if function_uses_strings(&func.sig) {
-        return transform_string_function(func);
-    }
-
-    transform_simple_function(func)
+/// Exported symbol of the `extern "C"` wrapper of the free function `name`.
+pub fn function_symbol(name: &str) -> String {
+    format!("{SYMBOL_PREFIX}{name}")
 }
+
+/// Exported symbol of the `extern "C"` wrapper of `Struct::method`.
+pub fn method_symbol(struct_name: &str, method: &str) -> String {
+    format!("{SYMBOL_PREFIX}{struct_name}_{method}")
+}
+
+// ============================================================================
+// Signature predicates (shared)
+// ============================================================================
 
 /// Whether a `#[julia]` function takes or returns `String` / `&str` (#242).
 pub fn function_uses_strings(sig: &syn::Signature) -> bool {
@@ -120,8 +150,10 @@ fn fresh_ident(base: &str, taken: &[String]) -> Ident {
     format_ident!("{}", name)
 }
 
-/// Names of every typed argument of a signature (destructuring patterns
-/// rendered as `argN`, see [`normalize_arg_patterns`]).
+/// Names of every typed argument of a signature. A destructuring pattern
+/// (`fn f((a, b): (i32, i32))`) has no name of its own, so the wrapper calls
+/// its argument `argN`; the annotated item keeps the pattern, because the
+/// wrapper passes the arguments on positionally.
 fn typed_arg_names(sig: &syn::Signature) -> Vec<Ident> {
     sig.inputs
         .iter()
@@ -133,6 +165,19 @@ fn typed_arg_names(sig: &syn::Signature) -> Vec<Ident> {
             }),
             FnArg::Receiver(_) => None,
         })
+        .collect()
+}
+
+/// `(name, type)` of every typed argument, in declaration order.
+fn arg_pairs(sig: &syn::Signature) -> Vec<(Ident, Type)> {
+    sig.inputs
+        .iter()
+        .filter_map(|a| match a {
+            FnArg::Typed(pt) => Some((*pt.ty).clone()),
+            FnArg::Receiver(_) => None,
+        })
+        .zip(typed_arg_names(sig))
+        .map(|(ty, name)| (name, ty))
         .collect()
 }
 
@@ -175,102 +220,172 @@ fn string_arg_conversion(
     }
 }
 
-/// Wrapper-side view of a function's arguments (see [`string_arg_conversion`]).
-struct StringArgs {
-    wrapper_args: Vec<TokenStream2>,
-    conversions: Vec<TokenStream2>,
-    call_args: Vec<TokenStream2>,
+// ============================================================================
+// The one wrapper generator (#279)
+// ============================================================================
+
+/// The receiver of a method wrapper: the wrapper takes `*const` / `*mut Struct`
+/// and dereferences it into `self_obj`.
+pub(crate) struct WrapperReceiver {
+    pub ty: Ident,
+    pub mutable: bool,
 }
 
-fn string_arg_conversions(func: &ItemFn, names: &[Ident]) -> StringArgs {
-    let taken: Vec<String> = names.iter().map(ToString::to_string).collect();
+/// The item the wrapper calls. Always the original, under its own name.
+pub(crate) enum CallTarget {
+    /// `f(args)`
+    Free(Ident),
+    /// `Struct::m(args)`
+    Assoc { ty: Ident, method: Ident },
+    /// `self_obj.m(args)`
+    Instance(Ident),
+}
+
+/// How the wrapper hands the value back across the C ABI.
+///
+/// `syn::Type` is a large enum; the variants carry it by value because a
+/// wrapper spec is built once per generated item and immediately consumed.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum WrapperReturn {
+    /// No return value.
+    Unit,
+    /// Returned as written.
+    Plain(Type),
+    /// The value is boxed and returned as `*mut Struct` (constructors and
+    /// anything returning `Self`).
+    Boxed(Ident),
+    /// `<helper> { ptr, len, cap }`, released through `<free>`.
+    OwnedString {
+        helper: Ident,
+        free: Ident,
+        /// Whether this wrapper declares the buffer type and its release
+        /// function (false when a struct-level helper is shared).
+        declare: bool,
+    },
+    /// `<helper> { ptr, len }` borrowed from the callee.
+    BorrowedStr { helper: Ident, declare: bool },
+    /// `CResult_<owner> { is_ok, ok_value, err_value }`.
+    CResult { name: Ident, ok: Type, err: Type },
+    /// `COption_<owner> { is_some, value }`.
+    COption { name: Ident, inner: Type },
+}
+
+/// Everything [`generate_wrapper`] needs: a signature model plus the call
+/// target. Every flavour of `#[julia]` codegen fills this in and so gets
+/// identical lowering by construction (#279).
+pub(crate) struct WrapperSpec {
+    /// Exported symbol, see the module docs.
+    pub symbol: Ident,
+    /// `#[cfg]` / `#[cfg_attr]` attributes replicated onto every generated item.
+    pub cfg_attrs: Vec<Attribute>,
+    pub receiver: Option<WrapperReceiver>,
+    pub args: Vec<(Ident, Type)>,
+    /// Whether `String` / `&str` arguments are lowered to `(ptr, len)` pairs.
+    /// Only `#[julia_pyo3]`, which exports the signature as written, says no.
+    pub lower_strings: bool,
+    pub ret: WrapperReturn,
+    pub target: CallTarget,
+}
+
+/// The single `extern "C"` wrapper generator: every entry point of this module
+/// goes through it, so the string ABI, the `#[cfg]` propagation and the
+/// receiver handling cannot diverge between flavours.
+pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
+    let WrapperSpec {
+        symbol,
+        cfg_attrs,
+        receiver,
+        args,
+        lower_strings,
+        ret,
+        target,
+    } = spec;
+
+    let taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
+    let ptr = fresh_ident("ptr", &taken);
+    let self_obj = fresh_ident("self_obj", &taken);
+
     let mut wrapper_args: Vec<TokenStream2> = Vec::new();
     let mut conversions: Vec<TokenStream2> = Vec::new();
     let mut call_args: Vec<TokenStream2> = Vec::new();
-    for (arg, name) in func.sig.inputs.iter().zip(names.iter()) {
-        let FnArg::Typed(pat_type) = arg else {
-            continue;
-        };
-        let (args, conversion) = string_arg_conversion(name, &pat_type.ty, &taken);
-        wrapper_args.extend(args);
-        conversions.extend(conversion);
+
+    if let Some(r) = &receiver {
+        let ty = &r.ty;
+        wrapper_args.push(if r.mutable {
+            quote! { #ptr: *mut #ty }
+        } else {
+            quote! { #ptr: *const #ty }
+        });
+    }
+    for (name, ty) in &args {
+        if lower_strings {
+            let (a, conversion) = string_arg_conversion(name, ty, &taken);
+            wrapper_args.extend(a);
+            conversions.extend(conversion);
+        } else {
+            wrapper_args.push(quote! { #name: #ty });
+        }
         call_args.push(quote! { #name });
     }
-    StringArgs {
-        wrapper_args,
-        conversions,
-        call_args,
-    }
-}
 
-/// `#[julia] fn f(s: String, t: &str) -> String` (#242).
-///
-/// Also applied by [`crate::specialize`] to the instantiation of a generic
-/// function whose fixed parameters are strings.
-///
-/// Same ABI as the struct method wrappers: every `String` / `&str` argument
-/// becomes a `(*const u8, usize)` pair (UTF-8, not NUL-terminated); a `String`
-/// return becomes `<fn>_RustCallOwnedString { ptr, len, cap }` released with
-/// `<fn>_free_rust_string(ptr, len, cap)`; a `&str` return becomes
-/// `<fn>_RustCallBorrowedString { ptr, len }` (the caller keeps the borrowed
-/// data alive). The original function is kept as `<fn>_inner`.
-pub fn transform_string_function(func: ItemFn) -> TokenStream2 {
-    let inner_fn = func.clone();
-    let mut func = func;
-    let names = normalize_arg_patterns(&mut func);
-    let func_name = &func.sig.ident;
-    let inner_fn_name = format_ident!("{}_inner", func_name);
-    let inner_fn_args = &inner_fn.sig.inputs;
-    let inner_output = &inner_fn.sig.output;
-    // Lifetime parameters (`fn f<'a>(s: &'a str) -> &'a str`) stay on the inner fn.
-    let inner_generics = &inner_fn.sig.generics;
-    let inner_where = &inner_fn.sig.generics.where_clause;
-    let body = &inner_fn.block;
-    let cfg_attrs = cfg_attrs(&func.attrs);
-    let outer_attrs = &func.attrs;
+    let self_binding = match &receiver {
+        None => quote! {},
+        Some(r) if r.mutable => quote! { let #self_obj = unsafe { &mut *#ptr }; },
+        Some(_) => quote! { let #self_obj = unsafe { &*#ptr }; },
+    };
+    let call = match &target {
+        CallTarget::Free(name) => quote! { #name(#(#call_args),*) },
+        CallTarget::Assoc { ty, method } => quote! { #ty::#method(#(#call_args),*) },
+        CallTarget::Instance(method) => quote! { #self_obj.#method(#(#call_args),*) },
+    };
+    let prologue = quote! { #(#conversions)* #self_binding };
 
-    let StringArgs {
-        wrapper_args,
-        conversions,
-        call_args,
-    } = string_arg_conversions(&func, &names);
-
-    let owned_helper = format_ident!("{}_RustCallOwnedString", func_name);
-    let owned_free = format_ident!("{}_free_rust_string", func_name);
-    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", func_name);
-    let call = quote! { #inner_fn_name(#(#call_args),*) };
-
-    let returns_owned = function_returns_string(&func.sig) || returns_copied_str(&func.sig);
-    let (helpers, wrapper) = if returns_owned {
-        (
+    let mut out = TokenStream2::new();
+    let wrapper = match ret {
+        WrapperReturn::Unit => quote! {
+            #(#cfg_attrs)*
+            #[no_mangle]
+            pub extern "C" fn #symbol(#(#wrapper_args),*) {
+                #prologue
+                #call
+            }
+        },
+        WrapperReturn::Plain(ty) => quote! {
+            #(#cfg_attrs)*
+            #[no_mangle]
+            pub extern "C" fn #symbol(#(#wrapper_args),*) -> #ty {
+                #prologue
+                #call
+            }
+        },
+        WrapperReturn::Boxed(ty) => quote! {
+            #(#cfg_attrs)*
+            #[no_mangle]
+            pub extern "C" fn #symbol(#(#wrapper_args),*) -> *mut #ty {
+                #prologue
+                let obj = #call;
+                Box::into_raw(Box::new(obj))
+            }
+        },
+        WrapperReturn::OwnedString {
+            helper,
+            free,
+            declare,
+        } => {
+            if declare {
+                out.extend(owned_string_helper(&cfg_attrs, &helper, &free));
+            }
             quote! {
                 #(#cfg_attrs)*
-                #[repr(C)]
-                pub struct #owned_helper {
-                    pub ptr: *mut u8,
-                    pub len: usize,
-                    pub cap: usize,
-                }
-
-                #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #owned_free(ptr: *mut u8, len: usize, cap: usize) {
-                    if !ptr.is_null() {
-                        unsafe { drop(Vec::from_raw_parts(ptr, len, cap)); }
-                    }
-                }
-            },
-            quote! {
-                #(#outer_attrs)*
-                #[no_mangle]
-                pub extern "C" fn #func_name(#(#wrapper_args),*) -> #owned_helper {
-                    #(#conversions)*
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #helper {
+                    #prologue
                     let rustcall_value = #call;
                     // `ToString` covers both `String` and a `&str` result that
                     // must be copied because it may borrow from a converted
                     // argument (see `returns_copied_str`).
                     let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
-                    let rustcall_ret = #owned_helper {
+                    let rustcall_ret = #helper {
                         ptr: rustcall_bytes.as_mut_ptr(),
                         len: rustcall_bytes.len(),
                         cap: rustcall_bytes.capacity(),
@@ -278,76 +393,96 @@ pub fn transform_string_function(func: ItemFn) -> TokenStream2 {
                     std::mem::forget(rustcall_bytes);
                     rustcall_ret
                 }
-            },
-        )
-    } else if returns_borrowed_str(&func.sig) {
-        (
+            }
+        }
+        WrapperReturn::BorrowedStr { helper, declare } => {
+            if declare {
+                out.extend(borrowed_string_helper(&cfg_attrs, &helper));
+            }
             quote! {
                 #(#cfg_attrs)*
-                #[repr(C)]
-                pub struct #borrowed_helper {
-                    pub ptr: *const u8,
-                    pub len: usize,
-                }
-            },
-            quote! {
-                #(#outer_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #func_name(#(#wrapper_args),*) -> #borrowed_helper {
-                    #(#conversions)*
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #helper {
+                    #prologue
                     let rustcall_value = #call;
-                    #borrowed_helper {
+                    #helper {
                         ptr: rustcall_value.as_ptr(),
                         len: rustcall_value.len(),
                     }
                 }
-            },
-        )
-    } else {
-        let output = &func.sig.output;
-        (
-            quote! {},
+            }
+        }
+        WrapperReturn::CResult { name, ok, err } => {
+            out.extend(generate_c_result_type(&name, &ok, &err, &cfg_attrs));
             quote! {
-                #(#outer_attrs)*
+                #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #func_name(#(#wrapper_args),*) #output {
-                    #(#conversions)*
-                    #call
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #name {
+                    #prologue
+                    #name::new(#call)
                 }
-            },
-        )
+            }
+        }
+        WrapperReturn::COption { name, inner } => {
+            out.extend(generate_c_option_type(&name, &inner, &cfg_attrs));
+            quote! {
+                #(#cfg_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #name {
+                    #prologue
+                    #name::new(#call)
+                }
+            }
+        }
     };
+    out.extend(wrapper);
+    out
+}
 
+/// The owned string buffer `<name> { ptr, len, cap }` and the `extern "C"`
+/// function that releases it (the Rust `Vec` is reconstructed and dropped).
+fn owned_string_helper(cfg_attrs: &[Attribute], helper: &Ident, free: &Ident) -> TokenStream2 {
     quote! {
-        #helpers
+        #(#cfg_attrs)*
+        #[repr(C)]
+        pub struct #helper {
+            pub ptr: *mut u8,
+            pub len: usize,
+            pub cap: usize,
+        }
 
         #(#cfg_attrs)*
-        #[allow(clippy::ptr_arg)]
-        fn #inner_fn_name #inner_generics (#inner_fn_args) #inner_output #inner_where #body
-
-        #wrapper
+        #[no_mangle]
+        pub extern "C" fn #free(ptr: *mut u8, len: usize, cap: usize) {
+            if !ptr.is_null() {
+                unsafe { drop(Vec::from_raw_parts(ptr, len, cap)); }
+            }
+        }
     }
 }
 
-fn transform_simple_function(mut func: ItemFn) -> TokenStream2 {
-    let no_mangle: Attribute = syn::parse_quote!(#[no_mangle]);
-    func.attrs.insert(0, no_mangle);
-    func.vis = Visibility::Public(syn::token::Pub::default());
-    func.sig.abi = Some(syn::parse_quote!(extern "C"));
-    quote! { #func }
+/// The borrowed string view `<name> { ptr, len }`.
+fn borrowed_string_helper(cfg_attrs: &[Attribute], helper: &Ident) -> TokenStream2 {
+    quote! {
+        #(#cfg_attrs)*
+        #[repr(C)]
+        pub struct #helper {
+            pub ptr: *const u8,
+            pub len: usize,
+        }
+    }
 }
 
 fn generate_c_result_type(
-    func_name: &Ident,
+    name: &Ident,
     ok_type: &Type,
     err_type: &Type,
     cfg_attrs: &[Attribute],
 ) -> TokenStream2 {
-    let result_type_name = format_ident!("CResult_{}", func_name);
     quote! {
         #(#cfg_attrs)*
         #[repr(C)]
-        pub struct #result_type_name {
+        pub struct #name {
             // Private: the discriminant and the payloads must stay consistent,
             // or `ok()` / `err()` would read uninitialized memory. The C layout
             // (u8 followed by both payloads) is unchanged.
@@ -360,7 +495,7 @@ fn generate_c_result_type(
         }
 
         #(#cfg_attrs)*
-        impl #result_type_name {
+        impl #name {
             /// Wrap a `Result` in the C-compatible representation.
             pub fn new(value: Result<#ok_type, #err_type>) -> Self {
                 match value {
@@ -393,15 +528,14 @@ fn generate_c_result_type(
 }
 
 fn generate_c_option_type(
-    func_name: &Ident,
+    name: &Ident,
     inner_type: &Type,
     cfg_attrs: &[Attribute],
 ) -> TokenStream2 {
-    let option_type_name = format_ident!("COption_{}", func_name);
     quote! {
         #(#cfg_attrs)*
         #[repr(C)]
-        pub struct #option_type_name {
+        pub struct #name {
             // Private, see the CResult type: the discriminant guards a
             // `MaybeUninit` payload. The C layout is unchanged.
             is_some: u8,
@@ -410,7 +544,7 @@ fn generate_c_option_type(
         }
 
         #(#cfg_attrs)*
-        impl #option_type_name {
+        impl #name {
             /// Wrap an `Option` in the C-compatible representation.
             pub fn new(value: Option<#inner_type>) -> Self {
                 match value {
@@ -436,129 +570,163 @@ fn generate_c_option_type(
     }
 }
 
-/// Give every typed argument a plain identifier (`argN` for destructuring
-/// patterns) so the outer `extern "C"` signature and the inner call agree.
-fn normalize_arg_patterns(func: &mut ItemFn) -> Vec<Ident> {
-    let mut names = Vec::new();
-    for (i, arg) in func.sig.inputs.iter_mut().enumerate() {
-        if let FnArg::Typed(pat_type) = arg {
-            match pat_type.pat.as_ref() {
-                Pat::Ident(pat_ident) => names.push(pat_ident.ident.clone()),
-                _ => {
-                    let ident = format_ident!("arg{}", i);
-                    *pat_type.pat = syn::parse_quote!(#ident);
-                    names.push(ident);
-                }
-            }
-        }
-    }
-    names
+// ============================================================================
+// Free functions: thin adapters over the generator
+// ============================================================================
+
+/// How a free function is lowered.
+struct FreeFnOptions {
+    /// Wrap a `Result` / `Option` return into `CResult_<fn>` / `COption_<fn>`.
+    wrap_result: bool,
+    /// Lower `String` / `&str` arguments and returns to the byte-pair ABI.
+    lower_strings: bool,
+    /// Extra `#[cfg]` attributes (the `julia_pyo3` non-Python branch).
+    extra_cfg: Vec<Attribute>,
 }
 
-fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> TokenStream2 {
-    let inner_fn = func.clone();
-    let mut func = func;
-    let names = normalize_arg_patterns(&mut func);
-    let func_name = &func.sig.ident;
-    let ok_type = &result_info.ok_type;
-    let err_type = &result_info.err_type;
-
-    if is_non_ffi_type(ok_type) {
-        return quote! {
-            compile_error!(concat!(
-                "#[julia] function `", stringify!(#func_name),
-                "` returns Result with non-FFI-compatible Ok type `", stringify!(#ok_type),
-                "`. Use a primitive or #[repr(C)] type instead."
-            ));
-        };
-    }
-    if is_non_ffi_type(err_type) {
-        return quote! {
-            compile_error!(concat!(
-                "#[julia] function `", stringify!(#func_name),
-                "` returns Result with non-FFI-compatible Err type `", stringify!(#err_type),
-                "`. Use a primitive or #[repr(C)] type instead."
-            ));
-        };
-    }
-
-    let cfg_attrs = cfg_attrs(&func.attrs);
-    let c_result_type = generate_c_result_type(func_name, ok_type, err_type, &cfg_attrs);
-    let result_type_name = format_ident!("CResult_{}", func_name);
-    let StringArgs {
-        wrapper_args: args,
-        conversions,
-        call_args: names,
-    } = string_arg_conversions(&func, &names);
-    let body = &inner_fn.block;
-    let inner_fn_name = format_ident!("{}_inner", func_name);
-    let inner_fn_args = &inner_fn.sig.inputs;
-    let inner_generics = &inner_fn.sig.generics;
-    let inner_where = &inner_fn.sig.generics.where_clause;
-    // `#[cfg]` must gate every generated item (struct, accessor impl, inner
-    // fn, extern fn); other attributes (docs, lints) stay on the exported fn.
-    let outer_attrs = &func.attrs;
-
-    quote! {
-        #c_result_type
-
-        #(#cfg_attrs)*
-        fn #inner_fn_name #inner_generics (#inner_fn_args) -> Result<#ok_type, #err_type> #inner_where #body
-
-        #(#outer_attrs)*
-        #[no_mangle]
-        pub extern "C" fn #func_name(#(#args),*) -> #result_type_name {
-            #(#conversions)*
-            #result_type_name::new(#inner_fn_name(#(#names),*))
+impl Default for FreeFnOptions {
+    fn default() -> Self {
+        FreeFnOptions {
+            wrap_result: true,
+            lower_strings: true,
+            extra_cfg: Vec::new(),
         }
     }
 }
 
-fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> TokenStream2 {
-    let inner_fn = func.clone();
-    let mut func = func;
-    let names = normalize_arg_patterns(&mut func);
-    let func_name = &func.sig.ident;
-    let inner_type = &option_info.inner_type;
+/// The wrapper (and its helpers) of a free function. The function itself is
+/// **not** part of the output: the caller emits the original item next to it.
+fn free_function_wrapper(func: &ItemFn, options: &FreeFnOptions) -> TokenStream2 {
+    let name = func.sig.ident.clone();
+    let symbol = format_ident!("{}", function_symbol(&name.to_string()));
+    let mut cfgs = cfg_attrs(&func.attrs);
+    cfgs.extend(options.extra_cfg.iter().cloned());
 
-    if is_non_ffi_type(inner_type) {
-        return quote! {
-            compile_error!(concat!(
-                "#[julia] function `", stringify!(#func_name),
-                "` returns Option with non-FFI-compatible type `", stringify!(#inner_type),
-                "`. Use a primitive or #[repr(C)] type instead."
-            ));
-        };
-    }
+    let ret = free_fn_return(func, &name, options);
+    generate_wrapper(WrapperSpec {
+        symbol,
+        cfg_attrs: cfgs,
+        receiver: None,
+        args: arg_pairs(&func.sig),
+        lower_strings: options.lower_strings,
+        ret,
+        target: CallTarget::Free(name),
+    })
+}
 
-    let cfg_attrs = cfg_attrs(&func.attrs);
-    let c_option_type = generate_c_option_type(func_name, inner_type, &cfg_attrs);
-    let option_type_name = format_ident!("COption_{}", func_name);
-    let StringArgs {
-        wrapper_args: args,
-        conversions,
-        call_args: names,
-    } = string_arg_conversions(&func, &names);
-    let body = &inner_fn.block;
-    let inner_fn_name = format_ident!("{}_inner", func_name);
-    let inner_fn_args = &inner_fn.sig.inputs;
-    let inner_generics = &inner_fn.sig.generics;
-    let inner_where = &inner_fn.sig.generics.where_clause;
-    let outer_attrs = &func.attrs;
-
-    quote! {
-        #c_option_type
-
-        #(#cfg_attrs)*
-        fn #inner_fn_name #inner_generics (#inner_fn_args) -> Option<#inner_type> #inner_where #body
-
-        #(#outer_attrs)*
-        #[no_mangle]
-        pub extern "C" fn #func_name(#(#args),*) -> #option_type_name {
-            #(#conversions)*
-            #option_type_name::new(#inner_fn_name(#(#names),*))
+fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> WrapperReturn {
+    let ReturnType::Type(_, ty) = &func.sig.output else {
+        return WrapperReturn::Unit;
+    };
+    if options.wrap_result {
+        if let Some(r) = extract_result_type(ty) {
+            return WrapperReturn::CResult {
+                name: format_ident!("CResult_{}", name),
+                ok: r.ok_type,
+                err: r.err_type,
+            };
+        }
+        if let Some(o) = extract_option_type(ty) {
+            return WrapperReturn::COption {
+                name: format_ident!("COption_{}", name),
+                inner: o.inner_type,
+            };
         }
     }
+    if options.lower_strings {
+        if function_returns_string(&func.sig) || returns_copied_str(&func.sig) {
+            return WrapperReturn::OwnedString {
+                helper: format_ident!("{}_RustCallOwnedString", name),
+                free: format_ident!("{}_free_rust_string", name),
+                declare: true,
+            };
+        }
+        if returns_borrowed_str(&func.sig) {
+            return WrapperReturn::BorrowedStr {
+                helper: format_ident!("{}_RustCallBorrowedString", name),
+                declare: true,
+            };
+        }
+    }
+    WrapperReturn::Plain((**ty).clone())
+}
+
+/// Transform a `#[julia]` function: the annotated item is kept as written (the
+/// attribute itself is already gone) and the `extern "C"` entry point is
+/// emitted next to it under `rustcall_<fn>` (#279).
+pub fn transform_function(func: ItemFn) -> TokenStream2 {
+    if func.sig.unsafety.is_some() {
+        return quote! {
+            compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
+        };
+    }
+    if let Some(error) = non_ffi_payload_error(&func) {
+        return error;
+    }
+
+    let wrapper = free_function_wrapper(&func, &FreeFnOptions::default());
+    quote! {
+        #func
+        #wrapper
+    }
+}
+
+/// `Result` / `Option` payloads must survive the C ABI; refuse at compile time
+/// rather than emit a wrapper that cannot be called.
+fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
+    let ReturnType::Type(_, ty) = &func.sig.output else {
+        return None;
+    };
+    let func_name = &func.sig.ident;
+    if let Some(r) = extract_result_type(ty) {
+        let ok_type = &r.ok_type;
+        let err_type = &r.err_type;
+        if is_non_ffi_type(ok_type) {
+            return Some(quote! {
+                compile_error!(concat!(
+                    "#[julia] function `", stringify!(#func_name),
+                    "` returns Result with non-FFI-compatible Ok type `", stringify!(#ok_type),
+                    "`. Use a primitive or #[repr(C)] type instead."
+                ));
+            });
+        }
+        if is_non_ffi_type(err_type) {
+            return Some(quote! {
+                compile_error!(concat!(
+                    "#[julia] function `", stringify!(#func_name),
+                    "` returns Result with non-FFI-compatible Err type `", stringify!(#err_type),
+                    "`. Use a primitive or #[repr(C)] type instead."
+                ));
+            });
+        }
+    }
+    if let Some(o) = extract_option_type(ty) {
+        let inner_type = &o.inner_type;
+        if is_non_ffi_type(inner_type) {
+            return Some(quote! {
+                compile_error!(concat!(
+                    "#[julia] function `", stringify!(#func_name),
+                    "` returns Option with non-FFI-compatible type `", stringify!(#inner_type),
+                    "`. Use a primitive or #[repr(C)] type instead."
+                ));
+            });
+        }
+    }
+    None
+}
+
+/// The wrapper of a function exported with the signature as written: `Result` /
+/// `Option` are not wrapped. Used by [`crate::specialize`] for the
+/// instantiation of a generic function, whose fixed `String` / `&str`
+/// parameters still get the byte-pair ABI (#242).
+pub fn plain_function_wrapper(func: &ItemFn) -> TokenStream2 {
+    free_function_wrapper(
+        func,
+        &FreeFnOptions {
+            wrap_result: false,
+            ..Default::default()
+        },
+    )
 }
 
 // ============================================================================
@@ -673,82 +841,66 @@ pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bo
         || matches!(&method.sig.output, ReturnType::Type(_, ty) if is_self_type(ty, struct_name))
 }
 
-/// Whether a method is treated as a constructor: static and either named `new`
-/// or returning `Self` / the struct type.
-pub fn is_constructor(struct_name: &Ident, method: &syn::ImplItemFn, is_static: bool) -> bool {
-    let returns_self = matches!(
-        &method.sig.output,
-        ReturnType::Type(_, ty) if is_self_type(ty, struct_name)
-    );
-    is_static && (method.sig.ident == "new" || returns_self)
-}
-
 /// Generate the FFI wrapper for a method (crate flavour).
 ///
-/// Same wrapper as the inline flavour ([`inline_method_wrapper`]): `String` /
+/// Same generator as the inline flavour ([`inline_method_wrapper`]): `String` /
 /// `&str` arguments arrive as `(ptr, len)` pairs, a string result leaves as an
 /// owned or borrowed buffer. The proc-macro transforms one impl block at a time
 /// and cannot see the struct or sibling impl blocks, so the buffer types are
 /// per method rather than per struct:
 /// `<Struct>_<method>_RustCallOwnedString` released through
 /// `<Struct>_<method>_free_rust_string`, and
-/// `<Struct>_<method>_RustCallBorrowedString`.
+/// `<Struct>_<method>_RustCallBorrowedString`. The method itself is left in the
+/// impl block untouched; the wrapper calls it (#279).
 pub fn generate_method_wrapper_crate(
     struct_name: &Ident,
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
     let model = MethodModel::from_fn(method);
-    let wrapper_name = format_ident!("{}_{}", struct_name, method.sig.ident);
-    let owned_helper = format_ident!("{}_RustCallOwnedString", wrapper_name);
-    let owned_free = format_ident!("{}_free_rust_string", wrapper_name);
-    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", wrapper_name);
-
-    let mut out = TokenStream2::new();
-    if !inline_method_is_ctor(struct_name, &model) {
-        if method_returns_string(&model) || method_copies_str(&model) {
-            out.extend(owned_string_helper(&owned_helper, &owned_free));
-        } else if method_returns_borrowed_str(&model) {
-            out.extend(borrowed_string_helper(&borrowed_helper));
-        }
-    }
-    out.extend(inline_method_wrapper(
+    let owner = format_ident!("{}_{}", struct_name, method.sig.ident);
+    let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
+    let owned_free = format_ident!("{}_free_rust_string", owner);
+    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", owner);
+    generate_wrapper(method_spec(
         struct_name,
         &model,
         &owned_helper,
+        &owned_free,
         &borrowed_helper,
-    ));
-    out
+        true,
+    ))
 }
 
 // ============================================================================
 // Crate flavour: #[julia_pyo3]
 // ============================================================================
 
+/// `#[julia_pyo3]` keeps its either/or `cfg(feature = "python")` shape, but the
+/// non-Python branch is now "original item + additive wrapper" like `#[julia]`
+/// (#279). The exported signature stays the one that was written — no
+/// `Result` / `Option` wrapping and no string lowering — so the manifest `abi`
+/// this attribute advertises remains honest (pending #275).
 pub fn transform_function_julia_pyo3(func: ItemFn) -> TokenStream2 {
     let func_attrs = &func.attrs;
+    let func_vis = &func.vis;
     let func_sig = &func.sig;
     let func_block = &func.block;
 
-    if let ReturnType::Type(_, ref ret_type) = func.sig.output {
-        if extract_result_type(ret_type).is_some() || extract_option_type(ret_type).is_some() {
-            return quote! {
-                #[cfg(not(feature = "python"))]
-                #(#func_attrs)*
-                #[no_mangle]
-                pub extern "C" #func_sig #func_block
-
-                #[cfg(feature = "python")]
-                #[pyo3::pyfunction]
-                pub #func_sig #func_block
-            };
-        }
-    }
+    let wrapper = free_function_wrapper(
+        &func,
+        &FreeFnOptions {
+            wrap_result: false,
+            lower_strings: false,
+            extra_cfg: vec![syn::parse_quote!(#[cfg(not(feature = "python"))])],
+        },
+    );
 
     quote! {
         #[cfg(not(feature = "python"))]
         #(#func_attrs)*
-        #[no_mangle]
-        pub extern "C" #func_sig #func_block
+        #func_vis #func_sig #func_block
+
+        #wrapper
 
         #[cfg(feature = "python")]
         #[pyo3::pyfunction]
@@ -864,37 +1016,6 @@ fn method_returns_borrowed_str(m: &MethodModel) -> bool {
     returns_borrowed_str(&m.func.sig)
 }
 
-/// The owned string buffer `<name> { ptr, len, cap }` and the `extern "C"`
-/// function that releases it (the Rust `Vec` is reconstructed and dropped).
-fn owned_string_helper(owned_helper: &Ident, owned_free: &Ident) -> TokenStream2 {
-    quote! {
-        #[repr(C)]
-        pub struct #owned_helper {
-            ptr: *mut u8,
-            len: usize,
-            cap: usize,
-        }
-
-        #[no_mangle]
-        pub extern "C" fn #owned_free(ptr: *mut u8, len: usize, cap: usize) {
-            if !ptr.is_null() {
-                unsafe { drop(Vec::from_raw_parts(ptr, len, cap)); }
-            }
-        }
-    }
-}
-
-/// The borrowed string view `<name> { ptr, len }`.
-fn borrowed_string_helper(borrowed_helper: &Ident) -> TokenStream2 {
-    quote! {
-        #[repr(C)]
-        pub struct #borrowed_helper {
-            ptr: *const u8,
-            len: usize,
-        }
-    }
-}
-
 fn inline_method_is_ctor(struct_name: &Ident, m: &MethodModel) -> bool {
     // Historical inline rule: `new`, or any method returning Self / the struct type
     // (static or not) is treated as returning a boxed struct.
@@ -940,18 +1061,20 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
 
     if needs_owned {
         meta.has_owned_string_helper = true;
-        out.extend(owned_string_helper(&owned_helper, &owned_free));
+        out.extend(owned_string_helper(&[], &owned_helper, &owned_free));
     }
     if needs_borrowed {
         meta.has_borrowed_string_helper = true;
-        out.extend(borrowed_string_helper(&borrowed_helper));
+        out.extend(borrowed_string_helper(&[], &borrowed_helper));
     }
 
-    // Field accessors (skipped when a method wrapper would take the same symbol).
+    // Field accessors (skipped when a method wrapper would take the same
+    // symbol; since #279 the method wrappers are prefixed, so this can only
+    // happen through a deliberately named accessor-shaped method).
     let method_symbols: Vec<String> = model
         .methods
         .iter()
-        .map(|m| format!("{}_{}", struct_name, m.name()))
+        .map(|m| method_symbol(&struct_name.to_string(), &m.name()))
         .collect();
     for (field_name, field_ty) in &accessible {
         let getter = format_ident!("{}_get_{}", struct_name, field_name);
@@ -1019,6 +1142,7 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
             struct_name,
             m,
             &owned_helper,
+            &owned_free,
             &borrowed_helper,
         ));
     }
@@ -1026,129 +1150,84 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
     (out, meta)
 }
 
+/// The [`WrapperSpec`] of a struct method, shared by the inline and the crate
+/// flavour: `declare` says whether the string buffer helpers are emitted by
+/// this wrapper (crate flavour, per method) or already exist next to the struct
+/// (inline flavour, per struct).
+fn method_spec(
+    struct_name: &Ident,
+    m: &MethodModel,
+    owned_helper: &Ident,
+    owned_free: &Ident,
+    borrowed_helper: &Ident,
+    declare: bool,
+) -> WrapperSpec {
+    let method_name = m.func.sig.ident.clone();
+    let symbol = format_ident!(
+        "{}",
+        method_symbol(&struct_name.to_string(), &method_name.to_string())
+    );
+    let receiver = (!m.is_static).then(|| WrapperReceiver {
+        ty: struct_name.clone(),
+        mutable: m.is_mutable,
+    });
+    let target = if m.is_static {
+        CallTarget::Assoc {
+            ty: struct_name.clone(),
+            method: method_name,
+        }
+    } else {
+        CallTarget::Instance(method_name)
+    };
+    let ret = if inline_method_is_ctor(struct_name, m) {
+        // `new`, or any method returning `Self` / the struct type, hands Julia
+        // an owning pointer. The string helpers are not involved.
+        WrapperReturn::Boxed(struct_name.clone())
+    } else if method_returns_string(m) || method_copies_str(m) {
+        WrapperReturn::OwnedString {
+            helper: owned_helper.clone(),
+            free: owned_free.clone(),
+            declare,
+        }
+    } else if method_returns_borrowed_str(m) {
+        WrapperReturn::BorrowedStr {
+            helper: borrowed_helper.clone(),
+            declare,
+        }
+    } else {
+        match &m.func.sig.output {
+            ReturnType::Default => WrapperReturn::Unit,
+            ReturnType::Type(_, ty) => WrapperReturn::Plain((**ty).clone()),
+        }
+    };
+    WrapperSpec {
+        symbol,
+        cfg_attrs: cfg_attrs(&m.func.attrs),
+        receiver,
+        args: arg_pairs(&m.func.sig),
+        lower_strings: true,
+        ret,
+        target,
+    }
+}
+
+/// The `extern "C"` wrapper of an inline struct method. The string buffer types
+/// are shared per struct, so the wrapper only refers to them.
 fn inline_method_wrapper(
     struct_name: &Ident,
     m: &MethodModel,
     owned_helper: &Ident,
+    owned_free: &Ident,
     borrowed_helper: &Ident,
 ) -> TokenStream2 {
-    let method_name = &m.func.sig.ident;
-    let wrapper_name = format_ident!("{}_{}", struct_name, method_name);
-    let returns_self = inline_method_is_ctor(struct_name, m);
-
-    // Generated identifiers (the receiver pointer, `self_obj`, `<arg>_ptr`,
-    // ...) must not coincide with the method's own argument names.
-    let names = typed_arg_names(&m.func.sig);
-    let taken: Vec<String> = names.iter().map(ToString::to_string).collect();
-    let ptr = fresh_ident("ptr", &taken);
-    let self_obj = fresh_ident("self_obj", &taken);
-
-    let mut wrapper_args: Vec<TokenStream2> = Vec::new();
-    let mut conversions: Vec<TokenStream2> = Vec::new();
-    let mut call_args: Vec<TokenStream2> = Vec::new();
-
-    if !m.is_static {
-        if m.is_mutable {
-            wrapper_args.push(quote! { #ptr: *mut #struct_name });
-        } else {
-            wrapper_args.push(quote! { #ptr: *const #struct_name });
-        }
-    }
-
-    for (arg, name) in m
-        .func
-        .sig
-        .inputs
-        .iter()
-        .filter(|a| matches!(a, FnArg::Typed(_)))
-        .zip(names.iter())
-    {
-        let FnArg::Typed(pat_type) = arg else {
-            continue;
-        };
-        let (args, conversion) = string_arg_conversion(name, &pat_type.ty, &taken);
-        wrapper_args.extend(args);
-        conversions.extend(conversion);
-        call_args.push(quote! { #name });
-    }
-
-    // A `&str` result of a method that takes string arguments may borrow from a
-    // converted argument, so it is copied into the owned representation.
-    let copies_str = method_copies_str(m);
-
-    let self_binding = if m.is_static {
-        quote! {}
-    } else if m.is_mutable {
-        quote! { let #self_obj = unsafe { &mut *#ptr }; }
-    } else {
-        quote! { let #self_obj = unsafe { &*#ptr }; }
-    };
-    let call = if m.is_static {
-        quote! { #struct_name::#method_name(#(#call_args),*) }
-    } else {
-        quote! { #self_obj.#method_name(#(#call_args),*) }
-    };
-
-    if returns_self {
-        return quote! {
-            #[no_mangle]
-            pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> *mut #struct_name {
-                #(#conversions)*
-                #self_binding
-                let obj = #call;
-                Box::into_raw(Box::new(obj))
-            }
-        };
-    }
-
-    match &m.func.sig.output {
-        ReturnType::Default => quote! {
-            #[no_mangle]
-            pub extern "C" fn #wrapper_name(#(#wrapper_args),*) {
-                #(#conversions)*
-                #self_binding
-                #call
-            }
-        },
-        ReturnType::Type(_, ty) if is_string_type(ty) || (is_str_ref_type(ty) && copies_str) => {
-            quote! {
-                #[no_mangle]
-                pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> #owned_helper {
-                    #(#conversions)*
-                    #self_binding
-                    let rustcall_value = #call;
-                    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
-                    let rustcall_ret = #owned_helper {
-                        ptr: rustcall_bytes.as_mut_ptr(),
-                        len: rustcall_bytes.len(),
-                        cap: rustcall_bytes.capacity(),
-                    };
-                    std::mem::forget(rustcall_bytes);
-                    rustcall_ret
-                }
-            }
-        }
-        ReturnType::Type(_, ty) if is_str_ref_type(ty) && !copies_str => quote! {
-            #[no_mangle]
-            pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> #borrowed_helper {
-                #(#conversions)*
-                #self_binding
-                let rustcall_value = #call;
-                #borrowed_helper {
-                    ptr: rustcall_value.as_ptr(),
-                    len: rustcall_value.len(),
-                }
-            }
-        },
-        ReturnType::Type(_, ty) => quote! {
-            #[no_mangle]
-            pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> #ty {
-                #(#conversions)*
-                #self_binding
-                #call
-            }
-        },
-    }
+    generate_wrapper(method_spec(
+        struct_name,
+        m,
+        owned_helper,
+        owned_free,
+        borrowed_helper,
+        false,
+    ))
 }
 
 /// Generics for a generic-struct method wrapper: the enclosing impl block's

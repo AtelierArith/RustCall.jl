@@ -290,13 +290,16 @@ registered source, the function name and `T = i32`-style bindings it:
    generics and comments are handled correctly),
 2. replaces the type parameters in the signature and body at the AST level,
 3. drops the bound generic parameters and their `where` predicates,
-4. renames the function (e.g. `identity_i32`) and marks it `#[no_mangle] pub extern "C"`,
+4. renames the function (e.g. `identity_i32`) and emits a
+   `#[no_mangle] pub extern "C" fn rustcall_identity_i32` wrapper next to it
+   (#279),
 5. reports the resulting argument and return types in a manifest that Julia
    uses to build the `ccall`.
 
 Struct definitions and impl blocks in the registered context are kept
 unchanged, so generic struct wrappers such as `Point_new<T>` become
-`Point_new_i32(x: i32) -> *mut Point<i32>` while `struct Point<T>` stays generic.
+`Point_new_i32(x: i32) -> *mut Point<i32>`, exported as
+`rustcall_Point_new_i32`, while `struct Point<T>` stays generic.
 
 ### Monomorphization Process
 

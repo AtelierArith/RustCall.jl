@@ -11,7 +11,12 @@
 //!
 //! ## Functions
 //!
-//! The `#[julia]` attribute on functions expands to `#[no_mangle] pub extern "C"`:
+//! `#[julia]` is **additive** (#279): the annotated item is kept exactly as
+//! written and a `#[no_mangle] pub extern "C" fn rustcall_<name>` wrapper that
+//! calls it is emitted next to it. The function therefore still has its own
+//! Rust signature for in-crate callers, `#[test]`s and other proc-macros such
+//! as `#[pyfunction]`, while Julia calls the `rustcall_`-prefixed symbol
+//! recorded in the manifest.
 //!
 //! ```rust,ignore
 //! use juliacall_macros::julia;
@@ -30,8 +35,9 @@
 //! ## Structs
 //!
 //! The `#[julia]` attribute on structs adds `#[repr(C)]` and generates FFI functions
-//! like `Point_free`, getters, and setters. `#[julia]` on an impl block wraps the
-//! methods that are themselves marked `#[julia]` (`Point_new`, `Point_distance`, ...).
+//! like `Point_free`, getters, and setters. `#[julia]` on an impl block leaves the
+//! methods alone and emits a wrapper next to the block for each method that is
+//! itself marked `#[julia]` (`rustcall_Point_new`, `rustcall_Point_distance`, ...).
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;

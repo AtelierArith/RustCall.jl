@@ -36,44 +36,54 @@ fn string_functions_get_ptr_len_wrappers() {
         .replace("( ", "(")
         .replace(", )", ")")
         .replace(" )", ")");
-    assert!(src.contains("pub extern \"C\" fn shout(input_ptr: *const u8, input_len: usize) -> shout_RustCallOwnedString"), "{src}");
+    assert!(src.contains("pub extern \"C\" fn rustcall_shout(input_ptr: *const u8, input_len: usize) -> shout_RustCallOwnedString"), "{src}");
     assert!(src.contains(
         "pub extern \"C\" fn shout_free_rust_string(ptr: *mut u8, len: usize, cap: usize)"
     ));
-    assert!(src.contains("fn shout_inner(input: String) -> String"));
-    assert!(src.contains("pub extern \"C\" fn concat(a_ptr: *const u8, a_len: usize, b_ptr: *const u8, b_len: usize, times: u32) -> concat_RustCallOwnedString"), "{src}");
-    assert!(src.contains("pub extern \"C\" fn byte_len(s_ptr: *const u8, s_len: usize) -> usize"));
-    assert!(src.contains("pub extern \"C\" fn greeting() -> greeting_RustCallBorrowedString"));
+    // The annotated item survives verbatim next to the wrapper (#279).
+    assert!(src.contains("fn shout(input: String) -> String"));
+    assert!(!src.contains("shout_inner"));
+    assert!(src.contains("pub extern \"C\" fn rustcall_concat(a_ptr: *const u8, a_len: usize, b_ptr: *const u8, b_len: usize, times: u32) -> concat_RustCallOwnedString"), "{src}");
+    assert!(src.contains(
+        "pub extern \"C\" fn rustcall_byte_len(s_ptr: *const u8, s_len: usize) -> usize"
+    ));
+    assert!(
+        src.contains("pub extern \"C\" fn rustcall_greeting() -> greeting_RustCallBorrowedString")
+    );
     assert!(!src.contains("greeting_free_rust_string"));
-    assert!(src.contains("pub extern \"C\" fn plain(x: i32) -> i32"));
+    assert!(src.contains("pub extern \"C\" fn rustcall_plain(x: i32) -> i32"));
     // Result / Option functions convert string arguments too.
     assert!(
         src.contains(
-            "pub extern \"C\" fn parse_num(s_ptr: *const u8, s_len: usize) -> CResult_parse_num"
+            "pub extern \"C\" fn rustcall_parse_num(s_ptr: *const u8, s_len: usize) -> CResult_parse_num"
         ),
         "{src}"
     );
     assert!(
         src.contains(
-            "pub extern \"C\" fn first_char(s_ptr: *const u8, s_len: usize) -> COption_first_char"
+            "pub extern \"C\" fn rustcall_first_char(s_ptr: *const u8, s_len: usize) -> COption_first_char"
         ),
         "{src}"
     );
     // Lifetime-qualified &str is a string argument as well. Because the result
     // may borrow from the converted argument, it is copied into an owned buffer.
-    assert!(src.contains("pub extern \"C\" fn identity(s_ptr: *const u8, s_len: usize) -> identity_RustCallOwnedString"), "{src}");
+    assert!(src.contains("pub extern \"C\" fn rustcall_identity(s_ptr: *const u8, s_len: usize) -> identity_RustCallOwnedString"), "{src}");
     assert!(src.contains("pub extern \"C\" fn identity_free_rust_string"));
     // `greeting()` takes no strings, so its &str result stays borrowed.
-    assert!(src.contains("pub extern \"C\" fn greeting() -> greeting_RustCallBorrowedString"));
-    // Qualified std::string::String is a string type too.
-    assert!(src.contains("pub extern \"C\" fn qualified(s_ptr: *const u8, s_len: usize) -> qualified_RustCallOwnedString"), "{src}");
     assert!(
-        src.contains("pub extern \"C\" fn qualified2(s_ptr: *const u8, s_len: usize) -> usize"),
+        src.contains("pub extern \"C\" fn rustcall_greeting() -> greeting_RustCallBorrowedString")
+    );
+    // Qualified std::string::String is a string type too.
+    assert!(src.contains("pub extern \"C\" fn rustcall_qualified(s_ptr: *const u8, s_len: usize) -> qualified_RustCallOwnedString"), "{src}");
+    assert!(
+        src.contains(
+            "pub extern \"C\" fn rustcall_qualified2(s_ptr: *const u8, s_len: usize) -> usize"
+        ),
         "{src}"
     );
     // The lifetime parameter stays on the inner fn.
     assert!(
-        src.contains("fn identity_inner<'a>(s: &'a str) -> &'a str"),
+        src.contains("fn identity<'a>(s: &'a str) -> &'a str"),
         "{src}"
     );
     // No unchecked UTF-8 construction anywhere.
@@ -135,20 +145,24 @@ pub fn paren_res(s: (String)) -> (Result<i32, i32>) { s.parse().map_err(|_| -1) 
     let e = expand(src).unwrap();
     let source = flat(&e.source);
     assert!(
-        source.contains("pub extern \"C\" fn consume(s_ptr: *const u8, s_len: usize) -> usize"),
-        "{source}"
-    );
-    assert!(
-        source.contains("pub extern \"C\" fn paren_ref(s_ptr: *const u8, s_len: usize) -> (usize)"),
-        "{source}"
-    );
-    assert!(
-        source.contains("pub extern \"C\" fn paren_ret(s_ptr: *const u8, s_len: usize) -> paren_ret_RustCallOwnedString"),
+        source.contains(
+            "pub extern \"C\" fn rustcall_consume(s_ptr: *const u8, s_len: usize) -> usize"
+        ),
         "{source}"
     );
     assert!(
         source.contains(
-            "pub extern \"C\" fn paren_res(s_ptr: *const u8, s_len: usize) -> CResult_paren_res"
+            "pub extern \"C\" fn rustcall_paren_ref(s_ptr: *const u8, s_len: usize) -> (usize)"
+        ),
+        "{source}"
+    );
+    assert!(
+        source.contains("pub extern \"C\" fn rustcall_paren_ret(s_ptr: *const u8, s_len: usize) -> paren_ret_RustCallOwnedString"),
+        "{source}"
+    );
+    assert!(
+        source.contains(
+            "pub extern \"C\" fn rustcall_paren_res(s_ptr: *const u8, s_len: usize) -> CResult_paren_res"
         ),
         "{source}"
     );
@@ -187,13 +201,13 @@ impl Holder {
     let source = flat(&e.source);
     assert!(
         source.contains(
-            "pub extern \"C\" fn f(s_ptr_: *const u8, s_len: usize, s_ptr: usize) -> usize"
+            "pub extern \"C\" fn rustcall_f(s_ptr_: *const u8, s_len: usize, s_ptr: usize) -> usize"
         ),
         "{source}"
     );
-    assert!(source.contains("fn f_inner(s: String, s_ptr: usize) -> usize"));
+    assert!(source.contains("fn f(s: String, s_ptr: usize) -> usize"));
     assert!(
-        source.contains("pub extern \"C\" fn g(s_ptr: *const u8, s_len_: usize, s_bytes: i32, s_cow: i32, s_len: i32) -> i32"),
+        source.contains("pub extern \"C\" fn rustcall_g(s_ptr: *const u8, s_len_: usize, s_bytes: i32, s_cow: i32, s_len: i32) -> i32"),
         "{source}"
     );
     assert!(
@@ -204,19 +218,17 @@ impl Holder {
         source.contains("let s_cow_ = String::from_utf8_lossy(s_bytes_);"),
         "{source}"
     );
-    assert!(
-        source.contains("g_inner(s, s_bytes, s_cow, s_len)"),
-        "{source}"
-    );
+    assert!(source.contains("g(s, s_bytes, s_cow, s_len)"), "{source}");
     // The user owns `s_ptr_`; the generated `s_ptr` is free and keeps its name.
-    assert!(source.contains("h_inner(s_ptr_, s)"), "{source}");
+    assert!(source.contains("h(s_ptr_, s)"), "{source}");
     assert!(
-        source
-            .contains("pub extern \"C\" fn h(s_ptr_: u8, s_ptr: *const u8, s_len: usize) -> usize"),
+        source.contains(
+            "pub extern \"C\" fn rustcall_h(s_ptr_: u8, s_ptr: *const u8, s_len: usize) -> usize"
+        ),
         "{source}"
     );
     assert!(
-        source.contains("pub extern \"C\" fn Holder_m(ptr_: *const Holder, ptr: u32, self_obj: u32, s_ptr: *const u8, s_len: usize, s_bytes: u32) -> u32"),
+        source.contains("pub extern \"C\" fn rustcall_Holder_m(ptr_: *const Holder, ptr: u32, self_obj: u32, s_ptr: *const u8, s_len: usize, s_bytes: u32) -> u32"),
         "{source}"
     );
     assert!(
@@ -299,7 +311,7 @@ impl<T: Copy> Tagged<T> {
     .unwrap();
     assert!(out.manifest.functions[0].has_borrowed_string_helper);
     assert!(
-        flat(&out.source).contains("pub extern \"C\" fn Tagged_tag_ref_i32(ptr: *const Tagged<i32>) -> Tagged_tag_ref_i32_RustCallBorrowedString"),
+        flat(&out.source).contains("pub extern \"C\" fn rustcall_Tagged_tag_ref_i32(ptr: *const Tagged<i32>) -> Tagged_tag_ref_i32_RustCallBorrowedString"),
         "{}",
         flat(&out.source)
     );
@@ -352,11 +364,11 @@ impl Greeter {
     let file: syn::File = syn::parse2(out).unwrap();
     let source = flat(&prettyplease::unparse(&file));
     assert!(
-        source.contains("pub extern \"C\" fn Greeter_new(count: u32) -> *mut Greeter"),
+        source.contains("pub extern \"C\" fn rustcall_Greeter_new(count: u32) -> *mut Greeter"),
         "{source}"
     );
     assert!(
-        source.contains("pub extern \"C\" fn Greeter_shout(ptr: *const Greeter, suffix_ptr: *const u8, suffix_len: usize) -> Greeter_shout_RustCallOwnedString"),
+        source.contains("pub extern \"C\" fn rustcall_Greeter_shout(ptr: *const Greeter, suffix_ptr: *const u8, suffix_len: usize) -> Greeter_shout_RustCallOwnedString"),
         "{source}"
     );
     assert!(source.contains("pub struct Greeter_shout_RustCallOwnedString"));
@@ -364,22 +376,22 @@ impl Greeter {
         "pub extern \"C\" fn Greeter_shout_free_rust_string(ptr: *mut u8, len: usize, cap: usize)"
     ));
     assert!(
-        source.contains("pub extern \"C\" fn Greeter_label(ptr: *const Greeter) -> Greeter_label_RustCallBorrowedString"),
+        source.contains("pub extern \"C\" fn rustcall_Greeter_label(ptr: *const Greeter) -> Greeter_label_RustCallBorrowedString"),
         "{source}"
     );
     assert!(!source.contains("Greeter_label_free_rust_string"));
     // A &str result that may borrow from a converted argument is copied.
     assert!(
-        source.contains("pub extern \"C\" fn Greeter_echo(ptr: *const Greeter, s_ptr: *const u8, s_len: usize) -> Greeter_echo_RustCallOwnedString"),
+        source.contains("pub extern \"C\" fn rustcall_Greeter_echo(ptr: *const Greeter, s_ptr: *const u8, s_len: usize) -> Greeter_echo_RustCallOwnedString"),
         "{source}"
     );
     assert!(
-        source.contains("pub extern \"C\" fn Greeter_take(ptr: *mut Greeter, s_ptr: *const u8, s_len: usize) -> usize"),
+        source.contains("pub extern \"C\" fn rustcall_Greeter_take(ptr: *mut Greeter, s_ptr: *const u8, s_len: usize) -> usize"),
         "{source}"
     );
-    assert!(
-        source.contains("pub extern \"C\" fn Greeter_plain(ptr: *const Greeter, x: i32) -> i32")
-    );
+    assert!(source.contains(
+        "pub extern \"C\" fn rustcall_Greeter_plain(ptr: *const Greeter, x: i32) -> i32"
+    ));
     assert!(!source.contains("from_utf8_unchecked"));
 
     // The crate manifest describes exactly that ABI.
@@ -409,7 +421,7 @@ impl Greeter {
     assert_eq!(method("echo").return_abi, "string");
     assert_eq!(method("take").args[0].abi, "string");
     assert_eq!(method("take").return_abi, "");
-    assert_eq!(method("new").symbol, "Greeter_new");
+    assert_eq!(method("new").symbol, "rustcall_Greeter_new");
 
     // `#[julia_pyo3] impl` methods go through the same wrapper generator, so
     // their manifest entries keep the string ABI.
@@ -420,7 +432,7 @@ impl Greeter {
     let py_file: syn::File = syn::parse2(transform_impl_julia_pyo3(py_impl)).unwrap();
     let py = flat(&prettyplease::unparse(&py_file));
     assert!(
-        py.contains("pub extern \"C\" fn DualCounter_describe(ptr: *const DualCounter, s_ptr: *const u8, s_len: usize) -> DualCounter_describe_RustCallOwnedString"),
+        py.contains("pub extern \"C\" fn rustcall_DualCounter_describe(ptr: *const DualCounter, s_ptr: *const u8, s_len: usize) -> DualCounter_describe_RustCallOwnedString"),
         "{py}"
     );
 }

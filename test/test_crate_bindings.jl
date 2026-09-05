@@ -142,7 +142,7 @@ const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_c
             @test s.field_setters["count"] == "Counter_set_count"
             @test [m.name for m in s.methods] == ["new", "increment"]
             @test s.methods[1].is_constructor
-            @test s.methods[1].symbol == "Counter_new"
+            @test s.methods[1].symbol == "rustcall_Counter_new"
             @test s.methods[2].is_mutable
         end
     end
@@ -713,10 +713,10 @@ end
     # The source-file emitter (write_bindings_to_file) uses the same ABI.
     info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
-    @test occursin("_call_rust_owned_string_ptr(_get_func_ptr(\"shout\"), _get_func_ptr(\"shout_free_rust_string\")", code)
+    @test occursin("_call_rust_owned_string_ptr(_get_func_ptr(\"rustcall_shout\"), _get_func_ptr(\"shout_free_rust_string\")", code)
     @test occursin("__rustcall_str_input = String(input)", code)
     @test occursin("GC.@preserve __rustcall_str_input", code)
-    @test occursin("_call_rust_borrowed_string_ptr(_get_func_ptr(\"crate_greeting\")", code)
+    @test occursin("_call_rust_borrowed_string_ptr(_get_func_ptr(\"rustcall_crate_greeting\")", code)
     @test occursin("GC.@preserve __rustcall_str_s call_rust_function(func_ptr, CResult_parse_int, pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
     @test occursin("GC.@preserve  call_rust_function(func_ptr, Int32, Int32(a), Int32(b))", code)
     # and the emitted module parses
@@ -732,28 +732,28 @@ end
     # Plain return, string arguments named func_ptr / lib_name
     @test occursin("__rustcall_str_func_ptr = String(func_ptr)", code)
     @test occursin("__rustcall_str_lib_name = String(lib_name)", code)
-    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_str_len\")", code)
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"rustcall_shadow_str_len\")", code)
     @test occursin("call_rust_function(__rustcall_func_ptr, Csize_t, pointer(__rustcall_str_func_ptr)", code)
     # The conversions come before the pointer lookup
     @test findfirst("__rustcall_str_func_ptr = String(func_ptr)", code).start <
-          findfirst("__rustcall_func_ptr = _get_func_ptr(\"shadow_str_len\")", code).start
+          findfirst("__rustcall_func_ptr = _get_func_ptr(\"rustcall_shadow_str_len\")", code).start
 
     # Result return: func_ptr and c_result are both argument names
-    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_parse_int\")", code)
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"rustcall_shadow_parse_int\")", code)
     @test occursin("__rustcall_c_result = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, CResult_shadow_parse_int,", code)
     @test occursin("if __rustcall_c_result.is_ok == 1", code)
 
     # Option return: func_ptr and c_option are both argument names
-    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_first_char\")", code)
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"rustcall_shadow_first_char\")", code)
     @test occursin("__rustcall_c_option = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, COption_shadow_first_char,", code)
     @test occursin("if __rustcall_c_option.is_some == 1", code)
 
     # No strings, but still a colliding argument name
-    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"shadow_double\")", code)
+    @test occursin("__rustcall_func_ptr = _get_func_ptr(\"rustcall_shadow_double\")", code)
     @test occursin("call_rust_function(__rustcall_func_ptr, Int32, Int32(func_ptr))", code)
 
     # Names that do not collide keep their readable form
-    @test occursin("func_ptr = _get_func_ptr(\"parse_int\")", code)
+    @test occursin("func_ptr = _get_func_ptr(\"rustcall_parse_int\")", code)
 
     @test Meta.parse(code) isa Expr
 
