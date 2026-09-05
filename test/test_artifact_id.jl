@@ -700,14 +700,15 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         @test key_a != key_b
     end
 
-    @testset "DEFECT #252: the rustc in the key is not the rustc that compiles" begin
-        # src/cache.jl:97-106 shells out to a bare `rustc` from PATH and returns
-        # "unknown" when that fails, while compilation goes through
-        # RustToolChain.rustc() (src/compiler.jl:212). A key built from the
-        # former therefore need not change when the real toolchain changes.
+    @testset "FIXED #252: the rustc in the key is the rustc that compiles" begin
+        # The PATH-based `_get_rustc_version()` that could degrade to the string
+        # "unknown" is gone; every key now names the toolchain
+        # `RustToolChain.rustc()` / `cargo()` resolve to, and an unidentifiable
+        # compiler is an error rather than a sentinel.
+        @test !isdefined(RustCall, :_get_rustc_version)
+        @test !isdefined(RustCall, :_cached_rustc_version)
+        @test !isdefined(RustCall, :_get_cargo_version)
 
-        # Warm the memoized values before touching PATH, so this test only
-        # observes the divergence and does not perturb anything.
         toolchain_ok = try
             RustCall.artifact_compiler_identity()
             true
@@ -716,31 +717,35 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
 
         if !toolchain_ok
-            @info "Skipping #252 divergence test: RustToolChain rustc/cargo unavailable"
+            @info "Skipping #252 identity test: RustToolChain rustc/cargo unavailable"
         else
             identity_str = RustCall.artifact_compiler_identity()
             @test occursin("rustc=", identity_str)
             @test occursin("cargo=", identity_str)
-            # Never the "unknown" sentinel: an unidentifiable compiler is an error.
-            @test !occursin("rustc=unknown", identity_str)
+            # Never the "unknown" sentinel, anywhere in the identity.
+            @test !occursin("unknown", identity_str)
 
-            saved = RustCall._cached_rustc_version[]
+            # The identity is memoized, so an empty PATH cannot change it back
+            # to a degraded value mid-session ...
             empty_dir = mktempdir()
             try
-                # With no `rustc` on PATH, the cache-key version degrades to
-                # "unknown" while the compiler that would actually run is
-                # unchanged — that is exactly the divergence of #252.
-                RustCall._cached_rustc_version[] = ""
-                path_version = withenv("PATH" => empty_dir) do
-                    RustCall._get_rustc_version()
-                end
-                @test path_version == "unknown"                       # #252, current behaviour
-                @test !occursin(path_version, RustCall.artifact_compiler_identity())
+                @test withenv("PATH" => empty_dir) do
+                    RustCall.artifact_compiler_identity()
+                end == identity_str
             finally
-                RustCall._cached_rustc_version[] = saved
                 rm(empty_dir; force = true, recursive = true)
             end
+
+            # ... and it is what `toolchain_fingerprint` folds in, so the
+            # fingerprint follows the real toolchain (#252).
+            fp = RustCall.toolchain_fingerprint()
+            @test fp == RustCall.toolchain_fingerprint()
+            @test !occursin(RustCall._TOOLCHAIN_COMPILER_UNIDENTIFIED, fp)
         end
+
+        # `toolchain_fingerprint()` stays total for callers that only need *a*
+        # fingerprint; the compile paths are the ones that raise.
+        @test RustCall._TOOLCHAIN_COMPILER_UNIDENTIFIED != "unknown"
     end
 
     @testset "DEFECT: existing key sites truncate inconsistently" begin

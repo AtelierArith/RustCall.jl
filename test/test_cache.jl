@@ -80,13 +80,63 @@ using Test
         key1_again = RustCall.generate_cache_key(code1, compiler)
         @test key1 == key1_again
 
-        # Key must be deterministic (session-stable) — verify by computing expected SHA256
-        using SHA
-        rustc_ver = RustCall._get_rustc_version()
-        pipeline = RustCall.toolchain_fingerprint()
-        config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)_$(pipeline)"
-        expected_key = bytes2hex(sha256("$(code1)\n---\n$(config_str)"))
-        @test key1 == expected_key
+        # The key is `artifact_key` of an ArtifactId and nothing else (#278):
+        # there is no second formula to keep in sync here.
+        expected_id = RustCall.ArtifactId(
+            kind = "rustc",
+            source = code1,
+            target_triple = compiler.target_triple,
+            codegen = RustCall.artifact_codegen_options(compiler),
+            cfg = String[RustCall.stable_content_hash(RustCall._cfg_snapshot(:strict))],
+            build_env = RustCall.artifact_build_env(RustCall.RUSTC_BUILD_ENV_NAMES),
+        )
+        @test key1 == RustCall.artifact_key(expected_id)
+
+        # Compiler settings are part of the key.
+        @test key1 != RustCall.generate_cache_key(
+            code1, RustCall.RustCompiler(optimization_level = 0))
+
+        # The cfg snapshot is part of the key, and an explicit snapshot wins.
+        @test RustCall.generate_cache_key(code1, compiler; cfg_text = "target_os=\"nowhere\"") != key1
+    end
+
+    @testset "The compiler in the key is the compiler that runs (#252)" begin
+        # `artifact_compiler_identity` reads RustToolChain.rustc()/cargo() —
+        # the very commands src/compiler.jl and src/cargobuild.jl invoke — and
+        # raises rather than degrading to the string "unknown".
+        @test !isdefined(RustCall, :_get_rustc_version)
+        @test !isdefined(RustCall, :_cached_rustc_version)
+        @test !isdefined(RustCall, :_get_cargo_version)
+
+        identity_ok = try
+            RustCall.artifact_compiler_identity()
+            true
+        catch
+            false
+        end
+        if !identity_ok
+            @info "Skipping #252 key test: RustToolChain rustc/cargo unavailable"
+        else
+            identity_str = RustCall.artifact_compiler_identity()
+            @test !occursin("unknown", identity_str)
+
+            # Acceptance test from the issue: a changed toolchain fingerprint
+            # must produce a cache miss, not a stale hit.
+            code = "#[no_mangle]\npub extern \"C\" fn fingerprint_probe() -> i32 { 1 }\n"
+            compiler = RustCall.get_default_compiler()
+            key_before = RustCall.generate_cache_key(code, compiler)
+            saved = RustCall._TOOLCHAIN_FINGERPRINT[]
+            try
+                RustCall._TOOLCHAIN_FINGERPRINT[] = RustCall.stable_content_hash("a different toolchain")
+                key_after = RustCall.generate_cache_key(code, compiler)
+                @test key_after != key_before
+                @test !RustCall.is_cache_valid(key_before, code, compiler)
+            finally
+                RustCall._TOOLCHAIN_FINGERPRINT[] = saved
+                RustCall._reset_extractor_state!()
+            end
+            @test RustCall.generate_cache_key(code, compiler) == key_before
+        end
     end
 
     @testset "stable_content_hash utility" begin

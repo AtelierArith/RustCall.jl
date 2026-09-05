@@ -121,38 +121,63 @@ end
 
 Fingerprint of everything that influences generated code besides the user's
 source: extractor binary, manifest schema, `rustcall_core` and
-`juliacall_macros` sources, `rustc`/`cargo` versions and the host target.
-Included in all cache keys.
+`juliacall_macros` sources, the identity of the compiler that actually runs
+(`artifact_compiler_identity`) and the host target. Included in all cache keys.
+
+# Missing toolchain (#252)
+
+`artifact_compiler_identity` throws when `rustc`/`cargo` cannot be identified,
+because an unidentifiable compiler cannot be part of a trustworthy key. This
+function stays **total** regardless: it records
+`_TOOLCHAIN_COMPILER_UNIDENTIFIED` instead and does not memoize the result, so
+callers that only need *a* fingerprint (`ArtifactId`'s default, test skipping,
+`_reset_extractor_state!` round-trips) keep working without a toolchain, and a
+toolchain appearing later is picked up.
+
+Paths that are about to compile are the ones that must refuse: they go through
+`ArtifactId`, whose `compiler` field calls `artifact_compiler_identity` directly
+and raises `RustError`.
 """
 function toolchain_fingerprint()
     lock(_EXTRACTOR_LOCK) do
         if isempty(_TOOLCHAIN_FINGERPRINT[])
             deps = joinpath(dirname(@__DIR__), "deps")
+            compiler, identified = _toolchain_compiler_identity()
             parts = String[
                 "schema=$(MANIFEST_SCHEMA_VERSION)",
                 "extractor=$(extractor_digest())",
                 "core=$(_rust_sources_digest(joinpath(deps, "rustcall_core"), joinpath(deps, "juliacall_macros")))",
-                "rustc=$(_get_rustc_version())",
-                "cargo=$(_get_cargo_version())",
+                "compiler=$(compiler)",
                 "target=$(Sys.MACHINE)",
                 "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
             ]
-            _TOOLCHAIN_FINGERPRINT[] = bytes2hex(sha256(join(parts, "\n")))
+            fingerprint = bytes2hex(sha256(join(parts, "\n")))
+            # A fingerprint computed without a usable toolchain describes
+            # nothing that could have been compiled; never memoize it.
+            identified || return fingerprint
+            _TOOLCHAIN_FINGERPRINT[] = fingerprint
         end
         return _TOOLCHAIN_FINGERPRINT[]
     end
 end
 
-const _cached_cargo_version = Ref{String}("")
-function _get_cargo_version()::String
-    if isempty(_cached_cargo_version[])
-        try
-            _cached_cargo_version[] = strip(read(`$(cargo()) --version`, String))
-        catch
-            _cached_cargo_version[] = "unknown"
-        end
+"""
+    _TOOLCHAIN_COMPILER_UNIDENTIFIED
+
+Placeholder recorded in `toolchain_fingerprint` when no `rustc`/`cargo` can be
+identified. Deliberately not a version string, and never `"unknown"`: nothing
+compiled can carry it, because every compile path resolves the compiler through
+`artifact_compiler_identity`, which raises instead (#252).
+"""
+const _TOOLCHAIN_COMPILER_UNIDENTIFIED = "unidentified-toolchain"
+
+function _toolchain_compiler_identity()
+    try
+        return artifact_compiler_identity(), true
+    catch e
+        e isa RustError || rethrow()
+        return _TOOLCHAIN_COMPILER_UNIDENTIFIED, false
     end
-    return _cached_cargo_version[]
 end
 
 """

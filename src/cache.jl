@@ -181,39 +181,57 @@ function get_metadata_dir()
 end
 
 """
-    _cached_rustc_version
+    RUSTC_BUILD_ENV_NAMES
 
-Cached output of `rustc --version` to avoid repeated process spawns.
-Populated on first call to `generate_cache_key`.
+Environment that changes what a direct `rustc` invocation produces: rustc itself
+ignores `RUSTFLAGS`, but rustup's proxy honours `RUSTUP_TOOLCHAIN`, and
+`RUSTFLAGS` is tracked so a user who sets it sees the same rebuild behaviour as
+with Cargo-backed blocks. An allowlist by name, never a `CARGO_*` sweep, so a
+credential can never reach a key (see `artifact_build_env_captured`).
 """
-const _cached_rustc_version = Ref{String}("")
-
-function _get_rustc_version()::String
-    if isempty(_cached_rustc_version[])
-        try
-            _cached_rustc_version[] = strip(read(`rustc --version`, String))
-        catch
-            _cached_rustc_version[] = "unknown"
-        end
-    end
-    return _cached_rustc_version[]
-end
+const RUSTC_BUILD_ENV_NAMES = ("RUSTFLAGS", "RUSTUP_TOOLCHAIN")
 
 """
-    generate_cache_key(code::String, compiler::RustCompiler) -> String
+    generate_cache_key(code::AbstractString, compiler::RustCompiler; kwargs...) -> String
 
-Generate a cache key based on code hash, compiler settings, target triple,
-and `rustc` version. Uses SHA256 for collision resistance.
+The identity of one direct-`rustc` artifact: `artifact_key` of an `ArtifactId`
+describing the source, the compiler snapshot, the `#[cfg]` set it was expanded
+under, the tracked rustc environment, the toolchain fingerprint and — since
+#252 — the identity of the compiler that actually runs
+(`artifact_compiler_identity`, from `RustToolChain`, never a bare `rustc` on
+`PATH` that could degrade to `"unknown"`).
+
+This is the **only** key formula of the direct-rustc path: the on-disk cache key
+and the in-memory library name (`_rustc_block_identity`) are the same value, so
+the two can no longer drift apart (#278).
+
+# Keyword arguments
+- `cfg_text`: the `#[cfg]` snapshot the wrappers were generated from;
+  `nothing` (the default) means the current strict snapshot, as in
+  `expand_inline`.
+- `dependencies`, `build_env`: extra identity components for callers that have
+  them; both default to empty, and `build_env` is merged with the tracked rustc
+  environment.
+
+Throws a `RustError` when the compiler cannot be identified: a request that is
+about to compile must not be cached under an unidentifiable toolchain (#252).
 """
-function generate_cache_key(code::String, compiler::RustCompiler)
-    rustc_ver = _get_rustc_version()
-    # toolchain_fingerprint() covers the extractor binary, manifest schema and the
-    # rustcall_core/juliacall_macros sources, so regenerating wrappers invalidates
-    # cached libraries even when the user's code is unchanged.
-    pipeline = toolchain_fingerprint()
-    config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)_$(pipeline)"
-    key_data = "$(code)\n---\n$(config_str)"
-    return stable_content_hash(key_data)
+function generate_cache_key(code::AbstractString, compiler::RustCompiler;
+                            cfg_text::Union{Nothing, AbstractString} = nothing,
+                            dependencies = String[],
+                            build_env = Pair{String, String}[])
+    text = cfg_text === nothing ? _cfg_snapshot(:strict) : String(cfg_text)
+    env = vcat(artifact_build_env(RUSTC_BUILD_ENV_NAMES),
+               Pair{String, String}[String(first(p)) => String(last(p)) for p in build_env])
+    return artifact_key(ArtifactId(
+        kind = "rustc",
+        source = String(code),
+        target_triple = compiler.target_triple,
+        codegen = artifact_codegen_options(compiler),
+        cfg = String[stable_content_hash(text)],
+        dependencies = dependencies,
+        build_env = env,
+    ))
 end
 
 """
@@ -655,13 +673,16 @@ function cleanup_old_cache(max_age_days::Int = 30)
 end
 
 """
-    is_cache_valid(cache_key::String, code::String, compiler::RustCompiler) -> Bool
+    is_cache_valid(cache_key::String, code::String, compiler::RustCompiler; cfg_text = nothing) -> Bool
 
-Check if a cached library is still valid for the given code and compiler settings.
+Check if a cached library is still valid for the given code and compiler
+settings. `cfg_text` must be the same snapshot the key was generated under (see
+`generate_cache_key`), or the recomputed key cannot match by construction.
 """
-function is_cache_valid(cache_key::String, code::String, compiler::RustCompiler)
+function is_cache_valid(cache_key::String, code::String, compiler::RustCompiler;
+                        cfg_text::Union{Nothing, AbstractString} = nothing)
     # Generate expected cache key
-    expected_key = generate_cache_key(code, compiler)
+    expected_key = generate_cache_key(code, compiler; cfg_text = cfg_text)
 
     # Check if keys match
     if cache_key != expected_key

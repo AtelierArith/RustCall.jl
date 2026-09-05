@@ -502,7 +502,13 @@ end
 
     @testset "Cache naming and checksum (#179/#180/#198)" begin
         @test isdefined(RustCall, :load_cached_library)
-        @test !isempty(RustCall._get_rustc_version())
+        # #252: the compiler in the key is the one RustToolChain resolves, and
+        # an unidentifiable compiler raises instead of becoming "unknown".
+        @test !isdefined(RustCall, :_get_rustc_version)
+        if RustCall.check_rustc_available()
+            @test !isempty(RustCall.artifact_compiler_identity())
+            @test !occursin("unknown", RustCall.artifact_compiler_identity())
+        end
         code = "fn test() -> i32 { 1 }"
         key1 = RustCall.generate_cache_key(code, RustCall.RustCompiler(optimization_level = 0))
         key2 = RustCall.generate_cache_key(code, RustCall.RustCompiler(optimization_level = 2))
