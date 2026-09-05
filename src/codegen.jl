@@ -96,7 +96,7 @@ function infer_function_types(lib_name::String, func_name::String)
         if mod_lib_name == lib_name
             fn = get_function(mod, func_name)
             if fn !== nothing
-                return get_function_signature(fn)
+                return _get_function_signature(fn)
             end
         end
     end

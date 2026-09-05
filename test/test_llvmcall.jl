@@ -232,3 +232,111 @@ using Test
         @warn "rustc not found, skipping LLVM integration tests"
     end
 end
+
+primitive type _Dep265Prim 8 end
+struct _Dep265Wrap
+    x::_Dep265Prim
+end
+struct _Dep265Pair
+    v::Tuple{Float32, Float32}
+end
+primitive type _Dep265Int <: Integer 8 end
+
+@testset "LLVM path deprecation (#265)" begin
+    # Every public entry point of the LLVM IR integration path emits a
+    # deprecation warning but keeps working. `@test_deprecated` checks the
+    # warning under --depwarn=yes (Pkg.test) and just runs the expression
+    # otherwise.
+    config = @test_deprecated RustCall.OptimizationConfig(level=1)
+    @test config isa RustCall.OptimizationConfig
+    @test config.level == 1
+
+    # Positional construction bypasses the keyword wrapper but must warn too.
+    positional = @test_deprecated RustCall.OptimizationConfig(2, 0, 225, true, true, true)
+    @test positional.inline_threshold == 225
+    # Convertible argument types still construct (Julia's default converting
+    # constructor is suppressed by the typed inner constructor).
+    converting = @test_deprecated RustCall.OptimizationConfig(Int8(2), Int8(0), Int16(225), true, true, true)
+    @test converting == positional
+
+    @test_deprecated RustCall.set_default_opt_config(RustCall._optimization_config())
+    @test (@test_deprecated RustCall.get_default_opt_config()) isa RustCall.OptimizationConfig
+    @test_deprecated RustCall.get_registered_function("no_such_function_265")
+    @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Int32)) == "i32"
+
+    # Downstream extensions of the public name still apply to nested conversions
+    # (tuple elements, struct fields) even though recursion goes through the
+    # private helper.
+    @eval RustCall.julia_type_to_llvm_ir_string(::Type{$(Symbol("_Dep265Prim"))}) = "i8"
+    @test RustCall._julia_type_to_llvm_ir_string(Tuple{_Dep265Prim}) == "{i8}"
+    @test RustCall._julia_type_to_llvm_ir_string(_Dep265Wrap) == "{i8}"
+    @test RustCall._julia_type_to_llvm_ir_string(Tuple{Int32, _Dep265Prim}) == "{i32, i8}"
+    # A downstream override of an already supported signature (e.g. a SIMD ABI
+    # for a tuple) also wins, at top level and nested, as it did when the
+    # built-ins were methods of the public name.
+    @eval RustCall.julia_type_to_llvm_ir_string(::Type{Tuple{Float32, Float32}}) = "<2 x float>"
+    @test RustCall._llvm_ir_type(Tuple{Float32, Float32}) == "<2 x float>"
+    @test RustCall._llvm_ir_type(Tuple{Int32, Tuple{Float32, Float32}}) == "{i32, <2 x float>}"
+    @test RustCall._llvm_ir_type(_Dep265Pair) == "{<2 x float>}"
+    @test occursin("<2 x float>", RustCall.generate_llvmcall_ir("f", Tuple{Float32, Float32}, Type[Int32]))
+    # Built-ins are untouched
+    @test RustCall._llvm_ir_type(Tuple{Float64, Float64}) == "{double, double}"
+    # A broad downstream method does not override more specific built-ins
+    # (original dispatch ordering), but applies to types it alone covers.
+    @eval RustCall.julia_type_to_llvm_ir_string(::Type{T}) where {T<:Integer} = "broad"
+    @test RustCall._llvm_ir_type(Int32) == "i32"
+    @test RustCall._llvm_ir_type(Tuple{Int64, UInt8}) == "{i64, i8}"
+    @test RustCall._llvm_ir_type(_Dep265Int) == "broad"
+    @test RustCall._llvm_ir_type(Tuple{Int32, _Dep265Int}) == "{i32, broad}"
+    @test occursin("i32", RustCall.generate_llvmcall_ir("g", Int32, Type[Int64]))
+    @test !occursin("broad", RustCall.generate_llvmcall_ir("g", Int32, Type[Int64]))
+    # Built-in signatures still warn through the public name.
+    @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Tuple{Int32})) == "{i32}"
+    @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Ptr{Cvoid})) == "ptr"
+    # Calls that hit a downstream method dispatch to it directly and therefore do
+    # not warn (documented exception).
+    if Base.JLOptions().depwarn != 0
+        @test_logs RustCall.julia_type_to_llvm_ir_string(_Dep265Prim)
+    end
+
+    # Internal helpers used by @rust and by the deprecated wrappers stay silent.
+    if Base.JLOptions().depwarn != 0
+        @test_logs RustCall._optimization_config()
+        @test_logs RustCall._get_default_opt_config()
+        @test_logs RustCall._get_registered_function("no_such_function_265")
+        @test_logs RustCall._julia_type_to_llvm_ir_string(Int32)
+    end
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[no_mangle]
+        pub extern "C" fn dep265_add(a: i32, b: i32) -> i32 { a + b }
+        """
+        result = @test_deprecated @rust_llvm dep265_add(Int32(1), Int32(2))
+        @test result == Int32(3)
+        # The non-deprecated equivalent
+        @test (@rust dep265_add(Int32(1), Int32(2))::Int32) == Int32(3)
+
+        wrapped = RustCall.wrap_rust_code("""
+        #[no_mangle]
+        pub extern "C" fn dep265_mul(a: i32, b: i32) -> i32 { a * b }
+        """)
+        compiler = RustCall.get_default_compiler()
+        ir_path = @test_deprecated RustCall.compile_rust_to_llvm_ir(wrapped; compiler=compiler)
+        @test isfile(ir_path)
+        rust_mod = @test_deprecated RustCall.load_llvm_ir(ir_path; source_code=wrapped)
+        @test rust_mod isa RustCall.RustModule
+        fn = RustCall.get_function(rust_mod, "dep265_mul")
+        if fn !== nothing
+            sig = @test_deprecated RustCall.get_function_signature(fn)
+            @test sig == (Int32, [Int32, Int32])
+            @test_deprecated RustCall.optimize_module!(rust_mod.mod)
+            @test_deprecated RustCall.optimize_for_speed!(rust_mod.mod)
+        end
+        info = @test_deprecated RustCall.compile_and_register_rust_function("""
+        #[no_mangle]
+        pub extern "C" fn dep265_sub(a: i32, b: i32) -> i32 { a - b }
+        """, "dep265_sub")
+        @test info.name == "dep265_sub"
+    end
+end

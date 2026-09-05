@@ -1,5 +1,8 @@
 # LLVM IR code generation using llvmcall
 # Phase 2: Direct LLVM IR integration
+#
+# DEPRECATED (#265): this whole path is scheduled for removal. Every public
+# entry point emits `Base.depwarn`; internal helpers are prefixed with `_`.
 
 using LLVM
 
@@ -38,6 +41,11 @@ end
     RustFunctionInfo
 
 Information about a compiled Rust function for llvmcall.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 struct RustFunctionInfo
     name::String
@@ -75,8 +83,8 @@ This creates a simple wrapper that calls the actual function.
 """
 function generate_llvmcall_ir(func_name::String, ret_type::Type, arg_types::Vector{Type})
     # Map Julia types to LLVM IR types
-    llvm_ret = julia_type_to_llvm_ir_string(ret_type)
-    llvm_args = [julia_type_to_llvm_ir_string(t) for t in arg_types]
+    llvm_ret = _llvm_ir_type(ret_type)
+    llvm_args = [_llvm_ir_type(t) for t in arg_types]
 
     # Build argument list
     arg_list = join(["$(llvm_args[i]) %$(i-1)" for i in 1:length(arg_types)], ", ")
@@ -100,21 +108,41 @@ end
 
 Convert a Julia type to its LLVM IR string representation.
 Supports basic types, pointers, tuples, and structs.
+
+Methods that downstream code adds to this name for its own types are still
+honoured, also for nested occurrences (tuple elements, struct fields), and
+take precedence over the built-in conversions. Such calls dispatch directly
+to the downstream method, so they do not emit the deprecation warning; they
+stop working when the function is removed together with the rest of the
+LLVM IR integration path. Method specificity between the built-in
+conversions and downstream ones is unchanged (the public name keeps a
+method per built-in signature).
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
-function julia_type_to_llvm_ir_string end
+function julia_type_to_llvm_ir_string(t::Type)
+    _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+    return _julia_type_to_llvm_ir_string(t)
+end
+
+# Internal, warning-free implementation (one method per supported type).
+function _julia_type_to_llvm_ir_string end
 
 # Basic integer types
-julia_type_to_llvm_ir_string(::Type{Bool}) = "i8"  # C ABI uses i8 for bool, not i1
-julia_type_to_llvm_ir_string(::Type{Int8}) = "i8"
-julia_type_to_llvm_ir_string(::Type{UInt8}) = "i8"
-julia_type_to_llvm_ir_string(::Type{Int16}) = "i16"
-julia_type_to_llvm_ir_string(::Type{UInt16}) = "i16"
-julia_type_to_llvm_ir_string(::Type{Int32}) = "i32"
-julia_type_to_llvm_ir_string(::Type{UInt32}) = "i32"
-julia_type_to_llvm_ir_string(::Type{Int64}) = "i64"
-julia_type_to_llvm_ir_string(::Type{UInt64}) = "i64"
-julia_type_to_llvm_ir_string(::Type{Int128}) = "i128"
-julia_type_to_llvm_ir_string(::Type{UInt128}) = "i128"
+_julia_type_to_llvm_ir_string(::Type{Bool}) = "i8"  # C ABI uses i8 for bool, not i1
+_julia_type_to_llvm_ir_string(::Type{Int8}) = "i8"
+_julia_type_to_llvm_ir_string(::Type{UInt8}) = "i8"
+_julia_type_to_llvm_ir_string(::Type{Int16}) = "i16"
+_julia_type_to_llvm_ir_string(::Type{UInt16}) = "i16"
+_julia_type_to_llvm_ir_string(::Type{Int32}) = "i32"
+_julia_type_to_llvm_ir_string(::Type{UInt32}) = "i32"
+_julia_type_to_llvm_ir_string(::Type{Int64}) = "i64"
+_julia_type_to_llvm_ir_string(::Type{UInt64}) = "i64"
+_julia_type_to_llvm_ir_string(::Type{Int128}) = "i128"
+_julia_type_to_llvm_ir_string(::Type{UInt128}) = "i128"
 
 # Platform-dependent C types (sized based on runtime sizeof)
 # Only define methods for types that don't alias an already-defined base type,
@@ -125,30 +153,81 @@ const _LLVM_IR_BASE_TYPES = Set{Type}([
 ])
 for ctype in [Cint, Cuint, Clong, Culong, Csize_t, Cssize_t, Cptrdiff_t, Clonglong, Culonglong]
     if ctype ∉ _LLVM_IR_BASE_TYPES
-        @eval julia_type_to_llvm_ir_string(::Type{$ctype}) = $(string("i", 8 * sizeof(ctype)))
+        @eval _julia_type_to_llvm_ir_string(::Type{$ctype}) = $(string("i", 8 * sizeof(ctype)))
     end
 end
 
 # Floating point types
-julia_type_to_llvm_ir_string(::Type{Float32}) = "float"
-julia_type_to_llvm_ir_string(::Type{Float64}) = "double"
+_julia_type_to_llvm_ir_string(::Type{Float32}) = "float"
+_julia_type_to_llvm_ir_string(::Type{Float64}) = "double"
 
 # Void type (Cvoid === Nothing in Julia, so this handles both)
-julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
+_julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
 
 # Pointer types (opaque pointer in modern LLVM)
-julia_type_to_llvm_ir_string(::Type{<:Ptr}) = "ptr"
+_julia_type_to_llvm_ir_string(::Type{<:Ptr}) = "ptr"
 
 # Tuple types
-julia_type_to_llvm_ir_string(t::Type{<:Tuple}) = _tuple_type_to_llvm_ir(t)
+_julia_type_to_llvm_ir_string(t::Type{<:Tuple}) = _tuple_type_to_llvm_ir(t)
 
 # Struct types fallback (immutable structs)
-function julia_type_to_llvm_ir_string(t::Type)
+function _julia_type_to_llvm_ir_string(t::Type)
     if isstructtype(t) && !isabstracttype(t) && !isprimitivetype(t)
         return _struct_type_to_llvm_ir(t)
     else
         error("Unsupported Julia type for LLVM IR: $t. Supported types: basic numeric types, Ptr, Tuple, and immutable structs.")
     end
+end
+
+# The public name keeps one (warning) method per built-in signature, mirroring
+# the private table, so method specificity between built-ins and downstream
+# extensions is exactly what it was before the deprecation: an exact `Int32`
+# built-in still beats a downstream `where T<:Integer`, and a downstream exact
+# `Tuple{Float32, Float32}` still beats the built-in `Type{<:Tuple}`.
+for T in [Bool, Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64, Int128, UInt128,
+          Float32, Float64, Nothing]
+    @eval function julia_type_to_llvm_ir_string(t::Type{$T})
+        _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+        return _julia_type_to_llvm_ir_string(t)
+    end
+end
+for ctype in [Cint, Cuint, Clong, Culong, Csize_t, Cssize_t, Cptrdiff_t, Clonglong, Culonglong]
+    if ctype ∉ _LLVM_IR_BASE_TYPES
+        @eval function julia_type_to_llvm_ir_string(t::Type{$ctype})
+            _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+            return _julia_type_to_llvm_ir_string(t)
+        end
+    end
+end
+function julia_type_to_llvm_ir_string(t::Type{<:Ptr})
+    _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+    return _julia_type_to_llvm_ir_string(t)
+end
+function julia_type_to_llvm_ir_string(t::Type{<:Tuple})
+    _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+    return _julia_type_to_llvm_ir_string(t)
+end
+
+# Whether the method the public name would dispatch to for `t` was added by
+# downstream code (any module other than RustCall).
+function _has_public_llvm_ir_extension(t::Type)
+    return parentmodule(which(julia_type_to_llvm_ir_string, Tuple{Type{t}})) !== @__MODULE__
+end
+
+"""
+    _llvm_ir_type(t::Type) -> String
+
+Conversion entry point used internally (call IR, tuple elements, struct
+fields). Compatibility hook for the deprecation period: a method that
+downstream code added to the public `julia_type_to_llvm_ir_string` wins over
+the built-in conversion, exactly as it did when the built-ins were methods of
+the public name; otherwise the private, warning-free table is used.
+"""
+function _llvm_ir_type(t::Type)
+    if _has_public_llvm_ir_extension(t)
+        return julia_type_to_llvm_ir_string(t)
+    end
+    return _julia_type_to_llvm_ir_string(t)
 end
 
 """
@@ -162,7 +241,7 @@ function _tuple_type_to_llvm_ir(t::Type{<:Tuple})
     end
 
     param_types = t.parameters
-    llvm_types = [julia_type_to_llvm_ir_string(param) for param in param_types]
+    llvm_types = [_llvm_ir_type(param) for param in param_types]
     return "{$(join(llvm_types, ", "))}"
 end
 
@@ -196,7 +275,7 @@ function _struct_type_to_llvm_ir(t::Type)
                 push!(llvm_fields, "i8")
             end
         end
-        llvm_type = julia_type_to_llvm_ir_string(ft)
+        llvm_type = _llvm_ir_type(ft)
         push!(llvm_fields, llvm_type)
         current_offset = Int(field_offset) + sizeof(ft)
     end
@@ -232,12 +311,17 @@ end
     compile_and_register_rust_function(code::String, func_name::String)
 
 Compile Rust code and register the function for llvmcall usage.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function compile_and_register_rust_function(code::String, func_name::String)
+    _llvm_path_depwarn("compile_and_register_rust_function", :compile_and_register_rust_function)
+
     # Check if already registered
-    existing = lock(LLVM_REGISTRY_LOCK) do
-        get(LLVM_FUNCTION_REGISTRY, func_name, nothing)
-    end
+    existing = _get_registered_function(func_name)
     if existing !== nothing
         return existing
     end
@@ -247,8 +331,8 @@ function compile_and_register_rust_function(code::String, func_name::String)
     compiler = get_default_compiler()
 
     # Compile to LLVM IR for analysis
-    ir_path = compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
-    rust_mod = load_llvm_ir(ir_path; source_code=wrapped_code)
+    ir_path = _compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
+    rust_mod = _load_llvm_ir(ir_path; source_code=wrapped_code)
 
     # Get function signature
     fn = get_function(rust_mod, func_name)
@@ -256,7 +340,7 @@ function compile_and_register_rust_function(code::String, func_name::String)
         error("Function '$func_name' not found in compiled code")
     end
 
-    ret_type, arg_types = get_function_signature(fn)
+    ret_type, arg_types = _get_function_signature(fn)
 
     # Also compile to shared library for function pointer
     lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
@@ -279,8 +363,18 @@ end
     get_registered_function(func_name::String) -> Union{RustFunctionInfo, Nothing}
 
 Get a registered Rust function's information.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function get_registered_function(func_name::String)
+    _llvm_path_depwarn("get_registered_function", :get_registered_function)
+    return _get_registered_function(func_name)
+end
+
+function _get_registered_function(func_name::String)
     return lock(LLVM_REGISTRY_LOCK) do
         get(LLVM_FUNCTION_REGISTRY, func_name, nothing)
     end
@@ -294,7 +388,15 @@ end
     @rust_llvm func_name(args...)
 
 Call a Rust function using LLVM IR integration (Phase 2).
-This uses @generated functions to produce optimized code at compile time.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
+
+In practice the call goes through the same function-pointer `ccall` as
+`@rust`; unregistered functions fall back to `dlsym` on the current library.
+Migrate to `@rust name(args...)::ReturnType`.
 
 # Example
 ```julia
@@ -336,8 +438,10 @@ Falls back to ccall if llvmcall is not available.
 - `TypeError`: If argument types don't match expected signature
 """
 function _rust_llvm_call(func_name::String, args...)
+    _llvm_path_depwarn("@rust_llvm", :_rust_llvm_call)
+
     # Get function info
-    info = get_registered_function(func_name)
+    info = _get_registered_function(func_name)
 
     if info === nothing
         # Try to find it in the current library
@@ -426,7 +530,7 @@ The function name is encoded as a type parameter for compile-time dispatch.
     n = length(args)
 
     # Try to get function info at compile time
-    info = get_registered_function(func_name)
+    info = _get_registered_function(func_name)
 
     if info !== nothing && info.func_ptr !== nothing
         expected_arg_types = info.arg_types

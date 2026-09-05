@@ -7,6 +7,11 @@ using LLVM
     OptimizationConfig
 
 Configuration for LLVM optimization passes.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 struct OptimizationConfig
     level::Int  # 0-3
@@ -15,14 +20,44 @@ struct OptimizationConfig
     enable_vectorization::Bool
     enable_loop_unrolling::Bool
     enable_licm::Bool  # Loop-invariant code motion
+
+    # Positional construction is public API too, so it warns as well (#265).
+    # `_optimization_config` passes `_warn=false` for internal use.
+    function OptimizationConfig(level::Int, size_level::Int, inline_threshold::Int,
+                                enable_vectorization::Bool, enable_loop_unrolling::Bool,
+                                enable_licm::Bool; _warn::Bool = true)
+        _warn && _llvm_path_depwarn("OptimizationConfig", :OptimizationConfig)
+        return new(level, size_level, inline_threshold,
+                   enable_vectorization, enable_loop_unrolling, enable_licm)
+    end
+end
+
+# Defining a typed inner constructor suppresses Julia's default converting
+# outer constructor; keep positional calls with convertible arguments
+# (`OptimizationConfig(Int8(2), Int8(0), Int16(225), true, true, true)`) working.
+function OptimizationConfig(level, size_level, inline_threshold,
+                            enable_vectorization, enable_loop_unrolling, enable_licm)
+    return OptimizationConfig(Int(level), Int(size_level), Int(inline_threshold),
+                              Bool(enable_vectorization), Bool(enable_loop_unrolling),
+                              Bool(enable_licm))
 end
 
 """
     OptimizationConfig(; kwargs...)
 
 Create an OptimizationConfig with specified settings.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
-function OptimizationConfig(;
+function OptimizationConfig(; kwargs...)
+    _llvm_path_depwarn("OptimizationConfig", :OptimizationConfig)
+    return _optimization_config(; kwargs...)
+end
+
+function _optimization_config(;
     level::Int = 2,
     size_level::Int = 0,
     inline_threshold::Int = 225,
@@ -33,20 +68,26 @@ function OptimizationConfig(;
     @assert 0 <= level <= 3 "Optimization level must be 0-3"
     @assert 0 <= size_level <= 2 "Size level must be 0-2"
     OptimizationConfig(level, size_level, inline_threshold,
-                      enable_vectorization, enable_loop_unrolling, enable_licm)
+                       enable_vectorization, enable_loop_unrolling, enable_licm; _warn=false)
 end
 
 # Default optimization config
 const DEFAULT_OPT_CONFIG = Ref{OptimizationConfig}()
 
 function get_default_opt_config()
+    _llvm_path_depwarn("get_default_opt_config", :get_default_opt_config)
+    return _get_default_opt_config()
+end
+
+function _get_default_opt_config()
     if !isassigned(DEFAULT_OPT_CONFIG)
-        DEFAULT_OPT_CONFIG[] = OptimizationConfig()
+        DEFAULT_OPT_CONFIG[] = _optimization_config()
     end
     return DEFAULT_OPT_CONFIG[]
 end
 
 function set_default_opt_config(config::OptimizationConfig)
+    _llvm_path_depwarn("set_default_opt_config", :set_default_opt_config)
     DEFAULT_OPT_CONFIG[] = config
 end
 
@@ -55,8 +96,18 @@ end
 
 Apply optimization passes to an LLVM module using LLVM's New Pass Manager.
 Returns the optimized module (modified in place).
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
-function optimize_module!(mod::LLVM.Module; config::OptimizationConfig = get_default_opt_config())
+function optimize_module!(mod::LLVM.Module; config::OptimizationConfig = _get_default_opt_config())
+    _llvm_path_depwarn("optimize_module!", :optimize_module!)
+    return _optimize_module!(mod; config)
+end
+
+function _optimize_module!(mod::LLVM.Module; config::OptimizationConfig = _get_default_opt_config())
     if config.level == 0 && config.size_level == 0
         return mod
     end
@@ -99,8 +150,14 @@ end
     optimize_function!(fn::LLVM.Function; config=get_default_opt_config())
 
 Apply optimization passes to a single LLVM function.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
-function optimize_function!(fn::LLVM.Function; config::OptimizationConfig = get_default_opt_config())
+function optimize_function!(fn::LLVM.Function; config::OptimizationConfig = _get_default_opt_config())
+    _llvm_path_depwarn("optimize_function!", :optimize_function!)
     mod = LLVM.parent(fn)
 
     if config.level == 0
@@ -201,9 +258,15 @@ end
     optimize_for_speed!(mod::LLVM.Module)
 
 Apply optimizations focused on execution speed.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function optimize_for_speed!(mod::LLVM.Module)
-    config = OptimizationConfig(
+    _llvm_path_depwarn("optimize_for_speed!", :optimize_for_speed!)
+    config = _optimization_config(
         level=3,
         size_level=0,
         inline_threshold=300,
@@ -211,16 +274,22 @@ function optimize_for_speed!(mod::LLVM.Module)
         enable_loop_unrolling=true,
         enable_licm=true
     )
-    return optimize_module!(mod; config=config)
+    return _optimize_module!(mod; config=config)
 end
 
 """
     optimize_for_size!(mod::LLVM.Module)
 
 Apply optimizations focused on code size.
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function optimize_for_size!(mod::LLVM.Module)
-    config = OptimizationConfig(
+    _llvm_path_depwarn("optimize_for_size!", :optimize_for_size!)
+    config = _optimization_config(
         level=2,
         size_level=2,
         inline_threshold=50,
@@ -228,15 +297,21 @@ function optimize_for_size!(mod::LLVM.Module)
         enable_loop_unrolling=false,
         enable_licm=true
     )
-    return optimize_module!(mod; config=config)
+    return _optimize_module!(mod; config=config)
 end
 
 """
     optimize_balanced!(mod::LLVM.Module)
 
 Apply balanced optimizations (default).
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function optimize_balanced!(mod::LLVM.Module)
-    config = OptimizationConfig()  # Uses defaults
-    return optimize_module!(mod; config=config)
+    _llvm_path_depwarn("optimize_balanced!", :optimize_balanced!)
+    config = _optimization_config()  # Uses defaults
+    return _optimize_module!(mod; config=config)
 end

@@ -178,8 +178,18 @@ Compile Rust code to LLVM IR and return the path to the generated .ll file.
 
 # Throws
 - `CompilationError` if compilation fails
+
+!!! warning "Deprecated"
+    The LLVM IR integration path is deprecated and will be removed in a future
+    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+    Use `@rust` instead.
 """
 function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_default_compiler())
+    _llvm_path_depwarn("compile_rust_to_llvm_ir", :compile_rust_to_llvm_ir)
+    return _compile_rust_to_llvm_ir(code; compiler)
+end
+
+function _compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_default_compiler())
     # Create a unique temporary directory for this compilation
     if compiler.debug_mode && compiler.debug_dir !== nothing
         tmp_dir = compiler.debug_dir
