@@ -282,6 +282,7 @@ using TOML
             # Generic functions keep the compiler they were expanded for: the
             # lazy specialization below runs while the default compiler is at
             # opt-level 2, but the block was expanded (and is compiled) at 0.
+            RustCall.set_default_compiler(RustCall.RustCompiler(optimization_level = 2))
             generic_block = """
             #[cfg(debug_assertions)]
             #[julia]
