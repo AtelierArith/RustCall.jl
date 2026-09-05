@@ -254,31 +254,51 @@ for (rust, T, sym) in (
 end
 
 # -- Strings -----------------------------------------------------------------
-# The ABI is direction-dependent, which is exactly what the flat tables cannot
-# express and why #246 exists:
+# **The spelling does not determine the ABI. Only the manifest does.**
 #
-#   * as an argument, both `String` and `&str` arrive as `(ptr, len)` bytes —
-#     Julia owns the buffer and must keep it rooted for the call; the Rust
-#     wrapper copies (`String`) or borrows (`&str`).
-#   * as a return, `String` is an owned `(ptr, len, cap)` buffer that Julia must
-#     hand back to the library that allocated it, and `&str` is a borrowed
+# On `main`, string lowering is not uniform across wrapper flavours:
+#
+#   * `transform_simple_function` (`deps/rustcall_core/src/codegen.rs:53-58`)
+#     only marks a free `#[julia] fn ... -> String` signature `extern "C"` — the
+#     Rust types are forwarded as written, with no `(ptr, len)` pair and no
+#     `CRustString`;
+#   * `generate_method_wrapper_crate` (`:378`, `:414`, `:443`) likewise forwards
+#     the original argument and return types;
+#   * only `inline_method_wrapper` (`:774-863`) actually lowers strings, into
+#     `(ptr, len)` arguments and a `<fn>_RustCallOwnedString` /
+#     `<fn>_RustCallBorrowedString` return.
+#
+# PR #274 makes the lowering uniform *and* records it in the manifest as
+# `Arg.abi` / `Method.return_abi`. So the rule that is correct both before and
+# after #274 is: **the manifest `abi` column is the only authority on whether
+# lowering happened.** These rows therefore carry `:unknown` — a bare `String`
+# spelling with `abi == ""` fails closed rather than describing a lowering the
+# wrapper may not have performed. `abi = "string"` / `"str"` selects the lowered
+# form, and only then does the contract name the slots, the aggregate and the
+# ownership:
+#
+#   * as an argument, both arrive as `(ptr, len)` bytes — Julia owns the buffer
+#     and must keep it rooted for the call; the wrapper copies (`String`) or
+#     borrows (`&str`);
+#   * as a return, `"string"` is an owned `(ptr, len, cap)` buffer that Julia
+#     must hand back to the library that allocated it, and `"str"` is a borrowed
 #     `(ptr, len)` view.
 #
-# The rows below carry the *return* ABI; [`ffi_argument_contract`](@ref)
-# rewrites them for the argument direction.
+# The `surface_type` / `julia_symbol` columns stay meaningful regardless: they
+# describe the Julia-visible type, not the calling convention.
 _ffi_register!(FFIType(
-    "String", Ptr{UInt8}, RustString, :RustString, :ptr_len_cap, :owned_by_rust,
-    "Owned Rust buffer: (ptr, len, cap). Never a Cstring — see #246.",
+    "String", Ptr{UInt8}, RustString, :RustString, :unknown, :unknown,
+    "Owned Rust buffer, never a Cstring (#246) — but only the manifest abi column says whether the wrapper lowered it.",
 ))
 _ffi_register!(FFIType(
-    "&str", Ptr{UInt8}, RustStr, :RustStr, :ptr_len, :borrowed,
-    "Fat pointer (ptr, len) borrowed from the callee; copy before the borrow ends.",
+    "&str", Ptr{UInt8}, RustStr, :RustStr, :unknown, :unknown,
+    "Fat pointer (ptr, len) when lowered; the manifest abi column says whether it was.",
 ))
 # Bare `str` is unsized and cannot cross the boundary by value; the existing
 # `RUST_TO_JULIA_TYPE_MAP` maps it to `Cstring`, which is recorded here so the
-# divergence tests can see it, but the contract treats it as a borrowed view.
+# divergence tests can see it.
 _ffi_register!(FFIType(
-    "str", Ptr{UInt8}, RustStr, :RustStr, :ptr_len, :borrowed,
+    "str", Ptr{UInt8}, RustStr, :RustStr, :unknown, :unknown,
     "Unsized; only ever reachable behind a reference. RUST_TO_JULIA_TYPE_MAP says Cstring.",
 ))
 
@@ -368,26 +388,44 @@ function _ffi_pointer_row(key::AbstractString, pointee::AbstractString)
         Ptr{inner.ccall_type}
     end
     note = inner === nothing ? "Opaque pointee: the contract does not know $(pointee)." : ""
-    return FFIType(String(key), T, T, Symbol(T), :pointer, :borrowed, note)
+    # Ownership of a raw pointer is NOT derivable from the spelling. A generated
+    # constructor returns `Box::into_raw` (`deps/rustcall_core/src/codegen.rs:386-392`),
+    # which Julia owns and must free, while another `*mut T` may be a pointer
+    # into memory Rust keeps. `:borrowed` — valid only for the duration of the
+    # call — is reserved for `&T` / `&mut T` references, which `rustcall_core`
+    # rejects as non-FFI anyway (`types.rs:104`). So the default is `:unknown`,
+    # and a consumer that has the metadata states it: see
+    # [`ffi_return_contract`](@ref)'s `ownership` / `free_symbol` keywords.
+    return FFIType(String(key), T, T, Symbol(T), :pointer, :unknown, note)
 end
 
 """
     ffi_known(rust_type::AbstractString) -> Bool
 
-Whether the contract covers this Rust type spelling.
+Whether the contract has a row for this Rust type spelling.
+
+Note that a row is not by itself enough to build a call: the string rows carry
+`abi === :unknown` because the spelling does not say whether the wrapper lowered
+them (see the Strings section above). Use
+[`ffi_argument_contract`](@ref) / [`ffi_return_contract`](@ref), whose `known`
+field answers the question a call site actually asks — "can I build this
+position?" — and is `false` for a string spelling without a manifest `abi`.
 """
 ffi_known(rust_type::AbstractString) = ffi_lookup(rust_type) !== nothing
 
 """
     ffi_ccall_type(rust_type::AbstractString) -> Union{Type, Nothing}
 
-The Julia type of the leading C slot, or `nothing` when the type is unknown.
-For multi-slot ABIs use [`ffi_argument_contract`](@ref) /
-[`ffi_return_contract`](@ref), whose `ccall_types` lists every slot.
+The Julia type of the single C slot this Rust type occupies, or `nothing` when
+the contract cannot say — either because the type is unknown, or because the
+spelling alone does not determine its ABI (the string rows). For multi-word
+ABIs use [`ffi_argument_contract`](@ref) / [`ffi_return_contract`](@ref).
 """
 function ffi_ccall_type(rust_type::AbstractString)
     entry = ffi_lookup(rust_type)
-    return entry === nothing ? nothing : entry.ccall_type
+    entry === nothing && return nothing
+    entry.abi === :unknown && return nothing
+    return entry.ccall_type
 end
 
 """
@@ -525,23 +563,28 @@ them.
 
 `abi` is the manifest `Arg.abi` column (PR #274); when non-empty it overrides
 the ABI derived from the Rust spelling, which is what makes the manifest
-normative (#270). When the Rust type is unknown the returned contract has
-`known = false`, empty `ccall_types` and `:unknown` ownership — callers must
-raise rather than substitute a default.
+normative (#270). It is also the *only* thing that selects the lowered string
+form: `ffi_argument_contract("String")` is unknown, `abi = "string"` makes it
+`:ptr_len`.
+
+When the position cannot be described the returned contract has `known = false`,
+empty `ccall_types` and `:unknown` ownership — callers must raise rather than
+substitute a default.
 
 ```julia
-c = RustCall.ffi_argument_contract("&str")
+c = RustCall.ffi_argument_contract("&str"; abi = "str")
 c.ccall_types     # Type[Ptr{UInt8}, Csize_t]  — two argument slots
 c.aggregate_type  # nothing
 c.ownership       # :owned_by_julia  (Julia's buffer, rooted for the call)
 ```
 """
 function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = "")
-    return _ffi_contract(rust_type, :argument, abi, nothing)
+    return _ffi_contract(rust_type, :argument, abi, nothing, nothing, nothing)
 end
 
 """
-    ffi_return_contract(rust_type; abi = "", owner = nothing) -> FFIContract
+    ffi_return_contract(rust_type; abi = "", owner = nothing,
+                        ownership = nothing, free_symbol = nothing) -> FFIContract
 
 The contract for the return position. `abi` is the manifest `Method.return_abi`
 column (PR #274). See [`ffi_argument_contract`](@ref).
@@ -550,11 +593,33 @@ A `ccall` has exactly one return type, so a multi-word value is **not** expanded
 here: `ccall_types` holds the single `#[repr(C)]` aggregate the wrapper returns
 (also available as `aggregate_type`), and `layout` holds its fields.
 
-`owner` is the function or struct name the wrapper belongs to; when given, an
-`:owned_by_rust` return also carries its [`ffi_free_symbol`](@ref).
+# Stating ownership the spelling cannot express
+
+A raw-pointer return defaults to `:unknown` ownership, because the spelling does
+not say: a generated constructor returns `Box::into_raw`
+(`deps/rustcall_core/src/codegen.rs:386-392`), which Julia owns and must free,
+while another `*mut T` may point into memory Rust keeps. A consumer that *has*
+the metadata states it with `ownership` (and, where a release is required, the
+`free_symbol` that performs it):
 
 ```julia
-c = RustCall.ffi_return_contract("String"; owner = "shout")
+c = RustCall.ffi_return_contract("*mut Point";
+                                 ownership = :transferred_to_julia,
+                                 free_symbol = "Point_free")
+c.ownership    # :transferred_to_julia
+c.free_symbol  # "Point_free"
+```
+
+Declaring `:owned_by_rust` or `:transferred_to_julia` without naming a
+`free_symbol` (directly, or via `owner` for the string convention) is an
+`ArgumentError`: an owned value with no way to release it is the shape of #246
+and #249, and the contract refuses to record it.
+
+`owner` is the function or struct name the wrapper belongs to; when given, an
+`:owned_by_rust` string return carries its [`ffi_free_symbol`](@ref).
+
+```julia
+c = RustCall.ffi_return_contract("String"; abi = "string", owner = "shout")
 c.abi             # :ptr_len_cap
 c.ccall_types     # Type[CRustString]  — one return type
 c.layout          # Type[Ptr{UInt8}, Csize_t, Csize_t]
@@ -563,15 +628,17 @@ c.free_symbol     # "shout_free_rust_string"
 ```
 """
 function ffi_return_contract(rust_type::AbstractString; abi::AbstractString = "",
-                             owner::Union{Nothing, AbstractString} = nothing)
-    return _ffi_contract(rust_type, :return, abi, owner)
+                             owner::Union{Nothing, AbstractString} = nothing,
+                             ownership::Union{Nothing, Symbol} = nothing,
+                             free_symbol::Union{Nothing, AbstractString} = nothing)
+    return _ffi_contract(rust_type, :return, abi, owner, ownership, free_symbol)
 end
 
 """
     ffi_return_ccall_type(rust_type; abi = "") -> Union{Type, Nothing}
 
 The single Julia type to put in the return slot of a `ccall` for this Rust type,
-or `nothing` when the contract does not cover it (`Cvoid` for `()`).
+or `nothing` when the contract cannot describe the position (`Cvoid` for `()`).
 """
 function ffi_return_ccall_type(rust_type::AbstractString; abi::AbstractString = "")
     c = ffi_return_contract(rust_type; abi = abi)
@@ -581,41 +648,70 @@ function ffi_return_ccall_type(rust_type::AbstractString; abi::AbstractString = 
 end
 
 function _ffi_contract(rust_type::AbstractString, direction::Symbol, abi::AbstractString,
-                       owner::Union{Nothing, AbstractString})
+                       owner::Union{Nothing, AbstractString},
+                       stated_ownership::Union{Nothing, Symbol},
+                       stated_free_symbol::Union{Nothing, AbstractString})
     _ffi_check_direction(direction)
     key = ffi_normalize_spelling(rust_type)
     override = ffi_manifest_abi_kind(abi, direction)
     entry = ffi_lookup(key)
+    stated = _ffi_check_stated_ownership(key, stated_ownership, stated_free_symbol, owner)
 
     if entry === nothing
-        override === nothing && return FFIContract(
-            key, direction, :unknown, copy(_FFI_UNKNOWN_SLOTS), nothing,
-            copy(_FFI_UNKNOWN_SLOTS), Any, :unknown, nothing, false,
-        )
+        override === nothing && return _ffi_unknown_contract(key, direction)
         # The manifest named the ABI even though the spelling is unknown to the
         # table: the manifest wins, which is the whole point of #270.
         ownership = _ffi_ownership_for(override, direction)
         surface = direction === :argument ? String :
             (override === :ptr_len_cap ? RustString : RustStr)
-        return _ffi_positional(key, direction, override, surface, ownership, owner)
+        return _ffi_positional(key, direction, override, surface, ownership, owner,
+                               nothing, stated...)
     end
 
     kind = override === nothing ? _ffi_directional_abi(entry, direction) : override
+    # No manifest column and a spelling whose ABI it does not determine (the
+    # string rows): fail closed instead of describing a lowering the wrapper may
+    # never have performed.
+    kind === :unknown && return _ffi_unknown_contract(key, direction)
+
     ownership = if entry.abi === :by_value || entry.abi === :void || entry.abi === :pointer
         # Scalars own nothing; for a raw pointer the contract cannot know who
-        # owns the pointee, so it stays `:borrowed` and the caller must say.
+        # owns the pointee, so it stays `:unknown` until a consumer states it.
         entry.ownership
     else
         _ffi_ownership_for(kind, direction)
     end
     surface = direction === :argument && (kind === :ptr_len || kind === :ptr_len_cap) ?
         String : entry.surface_type
-    return _ffi_positional(key, direction, kind, surface, ownership, owner, entry.ccall_type)
+    return _ffi_positional(key, direction, kind, surface, ownership, owner,
+                           entry.ccall_type, stated...)
+end
+
+_ffi_unknown_contract(key, direction) = FFIContract(
+    key, direction, :unknown, copy(_FFI_UNKNOWN_SLOTS), nothing,
+    copy(_FFI_UNKNOWN_SLOTS), Any, :unknown, nothing, false,
+)
+
+# An explicitly stated ownership must be a known tag, and one that implies a
+# release must name the symbol that performs it.
+function _ffi_check_stated_ownership(key, ownership, free_symbol, owner)
+    if ownership !== nothing
+        ownership in FFI_OWNERSHIP_KINDS || throw(ArgumentError(
+            "unknown ownership :$ownership for $key; expected one of $(FFI_OWNERSHIP_KINDS)"))
+        if ownership === :owned_by_rust || ownership === :transferred_to_julia
+            free_symbol === nothing && owner === nothing && throw(ArgumentError(
+                "ownership :$ownership for $key requires a free_symbol (or an owner): " *
+                "an owned value with no way to release it cannot be recorded"))
+        end
+    end
+    return (ownership, free_symbol === nothing ? nothing : String(free_symbol))
 end
 
 # Turn an ABI kind into the ccall slots / aggregate / layout for one position.
 function _ffi_positional(key, direction, kind, surface, ownership, owner,
-                         scalar_type::Union{Nothing, Type} = nothing)
+                         scalar_type::Union{Nothing, Type} = nothing,
+                         stated_ownership::Union{Nothing, Symbol} = nothing,
+                         stated_free_symbol::Union{Nothing, String} = nothing)
     layout = kind === :ptr_len || kind === :ptr_len_cap ? ffi_slots(kind) : Type[]
     aggregate = direction === :return ? ffi_aggregate_type(kind) : nothing
     slots = if kind === :void
@@ -628,14 +724,20 @@ function _ffi_positional(key, direction, kind, surface, ownership, owner,
     else
         copy(layout)
     end
-    free_symbol = ownership === :owned_by_rust && owner !== nothing ?
+    # A stated ownership wins over the derived one: the consumer has metadata
+    # the spelling does not carry (a constructor's `Box::into_raw`, say).
+    final_ownership = stated_ownership === nothing ? ownership : stated_ownership
+    derived_free = final_ownership === :owned_by_rust && owner !== nothing ?
         ffi_free_symbol(owner) : nothing
+    free_symbol = stated_free_symbol === nothing ? derived_free : stated_free_symbol
     return FFIContract(key, direction, kind, slots, aggregate, layout, surface,
-                       ownership, free_symbol, true)
+                       final_ownership, free_symbol, true)
 end
 
-# `String` and `&str` are `(ptr, len)` in argument position regardless of which
-# of the two they are: the wrapper copies for `String` and borrows for `&str`.
+# When the manifest says `"string"` for an argument, the wrapper takes the words
+# as `(ptr, len)` — `ffi_manifest_abi_kind` already resolves that. This only
+# handles the (now unreachable for strings) case of a table row whose own ABI is
+# `:ptr_len_cap`, kept so future owned-aggregate rows behave consistently.
 function _ffi_directional_abi(entry::FFIType, direction::Symbol)
     if direction === :argument && entry.abi === :ptr_len_cap
         return :ptr_len
@@ -648,7 +750,11 @@ function _ffi_ownership_for(kind::Symbol, direction::Symbol)
     kind === :by_value && return :none
     direction === :argument && return :owned_by_julia
     kind === :ptr_len_cap && return :owned_by_rust
-    return :borrowed
+    # A lowered `&str` return: a view into memory Rust keeps, valid only for as
+    # long as the callee guarantees. This is the one place `:borrowed` is
+    # derived — a raw pointer never is.
+    kind === :ptr_len && return :borrowed
+    return :unknown
 end
 
 """
@@ -658,7 +764,7 @@ A one-line human-readable rendering of a contract, for error messages and for
 the documentation of the supported-type matrix (#245 item 4).
 """
 function ffi_describe(rust_type::AbstractString; direction::Symbol = :return, abi::AbstractString = "")
-    c = _ffi_contract(rust_type, direction, abi, nothing)
+    c = _ffi_contract(rust_type, direction, abi, nothing, nothing, nothing)
     c.known || return "$(c.rust_type): not in the FFI contract"
     slots = isempty(c.ccall_types) ? "no slots" : join(string.(c.ccall_types), ", ")
     return "$(c.rust_type) [$(c.direction)]: abi=$(c.abi), slots=($slots), surface=$(c.surface_type), ownership=$(c.ownership)"

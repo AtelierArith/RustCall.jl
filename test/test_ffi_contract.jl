@@ -124,18 +124,81 @@ const ALL_SPELLINGS = vcat(
         # `Type::Ptr(_) => true`) but degrades the pointee to `Cvoid`.
         @test RustCall.ffi_ccall_type("*mut Point") === Ptr{Cvoid}
         @test RustCall.ffi_return_contract("*mut Point").abi === :pointer
-        @test RustCall.ffi_return_contract("*mut Point").ownership === :borrowed
         @test RustCall.ffi_lookup("*const  u8").ccall_type === Ptr{UInt8}
     end
 
-    @testset "strings: the ABI depends on direction" begin
-        # A `ccall` has exactly one return type, and the generated wrapper
-        # returns one `#[repr(C)]` aggregate
-        # (`<fn>_RustCallOwnedString { ptr, len, cap }`,
-        # deps/rustcall_core/src/codegen.rs:837-863), which the existing Julia
-        # path receives as `CRustString` (src/structs.jl:511-528). So the
-        # return contract carries the aggregate, not the word list.
-        ret = RustCall.ffi_return_contract("String")
+    @testset "raw-pointer ownership is not derivable from the spelling" begin
+        # A generated constructor returns `Box::into_raw`
+        # (deps/rustcall_core/src/codegen.rs:386-392) — Julia owns that
+        # allocation and must free it. Another `*mut T` may point into memory
+        # Rust keeps. Nothing in the spelling separates the two, so the default
+        # is `:unknown`, never `:borrowed` (whose documented lifetime is only
+        # the duration of the call).
+        @test RustCall.ffi_return_contract("*mut Point").ownership === :unknown
+        @test RustCall.ffi_return_contract("*const u8").ownership === :unknown
+        @test RustCall.ffi_argument_contract("*mut Point").ownership === :unknown
+        @test RustCall.ffi_ownership("*mut Point") === :unknown
+
+        # A consumer that has the metadata states it.
+        ctor = RustCall.ffi_return_contract("*mut Point";
+                                            ownership = :transferred_to_julia,
+                                            free_symbol = "Point_free")
+        @test ctor.ownership === :transferred_to_julia
+        @test ctor.free_symbol == "Point_free"
+        @test ctor.abi === :pointer
+        @test ctor.ccall_types == Type[Ptr{Cvoid}]
+        @test ctor.known
+
+        borrowed = RustCall.ffi_return_contract("*const u8"; ownership = :borrowed)
+        @test borrowed.ownership === :borrowed
+        @test borrowed.free_symbol === nothing
+
+        # Validation: an owned value with no way to release it is refused.
+        @test_throws ArgumentError RustCall.ffi_return_contract(
+            "*mut Point"; ownership = :transferred_to_julia)
+        @test_throws ArgumentError RustCall.ffi_return_contract(
+            "*mut Point"; ownership = :owned_by_rust)
+        @test_throws ArgumentError RustCall.ffi_return_contract(
+            "*mut Point"; ownership = :not_a_tag, free_symbol = "Point_free")
+        # `owner` also satisfies it, through the string convention.
+        @test RustCall.ffi_return_contract("*mut Point"; ownership = :owned_by_rust,
+                                           owner = "Point").free_symbol ==
+              "Point_free_rust_string"
+        # Tags that imply no release need no symbol.
+        @test RustCall.ffi_return_contract("*mut Point"; ownership = :none).ownership === :none
+    end
+
+    @testset "strings: only the manifest says whether lowering happened" begin
+        # On `main` the lowering is NOT uniform: `transform_simple_function`
+        # (deps/rustcall_core/src/codegen.rs:53-58) only marks a free
+        # `#[julia] fn ... -> String` signature `extern "C"` and
+        # `generate_method_wrapper_crate` (:378, :414, :443) forwards the
+        # original types; only `inline_method_wrapper` (:774-863) lowers to
+        # `(ptr, len)` / `CRustString`. So a bare spelling must fail closed.
+        for s in ("String", "&str", "str")
+            @test RustCall.ffi_argument_contract(s).known == false
+            @test RustCall.ffi_argument_contract(s).abi === :unknown
+            @test RustCall.ffi_return_contract(s).known == false
+            @test RustCall.ffi_return_contract(s).abi === :unknown
+            @test RustCall.ffi_return_contract(s).ownership === :unknown
+            @test isempty(RustCall.ffi_return_contract(s).ccall_types)
+            @test RustCall.ffi_return_ccall_type(s) === nothing
+            # Not even a single-slot answer, since there is no single slot.
+            @test RustCall.ffi_ccall_type(s) === nothing
+            # The Julia-visible type is still well defined; only the calling
+            # convention is not.
+            @test RustCall.ffi_surface_type(s) !== nothing
+            @test RustCall.ffi_known(s)
+        end
+
+        # With the manifest column, the lowered form appears. A `ccall` has
+        # exactly one return type, and the wrapper returns one `#[repr(C)]`
+        # aggregate (`<fn>_RustCallOwnedString { ptr, len, cap }`,
+        # codegen.rs:837-863), received as `CRustString`
+        # (src/structs.jl:511-528) — so the return contract carries the
+        # aggregate, not the word list.
+        ret = RustCall.ffi_return_contract("String"; abi = "string")
+        @test ret.known
         @test ret.abi === :ptr_len_cap
         @test ret.ccall_types == Type[RustCall.CRustString]
         @test ret.aggregate_type === RustCall.CRustString
@@ -143,12 +206,13 @@ const ALL_SPELLINGS = vcat(
         @test fieldtypes(RustCall.CRustString) == (Ptr{UInt8}, UInt, UInt)
         @test ret.ownership === :owned_by_rust      # Julia must free it (#246)
         @test ret.surface_type === RustCall.RustString
-        @test RustCall.ffi_return_ccall_type("String") === RustCall.CRustString
+        @test RustCall.ffi_return_ccall_type("String"; abi = "string") ===
+              RustCall.CRustString
 
         # Arguments are the other half: the wrapper takes the words as separate
         # parameters, so the argument contract expands them and has no
         # aggregate.
-        arg = RustCall.ffi_argument_contract("String")
+        arg = RustCall.ffi_argument_contract("String"; abi = "string")
         @test arg.abi === :ptr_len
         @test arg.ccall_types == Type[Ptr{UInt8}, Csize_t]
         @test arg.aggregate_type === nothing
@@ -156,25 +220,28 @@ const ALL_SPELLINGS = vcat(
         @test arg.ownership === :owned_by_julia
         @test arg.surface_type === String
 
-        sref = RustCall.ffi_return_contract("&str")
+        sref = RustCall.ffi_return_contract("&str"; abi = "str")
         @test sref.abi === :ptr_len
         @test sref.ccall_types == Type[RustCall.CRustStr]      # one return type
         @test sref.aggregate_type === RustCall.CRustStr
         @test sref.layout == Type[Ptr{UInt8}, Csize_t]
         @test fieldtypes(RustCall.CRustStr) == (Ptr{UInt8}, UInt)
         @test sref.ownership === :borrowed
-        @test RustCall.ffi_return_ccall_type("&str") === RustCall.CRustStr
-        @test RustCall.ffi_argument_contract("&str").ccall_types == Type[Ptr{UInt8}, Csize_t]
-        @test RustCall.ffi_argument_contract("&str").aggregate_type === nothing
+        @test RustCall.ffi_return_ccall_type("&str"; abi = "str") === RustCall.CRustStr
+        @test RustCall.ffi_argument_contract("&str"; abi = "str").ccall_types ==
+              Type[Ptr{UInt8}, Csize_t]
+        @test RustCall.ffi_argument_contract("&str"; abi = "str").aggregate_type === nothing
 
         # The free symbol is per-owner, so it appears only when the caller names
         # the owner (`deps/rustcall_core/src/codegen.rs:633`).
         @test RustCall.ffi_free_symbol("shout") == "shout_free_rust_string"
-        @test RustCall.ffi_return_contract("String"; owner = "shout").free_symbol ==
+        @test RustCall.ffi_return_contract("String"; abi = "string",
+                                           owner = "shout").free_symbol ==
               "shout_free_rust_string"
-        @test RustCall.ffi_return_contract("String").free_symbol === nothing
+        @test RustCall.ffi_return_contract("String"; abi = "string").free_symbol === nothing
         # Only an `:owned_by_rust` value has one.
-        @test RustCall.ffi_return_contract("&str"; owner = "peek").free_symbol === nothing
+        @test RustCall.ffi_return_contract("&str"; abi = "str",
+                                           owner = "peek").free_symbol === nothing
         @test RustCall.ffi_return_contract("i32"; owner = "add").free_symbol === nothing
 
         # Single-word positions carry no aggregate and no layout at all.
@@ -261,11 +328,12 @@ const ALL_SPELLINGS = vcat(
               RustCall.CRustStr
         @test RustCall.ffi_argument_contract("Cow<'a, str>"; abi = "str").ccall_types ==
               Type[Ptr{UInt8}, Csize_t]
-        # And it agrees with the spelling when both are present.
-        @test RustCall.ffi_return_contract("String"; abi = "string").abi ===
-              RustCall.ffi_return_contract("String").abi
-        @test RustCall.ffi_argument_contract("&str"; abi = "str").abi ===
-              RustCall.ffi_argument_contract("&str").abi
+        # And it is the ONLY authority for the string spellings: without it
+        # they are unknown, with it they lower (see the strings testset).
+        @test RustCall.ffi_return_contract("String").abi === :unknown
+        @test RustCall.ffi_return_contract("String"; abi = "string").abi === :ptr_len_cap
+        @test RustCall.ffi_argument_contract("&str").abi === :unknown
+        @test RustCall.ffi_argument_contract("&str"; abi = "str").abi === :ptr_len
     end
 
     @testset "ffi_slots" begin
@@ -393,10 +461,17 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.rusttype_to_julia("String") === RustCall.RustString
         @test RustCall.rusttype_to_julia("str") === Cstring
         @test table_structs("str") === :Any
-        # The contract says what neither of them says: the shape and the owner.
-        @test RustCall.ffi_return_contract("String").abi === :ptr_len_cap
-        @test RustCall.ffi_return_contract("String").ownership === :owned_by_rust
-        @test RustCall.ffi_return_contract("&str").ownership === :borrowed
+        # The contract says what neither of them says: the shape and the owner
+        # — but only once the manifest says the wrapper lowered the string.
+        # `main`'s free-function wrapper does NOT lower it
+        # (`transform_simple_function`, deps/rustcall_core/src/codegen.rs:53-58,
+        # only adds `extern "C"`), so Phase B must not assume the lowering
+        # until #274 lands; the contract fails closed in the meantime.
+        @test RustCall.ffi_return_contract("String").known == false
+        @test RustCall.ffi_return_contract("String"; abi = "string").abi === :ptr_len_cap
+        @test RustCall.ffi_return_contract("String"; abi = "string").ownership ===
+              :owned_by_rust
+        @test RustCall.ffi_return_contract("&str"; abi = "str").ownership === :borrowed
     end
 
     @testset "divergence: raw pointers (#245 item 2)" begin
@@ -450,11 +525,13 @@ const ALL_SPELLINGS = vcat(
         # (#246) and why the drop symbol is chosen from the Julia-side type tag
         # rather than from the allocating library (#249).
         @test table_structs("String") === :RustString   # a type, no owner
-        @test RustCall.ffi_return_contract("String").ownership === :owned_by_rust
-        @test RustCall.ffi_argument_contract("String").ownership === :owned_by_julia
+        @test RustCall.ffi_return_contract("String"; abi = "string").ownership ===
+              :owned_by_rust
+        @test RustCall.ffi_argument_contract("String"; abi = "string").ownership ===
+              :owned_by_julia
         # The free symbol is per-function (`<fn>_free_rust_string`), so the
-        # type-keyed table cannot name it yet; the field exists for Phase B.
-        @test RustCall.ffi_return_contract("String").free_symbol === nothing
+        # type-keyed table cannot name it unless the caller supplies the owner.
+        @test RustCall.ffi_return_contract("String"; abi = "string").free_symbol === nothing
         # Scalars own nothing, which must stay distinguishable from "unknown".
         @test RustCall.ffi_return_contract("i64").ownership === :none
         @test RustCall.ffi_return_contract("Vec<f64>").ownership === :unknown
