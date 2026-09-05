@@ -1,4 +1,4 @@
-schema_version = 3
+schema_version = 4
 mode = "crate"
 
 [[functions]]
@@ -11,6 +11,7 @@ is_generic = false
 type_params = []
 return_type = "i32"
 return_kind = "plain"
+return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
@@ -41,6 +42,7 @@ is_generic = false
 type_params = []
 return_type = "usize"
 return_kind = "plain"
+return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
@@ -73,6 +75,7 @@ module_path = []
 [[structs.fields]]
 name = "value"
 rust_type = "i32"
+abi = ""
 ffi_compatible = true
 getter = "DualCounter_get_value"
 setter = "DualCounter_set_value"
@@ -83,6 +86,7 @@ symbol = "rustcall_DualCounter_new"
 is_static = true
 is_mutable = false
 is_constructor = true
+returns_boxed_struct = true
 return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
@@ -98,6 +102,7 @@ symbol = "rustcall_DualCounter_increment"
 is_static = false
 is_mutable = true
 is_constructor = false
+returns_boxed_struct = false
 return_type = "()"
 return_abi = ""
 generic_wrapper = ""

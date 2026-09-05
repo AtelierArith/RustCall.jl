@@ -436,3 +436,70 @@ impl Greeter {
         "{py}"
     );
 }
+
+
+/// A `String` field cannot cross `extern "C"` by value. Both wrapper flavours
+/// lower its getter to the owned `(ptr, len, cap)` buffer and say so in the
+/// manifest, so Julia never has to re-derive the lowering from the spelling
+/// (#246, #276).
+#[test]
+fn string_fields_report_the_owned_string_abi_in_both_flavours() {
+    let src = r#"
+#[julia]
+pub struct Counter { count: u32, name: String }
+#[julia]
+impl Counter {
+    #[julia]
+    pub fn new() -> Self { Self { count: 0, name: String::new() } }
+}
+"#;
+    for mode in [Mode::Inline, Mode::Crate] {
+        let m = extract(src, mode).unwrap();
+        let s = m.structs.iter().find(|s| s.name == "Counter").unwrap();
+        let name = s.fields.iter().find(|f| f.name == "name").unwrap();
+        let count = s.fields.iter().find(|f| f.name == "count").unwrap();
+        assert_eq!(name.abi, "string", "{mode:?}");
+        assert_eq!(count.abi, "", "{mode:?}");
+        assert!(name.ffi_compatible, "{mode:?}");
+        assert!(s.has_owned_string_helper, "{mode:?}");
+    }
+
+    // The inline flavour emits the lowered getter directly...
+    let e = expand(src).unwrap();
+    assert!(
+        flat(&e.source).contains(
+            "pub extern \"C\" fn Counter_get_name(ptr: *const Counter) -> Counter_RustCallOwnedString"
+        ),
+        "{}",
+        e.source
+    );
+    // ...and so does the crate flavour, through the proc-macro entry point.
+    let item: syn::ItemStruct =
+        syn::parse_str("pub struct Counter { count: u32, name: String }").unwrap();
+    let crate_src = flat(&rustcall_core::codegen::transform_struct_crate(item).to_string());
+    assert!(
+        crate_src.contains("fn Counter_get_name")
+            && crate_src.contains("-> Counter_RustCallOwnedString"),
+        "{crate_src}"
+    );
+    assert!(
+        crate_src.contains("pub extern \"C\" fn Counter_free_rust_string"),
+        "{crate_src}"
+    );
+}
+
+/// `Function.return_abi` is the normative column since schema 4; the
+/// `has_*_string_helper` booleans are derived from it (#276).
+#[test]
+fn function_return_abi_is_the_normative_column() {
+    let m = extract(SRC, Mode::Inline).unwrap();
+    let by_name = |n: &str| m.functions.iter().find(|f| f.name == n).unwrap();
+    assert_eq!(by_name("shout").return_abi, "string");
+    assert_eq!(by_name("greeting").return_abi, "str");
+    assert_eq!(by_name("identity").return_abi, "string");
+    assert_eq!(by_name("plain").return_abi, "");
+    for f in &m.functions {
+        assert_eq!(f.has_owned_string_helper, f.return_abi == "string");
+        assert_eq!(f.has_borrowed_string_helper, f.return_abi == "str");
+    }
+}

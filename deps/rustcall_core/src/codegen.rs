@@ -137,6 +137,20 @@ pub fn return_abi(sig: &syn::Signature) -> &'static str {
     }
 }
 
+/// The manifest `abi` of a struct field: `"string"` when the generated getter
+/// returns an owned `<Struct>_RustCallOwnedString` buffer (released through
+/// `<Struct>_free_rust_string`), `""` when it returns the field as written.
+///
+/// Both wrapper flavours lower a `String` field the same way, so this depends
+/// on the field type alone (#276).
+pub fn field_abi(ty: &Type) -> &'static str {
+    if is_string_type(ty) {
+        "string"
+    } else {
+        ""
+    }
+}
+
 /// An identifier the generated wrapper introduces (`s_ptr`, `s_len`, `s_bytes`,
 /// `s_cow`, the receiver `ptr`, `self_obj`), chosen so that it never coincides
 /// with one of the function's own argument names (`taken`): a trailing
@@ -733,9 +747,28 @@ pub fn plain_function_wrapper(func: &ItemFn) -> TokenStream2 {
 // Crate flavour: structs and impl blocks (proc-macro)
 // ============================================================================
 
+/// Whether the crate flavour emits the `<Struct>_RustCallOwnedString` /
+/// `<Struct>_free_rust_string` helpers for this struct: it does exactly when a
+/// field getter has to hand an owned `String` back (#276).
+pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool {
+    let syn::Fields::Named(ref fields) = item_struct.fields else {
+        return false;
+    };
+    fields.named.iter().any(|f| {
+        f.ident.is_some()
+            && (is_ffi_compatible_type(&f.ty) || needs_clone_for_getter(&f.ty))
+            && is_string_type(&f.ty)
+    })
+}
+
 fn crate_field_accessors(item_struct: &ItemStruct) -> TokenStream2 {
     let struct_name = &item_struct.ident;
+    let owned_helper = format_ident!("{}_RustCallOwnedString", struct_name);
+    let owned_free = format_ident!("{}_free_rust_string", struct_name);
     let mut ffi_functions = TokenStream2::new();
+    if crate_struct_needs_owned_string_helper(item_struct) {
+        ffi_functions.extend(owned_string_helper(&[], &owned_helper, &owned_free));
+    }
     if let syn::Fields::Named(ref fields) = item_struct.fields {
         for field in &fields.named {
             let Some(ref field_name) = field.ident else {
@@ -746,7 +779,25 @@ fn crate_field_accessors(item_struct: &ItemStruct) -> TokenStream2 {
                 continue;
             }
             let getter_name = format_ident!("{}_get_{}", struct_name, field_name);
-            if needs_clone_for_getter(field_ty) {
+            if is_string_type(field_ty) {
+                // A `String` cannot cross `extern "C"` by value: it leaves as an
+                // owned `(ptr, len, cap)` buffer the caller hands back to
+                // `<Struct>_free_rust_string`, exactly as the inline flavour
+                // and the string-returning method wrappers do (#246).
+                ffi_functions.extend(quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #owned_helper {
+                        let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
+                        let rustcall_ret = #owned_helper {
+                            ptr: rustcall_bytes.as_mut_ptr(),
+                            len: rustcall_bytes.len(),
+                            cap: rustcall_bytes.capacity(),
+                        };
+                        std::mem::forget(rustcall_bytes);
+                        rustcall_ret
+                    }
+                });
+            } else if needs_clone_for_getter(field_ty) {
                 ffi_functions.extend(quote! {
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {

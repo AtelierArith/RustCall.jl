@@ -14,6 +14,9 @@ A method of a `#[julia]` struct as recorded in the manifest.
   for generic structs, and for a method built by hand rather than read from a
   manifest, where the emitters fall back to `method_wrapper_symbol`
 - `is_constructor`: static `new`, or any method returning `Self`/the struct type
+- `returns_boxed_struct`: the wrapper boxes the result and returns `*mut Struct`
+  (manifest `Method.returns_boxed_struct`, schema 4). Julia used to re-derive
+  this by comparing `return_type` against `"Self"` (#276)
 - `generic_wrapper`: generic wrapper source registered for monomorphization
 """
 struct RustMethod
@@ -28,6 +31,7 @@ struct RustMethod
     generic_wrapper::String
     arg_abis::Vector{String}   # manifest `abi` per argument ("string", "str" or "")
     return_abi::String         # "string" (owned buffer), "str" (borrowed) or ""
+    returns_boxed_struct::Bool
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -35,9 +39,11 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     symbol::String = "", is_constructor::Bool = (name == "new" || return_type == "Self"),
                     generic_wrapper::String = "",
                     arg_abis::Vector{String} = _default_arg_abis(arg_types),
-                    return_abi::String = _default_return_abi(return_type, arg_abis))
+                    return_abi::String = _default_return_abi(return_type, arg_abis),
+                    returns_boxed_struct::Bool = is_constructor)
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
-               symbol, is_constructor, generic_wrapper, arg_abis, return_abi)
+               symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
+               returns_boxed_struct)
 end
 
 """
@@ -78,6 +84,9 @@ end
 A `#[julia]` / `#[derive(JuliaStruct)]` struct as recorded in the manifest.
 
 - `fields`: `(name, rust_type)` for every named field
+- `field_abis`: manifest `Field.abi` per field — `"string"` when the getter
+  returns an owned `<Struct>_RustCallOwnedString` buffer, `""` when it returns
+  the field as written (schema 4, #276). Absent keys mean `""`
 - `field_getters` / `field_setters`: exported accessor symbols per accessible field
 - `context_code`: struct + impl source (generic structs only)
 - `generic_wrappers`: `(name, source, type_params)` wrappers registered for monomorphization;
@@ -92,6 +101,7 @@ struct RustStructInfo
     methods::Vector{RustMethod}
     context_code::String
     fields::Vector{Tuple{String, String}}
+    field_abis::Dict{String, String}
     has_derive_julia_struct::Bool
     derive_options::Dict{String, Bool}
     field_getters::Dict{String, String}
@@ -107,6 +117,7 @@ end
 function RustStructInfo(name::String, type_params::Vector{String}, methods::Vector{RustMethod},
                         context_code::String, fields::Vector{Tuple{String, String}},
                         has_derive_julia_struct::Bool, derive_options::Dict{String, Bool};
+                        field_abis::Dict{String, String} = Dict{String, String}(),
                         field_getters::Dict{String, String} = Dict{String, String}(),
                         field_setters::Dict{String, String} = Dict{String, String}(),
                         has_clone::Bool = get(derive_options, "Clone", false),
@@ -115,7 +126,8 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         generic_wrappers::Vector{Tuple{String, String, Vector{String}}} = Tuple{String, String, Vector{String}}[],
                         constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
                         module_path::Vector{String} = String[])
-    RustStructInfo(name, type_params, methods, context_code, fields, has_derive_julia_struct,
+    RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
+                   has_derive_julia_struct,
                    derive_options, field_getters, field_setters, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
                    module_path)

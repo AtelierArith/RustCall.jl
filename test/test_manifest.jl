@@ -24,6 +24,58 @@ using TOML
     _lf(x::AbstractVector) = Any[_lf(v) for v in x]
     _lf(x) = x
 
+    @testset "schema 4: return_abi, Field.abi, returns_boxed_struct (#276)" begin
+        # The manifest — not the Rust spelling — is what says how a value
+        # crosses the boundary. Schema 4 makes that true for free functions
+        # (`return_abi`), struct fields (`abi`) and boxed returns.
+        manifest = RustCall.extract_manifest("""
+        #[julia]
+        pub fn shout(s: String) -> String { s.to_uppercase() }
+        #[julia]
+        pub fn greeting() -> &'static str { "hi" }
+        #[julia]
+        pub fn plain(x: i32) -> i32 { x }
+        #[julia]
+        pub struct Tagged { tag: String, n: u16 }
+        impl Tagged {
+            pub fn new(tag: String) -> Self { Self { tag, n: 0 } }
+            pub fn n(&self) -> u16 { self.n }
+        }
+        """; mode = "inline")
+
+        sigs = RustCall.manifest_function_signatures(manifest)
+        by_name = Dict(s.name => s for s in sigs)
+        @test by_name["shout"].return_abi == "string"
+        @test by_name["shout"].has_owned_string_helper
+        @test by_name["greeting"].return_abi == "str"
+        @test by_name["greeting"].has_borrowed_string_helper
+        @test by_name["plain"].return_abi == ""
+        # The booleans are derived from the column, never the other way round.
+        for s in sigs
+            @test s.has_owned_string_helper == (s.return_abi == "string")
+            @test s.has_borrowed_string_helper == (s.return_abi == "str")
+        end
+
+        info = only(RustCall.manifest_struct_infos(manifest))
+        @test info.field_abis["tag"] == "string"
+        @test info.field_abis["n"] == ""
+        @test info.has_owned_string_helper
+        @test only(m for m in info.methods if m.name == "new").returns_boxed_struct
+        @test only(m for m in info.methods if m.name == "n").returns_boxed_struct == false
+    end
+
+    @testset "schema 4: crate-mode String fields are lowered too (#246)" begin
+        manifest = RustCall.extract_manifest("""
+        use juliacall_macros::julia;
+        #[julia]
+        pub struct Counter { count: u32, name: String }
+        """; mode = "crate")
+        info = only(RustCall.manifest_struct_infos(manifest))
+        @test info.field_abis["name"] == "string"
+        @test info.field_abis["count"] == ""
+        @test info.has_owned_string_helper
+    end
+
     @testset "CLI output matches the golden corpus" begin
         # The corpus is the Rust-side golden test; the CLI must produce exactly
         # the same manifests so the two front ends cannot drift apart.

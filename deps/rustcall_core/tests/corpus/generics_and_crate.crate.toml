@@ -1,4 +1,4 @@
-schema_version = 3
+schema_version = 4
 mode = "crate"
 
 [[functions]]
@@ -10,6 +10,7 @@ cfg = ""
 is_generic = true
 return_type = "T"
 return_kind = "plain"
+return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
@@ -62,6 +63,7 @@ type_params = []
 [[structs.fields]]
 name = "left"
 rust_type = "T"
+abi = ""
 ffi_compatible = false
 getter = ""
 setter = ""
@@ -69,6 +71,7 @@ setter = ""
 [[structs.fields]]
 name = "right"
 rust_type = "T"
+abi = ""
 ffi_compatible = false
 getter = ""
 setter = ""
@@ -79,6 +82,7 @@ symbol = "rustcall_Pair_new"
 is_static = true
 is_mutable = false
 is_constructor = true
+returns_boxed_struct = true
 return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
@@ -99,6 +103,7 @@ symbol = "rustcall_Pair_first"
 is_static = false
 is_mutable = false
 is_constructor = false
+returns_boxed_struct = false
 args = []
 return_type = "T"
 return_abi = ""

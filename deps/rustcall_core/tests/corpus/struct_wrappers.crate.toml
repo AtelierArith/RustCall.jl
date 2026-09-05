@@ -1,4 +1,4 @@
-schema_version = 3
+schema_version = 4
 mode = "crate"
 structs = []
 
@@ -12,6 +12,7 @@ is_generic = false
 type_params = []
 return_type = "Result<i32, i32>"
 return_kind = "result"
+return_abi = ""
 ok_type = "i32"
 err_type = "i32"
 inner_type = ""
@@ -37,6 +38,7 @@ is_generic = false
 type_params = []
 return_type = "Option<i32>"
 return_kind = "option"
+return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = "i32"

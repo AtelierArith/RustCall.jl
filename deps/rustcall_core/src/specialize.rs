@@ -17,10 +17,7 @@ use syn::visit_mut::{self, VisitMut};
 use syn::{GenericParam, Item, ItemFn, Path, PathArguments, Type, WherePredicate};
 
 use crate::cfg::body_has_cfg;
-use crate::codegen::{
-    function_returns_string, function_symbol, plain_function_wrapper, returns_borrowed_str,
-    returns_copied_str,
-};
+use crate::codegen::{function_symbol, plain_function_wrapper};
 use crate::manifest::{Arg, Attribute, Function, Manifest, Mode, ReturnKind};
 use crate::types::{return_type_to_string, type_to_string};
 
@@ -316,9 +313,9 @@ pub fn specialize(
     // entry point next to it under `rustcall_<new_name>`. Fixed `String` /
     // `&str` parameters or returns get the `(ptr, len)` ABI (#242); the
     // manifest records the helpers so the caller uses the string ABI.
-    entry.has_owned_string_helper =
-        function_returns_string(&func.sig) || returns_copied_str(&func.sig);
-    entry.has_borrowed_string_helper = returns_borrowed_str(&func.sig);
+    entry.return_abi = crate::codegen::return_abi(&func.sig).to_string();
+    entry.has_owned_string_helper = entry.return_abi == "string";
+    entry.has_borrowed_string_helper = entry.return_abi == "str";
     let new_items: Vec<Item> = {
         func.vis = syn::Visibility::Public(Default::default());
         let wrapper: syn::File = syn::parse2(plain_function_wrapper(&func))
@@ -393,6 +390,7 @@ fn function_entry(func: &ItemFn) -> Function {
             ReturnKind::Plain
         },
         return_type,
+        return_abi: crate::codegen::return_abi(&func.sig).to_string(),
         ok_type: String::new(),
         err_type: String::new(),
         inner_type: String::new(),

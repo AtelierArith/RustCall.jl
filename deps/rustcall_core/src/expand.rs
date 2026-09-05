@@ -272,6 +272,7 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
                 is_static: m.is_static,
                 is_mutable: m.is_mutable,
                 is_constructor: m.name() == "new" || returns_self,
+                returns_boxed_struct: crate::codegen::returns_boxed_struct(struct_name, &m.func),
                 args: fn_args(&m.func.sig),
                 return_type: return_type_to_string(&m.func.sig.output),
                 return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
@@ -290,6 +291,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
             Field {
                 name: name.to_string(),
                 rust_type: type_to_string(ty),
+                abi: crate::codegen::field_abi(ty).to_string(),
                 ffi_compatible: acc.is_some(),
                 getter: acc.map(|a| a.1.clone()).unwrap_or_default(),
                 setter: acc.map(|a| a.2.clone()).unwrap_or_default(),

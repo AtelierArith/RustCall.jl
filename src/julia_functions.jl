@@ -21,7 +21,11 @@ source text.
 - `module_path`: enclosing inline modules (`["api", "deep"]`)
 - `has_owned_string_helper` / `has_borrowed_string_helper`: the function returns
   `String` / `&str`; the wrapper returns `<fn>_RustCallOwnedString` (freed with
-  `<fn>_free_rust_string`) / `<fn>_RustCallBorrowedString` (#242)
+  `<fn>_free_rust_string`) / `<fn>_RustCallBorrowedString` (#242). Derived from
+  `return_abi` since manifest schema 4
+- `return_abi`: manifest `Function.return_abi` — `"string"` (owned buffer),
+  `"str"` (borrowed view) or `""` (as written). The normative description of
+  how the wrapper returns its value (#276)
 """
 struct RustFunctionSignature
     name::String
@@ -46,6 +50,7 @@ struct RustFunctionSignature
     has_owned_string_helper::Bool
     has_borrowed_string_helper::Bool
     arg_abis::Vector{String}
+    return_abi::String
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -60,13 +65,15 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                body_has_cfg::Bool = false,
                                has_owned_string_helper::Bool = false,
                                has_borrowed_string_helper::Bool = false,
-                               arg_abis::Vector{String} = _default_arg_abis(arg_types))
+                               arg_abis::Vector{String} = _default_arg_abis(arg_types),
+                               return_abi::String = _default_return_abi(return_type, arg_abis))
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
-                          has_owned_string_helper, has_borrowed_string_helper, arg_abis)
+                          has_owned_string_helper, has_borrowed_string_helper, arg_abis,
+                          return_abi)
 end
 
 """
