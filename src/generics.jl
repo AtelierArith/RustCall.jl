@@ -87,9 +87,60 @@ const GENERIC_FUNCTION_REGISTRY = Dict{String, GenericFunctionInfo}()
 
 """
 Registry for monomorphized function instances.
-Maps (function_name, type_params_tuple) to FunctionInfo.
+
+Keyed by `artifact_key` of the monomorphization `ArtifactId`
+(`_monomorphization_id`), which records the parameter bindings in **declaration
+order** together with the source, the compiler snapshot and the toolchain. The
+previous key was `(func_name, tuple(sort(values(type_params))...))`: sorting the
+*values* discarded which parameter got which type, so `pair<T=i32, U=i64>` and
+`pair<T=i64, U=i32>` shared one entry and the second call ran the first one's
+machine code (#247).
 """
-const MONOMORPHIZED_FUNCTIONS = Dict{Tuple{String, Tuple}, FunctionInfo}()
+const MONOMORPHIZED_FUNCTIONS = Dict{String, FunctionInfo}()
+
+"""
+    _monomorphization_id(generic_info, func_name, type_params, compiler) -> ArtifactId
+
+The identity of one instantiation of a generic function: the registered source
+(context plus generic code), the parameter bindings **in declaration order**,
+and the compiler snapshot the instantiation is built under. `dependencies` and
+`build_env` are left empty here — the lazy specialization is a direct `rustc`
+build — but they are fields of the record, so a future Cargo-backed
+specialization (#277) needs no new key formula.
+
+Throws `ArgumentError` when `type_params` does not bind every declared
+parameter.
+"""
+function _monomorphization_id(generic_info, func_name::AbstractString, type_params, compiler)
+    return ArtifactId(
+        kind = "monomorphization",
+        source = isempty(generic_info.context) ? generic_info.code :
+                 generic_info.context * "\n" * generic_info.code,
+        type_params = artifact_type_params(generic_info.type_params, type_params),
+        target_triple = compiler.target_triple,
+        codegen = artifact_codegen_options(compiler),
+        extra = Pair{String, String}["function" => String(func_name)],
+    )
+end
+
+# Julia type name -> short Rust-flavoured identifier, for the human-readable
+# part of a monomorphized symbol. Never load-bearing: the artifact key decides
+# identity, this only decides how the symbol reads.
+const _MONOMORPHIZATION_TYPE_SUFFIX = Dict{String, String}(
+    "Int32" => "i32",
+    "Int64" => "i64",
+    "UInt32" => "u32",
+    "UInt64" => "u64",
+    "Float32" => "f32",
+    "Float64" => "f64",
+    "Bool" => "bool",
+)
+
+function _rust_type_suffix(t)::String
+    type_str = string(t)
+    return get(_MONOMORPHIZATION_TYPE_SUFFIX, type_str,
+               replace(type_str, "Int" => "i", "UInt" => "u", "Float" => "f"))
+end
 
 # ============================================================================
 # Julia -> Rust type names for monomorphization
@@ -193,44 +244,32 @@ info = monomorphize_function("identity", Dict{Symbol, Type}(:T => Int32))
 ```
 """
 function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type})
-    # Check if already monomorphized
-    # Sort by type name (string representation) to ensure consistent ordering
-    sorted_types = sort(collect(values(type_params)), by=string)
-    type_params_tuple = tuple(sorted_types...)
-    cache_key = (func_name, type_params_tuple)
-
     lock(REGISTRY_LOCK) do
-        if haskey(MONOMORPHIZED_FUNCTIONS, cache_key)
-            return MONOMORPHIZED_FUNCTIONS[cache_key]
-        end
-
-        # Get generic function info
+        # Get generic function info. The declared parameter order lives here,
+        # and the key cannot be computed without it (#247).
         generic_info = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
         if generic_info === nothing
             error("Function '$func_name' is not registered as a generic function")
         end
+
+        # Compile the specialized function with the compiler the block was
+        # expanded for (its #[cfg] snapshot), falling back to the default.
+        compiler = something(generic_info.compiler, get_default_compiler())
+        id = _monomorphization_id(generic_info, func_name, type_params, compiler)
+        cache_key = artifact_key(id)
+
+        if haskey(MONOMORPHIZED_FUNCTIONS, cache_key)
+            return MONOMORPHIZED_FUNCTIONS[cache_key]
+        end
+
         isempty(generic_info.blocked) || throw(RustError(generic_info.blocked))
 
-        # Generate a unique name for the monomorphized function
-        # Create a type suffix from the type parameters
-        type_suffix_parts = String[]
-        for t in sort(collect(values(type_params)), by=string)
-            type_str = string(t)
-            # Convert Julia type names to short identifiers
-            type_map = Dict(
-                "Int32" => "i32",
-                "Int64" => "i64",
-                "UInt32" => "u32",
-                "UInt64" => "u64",
-                "Float32" => "f32",
-                "Float64" => "f64",
-                "Bool" => "bool",
-            )
-            suffix = get(type_map, type_str, replace(type_str, "Int" => "i", "UInt" => "u", "Float" => "f"))
-            push!(type_suffix_parts, suffix)
-        end
-        type_suffix = join(type_suffix_parts, "_")
-        specialized_name = "$(func_name)_$(type_suffix)"
+        # A human-readable name for the instantiation, built from the type
+        # parameters in *declaration* order, plus a short id so that a permuted
+        # instantiation with the same type set cannot claim the same symbol
+        # (`pair<i32,i64>` and `pair<i64,i32>` both read `pair_i32_i64`, #247).
+        type_suffix = join([_rust_type_suffix(t) for (_, t) in id.type_params], "_")
+        specialized_name = "$(func_name)_$(type_suffix)_$(artifact_short_id(cache_key, 8))"
 
         # Instantiate through the extractor: the specialized function is added to
         # the registered source (context + generic code) with the concrete types
@@ -242,9 +281,6 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         specialized = specialize_generic(full_source, generic_info.path, bindings, specialized_name)
         specialized_code = specialized.source
 
-        # Compile the specialized function with the compiler the block was
-        # expanded for (its #[cfg] snapshot), falling back to the default.
-        compiler = something(generic_info.compiler, get_default_compiler())
         wrapped_code = wrap_rust_code(specialized_code)
         lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
 
@@ -254,8 +290,12 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             error("Failed to load monomorphized function library: $lib_path")
         end
 
-        # Register the library (so it can be managed)
-        lib_name = basename(lib_path)
+        # Register the library under its artifact identity. `basename(lib_path)`
+        # used to be the key, but `_unique_source_name` returns the constant
+        # "rust_code" outside debug mode, so *every* instantiation collided on
+        # one RUST_LIBRARIES entry (the `:lib_basename` divergence recorded in
+        # src/loadpolicy.jl).
+        lib_name = "rust_generic_$(artifact_short_id(cache_key))"
         lock(REGISTRY_LOCK) do
             if !haskey(RUST_LIBRARIES, lib_name)
                 RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
@@ -551,12 +591,22 @@ end
     get_monomorphized_function(func_name::String, type_params::Dict{Symbol, Type}) -> Union{FunctionInfo, Nothing}
 
 Get a monomorphized function instance if it exists.
+
+Computes the same key as `monomorphize_function` (`_monomorphization_id`), which
+needs the declared parameter order — so an unregistered generic, an incomplete
+set of bindings, or an unidentifiable toolchain all mean "not cached" rather
+than an error.
 """
 function get_monomorphized_function(func_name::String, type_params::Dict{Symbol, <:Type})
     lock(REGISTRY_LOCK) do
-        sorted_types = sort(collect(values(type_params)), by=string)
-        type_params_tuple = tuple(sorted_types...)
-        cache_key = (func_name, type_params_tuple)
+        generic_info = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+        generic_info === nothing && return nothing
+        compiler = something(generic_info.compiler, get_default_compiler())
+        cache_key = try
+            artifact_key(_monomorphization_id(generic_info, func_name, type_params, compiler))
+        catch
+            return nothing
+        end
         return get(MONOMORPHIZED_FUNCTIONS, cache_key, nothing)
     end
 end

@@ -1220,6 +1220,28 @@ end
     end
 end
 
+# #247: the monomorphization key sorted the type *values*, so which parameter
+# got which type never reached the key. `pair<T=i32, U=i64>` and
+# `pair<T=i64, U=i32>` shared one MONOMORPHIZED_FUNCTIONS entry (and one symbol
+# suffix), and the second call ran the first one's machine code.
+@testset "#247: permuted generic parameters do not share an instantiation" begin
+    info = RustCall.GenericFunctionInfo(
+        "rc247_reg_pair", "pub fn rc247_reg_pair<T, U>(a: T, b: U) -> T { let _ = b; a }",
+        [:T, :U], Dict{Symbol, RustCall.TypeConstraints}(), "", ["T", "U"], "T",
+        "rc247_reg_pair", nothing, "")
+    compiler = RustCall.get_default_compiler()
+    ab = Dict{Symbol, Type}(:T => Int32, :U => Int64)
+    ba = Dict{Symbol, Type}(:T => Int64, :U => Int32)
+
+    id_ab = RustCall._monomorphization_id(info, "rc247_reg_pair", ab, compiler)
+    id_ba = RustCall._monomorphization_id(info, "rc247_reg_pair", ba, compiler)
+    @test id_ab.type_params == ["T" => "Int32", "U" => "Int64"]
+    @test id_ba.type_params == ["T" => "Int64", "U" => "Int32"]
+    @test RustCall.artifact_key(id_ab) != RustCall.artifact_key(id_ba)
+    # The registry that used to collide is now keyed by that value.
+    @test RustCall.MONOMORPHIZED_FUNCTIONS isa Dict{String, RustCall.FunctionInfo}
+end
+
 # #249: the free symbol is per-owner, so two libraries can both export
 # `X_free_rust_string`. Picking it by name from a global table frees a buffer
 # through the wrong allocator; it must be resolved inside the library that

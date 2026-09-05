@@ -235,7 +235,10 @@ end
         )
 
         mono = RustCall.monomorphize_function("test_identity", Dict(:T => Int32))
-        @test mono.name == "rustcall_test_identity_i32"
+        # The symbol reads as the instantiation plus a short artifact id, so a
+        # permuted instantiation with the same type set cannot claim it (#247).
+        @test startswith(mono.name, "rustcall_test_identity_i32_")
+        @test length(mono.name) == length("rustcall_test_identity_i32_") + 8
         @test mono.return_type == Int32
         @test mono.arg_types == [Int32]
         @test mono.func_ptr != C_NULL
@@ -244,6 +247,62 @@ end
         @test cached.name == mono.name
         @test cached.func_ptr == mono.func_ptr
         @test RustCall.call_generic_function("test_identity", Int32(42)) == Int32(42)
+
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        end
+    end
+end
+
+@testset "#247: permuted type parameters are different instantiations" begin
+    # `pair<T, U>` returns a value that depends on *which* parameter got which
+    # type, so `pair(Int32, Int64)` and `pair(Int64, Int32)` must be two
+    # different compiled functions. The old key sorted the type *values*, so
+    # both hashed to `("pair", (Int32, Int64))` and the second call silently ran
+    # the first one's machine code.
+    code = "pub fn rc247_pair<T: Copy, U: Copy>(a: T, b: U) -> i64 { let _ = (a, b); (std::mem::size_of::<T>() * 10 + std::mem::size_of::<U>()) as i64 }"
+
+    # The pure-key half runs without a toolchain.
+    info = RustCall.GenericFunctionInfo(
+        "rc247_pair", code, [:T, :U], Dict{Symbol, RustCall.TypeConstraints}(),
+        "", ["T", "U"], "i64", "rc247_pair", nothing, "")
+    compiler = RustCall.get_default_compiler()
+    a = Dict{Symbol, Type}(:T => Int32, :U => Int64)
+    b = Dict{Symbol, Type}(:T => Int64, :U => Int32)
+    @test RustCall.artifact_key(RustCall._monomorphization_id(info, "rc247_pair", a, compiler)) !=
+          RustCall.artifact_key(RustCall._monomorphization_id(info, "rc247_pair", b, compiler))
+
+    if RustCall.check_rustc_available()
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        end
+        sig = signature_named(code, "rc247_pair")
+        RustCall.register_generic_function(
+            sig.name, sig.source, Symbol.(sig.type_params), sig.constraints, "";
+            arg_types = sig.arg_types, return_type = sig.return_type)
+
+        mono_a = RustCall.monomorphize_function("rc247_pair", a)
+        mono_b = RustCall.monomorphize_function("rc247_pair", b)
+
+        @test mono_a.func_ptr != mono_b.func_ptr
+        @test mono_a.lib_name != mono_b.lib_name
+        @test mono_a.name != mono_b.name
+        @test startswith(mono_a.lib_name, "rust_generic_")
+        @test startswith(mono_b.lib_name, "rust_generic_")
+        @test mono_a.arg_types == [Int32, Int64]
+        @test mono_b.arg_types == [Int64, Int32]
+
+        # Both entries coexist, and a lookup returns the right one.
+        @test length(RustCall.MONOMORPHIZED_FUNCTIONS) == 2
+        @test RustCall.get_monomorphized_function("rc247_pair", a).func_ptr == mono_a.func_ptr
+        @test RustCall.get_monomorphized_function("rc247_pair", b).func_ptr == mono_b.func_ptr
+
+        # And they compute different things.
+        # size_of::<T>() * 10 + size_of::<U>(): 4*10+8 = 48 vs 8*10+4 = 84.
+        @test RustCall.call_generic_function("rc247_pair", Int32(1), Int64(2)) == 48
+        @test RustCall.call_generic_function("rc247_pair", Int64(1), Int32(2)) == 84
 
         lock(RustCall.REGISTRY_LOCK) do
             empty!(RustCall.GENERIC_FUNCTION_REGISTRY)

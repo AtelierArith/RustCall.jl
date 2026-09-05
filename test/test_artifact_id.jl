@@ -664,40 +664,41 @@ _id(; kwargs...) = RustCall.ArtifactId(;
     # existing key sites. Phase B flips them into regression tests.
     # ------------------------------------------------------------------
 
-    @testset "DEFECT #247: monomorphization key loses parameter order" begin
-        # Verbatim reproduction of src/generics.jl:191-193 as of this commit:
-        #
-        #     sorted_types = sort(collect(values(type_params)), by=string)
-        #     type_params_tuple = tuple(sorted_types...)
-        #     cache_key = (func_name, type_params_tuple)
-        #
-        # Sorting the *values* discards which parameter got which type, so
-        # pair<T=i32, U=i64> and pair<T=i64, U=i32> share one cache entry and
-        # the second call runs the first one's machine code (#247).
-        current_key(func_name, type_params) = begin
-            sorted_types = sort(collect(values(type_params)), by = string)
-            (func_name, tuple(sorted_types...))
-        end
-
+    @testset "FIXED #247: the monomorphization key keeps parameter order" begin
+        # The key used to be `(func_name, tuple(sort(values(type_params))...))`.
+        # Sorting the *values* discarded which parameter got which type, so
+        # pair<T=i32, U=i64> and pair<T=i64, U=i32> shared one cache entry and
+        # the second call ran the first one's machine code (#247).
         a = Dict{Symbol, Type}(:T => Int32, :U => Int64)
         b = Dict{Symbol, Type}(:T => Int64, :U => Int32)
 
-        # Current behaviour: COLLISION. This @test is expected to fail (and to
-        # be inverted) once Phase B migrates monomorphize_function.
-        @test current_key("pair", a) == current_key("pair", b)
-
-        # The same is true of the symbol suffix built at src/generics.jl:208-224
-        # from the same sorted values, so the two instantiations also want the
-        # same monomorphized symbol name.
-        suffix(tp) = join([string(t) for t in sort(collect(values(tp)), by = string)], "_")
-        @test suffix(a) == suffix(b)
-
-        # The replacement does not collide.
         key_a = RustCall.artifact_key(_id(kind = "monomorphization", source = "pair",
             type_params = RustCall.artifact_type_params([:T, :U], a)))
         key_b = RustCall.artifact_key(_id(kind = "monomorphization", source = "pair",
             type_params = RustCall.artifact_type_params([:T, :U], b)))
         @test key_a != key_b
+
+        # `_monomorphization_id` — the helper both generics.jl call sites use —
+        # has the same property, without needing a toolchain to build one.
+        info = RustCall.GenericFunctionInfo(
+            "pair", "pub fn pair<T, U>(a: T, b: U) -> T { a }", [:T, :U],
+            Dict{Symbol, RustCall.TypeConstraints}(), "", ["T", "U"], "T", "pair",
+            nothing, "")
+        compiler = RustCall.RustCompiler(optimization_level = 2)
+        id_a = RustCall._monomorphization_id(info, "pair", a, compiler)
+        id_b = RustCall._monomorphization_id(info, "pair", b, compiler)
+        @test id_a.type_params == ["T" => "Int32", "U" => "Int64"]
+        @test id_b.type_params == ["T" => "Int64", "U" => "Int32"]
+        @test RustCall.artifact_key(id_a) != RustCall.artifact_key(id_b)
+        # Deterministic, and the compiler snapshot is part of it.
+        @test RustCall.artifact_key(id_a) ==
+              RustCall.artifact_key(RustCall._monomorphization_id(info, "pair", a, compiler))
+        @test RustCall.artifact_key(id_a) != RustCall.artifact_key(
+            RustCall._monomorphization_id(info, "pair", a,
+                                          RustCall.RustCompiler(optimization_level = 0)))
+        # An unbound declared parameter is an error, never a silent key.
+        @test_throws ArgumentError RustCall._monomorphization_id(
+            info, "pair", Dict{Symbol, Type}(:T => Int32), compiler)
     end
 
     @testset "FIXED #252: the rustc in the key is the rustc that compiles" begin

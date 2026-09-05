@@ -112,7 +112,7 @@ every front door keeps a name.
 
 - `registry_key_kind::Symbol` — the shape of the key used with
   `:rust_libraries`: `:content_hash` (`rust_<hash>` from the inline paths),
-  `:lib_basename` (generics), `:irust_hash` (`irust_<hash>`),
+  `:lib_basename` (unused since #278), `:irust_hash` (`irust_<short id>`),
   `:crate_lib_name` (hot reload), or `:none`.
 
 - `registration_mode::Symbol` — `:replace` (assign unconditionally, as the
@@ -392,35 +392,35 @@ helper_library_policy() = LoadPolicy("helper-library";
 """
     generics_policy() -> LoadPolicy
 
-Monomorphized generic instantiation (`src/generics.jl:243`, registered at
-`:252` under the library *basename* rather than a content hash, and never
-touching `CURRENT_LIB`).
+Monomorphized generic instantiation, registered under
+`rust_generic_<artifact_short_id>` and never touching `CURRENT_LIB`.
 
-Registration mode is `:insert_only`: `src/generics.jl:250-253` writes the entry
-only `if !haskey(RUST_LIBRARIES, lib_name)`, and that guard is load-bearing.
-`_unique_source_name` (`src/compiler.jl:68-72`) returns the fixed base name
-`rust_code` whenever debug mode is off, so every instantiation compiled into
-its own temp directory yields the same `librust_code` basename — the registry
-key collides across instantiations.  Replacing the entry would swap the live
-handle and throw away the accumulated function-pointer cache that
-`src/generics.jl:267` fills, so Phase B must preserve the insert-only
-behaviour (or key these libraries by content, which is a behaviour change and
-therefore not Phase A).
+The key used to be `basename(lib_path)`. `_unique_source_name`
+(`src/compiler.jl`) returns the fixed base name `rust_code` whenever debug mode
+is off, so every instantiation compiled into its own temp directory yielded the
+same `librust_code` basename and they all collided on one `RUST_LIBRARIES`
+entry. Since #278 Phase B the key is the artifact identity of the
+instantiation (`_monomorphization_id`), so distinct instantiations are distinct
+entries.
+
+Registration mode stays `:insert_only`: the entry is written only
+`if !haskey(RUST_LIBRARIES, lib_name)`. With a content key a second write would
+be the same library anyway, and replacing the entry would swap the live handle
+and throw away the accumulated function-pointer cache.
 """
 generics_policy() = LoadPolicy("generics-monomorphization";
     dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
     panic_strategy = :abort,
     boundary_catches_panics = false,
     registry = :rust_libraries,
-    registry_key_kind = :lib_basename,
+    registry_key_kind = :content_hash,
     registration_mode = :insert_only,
     sets_current_lib = false,
     finalizer_frees = false,
-    call_sites = ["src/compiler.jl:68-72", "src/generics.jl:243",
-                  "src/generics.jl:250-253", "src/generics.jl:267"],
-    issues = [250],
-    notes = "Registers under a colliding basename key and only when absent, " *
-            "unlike every other RUST_LIBRARIES writer.")
+    call_sites = ["src/generics.jl (monomorphize_function)"],
+    issues = [247, 250],
+    notes = "Keyed by the monomorphization artifact identity since #278; " *
+            "written only when absent, unlike every other RUST_LIBRARIES writer.")
 
 """
     irust_policy() -> LoadPolicy
