@@ -197,18 +197,29 @@ function emit_julia_definitions(info::RustStructInfo)
         exprs = []
 
         # 1. Define Struct
+        # The destructor of a *generic* struct is itself generic, so the
+        # instantiation has to be compiled before the finalizer needs it —
+        # monomorphizing from inside a finalizer would run the extractor and
+        # rustc and take REGISTRY_LOCK. `generic_struct_free_pointer` does the
+        # instantiation here and hands back the raw pointer, which the object
+        # carries (#249).
+        generic_free_name = ffi_struct_free_symbol(struct_name_str)
         push!(exprs, quote
             mutable struct $where_clause
                 ptr::Ptr{Cvoid}
                 lib_name::String
+                # Captured at construction so the finalizer needs no lookup:
+                # the destructor, and the flag that says whether the library
+                # that owns it is still loaded.
+                free_ptr::Ptr{Cvoid}
+                alive::Base.RefValue{Bool}
 
                 function $where_clause(ptr::Ptr{Cvoid}, lib::String) where {$(esc_T_params...)}
-                    obj = new{$(esc_T_params...)}(ptr, lib)
-                    finalizer(obj) do x
-                        # Temporarily disabled free to diagnose segfault
-                        @debug "Finalizer: skipped free for generic struct $(struct_name_str) (ptr=$(x.ptr))"
-                        x.ptr = C_NULL
-                    end
+                    free_ptr, free_lib = RustCall.generic_struct_free_pointer(
+                        $generic_free_name, ($(esc_T_params...),))
+                    alive = RustCall.artifact_alive_ref(isempty(free_lib) ? lib : free_lib)
+                    obj = new{$(esc_T_params...)}(ptr, lib, free_ptr, alive)
+                    finalizer(RustCall.finalize_rust_object!, obj)
                     return obj
                 end
             end
@@ -237,8 +248,11 @@ function emit_julia_definitions(info::RustStructInfo)
                          end
 
                          function (::Type{$where_clause})($(esc_args...)) where {$(esc_T_params...)}
-                             # Precompile free function to avoid compilation in finalizer
-                             _precompile_generic_free($(struct_name_str * "_free"), ($(esc_T_params...),))
+                             # The destructor is compiled and *captured* by the
+                             # inner constructor below (`generic_struct_free_pointer`),
+                             # which is strictly stronger than warming it up:
+                             # the finalizer holds the pointer and consults no
+                             # registry at all (#249).
 
                              # Call generic constructor
                              # Point_new<T>(...)
@@ -295,6 +309,9 @@ function emit_julia_definitions(info::RustStructInfo)
                 method_names_set = $(QuoteNode(method_names))
 
                 if haskey(field_info, field)
+                    # Reading a field of a finalized object would dereference
+                    # C_NULL inside Rust — a segfault instead of an error (#249).
+                    RustCall.check_not_freed(self, $struct_name_str)
                     getter_name, rust_field_type = field_info[field]
                     type_param_names = ($(map(name -> QuoteNode(name), info.type_params)...),)
                     field_type = _resolve_generic_struct_field_type(rust_field_type, type_param_names, ($(esc_T_params...),))
@@ -310,6 +327,7 @@ function emit_julia_definitions(info::RustStructInfo)
             function Base.setproperty!(self::$where_clause, field::Symbol, value) where {$(esc_T_params...)}
                 field_setters_map = $(QuoteNode(field_setters))
                 if haskey(field_setters_map, field)
+                    RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
                     _call_generic_method(self.lib_name, setter_name, self.ptr, (value,), ($(esc_T_params...),))
                     return value
@@ -326,20 +344,26 @@ function emit_julia_definitions(info::RustStructInfo)
     exprs = []
 
     # 1. Define the struct
+    # The finalizer frees, as `@rust_crate` structs have always done. It used
+    # to be disabled with a "diagnose segfault" comment, so an inline
+    # `#[julia]` struct leaked its Rust allocation while the same construct
+    # from a crate did not — opposite lifetime semantics for one user-visible
+    # thing (#249). What makes the free safe is the capture below: the
+    # destructor pointer and the library's liveness flag are resolved *now*, so
+    # `finalize_rust_object!` takes no lock, looks nothing up and compiles no
+    # method.
     push!(exprs, quote
         mutable struct $esc_struct
             ptr::Ptr{Cvoid}
             lib_name::String
+            free_ptr::Ptr{Cvoid}
+            alive::Base.RefValue{Bool}
 
             function $esc_struct(ptr::Ptr{Cvoid}, lib::String)
-                obj = new(ptr, lib)
-                finalizer(obj) do x
-                    if x.ptr != C_NULL
-                        # Temporarily disabled free to diagnose segfault
-                        @debug "Finalizer: skipped free for struct $(struct_name_str) (ptr=$(x.ptr))"
-                        x.ptr = C_NULL
-                    end
-                end
+                obj = new(ptr, lib,
+                          RustCall.struct_free_pointer(lib, $struct_name_str),
+                          RustCall.artifact_alive_ref(lib))
+                finalizer(RustCall.finalize_rust_object!, obj)
                 return obj
             end
         end
@@ -497,6 +521,7 @@ function emit_julia_definitions(info::RustStructInfo)
 
                 # Check if it's a field
                 if haskey(field_info, field)
+                    RustCall.check_not_freed(self, $struct_name_str)
                     getter_name, read_kind, free_symbol, field_type = field_info[field]
                     lib = self.lib_name
                     if read_kind === :owned_string
@@ -522,6 +547,7 @@ function emit_julia_definitions(info::RustStructInfo)
             function Base.setproperty!(self::$esc_struct, field::Symbol, value)
                 field_setters_map = $(QuoteNode(field_setters))
                 if haskey(field_setters_map, field)
+                    RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
                     lib = self.lib_name
                     func_ptr = get_function_pointer(lib, setter_name)
@@ -549,6 +575,146 @@ function emit_julia_definitions(info::RustStructInfo)
     end
 
     return Expr(:block, exprs...)
+end
+
+# ============================================================================
+# Finalizers (#249, #277 Phase B4)
+#
+# A finalizer runs at an arbitrary point, on an arbitrary thread, possibly
+# while the running thread already holds `REGISTRY_LOCK`. It must therefore
+# take no lock, do no registry lookup, resolve no symbol and compile no method
+# — every one of those is a deadlock or a crash waiting for the wrong moment,
+# and it is why the inline-struct free was disabled with a "diagnose segfault"
+# comment for as long as it was.
+#
+# So everything a finalizer needs is captured at *construction* time: the
+# destructor pointer, and the `Ref{Bool}` that says whether the library is
+# still loaded. The finalizer then does four loads, one comparison each, and
+# one `ccall`.
+# ============================================================================
+
+"""
+    FINALIZER_FREE_FAILURES
+
+Number of destructor calls that raised inside a finalizer, process-wide.
+
+A finalizer must not log: `@warn` allocates, can yield, and runs at a moment
+the program did not choose. Counting is allocation-free and lock-free, and
+`finalizer_failure_count()` makes the number observable to a test or a user
+who suspects a leak.
+"""
+const FINALIZER_FREE_FAILURES = Threads.Atomic{Int}(0)
+
+"""
+    finalizer_failure_count() -> Int
+
+How many times a Rust destructor raised while being called from a finalizer.
+Non-zero means objects were leaked; the usual cause is a library unloaded
+without `unload_library` (which retires its objects properly).
+"""
+finalizer_failure_count() = FINALIZER_FREE_FAILURES[]
+
+"""
+    struct_free_pointer(lib_name, struct_name) -> Ptr{Cvoid}
+
+The destructor of `struct_name` in `lib_name`, resolved **now** so the
+finalizer never has to.
+
+`C_NULL` when the library does not export one — a struct whose destructor was
+`#[cfg]`-ed out, or a hand-registered `RustStructInfo` with no library behind
+it. A null destructor means the finalizer does nothing, which leaks rather than
+crashes: the right trade for a lookup that has already failed.
+"""
+function struct_free_pointer(lib_name::AbstractString, struct_name::AbstractString)
+    return try
+        get_function_pointer(String(lib_name), ffi_struct_free_symbol(struct_name))
+    catch
+        C_NULL
+    end
+end
+
+"""
+    finalize_rust_object!(x)
+
+The body every generated `#[julia]` struct finalizer runs.
+
+The order is the contract:
+
+1. read the pointer; a null one means this object was already finalized, or was
+   never given one, so there is nothing to do;
+2. **null the field before the call**, so a second finalization — or a
+   concurrent one — cannot free the same allocation twice;
+3. bail out if the library is gone: `unload_artifact!` flipped the captured
+   liveness flag, and calling into a `dlclose`d image is a jump into freed
+   text, which is worse than the leak;
+4. call the captured destructor, counting rather than logging a failure.
+
+No lock, no lookup, no allocation on the success path.
+"""
+function finalize_rust_object!(x)
+    ptr = getfield(x, :ptr)
+    ptr == C_NULL && return nothing
+    setfield!(x, :ptr, C_NULL)
+    getfield(x, :alive)[] || return nothing
+    free_ptr = getfield(x, :free_ptr)
+    free_ptr == C_NULL && return nothing
+    try
+        ccall(free_ptr, Cvoid, (Ptr{Cvoid},), ptr)
+    catch
+        Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
+    end
+    return nothing
+end
+
+"""
+    generic_struct_free_pointer(free_name, types) -> Ptr{Cvoid}
+
+The destructor of one instantiation of a generic `#[julia]` struct, resolved by
+monomorphizing it **at construction time**.
+
+This is what `_precompile_generic_free` was reaching for: the specialization
+has to be compiled before the finalizer needs it, because monomorphizing from
+inside a finalizer would shell out to the extractor, invoke `rustc`, and take
+`REGISTRY_LOCK`. Here the pointer is not merely warmed up but captured, so the
+finalizer never consults a registry at all.
+
+`(C_NULL, "")` when the generic destructor is not registered — a struct whose
+`_free` wrapper the extractor did not emit.
+"""
+function generic_struct_free_pointer(free_name::AbstractString, types::Tuple)
+    return try
+        generic_info = lock(REGISTRY_LOCK) do
+            get(GENERIC_FUNCTION_REGISTRY, String(free_name), nothing)
+        end
+        generic_info === nothing && return (C_NULL, "")
+        type_params = Dict{Symbol, Type}()
+        for (i, p) in enumerate(generic_info.type_params)
+            type_params[p] = types[i]
+        end
+        info = get_monomorphized_function(String(free_name), type_params)
+        info === nothing && (info = monomorphize_function(String(free_name), type_params))
+        (info.func_ptr, info.lib_name)
+    catch e
+        @debug "Could not resolve the destructor of $(free_name)" exception = e
+        (C_NULL, "")
+    end
+end
+
+"""
+    check_not_freed(obj, type_name)
+
+Raise when a method is called on an object whose finalizer already ran.
+
+Without it the call dereferences `C_NULL` inside Rust, which is a segfault
+rather than an error message. The inline structs got this in #277 Phase B4;
+`@rust_crate` structs have had it since #246 (`_check_not_freed`).
+"""
+function check_not_freed(obj, type_name::AbstractString)
+    if getfield(obj, :ptr) == C_NULL
+        throw(RustError("attempted to use a freed $(type_name) object: its " *
+                        "finalizer has already released the Rust allocation"))
+    end
+    return nothing
 end
 
 # Internal helpers

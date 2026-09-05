@@ -167,10 +167,12 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         # deprecated LLVM path (#265 Phase 2 deletes it) and the two
         # @rust_crate module templates, whose dlopen runs in the *generated*
         # module (B5 routes them through the loader too).
+        # Only the deprecated LLVM IR path still opens anything itself
+        # (#265 Phase 2 deletes it).
         @test local_sites == 0
-        @test global_sites == 3
+        @test global_sites == 1
         for file in ("cache.jl", "ruststr.jl", "generics.jl", "hot_reload.jl",
-                     "memory.jl", "rustmacro.jl")
+                     "memory.jl", "rustmacro.jl", "crate_bindings.jl")
             @test !occursin(r"dlopen\(", _src(file))
         end
         # ...and scripts/lint_load_path.sh is what keeps it that way.
@@ -387,10 +389,15 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test RustCall.hot_reload_policy().registry_key_kind === :crate_lib_name
         @test RustCall.inline_rustc_policy().registry_key_kind === :content_hash
 
-        # Two doors bypass RUST_LIBRARIES entirely, so registry-level unload
-        # cannot see them (#250).
-        @test !RustCall.registers_in_rust_libraries(RustCall.crate_direct_policy())
-        @test !RustCall.registers_in_rust_libraries(RustCall.crate_wrapper_policy())
+        # The two @rust_crate doors used to bypass RUST_LIBRARIES entirely, so
+        # registry-level unload could not see them (#250). Since B5 the
+        # generated module publishes its handle through `load_artifact!` and
+        # keeps its own `Ref` as a fast path, so both are visible.
+        @test RustCall.registers_in_rust_libraries(RustCall.crate_direct_policy())
+        @test RustCall.registers_in_rust_libraries(RustCall.crate_wrapper_policy())
+        @test RustCall.crate_direct_policy().registry_key_kind === :crate_lib_name
+        # The helper library's home is RUST_HELPERS_LIB, and the deprecated
+        # LLVM path registers nowhere at all.
         @test !RustCall.registers_in_rust_libraries(RustCall.helper_library_policy())
         @test !RustCall.registers_in_rust_libraries(RustCall.llvm_policy())
 
@@ -437,10 +444,12 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             @test_throws ArgumentError RustCall.register_library!(policy, name, C_NULL)
 
             # Policies that do not use RUST_LIBRARIES are a no-op, so a Phase B
-            # call site may call register_library! unconditionally.
-            @test RustCall.register_library!(RustCall.crate_direct_policy(), name, handle) == name
+            # call site may call register_library! unconditionally. (The
+            # helper library is such a policy; the @rust_crate doors stopped
+            # being one in B5.)
+            @test RustCall.register_library!(RustCall.helper_library_policy(), name, handle) == name
             @test !haskey(RustCall.RUST_LIBRARIES, name)
-            @test !RustCall.unregister_library!(RustCall.crate_direct_policy(), name)
+            @test !RustCall.unregister_library!(RustCall.helper_library_policy(), name)
 
             # :insert_only keeps the existing handle and its function-pointer
             # cache; :replace overwrites both (#250, src/generics.jl:250-253).
@@ -479,27 +488,57 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     end
 
     # -----------------------------------------------------------------
-    # Divergence 4: finalizer / ownership policy (#249, #252)
+    # #249: one lifetime rule, and finalizers that are safe to run.
     #
-    # Inline #[julia] struct objects never free ("Temporarily disabled free to
-    # diagnose segfault"); @rust_crate struct objects call <Name>_free.
-    # Same user-visible construct, opposite lifetime semantics.
+    # Inline `#[julia]` struct objects used to leak — the free was disabled
+    # with a "Temporarily disabled free to diagnose segfault" comment — while
+    # `@rust_crate` objects freed. Same construct, opposite semantics. Now
+    # both free, and both do it from a finalizer that takes no lock, resolves
+    # no symbol and logs nothing.
     # -----------------------------------------------------------------
-    @testset "divergence: finalizers (#249, #252)" begin
+    @testset "finalizers free, and are safe to run (#249)" begin
         structs_src = _src("structs.jl")
-        @test _count_in("structs.jl", r"Finalizer: skipped free") == 2
-        @test occursin("Temporarily disabled free", structs_src)
+        @test _count_in("structs.jl", r"Finalizer: skipped free") == 0
+        @test !occursin("Temporarily disabled free", structs_src)
 
-        crate_src = _src("crate_bindings.jl")
-        @test occursin("_free", crate_src)
-        @test occursin("finalizer(obj)", crate_src)
-
-        @test !RustCall.finalizer_frees(RustCall.inline_rustc_policy())
-        @test !RustCall.finalizer_frees(RustCall.inline_cargo_policy())
-        @test RustCall.finalizer_frees(RustCall.crate_direct_policy())
-        @test RustCall.finalizer_frees(RustCall.crate_wrapper_policy())
-        @test RustCall.finalizer_frees(RustCall.inline_rustc_policy()) !==
+        # Every policy frees.
+        for ctor in RustCall.ALL_LOAD_POLICIES
+            p = ctor()
+            p.name in ("irust", "llvm-ir", "generics-monomorphization") && continue
+            @test RustCall.finalizer_frees(p)
+        end
+        @test RustCall.finalizer_frees(RustCall.inline_rustc_policy()) ===
               RustCall.finalizer_frees(RustCall.crate_direct_policy())
+
+        # One destructor symbol, from the contract.
+        @test RustCall.ffi_struct_free_symbol("Point") == "Point_free"
+        for file in ("structs.jl", "crate_bindings.jl")
+            src = _src(file)
+            @test occursin("ffi_struct_free_symbol", src)
+            # ...and no hand-built `<Name>_free` string anywhere.
+            @test !occursin("_free\")", src)
+        end
+
+        # The finalizer body: captured pointer and flag, no lookup, no lock,
+        # no logging (a finalizer may run while the thread holds
+        # REGISTRY_LOCK, and @warn allocates and can yield).
+        body_start = findfirst("function finalize_rust_object!", structs_src)
+        @test body_start !== nothing
+        body = structs_src[first(body_start):end]
+        body = body[1:first(findfirst("\nend", body))]
+        for forbidden in ("dlsym", "REGISTRY_LOCK", "lock(", "@warn", "@info", "@error",
+                          "get_function_pointer")
+            @test !occursin(forbidden, body)
+        end
+        # The order that makes a double free impossible: null the field, then
+        # check liveness, then call.
+        @test findfirst("setfield!(x, :ptr, C_NULL)", body) <
+              findfirst("ccall(free_ptr", body)
+        @test findfirst("getfield(x, :alive)[] || return", body) <
+              findfirst("ccall(free_ptr", body)
+
+        # A failure is counted, not logged.
+        @test RustCall.finalizer_failure_count() isa Int
     end
 
     # -----------------------------------------------------------------

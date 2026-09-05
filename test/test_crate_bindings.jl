@@ -7,6 +7,8 @@ using RustToolChain: cargo
 # Path to the sample crate
 const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
 const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3")
+# Where the shared finalizer implementation lives, for the #249 assertions.
+const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
 @testset "Crate Bindings" begin
 
@@ -521,7 +523,19 @@ end
         @test occursin("module SampleCrate", code)
         @test occursin("const _LIB_PATH = \"/tmp/test_lib.so\"", code)
         @test occursin("function __init__()", code)
-        @test occursin("Libdl.dlopen", code)
+        # Since #277 Phase B5 the emitted module loads through the one loader
+        # rather than calling dlopen itself, so the handle is registered and
+        # `unload_library` can see this crate too (#250).
+        @test occursin("RustCall.load_artifact!", code)
+        @test !occursin("Libdl.dlopen", code)
+        @test occursin("const _LIB_NAME = ", code)
+        @test occursin("const _LIB_ALIVE = ", code)
+        @test occursin("# Bindings format: $(RustCall.BINDINGS_FORMAT_VERSION)", code)
+        # ...and its struct finalizers capture the destructor and the liveness
+        # flag rather than resolving anything when they run (#249).
+        @test occursin("_struct_free_ptr(", code)
+        @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", code)
+        @test !occursin("maxlog=10", code)
 
         # Test with relative path
         code_rel = RustCall.emit_crate_module_code(info, "lib/libtest.so", use_relative_path=true)
@@ -587,7 +601,9 @@ end
 
         # Create a mock object with a null ptr (freed)
         obj_freed = (ptr = Ptr{Cvoid}(0),)
-        @test_throws ErrorException RustCall._check_not_freed(obj_freed, "TestType")
+        # One implementation for both flavours since #277 Phase B4, so the
+        # exception is RustCall's own rather than a bare `error()`.
+        @test_throws RustCall.RustError RustCall._check_not_freed(obj_freed, "TestType")
 
         # Verify error message mentions the type name
         err = try
@@ -596,9 +612,9 @@ end
         catch e
             e
         end
-        @test err isa ErrorException
-        @test occursin("MyStruct", err.msg)
-        @test occursin("freed", err.msg)
+        @test err isa RustCall.RustError
+        @test occursin("MyStruct", err.message)
+        @test occursin("freed", err.message)
     end
 
     @testset "_emit_method_code null pointer checks" begin
@@ -674,10 +690,26 @@ end
         )
 
         code = RustCall._emit_struct_code(struct_info)
-        # Finalizer body must be wrapped in try-catch to prevent GC crash (#93)
-        @test occursin("try", code)
-        @test occursin("catch", code)
-        @test occursin("Failed to free SafeStruct", code)
+        # The finalizer must not crash the GC (#93), and since #277 Phase B4 it
+        # must also take no lock, resolve no symbol and log nothing (#249): a
+        # finalizer can run while the running thread holds `REGISTRY_LOCK`, and
+        # `@warn` allocates and can yield. The try/catch moved *into*
+        # `RustCall.finalize_rust_object!`, which counts a failure instead of
+        # logging it, and the destructor is captured at construction.
+        @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", code)
+        @test occursin("_struct_free_ptr(\"SafeStruct_free\")", code)
+        @test occursin("alive::Base.RefValue{Bool}", code)
+        @test !occursin("Failed to free SafeStruct", code)
+        @test !occursin("maxlog", code)
+        # The shared implementation is the one that catches.
+        body = read(joinpath(_SRC_DIR_CB, "structs.jl"), String)
+        i = findfirst("function finalize_rust_object!", body)
+        @test i !== nothing
+        tail = body[first(i):end]
+        tail = tail[1:first(findfirst("\nend", tail))]
+        @test occursin("try", tail)
+        @test occursin("catch", tail)
+        @test !occursin("@warn", tail)
     end
 
     @testset "_generate_crate_struct_wrapper finalizer is exception-safe" begin
@@ -692,10 +724,12 @@ end
         )
 
         exprs = RustCall._generate_crate_struct_wrapper(struct_info)
-        # Convert the generated Expr to string to verify try-catch is present
         code_str = sprint(show, exprs)
-        @test occursin("try", code_str)
-        @test occursin("catch", code_str)
+        # Same shape as the emitted file: capture at construction, and the
+        # exception safety lives in `finalize_rust_object!` (#93, #249).
+        @test occursin("finalize_rust_object!", code_str)
+        @test occursin("_struct_free_ptr", code_str)
+        @test !occursin("maxlog", code_str)
     end
 
     @testset "write_bindings_to_file" begin

@@ -182,6 +182,38 @@ function get_max_deferred_drops()
 end
 
 """
+    require_rust_helpers(operation) -> Ptr{Cvoid}
+
+The ownership helper library's handle, or a refusal that says exactly how to
+get one.
+
+Every `RustBox` / `RustRc` / `RustArc` / `RustVec` / `RustSlice` operation goes
+through here **before** it allocates anything (#249). Refusing up front is the
+whole point: a value constructed without the library has no way to free itself,
+so the alternative to an error at construction is a leak, or a finalizer that
+calls into a library that is not there.
+
+The message names the operation and the one command that fixes it, because
+"Rust helpers library not loaded" alone leaves the reader to guess whether they
+must install Rust, rebuild the package, or restart Julia.
+"""
+function require_rust_helpers(operation::AbstractString)
+    lib = RUST_HELPERS_LIB[]
+    lib === nothing && throw(RustError("""
+        $(operation) needs the RustCall ownership helper library, which is not loaded.
+
+        Build it once, then restart Julia:
+
+            using Pkg; Pkg.build("RustCall")
+
+        The helper library (deps/rust_helpers) implements Box / Rc / Arc / Vec
+        allocation and release. It is deliberately required *before* the value
+        exists: a value allocated without it could never be freed.
+        """))
+    return lib
+end
+
+"""
     get_rust_helpers_lib() -> Union{Ptr{Cvoid}, Nothing}
 
 Get or load the Rust helpers library.
@@ -507,11 +539,7 @@ Create a RustBox from a Julia value.
 Automatically calls the appropriate Rust Box::new function.
 """
 function create_rust_box(value::T) where T
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded. Cannot create RustBox. Please compile deps/rust_helpers.")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Create RustBox")
 
     fn_ptr = safe_dlsym(lib, _rust_box_new_symbol(T))
     ptr = _ccall_box_new(fn_ptr, value)
@@ -568,11 +596,7 @@ Create a RustRc from a Julia value.
 Automatically calls the appropriate Rust Rc::new function.
 """
 function create_rust_rc(value::T) where T
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded. Cannot create RustRc. Please compile deps/rust_helpers.")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Create RustRc")
 
     fn_ptr = safe_dlsym(lib, _rust_rc_new_symbol(T))
     ptr = _ccall_rc_new(fn_ptr, value)
@@ -589,11 +613,7 @@ function clone(rc::RustRc{T}) where T
         error("Cannot clone a dropped RustRc")
     end
 
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded. Cannot clone RustRc.")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Clone RustRc")
 
     fn_ptr = safe_dlsym(lib, _rust_rc_clone_symbol(T))
     new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
@@ -657,11 +677,7 @@ Create a RustArc from a Julia value.
 Automatically calls the appropriate Rust Arc::new function.
 """
 function create_rust_arc(value::T) where T
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded. Cannot create RustArc. Please compile deps/rust_helpers.")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Create RustArc")
 
     fn_ptr = safe_dlsym(lib, _rust_arc_new_symbol(T))
     ptr = _ccall_arc_new(fn_ptr, value)
@@ -678,11 +694,7 @@ function clone(arc::RustArc{T}) where T
         error("Cannot clone a dropped RustArc")
     end
 
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded. Cannot clone RustArc.")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Clone RustArc")
 
     fn_ptr = safe_dlsym(lib, _rust_arc_clone_symbol(T))
     new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
@@ -843,11 +855,7 @@ Remember to call `drop!(rust_vec)` when done to free Rust memory.
 See also: [`to_julia_vector`](@ref), [`drop!`](@ref)
 """
 function create_rust_vec(v::Vector{T}) where T
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded. Cannot create RustVec. Please compile deps/rust_helpers.")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Create RustVec")
     data_ptr = pointer(v)
     len = length(v)
 
@@ -900,11 +908,7 @@ function rust_vec_get(vec::RustVec{T}, index::Integer) where T
         throw(BoundsError(vec, index + 1))  # Convert to 1-indexed for error
     end
 
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Reading a RustVec element")
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
     fn_ptr = safe_dlsym(lib, _rust_vec_get_symbol(T))
@@ -925,11 +929,7 @@ function rust_vec_set!(vec::RustVec{T}, index::Integer, value::T) where T
         throw(BoundsError(vec, index + 1))
     end
 
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Writing a RustVec element")
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
     fn_ptr = safe_dlsym(lib, _rust_vec_set_symbol(T))
@@ -952,11 +952,7 @@ function Base.push!(vec::RustVec{T}, value::T) where T
         error("Cannot push to a dropped RustVec")
     end
 
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("push! on a RustVec")
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
 
     fn_ptr = safe_dlsym(lib, _rust_vec_push_symbol(T))
@@ -1021,11 +1017,7 @@ function copy_to_julia!(vec::RustVec{T}, dest::Vector{T}) where T
         error("Cannot copy from a dropped RustVec")
     end
 
-    if !is_rust_helpers_available()
-        error("Rust helpers library not loaded")
-    end
-
-    lib = get_rust_helpers_lib()
+    lib = require_rust_helpers("Copying a RustVec to a Julia Vector")
     cvec = CRustVec(vec.ptr, vec.len, vec.cap)
     dest_ptr = pointer(dest)
     dest_len = length(dest)

@@ -422,17 +422,32 @@ end
             [("x", "i32"), ("y", "f64")], false, Dict{String, Bool}(),
         )
         code = RustCall._emit_struct_code(info)
-        @test occursin("try", code)
-        @test occursin("catch", code)
-        @test occursin("finalizer", code)
-        @test occursin("exception=e", code) || occursin("exception = e", code)
+        # A destructor that raises must not take the GC down (#136). Since
+        # #277 Phase B4 the guard lives in the shared implementation
+        # `RustCall.finalize_rust_object!` rather than being inlined into every
+        # generated finalizer, and it *counts* the failure instead of logging
+        # it: `@warn` allocates and can yield, and a finalizer may run while
+        # the thread holds `REGISTRY_LOCK` (#249).
+        @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", code)
+        src = read(joinpath(dirname(dirname(pathof(RustCall))), "src", "structs.jl"), String)
+        i = findfirst("function finalize_rust_object!", src)
+        @test i !== nothing
+        body = src[first(i):end]
+        body = body[1:first(findfirst("\nend", body))]
+        @test occursin("try", body)
+        @test occursin("catch", body)
+        @test occursin("FINALIZER_FREE_FAILURES", body)
+        @test !occursin("@warn", body)
+        @test RustCall.finalizer_failure_count() isa Int
     end
 
     @testset "Generated wrappers include null pointer checks (#138)" begin
         alive = (ptr = Ptr{Cvoid}(1),)
         freed = (ptr = Ptr{Cvoid}(0),)
         @test_nowarn RustCall._check_not_freed(alive, "TestType")
-        @test_throws ErrorException RustCall._check_not_freed(freed, "TestType")
+        # One implementation for inline and crate structs since #277 Phase B4,
+        # so it raises RustCall's own exception rather than a bare `error()`.
+        @test_throws RustCall.RustError RustCall._check_not_freed(freed, "TestType")
         info = RustCall.RustStructInfo(
             "GuardTest", String[],
             [RustCall.RustMethod("do_something", false, false, String[], String[], "i32")],

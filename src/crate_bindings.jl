@@ -345,17 +345,35 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
     # Generate struct definitions and wrappers
     struct_defs = generate_crate_struct_wrappers(info, lib_path)
 
+    # The registry name of this crate's library. `@rust_crate` used to keep its
+    # handle only in a module-local `Ref`, invisible to `unload_library`,
+    # `unload_all_libraries` and every registry the rest of RustCall keeps
+    # (#250). It goes through `load_artifact!` now, so the module's `Ref` and
+    # the registry hold the same handle and the same liveness flag.
+    lib_key = crate_library_name(info)
+
     # Build the module body as a block
     module_body = quote
+        import RustCall
         import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
                          _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return
         import Libdl
 
         const _LIB_PATH = $lib_path
+        const _LIB_NAME = $lib_key
         const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
+        # A `Ref` holding the *artifact's* liveness `Ref`: the artifact does not
+        # exist until `__init__` runs, and a `const` cannot be rebound, so the
+        # indirection is what lets objects capture the real flag. Flipped by
+        # `unload_library`, which is how an object that outlives its library
+        # becomes inert instead of calling into a `dlclose`d image (#249).
+        const _LIB_ALIVE = Ref{Base.RefValue{Bool}}(Ref(true))
 
         function __init__()
-            _LIB_HANDLE[] = Libdl.dlopen(_LIB_PATH, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
+            artifact = RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;
+                                               lib_name = _LIB_NAME)
+            _LIB_HANDLE[] = artifact.handle
+            _LIB_ALIVE[] = artifact.alive
         end
 
         function _get_func_ptr(name::String)
@@ -363,6 +381,18 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
                 error("Library not loaded. Call __init__() first.")
             end
             Libdl.dlsym(_LIB_HANDLE[], name)
+        end
+
+        # The destructor of a struct, resolved at construction time so the
+        # finalizer never has to (#249). A missing destructor is `C_NULL`,
+        # which makes the finalizer a no-op: a leak, not a crash.
+        function _struct_free_ptr(name::String)
+            try
+                ptr = Libdl.dlsym(_LIB_HANDLE[], name; throw_error = false)
+                ptr === nothing ? C_NULL : ptr
+            catch
+                C_NULL
+            end
         end
 
         $func_defs
@@ -606,21 +636,18 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
     push!(exprs, quote
         mutable struct $struct_name
             ptr::Ptr{Cvoid}
+            free_ptr::Ptr{Cvoid}
+            alive::Base.RefValue{Bool}
 
             function $struct_name(ptr::Ptr{Cvoid})
-                obj = new(ptr)
-                finalizer(obj) do x
-                    try
-                        if getfield(x, :ptr) != C_NULL
-                            free_fn = $(struct_name_str * "_free")
-                            func_ptr = _get_func_ptr(free_fn)
-                            ccall(func_ptr, Cvoid, (Ptr{Cvoid},), getfield(x, :ptr))
-                            setfield!(x, :ptr, C_NULL)
-                        end
-                    catch e
-                        @warn "Failed to free $($(struct_name_str))" exception=e maxlog=10
-                    end
-                end
+                # The destructor is resolved *here*, not in the finalizer: a
+                # finalizer must do no `dlsym` and compile no method (#249).
+                # `_LIB_ALIVE` is the module's liveness flag, flipped when the
+                # library is unloaded, so an object that outlives its library
+                # becomes inert instead of calling into a closed image.
+                obj = new(ptr, _struct_free_ptr($(ffi_struct_free_symbol(struct_name_str))),
+                          _LIB_ALIVE[])
+                finalizer(RustCall.finalize_rust_object!, obj)
                 return obj
             end
         end
@@ -783,14 +810,15 @@ end
 """
     _check_not_freed(obj, type_name::String)
 
-Check that a wrapped Rust object has not been freed. Throws an error if the
-internal pointer is C_NULL, preventing use-after-free crashes.
+Check that a wrapped Rust object has not been freed, raising rather than
+letting the call dereference `C_NULL` inside Rust.
+
+The generated `@rust_crate` modules and the emitted bindings files import this
+name, so it stays; the implementation is `check_not_freed`
+(`src/structs.jl`), which the inline `#[julia]` structs use as well. One rule,
+one message, both flavours (#249, #277 Phase B4).
 """
-function _check_not_freed(obj, type_name::String)
-    if getfield(obj, :ptr) == C_NULL
-        error("Attempted to use a freed $type_name object")
-    end
-end
+_check_not_freed(obj, type_name::String) = check_not_freed(obj, type_name)
 
 function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod)
     struct_name = Symbol(info.name)
@@ -1028,6 +1056,42 @@ function build_crate_directly(info::CrateInfo, release::Bool)
     # and their profile decides (`crate_direct_policy`, #244).
     build_cargo_project(project, release=release, policy=crate_direct_policy())
 end
+
+"""
+    BINDINGS_FORMAT_VERSION
+
+Format marker carried by every file `write_bindings_to_file` emits.
+
+Bumped when a generated bindings file stops being interchangeable with one an
+older RustCall produced. `2` (#277 Phase B5): the file now loads its library
+through `RustCall.load_artifact!` rather than `Libdl.dlopen`, so the handle is
+registered and `unload_library` can see it, and its struct finalizers capture a
+destructor pointer and the library's liveness flag instead of resolving the
+destructor when they run.
+
+A file emitted by an older version still *works* — it only uses public API that
+still exists — but it does not get the unload, panic or lifetime guarantees.
+Regenerate after upgrading; the marker is what makes that visible.
+"""
+const BINDINGS_FORMAT_VERSION = 2
+
+"""
+    crate_library_name(info::CrateInfo) -> String
+
+The `RUST_LIBRARIES` key a `@rust_crate` library is registered under:
+`rust_crate_<crate name>_<short id of the crate identity>`.
+
+`@rust_crate` used to keep its handle only in a module-local `Ref`, so
+`unload_library`, `unload_all_libraries` and every registry the rest of
+RustCall keeps were blind to it (#250). Registering it means the same
+transaction that publishes the handle also publishes the liveness flag its
+objects capture, and unloading it retires them (#277 Phase B5).
+
+Keyed by the crate identity so two crates — or one crate rebuilt under a
+different toolchain — do not collide on one entry.
+"""
+crate_library_name(info::CrateInfo) =
+    "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info)))"
 
 """
     compute_crate_hash(info::CrateInfo) -> String
@@ -1473,9 +1537,14 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
 
     lines = String[]
 
-    # Header comment
+    # Header comment. The format marker is bumped whenever the emitted module
+    # stops being interchangeable with an older one: since #277 Phase B5 the
+    # file loads its library through `RustCall.load_artifact!` and its struct
+    # finalizers capture a destructor pointer and a liveness flag, neither of
+    # which an older RustCall provides. Regenerate after upgrading.
     push!(lines, "# Auto-generated bindings for $(info.name)")
     push!(lines, "# Generated by RustCall.jl - DO NOT EDIT")
+    push!(lines, "# Bindings format: $(BINDINGS_FORMAT_VERSION)")
     push!(lines, "# Regenerate with: write_bindings_to_file(\"$(info.path)\", \"<output_path>\")")
     push!(lines, "")
 
@@ -1484,6 +1553,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "")
 
     # Imports
+    push!(lines, "import RustCall")
     push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,")
     push!(lines, "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return")
     push!(lines, "import Libdl")
@@ -1495,12 +1565,21 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     else
         push!(lines, "const _LIB_PATH = $(repr(lib_path))")
     end
+    push!(lines, "const _LIB_NAME = $(repr(crate_library_name(info)))")
     push!(lines, "const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)")
+    # A `Ref` holding the artifact's liveness `Ref`: the artifact does not
+    # exist until `__init__` runs and a `const` cannot be rebound, so this
+    # indirection is what lets objects capture the real flag (#249).
+    push!(lines, "const _LIB_ALIVE = Ref{Base.RefValue{Bool}}(Ref(true))")
     push!(lines, "")
 
-    # __init__ function for loading library
+    # __init__ loads through the one loader (#277), so the handle is in
+    # RUST_LIBRARIES and `unload_library` can see this crate too (#250).
     push!(lines, "function __init__()")
-    push!(lines, "    _LIB_HANDLE[] = Libdl.dlopen(_LIB_PATH, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)")
+    push!(lines, "    artifact = RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;")
+    push!(lines, "                                      lib_name = _LIB_NAME)")
+    push!(lines, "    _LIB_HANDLE[] = artifact.handle")
+    push!(lines, "    _LIB_ALIVE[] = artifact.alive")
     push!(lines, "end")
     push!(lines, "")
 
@@ -1510,6 +1589,18 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "        error(\"Library not loaded. Call __init__() first.\")")
     push!(lines, "    end")
     push!(lines, "    Libdl.dlsym(_LIB_HANDLE[], name)")
+    push!(lines, "end")
+    push!(lines, "")
+
+    # The destructor of a struct, resolved at construction time so the
+    # finalizer never has to (#249).
+    push!(lines, "function _struct_free_ptr(name::String)")
+    push!(lines, "    try")
+    push!(lines, "        ptr = Libdl.dlsym(_LIB_HANDLE[], name; throw_error = false)")
+    push!(lines, "        ptr === nothing ? C_NULL : ptr")
+    push!(lines, "    catch")
+    push!(lines, "        C_NULL")
+    push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "")
 
@@ -1677,21 +1768,15 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
     # Struct definition
     push!(lines, "mutable struct $struct_name")
     push!(lines, "    ptr::Ptr{Cvoid}")
+    # Captured at construction: the destructor, and the flag that says whether
+    # the library is still loaded. A finalizer must take no lock, resolve no
+    # symbol and log nothing (#249).
+    push!(lines, "    free_ptr::Ptr{Cvoid}")
+    push!(lines, "    alive::Base.RefValue{Bool}")
     push!(lines, "")
     push!(lines, "    function $struct_name(ptr::Ptr{Cvoid})")
-    push!(lines, "        obj = new(ptr)")
-    push!(lines, "        finalizer(obj) do x")
-    push!(lines, "            try")
-    push!(lines, "                if getfield(x, :ptr) != C_NULL")
-    push!(lines, "                    free_fn = \"$(struct_name)_free\"")
-    push!(lines, "                    func_ptr = _get_func_ptr(free_fn)")
-    push!(lines, "                    ccall(func_ptr, Cvoid, (Ptr{Cvoid},), getfield(x, :ptr))")
-    push!(lines, "                    setfield!(x, :ptr, C_NULL)")
-    push!(lines, "                end")
-    push!(lines, "            catch e")
-    push!(lines, "                @warn \"Failed to free $(struct_name)\" exception=e maxlog=10")
-    push!(lines, "            end")
-    push!(lines, "        end")
+    push!(lines, "        obj = new(ptr, _struct_free_ptr($(repr(ffi_struct_free_symbol(struct_name)))), _LIB_ALIVE[])")
+    push!(lines, "        finalizer(RustCall.finalize_rust_object!, obj)")
     push!(lines, "        return obj")
     push!(lines, "    end")
     push!(lines, "end")

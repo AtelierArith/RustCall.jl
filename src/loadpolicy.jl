@@ -253,13 +253,14 @@ inline_rustc_policy() = LoadPolicy("inline-rustc";
     registry_key_kind = :content_hash,
     registration_mode = :replace,
     sets_current_lib = true,
-    finalizer_frees = false,
+    finalizer_frees = true,
     call_sites = ["src/cache.jl:270", "src/ruststr.jl:251",
                   "src/ruststr.jl:284", "src/ruststr.jl:291",
                   "src/compiler.jl:381", "src/structs.jl:282-285"],
     issues = [244, 249, 250],
     notes = "RTLD_LOCAL on both cache states, as every policy is since B2; " *
-            "inline #[julia] struct finalizers do not free.")
+            "inline #[julia] struct finalizers free, as crate ones always " *
+            "have (B4).")
 
 """
     inline_cargo_policy() -> LoadPolicy
@@ -290,7 +291,7 @@ inline_cargo_policy() = LoadPolicy("inline-cargo";
     registry = :rust_libraries,
     registry_key_kind = :content_hash,
     sets_current_lib = true,
-    finalizer_frees = false,
+    finalizer_frees = true,
     call_sites = ["src/ruststr.jl:386", "src/ruststr.jl:389",
                   "src/ruststr.jl:409", "src/ruststr.jl:419",
                   "src/ruststr.jl:426", "src/cargobuild.jl:25-67",
@@ -312,19 +313,21 @@ their `[profile.release] panic = "abort"`, a workspace profile,
 unresolved.  Phase B must read the effective profile (`cargo metadata` /
 `cargo config get`) or force the strategy explicitly (#244).
 
-Loading and ownership are shared with `crate_wrapper_policy`: the handle lives
-in a module-local `_LIB_HANDLE` `Ref` (`src/crate_bindings.jl:344`, and the
-emitted bindings-file template at `:1360`), not in `RUST_LIBRARIES`, so
-`RustCall`-level unload never sees it; crate structs *do* free in their
-finalizer (`:550`), the opposite of inline structs (#249).
+Loading and ownership are shared with `crate_wrapper_policy`.  The generated
+module still keeps the handle in its own `_LIB_HANDLE` `Ref` — that is how its
+wrappers reach it without a registry lookup per call — but the handle is
+*published through `load_artifact!`* since #277 Phase B5, so it appears in
+`RUST_LIBRARIES` under `crate_library_name(info)` and `unload_library` can see
+it.  The module also captures the artifact's liveness flag, which is what makes
+its struct finalizers safe against an unload (#249).
 """
 crate_direct_policy() = LoadPolicy("rust-crate-direct";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :crate_profile,
     cargo_profile = :release,
     boundary_catches_panics = true,
-    registry = :module_local,
-    registry_key_kind = :none,
+    registry = :rust_libraries,
+    registry_key_kind = :crate_lib_name,
     sets_current_lib = false,
     finalizer_frees = true,
     call_sites = ["src/crate_bindings.jl:344", "src/crate_bindings.jl:550",
@@ -332,8 +335,8 @@ crate_direct_policy() = LoadPolicy("rust-crate-direct";
                   "src/crate_bindings.jl:1360"],
     issues = [244, 249, 250],
     notes = "Cargo runs with the user's manifest as the root, so the panic " *
-            "strategy is whatever their effective profile says; struct " *
-            "finalizers free, and the handle is not in RUST_LIBRARIES.")
+            "strategy is whatever their effective profile says; the generated " *
+            "boundary catches regardless.")
 
 """
     crate_wrapper_policy() -> LoadPolicy
@@ -357,8 +360,8 @@ crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
     panic_strategy = :unwind,
     cargo_profile = :release,
     boundary_catches_panics = true,
-    registry = :module_local,
-    registry_key_kind = :none,
+    registry = :rust_libraries,
+    registry_key_kind = :crate_lib_name,
     sets_current_lib = false,
     finalizer_frees = true,
     call_sites = ["src/crate_bindings.jl:266-269", "src/crate_bindings.jl:344",
