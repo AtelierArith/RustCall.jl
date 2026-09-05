@@ -325,17 +325,22 @@ const FFI_PRIMITIVE_PATH_PREFIXES = ("core::primitive::", "std::primitive::")
 
 The table key for a Rust type spelling: whitespace trimmed, and a
 `core::primitive::` / `std::primitive::` qualifier stripped so that
-`core::primitive::i32` resolves like `i32`.
+`core::primitive::i32` resolves like `i32`. A leading `::` (the rooted form
+`::core::primitive::i32`, which `type_to_string` preserves) is stripped first.
 
 Only those two prefixes are stripped; see [`FFI_PRIMITIVE_PATH_PREFIXES`] for
-why an arbitrary `mycrate::i32` is not normalized even though
+why an arbitrary `mycrate::i32` — rooted or not — is not normalized even though
 `rustcall_core` accepts it.
 """
 function ffi_normalize_spelling(rust_type::AbstractString)
     key = String(strip(rust_type))
+    # A rooted path (`::core::primitive::i32`) names the same type as the
+    # unrooted one; only the primitive prefixes below act on it, so an
+    # unrecognised rooted path is returned untouched and still fails closed.
+    rooted = startswith(key, "::") ? key[3:end] : key
     for prefix in FFI_PRIMITIVE_PATH_PREFIXES
-        if startswith(key, prefix)
-            tail = key[(length(prefix) + 1):end]
+        if startswith(rooted, prefix)
+            tail = rooted[(length(prefix) + 1):end]
             # Only a bare final segment: `core::primitive::i32`, never
             # `core::primitive::foo::bar`.
             occursin("::", tail) && return key
@@ -610,13 +615,24 @@ c.ownership    # :transferred_to_julia
 c.free_symbol  # "Point_free"
 ```
 
-Declaring `:owned_by_rust` or `:transferred_to_julia` without naming a
-`free_symbol` (directly, or via `owner` for the string convention) is an
-`ArgumentError`: an owned value with no way to release it is the shape of #246
-and #249, and the contract refuses to record it.
+# The free-symbol invariant
 
-`owner` is the function or struct name the wrapper belongs to; when given, an
-`:owned_by_rust` string return carries its [`ffi_free_symbol`](@ref).
+A contract whose ownership is one of [`FFI_OWNERSHIP_NEEDS_FREE`] **always**
+names the `free_symbol` that releases the value; an owned value with no way to
+free it is the shape of #246 and #249 and is never recorded. Concretely:
+
+* declaring `:owned_by_rust` / `:transferred_to_julia` without a `free_symbol`
+  is an `ArgumentError`;
+* a *derived* owned return with no symbol available (a lowered `String` return
+  where the caller named no owner) reports `:unknown` ownership rather than an
+  unfreeable `:owned_by_rust`.
+
+`owner` is the function or struct name the wrapper belongs to. It supplies only
+the **string** release convention (`<owner>_free_rust_string`,
+`deps/rustcall_core/src/codegen.rs:633`), so it stands in for `free_symbol` only
+on a lowered owned-string return (`:ptr_len_cap`). For a pointer return — where
+the releasing symbol is whatever the crate exports, e.g. `Point_free` — it does
+not apply and `free_symbol` must be given.
 
 ```julia
 c = RustCall.ffi_return_contract("String"; abi = "string", owner = "shout")
@@ -631,6 +647,9 @@ function ffi_return_contract(rust_type::AbstractString; abi::AbstractString = ""
                              owner::Union{Nothing, AbstractString} = nothing,
                              ownership::Union{Nothing, Symbol} = nothing,
                              free_symbol::Union{Nothing, AbstractString} = nothing)
+    ownership === nothing || ownership in FFI_OWNERSHIP_KINDS || throw(ArgumentError(
+        "unknown ownership :$ownership for $rust_type; " *
+        "expected one of $(FFI_OWNERSHIP_KINDS)"))
     return _ffi_contract(rust_type, :return, abi, owner, ownership, free_symbol)
 end
 
@@ -655,7 +674,8 @@ function _ffi_contract(rust_type::AbstractString, direction::Symbol, abi::Abstra
     key = ffi_normalize_spelling(rust_type)
     override = ffi_manifest_abi_kind(abi, direction)
     entry = ffi_lookup(key)
-    stated = _ffi_check_stated_ownership(key, stated_ownership, stated_free_symbol, owner)
+    stated = (stated_ownership,
+              stated_free_symbol === nothing ? nothing : String(stated_free_symbol))
 
     if entry === nothing
         override === nothing && return _ffi_unknown_contract(key, direction)
@@ -692,20 +712,15 @@ _ffi_unknown_contract(key, direction) = FFIContract(
     copy(_FFI_UNKNOWN_SLOTS), Any, :unknown, nothing, false,
 )
 
-# An explicitly stated ownership must be a known tag, and one that implies a
-# release must name the symbol that performs it.
-function _ffi_check_stated_ownership(key, ownership, free_symbol, owner)
-    if ownership !== nothing
-        ownership in FFI_OWNERSHIP_KINDS || throw(ArgumentError(
-            "unknown ownership :$ownership for $key; expected one of $(FFI_OWNERSHIP_KINDS)"))
-        if ownership === :owned_by_rust || ownership === :transferred_to_julia
-            free_symbol === nothing && owner === nothing && throw(ArgumentError(
-                "ownership :$ownership for $key requires a free_symbol (or an owner): " *
-                "an owned value with no way to release it cannot be recorded"))
-        end
-    end
-    return (ownership, free_symbol === nothing ? nothing : String(free_symbol))
-end
+"""
+    FFI_OWNERSHIP_NEEDS_FREE
+
+The ownership tags that oblige someone to release the value. The contract keeps
+the invariant that a position tagged with one of these **always** names the
+`free_symbol` that performs the release — an owned value with no way to free it
+is the shape of #246 and #249, and is refused rather than recorded.
+"""
+const FFI_OWNERSHIP_NEEDS_FREE = (:owned_by_rust, :transferred_to_julia)
 
 # Turn an ABI kind into the ccall slots / aggregate / layout for one position.
 function _ffi_positional(key, direction, kind, surface, ownership, owner,
@@ -727,9 +742,30 @@ function _ffi_positional(key, direction, kind, surface, ownership, owner,
     # A stated ownership wins over the derived one: the consumer has metadata
     # the spelling does not carry (a constructor's `Box::into_raw`, say).
     final_ownership = stated_ownership === nothing ? ownership : stated_ownership
-    derived_free = final_ownership === :owned_by_rust && owner !== nothing ?
+
+    # `owner` only names the *string* release convention
+    # (`<owner>_free_rust_string`, deps/rustcall_core/src/codegen.rs:633), so it
+    # may stand in for `free_symbol` only where that convention applies: the
+    # lowered owned-string return. Every other owned value must name its own
+    # symbol explicitly.
+    derived_free = owner !== nothing && kind === :ptr_len_cap && direction === :return ?
         ffi_free_symbol(owner) : nothing
     free_symbol = stated_free_symbol === nothing ? derived_free : stated_free_symbol
+
+    if final_ownership in FFI_OWNERSHIP_NEEDS_FREE && free_symbol === nothing
+        if stated_ownership === nothing
+            # Derived, not asserted: the ABI says the value is owned but nobody
+            # named the releasing symbol. Fail closed rather than hand back an
+            # owned value a consumer cannot free (#246, #249).
+            final_ownership = :unknown
+        else
+            throw(ArgumentError(
+                "ownership :$stated_ownership for $key requires an explicit free_symbol" *
+                (kind === :ptr_len_cap ? " (or an owner, for the string convention)" : "") *
+                ": an owned value with no way to release it cannot be recorded"))
+        end
+    end
+
     return FFIContract(key, direction, kind, slots, aggregate, layout, surface,
                        final_ownership, free_symbol, true)
 end

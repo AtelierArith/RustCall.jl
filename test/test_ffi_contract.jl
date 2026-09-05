@@ -160,10 +160,18 @@ const ALL_SPELLINGS = vcat(
             "*mut Point"; ownership = :owned_by_rust)
         @test_throws ArgumentError RustCall.ffi_return_contract(
             "*mut Point"; ownership = :not_a_tag, free_symbol = "Point_free")
-        # `owner` also satisfies it, through the string convention.
-        @test RustCall.ffi_return_contract("*mut Point"; ownership = :owned_by_rust,
-                                           owner = "Point").free_symbol ==
-              "Point_free_rust_string"
+        # `owner` supplies only the STRING release convention
+        # (`<owner>_free_rust_string`, deps/rustcall_core/src/codegen.rs:633),
+        # which is wrong for a pointer — the crate exports e.g. `Point_free`.
+        # So it does not satisfy the requirement here.
+        @test_throws ArgumentError RustCall.ffi_return_contract(
+            "*mut Point"; ownership = :transferred_to_julia, owner = "Point")
+        @test_throws ArgumentError RustCall.ffi_return_contract(
+            "*mut Point"; ownership = :owned_by_rust, owner = "Point")
+        # …but an explicit symbol does.
+        @test RustCall.ffi_return_contract("*mut Point"; ownership = :transferred_to_julia,
+                                           free_symbol = "Point_free").free_symbol ==
+              "Point_free"
         # Tags that imply no release need no symbol.
         @test RustCall.ffi_return_contract("*mut Point"; ownership = :none).ownership === :none
     end
@@ -204,7 +212,15 @@ const ALL_SPELLINGS = vcat(
         @test ret.aggregate_type === RustCall.CRustString
         @test ret.layout == Type[Ptr{UInt8}, Csize_t, Csize_t]
         @test fieldtypes(RustCall.CRustString) == (Ptr{UInt8}, UInt, UInt)
-        @test ret.ownership === :owned_by_rust      # Julia must free it (#246)
+        # Derived-but-unnameable: the ABI says the buffer is owned, but no owner
+        # was given, so there is no symbol to free it with. The contract reports
+        # `:unknown` rather than an unfreeable `:owned_by_rust` (#246, #249).
+        @test ret.ownership === :unknown
+        @test ret.free_symbol === nothing
+        # Name the owner and it becomes owned, with the symbol.
+        owned = RustCall.ffi_return_contract("String"; abi = "string", owner = "shout")
+        @test owned.ownership === :owned_by_rust    # Julia must free it (#246)
+        @test owned.free_symbol == "shout_free_rust_string"
         @test ret.surface_type === RustCall.RustString
         @test RustCall.ffi_return_ccall_type("String"; abi = "string") ===
               RustCall.CRustString
@@ -266,6 +282,19 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_ccall_type("*mut core::primitive::i32") === Ptr{Int32}
         @test RustCall.ffi_ccall_type("  core::primitive::bool  ") === Bool
 
+        # Rooted paths: `type_to_string` preserves the leading `::`.
+        @test RustCall.ffi_normalize_spelling("::core::primitive::i32") == "i32"
+        @test RustCall.ffi_normalize_spelling("::std::primitive::u8") == "u8"
+        @test RustCall.ffi_ccall_type("::core::primitive::i32") === Int32
+        @test RustCall.ffi_ccall_type("::std::primitive::u8") === UInt8
+        @test RustCall.ffi_ccall_type("*mut ::core::primitive::f64") === Ptr{Float64}
+        @test RustCall.ffi_return_contract("::std::primitive::bool").ccall_types ==
+              Type[Bool]
+        # …and the rooted form of an arbitrary crate path still fails closed.
+        @test RustCall.ffi_lookup("::mycrate::i32") === nothing
+        @test RustCall.ffi_normalize_spelling("::mycrate::i32") == "::mycrate::i32"
+        @test RustCall.ffi_lookup("::core::primitive::Widget") === nothing
+
         # Negative: only those two prefixes. `rustcall_core` is laxer — it
         # matches on the last path segment alone, so it also accepts
         # `mycrate::i32`, where `i32` may be a user alias with a different
@@ -316,7 +345,7 @@ const ALL_SPELLINGS = vcat(
         # The column overrides the spelling, which is what makes the manifest
         # normative: an alias the table has never heard of still gets the right
         # ABI once the extractor labels it.
-        c = RustCall.ffi_return_contract("MyAlias"; abi = "string")
+        c = RustCall.ffi_return_contract("MyAlias"; abi = "string", owner = "MyAlias")
         @test c.known
         @test c.abi === :ptr_len_cap
         @test c.ownership === :owned_by_rust
@@ -469,8 +498,8 @@ const ALL_SPELLINGS = vcat(
         # until #274 lands; the contract fails closed in the meantime.
         @test RustCall.ffi_return_contract("String").known == false
         @test RustCall.ffi_return_contract("String"; abi = "string").abi === :ptr_len_cap
-        @test RustCall.ffi_return_contract("String"; abi = "string").ownership ===
-              :owned_by_rust
+        @test RustCall.ffi_return_contract("String"; abi = "string",
+                                           owner = "shout").ownership === :owned_by_rust
         @test RustCall.ffi_return_contract("&str"; abi = "str").ownership === :borrowed
     end
 
@@ -525,8 +554,8 @@ const ALL_SPELLINGS = vcat(
         # (#246) and why the drop symbol is chosen from the Julia-side type tag
         # rather than from the allocating library (#249).
         @test table_structs("String") === :RustString   # a type, no owner
-        @test RustCall.ffi_return_contract("String"; abi = "string").ownership ===
-              :owned_by_rust
+        @test RustCall.ffi_return_contract("String"; abi = "string",
+                                           owner = "shout").ownership === :owned_by_rust
         @test RustCall.ffi_argument_contract("String"; abi = "string").ownership ===
               :owned_by_julia
         # The free symbol is per-function (`<fn>_free_rust_string`), so the
@@ -535,6 +564,29 @@ const ALL_SPELLINGS = vcat(
         # Scalars own nothing, which must stay distinguishable from "unknown".
         @test RustCall.ffi_return_contract("i64").ownership === :none
         @test RustCall.ffi_return_contract("Vec<f64>").ownership === :unknown
+    end
+
+    @testset "invariant: an owned position always names its free symbol" begin
+        # A contract tagged :owned_by_rust / :transferred_to_julia must carry a
+        # free_symbol — an owned value with no way to release it is the shape of
+        # #246 and #249, so the contract reports :unknown (derived) or raises
+        # (asserted) instead.
+        cases = Any[]
+        for s in ALL_SPELLINGS, dir in (:argument, :return), abi in ("", "string", "str")
+            push!(cases, dir === :argument ?
+                  RustCall.ffi_argument_contract(s; abi = abi) :
+                  RustCall.ffi_return_contract(s; abi = abi))
+            dir === :return || continue
+            push!(cases, RustCall.ffi_return_contract(s; abi = abi, owner = "Owner"))
+        end
+        @test !isempty(cases)
+        for c in cases
+            if c.ownership in RustCall.FFI_OWNERSHIP_NEEDS_FREE
+                @test c.free_symbol !== nothing
+            end
+        end
+        # And the sweep really does exercise the owned branch.
+        @test any(c -> c.ownership === :owned_by_rust, cases)
     end
 
     @testset "no existing table was changed" begin
