@@ -321,16 +321,15 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     lib_name = "rust_$(code_hash)"
 
     # Check if already compiled and loaded in memory
-    lock(REGISTRY_LOCK) do
-        if haskey(RUST_LIBRARIES, lib_name)
-            CURRENT_LIB[] = lib_name
-
-            # Ensure generic functions and return types are registered
-            # (the registries are volatile)
-            _register_manifest(expanded, lib_name; compiler)
-
-            return lib_name
-        end
+    is_in_memory = lock(REGISTRY_LOCK) do
+        haskey(RUST_LIBRARIES, lib_name)
+    end
+    if is_in_memory
+        # Ensure the symbol mappings, return types and generic functions are
+        # registered (the registries are volatile). The handle is already
+        # published, so only `CURRENT_LIB[]` moves here.
+        _register_manifest(expanded, lib_name; compiler)
+        return lib_name
     end
 
     # Check cache first
@@ -339,14 +338,10 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         # Load from cache
         lib_handle, _ = load_cached_library(cache_key)
 
-        # Register the library
-        lock(REGISTRY_LOCK) do
-            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-            CURRENT_LIB[] = lib_name
-
-        end
-
-        _register_manifest(expanded, lib_name; compiler)
+        # Register the library. The handle and the manifest's lookup tables
+        # are published together (#279 follow-up): a concurrent
+        # `ensure_loaded` must never see the library before its symbols.
+        _register_manifest(expanded, lib_name; compiler, handle = lib_handle)
 
         return lib_name
     end
@@ -379,16 +374,12 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         error("Failed to load compiled Rust library: $lib_path")
     end
 
-    # Register the library
-    lock(REGISTRY_LOCK) do
-        RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-        CURRENT_LIB[] = lib_name
-    end
-
     # Temporarily disabled LLVM IR loading for stability
     # (LLVM IR is used for type inference and @rust_llvm)
 
-    _register_manifest(expanded, lib_name; compiler)
+    # Register the library: the handle and the manifest's lookup tables are
+    # published in one critical section (#279 follow-up).
+    _register_manifest(expanded, lib_name; compiler, handle = lib_handle)
 
     return lib_name
 end
@@ -470,9 +461,6 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         haskey(RUST_LIBRARIES, lib_name)
     end
     if is_in_memory
-        lock(REGISTRY_LOCK) do
-            CURRENT_LIB[] = lib_name
-        end
         @debug "Using cached Cargo library from memory" lib_name=lib_name
 
         _register_manifest(expanded, lib_name; cargo_backed = true)
@@ -488,13 +476,8 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # Load from cache
         lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         if lib_handle != C_NULL
-            lock(REGISTRY_LOCK) do
-                RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-                CURRENT_LIB[] = lib_name
-            end
+            _register_manifest(expanded, lib_name; cargo_backed = true, handle = lib_handle)
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
-
-            _register_manifest(expanded, lib_name; cargo_backed = true)
 
             return lib_name
         end
@@ -524,15 +507,11 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             error("Failed to load compiled Cargo library: $lib_path")
         end
 
-        # Register the library
-        lock(REGISTRY_LOCK) do
-            RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-            CURRENT_LIB[] = lib_name
-        end
+        # Register the library: handle and manifest lookup tables together
+        # (#279 follow-up).
+        _register_manifest(expanded, lib_name; cargo_backed = true, handle = lib_handle)
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
-
-        _register_manifest(expanded, lib_name; cargo_backed = true)
     finally
         # Clean up temporary project (keep for debugging if debug mode is enabled)
         compiler = get_default_compiler()
@@ -614,26 +593,64 @@ function _rustc_block_identity(wrapped_source::AbstractString, compiler::RustCom
 end
 
 """
-    _register_manifest(expanded::ExpandedInline, lib_name::String)
+    _register_manifest(expanded::ExpandedInline, lib_name::String; handle = nothing)
 
 Register everything the manifest of a compiled block tells us:
 
+- the name-to-symbol mapping and the return type of every exported function,
+  so `@rust f(...)` resolves `rustcall_f` (#279) and works without `::T`;
 - generic free functions and generic struct wrappers, for on-demand
   monomorphization. The registered code is the whole expanded block and the
   function is addressed by its qualified name, so `specialize` instantiates it
   in place with sibling items, imports and `super::` paths intact.
-- return types of exported functions, so `@rust f(...)` works without `::T`
+
+Pass `handle` to publish a freshly loaded library at the same time. The handle
+and the manifest-derived lookup tables then become visible in **one**
+`REGISTRY_LOCK` critical section, which is what makes a concurrent
+`ensure_loaded` / `@rust f(...)` safe: a task that sees the library in
+`RUST_LIBRARIES` also sees that `f` is exported as `rustcall_f`, instead of
+resolving `f` to itself and failing (or, worse, hitting another library's `f`).
+Callers must therefore not insert into `RUST_LIBRARIES` themselves.
+
+The generic registrations stay outside the lock: `register_generic_function`
+may shell out to the extractor to recover a signature, which must not run with
+the global registry lock held.
 """
-function _register_manifest(expanded, lib_name::String; compiler = nothing, cargo_backed::Bool = false)
+function _register_manifest(expanded, lib_name::String; compiler = nothing,
+                            cargo_backed::Bool = false,
+                            handle::Union{Ptr{Cvoid}, Nothing} = nothing,
+                            set_current::Bool = true)
     manifest = expanded.manifest
-    # This library's name-to-symbol mappings are rebuilt from scratch: a block
-    # re-registered under the same library name must not keep the entries of
-    # functions it no longer defines (#279).
-    clear_function_symbols!(lib_name)
+    signatures = manifest_function_signatures(manifest; only_attributed = false)
+
+    lock(REGISTRY_LOCK) do
+        # This library's name-to-symbol mappings are rebuilt from scratch: a
+        # block re-registered under the same library name must not keep the
+        # entries of functions it no longer defines (#279).
+        clear_function_symbols!(lib_name)
+        for sig in signatures
+            sig.is_generic && continue
+            sig.exported || continue
+            # `@rust f(...)` names the Rust function; the library exports the
+            # additive wrapper (#279), so record the mapping before the handle
+            # becomes visible. Identity mappings are recorded too, so a plain
+            # `#[no_mangle] fn f` here is explicitly `f => f` for this library
+            # and cannot pick up another library's `f => rustcall_f`.
+            register_function_symbol(lib_name, sig.name, sig.symbol)
+            _register_return_type(sig, lib_name)
+        end
+        # Publishing the handle last is what closes the window: no reader can
+        # find the library before its symbol mappings are in place.
+        if handle !== nothing
+            RUST_LIBRARIES[lib_name] = (handle, Dict{String, Ptr{Cvoid}}())
+        end
+        set_current && (CURRENT_LIB[] = lib_name)
+    end
+
     for info in manifest_struct_infos(manifest)
         register_generic_struct_wrappers(info, expanded.source; compiler)
     end
-    for sig in manifest_function_signatures(manifest; only_attributed = false)
+    for sig in signatures
         if sig.is_generic
             # Generic functions are compiled lazily; keep the compiler they were
             # expanded for so a later `set_default_compiler` cannot drop
@@ -655,14 +672,6 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing, carg
                                       arg_types = sig.arg_types, return_type = sig.return_type,
                                       path = qualified_name(sig.module_path, sig.name), compiler, blocked)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
-        elseif sig.exported
-            # `@rust f(...)` names the Rust function; the library exports the
-            # additive wrapper (#279), so record the mapping before anything
-            # tries to resolve it. Identity mappings are recorded too, so a
-            # plain `#[no_mangle] fn f` here is explicitly `f => f` for this
-            # library and cannot pick up another library's `f => rustcall_f`.
-            register_function_symbol(lib_name, sig.name, sig.symbol)
-            _register_return_type(sig, lib_name)
         end
     end
     return nothing

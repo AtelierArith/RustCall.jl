@@ -583,3 +583,47 @@ end
         unload!(lib_b)
     end
 end
+
+# #279 follow-up: a library handle and the name-to-symbol mappings its manifest
+# describes must become visible together. Publishing the handle first left a
+# window in which a concurrent `ensure_loaded` / `@rust f(...)` saw the library
+# but not the mapping, and resolved `f` to `f` instead of `rustcall_f`.
+@testset "#279: a library and its symbol mappings are published together" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping concurrent publication test"
+        return
+    end
+
+    rust"""
+    #[julia]
+    pub fn concurrent_probe(x: i32) -> i32 { x * 7 }
+    """
+    lib_name = RustCall.get_current_library()
+
+    # The mapping is in place for the library that is now current.
+    @test RustCall.exported_symbol(lib_name, "concurrent_probe") == "rustcall_concurrent_probe"
+
+    # Several tasks calling the attributed function concurrently: every call
+    # resolves and returns, none races the publication of the handle.
+    results = Vector{Int32}(undef, 32)
+    @sync for i in 1:length(results)
+        Threads.@spawn begin
+            results[i] = concurrent_probe(Int32(i))
+        end
+    end
+    @test results == Int32[i * 7 for i in 1:length(results)]
+
+    # The same through `@rust`, which resolves the Rust name at call time.
+    macro_results = Vector{Int32}(undef, 16)
+    @sync for i in 1:length(macro_results)
+        Threads.@spawn begin
+            macro_results[i] = @rust concurrent_probe(Int32(i))::Int32
+        end
+    end
+    @test macro_results == Int32[i * 7 for i in 1:length(macro_results)]
+
+    # Reloading the very same block (the in-memory hit path) keeps the mapping.
+    RustCall.ensure_loaded(lib_name, "#[julia]\npub fn concurrent_probe(x: i32) -> i32 { x * 7 }")
+    @test RustCall.exported_symbol(lib_name, "concurrent_probe") == "rustcall_concurrent_probe"
+    @test concurrent_probe(Int32(3)) == Int32(21)
+end

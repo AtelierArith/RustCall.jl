@@ -629,6 +629,29 @@ The name of the symbol that releases an `:owned_by_rust` string produced by
 ffi_free_symbol(owner::AbstractString) = string(owner, "_free_rust_string")
 
 """
+Prefix of every exported symbol that stands in for a user-written Rust item.
+
+`#[julia]` is additive (#279): the annotated item keeps its name and the
+`extern "C"` entry point is emitted next to it under this prefix. Mirrors
+`rustcall_core::codegen::SYMBOL_PREFIX`.
+"""
+const FFI_SYMBOL_PREFIX = "rustcall_"
+
+"""
+    ffi_method_symbol(struct_name, method_name) -> String
+
+The exported symbol of the wrapper of the `#[julia]` method `Struct::method`
+(`rustcall_<Struct>_<method>`, see `deps/rustcall_core/src/codegen.rs`).
+
+This is the fallback for a `RustMethod` built by hand rather than read from a
+manifest: its six-argument constructor cannot know the struct name, so it
+records no `symbol` and the emitters derive one here. A manifest-backed method
+always carries its own `symbol` and never reaches this (#279).
+"""
+ffi_method_symbol(struct_name::AbstractString, method_name::AbstractString) =
+    string(FFI_SYMBOL_PREFIX, struct_name, "_", method_name)
+
+"""
     ffi_argument_contract(rust_type; abi = "") -> FFIContract
 
 The contract for one argument position. Multi-word values are **expanded into

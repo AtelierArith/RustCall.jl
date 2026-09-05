@@ -321,10 +321,12 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             writes += count(_ -> true,
                             eachmatch(r"RUST_LIBRARIES\[[^\]]*\]\s*=", _src(file)))
         end
-        # Eight open-coded registration sites on current main: five in
-        # ruststr.jl, generics.jl, hot_reload.jl, and the reload alias that
-        # #272 added in rustmacro.jl (`_alias_reloaded_library`).
-        @test writes == 8
+        # Five open-coded registration sites on current main: two in
+        # ruststr.jl (`_register_manifest`, which publishes an inline block's
+        # handle together with its symbol mappings since #279, and the `@irust`
+        # loader), generics.jl, hot_reload.jl, and the reload alias that #272
+        # added in rustmacro.jl (`_alias_reloaded_library`).
+        @test writes == 5
 
         # Each site decides for itself whether CURRENT_LIB moves and what the
         # key looks like; the policies record that disagreement.
