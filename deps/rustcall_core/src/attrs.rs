@@ -126,3 +126,34 @@ pub fn has_no_mangle(attrs: &[Attribute]) -> bool {
                 && matches!(&a.meta, Meta::List(l) if l.tokens.to_string().contains("no_mangle")))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attrs_of(source: &str) -> Vec<Attribute> {
+        syn::parse_str::<syn::ItemFn>(source).unwrap().attrs
+    }
+
+    /// An item carrying both attributes is owned by `#[julia]`: it already
+    /// exports `rustcall_<name>`, so the PyO3 scan of #275 must skip it rather
+    /// than emit a second wrapper under the same symbol (#279).
+    #[test]
+    fn julia_wins_over_pyfunction() {
+        let both = attrs_of("#[julia] #[pyfunction] fn f() {}");
+        assert!(julia_owns_entry_point(&both));
+        assert!(!pyo3_scan_selects(&both));
+
+        let flipped = attrs_of("#[pyo3::pyfunction] #[julia] fn f() {}");
+        assert!(julia_owns_entry_point(&flipped));
+        assert!(!pyo3_scan_selects(&flipped));
+
+        let pyo3_only = attrs_of("#[pyfunction] fn f() {}");
+        assert!(!julia_owns_entry_point(&pyo3_only));
+        assert!(pyo3_scan_selects(&pyo3_only));
+
+        let neither = attrs_of("#[inline] fn f() {}");
+        assert!(!julia_owns_entry_point(&neither));
+        assert!(!pyo3_scan_selects(&neither));
+    }
+}
