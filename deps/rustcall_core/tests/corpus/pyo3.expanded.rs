@@ -1,6 +1,9 @@
-#[no_mangle]
-pub extern "C" fn dual_add(left: i32, right: i32) -> i32 {
+pub fn dual_add(left: i32, right: i32) -> i32 {
     left + right
+}
+#[no_mangle]
+pub extern "C" fn rustcall_dual_add(left: i32, right: i32) -> i32 {
+    dual_add(left, right)
 }
 pub struct DualCounter {
     pub value: i32,
@@ -24,12 +27,12 @@ pub extern "C" fn DualCounter_set_value(ptr: *mut DualCounter, value: i32) {
     }
 }
 #[no_mangle]
-pub extern "C" fn DualCounter_new(value: i32) -> *mut DualCounter {
+pub extern "C" fn rustcall_DualCounter_new(value: i32) -> *mut DualCounter {
     let obj = DualCounter::new(value);
     Box::into_raw(Box::new(obj))
 }
 #[no_mangle]
-pub extern "C" fn DualCounter_increment(ptr: *mut DualCounter, amount: i32) {
+pub extern "C" fn rustcall_DualCounter_increment(ptr: *mut DualCounter, amount: i32) {
     let self_obj = unsafe { &mut *ptr };
     self_obj.increment(amount)
 }
@@ -41,15 +44,14 @@ impl DualCounter {
         self.value += amount;
     }
 }
-#[allow(clippy::ptr_arg)]
-fn dual_len_inner(s: String) -> usize {
+pub fn dual_len(s: String) -> usize {
     s.len()
 }
 #[no_mangle]
-pub extern "C" fn dual_len(s_ptr: *const u8, s_len: usize) -> usize {
+pub extern "C" fn rustcall_dual_len(s_ptr: *const u8, s_len: usize) -> usize {
     let s = unsafe {
         let slice = std::slice::from_raw_parts(s_ptr, s_len);
         String::from_utf8_lossy(slice).into_owned()
     };
-    dual_len_inner(s)
+    dual_len(s)
 }

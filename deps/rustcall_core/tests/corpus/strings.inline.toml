@@ -1,9 +1,9 @@
-schema_version = 2
+schema_version = 3
 mode = "inline"
 
 [[functions]]
 name = "shout"
-symbol = "shout"
+symbol = "rustcall_shout"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -28,7 +28,7 @@ abi = "string"
 
 [[functions]]
 name = "concat"
-symbol = "concat"
+symbol = "rustcall_concat"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -63,7 +63,7 @@ abi = ""
 
 [[functions]]
 name = "byte_len"
-symbol = "byte_len"
+symbol = "rustcall_byte_len"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -88,7 +88,7 @@ abi = "str"
 
 [[functions]]
 name = "greeting"
-symbol = "greeting"
+symbol = "rustcall_greeting"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -109,7 +109,7 @@ module_path = []
 
 [[functions]]
 name = "unix_name"
-symbol = "unix_name"
+symbol = "rustcall_unix_name"
 attribute = "julia"
 exported = true
 cfg = "unix"
@@ -134,7 +134,7 @@ abi = "string"
 
 [[functions]]
 name = "consume"
-symbol = "consume"
+symbol = "rustcall_consume"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -159,7 +159,7 @@ abi = "string"
 
 [[functions]]
 name = "paren_ref"
-symbol = "paren_ref"
+symbol = "rustcall_paren_ref"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -184,7 +184,7 @@ abi = "str"
 
 [[functions]]
 name = "collide"
-symbol = "collide"
+symbol = "rustcall_collide"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -235,7 +235,7 @@ setter = "Greeter_set_count"
 
 [[structs.methods]]
 name = "new"
-symbol = "Greeter_new"
+symbol = "rustcall_Greeter_new"
 is_static = true
 is_mutable = false
 is_constructor = true
@@ -250,7 +250,7 @@ abi = ""
 
 [[structs.methods]]
 name = "shout"
-symbol = "Greeter_shout"
+symbol = "rustcall_Greeter_shout"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -265,7 +265,7 @@ abi = "str"
 
 [[structs.methods]]
 name = "label"
-symbol = "Greeter_label"
+symbol = "rustcall_Greeter_label"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -276,7 +276,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "take"
-symbol = "Greeter_take"
+symbol = "rustcall_Greeter_take"
 is_static = false
 is_mutable = true
 is_constructor = false

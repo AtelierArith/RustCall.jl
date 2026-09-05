@@ -13,9 +13,9 @@ pub extern "C" fn Greeter_free(ptr: *mut Greeter) {
 }
 #[repr(C)]
 pub struct Greeter_RustCallOwnedString {
-    ptr: *mut u8,
-    len: usize,
-    cap: usize,
+    pub ptr: *mut u8,
+    pub len: usize,
+    pub cap: usize,
 }
 #[no_mangle]
 pub extern "C" fn Greeter_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
@@ -27,8 +27,8 @@ pub extern "C" fn Greeter_free_rust_string(ptr: *mut u8, len: usize, cap: usize)
 }
 #[repr(C)]
 pub struct Greeter_RustCallBorrowedString {
-    ptr: *const u8,
-    len: usize,
+    pub ptr: *const u8,
+    pub len: usize,
 }
 #[no_mangle]
 pub extern "C" fn Greeter_get_name(ptr: *const Greeter) -> Greeter_RustCallOwnedString {
@@ -62,7 +62,10 @@ pub extern "C" fn Greeter_clone(ptr: *const Greeter) -> *mut Greeter {
     unsafe { Box::into_raw(Box::new((*ptr).clone())) }
 }
 #[no_mangle]
-pub extern "C" fn Greeter_new(name_ptr: *const u8, name_len: usize) -> *mut Greeter {
+pub extern "C" fn rustcall_Greeter_new(
+    name_ptr: *const u8,
+    name_len: usize,
+) -> *mut Greeter {
     let name = unsafe {
         let slice = std::slice::from_raw_parts(name_ptr, name_len);
         String::from_utf8_lossy(slice).into_owned()
@@ -71,7 +74,7 @@ pub extern "C" fn Greeter_new(name_ptr: *const u8, name_len: usize) -> *mut Gree
     Box::into_raw(Box::new(obj))
 }
 #[no_mangle]
-pub extern "C" fn Greeter_rename(
+pub extern "C" fn rustcall_Greeter_rename(
     ptr: *mut Greeter,
     name_ptr: *const u8,
     name_len: usize,
@@ -84,7 +87,7 @@ pub extern "C" fn Greeter_rename(
     self_obj.rename(name)
 }
 #[no_mangle]
-pub extern "C" fn Greeter_greet(
+pub extern "C" fn rustcall_Greeter_greet(
     ptr: *const Greeter,
     prefix_ptr: *const u8,
     prefix_len: usize,
@@ -104,7 +107,9 @@ pub extern "C" fn Greeter_greet(
     rustcall_ret
 }
 #[no_mangle]
-pub extern "C" fn Greeter_name(ptr: *const Greeter) -> Greeter_RustCallBorrowedString {
+pub extern "C" fn rustcall_Greeter_name(
+    ptr: *const Greeter,
+) -> Greeter_RustCallBorrowedString {
     let self_obj = unsafe { &*ptr };
     let rustcall_value = self_obj.name();
     Greeter_RustCallBorrowedString {
@@ -125,6 +130,9 @@ impl Greeter {
     pub fn name(&self) -> &str {
         &self.name
     }
+}
+pub fn checked_double(value: i32) -> Result<i32, i32> {
+    value.checked_mul(2).ok_or(value)
 }
 #[repr(C)]
 pub struct CResult_checked_double {
@@ -176,12 +184,12 @@ impl CResult_checked_double {
         }
     }
 }
-fn checked_double_inner(value: i32) -> Result<i32, i32> {
-    value.checked_mul(2).ok_or(value)
-}
 #[no_mangle]
-pub extern "C" fn checked_double(value: i32) -> CResult_checked_double {
-    CResult_checked_double::new(checked_double_inner(value))
+pub extern "C" fn rustcall_checked_double(value: i32) -> CResult_checked_double {
+    CResult_checked_double::new(checked_double(value))
+}
+pub fn positive(value: i32) -> Option<i32> {
+    (value > 0).then_some(value)
 }
 #[repr(C)]
 pub struct COption_positive {
@@ -220,10 +228,7 @@ impl COption_positive {
         }
     }
 }
-fn positive_inner(value: i32) -> Option<i32> {
-    (value > 0).then_some(value)
-}
 #[no_mangle]
-pub extern "C" fn positive(value: i32) -> COption_positive {
-    COption_positive::new(positive_inner(value))
+pub extern "C" fn rustcall_positive(value: i32) -> COption_positive {
+    COption_positive::new(positive(value))
 }

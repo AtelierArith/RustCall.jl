@@ -21,7 +21,13 @@ use serde::{Deserialize, Serialize};
 ///   how a consumer must call the exported symbols (`(ptr, len)` pairs and
 ///   `<name>_RustCallOwnedString` buffers), so a version-1 consumer must not
 ///   load a version-2 manifest, nor the reverse.
-pub const SCHEMA_VERSION: u32 = 2;
+/// * 3: additive `#[julia]` (#279): the annotated item keeps its name and the
+///   exported entry point is a wrapper emitted next to it, so `Function.symbol`
+///   and `Method.symbol` now differ from `name` for *every* wrapped item
+///   (`rustcall_<fn>` / `rustcall_<Struct>_<method>`), not only for generic
+///   instantiations. A version-2 consumer would `dlsym` the Rust name and find
+///   nothing.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Which pipeline produced the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +108,9 @@ pub struct TypeParam {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
-    /// Exported C symbol. Equal to `name` for non-generic functions.
+    /// Exported C symbol. `#[julia]` is additive, so a wrapped function is
+    /// exported as `rustcall_<name>` and never under `name` itself (#279); a
+    /// plain `#[no_mangle] extern "C"` function keeps its own name.
     pub symbol: String,
     pub attribute: Attribute,
     /// True when the generated code carries `#[no_mangle] extern "C"`.
@@ -176,8 +184,9 @@ pub struct Field {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Method {
     pub name: String,
-    /// Exported C symbol of the wrapper (`Struct_method`). Empty for generic
-    /// structs, whose wrappers are registered for monomorphization instead.
+    /// Exported C symbol of the wrapper (`rustcall_<Struct>_<method>`, #279).
+    /// Empty for generic structs, whose wrappers are registered for
+    /// monomorphization instead.
     pub symbol: String,
     pub is_static: bool,
     pub is_mutable: bool,

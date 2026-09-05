@@ -1,9 +1,9 @@
-schema_version = 2
+schema_version = 3
 mode = "crate"
 
 [[functions]]
 name = "unix_only"
-symbol = "unix_only"
+symbol = "rustcall_unix_only"
 attribute = "julia"
 exported = true
 cfg = "unix"
@@ -28,7 +28,7 @@ abi = ""
 
 [[functions]]
 name = "windows_wide"
-symbol = "windows_wide"
+symbol = "rustcall_windows_wide"
 attribute = "julia"
 exported = true
 cfg = 'all(windows, feature = "wide")'
@@ -49,7 +49,7 @@ module_path = []
 
 [[functions]]
 name = "maybe"
-symbol = "maybe"
+symbol = "rustcall_maybe"
 attribute = "julia"
 exported = true
 cfg = 'not(target_os = "freebsd")'
@@ -74,7 +74,7 @@ abi = ""
 
 [[functions]]
 name = "bonus"
-symbol = "bonus"
+symbol = "rustcall_bonus"
 attribute = "julia"
 exported = true
 cfg = ""

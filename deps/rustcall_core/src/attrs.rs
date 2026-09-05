@@ -16,6 +16,40 @@ pub fn is_rustcall_attr(attr: &Attribute) -> bool {
     is_julia_attr(attr) || is_julia_pyo3_attr(attr)
 }
 
+/// Whether the item carries a PyO3 entry-point attribute (`#[pyfunction]`,
+/// `#[pyo3::pyfunction]`, `#[pymethods]`, `#[pyclass]`, ...).
+pub fn is_pyo3_attr(attr: &Attribute) -> bool {
+    attr.path()
+        .segments
+        .last()
+        .map(|s| {
+            let name = s.ident.to_string();
+            matches!(
+                name.as_str(),
+                "pyfunction" | "pymethods" | "pyclass" | "pymodule"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Whether `#[julia]` owns this item's C entry point.
+///
+/// Since #279 `#[julia]` is additive, so an item may carry both `#[julia]` and
+/// `#[pyfunction]` and get a Julia wrapper *and* a Python one. When both are
+/// present `#[julia]` is authoritative for the C symbol: it already emits
+/// `rustcall_<name>`, so a PyO3-driven scan (#275) must skip the item rather
+/// than emit a second wrapper under the same symbol.
+pub fn julia_owns_entry_point(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(is_julia_attr)
+}
+
+/// Whether a PyO3 scan (#275) should generate a wrapper for this item: it
+/// carries a PyO3 attribute and `#[julia]` has not already claimed it (see
+/// [`julia_owns_entry_point`]).
+pub fn pyo3_scan_selects(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(is_pyo3_attr) && !julia_owns_entry_point(attrs)
+}
+
 /// Which RustCall attribute marks the item, if any.
 pub fn rustcall_attribute(attrs: &[Attribute]) -> ManifestAttribute {
     if attrs.iter().any(is_julia_attr) {
