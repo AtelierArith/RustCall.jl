@@ -81,9 +81,19 @@ end
 
 The `abi` column for signatures constructed by hand (tests, legacy callers):
 the extractor classifies argument types on the Rust side (`Arg.abi`:
-`"string"`, `"str"` or `""`), this only covers the literal spellings.
+`"string"`, `"str"` or `""`); this reconstructs the column from the FFI
+contract (`src/ffi_contract.jl`), which is the same table the wrapper
+generators consult, so a hand-built signature and a manifest one agree.
 """
-_default_arg_abis(arg_types) = String[t == "String" ? "string" : (t == "&str" ? "str" : "") for t in arg_types]
+_default_arg_abis(arg_types) = String[_default_arg_abi(t) for t in arg_types]
+
+function _default_arg_abi(rust_type::AbstractString)
+    entry = ffi_lookup(rust_type)
+    entry === nothing && return ""
+    entry.surface_type === RustString && return "string"
+    entry.surface_type === RustStr && return "str"
+    return ""
+end
 
 """
     _is_string_abi(abi) -> Bool
@@ -120,18 +130,43 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
     prefix = _string_temp_prefix(arg_names)
     for (name, rust_type, abi) in zip(arg_names, arg_types, arg_abis)
         arg_sym = escape(Symbol(name))
-        if _is_string_abi(abi)
+        # The contract, not the spelling, decides how many C slots this
+        # position occupies and what goes in them (#276).
+        c = ffi_argument_contract(rust_type; abi = abi)
+        if c.abi === :ptr_len || c.abi === :ptr_len_cap
+            # `(ptr, len)` — and, should an owned buffer ever be taken by
+            # value, `(ptr, len, cap)`. Slot-count driven, so a new multi-word
+            # ABI needs no new branch here.
             bytes = Symbol(prefix, name)
             push!(bindings, :($bytes = String($arg_sym)))
             push!(preserved, bytes)
             push!(call_args, :(pointer($bytes)))
             push!(call_args, :(sizeof($bytes) % Csize_t))
+            c.abi === :ptr_len_cap && push!(call_args, :(sizeof($bytes) % Csize_t))
+        elseif c.known && c.abi === :by_value
+            push!(call_args, :($(_ffi_arg_conversion(rust_type, c))($arg_sym)))
         else
-            julia_type = _rust_type_to_julia_conversion_type(rust_type)
-            push!(call_args, julia_type === nothing ? arg_sym : :($julia_type($arg_sym)))
+            # A pointer, the unit type, or a spelling the contract does not
+            # cover: hand the value to `call_rust_function`, which applies its
+            # own Julia-type-keyed coercion, exactly as before.
+            push!(call_args, arg_sym)
         end
     end
     return bindings, preserved, call_args
+end
+
+"""
+    _ffi_arg_conversion(rust_type, contract) -> Union{Symbol, Expr}
+
+How a by-value argument is spelled in generated code: the contract's own
+spelling (`:Csize_t` for `usize`) when the C slot and the surface type agree,
+and the **C slot** otherwise. Rust `char` is the case where they differ — the
+slot is `UInt32` and the value must be converted into it, never reinterpreted.
+"""
+function _ffi_arg_conversion(rust_type::AbstractString, c::FFIContract)
+    slot = only(c.ccall_types)
+    slot === c.surface_type || return ffi_type_expr(slot)
+    return something(ffi_julia_symbol(rust_type), ffi_type_expr(slot))
 end
 
 """
@@ -330,32 +365,6 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
             RustCall.convert_c_option_to_rust_option($c_sym, $inner_t)
         end
     end
-end
-
-"""
-    _rust_type_to_julia_conversion_type(rust_type::String) -> Union{Symbol, Nothing}
-
-Get the Julia type to use for argument conversion from Rust type.
-Returns Nothing if no conversion is needed or type is unknown.
-"""
-function _rust_type_to_julia_conversion_type(rust_type::String)
-    type_map = Dict(
-        "i8" => :Int8,
-        "i16" => :Int16,
-        "i32" => :Int32,
-        "i64" => :Int64,
-        "u8" => :UInt8,
-        "u16" => :UInt16,
-        "u32" => :UInt32,
-        "u64" => :UInt64,
-        "f32" => :Float32,
-        "f64" => :Float64,
-        "bool" => :Bool,
-        "usize" => :Csize_t,
-        "isize" => :Cssize_t,
-    )
-
-    return get(type_map, strip(rust_type), nothing)
 end
 
 """
