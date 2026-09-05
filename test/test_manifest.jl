@@ -127,6 +127,27 @@ using TOML
         @test RustCall.is_none(manifest_maybe(-1))
     end
 
+    @testset "#[julia] items inside inline modules" begin
+        rust"""
+        mod api {
+            #[julia]
+            pub fn mod_add(a: i32, b: i32) -> i32 { a + b }
+
+            #[julia]
+            pub struct ModPoint { x: f64 }
+
+            impl ModPoint {
+                pub fn new(x: f64) -> Self { Self { x } }
+                pub fn get_x(&self) -> f64 { self.x }
+            }
+        }
+        """
+        @test mod_add(Int32(2), Int32(3)) == 5
+        p = ModPoint(1.5)
+        @test p.x == 1.5
+        @test get_x(p) == 1.5
+    end
+
     @testset "syntax that broke the old parsers (#169, #177/#201, #184, #233)" begin
         rust"""
         // #177 / #201: nested block comments inside a function body

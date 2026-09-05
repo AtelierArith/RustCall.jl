@@ -19,7 +19,7 @@ use crate::attrs::{rustcall_attribute, strip_julia_struct_derive, strip_rustcall
 use crate::codegen::{inline_generic_wrappers, inline_struct_wrappers, transform_function};
 use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
-use crate::model::{collect_struct_models, StructModel};
+use crate::model::{collect_struct_models_in, StructModel};
 use crate::types::{
     generics_to_type_params, has_type_params, is_inline_accessible_field_type,
     return_type_to_string, type_to_string,
@@ -51,11 +51,25 @@ fn unparse_file(attrs: Vec<syn::Attribute>, items: Vec<Item>) -> String {
 
 pub fn expand(source: &str) -> Result<Expanded, syn::Error> {
     let file = syn::parse_file(source)?;
-    let models = collect_struct_models(&file, Mode::Inline);
     let mut manifest = Manifest::new(Mode::Inline);
+    let out = expand_items(&file.items, &mut manifest)?;
+
+    Ok(Expanded {
+        // Crate-level inner attributes (`#![allow(...)]`, `//!` docs) are kept;
+        // ordinary comments are not part of the AST and are dropped.
+        source: unparse_file(file.attrs.clone(), out),
+        manifest,
+    })
+}
+
+/// Expand one level of items. Inline modules (`mod m { ... }`) are expanded
+/// recursively so `#[julia]` items inside them are transformed and reported;
+/// `#[no_mangle]` symbols are unaffected by the module path.
+fn expand_items(items: &[Item], manifest: &mut Manifest) -> Result<Vec<Item>, syn::Error> {
+    let models = collect_struct_models_in(items, Mode::Inline);
     let mut out: Vec<Item> = Vec::new();
 
-    for item in &file.items {
+    for item in items {
         match item {
             Item::Fn(f) => {
                 let attribute = rustcall_attribute(&f.attrs);
@@ -111,16 +125,19 @@ pub fn expand(source: &str) -> Result<Expanded, syn::Error> {
                 }
                 out.push(Item::Impl(imp));
             }
+            Item::Mod(m) => match &m.content {
+                Some((brace, inner)) => {
+                    let mut m = m.clone();
+                    m.content = Some((*brace, expand_items(inner, manifest)?));
+                    out.push(Item::Mod(m));
+                }
+                None => out.push(item.clone()),
+            },
             other => out.push(other.clone()),
         }
     }
 
-    Ok(Expanded {
-        // Crate-level inner attributes (`#![allow(...)]`, `//!` docs) are kept;
-        // ordinary comments are not part of the AST and are dropped.
-        source: unparse_file(file.attrs.clone(), out),
-        manifest,
-    })
+    Ok(out)
 }
 
 fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {

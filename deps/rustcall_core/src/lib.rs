@@ -208,6 +208,38 @@ mod tests {
     }
 
     #[test]
+    fn inline_modules_are_expanded_recursively() {
+        let src = r#"
+            mod api {
+                #[julia]
+                pub fn inner_add(a: i32, b: i32) -> i32 { a + b }
+                #[julia]
+                pub struct P { x: f64 }
+                impl P { pub fn new(x: f64) -> Self { Self { x } } }
+                mod deep { #[julia] fn deeper() -> u8 { 1 } }
+            }
+            mod external;
+        "#;
+        let e = expand::expand(src).unwrap();
+        let names: Vec<_> = e
+            .manifest
+            .functions
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        assert_eq!(names, vec!["inner_add", "deeper"]);
+        assert_eq!(e.manifest.structs[0].name, "P");
+        assert!(e.source.contains("pub extern \"C\" fn inner_add"));
+        assert!(e.source.contains("pub extern \"C\" fn P_new"));
+        assert!(!e.source.contains("#[julia]"));
+        assert!(e.source.contains("mod external;"));
+
+        let c = extract::extract(src, Mode::Crate).unwrap();
+        assert_eq!(c.functions.len(), 2);
+        assert_eq!(c.structs.len(), 1);
+    }
+
+    #[test]
     fn manifest_roundtrips_through_toml() {
         let e = expand::expand("#[julia] fn a(x: i32) -> i32 { x }").unwrap();
         let toml = e.manifest.to_toml().unwrap();

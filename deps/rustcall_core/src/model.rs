@@ -76,9 +76,15 @@ fn impl_target_name(item: &ItemImpl) -> Option<String> {
 /// structs) together with their inherent impl blocks and the methods that get
 /// wrapped under the given mode.
 pub fn collect_struct_models(file: &syn::File, mode: Mode) -> Vec<StructModel> {
+    collect_struct_models_in(&file.items, mode)
+}
+
+/// Same as [`collect_struct_models`] for one level of items (a file or the body
+/// of an inline `mod`). Impl blocks are matched within the same level only.
+pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> {
     let mut models: Vec<StructModel> = Vec::new();
 
-    for item in &file.items {
+    for item in items {
         if let Item::Struct(s) = item {
             let attribute = rustcall_attribute(&s.attrs);
             let selected = matches!(
@@ -104,7 +110,7 @@ pub fn collect_struct_models(file: &syn::File, mode: Mode) -> Vec<StructModel> {
         }
     }
 
-    for item in &file.items {
+    for item in items {
         let Item::Impl(imp) = item else { continue };
         let Some(target) = impl_target_name(imp) else {
             continue;

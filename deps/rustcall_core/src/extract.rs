@@ -14,7 +14,7 @@ use crate::codegen::returns_boxed_struct;
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
 };
-use crate::model::{collect_struct_models, StructModel};
+use crate::model::{collect_struct_models_in, StructModel};
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_type_params,
     is_ffi_compatible_type, needs_clone_for_getter, return_type_to_string, type_to_string,
@@ -121,28 +121,39 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
 pub fn extract_crate(source: &str) -> Result<Manifest, syn::Error> {
     let file = syn::parse_file(source)?;
     let mut manifest = Manifest::new(Mode::Crate);
+    extract_crate_items(&file.items, &mut manifest);
+    Ok(manifest)
+}
 
-    for item in &file.items {
-        if let Item::Fn(f) = item {
-            let attribute = rustcall_attribute(&f.attrs);
-            match attribute {
-                Attribute::Julia => manifest.functions.push(function_entry(f, attribute, true)),
-                // `#[julia_pyo3]` does not wrap Result/Option; report the raw signature.
-                Attribute::JuliaPyo3 => {
-                    let mut entry = function_entry(f, attribute, false);
-                    entry.exported = !entry.is_generic;
-                    manifest.functions.push(entry);
+/// One level of items; inline modules are visited recursively.
+fn extract_crate_items(items: &[Item], manifest: &mut Manifest) {
+    for item in items {
+        match item {
+            Item::Fn(f) => {
+                let attribute = rustcall_attribute(&f.attrs);
+                match attribute {
+                    Attribute::Julia => manifest.functions.push(function_entry(f, attribute, true)),
+                    // `#[julia_pyo3]` does not wrap Result/Option; report the raw signature.
+                    Attribute::JuliaPyo3 => {
+                        let mut entry = function_entry(f, attribute, false);
+                        entry.exported = !entry.is_generic;
+                        manifest.functions.push(entry);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    extract_crate_items(inner, manifest);
+                }
+            }
+            _ => {}
         }
     }
 
-    for model in collect_struct_models(&file, Mode::Crate) {
+    for model in collect_struct_models_in(items, Mode::Crate) {
         manifest.structs.push(crate_struct_entry(&model));
     }
-
-    Ok(manifest)
 }
 
 fn crate_struct_entry(model: &StructModel) -> Struct {
