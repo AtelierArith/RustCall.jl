@@ -260,6 +260,138 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
     end
 
+    @testset "Path dependency inputs come from Cargo, not from a layout guess" begin
+        # Review finding (1): hashing only Cargo.toml + src/ misses build.rs, a
+        # [lib]/[[bin]] path outside src/, #[path] modules and Cargo.lock.
+        function crate_with(dir; manifest_extra = "", files = Dict{String, String}())
+            mkpath(dir)
+            write(joinpath(dir, "Cargo.toml"),
+                "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n$(manifest_extra)")
+            for (rel, body) in files
+                mkpath(dirname(joinpath(dir, rel)))
+                write(joinpath(dir, rel), body)
+            end
+            return dir
+        end
+
+        # (a) build.rs is an input.
+        bs = crate_with(mktempdir();
+            manifest_extra = "\n[lib]\npath = \"src/lib.rs\"\n",
+            files = Dict("src/lib.rs" => "pub fn f() {}",
+                         "build.rs" => "fn main() { println!(\"cargo:rustc-cfg=x\"); }"))
+        # (b) a [lib] path outside src/.
+        outside = crate_with(mktempdir();
+            manifest_extra = "\n[lib]\npath = \"lib/entry.rs\"\n",
+            files = Dict("lib/entry.rs" => "pub fn f() -> i32 { 1 }"))
+
+        try
+            dig_bs = RustCall.artifact_path_dependency_digest(bs)
+            write(joinpath(bs, "build.rs"), "fn main() { println!(\"cargo:rustc-cfg=y\"); }")
+            @test RustCall.artifact_path_dependency_digest(bs) != dig_bs   # build.rs counts
+
+            dig_out = RustCall.artifact_path_dependency_digest(outside)
+            write(joinpath(outside, "lib", "entry.rs"), "pub fn f() -> i32 { 2 }")
+            @test RustCall.artifact_path_dependency_digest(outside) != dig_out  # outside src/
+
+            # Cargo.lock is always included when present.
+            dig_lock = RustCall.artifact_path_dependency_digest(outside)
+            write(joinpath(outside, "Cargo.lock"), "version = 3\n")
+            @test RustCall.artifact_path_dependency_digest(outside) != dig_lock
+            strategy_lock, files_lock = RustCall.crate_input_files(outside)
+            @test "Cargo.lock" in files_lock
+
+            # Both strategies are exercised. A bare workspace manifest has no
+            # package, so `cargo package --list` fails and the walk takes over.
+            ws = mktempdir()
+            write(joinpath(ws, "Cargo.toml"), "[workspace]\nmembers = []\n")
+            mkpath(joinpath(ws, "odd"))
+            write(joinpath(ws, "odd", "thing.txt"), "content")
+            ws_strategy, ws_files = RustCall.crate_input_files(ws)
+            @test ws_strategy == "walk"
+            @test "odd/thing.txt" in ws_files                # the walk sees everything
+            @test "Cargo.toml" in ws_files
+            dig_ws = RustCall.artifact_path_dependency_digest(ws)
+            write(joinpath(ws, "odd", "thing.txt"), "changed")
+            @test RustCall.artifact_path_dependency_digest(ws) != dig_ws
+
+            # The walk skips build output and VCS metadata.
+            mkpath(joinpath(ws, "target", "debug"))
+            write(joinpath(ws, "target", "debug", "junk"), "noise")
+            mkpath(joinpath(ws, ".git"))
+            write(joinpath(ws, ".git", "HEAD"), "ref: refs/heads/main")
+            _, ws_files2 = RustCall.crate_input_files(ws)
+            @test !any(f -> startswith(f, "target/") || startswith(f, ".git/"), ws_files2)
+            @test "target" in RustCall.CRATE_INPUT_VCS_DIRS
+            @test ".git" in RustCall.CRATE_INPUT_VCS_DIRS
+
+            # The strategy is hashed, so the two file sets can never collide.
+            strategy_bs, _ = RustCall.crate_input_files(bs)
+            if strategy_bs == "cargo-package-list"
+                # cargo is available: the real strategy differs from the fallback.
+                @test strategy_bs != ws_strategy
+            else
+                @info "cargo package --list unavailable; only the walk strategy exercised"
+            end
+            rm(ws; force = true, recursive = true)
+        finally
+            for d in (bs, outside)
+                rm(d; force = true, recursive = true)
+            end
+        end
+    end
+
+    @testset "Build-script environment inputs are captured" begin
+        # Review finding (2): CC/CFLAGS/PKG_CONFIG_PATH and friends reach the
+        # build scripts of dependencies (cc-rs, pkg-config, cmake, bindgen) and
+        # change the native objects linked into the artifact.
+        for n in ("CC", "CXX", "AR", "LD", "RANLIB", "STRIP", "NM",
+                  "CFLAGS", "CXXFLAGS", "LDFLAGS", "ASFLAGS", "CPPFLAGS",
+                  "PKG_CONFIG", "PKG_CONFIG_PATH", "PKG_CONFIG_ALLOW_CROSS",
+                  "CMAKE_TOOLCHAIN_FILE", "BINDGEN_EXTRA_CLANG_ARGS",
+                  "LIBCLANG_PATH", "CLANG_PATH",
+                  "TARGET_CFLAGS", "HOST_CFLAGS", "CARGO_FEATURE_DEFAULT")
+            @test RustCall.artifact_build_env_captured(n)
+        end
+
+        # cc-rs accepts both per-target spellings.
+        @test RustCall.artifact_build_env_captured("x86_64_unknown_linux_gnu_CC")
+        @test RustCall.artifact_build_env_captured("CC_x86_64-unknown-linux-gnu")
+        @test RustCall.artifact_build_env_captured("aarch64_apple_darwin_CFLAGS")
+        @test RustCall.artifact_build_env_captured("CFLAGS_aarch64-apple-darwin")
+        @test RustCall.artifact_build_env_captured("x86_64_unknown_linux_gnu_LINKER")
+
+        # Secret rejection still runs first, over the build-script allowlist too.
+        for n in ("PKG_CONFIG_AUTH_TOKEN", "PKG_CONFIG_SECRET", "CC_PASSWORD",
+                  "BINDGEN_API_KEY", "CMAKE_CREDENTIAL_HELPER", "TARGET_AUTH")
+            @test !RustCall.artifact_build_env_captured(n)
+        end
+        @test RustCall.artifact_build_env_captured("PKG_CONFIG_PATH")
+
+        # Unrelated variables stay out.
+        for n in ("EDITOR", "LANG", "TERM", "SHELL", "PWD")
+            @test !RustCall.artifact_build_env_captured(n)
+        end
+
+        # A build-script variable reaches the key.
+        env_a = Dict("CC" => "clang")
+        env_b = Dict("CC" => "gcc")
+        @test RustCall.artifact_key(_id(kind = "cargo",
+                  build_env = RustCall.artifact_build_env(; env = env_a))) !=
+              RustCall.artifact_key(_id(kind = "cargo",
+                  build_env = RustCall.artifact_build_env(; env = env_b)))
+        # ... and unset CC differs from CC="".
+        @test RustCall.artifact_build_env(["CC"]; env = Dict{String, String}()) !=
+              RustCall.artifact_build_env(["CC"]; env = Dict("CC" => ""))
+
+        # A scan never leaks a credential even when build-script vars are present.
+        mixed = Dict("CC" => "clang", "PKG_CONFIG_PATH" => "/opt/lib/pkgconfig",
+                     "PKG_CONFIG_AUTH_TOKEN" => "s3cret", "CARGO_REGISTRY_TOKEN" => "s3cret")
+        captured = RustCall.artifact_build_env(; env = mixed)
+        @test first.(captured) == ["CC", "PKG_CONFIG_PATH"]
+        @test !any(p -> occursin("s3cret", last(p)), captured)
+    end
+
+
     @testset "Build environment: presence and prefix capture" begin
         # Review finding (1): unset and empty must not collide. Cargo treats an
         # empty RUSTFLAGS as "suppress inherited rustflags", not as "unset".

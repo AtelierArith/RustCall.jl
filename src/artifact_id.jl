@@ -390,10 +390,16 @@ end
 """
     artifact_path_dependency_digest(path::AbstractString) -> String
 
-Deterministic SHA-256 digest of the *inputs* of a local path dependency: its
-`Cargo.toml` plus every file under `src/`, by sorted relative path with
+Deterministic SHA-256 digest of the *inputs* of a local path dependency: every
+file Cargo considers part of the package, by sorted relative path with
 contents, recursing into the path dependencies that `Cargo.toml` itself
 declares.
+
+The file set comes from `crate_input_files`, which asks Cargo
+(`cargo package --list`) rather than assuming a layout, so a `build.rs`, a
+`[lib] path` or `[[bin]] path` outside `src/`, a `#[path = "..."]` module and
+`Cargo.lock` all reach the digest; the strategy that produced the set is hashed
+alongside it.
 
 Only content is hashed — never the absolute location — so an identical crate in
 a differently named directory yields the same digest and a checkout move does
@@ -432,37 +438,103 @@ function _hash_path_crate!(io::IO, path::AbstractString, seen::Set{String})
     push!(seen, canonical)
 
     _netstring!(io, "crate")
-    files = String[]
-    manifest = joinpath(dir, "Cargo.toml")
-    isfile(manifest) && push!(files, manifest)
-    srcdir = joinpath(dir, "src")
-    if isdir(srcdir)
-        for (root, dirs, names) in walkdir(srcdir)
-            filter!(!isequal("target"), dirs)
-            for n in names
-                push!(files, joinpath(root, n))
-            end
-        end
-    end
-    relnames = Dict(f => replace(relpath(f, dir), '\\' => '/') for f in files)
-    sort!(files, by = f -> relnames[f])
+    strategy, files = crate_input_files(dir)
+    # The strategy is part of the digest: a file set found by asking Cargo and
+    # one found by walking the directory must never be able to collide.
+    _netstring!(io, "strategy")
+    _netstring!(io, strategy)
     _netstring!(io, string(length(files)))
-    for f in files
-        _netstring!(io, relnames[f])
-        try
-            _netstring_bytes!(io, read(f))
-        catch
-            _netstring!(io, "unreadable")
+    for rel in files
+        _netstring!(io, rel)
+        f = joinpath(dir, rel)
+        if isfile(f)
+            try
+                _netstring_bytes!(io, read(f))
+            catch
+                _netstring!(io, "unreadable")
+            end
+        else
+            # `cargo package --list` also names files it would synthesize
+            # (Cargo.toml.orig, .cargo_vcs_info.json); record their absence.
+            _netstring!(io, "not-on-disk")
         end
     end
 
     # Recurse into the path dependencies this crate declares itself.
-    for child in _declared_path_dependencies(manifest)
+    for child in _declared_path_dependencies(joinpath(dir, "Cargo.toml"))
         _netstring!(io, "path-dep")
         _netstring!(io, child)
         _hash_path_crate!(io, joinpath(dir, child), seen)
     end
     return nothing
+end
+
+"""
+    CRATE_INPUT_VCS_DIRS
+
+Directories never treated as crate inputs by the directory-walk fallback of
+`crate_input_files`: build output and version-control metadata.
+"""
+const CRATE_INPUT_VCS_DIRS = String[
+    ".bzr", ".git", ".hg", ".jj", ".pijul", ".svn", "target",
+]
+
+"""
+    crate_input_files(dir::AbstractString) -> (strategy::String, files::Vector{String})
+
+The set of files that make up a crate, as relative `/`-separated paths, sorted,
+together with the name of the strategy that produced it.
+
+Cargo already knows exactly which files are package inputs — it honours
+`include`/`exclude`, `build = "..."`, `[lib] path`, `[[bin]] path`, modules
+pulled in by `#[path = "..."]` and everything else outside `src/` — so ask it:
+
+1. `cargo package --list --offline --allow-dirty` (no build, no network).
+2. If that fails (manifest is a bare workspace, no lockfile resolvable offline,
+   Cargo unavailable), fall back to walking the package directory for every
+   regular file, skipping `CRATE_INPUT_VCS_DIRS`.
+
+`Cargo.lock` is added whenever it exists, since `cargo package --list` omits it
+for a library crate while it still pins what gets built.
+
+The strategy name is returned, and hashed, so a file set obtained one way can
+never collide with one obtained the other way.
+"""
+function crate_input_files(dir::AbstractString)
+    dir = String(dir)
+    manifest = joinpath(dir, "Cargo.toml")
+    files = String[]
+    strategy = "walk"
+
+    if isfile(manifest)
+        listed = try
+            cmd = `$(cargo()) package --list --offline --allow-dirty --manifest-path $(manifest)`
+            read(pipeline(cmd; stderr = devnull), String)
+        catch
+            ""
+        end
+        entries = String[strip(l) for l in split(listed, '\n') if !isempty(strip(l))]
+        if !isempty(entries)
+            files = entries
+            strategy = "cargo-package-list"
+        end
+    end
+
+    if strategy == "walk"
+        for (root, dirs, names) in walkdir(dir)
+            filter!(d -> !(d in CRATE_INPUT_VCS_DIRS), dirs)
+            for n in names
+                push!(files, relpath(joinpath(root, n), dir))
+            end
+        end
+    end
+
+    isfile(joinpath(dir, "Cargo.lock")) && push!(files, "Cargo.lock")
+
+    files = String[replace(f, '\\' => '/') for f in files]
+    unique!(files)
+    sort!(files)
+    return strategy, files
 end
 
 function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
@@ -540,6 +612,9 @@ so registry credentials such as `CARGO_REGISTRY_TOKEN` or
 `CARGO_REGISTRIES_<NAME>_TOKEN` can never enter an artifact key, be written to a
 cache directory name, or be logged.
 
+Build-script inputs (`CC`, `CFLAGS`, `PKG_CONFIG_PATH`, …) are a second,
+separately documented allowlist: see `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`.
+
 This mirrors the environment-capture design PR #272 introduces in
 `src/manifest.jl`. That PR is not on `main` yet, so the rule is implemented here
 independently; Phase B of #278 unifies the two into this one place.
@@ -571,6 +646,46 @@ const ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS = String[
 ]
 
 """
+    ARTIFACT_BUILD_SCRIPT_ENV_NAMES
+    ARTIFACT_BUILD_SCRIPT_ENV_PREFIXES
+    ARTIFACT_BUILD_SCRIPT_ENV_SUFFIXES
+
+The second allowlist: variables that reach the **build scripts** of
+dependencies. `cc-rs`, `pkg-config`, `cmake-rs` and `bindgen` all read the
+ambient environment of this process, so `CC`, `CFLAGS`, `PKG_CONFIG_PATH`,
+`LIBCLANG_PATH` and friends change the native objects that end up in the
+artifact while nothing about the Rust source changes.
+
+`ARTIFACT_BUILD_SCRIPT_ENV_SUFFIXES` covers the per-target convention
+(`x86_64_unknown_linux_gnu_CC`); the equivalent `CC_x86_64-unknown-linux-gnu`
+spelling, which `cc-rs` also accepts, is covered by the prefixes.
+
+!!! note "Best effort by construction"
+    No allowlist can be complete: a build script may read any variable it
+    likes, and the only exhaustive answer is Cargo's own fingerprint. This set
+    is therefore a safety net, not a proof. Phase B of #278 must treat a change
+    in the captured set as **rebuild**, never as grounds to reuse an artifact —
+    a captured variable that changed means "stale", while an unchanged captured
+    set does not by itself prove "fresh".
+"""
+const ARTIFACT_BUILD_SCRIPT_ENV_NAMES = String[
+    "AR", "ASFLAGS", "CC", "CFLAGS", "CPPFLAGS", "CXX", "CXXFLAGS",
+    "LD", "LDFLAGS", "NM", "RANLIB", "STRIP",
+]
+
+"See `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`."
+const ARTIFACT_BUILD_SCRIPT_ENV_PREFIXES = String[
+    "AR_", "BINDGEN_", "CARGO_FEATURE_", "CC_", "CFLAGS_", "CLANG_", "CMAKE_",
+    "CXXFLAGS_", "CXX_", "HOST_", "LDFLAGS_", "LIBCLANG_", "LINKER_",
+    "PKG_CONFIG", "TARGET_",
+]
+
+"See `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`."
+const ARTIFACT_BUILD_SCRIPT_ENV_SUFFIXES = String[
+    "_AR", "_CC", "_CFLAGS", "_CXX", "_CXXFLAGS", "_LDFLAGS", "_LINKER",
+]
+
+"""
     artifact_build_env_captured(name::AbstractString) -> Bool
 
 Whether `name` is a build variable that belongs in an artifact key. Secrets are
@@ -579,9 +694,11 @@ rejected before the allowlist is consulted; see
 """
 function artifact_build_env_captured(name::AbstractString)::Bool
     upper = uppercase(String(name))
+    # Secrets are rejected first, over both allowlists, unconditionally.
     for bad in ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS
         occursin(bad, upper) && return false
     end
+    # Allowlist 1: Cargo/rustc inputs.
     upper in ARTIFACT_BUILD_ENV_NAMES && return true
     for prefix in ARTIFACT_BUILD_ENV_PREFIXES
         startswith(upper, prefix) && return true
@@ -590,6 +707,14 @@ function artifact_build_env_captured(name::AbstractString)::Bool
     if startswith(upper, "CARGO_TARGET_") &&
        (endswith(upper, "_RUSTFLAGS") || endswith(upper, "_LINKER"))
         return true
+    end
+    # Allowlist 2: build-script inputs (cc-rs, pkg-config, cmake, bindgen).
+    upper in ARTIFACT_BUILD_SCRIPT_ENV_NAMES && return true
+    for prefix in ARTIFACT_BUILD_SCRIPT_ENV_PREFIXES
+        startswith(upper, prefix) && return true
+    end
+    for suffix in ARTIFACT_BUILD_SCRIPT_ENV_SUFFIXES
+        endswith(upper, suffix) && return true
     end
     return false
 end
