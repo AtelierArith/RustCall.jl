@@ -897,3 +897,106 @@ function ffi_describe(rust_type::AbstractString; direction::Symbol = :return, ab
     slots = isempty(c.ccall_types) ? "no slots" : join(string.(c.ccall_types), ", ")
     return "$(c.rust_type) [$(c.direction)]: abi=$(c.abi), slots=($slots), surface=$(c.surface_type), ownership=$(c.ownership)"
 end
+
+# ============================================================================
+# The one return decision (issue #276 Phase B)
+# ============================================================================
+
+"""
+    FFI_STRICT :: Ref{Symbol}
+
+What generated code does when the FFI contract cannot describe a **return**
+position:
+
+| value    | behaviour |
+| -------- | --------- |
+| `:error` | raise a `RustError` naming the signature (the default) |
+| `:warn`  | warn once per signature and emit `Any`, the pre-#276 behaviour |
+| `:none`  | emit `Any` silently |
+
+`Any` in a `ccall` return slot was never well defined — it is the guess #245
+is about — so `:warn` and `:none` exist only to get an existing crate compiling
+again while its unsupported types are dealt with. `write_bindings_to_file`
+binds this per call through its `strict` keyword.
+"""
+const FFI_STRICT = Ref{Symbol}(:warn)
+
+const _FFI_WARNED_CONTEXTS = Set{String}()
+
+"""
+    ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
+
+How the return position of `ctx` is spelled in generated code, as a Julia AST
+fragment ready to splice.
+
+This is the single entry point every return site uses — the `Expr` generators
+of `src/crate_bindings.jl` and the source-text emitters alike — so the two
+copies cannot drift apart again (#276 acceptance criterion 2). `ctx` is the
+signature the position belongs to (`"mycrate::shout(s) -> String"`), and it is
+what an unsupported type is reported against.
+
+Multi-word returns are *not* handled here: a lowered `String` / `&str` return
+is a `#[repr(C)]` buffer with an owner, which the caller must take from
+[`ffi_return_contract`](@ref) so it also gets `free_symbol`. Asking for a
+single symbol for one is treated as unsupported.
+
+The C **slot** is what generated code needs, which is not always the surface
+type: Rust `char` arrives as a `UInt32` code point and must be converted, never
+reinterpreted as Julia's left-aligned UTF-8 `Char`.
+"""
+function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                    ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known
+        c.abi === :void && return :Cvoid
+        if c.abi === :by_value || c.abi === :pointer
+            return _ffi_slot_expr(rust_type, c)
+        end
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict)
+end
+
+# The spelling of the single C slot: the contract's own spelling (`:Csize_t`)
+# when the slot and the surface type agree, the slot otherwise (`char`).
+function _ffi_slot_expr(rust_type::AbstractString, c::FFIContract)
+    slot = only(c.ccall_types)
+    slot === c.surface_type || return ffi_type_expr(slot)
+    return something(ffi_julia_symbol(rust_type), ffi_type_expr(slot))
+end
+
+function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol)
+    strict in (:error, :warn, :none) || throw(ArgumentError(
+        "FFI_STRICT must be :error, :warn or :none, got :$strict"))
+    strict === :none && return :Any
+    detail = ffi_describe(rust_type; direction = :return, abi = abi)
+    if strict === :error
+        throw(RustError(
+            "the FFI contract cannot describe the return type of `$ctx`: $detail. " *
+            "Add a `::T` return annotation at the call site, change the Rust " *
+            "signature to a supported type, or set " *
+            "`RustCall.FFI_STRICT[] = :warn` to fall back to `Any` (see " *
+            "https://github.com/AtelierArith/RustCall.jl/issues/276)."))
+    end
+    if !(ctx in _FFI_WARNED_CONTEXTS)
+        lock(REGISTRY_LOCK) do
+            push!(_FFI_WARNED_CONTEXTS, String(ctx))
+        end
+        @warn "the FFI contract cannot describe the return type of `$ctx`; \
+               emitting `Any`, which is not a well-defined ccall return slot. \
+               Set `RustCall.FFI_STRICT[] = :error` to make this fail instead." detail
+    end
+    return :Any
+end
+
+"""
+    ffi_signature_context(name, arg_types, return_type; owner = nothing) -> String
+
+The human-readable signature an unsupported type is reported against:
+`"Struct::method(i32, String) -> Vec<f64>"`.
+"""
+function ffi_signature_context(name::AbstractString, arg_types, return_type::AbstractString;
+                               owner::Union{Nothing, AbstractString} = nothing)
+    prefix = owner === nothing ? "" : string(owner, "::")
+    args = join(arg_types, ", ")
+    return string(prefix, name, "(", args, ") -> ", isempty(return_type) ? "()" : return_type)
+end

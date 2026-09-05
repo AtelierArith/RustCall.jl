@@ -51,7 +51,6 @@ function core_is_non_ffi(s::AbstractString)
 end
 
 # Tables 2-5 are Julia functions and can be called directly.
-table_symbol(s) = RustCall._rust_type_to_julia_type_symbol(s)              # src/julia_functions.jl:220
 table_structs(s) = RustCall.rust_to_julia_type_sym(s)                      # src/structs.jl:665
 
 # The union of the spellings any of the five tables (or the contract) has an
@@ -431,11 +430,9 @@ const ALL_SPELLINGS = vcat(
         # A quick census, so a table gaining an entry shows up as a failure here
         # rather than silently.
         covered = Dict(
-            "julia_functions/symbol" => count(s -> table_symbol(s) !== nothing, ALL_SPELLINGS),
             "structs/type_sym" => count(s -> table_structs(s) !== :Any, ALL_SPELLINGS),
             "ffi_contract" => count(RustCall.ffi_known, ALL_SPELLINGS),
         )
-        @test covered["julia_functions/symbol"] == 14
         @test covered["structs/type_sym"] == 10
         # The contract covers everything except the genuinely unsupported
         # aggregate, which it refuses on purpose.
@@ -447,7 +444,6 @@ const ALL_SPELLINGS = vcat(
         for s in ("i128", "u128", "char")
             @test core_is_ffi_compatible(s)
             # …but every Julia table mistranslates them.
-            @test table_symbol(s) === nothing
             @test table_structs(s) === :Any        # fail-open: `Any` in a ccall
             # The contract knows all three.
             @test RustCall.ffi_known(s)
@@ -466,9 +462,8 @@ const ALL_SPELLINGS = vcat(
         # while the same type in a free function becomes `:UInt16`.
         for s in ("i8", "i16", "u8", "u16", "i128", "u128", "usize", "isize", "char")
             @test table_structs(s) === :Any
-            @test table_symbol(s) !== :Any
+            @test RustCall.ffi_julia_symbol(s) !== nothing
         end
-        @test table_symbol("u16") === :UInt16
         @test RustCall.ffi_julia_symbol("u16") === :UInt16
     end
 
@@ -477,7 +472,6 @@ const ALL_SPELLINGS = vcat(
         # one with the fixed-width names. Same type on every supported
         # platform, different spelling in generated code — and a real
         # divergence on any target where `Csize_t !== UInt64`.
-        @test table_symbol("usize") === :Csize_t
         @test table_structs("usize") === :Any
         @test RustCall.ffi_julia_symbol("usize") === :Csize_t
         # Today these coincide; the test records the assumption.
@@ -493,7 +487,6 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_argument_contract("()").abi === :void
         @test RustCall.ffi_return_contract("()").abi === :void
         @test RustCall.ffi_return_ccall_type("()") === Cvoid
-        @test table_symbol("()") === :Cvoid
         @test table_structs("()") === :Cvoid
         @test RustCall.ffi_julia_symbol("()") === :Cvoid
     end
@@ -502,8 +495,6 @@ const ALL_SPELLINGS = vcat(
         # Only `src/structs.jl` maps the string types at all.
         @test table_structs("String") === :RustString
         @test table_structs("&str") === :RustStr
-        @test table_symbol("String") === nothing
-        @test table_symbol("&str") === nothing
         # `rustcall_core` classifies both as *non*-FFI…
         @test core_is_non_ffi("String")
         @test core_is_non_ffi("&str")
@@ -533,7 +524,6 @@ const ALL_SPELLINGS = vcat(
         # path in each of them.
         for s in ("*const u8", "*mut i32", "*mut c_void")
             @test core_is_ffi_compatible(s)
-            @test table_symbol(s) === nothing
             @test table_structs(s) === :Any
             @test RustCall.ffi_known(s)
         end
@@ -547,6 +537,47 @@ const ALL_SPELLINGS = vcat(
         # The contract answers `nothing`, which a caller cannot mistake for one.
         @test RustCall.ffi_julia_symbol("Vec<f64>") === nothing
         @test RustCall.ffi_return_contract("CompletelyMadeUp").known == false
+    end
+
+    @testset "one return decision: ffi_return_symbol_or_throw (#276 AC 2)" begin
+        # Every return site — the `Expr` generators and the source-text
+        # emitters alike — goes through this one function, so the two copies
+        # cannot drift apart again.
+        @test RustCall.ffi_return_symbol_or_throw("i32", "", "f() -> i32") === :Int32
+        @test RustCall.ffi_return_symbol_or_throw("usize", "", "f() -> usize") === :Csize_t
+        @test RustCall.ffi_return_symbol_or_throw("()", "", "f()") === :Cvoid
+        @test RustCall.ffi_return_symbol_or_throw("i128", "", "f() -> i128") === :Int128
+        @test RustCall.ffi_return_symbol_or_throw("*mut i32", "", "f()") == :(Ptr{Int32})
+        # `char` arrives as its C slot, never reinterpreted from Julia's
+        # left-aligned UTF-8 `Char`.
+        @test RustCall.ffi_return_symbol_or_throw("char", "", "f() -> char") === :UInt32
+
+        ctx = "mycrate::f(i32) -> Vec<f64>"
+        # `:error` names the signature and the contract's verdict.
+        err = try
+            RustCall.ffi_return_symbol_or_throw("Vec<f64>", "", ctx; strict = :error)
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        @test occursin(ctx, sprint(showerror, err))
+        @test occursin("not in the FFI contract", sprint(showerror, err))
+        # `:warn` / `:none` fall back to the pre-#276 `Any`.
+        @test RustCall.ffi_return_symbol_or_throw("Vec<f64>", "", ctx; strict = :none) === :Any
+        @test_throws ArgumentError RustCall.ffi_return_symbol_or_throw(
+            "Vec<f64>", "", ctx; strict = :nonsense)
+
+        # A multi-word return has no single symbol: it carries an owner and a
+        # free symbol, so callers must take `ffi_return_contract` instead.
+        @test RustCall.ffi_return_symbol_or_throw("String", "string", ctx;
+                                                  strict = :none) === :Any
+
+        @test RustCall.FFI_STRICT[] in (:error, :warn, :none)
+        @test RustCall.ffi_signature_context("f", ["i32", "String"], "u8") ==
+              "f(i32, String) -> u8"
+        @test RustCall.ffi_signature_context("m", ["i32"], ""; owner = "P") ==
+              "P::m(i32) -> ()"
     end
 
     @testset "divergence: the return-type guess (#245 item 1)" begin
@@ -641,7 +672,6 @@ const ALL_SPELLINGS = vcat(
         # Phase A is additive. If any of these change, a call site was migrated
         # and the divergence tests above must be revisited.
         @test length(RustCall.RUST_TO_JULIA_TYPE_MAP) == 26
-        @test table_symbol("i32") === :Int32
         @test table_structs("i32") === :Int32
     end
 end
