@@ -83,8 +83,8 @@ This creates a simple wrapper that calls the actual function.
 """
 function generate_llvmcall_ir(func_name::String, ret_type::Type, arg_types::Vector{Type})
     # Map Julia types to LLVM IR types
-    llvm_ret = julia_type_to_llvm_ir_string(ret_type)
-    llvm_args = [julia_type_to_llvm_ir_string(t) for t in arg_types]
+    llvm_ret = _julia_type_to_llvm_ir_string(ret_type)
+    llvm_args = [_julia_type_to_llvm_ir_string(t) for t in arg_types]
 
     # Build argument list
     arg_list = join(["$(llvm_args[i]) %$(i-1)" for i in 1:length(arg_types)], ", ")
@@ -114,20 +114,26 @@ Supports basic types, pointers, tuples, and structs.
     release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
     Use `@rust` instead.
 """
-function julia_type_to_llvm_ir_string end
+function julia_type_to_llvm_ir_string(t::Type)
+    _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+    return _julia_type_to_llvm_ir_string(t)
+end
+
+# Internal, warning-free implementation (one method per supported type).
+function _julia_type_to_llvm_ir_string end
 
 # Basic integer types
-julia_type_to_llvm_ir_string(::Type{Bool}) = "i8"  # C ABI uses i8 for bool, not i1
-julia_type_to_llvm_ir_string(::Type{Int8}) = "i8"
-julia_type_to_llvm_ir_string(::Type{UInt8}) = "i8"
-julia_type_to_llvm_ir_string(::Type{Int16}) = "i16"
-julia_type_to_llvm_ir_string(::Type{UInt16}) = "i16"
-julia_type_to_llvm_ir_string(::Type{Int32}) = "i32"
-julia_type_to_llvm_ir_string(::Type{UInt32}) = "i32"
-julia_type_to_llvm_ir_string(::Type{Int64}) = "i64"
-julia_type_to_llvm_ir_string(::Type{UInt64}) = "i64"
-julia_type_to_llvm_ir_string(::Type{Int128}) = "i128"
-julia_type_to_llvm_ir_string(::Type{UInt128}) = "i128"
+_julia_type_to_llvm_ir_string(::Type{Bool}) = "i8"  # C ABI uses i8 for bool, not i1
+_julia_type_to_llvm_ir_string(::Type{Int8}) = "i8"
+_julia_type_to_llvm_ir_string(::Type{UInt8}) = "i8"
+_julia_type_to_llvm_ir_string(::Type{Int16}) = "i16"
+_julia_type_to_llvm_ir_string(::Type{UInt16}) = "i16"
+_julia_type_to_llvm_ir_string(::Type{Int32}) = "i32"
+_julia_type_to_llvm_ir_string(::Type{UInt32}) = "i32"
+_julia_type_to_llvm_ir_string(::Type{Int64}) = "i64"
+_julia_type_to_llvm_ir_string(::Type{UInt64}) = "i64"
+_julia_type_to_llvm_ir_string(::Type{Int128}) = "i128"
+_julia_type_to_llvm_ir_string(::Type{UInt128}) = "i128"
 
 # Platform-dependent C types (sized based on runtime sizeof)
 # Only define methods for types that don't alias an already-defined base type,
@@ -138,25 +144,25 @@ const _LLVM_IR_BASE_TYPES = Set{Type}([
 ])
 for ctype in [Cint, Cuint, Clong, Culong, Csize_t, Cssize_t, Cptrdiff_t, Clonglong, Culonglong]
     if ctype ∉ _LLVM_IR_BASE_TYPES
-        @eval julia_type_to_llvm_ir_string(::Type{$ctype}) = $(string("i", 8 * sizeof(ctype)))
+        @eval _julia_type_to_llvm_ir_string(::Type{$ctype}) = $(string("i", 8 * sizeof(ctype)))
     end
 end
 
 # Floating point types
-julia_type_to_llvm_ir_string(::Type{Float32}) = "float"
-julia_type_to_llvm_ir_string(::Type{Float64}) = "double"
+_julia_type_to_llvm_ir_string(::Type{Float32}) = "float"
+_julia_type_to_llvm_ir_string(::Type{Float64}) = "double"
 
 # Void type (Cvoid === Nothing in Julia, so this handles both)
-julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
+_julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
 
 # Pointer types (opaque pointer in modern LLVM)
-julia_type_to_llvm_ir_string(::Type{<:Ptr}) = "ptr"
+_julia_type_to_llvm_ir_string(::Type{<:Ptr}) = "ptr"
 
 # Tuple types
-julia_type_to_llvm_ir_string(t::Type{<:Tuple}) = _tuple_type_to_llvm_ir(t)
+_julia_type_to_llvm_ir_string(t::Type{<:Tuple}) = _tuple_type_to_llvm_ir(t)
 
 # Struct types fallback (immutable structs)
-function julia_type_to_llvm_ir_string(t::Type)
+function _julia_type_to_llvm_ir_string(t::Type)
     if isstructtype(t) && !isabstracttype(t) && !isprimitivetype(t)
         return _struct_type_to_llvm_ir(t)
     else
@@ -175,7 +181,7 @@ function _tuple_type_to_llvm_ir(t::Type{<:Tuple})
     end
 
     param_types = t.parameters
-    llvm_types = [julia_type_to_llvm_ir_string(param) for param in param_types]
+    llvm_types = [_julia_type_to_llvm_ir_string(param) for param in param_types]
     return "{$(join(llvm_types, ", "))}"
 end
 
@@ -209,7 +215,7 @@ function _struct_type_to_llvm_ir(t::Type)
                 push!(llvm_fields, "i8")
             end
         end
-        llvm_type = julia_type_to_llvm_ir_string(ft)
+        llvm_type = _julia_type_to_llvm_ir_string(ft)
         push!(llvm_fields, llvm_type)
         current_offset = Int(field_offset) + sizeof(ft)
     end

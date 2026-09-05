@@ -65,7 +65,7 @@ Define the method for one canonical type and add a comment:
 
 ```julia
 # Void type (Cvoid === Nothing in Julia, so this handles both)
-RustCall.julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
+RustCall._julia_type_to_llvm_ir_string(::Type{Nothing}) = "void"
 ```
 
 If you need to handle both names in user-facing code (e.g., dispatching on a

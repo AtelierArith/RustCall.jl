@@ -20,6 +20,16 @@ struct OptimizationConfig
     enable_vectorization::Bool
     enable_loop_unrolling::Bool
     enable_licm::Bool  # Loop-invariant code motion
+
+    # Positional construction is public API too, so it warns as well (#265).
+    # `_optimization_config` passes `_warn=false` for internal use.
+    function OptimizationConfig(level::Int, size_level::Int, inline_threshold::Int,
+                                enable_vectorization::Bool, enable_loop_unrolling::Bool,
+                                enable_licm::Bool; _warn::Bool = true)
+        _warn && _llvm_path_depwarn("OptimizationConfig", :OptimizationConfig)
+        return new(level, size_level, inline_threshold,
+                   enable_vectorization, enable_loop_unrolling, enable_licm)
+    end
 end
 
 """
@@ -48,7 +58,7 @@ function _optimization_config(;
     @assert 0 <= level <= 3 "Optimization level must be 0-3"
     @assert 0 <= size_level <= 2 "Size level must be 0-2"
     OptimizationConfig(level, size_level, inline_threshold,
-                      enable_vectorization, enable_loop_unrolling, enable_licm)
+                       enable_vectorization, enable_loop_unrolling, enable_licm; _warn=false)
 end
 
 # Default optimization config

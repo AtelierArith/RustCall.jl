@@ -242,13 +242,19 @@ end
     @test config isa RustCall.OptimizationConfig
     @test config.level == 1
 
+    # Positional construction bypasses the keyword wrapper but must warn too.
+    positional = @test_deprecated RustCall.OptimizationConfig(2, 0, 225, true, true, true)
+    @test positional.inline_threshold == 225
+
     @test_deprecated RustCall.set_default_opt_config(RustCall._optimization_config())
     @test_deprecated RustCall.get_registered_function("no_such_function_265")
+    @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Int32)) == "i32"
 
     # Internal helpers used by @rust and by the deprecated wrappers stay silent.
     if Base.JLOptions().depwarn != 0
         @test_logs RustCall._optimization_config()
         @test_logs RustCall._get_registered_function("no_such_function_265")
+        @test_logs RustCall._julia_type_to_llvm_ir_string(Int32)
     end
 
     if RustCall.check_rustc_available()
