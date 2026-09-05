@@ -25,6 +25,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[functions]]
 name = "positive"
@@ -49,3 +50,4 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""

@@ -69,6 +69,11 @@ pub enum ReturnKind {
 pub struct Arg {
     pub name: String,
     pub rust_type: String,
+    /// How the wrapper receives the argument: `""` as written (`rust_type`),
+    /// `"string"` (`String`: `(ptr, len)` bytes copied into an owned String),
+    /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed).
+    #[serde(default)]
+    pub abi: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

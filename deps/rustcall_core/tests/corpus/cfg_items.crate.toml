@@ -24,6 +24,7 @@ module_path = []
 [[functions.args]]
 name = "x"
 rust_type = "i32"
+abi = ""
 
 [[functions]]
 name = "windows_wide"
@@ -69,6 +70,7 @@ module_path = []
 [[functions.args]]
 name = "x"
 rust_type = "f64"
+abi = ""
 
 [[functions]]
 name = "bonus"

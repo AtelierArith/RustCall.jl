@@ -44,6 +44,7 @@ type_params = []
 [[functions.args]]
 name = "value"
 rust_type = "Vec<Option<Result<T, String>>>"
+abi = ""
 
 [[functions]]
 name = "const_expression"
@@ -68,6 +69,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "[u8; { if 1 < 2 { 3 } else { 4 } }]"
+abi = ""
 
 [[functions]]
 name = "raw_braces"

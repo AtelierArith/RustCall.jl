@@ -395,25 +395,15 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
     # Build argument list
     arg_syms = [Symbol(name) for name in func.arg_names]
 
-    # Build converted arguments with type conversion (a bare Symbol when the
-    # argument is passed through unchanged)
-    converted_args = Any[]
-    for (name, rust_type) in zip(func.arg_names, func.arg_types)
-        julia_type = _rust_type_to_julia_conversion_type(rust_type)
-        arg_sym = Symbol(name)
-
-        if julia_type !== nothing
-            push!(converted_args, :($julia_type($arg_sym)))
-        else
-            push!(converted_args, arg_sym)
-        end
-    end
+    # Build converted arguments (string arguments become (ptr, len) pairs kept
+    # alive with GC.@preserve, see `_string_arg_plan`)
+    bindings, preserved, converted_args = _string_arg_plan(func, identity)
 
     # Result<T, E> / Option<T> returns are reported by the manifest
     if func.return_kind == :result
-        return _generate_result_function_wrapper(func, arg_syms, converted_args)
+        return _generate_result_function_wrapper(func, arg_syms, bindings, preserved, converted_args)
     elseif func.return_kind == :option
-        return _generate_option_function_wrapper(func, arg_syms, converted_args)
+        return _generate_option_function_wrapper(func, arg_syms, bindings, preserved, converted_args)
     elseif _uses_string_ffi(func)
         return _generate_string_function_wrapper(func, arg_syms)
     else
@@ -471,7 +461,8 @@ end
 Generate a Julia wrapper for a function that returns Result<T, E>.
 The wrapper will return RustResult{T, E}.
 """
-function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol}, converted_args::Vector)
+function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
+                                           bindings::Vector, preserved::Vector, converted_args::Vector)
     func_name = Symbol(func.name)
     func_name_str = func.name
 
@@ -499,7 +490,8 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
 
         function $func_name($(arg_syms...))
             func_ptr = _get_func_ptr($func_name_str)
-            c_result = call_rust_function(func_ptr, $c_result_struct_name, $(converted_args...))
+            $(bindings...)
+            c_result = GC.@preserve $(preserved...) call_rust_function(func_ptr, $c_result_struct_name, $(converted_args...))
             # Convert to RustResult
             if c_result.is_ok == 1
                 RustResult{$ok_julia_type, $err_julia_type}(true, c_result.ok_value)
@@ -517,7 +509,8 @@ end
 Generate a Julia wrapper for a function that returns Option<T>.
 The wrapper will return RustOption{T}.
 """
-function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol}, converted_args::Vector)
+function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
+                                           bindings::Vector, preserved::Vector, converted_args::Vector)
     func_name = Symbol(func.name)
     func_name_str = func.name
 
@@ -540,7 +533,8 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
 
         function $func_name($(arg_syms...))
             func_ptr = _get_func_ptr($func_name_str)
-            c_option = call_rust_function(func_ptr, $c_option_struct_name, $(converted_args...))
+            $(bindings...)
+            c_option = GC.@preserve $(preserved...) call_rust_function(func_ptr, $c_option_struct_name, $(converted_args...))
             # Convert to RustOption
             if c_option.is_some == 1
                 RustOption{$inner_julia_type}(true, c_option.value)
@@ -1381,7 +1375,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "")
 
     # Imports
-    push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed")
+    push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,")
+    push!(lines, "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr")
     push!(lines, "import Libdl")
     push!(lines, "")
 
@@ -1433,6 +1428,19 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
 end
 
 """
+    _emit_string_arg_plan(func) -> (bindings_str, preserve_str, converted_args_str)
+
+Source-text counterpart of `_string_arg_plan` for the file emitter.
+"""
+function _emit_string_arg_plan(func::RustFunctionSignature)
+    bindings, preserved, call_args = _string_arg_plan(func, identity)
+    bindings_str = join(("    " * string(b) for b in bindings), "\n")
+    preserve_str = join(string.(preserved), " ")
+    converted_args_str = join(string.(call_args), ", ")
+    return bindings_str, preserve_str, converted_args_str
+end
+
+"""
     _emit_function_code(func::RustFunctionSignature) -> String
 
 Generate Julia code for a function wrapper as a string.
@@ -1440,26 +1448,29 @@ Generate Julia code for a function wrapper as a string.
 function _emit_function_code(func::RustFunctionSignature)
     func_name = func.name
     arg_names = func.arg_names
-    arg_types = func.arg_types
 
-    # Build argument conversions
+    # Build argument conversions (string arguments become (ptr, len) pairs)
     arg_syms = join(arg_names, ", ")
-    converted_args = String[]
-    for (name, rust_type) in zip(arg_names, arg_types)
-        julia_type = _rust_type_to_julia_conversion_type(rust_type)
-        if julia_type !== nothing
-            push!(converted_args, "$julia_type($name)")
-        else
-            push!(converted_args, name)
-        end
-    end
-    converted_args_str = join(converted_args, ", ")
+    bindings_str, preserve_str, converted_args_str = _emit_string_arg_plan(func)
+    prologue = isempty(bindings_str) ? "" : bindings_str * "\n"
 
     # Result/Option return types are reported by the manifest
     if func.return_kind == :result
-        return _emit_result_function_code(func, arg_syms, converted_args_str)
+        return _emit_result_function_code(func, arg_syms, converted_args_str; prologue, preserve_str)
     elseif func.return_kind == :option
-        return _emit_option_function_code(func, arg_syms, converted_args_str)
+        return _emit_option_function_code(func, arg_syms, converted_args_str; prologue, preserve_str)
+    elseif func.has_owned_string_helper
+        return """
+function $func_name($arg_syms)
+$(prologue)    GC.@preserve $preserve_str _call_rust_owned_string_ptr(_get_func_ptr("$func_name"), _get_func_ptr("$(func_name)_free_rust_string"), $converted_args_str)
+end
+export $func_name"""
+    elseif func.has_borrowed_string_helper
+        return """
+function $func_name($arg_syms)
+$(prologue)    GC.@preserve $preserve_str _call_rust_borrowed_string_ptr(_get_func_ptr("$func_name"), $converted_args_str)
+end
+export $func_name"""
     else
         # Standard function
         julia_ret_type = _rust_type_to_julia_type_symbol(func.return_type)
@@ -1467,14 +1478,15 @@ function _emit_function_code(func::RustFunctionSignature)
 
         return """
 function $func_name($arg_syms)
-    func_ptr = _get_func_ptr("$func_name")
-    call_rust_function(func_ptr, $ret_type_str, $converted_args_str)
+$(prologue)    func_ptr = _get_func_ptr("$func_name")
+    GC.@preserve $preserve_str call_rust_function(func_ptr, $ret_type_str, $converted_args_str)
 end
 export $func_name"""
     end
 end
 
-function _emit_result_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String)
+function _emit_result_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
+                                    prologue::String = "", preserve_str::String = "")
     func_name = func.name
     ok_julia_type = _rust_type_to_julia_type_symbol(func.ok_type)
     err_julia_type = _rust_type_to_julia_type_symbol(func.err_type)
@@ -1490,8 +1502,8 @@ struct $c_result_struct_name
 end
 
 function $func_name($arg_syms)
-    func_ptr = _get_func_ptr("$func_name")
-    c_result = call_rust_function(func_ptr, $c_result_struct_name, $converted_args_str)
+$(prologue)    func_ptr = _get_func_ptr("$func_name")
+    c_result = GC.@preserve $preserve_str call_rust_function(func_ptr, $c_result_struct_name, $converted_args_str)
     if c_result.is_ok == 1
         RustResult{$ok_type_str, $err_type_str}(true, c_result.ok_value)
     else
@@ -1501,7 +1513,8 @@ end
 export $func_name"""
 end
 
-function _emit_option_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String)
+function _emit_option_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
+                                    prologue::String = "", preserve_str::String = "")
     func_name = func.name
     inner_julia_type = _rust_type_to_julia_type_symbol(func.inner_type)
     inner_type_str = inner_julia_type !== nothing ? string(inner_julia_type) : "Any"
@@ -1514,8 +1527,8 @@ struct $c_option_struct_name
 end
 
 function $func_name($arg_syms)
-    func_ptr = _get_func_ptr("$func_name")
-    c_option = call_rust_function(func_ptr, $c_option_struct_name, $converted_args_str)
+$(prologue)    func_ptr = _get_func_ptr("$func_name")
+    c_option = GC.@preserve $preserve_str call_rust_function(func_ptr, $c_option_struct_name, $converted_args_str)
     if c_option.is_some == 1
         RustOption{$inner_type_str}(true, c_option.value)
     else

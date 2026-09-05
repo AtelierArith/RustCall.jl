@@ -48,6 +48,24 @@ fn crate_greeting() -> &'static str {
     "hello from sample_crate"
 }
 
+/// Parse an integer (Result with a string argument)
+#[julia]
+fn parse_int(s: &str) -> Result<i32, i32> {
+    s.trim().parse().map_err(|_| -1)
+}
+
+/// First Unicode scalar value (Option with a String argument)
+#[julia]
+fn first_char(s: String) -> Option<u32> {
+    s.chars().next().map(|c| c as u32)
+}
+
+/// Lifetime-qualified borrowed string in and out
+#[julia]
+fn identity_str<'a>(s: &'a str) -> &'a str {
+    s
+}
+
 /// Calculate the nth Fibonacci number
 #[julia]
 fn fibonacci(n: u32) -> u64 {

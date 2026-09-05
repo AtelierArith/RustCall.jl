@@ -72,26 +72,17 @@ pub fn function_returns_str_ref(sig: &syn::Signature) -> bool {
     matches!(&sig.output, ReturnType::Type(_, ty) if is_str_ref_type(ty))
 }
 
-/// `#[julia] fn f(s: String, t: &str) -> String` (#242).
-///
-/// Same ABI as the struct method wrappers: every `String` / `&str` argument
-/// becomes a `(*const u8, usize)` pair (UTF-8, not NUL-terminated); a `String`
-/// return becomes `<fn>_RustCallOwnedString { ptr, len, cap }` released with
-/// `<fn>_free_rust_string(ptr, len, cap)`; a `&str` return becomes
-/// `<fn>_RustCallBorrowedString { ptr, len }` (the caller keeps the borrowed
-/// data alive). The original function is kept as `<fn>_inner`.
-fn transform_string_function(func: ItemFn) -> TokenStream2 {
-    let inner_fn = func.clone();
-    let mut func = func;
-    let names = normalize_arg_patterns(&mut func);
-    let func_name = &func.sig.ident;
-    let inner_fn_name = format_ident!("{}_inner", func_name);
-    let inner_fn_args = &inner_fn.sig.inputs;
-    let inner_output = &inner_fn.sig.output;
-    let body = &inner_fn.block;
-    let cfg_attrs = cfg_attrs(&func.attrs);
-    let outer_attrs = &func.attrs;
+/// Wrapper-side view of a function's arguments: `String` / `&str` become
+/// `(ptr, len)` byte pairs (`conversions` rebuild the Rust value, lossily for
+/// invalid UTF-8, never through `from_utf8_unchecked`), everything else is
+/// passed through.
+struct StringArgs {
+    wrapper_args: Vec<TokenStream2>,
+    conversions: Vec<TokenStream2>,
+    call_args: Vec<TokenStream2>,
+}
 
+fn string_arg_conversions(func: &ItemFn, names: &[Ident]) -> StringArgs {
     let mut wrapper_args: Vec<TokenStream2> = Vec::new();
     let mut conversions: Vec<TokenStream2> = Vec::new();
     let mut call_args: Vec<TokenStream2> = Vec::new();
@@ -115,17 +106,54 @@ fn transform_string_function(func: ItemFn) -> TokenStream2 {
             let p = format_ident!("{}_ptr", name);
             let l = format_ident!("{}_len", name);
             let b = format_ident!("{}_bytes", name);
+            let c = format_ident!("{}_cow", name);
             wrapper_args.push(quote! { #p: *const u8 });
             wrapper_args.push(quote! { #l: usize });
             conversions.push(quote! {
                 let #b = unsafe { std::slice::from_raw_parts(#p, #l) };
-                let #name = unsafe { std::str::from_utf8_unchecked(#b) };
+                let #c = String::from_utf8_lossy(#b);
+                let #name: &str = &#c;
             });
         } else {
             wrapper_args.push(quote! { #name: #ty });
         }
         call_args.push(quote! { #name });
     }
+    StringArgs {
+        wrapper_args,
+        conversions,
+        call_args,
+    }
+}
+
+/// `#[julia] fn f(s: String, t: &str) -> String` (#242).
+///
+/// Same ABI as the struct method wrappers: every `String` / `&str` argument
+/// becomes a `(*const u8, usize)` pair (UTF-8, not NUL-terminated); a `String`
+/// return becomes `<fn>_RustCallOwnedString { ptr, len, cap }` released with
+/// `<fn>_free_rust_string(ptr, len, cap)`; a `&str` return becomes
+/// `<fn>_RustCallBorrowedString { ptr, len }` (the caller keeps the borrowed
+/// data alive). The original function is kept as `<fn>_inner`.
+fn transform_string_function(func: ItemFn) -> TokenStream2 {
+    let inner_fn = func.clone();
+    let mut func = func;
+    let names = normalize_arg_patterns(&mut func);
+    let func_name = &func.sig.ident;
+    let inner_fn_name = format_ident!("{}_inner", func_name);
+    let inner_fn_args = &inner_fn.sig.inputs;
+    let inner_output = &inner_fn.sig.output;
+    // Lifetime parameters (`fn f<'a>(s: &'a str) -> &'a str`) stay on the inner fn.
+    let inner_generics = &inner_fn.sig.generics;
+    let inner_where = &inner_fn.sig.generics.where_clause;
+    let body = &inner_fn.block;
+    let cfg_attrs = cfg_attrs(&func.attrs);
+    let outer_attrs = &func.attrs;
+
+    let StringArgs {
+        wrapper_args,
+        conversions,
+        call_args,
+    } = string_arg_conversions(&func, &names);
 
     let owned_helper = format_ident!("{}_RustCallOwnedString", func_name);
     let owned_free = format_ident!("{}_free_rust_string", func_name);
@@ -210,7 +238,7 @@ fn transform_string_function(func: ItemFn) -> TokenStream2 {
 
         #(#cfg_attrs)*
         #[allow(clippy::ptr_arg)]
-        fn #inner_fn_name(#inner_fn_args) #inner_output #body
+        fn #inner_fn_name #inner_generics (#inner_fn_args) #inner_output #inner_where #body
 
         #wrapper
     }
@@ -372,10 +400,16 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
     let cfg_attrs = cfg_attrs(&func.attrs);
     let c_result_type = generate_c_result_type(func_name, ok_type, err_type, &cfg_attrs);
     let result_type_name = format_ident!("CResult_{}", func_name);
-    let args: Vec<_> = func.sig.inputs.iter().collect();
+    let StringArgs {
+        wrapper_args: args,
+        conversions,
+        call_args: names,
+    } = string_arg_conversions(&func, &names);
     let body = &inner_fn.block;
     let inner_fn_name = format_ident!("{}_inner", func_name);
     let inner_fn_args = &inner_fn.sig.inputs;
+    let inner_generics = &inner_fn.sig.generics;
+    let inner_where = &inner_fn.sig.generics.where_clause;
     // `#[cfg]` must gate every generated item (struct, accessor impl, inner
     // fn, extern fn); other attributes (docs, lints) stay on the exported fn.
     let outer_attrs = &func.attrs;
@@ -384,11 +418,12 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
         #c_result_type
 
         #(#cfg_attrs)*
-        fn #inner_fn_name(#inner_fn_args) -> Result<#ok_type, #err_type> #body
+        fn #inner_fn_name #inner_generics (#inner_fn_args) -> Result<#ok_type, #err_type> #inner_where #body
 
         #(#outer_attrs)*
         #[no_mangle]
         pub extern "C" fn #func_name(#(#args),*) -> #result_type_name {
+            #(#conversions)*
             #result_type_name::new(#inner_fn_name(#(#names),*))
         }
     }
@@ -414,21 +449,28 @@ fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> Token
     let cfg_attrs = cfg_attrs(&func.attrs);
     let c_option_type = generate_c_option_type(func_name, inner_type, &cfg_attrs);
     let option_type_name = format_ident!("COption_{}", func_name);
-    let args: Vec<_> = func.sig.inputs.iter().collect();
+    let StringArgs {
+        wrapper_args: args,
+        conversions,
+        call_args: names,
+    } = string_arg_conversions(&func, &names);
     let body = &inner_fn.block;
     let inner_fn_name = format_ident!("{}_inner", func_name);
     let inner_fn_args = &inner_fn.sig.inputs;
+    let inner_generics = &inner_fn.sig.generics;
+    let inner_where = &inner_fn.sig.generics.where_clause;
     let outer_attrs = &func.attrs;
 
     quote! {
         #c_option_type
 
         #(#cfg_attrs)*
-        fn #inner_fn_name(#inner_fn_args) -> Option<#inner_type> #body
+        fn #inner_fn_name #inner_generics (#inner_fn_args) -> Option<#inner_type> #inner_where #body
 
         #(#outer_attrs)*
         #[no_mangle]
         pub extern "C" fn #func_name(#(#args),*) -> #option_type_name {
+            #(#conversions)*
             #option_type_name::new(#inner_fn_name(#(#names),*))
         }
     }
@@ -1006,9 +1048,11 @@ fn inline_method_wrapper(
             let b = format_ident!("{}_bytes", name);
             wrapper_args.push(quote! { #p: *const u8 });
             wrapper_args.push(quote! { #l: usize });
+            let c = format_ident!("{}_cow", name);
             conversions.push(quote! {
                 let #b = unsafe { std::slice::from_raw_parts(#p, #l) };
-                let #name = unsafe { std::str::from_utf8_unchecked(#b) };
+                let #c = String::from_utf8_lossy(#b);
+                let #name: &str = &#c;
             });
             call_args.push(quote! { #name });
         } else {

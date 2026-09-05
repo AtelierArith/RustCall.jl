@@ -45,6 +45,7 @@ struct RustFunctionSignature
     body_has_cfg::Bool
     has_owned_string_helper::Bool
     has_borrowed_string_helper::Bool
+    arg_abis::Vector{String}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -58,20 +59,32 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                module_path::Vector{String} = String[],
                                body_has_cfg::Bool = false,
                                has_owned_string_helper::Bool = false,
-                               has_borrowed_string_helper::Bool = false)
+                               has_borrowed_string_helper::Bool = false,
+                               arg_abis::Vector{String} = _default_arg_abis(arg_types))
+    length(arg_abis) == length(arg_types) ||
+        throw(ArgumentError("arg_abis must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
-                          has_owned_string_helper, has_borrowed_string_helper)
+                          has_owned_string_helper, has_borrowed_string_helper, arg_abis)
 end
 
 """
-    _is_rust_string_arg(rust_type) -> Bool
+    _default_arg_abis(arg_types) -> Vector{String}
 
-Whether a `#[julia]` function argument is passed as a `(ptr, len)` byte pair
-(`String` or `&str`, see `rustcall_core::codegen::transform_string_function`).
+The `abi` column for signatures constructed by hand (tests, legacy callers):
+the extractor classifies argument types on the Rust side (`Arg.abi`:
+`"string"`, `"str"` or `""`), this only covers the literal spellings.
 """
-_is_rust_string_arg(rust_type::AbstractString) = strip(rust_type) in ("String", "&str")
+_default_arg_abis(arg_types) = String[t == "String" ? "string" : (t == "&str" ? "str" : "") for t in arg_types]
+
+"""
+    _is_string_abi(abi) -> Bool
+
+Whether an argument travels as a `(ptr, len)` byte pair (`Arg.abi` of the
+manifest is `"string"` or `"str"`; covers `&'a str` and other spellings).
+"""
+_is_string_abi(abi::AbstractString) = abi in ("string", "str")
 
 """
     _string_arg_plan(sig) -> (bindings, preserved, call_args)
@@ -87,9 +100,9 @@ function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
-    for (name, rust_type) in zip(sig.arg_names, sig.arg_types)
+    for (name, rust_type, abi) in zip(sig.arg_names, sig.arg_types, sig.arg_abis)
         arg_sym = escape(Symbol(name))
-        if _is_rust_string_arg(rust_type)
+        if _is_string_abi(abi)
             bytes = Symbol("__rustcall_str_", name)
             push!(bindings, :($bytes = String($arg_sym)))
             push!(preserved, bytes)
@@ -111,7 +124,7 @@ Whether the wrapper of `sig` needs the string ABI (string arguments or a
 """
 function _uses_string_ffi(sig::RustFunctionSignature)
     return sig.has_owned_string_helper || sig.has_borrowed_string_helper ||
-           any(_is_rust_string_arg, sig.arg_types)
+           any(_is_string_abi, sig.arg_abis)
 end
 
 """
@@ -171,31 +184,15 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     func_name_str = sig.name
     func_name = esc(Symbol(func_name_str))
 
-    # Build argument list with conversion
+    # Build argument list with conversion (string arguments become (ptr, len)
+    # pairs kept alive with GC.@preserve, see `_string_arg_plan`)
     arg_syms = [esc(Symbol(name)) for name in sig.arg_names]
-
-    # Build converted arguments
-    converted_args = Expr[]
-    arg_types = Symbol[]
-    for (name, rust_type) in zip(sig.arg_names, sig.arg_types)
-        julia_type = _rust_type_to_julia_conversion_type(rust_type)
-        arg_sym = esc(Symbol(name))
-
-        if julia_type !== nothing
-            # Add type conversion: Type(arg)
-            push!(converted_args, :($julia_type($arg_sym)))
-            push!(arg_types, julia_type)
-        else
-            # No conversion needed
-            push!(converted_args, arg_sym)
-            push!(arg_types, :Any)
-        end
-    end
+    bindings, preserved, converted_args = _string_arg_plan(sig, esc)
 
     if sig.return_kind == :result
-        return _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+        return _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, bindings, preserved, converted_args)
     elseif sig.return_kind == :option
-        return _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+        return _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, bindings, preserved, converted_args)
     elseif _uses_string_ffi(sig)
         return _generate_inline_string_wrapper(sig, func_name, func_name_str, arg_syms)
     end
@@ -246,26 +243,28 @@ end
 # Result<T, E> / Option<T> returning #[julia] functions in inline blocks: the
 # extractor generates `CResult_<fn>` / `COption_<fn>` on the Rust side; the
 # wrapper reads that struct and converts it to RustResult / RustOption.
-function _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+function _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, bindings, preserved, converted_args)
     ok_t = something(_rust_type_to_julia_type_symbol(sig.ok_type), :Any)
     err_t = something(_rust_type_to_julia_type_symbol(sig.err_type), :Any)
     quote
         function $func_name($(arg_syms...))
+            $(bindings...)
             lib_name = RustCall.get_current_library()
             func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
-            c = RustCall.call_rust_function(func_ptr, RustCall.CResultType{$ok_t, $err_t}, $(converted_args...))
+            c = GC.@preserve $(preserved...) RustCall.call_rust_function(func_ptr, RustCall.CResultType{$ok_t, $err_t}, $(converted_args...))
             RustCall.convert_c_result_to_rust_result(c, $ok_t, $err_t)
         end
     end
 end
 
-function _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+function _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, bindings, preserved, converted_args)
     inner_t = something(_rust_type_to_julia_type_symbol(sig.inner_type), :Any)
     quote
         function $func_name($(arg_syms...))
+            $(bindings...)
             lib_name = RustCall.get_current_library()
             func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
-            c = RustCall.call_rust_function(func_ptr, RustCall.COptionType{$inner_t}, $(converted_args...))
+            c = GC.@preserve $(preserved...) RustCall.call_rust_function(func_ptr, RustCall.COptionType{$inner_t}, $(converted_args...))
             RustCall.convert_c_option_to_rust_option(c, $inner_t)
         end
     end

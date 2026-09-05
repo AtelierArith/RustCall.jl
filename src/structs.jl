@@ -24,14 +24,16 @@ struct RustMethod
     symbol::String
     is_constructor::Bool
     generic_wrapper::String
+    arg_abis::Vector{String}   # manifest `abi` per argument ("string", "str" or "")
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
                     arg_types::Vector{String}, return_type::String;
                     symbol::String = "", is_constructor::Bool = (name == "new" || return_type == "Self"),
-                    generic_wrapper::String = "")
+                    generic_wrapper::String = "",
+                    arg_abis::Vector{String} = _default_arg_abis(arg_types))
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
-               symbol, is_constructor, generic_wrapper)
+               symbol, is_constructor, generic_wrapper, arg_abis)
 end
 
 """
@@ -304,9 +306,9 @@ function emit_julia_definitions(info::RustStructInfo)
         # Build expanded arguments for String types
         # String args need to be passed as (pointer, length) pairs
         expanded_call_args = Expr[]
-        for (aname, atype) in zip(arg_names, m.arg_types)
+        for (aname, abi) in zip(arg_names, m.arg_abis)
             esc_aname = esc(aname)
-            if atype == "String" || atype == "&str"
+            if _is_string_abi(abi)
                 # Convert to (pointer, length) pair
                 push!(expanded_call_args, :(pointer($esc_aname)))
                 push!(expanded_call_args, :(sizeof($esc_aname)))

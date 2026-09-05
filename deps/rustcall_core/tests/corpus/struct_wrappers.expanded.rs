@@ -90,7 +90,8 @@ pub extern "C" fn Greeter_greet(
     prefix_len: usize,
 ) -> Greeter_RustCallOwnedString {
     let prefix_bytes = unsafe { std::slice::from_raw_parts(prefix_ptr, prefix_len) };
-    let prefix = unsafe { std::str::from_utf8_unchecked(prefix_bytes) };
+    let prefix_cow = String::from_utf8_lossy(prefix_bytes);
+    let prefix: &str = &prefix_cow;
     let self_obj = unsafe { &*ptr };
     let rustcall_value = self_obj.greet(prefix);
     let mut rustcall_bytes = rustcall_value.into_bytes();

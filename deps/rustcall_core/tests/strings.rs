@@ -15,6 +15,12 @@ pub fn byte_len(s: &str) -> usize { s.len() }
 pub fn greeting() -> &'static str { "hello" }
 #[julia]
 pub fn plain(x: i32) -> i32 { x }
+#[julia]
+pub fn parse_num(s: &str) -> Result<i32, i32> { s.parse().map_err(|_| -1) }
+#[julia]
+pub fn first_char(s: String) -> Option<u32> { s.chars().next().map(|c| c as u32) }
+#[julia]
+pub fn identity<'a>(s: &'a str) -> &'a str { s }
 "#;
 
 #[test]
@@ -36,6 +42,28 @@ fn string_functions_get_ptr_len_wrappers() {
     assert!(src.contains("pub extern \"C\" fn greeting() -> greeting_RustCallBorrowedString"));
     assert!(!src.contains("greeting_free_rust_string"));
     assert!(src.contains("pub extern \"C\" fn plain(x: i32) -> i32"));
+    // Result / Option functions convert string arguments too.
+    assert!(
+        src.contains(
+            "pub extern \"C\" fn parse_num(s_ptr: *const u8, s_len: usize) -> CResult_parse_num"
+        ),
+        "{src}"
+    );
+    assert!(
+        src.contains(
+            "pub extern \"C\" fn first_char(s_ptr: *const u8, s_len: usize) -> COption_first_char"
+        ),
+        "{src}"
+    );
+    // Lifetime-qualified &str is a string argument as well.
+    assert!(src.contains("pub extern \"C\" fn identity(s_ptr: *const u8, s_len: usize) -> identity_RustCallBorrowedString"), "{src}");
+    // The lifetime parameter stays on the inner fn.
+    assert!(
+        src.contains("fn identity_inner<'a>(s: &'a str) -> &'a str"),
+        "{src}"
+    );
+    // No unchecked UTF-8 construction anywhere.
+    assert!(!src.contains("from_utf8_unchecked"));
 }
 
 #[test]
@@ -53,5 +81,12 @@ fn manifest_records_string_helpers() {
         assert!(f("greeting").has_borrowed_string_helper);
         assert!(!f("plain").has_owned_string_helper && !f("plain").has_borrowed_string_helper);
         assert!(f("shout").exported);
+        assert_eq!(f("shout").args[0].abi, "string");
+        assert_eq!(f("concat").args[0].abi, "str");
+        assert_eq!(f("concat").args[2].abi, "");
+        assert_eq!(f("parse_num").args[0].abi, "str");
+        assert_eq!(f("identity").args[0].rust_type, "&'a str");
+        assert_eq!(f("identity").args[0].abi, "str");
+        assert!(f("identity").has_borrowed_string_helper);
     }
 }

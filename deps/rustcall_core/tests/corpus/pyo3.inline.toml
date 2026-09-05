@@ -24,10 +24,12 @@ module_path = []
 [[functions.args]]
 name = "left"
 rust_type = "i32"
+abi = ""
 
 [[functions.args]]
 name = "right"
 rust_type = "i32"
+abi = ""
 
 [[structs]]
 name = "DualCounter"
@@ -62,6 +64,7 @@ generic_wrapper = ""
 [[structs.methods.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[structs.methods]]
 name = "increment"
@@ -75,3 +78,4 @@ generic_wrapper = ""
 [[structs.methods.args]]
 name = "amount"
 rust_type = "i32"
+abi = ""

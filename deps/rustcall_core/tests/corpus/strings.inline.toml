@@ -24,6 +24,7 @@ module_path = []
 [[functions.args]]
 name = "input"
 rust_type = "String"
+abi = "string"
 
 [[functions]]
 name = "concat"
@@ -47,14 +48,17 @@ module_path = []
 [[functions.args]]
 name = "a"
 rust_type = "&str"
+abi = "str"
 
 [[functions.args]]
 name = "b"
 rust_type = "&str"
+abi = "str"
 
 [[functions.args]]
 name = "times"
 rust_type = "u32"
+abi = ""
 
 [[functions]]
 name = "byte_len"
@@ -78,6 +82,7 @@ module_path = []
 [[functions.args]]
 name = "s"
 rust_type = "&str"
+abi = "str"
 
 [[functions]]
 name = "greeting"
@@ -121,3 +126,4 @@ module_path = []
 [[functions.args]]
 name = "s"
 rust_type = "String"
+abi = "string"

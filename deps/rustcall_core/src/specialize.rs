@@ -350,6 +350,7 @@ fn function_entry(func: &ItemFn) -> Function {
                     other => quote::quote!(#other).to_string(),
                 },
                 rust_type: type_to_string(&pt.ty),
+                abi: crate::extract::arg_abi(&pt.ty).to_string(),
             }),
             syn::FnArg::Receiver(_) => None,
         })

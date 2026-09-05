@@ -24,6 +24,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[functions]]
 name = "positive"
@@ -48,6 +49,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "i32"
+abi = ""
 
 [[structs]]
 name = "Greeter"
@@ -89,6 +91,7 @@ generic_wrapper = ""
 [[structs.methods.args]]
 name = "name"
 rust_type = "String"
+abi = "string"
 
 [[structs.methods]]
 name = "rename"
@@ -102,6 +105,7 @@ generic_wrapper = ""
 [[structs.methods.args]]
 name = "name"
 rust_type = "String"
+abi = "string"
 
 [[structs.methods]]
 name = "greet"
@@ -115,6 +119,7 @@ generic_wrapper = ""
 [[structs.methods.args]]
 name = "prefix"
 rust_type = "&str"
+abi = "str"
 
 [[structs.methods]]
 name = "name"

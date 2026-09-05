@@ -37,6 +37,7 @@ type_params = []
 [[functions.args]]
 name = "value"
 rust_type = "T"
+abi = ""
 
 [[structs]]
 name = "Pair"
@@ -84,10 +85,12 @@ generic_wrapper = ""
 [[structs.methods.args]]
 name = "left"
 rust_type = "T"
+abi = ""
 
 [[structs.methods.args]]
 name = "right"
 rust_type = "T"
+abi = ""
 
 [[structs.methods]]
 name = "first"

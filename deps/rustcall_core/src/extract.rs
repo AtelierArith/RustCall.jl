@@ -18,8 +18,8 @@ use crate::manifest::{
 use crate::model::{collect_struct_models_in, StructModel};
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
-    has_type_params, is_ffi_compatible_type, needs_clone_for_getter, return_type_to_string,
-    type_to_string,
+    has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type,
+    needs_clone_for_getter, return_type_to_string, type_to_string,
 };
 
 pub fn extract(source: &str, mode: Mode) -> Result<Manifest, syn::Error> {
@@ -49,10 +49,22 @@ pub fn fn_args(sig: &syn::Signature) -> Vec<Arg> {
                     other => quote::quote!(#other).to_string(),
                 },
                 rust_type: type_to_string(&pt.ty),
+                abi: arg_abi(&pt.ty).to_string(),
             }),
             FnArg::Receiver(_) => None,
         })
         .collect()
+}
+
+/// The manifest `abi` column of an argument type (see [`Arg::abi`]).
+pub fn arg_abi(ty: &syn::Type) -> &'static str {
+    if is_string_type(ty) {
+        "string"
+    } else if is_str_ref_type(ty) {
+        "str"
+    } else {
+        ""
+    }
 }
 
 fn item_fn_source(func: &ItemFn) -> String {

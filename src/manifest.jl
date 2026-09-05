@@ -667,6 +667,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             body_has_cfg = _mbool(f, "body_has_cfg"),
             has_owned_string_helper = _mbool(f, "has_owned_string_helper"),
             has_borrowed_string_helper = _mbool(f, "has_borrowed_string_helper"),
+            arg_abis = String[_mstr(a, "abi") for a in args],
         ))
     end
     return sigs
@@ -684,6 +685,7 @@ function _manifest_method(m)
         symbol = _mstr(m, "symbol"),
         is_constructor = _mbool(m, "is_constructor"),
         generic_wrapper = _mstr(m, "generic_wrapper"),
+        arg_abis = String[_mstr(a, "abi") for a in args],
     )
 end
 

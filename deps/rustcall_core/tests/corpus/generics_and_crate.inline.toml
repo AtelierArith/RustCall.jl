@@ -37,6 +37,7 @@ type_params = []
 [[functions.args]]
 name = "value"
 rust_type = "T"
+abi = ""
 
 [[functions]]
 name = "raw_increment"
@@ -61,6 +62,7 @@ module_path = []
 [[functions.args]]
 name = "value"
 rust_type = "u32"
+abi = ""
 
 [[structs]]
 name = "Pair"
@@ -137,10 +139,12 @@ where
 [[structs.methods.args]]
 name = "left"
 rust_type = "T"
+abi = ""
 
 [[structs.methods.args]]
 name = "right"
 rust_type = "T"
+abi = ""
 
 [[structs.methods]]
 name = "first"

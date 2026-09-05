@@ -67,9 +67,11 @@ pub extern "C" fn concat(
     times: u32,
 ) -> concat_RustCallOwnedString {
     let a_bytes = unsafe { std::slice::from_raw_parts(a_ptr, a_len) };
-    let a = unsafe { std::str::from_utf8_unchecked(a_bytes) };
+    let a_cow = String::from_utf8_lossy(a_bytes);
+    let a: &str = &a_cow;
     let b_bytes = unsafe { std::slice::from_raw_parts(b_ptr, b_len) };
-    let b = unsafe { std::str::from_utf8_unchecked(b_bytes) };
+    let b_cow = String::from_utf8_lossy(b_bytes);
+    let b: &str = &b_cow;
     let mut rustcall_bytes = concat_inner(a, b, times).into_bytes();
     let rustcall_ret = concat_RustCallOwnedString {
         ptr: rustcall_bytes.as_mut_ptr(),
@@ -86,7 +88,8 @@ fn byte_len_inner(s: &str) -> usize {
 #[no_mangle]
 pub extern "C" fn byte_len(s_ptr: *const u8, s_len: usize) -> usize {
     let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
-    let s = unsafe { std::str::from_utf8_unchecked(s_bytes) };
+    let s_cow = String::from_utf8_lossy(s_bytes);
+    let s: &str = &s_cow;
     byte_len_inner(s)
 }
 #[repr(C)]

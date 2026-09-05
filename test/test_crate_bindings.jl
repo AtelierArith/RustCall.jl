@@ -699,9 +699,26 @@ end
             @test bindings.join_repeat("a", "b", "-", UInt32(2)) == "a-b-a-b"
             @test bindings.char_count("日本語") == 3
             @test bindings.crate_greeting() == "hello from sample_crate"
+            @test RustCall.unwrap(bindings.parse_int(" 7 ")) == Int32(7)
+            @test RustCall.is_err(bindings.parse_int("seven"))
+            @test RustCall.unwrap(bindings.first_char("é")) == UInt32('é')
+            @test RustCall.is_none(bindings.first_char(""))
+            @test bindings.identity_str("λ") == "λ"
             for _ in 1:200
                 @test bindings.shout("x") == "X"
             end
         end
     end
+
+    # The source-file emitter (write_bindings_to_file) uses the same ABI.
+    info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+    code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
+    @test occursin("_call_rust_owned_string_ptr(_get_func_ptr(\"shout\"), _get_func_ptr(\"shout_free_rust_string\")", code)
+    @test occursin("__rustcall_str_input = String(input)", code)
+    @test occursin("GC.@preserve __rustcall_str_input", code)
+    @test occursin("_call_rust_borrowed_string_ptr(_get_func_ptr(\"crate_greeting\")", code)
+    @test occursin("GC.@preserve __rustcall_str_s call_rust_function(func_ptr, CResult_parse_int, pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve  call_rust_function(func_ptr, Int32, Int32(a), Int32(b))", code)
+    # and the emitted module parses
+    @test Meta.parse(code) isa Expr
 end

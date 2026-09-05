@@ -355,7 +355,9 @@ end
     @test by_name["greeting"].has_borrowed_string_helper
     @test !by_name["char_count"].has_owned_string_helper
     @test RustCall._uses_string_ffi(by_name["char_count"])
-    @test !RustCall._uses_string_ffi(by_name["shout"]) == false
+    @test RustCall._uses_string_ffi(by_name["shout"])
+    @test by_name["shout"].arg_abis == ["string"]
+    @test by_name["join_repeat"].arg_abis == ["str", "str", "str", ""]
     bindings, preserved, call_args = RustCall._string_arg_plan(by_name["join_repeat"], identity)
     @test length(bindings) == 3 && length(preserved) == 3 && length(call_args) == 7
 
@@ -374,7 +376,23 @@ end
         pub fn greeting() -> &'static str { "hello" }
         #[julia]
         pub fn with_nul(s: String) -> String { format!("{s}\0{s}") }
+        #[julia]
+        pub fn parse_num(s: &str) -> Result<i32, i32> { s.trim().parse().map_err(|_| -1) }
+        #[julia]
+        pub fn first_char(s: String) -> Option<u32> { s.chars().next().map(|c| c as u32) }
+        #[julia]
+        pub fn identity_str<'a>(s: &'a str) -> &'a str { s }
         """
+        # Result / Option functions with string arguments
+        @test RustCall.unwrap(parse_num(" 42 ")) == Int32(42)
+        @test RustCall.is_err(parse_num("x"))
+        @test RustCall.unwrap(first_char("λx")) == UInt32('λ')
+        @test RustCall.is_none(first_char(""))
+        # Lifetime-qualified &str
+        @test identity_str("kept") == "kept"
+        # Invalid UTF-8 is replaced, never handed to Rust as an invalid &str
+        @test char_count(String(UInt8[0xff, 0x41])) == 2
+        @test shout(String(UInt8[0xc3, 0x28])) == "\ufffd("
         @test shout("hello, wörld") == "HELLO, WÖRLD"
         @test shout(SubString("xyz", 2)) == "YZ"
         @test join_repeat("a", "b", "-", UInt32(2)) == "a-b-a-b"
