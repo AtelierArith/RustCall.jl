@@ -1,658 +1,251 @@
-# Tests for generic function support
+# Tests for generic function support through the rustcall-extract manifest.
 
 using RustCall
 using Test
 
-# Import internal functions for testing
-using RustCall: GENERIC_FUNCTION_REGISTRY, MONOMORPHIZED_FUNCTIONS
-using RustCall: TraitBound, TypeConstraints, GenericFunctionInfo
-using RustCall: parse_trait_bounds, parse_single_trait, parse_where_clause
-using RustCall: parse_inline_constraints, parse_generic_function
-using RustCall: constraints_to_rust_string, merge_constraints
-using RustCall: _find_matching_angle_bracket
-
-# ============================================================================
-# Bracket-counting Helper Tests
-# ============================================================================
-
-@testset "Bracket-counting helpers" begin
-    @testset "_find_matching_angle_bracket" begin
-        # Simple: <T>
-        @test _find_matching_angle_bracket("<T>", 1) == 3
-
-        # One level: <Vec<T>>
-        @test _find_matching_angle_bracket("<Vec<T>>", 1) == 8
-
-        # Two levels: <Option<Result<T, E>>>
-        s = "<Option<Result<T, E>>>"
-        @test _find_matching_angle_bracket(s, 1) == lastindex(s)
-
-        # Three levels: <Vec<Option<Result<T, String>>>>
-        s = "<Vec<Option<Result<T, String>>>>"
-        @test _find_matching_angle_bracket(s, 1) == lastindex(s)
-
-        # Multiple params with nesting: <K: Hash, V: Into<Vec<U>>>
-        s = "<K: Hash, V: Into<Vec<U>>>"
-        @test _find_matching_angle_bracket(s, 1) == lastindex(s)
-
-        # No matching bracket
-        @test _find_matching_angle_bracket("<T", 1) == 0
-
-        # Starting from non-first position
-        s = "fn foo<T: Add<Output = T>>(x: T)"
-        open_pos = findfirst('<', s)
-        close_pos = _find_matching_angle_bracket(s, open_pos)
-        inner = s[open_pos+1:close_pos-1]
-        @test inner == "T: Add<Output = T>"
-    end
+function manifest_signatures(code)
+    manifest = RustCall.extract_manifest(code; mode = "inline")
+    RustCall.manifest_function_signatures(manifest; only_attributed = false)
 end
 
-# ============================================================================
-# Trait Bounds Parsing Tests
-# ============================================================================
+function signature_named(code, name)
+    only(filter(sig -> sig.name == name, manifest_signatures(code)))
+end
 
-@testset "Trait Bounds Parsing" begin
-    @testset "parse_single_trait" begin
-        # Simple trait
-        tb = parse_single_trait("Copy")
-        @test tb.trait_name == "Copy"
-        @test isempty(tb.type_params)
-
-        # Trait with type parameter
-        tb = parse_single_trait("Into<String>")
-        @test tb.trait_name == "Into"
-        @test tb.type_params == ["String"]
-
-        # Trait with associated type
-        tb = parse_single_trait("Add<Output = T>")
-        @test tb.trait_name == "Add"
-        @test tb.type_params == ["Output = T"]
-
-        # Trait with multiple type parameters
-        tb = parse_single_trait("Fn<(A, B), Output = C>")
-        @test tb.trait_name == "Fn"
-        @test tb.type_params == ["(A, B)", "Output = C"]
-    end
-
-    @testset "parse_trait_bounds" begin
-        # Single trait
-        tc = parse_trait_bounds("Copy")
-        @test length(tc.bounds) == 1
-        @test tc.bounds[1].trait_name == "Copy"
-
-        # Multiple traits
-        tc = parse_trait_bounds("Copy + Clone")
-        @test length(tc.bounds) == 2
-        @test tc.bounds[1].trait_name == "Copy"
-        @test tc.bounds[2].trait_name == "Clone"
-
-        # Multiple traits with generics
-        tc = parse_trait_bounds("Copy + Add<Output = T> + Debug")
-        @test length(tc.bounds) == 3
-        @test tc.bounds[1].trait_name == "Copy"
-        @test tc.bounds[2].trait_name == "Add"
-        @test tc.bounds[2].type_params == ["Output = T"]
-        @test tc.bounds[3].trait_name == "Debug"
-
-        # Empty string
-        tc = parse_trait_bounds("")
-        @test isempty(tc)
-    end
-
-    @testset "parse_inline_constraints" begin
-        # Simple type parameters without bounds
-        type_params, constraints = parse_inline_constraints("T, U")
-        @test type_params == [:T, :U]
-        @test isempty(constraints)
-
-        # Type parameters with single bounds
-        type_params, constraints = parse_inline_constraints("T: Copy, U: Debug")
-        @test type_params == [:T, :U]
-        @test length(constraints) == 2
-        @test constraints[:T].bounds[1].trait_name == "Copy"
-        @test constraints[:U].bounds[1].trait_name == "Debug"
-
-        # Type parameters with multiple bounds
-        type_params, constraints = parse_inline_constraints("T: Copy + Clone + Debug")
-        @test type_params == [:T]
-        @test length(constraints[:T].bounds) == 3
-
-        # Mixed: some with bounds, some without
-        type_params, constraints = parse_inline_constraints("T: Copy, U")
-        @test type_params == [:T, :U]
-        @test haskey(constraints, :T)
-        @test !haskey(constraints, :U)
-
-        # With generic trait bounds
-        type_params, constraints = parse_inline_constraints("T: Add<Output = T> + Copy")
-        @test type_params == [:T]
-        @test length(constraints[:T].bounds) == 2
-        @test constraints[:T].bounds[1].trait_name == "Add"
-        @test constraints[:T].bounds[1].type_params == ["Output = T"]
-    end
-
-    @testset "parse_where_clause" begin
-        # Simple where clause
-        code = "fn foo<T>(x: T) -> T where T: Copy { x }"
-        constraints = parse_where_clause(code)
-        @test haskey(constraints, :T)
-        @test constraints[:T].bounds[1].trait_name == "Copy"
-
-        # Multiple constraints in where clause
-        code = "fn bar<T, U>(x: T, y: U) where T: Copy + Clone, U: Debug { x }"
-        constraints = parse_where_clause(code)
-        @test length(constraints) == 2
-        @test length(constraints[:T].bounds) == 2
-        @test constraints[:U].bounds[1].trait_name == "Debug"
-
-        # Where clause with generic traits
-        code = "fn transform<T, U>(x: T) -> U where T: Into<U>, U: From<T> { x.into() }"
-        constraints = parse_where_clause(code)
-        @test constraints[:T].bounds[1].trait_name == "Into"
-        @test constraints[:T].bounds[1].type_params == ["U"]
-        @test constraints[:U].bounds[1].trait_name == "From"
-        @test constraints[:U].bounds[1].type_params == ["T"]
-
-        # No where clause
-        code = "fn simple<T>(x: T) -> T { x }"
-        constraints = parse_where_clause(code)
-        @test isempty(constraints)
-    end
-
-    @testset "parse_generic_function with constraints" begin
-        # Inline constraints
+@testset "Generic manifest metadata" begin
+    @testset "Inline and where-clause constraints" begin
         code = """
-        pub fn identity<T: Copy + Clone>(x: T) -> T {
-            x
-        }
-        """
-        info = parse_generic_function(code, "identity")
-        @test info !== nothing
-        @test info.type_params == [:T]
-        @test haskey(info.constraints, :T)
-        @test length(info.constraints[:T].bounds) == 2
+        pub fn identity<T: Copy + Clone>(x: T) -> T { x }
 
-        # Where clause
-        code = """
-        pub fn transform<T, U>(x: T) -> U where T: Copy, U: From<T> {
+        pub fn transform<T, U>(x: T) -> U
+        where
+            T: Into<U>,
+            U: From<T> + core::fmt::Debug,
+        {
             U::from(x)
         }
-        """
-        info = parse_generic_function(code, "transform")
-        @test info !== nothing
-        @test info.type_params == [:T, :U]
-        @test haskey(info.constraints, :T)
-        @test haskey(info.constraints, :U)
-        @test info.constraints[:T].bounds[1].trait_name == "Copy"
-        @test info.constraints[:U].bounds[1].trait_name == "From"
 
-        # Mixed inline and where clause
-        code = """
-        pub fn mixed<T: Copy, U>(x: T, y: U) -> T where U: Debug {
-            x
-        }
-        """
-        info = parse_generic_function(code, "mixed")
-        @test info !== nothing
-        @test info.type_params == [:T, :U]
-        @test info.constraints[:T].bounds[1].trait_name == "Copy"
-        @test info.constraints[:U].bounds[1].trait_name == "Debug"
-
-        # No constraints
-        code = """
-        pub fn simple<T>(x: T) -> T {
-            x
-        }
-        """
-        info = parse_generic_function(code, "simple")
-        @test info !== nothing
-        @test info.type_params == [:T]
-        @test isempty(info.constraints)
-    end
-
-    @testset "parse_generic_function with deeply nested generics" begin
-        # Two levels of nesting: Add<Output = T>
-        code = """
-        pub fn add_values<T: Copy + Add<Output = T>>(a: T, b: T) -> T {
+        pub fn add_values<T: Copy + core::ops::Add<Output = T>>(a: T, b: T) -> T {
             a + b
         }
         """
-        info = parse_generic_function(code, "add_values")
-        @test info !== nothing
-        @test info.type_params == [:T]
-        @test haskey(info.constraints, :T)
-        @test length(info.constraints[:T].bounds) == 2
-        @test info.constraints[:T].bounds[1].trait_name == "Copy"
-        @test info.constraints[:T].bounds[2].trait_name == "Add"
-        @test info.constraints[:T].bounds[2].type_params == ["Output = T"]
 
-        # Three levels of nesting: Vec<Option<T>>
-        code = """
-        pub fn first_some<T: Clone>(items: Vec<Option<T>>) -> T {
-            items[0].unwrap().clone()
-        }
-        """
-        info = parse_generic_function(code, "first_some")
-        @test info !== nothing
-        @test info.type_params == [:T]
-        @test info.constraints[:T].bounds[1].trait_name == "Clone"
+        identity = signature_named(code, "identity")
+        @test identity.is_generic
+        @test identity.type_params == ["T"]
+        @test identity.arg_names == ["x"]
+        @test identity.arg_types == ["T"]
+        @test identity.return_type == "T"
+        @test [b.trait_name for b in identity.constraints[:T].bounds] == ["Copy", "Clone"]
 
-        # Deeply nested: Vec<Option<Result<T, String>>>
-        code = """
-        pub fn unwrap_deep<T>(items: Vec<Option<Result<T, String>>>) -> T {
-            items[0].unwrap().unwrap()
-        }
-        """
-        info = parse_generic_function(code, "unwrap_deep")
-        @test info !== nothing
-        @test info.type_params == [:T]
+        transform = signature_named(code, "transform")
+        @test transform.type_params == ["T", "U"]
+        @test transform.constraints[:T].bounds[1].trait_name == "Into"
+        @test transform.constraints[:T].bounds[1].type_params == ["U"]
+        @test [b.trait_name for b in transform.constraints[:U].bounds] == ["From", "Debug"]
+        @test transform.constraints[:U].bounds[1].type_params == ["T"]
 
-        # Multiple type params with nested generics in bounds
-        code = """
-        pub fn convert<T: Into<Vec<U>>, U: Clone>(x: T) -> Vec<U> {
-            x.into()
-        }
-        """
-        info = parse_generic_function(code, "convert")
-        @test info !== nothing
-        @test info.type_params == [:T, :U]
-        @test info.constraints[:T].bounds[1].trait_name == "Into"
-        @test info.constraints[:T].bounds[1].type_params == ["Vec<U>"]
-        @test info.constraints[:U].bounds[1].trait_name == "Clone"
-
-        # impl with nested trait: impl<T: Add<Output = T>>
-        # (parse_generic_function only handles fn, but test the pattern concept)
-        code = """
-        pub fn sum_all<T: Copy + Add<Output = T> + Default>(items: &[T]) -> T {
-            items.iter().copied().fold(T::default(), |a, b| a + b)
-        }
-        """
-        info = parse_generic_function(code, "sum_all")
-        @test info !== nothing
-        @test info.type_params == [:T]
-        @test length(info.constraints[:T].bounds) == 3
-        @test info.constraints[:T].bounds[1].trait_name == "Copy"
-        @test info.constraints[:T].bounds[2].trait_name == "Add"
-        @test info.constraints[:T].bounds[3].trait_name == "Default"
+        add_values = signature_named(code, "add_values")
+        @test [b.trait_name for b in add_values.constraints[:T].bounds] == ["Copy", "Add"]
+        @test add_values.constraints[:T].bounds[2].type_params == ["Output = T"]
     end
 
-    @testset "parse_single_trait with nested generics" begin
-        # Nested generic in trait: Into<Vec<String>>
-        tb = parse_single_trait("Into<Vec<String>>")
-        @test tb.trait_name == "Into"
-        @test tb.type_params == ["Vec<String>"]
-
-        # Deeply nested: From<Option<Result<T, E>>>
-        tb = parse_single_trait("From<Option<Result<T, E>>>")
-        @test tb.trait_name == "From"
-        @test tb.type_params == ["Option<Result<T, E>>"]
-
-        # Multiple params with nesting: Fn<(Vec<T>,), Output = Result<U, E>>
-        tb = parse_single_trait("Fn<(Vec<T>,), Output = Result<U, E>>")
-        @test tb.trait_name == "Fn"
-        @test length(tb.type_params) == 2
-        @test tb.type_params[1] == "(Vec<T>,)"
-        @test tb.type_params[2] == "Output = Result<U, E>"
+    @testset "Nested generic syntax is preserved (#184)" begin
+        code = """
+        pub fn nested<T: Into<Vec<Option<T>>>>(
+            x: HashMap<String, Vec<Option<Result<T, String>>>>,
+        ) -> Result<Vec<Option<T>>, Box<dyn Error>> {
+            unimplemented!()
+        }
+        """
+        sig = signature_named(code, "nested")
+        @test sig.type_params == ["T"]
+        @test sig.arg_types == ["HashMap<String, Vec<Option<Result<T, String>>>>"]
+        @test sig.return_type == "Result<Vec<Option<T>>, Box<dyn Error>>"
+        @test sig.constraints[:T].bounds[1].type_params == ["Vec<Option<T>>"]
     end
 
-    @testset "parse_trait_bounds with nested generic traits" begin
-        # Bounds with nested generic traits
-        tc = parse_trait_bounds("Copy + Into<Vec<String>> + Debug")
-        @test length(tc.bounds) == 3
-        @test tc.bounds[1].trait_name == "Copy"
-        @test tc.bounds[2].trait_name == "Into"
-        @test tc.bounds[2].type_params == ["Vec<String>"]
-        @test tc.bounds[3].trait_name == "Debug"
-
-        # Two generic traits with nesting
-        tc = parse_trait_bounds("From<Option<T>> + Into<Result<U, E>>")
-        @test length(tc.bounds) == 2
-        @test tc.bounds[1].trait_name == "From"
-        @test tc.bounds[1].type_params == ["Option<T>"]
-        @test tc.bounds[2].trait_name == "Into"
-        @test tc.bounds[2].type_params == ["Result<U, E>"]
-    end
-
-    @testset "constraints_to_rust_string" begin
-        # Empty constraints
-        @test constraints_to_rust_string(Dict{Symbol, TypeConstraints}()) == ""
-
-        # Single constraint with single bound
-        constraints = Dict(:T => TypeConstraints([TraitBound("Copy", String[])]))
-        @test constraints_to_rust_string(constraints) == "T: Copy"
-
-        # Single constraint with multiple bounds
-        constraints = Dict(:T => TypeConstraints([
-            TraitBound("Copy", String[]),
-            TraitBound("Clone", String[])
-        ]))
-        @test constraints_to_rust_string(constraints) == "T: Copy + Clone"
-
-        # Multiple constraints
-        constraints = Dict(
-            :T => TypeConstraints([TraitBound("Copy", String[])]),
-            :U => TypeConstraints([TraitBound("Debug", String[])])
+    @testset "Const-expression angle brackets do not affect signatures (#233)" begin
+        sig = signature_named(
+            "pub fn foo<const N: usize = { 1 + 2 }, T: Trait<{ 1 < 2 }>>(x: T) -> T { x }",
+            "foo",
         )
-        result = constraints_to_rust_string(constraints)
-        @test occursin("T: Copy", result)
-        @test occursin("U: Debug", result)
-
-        # With generic trait
-        constraints = Dict(:T => TypeConstraints([
-            TraitBound("Add", ["Output = T"])
-        ]))
-        @test constraints_to_rust_string(constraints) == "T: Add<Output = T>"
+        @test sig.type_params == ["T"]
+        @test sig.arg_types == ["T"]
+        @test sig.return_type == "T"
+        @test sig.constraints[:T].bounds[1].trait_name == "Trait"
+        const_arg = only(sig.constraints[:T].bounds[1].type_params)
+        @test replace(const_arg, " " => "") == "{1<2}"
     end
 
-    @testset "merge_constraints" begin
-        c1 = Dict(:T => TypeConstraints([TraitBound("Copy", String[])]))
-        c2 = Dict(:U => TypeConstraints([TraitBound("Debug", String[])]))
+    @testset "Lifetimes are not monomorphization parameters" begin
+        with_type = signature_named(
+            "pub fn process<'a, T: Clone>(data: &'a T, fallback: T) -> &'a T { data }",
+            "process",
+        )
+        @test with_type.type_params == ["T"]
+        @test with_type.arg_types == ["&'a T", "T"]
+        @test haskey(with_type.constraints, :T)
+        @test !haskey(with_type.constraints, Symbol("'a"))
 
-        merged = merge_constraints(c1, c2)
-        @test haskey(merged, :T)
-        @test haskey(merged, :U)
-
-        # Merging same type parameter
-        c1 = Dict(:T => TypeConstraints([TraitBound("Copy", String[])]))
-        c2 = Dict(:T => TypeConstraints([TraitBound("Clone", String[])]))
-
-        merged = merge_constraints(c1, c2)
-        @test length(merged[:T].bounds) == 2
+        lifetime_only = signature_named(
+            "pub fn borrow<'a>(data: &'a i32) -> &'a i32 { data }",
+            "borrow",
+        )
+        @test !lifetime_only.is_generic
+        @test isempty(lifetime_only.type_params)
     end
 
-    @testset "TypeConstraints and TraitBound show methods" begin
-        tb = TraitBound("Copy", String[])
-        @test string(tb) == "Copy"
-
-        tb = TraitBound("Add", ["Output = T"])
-        @test string(tb) == "Add<Output = T>"
-
-        tc = TypeConstraints([
-            TraitBound("Copy", String[]),
-            TraitBound("Clone", String[])
-        ])
-        @test string(tc) == "Copy + Clone"
-    end
-
-    @testset "register_generic_function with constraints" begin
-        # Test with new TypeConstraints format
-        constraints = Dict(:T => TypeConstraints([
-            TraitBound("Copy", String[]),
-            TraitBound("Clone", String[])
-        ]))
-        code = "pub fn test_func<T: Copy + Clone>(x: T) -> T { x }"
-        info = RustCall.register_generic_function("test_with_constraints", code, [:T], constraints)
-
-        @test info.name == "test_with_constraints"
-        @test length(info.constraints[:T].bounds) == 2
-
-        # Test backward compatibility with Dict{Symbol, String}
-        legacy_constraints = Dict(:T => "Copy + Clone")
-        info = RustCall.register_generic_function("test_legacy", code, [:T], legacy_constraints)
-
-        @test info.name == "test_legacy"
-        @test length(info.constraints[:T].bounds) == 2
-        @test info.constraints[:T].bounds[1].trait_name == "Copy"
+    @testset "Const generic parameter lists are parsed (#231/#232)" begin
+        sig = signature_named(
+            "pub fn const_generic<const N: usize = { 1 + 2 }, T>(x: T) -> T { x }",
+            "const_generic",
+        )
+        @test sig.type_params == ["T"]
+        @test sig.arg_types == ["T"]
+        @test sig.return_type == "T"
     end
 end
 
-# ============================================================================
-# Original Generic Function Tests
-# ============================================================================
+@testset "Constraint value types" begin
+    copy_bound = RustCall.TraitBound("Copy", String[])
+    add_bound = RustCall.TraitBound("Add", ["Output = T"])
+    @test string(copy_bound) == "Copy"
+    @test string(add_bound) == "Add<Output = T>"
+    @test string(RustCall.TypeConstraints([copy_bound, add_bound])) == "Copy + Add<Output = T>"
+    @test copy_bound == RustCall.TraitBound("Copy", String[])
+end
 
-@testset "Generic Function Support" begin
-    @testset "Generic Function Registration" begin
-        # Test registering a generic function
-        code = """
-        #[no_mangle]
-        pub extern "C" fn identity<T>(x: T) -> T {
-            x
-        }
-        """
-
-        RustCall.register_generic_function("identity", code, [:T])
-
-        @test RustCall.is_generic_function("identity")
-        @test !RustCall.is_generic_function("nonexistent")
-
-        # Check that it's in the registry
-        @test haskey(GENERIC_FUNCTION_REGISTRY, "identity")
-        info = GENERIC_FUNCTION_REGISTRY["identity"]
-        @test info.name == "identity"
-        @test info.type_params == [:T]
+@testset "Generic function registration and inference (#170)" begin
+    lock(RustCall.REGISTRY_LOCK) do
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
     end
 
-    @testset "Type Parameter Inference" begin
-        # Register a generic function
-        code = """
-        #[no_mangle]
-        pub extern "C" fn identity<T>(x: T) -> T {
-            x
-        }
-        """
-        RustCall.register_generic_function("identity", code, [:T])
+    code = "pub fn transform<T, U>(x: T, y: T, z: U) -> U { z }"
+    sig = signature_named(code, "transform")
+    info = RustCall.register_generic_function(
+        sig.name,
+        sig.source,
+        Symbol.(sig.type_params),
+        sig.constraints,
+        "";
+        arg_types = sig.arg_types,
+        return_type = sig.return_type,
+    )
 
-        # Test inference with Int32
-        type_params = RustCall.infer_type_parameters("identity", [Int32])
-        @test type_params == Dict(:T => Int32)
+    @test info.name == "transform"
+    @test info.code == sig.source
+    @test info.arg_types == ["T", "T", "U"]
+    @test info.return_type == "U"
+    @test RustCall.is_generic_function("transform")
+    @test !RustCall.is_generic_function("not_registered")
 
-        # Test inference with Float64
-        type_params = RustCall.infer_type_parameters("identity", [Float64])
-        @test type_params == Dict(:T => Float64)
+    inferred = RustCall.infer_type_parameters("transform", Type[Int32, Int32, Float64])
+    @test inferred == Dict(:T => Int32, :U => Float64)
+    @test_throws ErrorException RustCall.infer_type_parameters(
+        "transform", Type[Int32, Float64, Float64]
+    )
+    @test_throws ErrorException RustCall.infer_type_parameters("transform", Type[Int32])
+
+    container_code = "pub fn first<T>(xs: Vec<T>) -> T { todo!() }"
+    container_sig = signature_named(container_code, "first")
+    RustCall.register_generic_function(
+        container_sig.name,
+        container_sig.source,
+        Symbol.(container_sig.type_params),
+        container_sig.constraints,
+        "";
+        arg_types = container_sig.arg_types,
+        return_type = container_sig.return_type,
+    )
+    @test_throws ErrorException RustCall.infer_type_parameters("first", Type[Vector{Int32}])
+
+    lock(RustCall.REGISTRY_LOCK) do
+        empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
     end
+end
 
-    @testset "_parse_fn_arg_types handles braces in generic parameter lists" begin
-        types = RustCall._parse_fn_arg_types(
-            "fn foo<const N: usize = { 1 + 2 }, T>(x: T) -> T { x }",
-            "foo",
+@testset "AST specialization" begin
+    @testset "Primitive and multiple bindings" begin
+        specialized = RustCall.specialize_generic(
+            "pub fn pair<T, U>(a: T, b: U) -> T { let _ = b; a }",
+            "pair",
+            ["T" => "i32", "U" => "f64"],
+            "pair_i32_f64",
         )
-        @test types == ["T"]
+        @test specialized.name == "pair_i32_f64"
+        @test specialized.arg_types == ["i32", "f64"]
+        @test specialized.return_type == "i32"
+        @test occursin("pub extern \"C\" fn pair_i32_f64", specialized.source)
+        @test !occursin("fn pair<T", specialized.source)
+    end
 
-        types = RustCall._parse_fn_arg_types(
-            "fn foo<T: Trait<{ 1 + 2 }>>(x: T) -> T { x }",
-            "foo",
+    @testset "Deeply nested types (#108/#184)" begin
+        specialized = RustCall.specialize_generic(
+            "pub fn deep<T>(x: Vec<Option<Result<T, String>>>) -> T { todo!() }",
+            "deep",
+            ["T" => "i32"],
+            "deep_i32",
         )
-        @test types == ["T"]
+        @test specialized.arg_types == ["Vec<Option<Result<i32, String>>>"]
+        @test specialized.return_type == "i32"
+        @test occursin("Vec<Option<Result<i32, String>>>", specialized.source)
+
+        specialized_map = RustCall.specialize_generic(
+            "pub fn lookup<K, V>(m: HashMap<K, Vec<V>>, key: K) -> V { todo!() }",
+            "lookup",
+            ["K" => "i32", "V" => "f64"],
+            "lookup_i32_f64",
+        )
+        @test specialized_map.arg_types == ["HashMap<i32, Vec<f64>>", "i32"]
+        @test specialized_map.return_type == "f64"
     end
+end
 
-    @testset "Code Specialization" begin
-        # Test specializing generic code
-        code = """
-        #[no_mangle]
-        pub extern "C" fn identity<T>(x: T) -> T {
-            x
-        }
-        """
+@testset "Julia to Rust generic type spelling" begin
+    @test RustCall.julia_type_to_rust_string(Int32) == "i32"
+    @test RustCall.julia_type_to_rust_string(Float64) == "f64"
+    @test RustCall.julia_type_to_rust_string(Ptr{Int32}) == "Ptr<i32>"
+    @test_throws ErrorException RustCall.julia_type_to_rust_string(Union{Int32, Float64})
+end
 
-        specialized = RustCall.specialize_generic_code(code, Dict(:T => Int32))
-
-        # Check that T is replaced with i32
-        @test occursin("i32", specialized)
-        @test !occursin("<T>", specialized)
-        @test !occursin(": T", specialized) || occursin(": i32", specialized)
-    end
-
-    @testset "Code Specialization with Container Types" begin
-        # Test that nested angle brackets in container types are handled correctly
-        # This was broken by the regex `<.+?>` which stops at the first `>`
-
-        # Vec<T> parameter
-        code = """
-        pub fn sum_vec<T: Copy + std::ops::Add<Output = T>>(v: *const T, len: usize) -> T {
-            let slice = unsafe { std::slice::from_raw_parts(v, len) };
-            slice[0]
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:T => Float64))
-        @test !occursin("<T:", specialized)  # generic params removed
-        @test occursin("f64", specialized)
-        @test occursin("fn sum_vec(", specialized)
-
-        # Nested generics: Vec<Vec<T>>
-        code = """
-        pub fn nested<T>(x: Vec<Vec<T>>) -> T {
-            x[0][0]
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:T => Int32))
-        @test !occursin("<T>", specialized)
-        @test occursin("Vec<Vec<i32>>", specialized)
-        @test occursin("fn nested(", specialized)
-
-        # Multiple type params with containers: HashMap<K, V>
-        code = """
-        pub fn get_value<K, V>(map: HashMap<K, V>, key: K) -> V {
-            map[key]
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:K => Int32, :V => Float64))
-        @test occursin("HashMap<i32, f64>", specialized)
-        @test occursin("fn get_value(", specialized)
-
-        # impl block with nested generics
-        code = """
-        impl<T: Copy> MyStruct<T> {
-            pub fn get(&self) -> T { self.value }
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:T => Int32))
-        @test !occursin("impl<", specialized)
-        @test occursin("impl", specialized)
-        @test occursin("i32", specialized)
-    end
-
-    @testset "Deeply nested generic specialization" begin
-        # Three levels: Vec<Option<Result<T, String>>>
-        code = """
-        pub fn unwrap_deep<T>(items: Vec<Option<Result<T, String>>>) -> T {
-            items[0].unwrap().unwrap()
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:T => Int32))
-        @test occursin("Vec<Option<Result<i32, String>>>", specialized)
-        @test occursin("fn unwrap_deep(", specialized)
-        @test !occursin("<T>", specialized)
-
-        # Nested trait bounds in fn signature: Add<Output = T>
-        code = """
-        pub fn sum<T: Copy + Add<Output = T> + Default>(items: &[T]) -> T {
-            items.iter().copied().fold(T::default(), |a, b| a + b)
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:T => Float64))
-        @test occursin("fn sum(", specialized)
-        @test !occursin("<T:", specialized)
-        @test occursin("f64", specialized)
-
-        # impl block with deeply nested generics
-        code = """
-        impl<T: Clone + Into<Vec<Option<T>>>> Wrapper<T> {
-            pub fn convert(&self) -> Vec<Option<T>> { self.value.clone().into() }
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:T => Int64))
-        @test !occursin("impl<", specialized)
-        @test occursin("impl", specialized)
-        @test occursin("i64", specialized)
-
-        # Multiple type params with nested containers
-        code = """
-        pub fn merge<K, V>(a: HashMap<K, Vec<V>>, b: HashMap<K, Vec<V>>) -> HashMap<K, Vec<V>> {
-            a
-        }
-        """
-        specialized = RustCall.specialize_generic_code(code, Dict(:K => Int32, :V => Float64))
-        @test occursin("HashMap<i32, Vec<f64>>", specialized)
-        @test occursin("fn merge(", specialized)
-    end
-
-    @testset "Generic Function Detection" begin
-        # Test that generic functions are detected in rust"" blocks
-        if RustCall.check_rustc_available()
-            rust"""
-            #[no_mangle]
-            pub extern "C" fn test_identity<T>(x: T) -> T {
-                x
-            }
-            """
-
-            # Check if it was registered
-            # Note: This might not work if the detection fails silently
-            # We'll test the manual registration path instead
-            @test true  # Placeholder - actual detection test would go here
-        else
-            @warn "rustc not available, skipping generic function detection test"
+@testset "Generic monomorphization" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required for monomorphization"
+    else
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
         end
-    end
 
-    @testset "Monomorphization" begin
-        if RustCall.check_rustc_available()
-            # Register a simple generic function
-            code = """
-            #[no_mangle]
-            pub extern "C" fn identity<T>(x: T) -> T {
-                x
-            }
-            """
-            RustCall.register_generic_function("test_identity", code, [:T])
+        code = "pub fn test_identity<T>(x: T) -> T { x }"
+        sig = signature_named(code, "test_identity")
+        RustCall.register_generic_function(
+            sig.name,
+            sig.source,
+            Symbol.(sig.type_params),
+            sig.constraints,
+            "";
+            arg_types = sig.arg_types,
+            return_type = sig.return_type,
+        )
 
-            # Test monomorphization with Int32
-            type_params = Dict(:T => Int32)
-            info = RustCall.monomorphize_function("test_identity", type_params)
+        mono = RustCall.monomorphize_function("test_identity", Dict(:T => Int32))
+        @test mono.name == "test_identity_i32"
+        @test mono.return_type == Int32
+        @test mono.arg_types == [Int32]
+        @test mono.func_ptr != C_NULL
 
-            @test info.name != "test_identity"  # Should have a specialized name
-            @test occursin("i32", info.name)  # Should contain type suffix
-            @test info.return_type == Int32
-            @test info.arg_types == [Int32]
-            @test info.func_ptr != C_NULL
+        cached = RustCall.monomorphize_function("test_identity", Dict(:T => Int32))
+        @test cached.name == mono.name
+        @test cached.func_ptr == mono.func_ptr
+        @test RustCall.call_generic_function("test_identity", Int32(42)) == Int32(42)
 
-            # Test that caching works
-            info2 = RustCall.monomorphize_function("test_identity", type_params)
-            @test info.name == info2.name
-            @test info.func_ptr == info2.func_ptr
-        else
-            @warn "rustc not available, skipping monomorphization test"
-        end
-    end
-
-    @testset "Call Generic Function" begin
-        if RustCall.check_rustc_available()
-            # Register and test calling a generic function
-            code = """
-            #[no_mangle]
-            pub extern "C" fn add<T>(a: T, b: T) -> T {
-                a + b
-            }
-            """
-            RustCall.register_generic_function("test_add", code, [:T])
-
-            # Note: This test might fail because Rust generics with + operator
-            # require trait bounds. For now, we'll test the infrastructure.
-            # A working example would need: fn add<T: Copy + Add<Output = T>>(a: T, b: T) -> T
-
-            @test RustCall.is_generic_function("test_add")
-        else
-            @warn "rustc not available, skipping generic function call test"
-        end
-    end
-
-    @testset "Multiple Type Parameters" begin
-        if RustCall.check_rustc_available()
-            # Test with multiple type parameters
-            code = """
-            #[no_mangle]
-            pub extern "C" fn pair<T, U>(a: T, b: U) -> T {
-                a
-            }
-            """
-            RustCall.register_generic_function("test_pair", code, [:T, :U])
-
-            # Test inference
-            type_params = RustCall.infer_type_parameters("test_pair", [Int32, Float64])
-            @test type_params[:T] == Int32
-            @test type_params[:U] == Float64
-        else
-            @warn "rustc not available, skipping multiple type parameters test"
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
         end
     end
 end
