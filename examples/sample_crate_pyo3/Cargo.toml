@@ -8,7 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 juliacall_macros = { path = "../../deps/juliacall_macros" }
-pyo3 = { version = "0.24", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
 
 [features]
 default = []

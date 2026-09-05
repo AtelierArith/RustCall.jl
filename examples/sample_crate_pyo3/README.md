@@ -156,7 +156,7 @@ All APIs are generated from `#[julia_pyo3]` - **same function names** in both la
 ```toml
 [dependencies]
 juliacall_macros = { path = "../../deps/juliacall_macros" }
-pyo3 = { version = "0.24", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
 
 [features]
 default = []
