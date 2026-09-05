@@ -361,20 +361,22 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # inside the lock: an `unload_library` racing with the check above must
     # send us down the compile path, not leave metadata behind for a library
     # that is gone.
-    if is_in_memory && _register_manifest(expanded, lib_name; compiler, require_loaded = true)
+    policy = inline_rustc_policy()
+    if is_in_memory &&
+       _register_manifest(expanded, lib_name; compiler, policy, require_loaded = true)
         return lib_name
     end
 
     # Check cache first
     cached_lib = get_cached_library(cache_key)
     if cached_lib !== nothing && is_cache_valid(cache_key, wrapped_code, compiler; cfg_text)
-        # Load from cache
-        lib_handle, _ = load_cached_library(cache_key)
-
-        # Register the library. The handle and the manifest's lookup tables
-        # are published together (#279 follow-up): a concurrent
-        # `ensure_loaded` must never see the library before its symbols.
-        _register_manifest(expanded, lib_name; compiler, handle = lib_handle)
+        # Load from cache. `load_cached_library` verifies the checksum and
+        # hands back a path; opening it and publishing the handle together with
+        # the manifest's lookup tables is `load_artifact!`'s job (#277 Phase
+        # B), so a concurrent `ensure_loaded` never sees the library before its
+        # symbols.
+        _register_manifest(expanded, lib_name; compiler, policy,
+                           load_path = load_cached_library(cache_key))
 
         return lib_name
     end
@@ -401,18 +403,12 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
         @warn "Failed to save library to cache: $e"
     end
 
-    # Load the library
-    lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
-    if lib_handle == C_NULL
-        error("Failed to load compiled Rust library: $lib_path")
-    end
-
     # Temporarily disabled LLVM IR loading for stability
     # (LLVM IR is used for type inference and @rust_llvm)
 
-    # Register the library: the handle and the manifest's lookup tables are
-    # published in one critical section (#279 follow-up).
-    _register_manifest(expanded, lib_name; compiler, handle = lib_handle)
+    # Load and register the library: the handle and the manifest's lookup
+    # tables are published in one critical section (#279 follow-up, #277).
+    _register_manifest(expanded, lib_name; compiler, policy, load_path = lib_path)
 
     return lib_name
 end
@@ -511,8 +507,10 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # As in the rustc path: the re-check happens inside `_register_manifest`'s
     # critical section, so a concurrent unload sends us down the build path
     # rather than leaving metadata for a library that is gone.
+    policy = inline_cargo_policy()
     if is_in_memory &&
-       _register_manifest(expanded, lib_name; cargo_backed = true, require_loaded = true)
+       _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+                          snapshot_env = build_env, require_loaded = true)
         @debug "Using cached Cargo library from memory" lib_name=lib_name
         return lib_name
     end
@@ -525,10 +523,16 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     cached_lib = get_cargo_cached_library(cache_key)
     if !isnothing(cached_lib) && isfile(cached_lib)
-        # Load from cache
-        lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-        if lib_handle != C_NULL
-            _register_manifest(expanded, lib_name; cargo_backed = true, handle = lib_handle)
+        # Load from cache through the one loader (#277 Phase B). A failure to
+        # open the cached file is not fatal: fall through and rebuild.
+        loaded = try
+            _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+                               load_path = cached_lib, snapshot_env = build_env)
+        catch e
+            @debug "Failed to load the cached Cargo library; rebuilding" exception = e
+            false
+        end
+        if loaded
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=artifact_short_id(cache_key, 8)
 
             return lib_name
@@ -553,15 +557,10 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             @debug "Failed to cache Cargo library: $e"
         end
 
-        # Load the library
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-        if lib_handle == C_NULL
-            error("Failed to load compiled Cargo library: $lib_path")
-        end
-
-        # Register the library: handle and manifest lookup tables together
-        # (#279 follow-up).
-        _register_manifest(expanded, lib_name; cargo_backed = true, handle = lib_handle)
+        # Load and register the library: handle and manifest lookup tables
+        # together (#279 follow-up, #277 Phase B).
+        _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+                           load_path = lib_path, snapshot_env = build_env)
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
     finally
@@ -661,7 +660,8 @@ function _rustc_block_identity(wrapped_source::AbstractString, compiler::RustCom
 end
 
 """
-    _register_manifest(expanded::ExpandedInline, lib_name::String; handle = nothing)
+    _register_manifest(expanded::ExpandedInline, lib_name::String;
+                       policy, load_path = nothing) -> Bool
 
 Register everything the manifest of a compiled block tells us:
 
@@ -672,21 +672,24 @@ Register everything the manifest of a compiled block tells us:
   function is addressed by its qualified name, so `specialize` instantiates it
   in place with sibling items, imports and `super::` paths intact.
 
-Pass `handle` to publish a freshly loaded library at the same time. The handle
-and the manifest-derived lookup tables then become visible in **one**
-`REGISTRY_LOCK` critical section, which is what makes a concurrent
-`ensure_loaded` / `@rust f(...)` safe: a task that sees the library in
-`RUST_LIBRARIES` also sees that `f` is exported as `rustcall_f`, instead of
-resolving `f` to itself and failing (or, worse, hitting another library's `f`).
-Callers must therefore not insert into `RUST_LIBRARIES` themselves.
+Pass `load_path` to open and publish a freshly compiled (or cached) library at
+the same time: the load goes through `load_artifact!` (`src/loadpolicy.jl`),
+which opens the file under `policy` and installs the handle together with the
+manifest-derived lookup tables in **one** `REGISTRY_LOCK` critical section.
+That is what makes a concurrent `ensure_loaded` / `@rust f(...)` safe: a task
+that sees the library in `RUST_LIBRARIES` also sees that `f` is exported as
+`rustcall_f`, instead of resolving `f` to itself and failing (or, worse,
+hitting another library's `f`). No call site inserts into `RUST_LIBRARIES`
+itself (#277 Phase B).
 
-Pass `require_loaded` instead when re-registering the volatile tables of a
-library that is *already* loaded. The existence check then happens inside the
-same critical section, so an `unload_library` or hot reload racing between a
-caller's `haskey` and this call cannot leave metadata and `CURRENT_LIB[]`
-pointing at a library that is no longer in `RUST_LIBRARIES`. Returns `false`
-when the library turned out to be gone and nothing was registered; the caller
-then falls through to compiling and loading it again.
+Omit `load_path` when re-registering the volatile tables of a library that is
+*already* loaded. The existence check then happens inside the same critical
+section (`register_artifact_metadata!(...; require_loaded = true)`), so an
+`unload_library` or hot reload racing between a caller's `haskey` and this call
+cannot leave metadata and `CURRENT_LIB[]` pointing at a library that is no
+longer in `RUST_LIBRARIES`. Returns `false` when the library turned out to be
+gone and nothing was registered; the caller then falls through to compiling and
+loading it again.
 
 The generic registrations stay outside the lock: `register_generic_function`
 may shell out to the extractor to recover a signature, which must not run with
@@ -694,24 +697,27 @@ the global registry lock held.
 """
 function _register_manifest(expanded, lib_name::String; compiler = nothing,
                             cargo_backed::Bool = false,
+                            policy::LoadPolicy = inline_rustc_policy(),
+                            load_path::Union{AbstractString, Nothing} = nothing,
                             handle::Union{Ptr{Cvoid}, Nothing} = nothing,
-                            set_current::Bool = true,
-                            require_loaded::Bool = false)
+                            snapshot_env = nothing,
+                            require_loaded::Bool = false,
+                            set_current::Bool = true)
     manifest = expanded.manifest
     signatures = manifest_function_signatures(manifest; only_attributed = false)
+    symbols, return_types = _manifest_registry_entries(signatures)
 
-    registered = lock(REGISTRY_LOCK) do
-        if require_loaded && !haskey(RUST_LIBRARIES, lib_name)
-            return false
-        end
-        _register_exported_symbols!(signatures, lib_name)
-        # Publishing the handle last is what closes the window: no reader can
-        # find the library before its symbol mappings are in place.
-        if handle !== nothing
-            RUST_LIBRARIES[lib_name] = (handle, Dict{String, Ptr{Cvoid}}())
-        end
-        set_current && (CURRENT_LIB[] = lib_name)
-        return true
+    registered = if load_path !== nothing
+        load_artifact!(policy, load_path; lib_name, symbols, return_types,
+                       snapshot_env, set_current)
+        true
+    elseif handle !== nothing
+        adopt_artifact!(policy, handle; lib_name, symbols, return_types,
+                        snapshot_env, set_current)
+        true
+    else
+        register_artifact_metadata!(policy, lib_name; symbols, return_types,
+                                    require_loaded, set_current)
     end
     registered || return false
 
@@ -746,21 +752,20 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
 end
 
 """
-    _register_exported_symbols!(signatures, lib_name)
+    _manifest_registry_entries(signatures) -> (symbols, return_types)
 
-Record the name-to-symbol mapping and the return type of every exported,
-non-generic function of a manifest.
+The registry rows a manifest implies: `name => exported symbol` pairs and
+`name => Julia return type` pairs for every exported, non-generic function.
 
-The caller must hold `REGISTRY_LOCK` and publish the library handle in the same
-critical section, so that a task which finds the library in `RUST_LIBRARIES`
-also finds how to resolve its names (#279). Everything the registries recorded
-about the library is dropped first (`clear_library_metadata!`: both the symbol
-mappings and the return-type hints), so a library re-registered under the same
-name — a re-run block, a hot reload — keeps nothing about a function it no
-longer defines or now declares differently.
+Computing them is deliberately separate from installing them. The rows are
+derived here, outside any lock (recovering a return type consults the FFI
+contract and the generic registry), and handed to `load_artifact!` /
+`register_artifact_metadata!`, which install them in the same critical section
+that publishes the library handle — so a task which finds the library in
+`RUST_LIBRARIES` also finds how to resolve its names (#279, #277 Phase B).
 
-Identity mappings are recorded too, so a plain `#[no_mangle] fn f` is
-explicitly `f => f` for this library and cannot pick up another library's
+Identity mappings are included, so a plain `#[no_mangle] fn f` is explicitly
+`f => f` for its library and cannot pick up another library's
 `f => rustcall_f`.
 
 A manifest may report one symbol twice. `@rust_crate` and the hot reload scan
@@ -773,32 +778,41 @@ built, and a wrong primitive hint is a wrong ABI. Such a call falls through to
 inference or an explicit `::T` instead. Deciding an external crate's features
 exactly needs the crate's own build configuration, which #277 Phase B owns.
 """
-function _register_exported_symbols!(signatures, lib_name::String)
-    clear_library_metadata!(lib_name)
+function _manifest_registry_entries(signatures)
     exported = [sig for sig in signatures if !sig.is_generic && sig.exported]
     occurrences = Dict{String, Int}()
     for sig in exported
         occurrences[sig.symbol] = get(occurrences, sig.symbol, 0) + 1
     end
+    symbols = Pair{String, String}[]
+    return_types = Pair{String, Type}[]
     for sig in exported
-        register_function_symbol(lib_name, sig.name, sig.symbol)
+        isempty(sig.symbol) || push!(symbols, String(sig.name) => String(sig.symbol))
         if occurrences[sig.symbol] > 1
-            @debug "Ambiguous manifest entry: not registering a return type" symbol = sig.symbol lib_name
+            @debug "Ambiguous manifest entry: not registering a return type" symbol = sig.symbol
             continue
         end
-        _register_return_type(sig, lib_name)
+        ret_type = _manifest_return_type(sig)
+        ret_type === nothing && continue
+        # Recorded under both the Rust name and the exported symbol: `@rust
+        # f(...)` names the function, while a caller that already resolved the
+        # symbol (or a generated wrapper) asks for `rustcall_f`. Both keys are
+        # library-scoped — a name-only hint would outlive this library (#279).
+        for key in unique((sig.name, sig.symbol))
+            push!(return_types, String(key) => ret_type)
+        end
     end
-    return nothing
+    return symbols, return_types
 end
 
 """
-    _register_return_type(sig::RustFunctionSignature, lib_name::String)
+    _manifest_return_type(sig::RustFunctionSignature) -> Union{Type, Nothing}
 
-Record the Julia return type of an exported function for `@rust` calls that
-omit `::ReturnType`. Functions whose return type has no primitive Julia
-counterpart are skipped and must be called with an explicit return type.
+The Julia return type to record for an exported function so that `@rust` calls
+may omit `::ReturnType`, or `nothing` when the return type has no single-slot
+Julia counterpart and the call must be explicit.
 """
-function _register_return_type(sig, lib_name::String)
+function _manifest_return_type(sig)
     if haskey(FUNCTION_REGISTRY, sig.symbol) || is_generic_function(sig.symbol)
         return nothing
     end
@@ -817,16 +831,7 @@ function _register_return_type(sig, lib_name::String)
         # generated Julia wrapper handles them, `@rust` callers must be explicit.
         nothing
     end
-    ret_type === nothing && return nothing
-    # Recorded under both the Rust name and the exported symbol: `@rust f(...)`
-    # names the function, while a caller that already resolved the symbol (or a
-    # generated wrapper) asks for `rustcall_f`. Both keys are library-scoped —
-    # a name-only hint would outlive this library (#279).
-    for key in unique((sig.name, sig.symbol))
-        FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, key)] = ret_type
-    end
-    @debug "Registered return type for function: $(sig.name) (symbol $(sig.symbol)) => $ret_type (library: $lib_name)"
-    return nothing
+    return ret_type
 end
 
 """

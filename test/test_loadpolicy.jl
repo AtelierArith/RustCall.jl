@@ -158,23 +158,21 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             local_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", src))
             global_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", src))
         end
-        # Current main: 4 local, 8 global, 12 total. Phase B collapses these
-        # into a single loader; update these numbers as doors move over.
-        @test local_sites == 4
-        @test global_sites == 8
-        @test local_sites + global_sites == 12
+        # B0 moved the two inline doors (direct rustc and Cargo) onto
+        # `load_artifact!`, which reads the flags off the policy. What is left
+        # open-coded: @irust, generics, hot reload, the two @rust_crate
+        # templates, the helper library (2) and the deprecated LLVM path.
+        @test local_sites == 2
+        @test global_sites == 6
+        @test local_sites + global_sites == 8
 
-        # Cache state does not change the flags. The dependency-free door
-        # loads RTLD_LOCAL from both the cache and a fresh compile: cache.jl
-        # has a RTLD_LOCAL dlopen and no RTLD_GLOBAL one at all.
+        # The inline doors no longer name a flag at all: cache.jl hands back a
+        # path and ruststr.jl calls the loader.
         cache_src = _src("cache.jl")
-        @test occursin(r"dlopen\([^)]*RTLD_LOCAL", cache_src)
-        @test !occursin(r"dlopen\([^)]*RTLD_GLOBAL", cache_src)
-        # ruststr.jl: exactly one RTLD_LOCAL (the dependency-free cache miss)
-        # and three RTLD_GLOBAL (Cargo cache hit, Cargo build, @irust).
+        @test !occursin(r"dlopen\(", cache_src)
         ruststr_src = _src("ruststr.jl")
-        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", ruststr_src)) == 1
-        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", ruststr_src)) == 3
+        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", ruststr_src)) == 0
+        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", ruststr_src)) == 1
 
         # One policy per axis value, each covering both cache states.
         rustc_policy = RustCall.inline_rustc_policy()
@@ -321,12 +319,11 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             writes += count(_ -> true,
                             eachmatch(r"RUST_LIBRARIES\[[^\]]*\]\s*=", _src(file)))
         end
-        # Five open-coded registration sites on current main: two in
-        # ruststr.jl (`_register_manifest`, which publishes an inline block's
-        # handle together with its symbol mappings since #279, and the `@irust`
-        # loader), generics.jl, hot_reload.jl, and the reload alias that #272
-        # added in rustmacro.jl (`_alias_reloaded_library`).
-        @test writes == 5
+        # B0 moved `_register_manifest` onto `load_artifact!`, so the inline
+        # doors write nothing themselves. Four open-coded sites remain: the
+        # `@irust` loader in ruststr.jl, generics.jl, hot_reload.jl, and the
+        # reload alias that #272 added in rustmacro.jl.
+        @test writes == 4
 
         # Each site decides for itself whether CURRENT_LIB moves and what the
         # key looks like; the policies record that disagreement.
@@ -452,14 +449,86 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
               RustCall.finalizer_frees(RustCall.crate_direct_policy())
     end
 
-    @testset "Phase A is additive: no call site migrated yet" begin
-        # loadpolicy.jl is included but nothing in src/ uses it yet.
+    # -----------------------------------------------------------------
+    # Phase B migration front: which doors already go through the loader.
+    #
+    # Phase A was additive; every commit of Phase B moves one more door onto
+    # `load_artifact!` and shrinks this allow-list. When it is empty the
+    # `Libdl.dlopen` lint (scripts/lint_load_path.sh) is what keeps it that
+    # way.
+    # -----------------------------------------------------------------
+    @testset "Phase B: migrated doors go through loadpolicy.jl" begin
+        migrated = ("ruststr.jl", "cache.jl")
         for file in readdir(_SRC_DIR)
             endswith(file, ".jl") || continue
             file in ("loadpolicy.jl", "RustCall.jl") && continue
             src = _src(file)
-            @test !occursin("LoadPolicy", src)
-            @test !occursin("register_library!", src)
+            if file in migrated
+                continue
+            end
+            @test !occursin("load_artifact!(", src)
+        end
+        # ...and the migrated ones really do.
+        @test occursin("load_artifact!(", _src("ruststr.jl"))
+        @test occursin("inline_rustc_policy()", _src("ruststr.jl"))
+        @test occursin("inline_cargo_policy()", _src("ruststr.jl"))
+    end
+
+    @testset "load_artifact! / unload_artifact! / alias_artifact!" begin
+        policy = RustCall.LoadPolicy("test-loader"; sets_current_lib = true)
+        name = "loadpolicy_loader_test_$(getpid())"
+        alias = name * "_alias"
+        handle = Ptr{Cvoid}(UInt(0xfeed0000))
+        previous = RustCall.CURRENT_LIB[]
+        try
+            a = RustCall.adopt_artifact!(policy, handle; lib_name = name,
+                                         symbols = ["f" => "rustcall_f"],
+                                         return_types = ["f" => Int32])
+            @test a isa RustCall.LoadedArtifact
+            @test a.handle == handle
+            @test a.alive[]
+            @test RustCall.CURRENT_LIB[] == name
+            @test RustCall.exported_symbol(name, "f") == "rustcall_f"
+            @test RustCall.get_function_return_type(name, "f") === Int32
+            @test occursin("LoadedArtifact(", sprint(show, a))
+
+            # The alias shares the handle, gets its own metadata rows, and
+            # shares the liveness flag.
+            @test RustCall.alias_artifact!(policy, name, alias)
+            @test RustCall.exported_symbol(alias, "f") == "rustcall_f"
+            @test RustCall.artifact_alive_ref(alias) === a.alive
+
+            # A :replace registration retires the previous artifact.
+            other = Ptr{Cvoid}(UInt(0xf00d0000))
+            b = RustCall.adopt_artifact!(policy, other; lib_name = name)
+            @test !a.alive[]
+            @test b.alive[]
+            @test RustCall.exported_symbol(name, "f") == "f"   # metadata replaced
+
+            # :insert_only keeps the incumbent and reports it.
+            insert_only = RustCall.LoadPolicy("test-loader-insert";
+                                              registration_mode = :insert_only)
+            c = RustCall.adopt_artifact!(insert_only, handle; lib_name = name)
+            @test c.handle == other
+            @test c.alive === b.alive
+
+            @test RustCall.unload_artifact!(policy, name; dlclose = false)
+            @test !b.alive[]
+            @test RustCall.CURRENT_LIB[] == ""
+            @test !RustCall.unload_artifact!(policy, name; dlclose = false)
+            @test_throws ArgumentError RustCall.adopt_artifact!(policy, C_NULL;
+                                                               lib_name = name)
+            @test_throws ArgumentError RustCall.adopt_artifact!(policy, handle;
+                                                               lib_name = name,
+                                                               on_replace = :burn)
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, name)
+                delete!(RustCall.RUST_LIBRARIES, alias)
+                delete!(RustCall.ARTIFACT_ALIVE, name)
+                delete!(RustCall.ARTIFACT_ALIVE, alias)
+            end
+            RustCall.CURRENT_LIB[] = previous
         end
     end
 end

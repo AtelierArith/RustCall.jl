@@ -18,11 +18,14 @@
 # that Phase B can move call sites onto the shared loader one at a time without
 # having to agree on the target policy first.
 #
-# Phase A is strictly additive: nothing in this file is called from the rest of
-# `src/` yet, and no existing behaviour changes.  Each constructor below
-# reproduces *what its call sites do today*, divergences included; the
-# divergences are pinned down by `test/test_loadpolicy.jl` so that Phase B
-# migrations are visible as test changes.
+# Phase A was strictly additive.  Phase B (#277) makes this file the *only*
+# place that opens, registers and unloads a compiled artifact: `load_artifact!`
+# / `unload_artifact!` / `alias_artifact!` below own the `dlopen`, the
+# `RUST_LIBRARIES` entry, the per-library symbol and return-type tables, the
+# function-pointer cache and `CURRENT_LIB`, as one transaction under
+# `REGISTRY_LOCK`.  Each named constructor still records the policy of its own
+# front door, so a migration is behaviour-neutral at the moment of the swap and
+# any later change of policy is one edit in one place.
 #
 # Related issues: #244 (panic containment), #249 (finalizers), #250 (symbol
 # visibility / unload), #252, #255 (failed hot reload empties the registry),
@@ -799,4 +802,329 @@ function Base.show(io::IO, policy::LoadPolicy)
           ", registry=", policy.registry,
           "/", policy.registration_mode,
           ", finalizer_frees=", policy.finalizer_frees, ")")
+end
+
+# ---------------------------------------------------------------------------
+# The one load / unload / alias path (#277 Phase B).
+#
+# Every front door goes through the three functions below.  They own the
+# `dlopen`, the `RUST_LIBRARIES` entry, its function-pointer cache, the
+# per-library symbol and return-type tables, `CURRENT_LIB` and the liveness
+# flag finalizers capture; a call site supplies only a `LoadPolicy`, a path and
+# the metadata the artifact publishes.
+# ---------------------------------------------------------------------------
+
+"""
+    LoadedArtifact
+
+One loaded shared library, as returned by `load_artifact!`.
+
+# Fields
+
+- `name::String` — the `RUST_LIBRARIES` key the artifact is registered under
+  (still meaningful for policies that register nowhere: it names the artifact
+  in diagnostics).
+- `handle::Ptr{Cvoid}` — the live `dlopen` handle. For an `:insert_only`
+  policy that lost the race this is the *existing* handle, not the duplicate
+  that was opened and immediately closed.
+- `path::String` — the file that was opened.
+- `policy::LoadPolicy` — the policy it was opened under.
+- `alive::Ref{Bool}` — flipped to `false` by `unload_artifact!` and by a
+  `:replace` registration that evicts this artifact. Objects produced by the
+  artifact capture this `Ref` at construction so their finalizer can skip a
+  call into a `dlclose`d image **without taking a lock or doing a lookup**
+  (#249): a finalizer may run while the running thread holds `REGISTRY_LOCK`,
+  so it must never take it.
+- `assumed_unwind::Bool` — `must_assume_unwind` resolved against the
+  environment the artifact was *built* under (`snapshot_env`), recorded at load
+  time because the live `ENV` is not evidence about a cached artifact (#244).
+"""
+struct LoadedArtifact
+    name::String
+    handle::Ptr{Cvoid}
+    path::String
+    policy::LoadPolicy
+    alive::Ref{Bool}
+    assumed_unwind::Bool
+end
+
+function Base.show(io::IO, a::LoadedArtifact)
+    print(io, "LoadedArtifact(", a.name, " @ ", repr(a.handle),
+          ", ", a.policy.name, a.alive[] ? "" : ", dead", ")")
+end
+
+"""
+    ARTIFACT_ALIVE
+
+`lib_name` → the liveness flag of the artifact currently registered under it.
+
+The flag is a `Ref{Bool}` rather than a registry lookup on purpose: a finalizer
+must be able to answer "is my library still loaded?" with a single load of a
+captured `Ref`, taking no lock and touching no dictionary (#249).  Flipping the
+flag is the *only* thing that makes an object produced by an unloaded library
+inert; the object itself is unreachable from here by then.
+
+Guarded by `REGISTRY_LOCK`.  An alias (`alias_artifact!`) shares the flag of
+the artifact it aliases, so unloading either name retires both.
+"""
+const ARTIFACT_ALIVE = Dict{String, Ref{Bool}}()
+
+"""
+    artifact_alive_ref(lib_name) -> Ref{Bool}
+
+The liveness flag of `lib_name`, created (as `true`) when the library has none
+yet — a library loaded before this session's first `load_artifact!`, or one
+registered by a path that predates the loader.
+
+Capture this once, at construction time, into any object whose finalizer calls
+back into the library; never look it up from the finalizer.
+"""
+function artifact_alive_ref(lib_name::AbstractString)
+    name = String(lib_name)
+    lock(REGISTRY_LOCK) do
+        get!(() -> Ref(true), ARTIFACT_ALIVE, name)
+    end
+end
+
+# Retire the flag of whatever is registered under `name`.  Caller holds
+# REGISTRY_LOCK.
+function _retire_alive!(name::String)
+    old = get(ARTIFACT_ALIVE, name, nothing)
+    old === nothing || (old[] = false)
+    return nothing
+end
+
+# Retire the old flag and install a fresh live one.  Caller holds REGISTRY_LOCK.
+function _fresh_alive!(name::String)
+    _retire_alive!(name)
+    ref = Ref(true)
+    ARTIFACT_ALIVE[name] = ref
+    return ref
+end
+
+"""
+    load_artifact!(policy::LoadPolicy, path;
+                   lib_name, symbols = (), return_types = (), eager = (),
+                   snapshot_env = nothing, on_replace = :keep_handle,
+                   set_current = policy.sets_current_lib) -> LoadedArtifact
+
+Open `path` under `policy` and publish it, as one transaction.
+
+`Libdl.dlopen` runs **outside** `REGISTRY_LOCK` — it executes arbitrary
+initialisation code and is slow, and holding the global registry lock across it
+would serialise every unrelated `@rust` call.  Everything else happens in a
+single locked block, so no task can observe a half-registered library: the
+handle, its fresh function-pointer cache (pre-filled from `eager`), the
+name-to-symbol mappings (`symbols`, `name => exported symbol`, #279), the
+return-type hints (`return_types`, `name => Type`) and `CURRENT_LIB` all become
+visible together.  That is what closes the window in which a concurrent
+`@rust f(...)` could find the library but not yet know that `f` is exported as
+`rustcall_f`.
+
+`policy.registration_mode` decides what happens when the key is taken:
+
+- `:replace` evicts the previous entry.  Its liveness flag is flipped, so
+  objects still referencing it become inert instead of calling into a library
+  that may be about to be closed.  The evicted handle is `dlclose`d after the
+  lock is released, and only when `on_replace === :dlclose`; the default
+  `:keep_handle` leaves the image mapped, which is what a re-registered
+  `rust\"\"\"` block wants — Julia objects and cached pointers may still refer to
+  it.
+- `:insert_only` keeps the existing entry, together with its accumulated
+  function-pointer cache, and `dlclose`s the duplicate just opened.  Two tasks
+  racing on the same path therefore agree on one handle (`src/generics.jl`).
+
+Policies that register nowhere (`:module_local`, `:helper_slot`, `:none`) still
+get their `dlopen` from here — that is what makes the flag set one decision —
+and come back as a `LoadedArtifact` with a liveness flag of their own.
+
+`snapshot_env` is the environment the artifact was *built* under; it is used
+only to resolve `assumed_unwind`.  Pass the captured snapshot for a cached or
+reloaded artifact, never the live `ENV` (see `effective_panic_strategy`).
+
+Throws if the load fails, leaving the registry untouched.
+"""
+function load_artifact!(policy::LoadPolicy, path::AbstractString;
+                        lib_name::AbstractString,
+                        kwargs...)
+    lib_path = String(path)
+    handle = Libdl.dlopen(lib_path, dlopen_flags(policy))
+    if handle == C_NULL
+        throw(RustError("Failed to load $(policy.name) library: $(lib_path)"))
+    end
+    return adopt_artifact!(policy, handle; lib_name, path = lib_path, kwargs...)
+end
+
+"""
+    adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
+                    lib_name, path = "", symbols = (), return_types = (),
+                    eager = (), snapshot_env = nothing,
+                    on_replace = :keep_handle,
+                    set_current = policy.sets_current_lib) -> LoadedArtifact
+
+The registration half of `load_artifact!`, for a handle that is already open.
+
+`load_artifact!` is `dlopen` (outside the lock) followed by this. Splitting the
+two is what lets a caller that obtained a handle some other way — a test
+registering a preopened image, a generated `@rust_crate` module that keeps its
+own module-local `Ref` — publish it through exactly the same transaction, with
+the same eviction, liveness and `CURRENT_LIB` semantics.
+"""
+function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
+                         lib_name::AbstractString,
+                         path::AbstractString = "",
+                         symbols = (),
+                         return_types = (),
+                         eager = (),
+                         snapshot_env = nothing,
+                         on_replace::Symbol = :keep_handle,
+                         set_current::Bool = policy.sets_current_lib)
+    on_replace in (:keep_handle, :dlclose) ||
+        throw(ArgumentError("invalid on_replace $(on_replace); expected :keep_handle or :dlclose"))
+    handle == C_NULL &&
+        throw(ArgumentError("refusing to register a NULL handle for $(lib_name)"))
+    name = String(lib_name)
+    lib_path = String(path)
+
+    assumed = snapshot_env === nothing ? must_assume_unwind(policy) :
+              must_assume_unwind(policy, snapshot_env)
+
+    duplicate = C_NULL
+    replaced = C_NULL
+    artifact = lock(REGISTRY_LOCK) do
+        if !registers_in_rust_libraries(policy)
+            return LoadedArtifact(name, handle, lib_path, policy, _fresh_alive!(name), assumed)
+        end
+        if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
+            @debug "load_artifact!: keeping the existing entry" lib_name = name policy = policy.name
+            duplicate = handle
+            existing, _ = RUST_LIBRARIES[name]
+            alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
+            return LoadedArtifact(name, existing, lib_path, policy, alive, assumed)
+        end
+        if haskey(RUST_LIBRARIES, name)
+            replaced = RUST_LIBRARIES[name][1]
+        end
+        cache = Dict{String, Ptr{Cvoid}}()
+        for symbol in eager
+            found = Libdl.dlsym(handle, String(symbol); throw_error = false)
+            (found === nothing || found == C_NULL) && continue
+            cache[String(symbol)] = found
+        end
+        install_library_metadata!(name, symbols, return_types)
+        alive = _fresh_alive!(name)
+        RUST_LIBRARIES[name] = (handle, cache)
+        set_current && (CURRENT_LIB[] = name)
+        return LoadedArtifact(name, handle, lib_path, policy, alive, assumed)
+    end
+
+    # dlclose outside the lock: it runs destructors in the image.
+    duplicate == C_NULL || Libdl.dlclose(duplicate)
+    (replaced != C_NULL && on_replace === :dlclose) && Libdl.dlclose(replaced)
+    return artifact
+end
+
+"""
+    register_artifact_metadata!(policy, lib_name; symbols, return_types,
+                                require_loaded = false,
+                                set_current = policy.sets_current_lib) -> Bool
+
+Re-publish the volatile metadata of a library that is **already** loaded — the
+name-to-symbol mappings and the return-type hints — without opening anything.
+
+`require_loaded` makes the existence check part of the same critical section as
+the writes, so an `unload_artifact!` racing between a caller's `haskey` and
+this call cannot leave metadata and `CURRENT_LIB[]` pointing at a library that
+is gone.  Returns `false` in that case and writes nothing; the caller then
+falls through to compiling and loading the library again.
+"""
+function register_artifact_metadata!(policy::LoadPolicy, lib_name::AbstractString;
+                                     symbols = (), return_types = (),
+                                     require_loaded::Bool = false,
+                                     set_current::Bool = policy.sets_current_lib)
+    name = String(lib_name)
+    return lock(REGISTRY_LOCK) do
+        if require_loaded && !haskey(RUST_LIBRARIES, name)
+            return false
+        end
+        install_library_metadata!(name, symbols, return_types)
+        set_current && (CURRENT_LIB[] = name)
+        return true
+    end
+end
+
+"""
+    unload_artifact!(artifact::LoadedArtifact; dlclose = true) -> Bool
+    unload_artifact!(policy::LoadPolicy, lib_name; dlclose = true) -> Bool
+
+Retire a library and everything the registries record about it, in one locked
+block: the `RUST_LIBRARIES` entry and its function-pointer cache, the
+name-to-symbol mappings and return-type hints (`clear_library_metadata!`), the
+library-scoped `FUNCTION_REGISTRY_BY_LIB` rows, the `MONOMORPHIZED_FUNCTIONS`
+entries that point into it (whose stale pointers would otherwise be a
+use-after-free, #73), its `IRUST_FUNCTIONS` rows, and `CURRENT_LIB` if it
+pointed here.  The liveness flag is flipped, which is what makes objects the
+library produced inert rather than a jump into freed text.
+
+`Libdl.dlclose` happens **after** the lock is released.  Pass `dlclose = false`
+to retire the bookkeeping while keeping the image mapped (the caller then owns
+the handle).
+
+Returns whether a `RUST_LIBRARIES` entry was actually removed.
+"""
+function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; dlclose::Bool = true)
+    name = String(lib_name)
+    handle = C_NULL
+    removed = lock(REGISTRY_LOCK) do
+        _retire_alive!(name)
+        delete!(ARTIFACT_ALIVE, name)
+        found = haskey(RUST_LIBRARIES, name)
+        if found
+            handle, _ = RUST_LIBRARIES[name]
+            delete!(RUST_LIBRARIES, name)
+        end
+        purge_library_state!(name)
+        if CURRENT_LIB[] == name
+            CURRENT_LIB[] = ""
+        end
+        return found
+    end
+    (dlclose && handle != C_NULL) && Libdl.dlclose(handle)
+    return removed
+end
+
+unload_artifact!(artifact::LoadedArtifact; dlclose::Bool = true) =
+    unload_artifact!(artifact.policy, artifact.name; dlclose)
+
+"""
+    alias_artifact!(policy::LoadPolicy, from, to) -> Bool
+
+Register the library already loaded as `from` under the second name `to`.
+
+One handle legitimately sits in `RUST_LIBRARIES` under two names: a reload
+derives a different identity than the one a precompiled module recorded, and
+`_alias_reloaded_library` (#272) makes the stored name resolve to the library
+that was actually loaded.  Both registries are per library (#279), so the alias
+needs its **own** symbol mappings and return-type hints — without them a lookup
+through the stored name resolves `f` to `f`, misses the `rustcall_f` the
+library exports and falls into the cross-library search.
+
+The alias shares the aliased artifact's liveness flag, so unloading either name
+retires objects produced through both.  Returns `false` when `from` is not
+loaded.
+"""
+function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractString)
+    source = String(from)
+    target = String(to)
+    source == target && return false
+    registers_in_rust_libraries(policy) || return false
+    return lock(REGISTRY_LOCK) do
+        entry = get(RUST_LIBRARIES, source, nothing)
+        entry === nothing && return false
+        copy_library_metadata!(source, target)
+        _retire_alive!(target)
+        ARTIFACT_ALIVE[target] = get!(() -> Ref(true), ARTIFACT_ALIVE, source)
+        RUST_LIBRARIES[target] = entry
+        return true
+    end
 end

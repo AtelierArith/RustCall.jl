@@ -132,6 +132,65 @@ function clear_library_metadata!(lib_name::AbstractString)
 end
 
 """
+    install_library_metadata!(lib_name, symbols, return_types)
+
+Replace everything the registries record about `lib_name` with `symbols`
+(`name => exported symbol` pairs) and `return_types` (`name => Type` pairs).
+
+**The caller must hold `REGISTRY_LOCK`**, and must publish the library handle
+in the same critical section: a task that finds the library in
+`RUST_LIBRARIES` has to find how to resolve its names as well (#279). That is
+what `load_artifact!` does; this is its metadata half, factored out so the
+already-loaded re-registration path (`register_artifact_metadata!`) writes
+exactly the same rows.
+
+Whatever the library recorded before is dropped first, so a library
+re-registered under the same name — a re-run block, a hot reload — keeps
+nothing about a function it no longer defines or now declares differently.
+"""
+function install_library_metadata!(lib_name::AbstractString, symbols, return_types)
+    name = String(lib_name)
+    clear_library_metadata!(name)
+    for (rust_name, symbol) in symbols
+        register_function_symbol(name, rust_name, symbol)
+    end
+    for (key, ret_type) in return_types
+        FUNCTION_RETURN_TYPES_BY_LIB[(name, String(key))] = ret_type
+    end
+    return nothing
+end
+
+"""
+    purge_library_state!(lib_name)
+
+Drop *every* registry row that belongs to `lib_name`: its symbol mappings and
+return-type hints (`clear_library_metadata!`), its `FUNCTION_REGISTRY_BY_LIB`
+entries, the `MONOMORPHIZED_FUNCTIONS` entries whose function pointers point
+into it (stale pointers into an unloaded image are a use-after-free, #73) and
+its `IRUST_FUNCTIONS` rows.
+
+The caller must hold `REGISTRY_LOCK`. Called from `unload_artifact!`, which is
+the only place a library leaves `RUST_LIBRARIES` (#277 Phase B).
+"""
+function purge_library_state!(lib_name::AbstractString)
+    name = String(lib_name)
+    clear_library_metadata!(name)
+    for key in collect(keys(FUNCTION_REGISTRY_BY_LIB))
+        first(key) == name && delete!(FUNCTION_REGISTRY_BY_LIB, key)
+    end
+    for (key, info) in collect(FUNCTION_REGISTRY)
+        info.lib_name == name && delete!(FUNCTION_REGISTRY, key)
+    end
+    for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
+        info.lib_name == name && delete!(MONOMORPHIZED_FUNCTIONS, key)
+    end
+    for (key, (lib, _)) in collect(IRUST_FUNCTIONS)
+        lib == name && delete!(IRUST_FUNCTIONS, key)
+    end
+    return nothing
+end
+
+"""
     copy_library_metadata!(from, to)
 
 Give the library `to` the same name-to-symbol mappings and return-type hints as

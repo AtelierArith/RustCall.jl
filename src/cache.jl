@@ -426,13 +426,16 @@ function save_cached_llvm_ir(cache_key::String, ir_path::String)
 end
 
 """
-    load_cached_library(cache_key::String) -> Tuple{Ptr{Cvoid}, String}
+    load_cached_library(cache_key::String) -> String
 
-Load a cached library and return its handle and the cached library path.
+The path of the cached library for `cache_key`, verified and ready to be
+opened.
 
-The caller is responsible for providing a consistent library name (e.g.,
-based on `stable_content_hash` of the wrapped code) to avoid mismatches
-between cache lookup keys and in-memory registry names.
+It does **not** `dlopen` any more (#277 Phase B): opening a compiled artifact,
+choosing its `dlopen` flags and registering the resulting handle are one
+decision that lives in `load_artifact!` (`src/loadpolicy.jl`). This function
+owns the cache half — the lookup and the checksum verification (#198) — under
+`CACHE_LOCK`, and hands the caller a path.
 """
 function load_cached_library(cache_key::String)
     lock(CACHE_LOCK) do
@@ -441,16 +444,10 @@ function load_cached_library(cache_key::String)
             error("Cached library not found for key: $cache_key")
         end
 
-        # Verify checksum before loading (issue #198)
+        # Verify checksum before handing the path out (issue #198)
         _verify_cached_checksum(cache_key, cached_lib)
 
-        # Load the library
-        lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
-        if lib_handle == C_NULL
-            error("Failed to load cached library: $cached_lib")
-        end
-
-        return lib_handle, cached_lib
+        return cached_lib
     end
 end
 

@@ -225,8 +225,10 @@ function _reload_library_locked(state::HotReloadState)
             end
             # Mappings first, handle last: the two must never be observable
             # apart (#279).
-            signatures === nothing ||
-                _register_exported_symbols!(signatures, state.lib_name)
+            if signatures !== nothing
+                install_library_metadata!(state.lib_name,
+                                          _manifest_registry_entries(signatures)...)
+            end
             RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
         end
 
