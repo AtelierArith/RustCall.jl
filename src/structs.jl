@@ -42,7 +42,9 @@ A `#[julia]` / `#[derive(JuliaStruct)]` struct as recorded in the manifest.
 - `fields`: `(name, rust_type)` for every named field
 - `field_getters` / `field_setters`: exported accessor symbols per accessible field
 - `context_code`: struct + impl source (generic structs only)
-- `generic_wrappers`: `(name, source)` wrappers registered for monomorphization
+- `generic_wrappers`: `(name, source, type_params)` wrappers registered for monomorphization;
+  `type_params` are the wrapper's own parameter names in the struct's parameter order
+  (`impl<U> Wrapper<U>` wrappers list `U` where the struct declares `T`)
 - `has_owned_string_helper` / `has_borrowed_string_helper`: whether the
   `<Struct>_RustCallOwnedString` / `<Struct>_RustCallBorrowedString` ABI helpers exist
 """
@@ -59,7 +61,7 @@ struct RustStructInfo
     has_clone::Bool
     has_owned_string_helper::Bool
     has_borrowed_string_helper::Bool
-    generic_wrappers::Vector{Tuple{String, String}}
+    generic_wrappers::Vector{Tuple{String, String, Vector{String}}}
     constraints::Dict{Symbol, TypeConstraints}
     module_path::Vector{String}
 end
@@ -72,7 +74,7 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         has_clone::Bool = get(derive_options, "Clone", false),
                         has_owned_string_helper::Bool = false,
                         has_borrowed_string_helper::Bool = false,
-                        generic_wrappers::Vector{Tuple{String, String}} = Tuple{String, String}[],
+                        generic_wrappers::Vector{Tuple{String, String, Vector{String}}} = Tuple{String, String, Vector{String}}[],
                         constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
                         module_path::Vector{String} = String[])
     RustStructInfo(name, type_params, methods, context_code, fields, has_derive_julia_struct,
@@ -101,11 +103,18 @@ compiled into the library directly and need no registration.
 """
 function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String)
     isempty(info.type_params) && return nothing
-    type_params = Symbol.(info.type_params)
-    for (wrapper_name, _) in info.generic_wrappers
+    for (wrapper_name, _, wrapper_params) in info.generic_wrappers
+        # The wrapper's own parameter names, positionally aligned with the
+        # struct's parameters, so `Point{Int32}` binds the right name even when
+        # the impl block renames them (`impl<U> Point<U>`).
+        type_params = isempty(wrapper_params) ? Symbol.(info.type_params) : Symbol.(wrapper_params)
+        constraints = Dict{Symbol, TypeConstraints}()
+        for (sp, wp) in zip(Symbol.(info.type_params), type_params)
+            haskey(info.constraints, sp) && (constraints[wp] = info.constraints[sp])
+        end
         m = findfirst(mm -> "$(info.name)_$(mm.name)" == wrapper_name, info.methods)
         arg_types = m === nothing ? String[] : info.methods[m].arg_types
-        register_generic_function(wrapper_name, expanded_source, type_params, info.constraints, "";
+        register_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
                                   arg_types = arg_types,
                                   path = qualified_name(info.module_path, wrapper_name))
     end

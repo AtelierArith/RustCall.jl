@@ -179,6 +179,19 @@ using TOML
         @test (@rust mod_offset(Int32(5))) == 105
         c = Cell{Int64}(Int64(9))
         @test get(c) == 9
+
+        # impl block renaming the struct parameter (impl<U> Holder<U>)
+        rust"""
+        #[julia]
+        pub struct Holder<T> { value: T }
+        impl<U: Copy> Holder<U> {
+            pub fn new(value: U) -> Self { Self { value } }
+            pub fn value(&self) -> U { self.value }
+        }
+        """
+        h = Holder{Int32}(Int32(11))
+        @test value(h) == 11
+        @test h.value == 11
     end
 
     @testset "syntax that broke the old parsers (#169, #177/#201, #184, #233)" begin

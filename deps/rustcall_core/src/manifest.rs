@@ -198,6 +198,11 @@ pub struct Struct {
 pub struct GenericWrapper {
     pub name: String,
     pub source: String,
+    /// Type parameter names as declared by the wrapper, in the order of the
+    /// struct's own parameters (an `impl<U> Wrapper<U>` wrapper lists `U` where
+    /// the struct declares `T`), followed by method-level parameters.
+    #[serde(default)]
+    pub type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

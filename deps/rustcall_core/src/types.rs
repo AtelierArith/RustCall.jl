@@ -308,6 +308,24 @@ pub fn has_type_params(generics: &Generics) -> bool {
         .any(|p| matches!(p, GenericParam::Type(_) | GenericParam::Const(_)))
 }
 
+/// Whether the signature uses `impl Trait` anywhere in its arguments or return
+/// type. Such functions are generic for rustc (`#[no_mangle]` exports nothing)
+/// and have no parameter Julia could bind.
+pub fn has_impl_trait(sig: &syn::Signature) -> bool {
+    struct Finder(bool);
+    impl<'ast> syn::visit::Visit<'ast> for Finder {
+        fn visit_type_impl_trait(&mut self, _: &'ast syn::TypeImplTrait) {
+            self.0 = true;
+        }
+    }
+    let mut f = Finder(false);
+    for input in &sig.inputs {
+        syn::visit::Visit::visit_fn_arg(&mut f, input);
+    }
+    syn::visit::Visit::visit_return_type(&mut f, &sig.output);
+    f.0
+}
+
 /// Names of const generic parameters (`const N: usize` -> `N`).
 pub fn const_param_names(generics: &Generics) -> Vec<String> {
     generics

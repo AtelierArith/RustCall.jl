@@ -180,6 +180,7 @@ where
     Box::into_raw(Box::new(obj))
 }
 """
+type_params = ["T"]
 
 [[structs.generic_wrappers]]
 name = "Pair_first"
@@ -192,6 +193,7 @@ where
     self_obj.first()
 }
 """
+type_params = ["T"]
 
 [[structs.generic_wrappers]]
 name = "Pair_inline_only"
@@ -204,6 +206,7 @@ where
     self_obj.inline_only()
 }
 """
+type_params = ["T"]
 
 [[structs.generic_wrappers]]
 name = "Pair_get_left"
@@ -216,6 +219,7 @@ where
     unsafe { (*ptr).left }
 }
 """
+type_params = ["T"]
 
 [[structs.generic_wrappers]]
 name = "Pair_set_left"
@@ -229,6 +233,7 @@ where
     }
 }
 """
+type_params = ["T"]
 
 [[structs.generic_wrappers]]
 name = "Pair_get_right"
@@ -241,6 +246,7 @@ where
     unsafe { (*ptr).right }
 }
 """
+type_params = ["T"]
 
 [[structs.generic_wrappers]]
 name = "Pair_set_right"
@@ -254,6 +260,7 @@ where
     }
 }
 """
+type_params = ["T"]
 
 [[structs.generic_wrappers]]
 name = "Pair_free"
@@ -269,3 +276,4 @@ where
     }
 }
 """
+type_params = ["T"]

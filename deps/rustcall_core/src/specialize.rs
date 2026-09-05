@@ -74,21 +74,25 @@ impl TypeSubst {
 impl TypeSubst {
     fn substitute_tokens(&self, tokens: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
         use proc_macro2::{Group, TokenTree};
-        tokens
-            .into_iter()
-            .flat_map(|tt| match tt {
-                TokenTree::Ident(ref id) => match self.map.get(&id.to_string()) {
-                    Some(ty) => quote::quote!(#ty).into_iter().collect::<Vec<_>>(),
-                    None => vec![tt],
+        let mut out: Vec<TokenTree> = Vec::new();
+        let mut after_dollar = false;
+        for tt in tokens {
+            match tt {
+                // `$T` inside a `macro_rules!` definition is a metavariable, not a type.
+                TokenTree::Ident(ref id) if !after_dollar => match self.map.get(&id.to_string()) {
+                    Some(ty) => out.extend(quote::quote!(#ty)),
+                    None => out.push(tt),
                 },
                 TokenTree::Group(g) => {
                     let mut ng = Group::new(g.delimiter(), self.substitute_tokens(g.stream()));
                     ng.set_span(g.span());
-                    vec![TokenTree::Group(ng)]
+                    out.push(TokenTree::Group(ng));
                 }
-                other => vec![other],
-            })
-            .collect()
+                other => out.push(other),
+            }
+            after_dollar = matches!(out.last(), Some(TokenTree::Punct(p)) if p.as_char() == '$');
+        }
+        out.into_iter().collect()
     }
 
     /// Type parameters declared by an item that shadow outer bindings.
@@ -494,6 +498,17 @@ mod tests {
         assert!(out.source.contains("assert_eq!(x, i32::default())"));
         assert!(out.source.contains("vec![i32::default()]"));
         assert!(!out.source.contains("fn check_i32<"));
+    }
+
+    #[test]
+    fn macro_rules_metavariables_are_preserved() {
+        let src = "pub fn m<T: Default>(x: T) -> T { macro_rules! mk { ($T:ty) => { <$T>::default() }; } let _y: T = mk!(T); x }";
+        let out = specialize(src, "m", &[("T".into(), "i32".into())], "m_i32").unwrap();
+        assert!(out.source.contains("($T:ty)"));
+        assert!(out.source.contains("$T >::default()"));
+        assert!(!out.source.contains("$i32"));
+        assert!(out.source.contains("mk!(i32)"));
+        assert!(out.source.contains("let _y: i32"));
     }
 
     #[test]

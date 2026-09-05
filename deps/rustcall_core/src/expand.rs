@@ -21,8 +21,8 @@ use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
 use crate::model::{collect_struct_models_in, StructModel};
 use crate::types::{
-    const_param_names, generics_to_type_params, has_type_params, is_inline_accessible_field_type,
-    return_type_to_string, type_to_string,
+    const_param_names, generics_to_type_params, has_impl_trait, has_type_params,
+    is_inline_accessible_field_type, return_type_to_string, type_to_string,
 };
 
 pub struct Expanded {
@@ -86,15 +86,21 @@ fn expand_items(
                         let mut f = f.clone();
                         strip_rustcall_attrs(&mut f.attrs);
                         let consts = const_param_names(&f.sig.generics);
-                        if !consts.is_empty() {
-                            // Const generics cannot be instantiated from Julia and a
-                            // `#[no_mangle]` const-generic fn exports no symbol: fail
-                            // at compile time rather than at the first call.
+                        let impl_trait = has_impl_trait(&f.sig);
+                        if !consts.is_empty() || impl_trait {
+                            // Const generics and `impl Trait` cannot be instantiated
+                            // from Julia, and `#[no_mangle]` on a still-generic fn
+                            // exports no symbol: fail at compile time rather than at
+                            // the first call.
                             let name = f.sig.ident.to_string();
-                            let msg = format!(
-                                "#[julia] function `{name}` has const generic parameter(s) {}; const generics are not supported by RustCall",
-                                consts.join(", ")
-                            );
+                            let msg = if impl_trait {
+                                format!("#[julia] function `{name}` uses `impl Trait` in its signature; `impl Trait` is not supported by RustCall")
+                            } else {
+                                format!(
+                                    "#[julia] function `{name}` has const generic parameter(s) {}; const generics are not supported by RustCall",
+                                    consts.join(", ")
+                                )
+                            };
                             out.push(syn::parse_quote! { compile_error!(#msg); });
                             f.vis = Visibility::Public(Default::default());
                             push_fn(manifest, function_entry(&f, attribute, false));

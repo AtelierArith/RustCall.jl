@@ -16,8 +16,9 @@ use crate::manifest::{
 };
 use crate::model::{collect_struct_models_in, StructModel};
 use crate::types::{
-    extract_option_type, extract_result_type, generics_to_type_params, has_type_params,
-    is_ffi_compatible_type, needs_clone_for_getter, return_type_to_string, type_to_string,
+    extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
+    has_type_params, is_ffi_compatible_type, needs_clone_for_getter, return_type_to_string,
+    type_to_string,
 };
 
 pub fn extract(source: &str, mode: Mode) -> Result<Manifest, syn::Error> {
@@ -57,7 +58,7 @@ fn item_fn_source(func: &ItemFn) -> String {
 /// `wrapped` says whether RustCall codegen (`transform_function`) is applied,
 /// which decides the `Result`/`Option` return kinds and the exported flag.
 pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Function {
-    let is_generic = has_type_params(&func.sig.generics);
+    let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
     let return_type = return_type_to_string(&func.sig.output);
     let mut ok_type = String::new();
     let mut err_type = String::new();

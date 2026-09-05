@@ -459,8 +459,9 @@ function manifest_struct_infos(manifest::Dict)
             has_clone = _mbool(s, "has_clone"),
             has_owned_string_helper = _mbool(s, "has_owned_string_helper"),
             has_borrowed_string_helper = _mbool(s, "has_borrowed_string_helper"),
-            generic_wrappers = Tuple{String, String}[(_mstr(w, "name"), _mstr(w, "source"))
-                                                     for w in _mvec(s, "generic_wrappers")],
+            generic_wrappers = Tuple{String, String, Vector{String}}[
+                (_mstr(w, "name"), _mstr(w, "source"), String[String(p) for p in _mvec(w, "type_params")])
+                for w in _mvec(s, "generic_wrappers")],
             constraints = manifest_constraints(s),
             module_path = String[String(m) for m in _mvec(s, "module_path")],
         ))

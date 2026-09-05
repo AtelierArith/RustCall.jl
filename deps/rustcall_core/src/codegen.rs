@@ -876,6 +876,43 @@ fn inline_method_wrapper(
 /// Generics for a generic-struct method wrapper: the enclosing impl block's
 /// parameters and `where` predicates, plus the method's own. Falls back to the
 /// struct's parameters when no impl block declares the method.
+/// Type parameter names of a wrapper in the struct's parameter order: for
+/// `struct S<T>` and `impl<U> S<U>`, the name bound at the struct's `T` position
+/// is `U`. Remaining impl/method parameters follow.
+fn wrapper_param_names(decl: &syn::Generics, self_ty: &Type) -> Vec<String> {
+    let declared: Vec<String> = decl
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            syn::GenericParam::Type(tp) => Some(tp.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    let mut ordered: Vec<String> = Vec::new();
+    if let Type::Path(tp) = self_ty {
+        if let Some(seg) = tp.path.segments.last() {
+            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                for a in &args.args {
+                    if let syn::GenericArgument::Type(Type::Path(p)) = a {
+                        if p.qself.is_none() && p.path.segments.len() == 1 {
+                            let n = p.path.segments[0].ident.to_string();
+                            if declared.contains(&n) && !ordered.contains(&n) {
+                                ordered.push(n);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for n in declared {
+        if !ordered.contains(&n) {
+            ordered.push(n);
+        }
+    }
+    ordered
+}
+
 fn wrapper_generics(
     model: &StructModel,
     m: &MethodModel,
@@ -1010,6 +1047,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         wrappers.push(GenericWrapper {
             name: wrapper_name.to_string(),
             source: fn_source(func),
+            type_params: wrapper_param_names(&decl_generics, &self_ty),
         });
     }
 
@@ -1033,6 +1071,14 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
     };
     let struct_where = where_of(None);
 
+    let struct_param_names: Vec<String> = generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            syn::GenericParam::Type(tp) => Some(tp.ident.to_string()),
+            _ => None,
+        })
+        .collect();
     let method_symbols: Vec<String> = wrappers.iter().map(|w| w.name.clone()).collect();
     for (field_name, field_ty) in model.named_fields() {
         if !is_inline_accessible_field_type(&field_ty) {
@@ -1065,10 +1111,12 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         wrappers.push(GenericWrapper {
             name: getter.to_string(),
             source: fn_source(g),
+            type_params: struct_param_names.clone(),
         });
         wrappers.push(GenericWrapper {
             name: setter.to_string(),
             source: fn_source(s),
+            type_params: struct_param_names.clone(),
         });
     }
 
@@ -1083,6 +1131,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
     wrappers.push(GenericWrapper {
         name: free_name.to_string(),
         source: fn_source(f),
+        type_params: struct_param_names,
     });
 
     wrappers

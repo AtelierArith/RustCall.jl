@@ -324,10 +324,46 @@ mod tests {
         assert!(e
             .source
             .contains("pub fn Wrapper_get<U: Copy>(ptr: *const Wrapper<U>) -> U"));
+        let s = &e.manifest.structs[0];
+        let get = s
+            .generic_wrappers
+            .iter()
+            .find(|w| w.name == "Wrapper_get")
+            .unwrap();
+        assert_eq!(get.type_params, vec!["U"]);
+        let free = s
+            .generic_wrappers
+            .iter()
+            .find(|w| w.name == "Wrapper_free")
+            .unwrap();
+        assert_eq!(free.type_params, vec!["T"]);
+        let sp = specialize::specialize(
+            &e.source,
+            "Wrapper_get",
+            &[("U".into(), "i32".into())],
+            "Wrapper_get_i32",
+        )
+        .unwrap();
+        assert!(sp
+            .source
+            .contains("fn Wrapper_get_i32(ptr: *const Wrapper<i32>) -> i32"));
         assert!(e
             .source
             .contains("pub fn Wrapper_new<U: Copy>(value: U) -> *mut Wrapper<U>"));
         assert!(!e.source.contains("Wrapper<T>) -> U"));
+    }
+
+    #[test]
+    fn impl_trait_arguments_are_not_exported() {
+        let src = "#[julia] fn f(x: impl Copy) -> i32 { let _ = x; 1 }\n#[julia] fn g() -> impl Copy { 1 }\n#[julia] fn h(x: &impl Copy) {}";
+        let e = expand::expand(src).unwrap();
+        assert!(e
+            .manifest
+            .functions
+            .iter()
+            .all(|f| !f.exported && f.is_generic));
+        assert_eq!(e.source.matches("compile_error!").count(), 3);
+        assert!(!e.source.contains("extern \"C\""));
     }
 
     #[test]
