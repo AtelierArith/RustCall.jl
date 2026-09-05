@@ -58,7 +58,7 @@ const ALL_SPELLINGS = vcat(
     ["()", "String", "&str", "str", "*const u8", "*mut i32", "*mut c_void", "Vec<f64>"],
 )
 
-@testset "FFI contract (#276 Phase A)" begin
+@testset "FFI contract (#276)" begin
 
     @testset "table shape" begin
         for (spelling, entry) in RustCall.FFI_TYPE_TABLE
@@ -451,9 +451,9 @@ const ALL_SPELLINGS = vcat(
     end
 
     @testset "divergence: small integers missing from src/structs.jl (#245 item 2)" begin
-        # `rust_to_julia_type_sym` knows 8 primitives. A `#[julia]` struct field
-        # of type `u16` therefore becomes `:Any` in generated accessor code,
-        # while the same type in a free function becomes `:UInt16`.
+        # `rust_to_julia_type_sym` knew 8 primitives, so a `#[julia]` struct field
+        # of type `u16` became `:Any` in generated accessor code while the same
+        # type in a free function became `:UInt16`. One table, one answer now.
         for s in ("i8", "i16", "u8", "u16", "i128", "u128", "usize", "isize", "char")
             @test RustCall.ffi_julia_symbol(s) !== nothing
             # A struct field accessor resolves the same concrete type a free

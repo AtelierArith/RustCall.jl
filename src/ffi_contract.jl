@@ -1,41 +1,35 @@
-# The FFI type contract: single source of truth (issue #276, Phase A)
+# The FFI type contract: single source of truth (issue #276)
 #
-# RustCall currently decides "what does this Rust type mean at the C boundary?"
-# in five independent places, each with its own table and its own domain:
+# RustCall used to decide "what does this Rust type mean at the C boundary?" in
+# five independent places, each with its own table and its own domain — plus
+# `RUST_TO_JULIA_TYPE_MAP`, a sixth and wider one. They disagreed: `u16` was
+# `UInt16` in a free function and `Any` in a struct field, `usize` was
+# `Csize_t` in two of them and `UInt64` in a third, `i128` and `char` were in
+# none of them although the Rust side generates wrappers for both, and `str`
+# was a `Cstring` — a NUL-terminated pointer, which a Rust string is not.
 #
-#   | table                                                    | knows                          |
-#   | -------------------------------------------------------- | ------------------------------ |
-#   | `is_ffi_compatible_type` / `is_non_ffi_type`             | `PRIMITIVES` + `Type::Ptr`     |
-#   | (`deps/rustcall_core/src/types.rs:85,104`)               |                                |
-#   | `_rust_type_to_julia_conversion_type`                    | 13 primitives                  |
-#   | (`src/julia_functions.jl:193`)                           |                                |
-#   | `_rust_type_to_julia_type_symbol`                        | the same 13 plus `()`          |
-#   | (`src/julia_functions.jl:220`)                           |                                |
-#   | `_RUST_PRIMITIVE_TO_JULIA` (`src/ruststr.jl:519`)        | 13 primitives plus `()`        |
-#   | `rust_to_julia_type_sym` (`src/structs.jl:665`)          | 8 primitives, `String`, `&str` |
-#
-# (`RUST_TO_JULIA_TYPE_MAP` in `src/typetranslation.jl` is a sixth, wider one.)
-#
-# This file is the *one* table those five are meant to collapse into. It also
-# makes explicit two things the manifest leaves implicit today:
+# This file is the one table they collapsed into (Phase B). It also makes
+# explicit two things the manifest leaves implicit:
 #
 #   * the **C ABI form** of a value — by value, behind a pointer, as a
 #     `(ptr, len)` pair, as a `(ptr, len, cap)` triple, ...
 #   * **ownership** — who is responsible for releasing the memory a C slot
 #     points at, and through which symbol.
 #
-# Phase A is strictly additive: nothing here is wired into a call site yet, and
-# no existing behaviour changes. `test/test_ffi_contract.jl` enumerates, as
-# executable documentation, every point where the five tables disagree with
-# this one. Phase B migrates the call sites; those tests then become the
-# regression tests for #245, #246 and #249.
+# What remains outside it, deliberately: `is_ffi_compatible_type` /
+# `is_non_ffi_type` (`deps/rustcall_core/src/types.rs`) is the *acceptance
+# gate* on the Rust side — it decides whether a wrapper is generated at all,
+# not what the type means — and `JULIA_TO_RUST_TYPE_MAP` covers the reverse
+# direction, which a Julia type does not determine on its own.
 #
-# Forward compatibility with the `abi` manifest column (#270, PR #274): the
-# extractor is growing an `Arg.abi` / `Method.return_abi` string column whose
-# values are `""` (as written), `"string"` and `"str"`. Every entry point here
-# accepts that column verbatim as the `abi` keyword and lets it override the
-# ABI derived from the Rust type spelling, so wiring the manifest column in
-# later is a parameter pass, not a rewrite.
+# The manifest, not the Rust spelling, is the authority on how a value was
+# lowered. The `abi` column (`Arg.abi`, `Function.return_abi`,
+# `Method.return_abi`, `Field.abi`) takes the values `""` (as written),
+# `"string"` and `"str"`; every entry point here accepts it verbatim as the
+# `abi` keyword and lets it override the ABI derived from the spelling.
+#
+# `test/test_ffi_contract.jl` holds what were the divergence tests and are now
+# the regression tests for #245, #246 and #249.
 
 # ============================================================================
 # Vocabulary
@@ -244,8 +238,8 @@ end
 
 # `usize` / `isize` are spelled with the C aliases because that is what the
 # generated code emits; `Csize_t === UInt64` and `Cssize_t === Int64` on every
-# platform RustCall supports, so this agrees with `RUST_TO_JULIA_TYPE_MAP`'s
-# `UInt` / `Int` as a *type* while differing as a *spelling*.
+# platform RustCall supports, so this agrees as a *type* with the `UInt` / `Int`
+# the retired `RUST_TO_JULIA_TYPE_MAP` used, while differing as a *spelling*.
 _ffi_register!(_ffi_scalar("usize", Csize_t, :Csize_t))
 _ffi_register!(_ffi_scalar("isize", Cssize_t, :Cssize_t))
 
@@ -260,7 +254,7 @@ _ffi_register!(FFIType(
 # -- The unit type -----------------------------------------------------------
 _ffi_register!(FFIType("()", Cvoid, Cvoid, :Cvoid, :void, :none, ""))
 
-# -- `std::os::raw` aliases (from `RUST_TO_JULIA_TYPE_MAP`) ------------------
+# -- `std::os::raw` aliases --------------------------------------------------
 for (rust, T, sym) in (
     ("c_char", Cchar, :Cchar),
     ("c_int", Cint, :Cint),
@@ -317,11 +311,11 @@ _ffi_register!(FFIType(
     "Fat pointer (ptr, len) when lowered; the manifest abi column says whether it was.",
 ))
 # Bare `str` is unsized and cannot cross the boundary by value; the existing
-# `RUST_TO_JULIA_TYPE_MAP` maps it to `Cstring`, which is recorded here so the
-# divergence tests can see it.
+# it is a `(ptr, len)` view like `&str`, never the `Cstring` the retired
+# `RUST_TO_JULIA_TYPE_MAP` claimed (#246).
 _ffi_register!(FFIType(
     "str", Ptr{UInt8}, RustStr, :RustStr, :unknown, :unknown,
-    "Unsized; only ever reachable behind a reference. RUST_TO_JULIA_TYPE_MAP says Cstring.",
+    "Unsized; only ever reachable behind a reference, so it travels as (ptr, len), never as a Cstring.",
 ))
 
 # ============================================================================
@@ -485,10 +479,11 @@ T = RustCall.ffi_julia_symbol("*const *mut i32")   # :(Ptr{Ptr{Int32}})
 Use [`ffi_julia_type`](@ref) when you want the `Type` itself rather than its
 spelling.
 
-This is the replacement for `_rust_type_to_julia_type_symbol`
-(`src/julia_functions.jl:220`) and `rust_to_julia_type_sym`
-(`src/structs.jl:665`) — except that both of those answer `:Any` for unknown
-types, while this answers `nothing` so the caller can fail closed.
+This replaced `_rust_type_to_julia_type_symbol` (`src/julia_functions.jl`) and
+`rust_to_julia_type_sym` (`src/structs.jl`), both of which answered `:Any` for
+an unknown type; this answers `nothing`, so a caller can fail closed. Return
+sites should call [`ffi_return_symbol_or_throw`](@ref), which does exactly
+that.
 """
 function ffi_julia_symbol(rust_type::AbstractString)
     entry = ffi_lookup(rust_type)
