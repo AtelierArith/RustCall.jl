@@ -187,7 +187,8 @@ _id(; kwargs...) = RustCall.ArtifactId(;
               RustCall.artifact_dependency_strings([RustCall.DependencySpec("serde", "1.0")])
 
         # Plain strings pass through, so the helper is usable anywhere.
-        @test RustCall.artifact_dependency_strings(["b", "a"]) == ["a", "b"]
+        raws = RustCall.artifact_dependency_strings(["b", "a"])
+        @test length(raws) == 2 && issorted(raws) && allunique(raws)
 
         # The dependency set reaches the key.
         with_deps = _id(kind = "cargo", source = "fn f() {}", dependencies = canon)
@@ -195,21 +196,147 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         @test RustCall.artifact_key(with_deps) != RustCall.artifact_key(without)
     end
 
-    @testset "Build environment snapshot" begin
-        env0 = Dict("RUSTFLAGS" => "")
-        env1 = Dict("RUSTFLAGS" => "-C target-cpu=native")
-        snap0 = RustCall.artifact_build_env(["RUSTFLAGS", "CARGO_TARGET_DIR"]; env = env0)
-        snap1 = RustCall.artifact_build_env(["RUSTFLAGS", "CARGO_TARGET_DIR"]; env = env1)
+    @testset "Local path dependencies are identified by content" begin
+        # Review finding (3): a `path = "..."` dependency identified by its path
+        # text alone means editing its sources leaves the key unchanged.
+        function make_crate(dir, body; name = "helper", extra_manifest = "")
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"),
+                "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\n$(extra_manifest)")
+            write(joinpath(dir, "src", "lib.rs"), body)
+            return dir
+        end
 
-        # Absent variables are recorded, not dropped.
-        @test first.(snap0) == ["CARGO_TARGET_DIR", "RUSTFLAGS"]
-        @test snap0 != snap1
-        @test RustCall.artifact_key(_id(kind = "cargo", build_env = snap0)) !=
-              RustCall.artifact_key(_id(kind = "cargo", build_env = snap1))
+        a = make_crate(mktempdir(), "pub fn f() -> i32 { 1 }")
+        b = make_crate(mktempdir(), "pub fn f() -> i32 { 2 }")   # one byte differs
+        c = make_crate(mktempdir(), "pub fn f() -> i32 { 1 }")   # same content, other dir
 
-        # The default list is non-empty and covers what the recent Cargo fixes added.
-        @test "RUSTFLAGS" in RustCall.ARTIFACT_BUILD_ENV_VARS
-        @test "CARGO_ENCODED_RUSTFLAGS" in RustCall.ARTIFACT_BUILD_ENV_VARS
+        try
+            dig_a = RustCall.artifact_path_dependency_digest(a)
+            dig_b = RustCall.artifact_path_dependency_digest(b)
+            dig_c = RustCall.artifact_path_dependency_digest(c)
+
+            @test dig_a != dig_b                       # editing sources changes the digest
+            @test dig_a == dig_c                       # location is NOT part of identity
+            @test dig_a == RustCall.artifact_path_dependency_digest(a)  # deterministic
+
+            # Files added under src/ count, and target/ artifacts are ignored.
+            write(joinpath(a, "src", "extra.rs"), "pub fn g() {}")
+            @test RustCall.artifact_path_dependency_digest(a) != dig_a
+            dig_a2 = RustCall.artifact_path_dependency_digest(a)
+            mkpath(joinpath(a, "target", "release"))
+            write(joinpath(a, "target", "release", "junk"), "noise")
+            @test RustCall.artifact_path_dependency_digest(a) == dig_a2
+
+            # The digest reaches the dependency string, and hence the key.
+            spec_a = RustCall.DependencySpec("helper", nothing, String[], nothing, a)
+            spec_b = RustCall.DependencySpec("helper", nothing, String[], nothing, b)
+            spec_c = RustCall.DependencySpec("helper", nothing, String[], nothing, c)
+            key(spec) = RustCall.artifact_key(_id(kind = "cargo",
+                dependencies = RustCall.artifact_dependency_strings([spec])))
+            @test key(spec_a) != key(spec_b)
+            @test key(spec_b) != key(spec_c)
+            @test RustCall.artifact_dependency_strings([spec_a]) !=
+                  RustCall.artifact_dependency_strings([spec_b])
+
+            # A nested path dependency is followed.
+            nested_parent = mktempdir()
+            child = make_crate(joinpath(nested_parent, "child"), "pub fn h() {}"; name = "child")
+            parent = make_crate(nested_parent, "pub fn p() {}";
+                name = "parent",
+                extra_manifest = "\n[dependencies]\nchild = { path = \"child\" }\n")
+            dig_parent = RustCall.artifact_path_dependency_digest(parent)
+            write(joinpath(child, "src", "lib.rs"), "pub fn h() -> i32 { 7 }")
+            @test RustCall.artifact_path_dependency_digest(parent) != dig_parent
+
+            # A missing crate is recorded, not silently ignored, and never throws.
+            missing_dig = RustCall.artifact_path_dependency_digest(joinpath(a, "nope"))
+            @test length(missing_dig) == 64
+            @test missing_dig != dig_a
+        finally
+            for d in (a, b, c)
+                rm(d; force = true, recursive = true)
+            end
+        end
+    end
+
+    @testset "Build environment: presence and prefix capture" begin
+        # Review finding (1): unset and empty must not collide. Cargo treats an
+        # empty RUSTFLAGS as "suppress inherited rustflags", not as "unset".
+        unset = Dict{String, String}()
+        empty_val = Dict("RUSTFLAGS" => "")
+        set_val = Dict("RUSTFLAGS" => "-C target-cpu=native")
+
+        snap_unset = RustCall.artifact_build_env(["RUSTFLAGS"]; env = unset)
+        snap_empty = RustCall.artifact_build_env(["RUSTFLAGS"]; env = empty_val)
+        snap_set = RustCall.artifact_build_env(["RUSTFLAGS"]; env = set_val)
+
+        @test snap_unset[1] == ("RUSTFLAGS" => RustCall.ARTIFACT_ENV_ABSENT)
+        @test snap_empty[1] == ("RUSTFLAGS" => "present:")
+        @test snap_unset != snap_empty
+        keys3 = [RustCall.artifact_key(_id(kind = "cargo", build_env = s))
+                 for s in (snap_unset, snap_empty, snap_set)]
+        @test length(unique(keys3)) == 3
+
+        # A value that literally reads "absent" cannot imitate the absent marker.
+        literal = RustCall.artifact_build_env(["RUSTFLAGS"]; env = Dict("RUSTFLAGS" => "absent"))
+        @test literal != snap_unset
+
+        # Review finding (2): profile overrides are tracked by prefix, not by an
+        # enumeration that has to be patched for every new key.
+        for n in ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
+                  "CARGO_PROFILE_RELEASE_PANIC", "CARGO_PROFILE_RELEASE_DEBUG",
+                  "CARGO_PROFILE_RELEASE_STRIP", "CARGO_PROFILE_RELEASE_LTO",
+                  "CARGO_PROFILE_DEV_OPT_LEVEL", "CARGO_BUILD_RUSTFLAGS",
+                  "CARGO_BUILD_TARGET", "CARGO_CFG_TARGET_FEATURE",
+                  "CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER",
+                  "RUSTDOCFLAGS", "RUSTUP_TOOLCHAIN",
+                  "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+                  "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER")
+            @test RustCall.artifact_build_env_captured(n)
+        end
+
+        # Not build-affecting: output location and unrelated variables.
+        for n in ("CARGO_TARGET_DIR", "PATH", "HOME", "JULIA_DEPOT_PATH", "CARGO_HOME")
+            @test !RustCall.artifact_build_env_captured(n)
+        end
+
+        # HARD SECURITY REQUIREMENT: credentials are rejected before the
+        # allowlist is consulted and can never enter a key.
+        for n in ("CARGO_REGISTRY_TOKEN", "CARGO_REGISTRIES_MYREG_TOKEN",
+                  "CARGO_REGISTRIES_X_TOKEN", "CARGO_BUILD_SECRET",
+                  "CARGO_PROFILE_RELEASE_AUTH", "RUSTFLAGS_TOKEN",
+                  "AWS_SECRET_ACCESS_KEY", "MY_PASSWORD", "GH_CREDENTIALS",
+                  "cargo_registry_token")
+            @test !RustCall.artifact_build_env_captured(n)
+        end
+        secret_env = Dict(
+            "CARGO_REGISTRY_TOKEN" => "s3cret",
+            "CARGO_REGISTRIES_X_TOKEN" => "s3cret2",
+            "RUSTFLAGS" => "-C opt-level=3",
+        )
+        captured = RustCall.artifact_build_env(; env = secret_env)
+        @test first.(captured) == ["RUSTFLAGS"]
+        @test !any(p -> occursin("s3cret", last(p)), captured)
+        # Even when named explicitly, a credential is skipped.
+        @test isempty(RustCall.artifact_build_env(["CARGO_REGISTRY_TOKEN"]; env = secret_env))
+
+        # Scanning the environment is sorted and deterministic.
+        scan_env = Dict("RUSTFLAGS" => "a", "CARGO_BUILD_TARGET" => "b",
+                        "CARGO_PROFILE_RELEASE_OPT_LEVEL" => "z", "PATH" => "/bin")
+        scanned = RustCall.artifact_build_env(; env = scan_env)
+        @test first.(scanned) ==
+              ["CARGO_BUILD_TARGET", "CARGO_PROFILE_RELEASE_OPT_LEVEL", "RUSTFLAGS"]
+        @test scanned == RustCall.artifact_build_env(; env = scan_env)
+
+        # Changing any captured variable changes the key.
+        base_env = Dict("RUSTFLAGS" => "-C opt-level=2")
+        mutated_env = Dict("RUSTFLAGS" => "-C opt-level=2",
+                           "CARGO_PROFILE_RELEASE_CODEGEN_UNITS" => "1")
+        @test RustCall.artifact_key(_id(kind = "cargo",
+                  build_env = RustCall.artifact_build_env(; env = base_env))) !=
+              RustCall.artifact_key(_id(kind = "cargo",
+                  build_env = RustCall.artifact_build_env(; env = mutated_env)))
     end
 
     @testset "Codegen options come from the compiler config" begin

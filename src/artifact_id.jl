@@ -30,6 +30,7 @@
 #    solely for human-readable names (library names, temp project directories).
 
 using SHA: sha256
+using TOML
 using RustToolChain: rustc, cargo
 
 """
@@ -74,19 +75,19 @@ neutral default so a caller only names what applies to it.
   debug info, release/debug profile, LTO, …), in a caller-fixed order.
 - `cfg::Vector{String}`: `--cfg` snapshot / feature-gate state.
 - `dependencies::Vector{String}`: canonical, sorted description of the
-  dependency set (see [`artifact_dependency_strings`](@ref)).
+  dependency set (see `artifact_dependency_strings`).
 - `features::Vector{String}`: crate features enabled for the build.
 - `build_env::Vector{Pair{String, String}}`: build environment that reaches the
   compiler (`RUSTFLAGS`, `CARGO_*`, …), sorted by name.
-- `toolchain::String`: [`toolchain_fingerprint`](@ref) — extractor digest,
+- `toolchain::String`: `toolchain_fingerprint` — extractor digest,
   manifest schema, `rustcall_core` / `juliacall_macros` sources.
 - `compiler::String`: identity of the compiler that actually runs, from
-  `RustToolChain` (see [`artifact_compiler_identity`](@ref)).
+  `RustToolChain` (see `artifact_compiler_identity`).
 - `extra::Vector{Pair{String, String}}`: escape hatch for pipeline-specific
   inputs that do not yet deserve a field of their own.
 
 Two `ArtifactId`s are `==` exactly when they encode identically, which is
-exactly when [`artifact_key`](@ref) agrees.
+exactly when `artifact_key` agrees.
 """
 struct ArtifactId
     kind::String
@@ -106,8 +107,8 @@ end
 """
     ArtifactId(; kind, source, ...) -> ArtifactId
 
-Keyword constructor. `toolchain` defaults to [`toolchain_fingerprint`](@ref) and
-`compiler` to [`artifact_compiler_identity`](@ref); pass them explicitly only in
+Keyword constructor. `toolchain` defaults to `toolchain_fingerprint` and
+`compiler` to `artifact_compiler_identity`; pass them explicitly only in
 tests that need to vary them.
 """
 function ArtifactId(;
@@ -181,7 +182,7 @@ Identity of the toolchain that actually compiles: the `--version` strings of
 This is deliberately *not* `_get_rustc_version()` in `src/cache.jl`, which
 shells out to a bare `rustc` from `PATH` and degrades to `"unknown"`; upgrading
 the real toolchain then need not invalidate anything (#252). Here a version that
-cannot be determined throws a [`RustError`](@ref) instead, because an
+cannot be determined throws a `RustError` instead, because an
 unidentifiable compiler cannot produce a trustworthy cache key.
 
 The result is memoized for the session.
@@ -231,6 +232,15 @@ function _netstring!(io::IO, s::AbstractString)
     return nothing
 end
 
+# Same framing for raw bytes (file contents), which need not be valid UTF-8.
+function _netstring_bytes!(io::IO, bytes::AbstractVector{UInt8})
+    print(io, length(bytes))
+    write(io, UInt8(':'))
+    write(io, bytes)
+    write(io, UInt8(','))
+    return nothing
+end
+
 function _netstrings!(io::IO, xs::Vector{String})
     _netstring!(io, string(length(xs)))
     for x in xs
@@ -252,11 +262,11 @@ end
     artifact_encoding(id::ArtifactId) -> Vector{UInt8}
 
 Canonical, injective byte encoding of `id`: a fixed field order, every field
-netstring-framed, prefixed by [`ARTIFACT_ID_SCHEMA_VERSION`](@ref). Distinct
+netstring-framed, prefixed by `ARTIFACT_ID_SCHEMA_VERSION`. Distinct
 records always encode to distinct bytes.
 
 Exposed mainly so tests can assert injectivity directly; production code wants
-[`artifact_key`](@ref).
+`artifact_key`.
 """
 function artifact_encoding(id::ArtifactId)::Vector{UInt8}
     io = IOBuffer()
@@ -283,7 +293,7 @@ end
 `id`, as 64 lowercase hex characters.
 
 Never truncated — the lookup key carries the full digest. Use
-[`artifact_short_id`](@ref) when you need a name a human will read.
+`artifact_short_id` when you need a name a human will read.
 
 ```julia
 id = RustCall.ArtifactId(kind = "rustc", source = code, target_triple = triple)
@@ -295,7 +305,7 @@ artifact_key(id::ArtifactId)::String = bytes2hex(sha256(artifact_encoding(id)))
 """
     artifact_key(; kwargs...) -> String
 
-Convenience form: build an [`ArtifactId`](@ref) from the keyword arguments and
+Convenience form: build an `ArtifactId` from the keyword arguments and
 hash it.
 """
 artifact_key(; kwargs...) = artifact_key(ArtifactId(; kwargs...))
@@ -305,7 +315,7 @@ artifact_key(; kwargs...) = artifact_key(ArtifactId(; kwargs...))
     artifact_short_id(key::AbstractString, n::Int = ARTIFACT_SHORT_ID_LEN) -> String
 
 The one place in the design where a key is truncated: the first `n` hex
-characters of [`artifact_key`](@ref), for human-readable names only (library
+characters of `artifact_key`, for human-readable names only (library
 names, temporary Cargo project directories, log lines).
 
 Never use the result as a cache lookup key: correctness must depend on the full
@@ -329,35 +339,150 @@ end
     artifact_dependency_strings(deps) -> Vector{String}
 
 Canonical, sorted string form of a dependency set, suitable for the
-`dependencies` field of [`ArtifactId`](@ref).
+`dependencies` field of `ArtifactId`.
 
 Accepts anything with the `DependencySpec` shape (`name`, `version`, `features`,
 `git`, `path`) as well as plain strings, so it can be used before
-`dependencies.jl` types are in scope. Every component is named in the output, so
-distinct specs never collapse onto the same string.
+`dependencies.jl` types are in scope. Every component is netstring-framed, so
+distinct specs can never collapse onto the same string.
+
+# How each kind of dependency is identified
+
+- **Registry** dependencies: name, version requirement and feature set. The
+  *resolved* version from `Cargo.lock` is deliberately out of scope for Phase A
+  (see #256); folding lockfile resolution into the key is a Phase B item.
+- **Git** dependencies: name and the git URL (plus rev/branch/tag when the spec
+  carries them). Resolving a floating branch to a commit is likewise Phase B.
+- **Local path** dependencies: a content digest of the crate's inputs (see
+  `artifact_path_dependency_digest`), **not** the path text. Editing a
+  local dependency's sources therefore changes the key, while moving the
+  checkout to a different directory does not — cache hits survive a move,
+  which is the point of hashing content rather than location.
 """
 function artifact_dependency_strings(deps)::Vector{String}
     out = String[]
     for d in deps
+        io = IOBuffer()
         if d isa AbstractString
-            push!(out, String(d))
+            _netstring!(io, "raw")
+            _netstring!(io, String(d))
         elseif hasproperty(d, :name)
             version = hasproperty(d, :version) ? getproperty(d, :version) : nothing
             git = hasproperty(d, :git) ? getproperty(d, :git) : nothing
             path = hasproperty(d, :path) ? getproperty(d, :path) : nothing
             feats = hasproperty(d, :features) ? collect(String.(getproperty(d, :features))) : String[]
-            push!(out, string(
-                "name=", getproperty(d, :name),
-                " version=", version === nothing ? "" : version,
-                " features=[", join(sort(feats), ","), "]",
-                " git=", git === nothing ? "" : git,
-                " path=", path === nothing ? "" : path,
-            ))
+            _netstring!(io, "dep")
+            _netstring!(io, string(getproperty(d, :name)))
+            _netstring!(io, version === nothing ? "" : string(version))
+            _netstrings!(io, sort(feats))
+            _netstring!(io, git === nothing ? "" : string(git))
+            # Local paths contribute their content, never their location.
+            _netstring!(io, path === nothing ? "" : artifact_path_dependency_digest(string(path)))
         else
-            push!(out, string(d))
+            _netstring!(io, "other")
+            _netstring!(io, string(d))
         end
+        push!(out, String(take!(io)))
     end
     return sort!(out)
+end
+
+"""
+    artifact_path_dependency_digest(path::AbstractString) -> String
+
+Deterministic SHA-256 digest of the *inputs* of a local path dependency: its
+`Cargo.toml` plus every file under `src/`, by sorted relative path with
+contents, recursing into the path dependencies that `Cargo.toml` itself
+declares.
+
+Only content is hashed — never the absolute location — so an identical crate in
+a differently named directory yields the same digest and a checkout move does
+not invalidate the cache. `target/` is skipped. A path that does not exist, or a
+`Cargo.toml` that cannot be parsed, is recorded as such rather than silently
+ignored, and dependency cycles terminate at the first repeat.
+
+Without this, a `path = "..."` dependency is identified by its path text alone
+and editing its sources leaves the artifact key unchanged.
+"""
+function artifact_path_dependency_digest(path::AbstractString)::String
+    io = IOBuffer()
+    _hash_path_crate!(io, String(path), Set{String}())
+    return bytes2hex(sha256(take!(io)))
+end
+
+function _hash_path_crate!(io::IO, path::AbstractString, seen::Set{String})
+    dir = try
+        abspath(String(path))
+    catch
+        String(path)
+    end
+    if !isdir(dir)
+        _netstring!(io, "missing-crate")
+        return nothing
+    end
+    canonical = try
+        realpath(dir)
+    catch
+        dir
+    end
+    if canonical in seen
+        _netstring!(io, "cycle")
+        return nothing
+    end
+    push!(seen, canonical)
+
+    _netstring!(io, "crate")
+    files = String[]
+    manifest = joinpath(dir, "Cargo.toml")
+    isfile(manifest) && push!(files, manifest)
+    srcdir = joinpath(dir, "src")
+    if isdir(srcdir)
+        for (root, dirs, names) in walkdir(srcdir)
+            filter!(!isequal("target"), dirs)
+            for n in names
+                push!(files, joinpath(root, n))
+            end
+        end
+    end
+    relnames = Dict(f => replace(relpath(f, dir), '\\' => '/') for f in files)
+    sort!(files, by = f -> relnames[f])
+    _netstring!(io, string(length(files)))
+    for f in files
+        _netstring!(io, relnames[f])
+        try
+            _netstring_bytes!(io, read(f))
+        catch
+            _netstring!(io, "unreadable")
+        end
+    end
+
+    # Recurse into the path dependencies this crate declares itself.
+    for child in _declared_path_dependencies(manifest)
+        _netstring!(io, "path-dep")
+        _netstring!(io, child)
+        _hash_path_crate!(io, joinpath(dir, child), seen)
+    end
+    return nothing
+end
+
+function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
+    isfile(manifest) || return String[]
+    parsed = try
+        TOML.parsefile(manifest)
+    catch
+        return String["unparsable-manifest"]
+    end
+    out = String[]
+    for section in ("dependencies", "dev-dependencies", "build-dependencies")
+        table = get(parsed, section, nothing)
+        table isa AbstractDict || continue
+        for (_, spec) in table
+            spec isa AbstractDict || continue
+            p = get(spec, "path", nothing)
+            p isa AbstractString && push!(out, String(p))
+        end
+    end
+    return sort!(unique!(out))
 end
 
 """
@@ -399,43 +524,124 @@ function artifact_type_params(param_order, bindings::AbstractDict)::Vector{Pair{
 end
 
 """
-    ARTIFACT_BUILD_ENV_VARS
+    ARTIFACT_BUILD_ENV_PREFIXES
+    ARTIFACT_BUILD_ENV_NAMES
+    ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS
 
-Environment variables known to change the binary a build produces. Anything
-added here is folded into every key computed with [`artifact_build_env`](@ref),
-once, instead of being patched into individual formulas.
+Which environment variables can change the binary a build produces, tracked by
+**prefix and allowlist** rather than by enumerating individual keys: every
+`CARGO_PROFILE_*` override (`_OPT_LEVEL`, `_CODEGEN_UNITS`, `_PANIC`, `_DEBUG`,
+`_STRIP`, `_LTO`, …) changes generated code, and listing them one by one is the
+same "remember to patch every formula" mistake #278 is about.
+
+`ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS` is applied **first** and unconditionally: a
+name containing any of those substrings (case-insensitively) is never captured,
+so registry credentials such as `CARGO_REGISTRY_TOKEN` or
+`CARGO_REGISTRIES_<NAME>_TOKEN` can never enter an artifact key, be written to a
+cache directory name, or be logged.
+
+This mirrors the environment-capture design PR #272 introduces in
+`src/manifest.jl`. That PR is not on `main` yet, so the rule is implemented here
+independently; Phase B of #278 unifies the two into this one place.
 """
-const ARTIFACT_BUILD_ENV_VARS = String[
-    "CARGO_BUILD_RUSTFLAGS",
-    "CARGO_BUILD_TARGET",
+const ARTIFACT_BUILD_ENV_PREFIXES = String[
+    "CARGO_BUILD_",
+    "CARGO_CFG_",
     "CARGO_ENCODED_RUSTFLAGS",
-    "CARGO_PROFILE_RELEASE_LTO",
-    "CARGO_TARGET_DIR",
+    "CARGO_PROFILE_",
+]
+
+"See `ARTIFACT_BUILD_ENV_PREFIXES`."
+const ARTIFACT_BUILD_ENV_NAMES = String[
+    "RUSTC",
     "RUSTC_WRAPPER",
     "RUSTDOCFLAGS",
     "RUSTFLAGS",
+    "RUSTUP_TOOLCHAIN",
+]
+
+"See `ARTIFACT_BUILD_ENV_PREFIXES`."
+const ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS = String[
+    "AUTH",
+    "CREDENTIAL",
+    "KEY",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
 ]
 
 """
-    artifact_build_env(names = ARTIFACT_BUILD_ENV_VARS; env = ENV) -> Vector{Pair{String, String}}
+    artifact_build_env_captured(name::AbstractString) -> Bool
 
-Snapshot of the build environment variables that reach the compiler, sorted by
-name and with absent variables recorded as absent (rather than silently
-dropped). Suitable for the `build_env` field of [`ArtifactId`](@ref).
+Whether `name` is a build variable that belongs in an artifact key. Secrets are
+rejected before the allowlist is consulted; see
+`ARTIFACT_BUILD_ENV_PREFIXES`.
 """
-function artifact_build_env(names = ARTIFACT_BUILD_ENV_VARS; env = ENV)
-    out = Pair{String, String}[]
-    for n in sort(collect(String.(names)))
-        push!(out, n => get(env, n, ""))
+function artifact_build_env_captured(name::AbstractString)::Bool
+    upper = uppercase(String(name))
+    for bad in ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS
+        occursin(bad, upper) && return false
     end
-    return out
+    upper in ARTIFACT_BUILD_ENV_NAMES && return true
+    for prefix in ARTIFACT_BUILD_ENV_PREFIXES
+        startswith(upper, prefix) && return true
+    end
+    # CARGO_TARGET_<TRIPLE>_RUSTFLAGS / _LINKER, per-target overrides.
+    if startswith(upper, "CARGO_TARGET_") &&
+       (endswith(upper, "_RUSTFLAGS") || endswith(upper, "_LINKER"))
+        return true
+    end
+    return false
+end
+
+"""
+    ARTIFACT_ENV_ABSENT
+
+Marker recorded for a build variable that is **not set**, as opposed to one set
+to the empty string. The two are different to Cargo — an empty `RUSTFLAGS`
+suppresses the rustflags a Cargo config would otherwise contribute — so they
+must never share a key. A variable that is set is recorded as
+`"present:" * value`, which can never equal this marker.
+"""
+const ARTIFACT_ENV_ABSENT = "absent"
+
+_artifact_env_value(env, name) =
+    haskey(env, name) ? string("present:", env[name]) : ARTIFACT_ENV_ABSENT
+
+"""
+    artifact_build_env(; env = ENV) -> Vector{Pair{String, String}}
+
+Snapshot of every build variable in `env` that
+`artifact_build_env_captured` accepts, sorted by name so the encoding is
+deterministic. Values carry their presence explicitly (see
+`ARTIFACT_ENV_ABSENT`). Suitable for the `build_env` field of
+`ArtifactId`.
+"""
+function artifact_build_env(; env = ENV)
+    names = String[String(k) for k in keys(env) if artifact_build_env_captured(String(k))]
+    sort!(names)
+    return Pair{String, String}[n => _artifact_env_value(env, n) for n in names]
+end
+
+"""
+    artifact_build_env(names; env = ENV) -> Vector{Pair{String, String}}
+
+As above but for an explicit list of variable names, sorted, with absent
+variables recorded as `ARTIFACT_ENV_ABSENT` rather than dropped (so
+"unset" and "set to the empty string" produce different keys). Names that
+`artifact_build_env_captured` rejects — anything that looks like a
+credential — are skipped even when named explicitly.
+"""
+function artifact_build_env(names; env = ENV)
+    wanted = String[n for n in sort(collect(String.(names))) if artifact_build_env_captured(n)]
+    return Pair{String, String}[n => _artifact_env_value(env, n) for n in wanted]
 end
 
 """
     artifact_codegen_options(compiler) -> Vector{Pair{String, String}}
 
 Codegen options of a `RustCompiler` in a fixed order, for the `codegen` field of
-[`ArtifactId`](@ref).
+`ArtifactId`.
 """
 function artifact_codegen_options(compiler)
     return Pair{String, String}[
