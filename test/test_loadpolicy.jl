@@ -336,7 +336,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test !RustCall.irust_policy().sets_current_lib
         @test !RustCall.hot_reload_policy().sets_current_lib
 
-        @test RustCall.generics_policy().registry_key_kind === :lib_basename
+        @test RustCall.generics_policy().registry_key_kind === :content_hash
         @test RustCall.irust_policy().registry_key_kind === :irust_hash
         @test RustCall.hot_reload_policy().registry_key_kind === :crate_lib_name
         @test RustCall.inline_rustc_policy().registry_key_kind === :content_hash

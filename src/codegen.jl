@@ -223,14 +223,16 @@ Try to infer the return type and argument types for a function.
 Uses LLVM IR analysis if available.
 """
 function infer_function_types(lib_name::String, func_name::String)
-    # Try to find the RustModule for this library
-    for (hash, mod) in RUST_MODULE_REGISTRY
-        mod_lib_name = "rust_$(string(hash, base=16))"
-        if mod_lib_name == lib_name
-            fn = get_function(mod, func_name)
-            if fn !== nothing
-                return _get_function_signature(fn)
-            end
+    # The RustModule for this library, if the LLVM IR path recorded one.
+    # `RUST_MODULE_REGISTRY` is keyed by library name (#278); it used to be
+    # keyed by Julia's session-randomized `hash`, which no name could match.
+    mod = lock(REGISTRY_LOCK) do
+        get(RUST_MODULE_REGISTRY, lib_name, nothing)
+    end
+    if mod !== nothing
+        fn = get_function(mod, func_name)
+        if fn !== nothing
+            return _get_function_signature(fn)
         end
     end
 

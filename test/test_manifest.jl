@@ -443,8 +443,18 @@ using TOML
             id_plain = withenv(() -> RustCall._rustc_block_identity("x", o0, snapshot_o0), "RUSTFLAGS" => nothing)
             id_flags = withenv(() -> RustCall._rustc_block_identity("x", o0, snapshot_o0), "RUSTFLAGS" => "--cfg foo")
             @test id_plain != id_flags
-            @test RustCall._block_identity("x", "a" => "1") != RustCall._block_identity("x", "a" => "2")
-            @test RustCall._cargo_block_identity("x", "d", "e") == RustCall._block_identity("x", "deps" => "d", "cargo-env" => "e")
+            # `_block_identity`'s hand-rolled `---section---` framing is gone:
+            # both adapters are `artifact_key` of an `ArtifactId` now (#278), so
+            # what is asserted is the property, not the internal equality.
+            @test !isdefined(RustCall, :_block_identity)
+            @test RustCall._cargo_block_identity("x", "d", "e") !=
+                  RustCall._cargo_block_identity("x", "d", "f")
+            @test RustCall._cargo_block_identity("x", "d", "e") !=
+                  RustCall._cargo_block_identity("y", "d", "e")
+            # The two kinds cannot collide even on identical inputs.
+            @test RustCall._cargo_block_identity("x", "", "") !=
+                  RustCall._rustc_block_identity("x", o0, snapshot_o0)
+            @test length(RustCall._cargo_block_identity("x", "d", "e")) == 64
 
             # A reload that derives another library name than the one a
             # precompiled module stored (toolchain fingerprint, compiler snapshot
@@ -462,8 +472,14 @@ using TOML
             @test haskey(RustCall.RUST_LIBRARIES, resolved) && haskey(RustCall.RUST_LIBRARIES, stale_name)
             @test RustCall.RUST_LIBRARIES[stale_name] === RustCall.RUST_LIBRARIES[resolved]
             @test stale_mod.__RUSTCALL_ACTIVE_LIB[] == resolved
-            # The stored key now short-circuits `ensure_loaded` (no second reload) ...
-            @test RustCall.ensure_loaded(stale_name, stale_mod.__RUSTCALL_LIBS[stale_name]) == stale_name
+            # `__RUSTCALL_LIBS` is *rebound*, not merely aliased (#278 B6): the
+            # entry moves to the name the manifest was registered under, so the
+            # next `_resolve_lib` does not walk the reload path again ...
+            @test haskey(stale_mod.__RUSTCALL_LIBS, resolved)
+            @test !haskey(stale_mod.__RUSTCALL_LIBS, stale_name)
+            # ... and the stored key still short-circuits `ensure_loaded`
+            # through the RUST_LIBRARIES alias, for callers that name it.
+            @test RustCall.ensure_loaded(stale_name, stale_mod.__RUSTCALL_LIBS[resolved]) == stale_name
             @test RustCall._resolve_lib(stale_mod, "") == resolved
             @test RustCall._resolve_lib(stale_mod, stale_name) == stale_name
             # ... and both names reach the symbol without the global fallback search.

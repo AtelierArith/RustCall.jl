@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **One artifact identity** ([#278](https://github.com/AtelierArith/RustCall.jl/issues/278),
+  Phase B). Twelve places answered "which compiled artifact corresponds to this
+  request?", each with its own component list, its own concatenation format and
+  its own truncation. Every one of them now builds a `RustCall.ArtifactId` and
+  calls `artifact_key` (`src/artifact_id.jl`). Five user-visible consequences:
+
+  - **The cache directory is now `.../RustCall/v2`.** `CACHE_FORMAT_VERSION = 2`
+    namespaces the on-disk layout, and `get_metadata_dir()` /
+    `get_cargo_cache_dir()` nest under it. Nothing is silently served from the
+    old layout; `clear_cache()` and `cleanup_old_cache()` sweep older `v*`
+    siblings and the unversioned pre-#278 tree best effort. A *newer* sibling is
+    left alone.
+  - **Every on-disk key changes value**, so the first build after upgrading
+    recompiles. Keys are the full 64-hex digest now: truncation happens only in
+    `artifact_short_id`, and only for names a human reads (library names,
+    temporary Cargo project directories, log lines).
+  - **A missing toolchain is an error on compile paths.** `_get_rustc_version()`
+    (a bare `rustc` from `PATH`, degrading to the string `"unknown"`) and
+    `_get_cargo_version()` are deleted; keys name the compiler
+    `RustToolChain.rustc()` / `cargo()` resolves to
+    (`RustCall.artifact_compiler_identity()`), and an unidentifiable compiler
+    raises `RustError` instead of caching everything under one sentinel
+    ([#252](https://github.com/AtelierArith/RustCall.jl/issues/252)).
+    `toolchain_fingerprint()` itself stays total.
+  - **Monomorphized names changed.** A specialization is now
+    `<name>_<types in declaration order>_<8 hex>` and its library is
+    `rust_generic_<16 hex>`. The old key sorted the type *values*, so
+    `pair<T=i32, U=i64>` and `pair<T=i64, U=i32>` shared one cache entry and the
+    second call ran the first one's machine code
+    ([#247](https://github.com/AtelierArith/RustCall.jl/issues/247)); each
+    instantiation also used to register under one colliding `RUST_LIBRARIES`
+    key.
+  - **`RustBlockSnapshot` has an `artifact_schema` field** (defaulted by an
+    inner constructor). A snapshot from an older RustCall is recomputed and then
+    aliased, never an error.
+
 - **One FFI type contract** ([#276](https://github.com/AtelierArith/RustCall.jl/issues/276)).
   Five independent tables decided "what does this Rust type mean at the C
   boundary?", and they disagreed with each other. Every call site now reads
@@ -46,6 +82,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `<Struct>_free_rust_string`, as the inline path already did; it used to be
     read as `Any` and leaked
     ([#246](https://github.com/AtelierArith/RustCall.jl/issues/246)).
+
+### Changed
+- Cargo-backed blocks fold the **effective Cargo configuration** into the key:
+  the project-local `.cargo/config.toml` chain Cargo searches, not only
+  `$CARGO_HOME/config.toml` (`RustCall._cargo_config_digest(env; dir)`).
+- Local **path dependencies are identified by content**, so editing one rebuilds
+  while moving the checkout does not. Every byte of every input is read on every
+  call — file contents are never memoized, because a `(mtime, size)` stamp can
+  alias distinct contents and the cost of being wrong is running the wrong
+  machine code. What *is* memoized is the resolved dependency graph (the
+  `cargo tree` process spawn), validated against the **content digests** of
+  every manifest that can decide the graph — each crate's `Cargo.toml` /
+  `Cargo.lock` *and* the workspace root each crate belongs to, since a member
+  can inherit a path from `[workspace.dependencies]` in a manifest that is not
+  a package at all — including one named by an explicit
+  `[package] workspace = "../elsewhere"`, which need not be an ancestor. A block
+  that declares no `path =` dependency never resolves a graph, so a warm
+  `rust"""` re-evaluation spawns no `cargo tree`.
+- `clear_cache` gains `sweep_legacy` (default `false`). RustCall's cache root is
+  `.../compiled/vX.Y/RustCall`, which is **Julia's own precompile directory for
+  RustCall** — its `.ji` and native images live there. The pre-#278 layout's
+  loose files are removed only on explicit request and only when they match the
+  exact naming that layout used; `cleanup_old_cache` never removes them at all,
+  and nothing else in that directory is ever touched.
+- `build_cargo_project_cached(project, id::ArtifactId; ...)` takes the artifact
+  identity instead of a code-hash string, and uses `artifact_key(id)` unchanged:
+  a Cargo block has exactly one key for its in-memory name, its disk lookup, its
+  build and its save. The effective Cargo configuration is folded in by the
+  caller, once, so a `.cargo/config.toml` change rebuilds instead of matching
+  the pre-change binary. A profile disagreeing with the identity is an error.
+- `generate_cache_key` and `is_cache_valid` take a `cfg_text` keyword, so the
+  disk key and the in-memory library name of a `rust"""` block are one value.
+- New CI lint: `scripts/lint_artifact_identity.sh` fails when Julia source
+  outside `src/artifact_id.jl` concatenates key material, truncates a digest, or
+  names an artifact with Julia's session-randomized `hash()`.
+
 
 ### Deprecated
 - `call_rust_function_infer` guessed the **return** type from the type of the

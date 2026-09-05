@@ -180,14 +180,41 @@ const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_c
         end
 
         info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+        # A cold call may make Cargo write `Cargo.lock` into the crate, which is
+        # itself a hashed input; every call from then on agrees.
+        RustCall.compute_crate_hash(info)
         hash1 = RustCall.compute_crate_hash(info)
 
         # Hash should be deterministic
         hash2 = RustCall.compute_crate_hash(info)
         @test hash1 == hash2
 
-        # Hash should be 32 characters (hex-encoded SHA256 truncated)
-        @test length(hash1) == 32
+        # A lookup key is the full digest: truncation is for names only (#278).
+        @test length(hash1) == 64
+        deps_digest = RustCall.artifact_path_dependency_digest(info.path)
+        @test hash1 == RustCall.artifact_key(RustCall.ArtifactId(
+            kind = "crate",
+            source = RustCall.crate_content_digest(info.path),
+            codegen = ["profile" => "release"],
+            dependencies = [deps_digest],
+            build_env = ["cargo-config" => RustCall._cargo_config_digest(ENV; dir = info.path)],
+            extra = ["name" => info.name, "version" => info.version]))
+
+        # The build profile is part of it.
+        @test RustCall.compute_crate_hash(info; release = false) != hash1
+
+        # The whole crate directory is an input, not just the scanned .rs files:
+        # a new file in the crate changes the key.
+        probe = joinpath(info.path, "rc278_probe.txt")
+        try
+            write(probe, "an input the scan never lists")
+            RustCall._artifact_reset_digest_caches!()
+            @test RustCall.compute_crate_hash(info) != hash1
+        finally
+            rm(probe; force = true)
+            RustCall._artifact_reset_digest_caches!()
+        end
+        @test RustCall.compute_crate_hash(info) == hash1
     end
 
 end

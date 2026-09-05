@@ -301,7 +301,7 @@ signature_for(code, name; mode = "inline") = only(
                 try
                     RustCall.is_generic_function("concurrent_$(t)_$(i)")
                     lock(RustCall.REGISTRY_LOCK) do
-                        haskey(RustCall.IRUST_FUNCTIONS, UInt64(t * 1000 + i))
+                        haskey(RustCall.IRUST_FUNCTIONS, "concurrent_$(t)_$(i)")
                     end
                 catch
                     Threads.atomic_add!(errors, 1)
@@ -502,7 +502,13 @@ end
 
     @testset "Cache naming and checksum (#179/#180/#198)" begin
         @test isdefined(RustCall, :load_cached_library)
-        @test !isempty(RustCall._get_rustc_version())
+        # #252: the compiler in the key is the one RustToolChain resolves, and
+        # an unidentifiable compiler raises instead of becoming "unknown".
+        @test !isdefined(RustCall, :_get_rustc_version)
+        if RustCall.check_rustc_available()
+            @test !isempty(RustCall.artifact_compiler_identity())
+            @test !occursin("unknown", RustCall.artifact_compiler_identity())
+        end
         code = "fn test() -> i32 { 1 }"
         key1 = RustCall.generate_cache_key(code, RustCall.RustCompiler(optimization_level = 0))
         key2 = RustCall.generate_cache_key(code, RustCall.RustCompiler(optimization_level = 2))
@@ -1211,6 +1217,91 @@ end
         c = RustCall.ffi_return_contract(m.return_type; abi = m.return_abi, owner = "Rc246Buf")
         @test c.free_symbol == "Rc246Buf_free_rust_string"
         @test c.ownership === :owned_by_rust
+    end
+end
+
+# #247: the monomorphization key sorted the type *values*, so which parameter
+# got which type never reached the key. `pair<T=i32, U=i64>` and
+# `pair<T=i64, U=i32>` shared one MONOMORPHIZED_FUNCTIONS entry (and one symbol
+# suffix), and the second call ran the first one's machine code.
+@testset "#247: permuted generic parameters do not share an instantiation" begin
+    info = RustCall.GenericFunctionInfo(
+        "rc247_reg_pair", "pub fn rc247_reg_pair<T, U>(a: T, b: U) -> T { let _ = b; a }",
+        [:T, :U], Dict{Symbol, RustCall.TypeConstraints}(), "", ["T", "U"], "T",
+        "rc247_reg_pair", nothing, "")
+    compiler = RustCall.get_default_compiler()
+    ab = Dict{Symbol, Type}(:T => Int32, :U => Int64)
+    ba = Dict{Symbol, Type}(:T => Int64, :U => Int32)
+
+    id_ab = RustCall._monomorphization_id(info, "rc247_reg_pair", ab, compiler)
+    id_ba = RustCall._monomorphization_id(info, "rc247_reg_pair", ba, compiler)
+    @test id_ab.type_params == ["T" => "Int32", "U" => "Int64"]
+    @test id_ba.type_params == ["T" => "Int64", "U" => "Int32"]
+    @test RustCall.artifact_key(id_ab) != RustCall.artifact_key(id_ba)
+    # The registry that used to collide is now keyed by that value.
+    @test RustCall.MONOMORPHIZED_FUNCTIONS isa Dict{String, RustCall.FunctionInfo}
+end
+
+# #278 B6: a precompiled module stores the *inputs* of a `rust"""` block, never
+# a key — `toolchain` and `compiler` are properties of the loading session, so a
+# stored key would pin a rustc that may since have been upgraded. The name a
+# later session derives therefore routinely differs from the stored one, and
+# `_resolve_lib` has to rebind the registry entry rather than only alias it.
+@testset "#278: a reloaded block rebinds its stored name" begin
+    @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2).artifact_schema ==
+          RustCall.ARTIFACT_ID_SCHEMA_VERSION
+    @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2, "").cargo_env == ""
+    @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2, nothing, 0).artifact_schema == 0
+
+    if RustCall.check_rustc_available()
+        code = """
+        #[no_mangle]
+        pub extern "C" fn rc278_snapshot_probe() -> i32 { 7 }
+        """
+        compiler = RustCall.get_default_compiler()
+        cfg = RustCall._cfg_snapshot(:strict)
+        actual = RustCall._compile_and_load_rust(code, "snapshot", 0; cfg_text = cfg,
+                                                 compiler_target = compiler.target_triple,
+                                                 compiler_level = compiler.optimization_level)
+        block = RustCall.RustBlockSnapshot(code, cfg, compiler.target_triple,
+                                           compiler.optimization_level)
+        @test RustCall.ensure_loaded(actual, block) == actual
+
+        # A stale name that happens to be registered short-circuits ...
+        stale = "rust_rc278_stale_name"
+        lock(RustCall.REGISTRY_LOCK) do
+            RustCall.RUST_LIBRARIES[stale] = RustCall.RUST_LIBRARIES[actual]
+        end
+        try
+            @test RustCall.ensure_loaded(stale, block) == stale
+            # ... unless the snapshot predates the current identity encoding,
+            # in which case the stored name is not evidence of anything:
+            # recompute, and let the caller alias. Never an error.
+            old = RustCall.RustBlockSnapshot(code, cfg, compiler.target_triple,
+                                             compiler.optimization_level, nothing, 0)
+            @test RustCall.ensure_loaded(stale, old) == actual
+
+            # `_resolve_lib` rebinds __RUSTCALL_LIBS and the module's active
+            # library to the name the manifest was registered under, keeping the
+            # alias in RUST_LIBRARIES for callers that still name the old one.
+            mod = Module(:RC278ResolveProbe)
+            Core.eval(mod, :(const __RUSTCALL_LIBS = Dict{String, Any}()))
+            Core.eval(mod, :(const __RUSTCALL_ACTIVE_LIB = Ref("")))
+            libs = getfield(mod, :__RUSTCALL_LIBS)
+            libs[stale] = old
+            getfield(mod, :__RUSTCALL_ACTIVE_LIB)[] = stale
+
+            RustCall._resolve_lib(mod, "")
+            @test haskey(libs, actual)
+            @test !haskey(libs, stale)
+            @test getfield(mod, :__RUSTCALL_ACTIVE_LIB)[] == actual
+            @test lock(() -> haskey(RustCall.RUST_LIBRARIES, stale), RustCall.REGISTRY_LOCK)
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, stale)
+                RustCall.clear_library_metadata!(stale)
+            end
+        end
     end
 end
 

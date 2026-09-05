@@ -163,45 +163,71 @@ function hash_dependencies(deps::Vector{DependencySpec})
 end
 
 """
-    build_cargo_project_cached(
-        project::CargoProject,
-        code_hash::UInt64;
-        release::Bool = true
-    ) -> String
+    _check_cargo_profile(id::ArtifactId, release::Bool)
+
+Refuse to build when the profile recorded in `id` is not the one being built.
+
+The two must agree because `artifact_key(id)` is the *only* key of the build:
+if they could disagree, the caller's lookup key and the artifact actually
+produced would describe different things — the shape of #287. Better a loud
+error than a cache that quietly holds the wrong binary.
+"""
+function _check_cargo_profile(id::ArtifactId, release::Bool)
+    want = release ? "release" : "debug"
+    recorded = nothing
+    for (k, v) in id.codegen
+        k == "profile" && (recorded = v)
+    end
+    recorded == want && return nothing
+    throw(ArgumentError(
+        "the ArtifactId records profile $(repr(recorded)) but the build was asked for " *
+        "$(repr(want)). A Cargo block must have exactly one key for its lookup, its " *
+        "build and its save (#278, #287); pass `release` to `_cargo_block_id` instead."))
+end
+
+"""
+    build_cargo_project_cached(project::CargoProject, id::ArtifactId;
+                               release = true, env = nothing) -> String
 
 Build a Cargo project with caching support.
 
-If a cached library exists with matching code and dependency hashes, returns
-the cached library path. Otherwise, builds the project and caches the result.
+If a cached library exists for this artifact, returns its path. Otherwise builds
+the project and caches the result.
 
 # Arguments
 - `project::CargoProject`: The Cargo project to build
-- `code_hash::AbstractString`: SHA256 hex digest of the Rust source code
+- `id::ArtifactId`: the complete identity of what is being built — source,
+  dependency set, build environment (including the effective Cargo
+  configuration), build profile and toolchain. The cache key is `artifact_key`
+  of exactly that record: this function never extends or re-derives it, so a
+  Cargo block has one key for its lookup, its build and its save (#278, #287).
 
 # Keyword Arguments
 - `release::Bool`: Build in release mode (default: true)
+- `env`: environment override for the `cargo` invocation
 
 # Returns
 - `String`: Path to the compiled shared library (may be cached)
 """
 function build_cargo_project_cached(
     project::CargoProject,
-    code_hash::AbstractString;
+    id::ArtifactId;
     release::Bool = true,
     env::Union{Nothing, AbstractDict} = nothing
 )
-    # Generate cache key from code hash, dependency hash, and build mode
-    deps_hash = hash_dependencies(project.dependencies)
-    mode_str = release ? "release" : "debug"
-
-    # Combine hashes for cache key
-    cache_key_data = "$(code_hash)_$(deps_hash)_$(mode_str)"
-    cache_key = bytes2hex(sha256(cache_key_data))[1:32]  # Use first 32 chars
+    # `id` is already the complete identity of this build — the caller computed
+    # it once and looked the artifact up under it. Deriving a *richer* key here
+    # is what #287 caught: the outer lookup then hit the pre-change binary while
+    # the build cached under a key nothing would ever ask for again. So the key
+    # is `artifact_key(id)` and nothing else, and a mismatched profile is an
+    # error rather than a second key.
+    _check_cargo_profile(id, release)
+    cache_key = artifact_key(id)
 
     # Check cache
     cached_lib = get_cargo_cached_library(cache_key)
     if !isnothing(cached_lib) && isfile(cached_lib)
-        @debug "Using cached Cargo library" cache_key=cache_key[1:8]
+        @debug "Using cached Cargo library" cache_key=artifact_short_id(cache_key, 8)
         return cached_lib
     end
 
@@ -267,7 +293,7 @@ function save_cargo_cached_library(cache_key::String, lib_path::String)
     # Copy library to cache
     cp(lib_path, cached_path, force=true)
 
-    @debug "Cached Cargo library" cache_key=cache_key[1:8] path=cached_path
+    @debug "Cached Cargo library" cache_key=artifact_short_id(cache_key, 8) path=cached_path
 end
 
 """
@@ -277,10 +303,25 @@ Clear all cached Cargo-built libraries.
 """
 function clear_cargo_cache()
     cache_dir = get_cargo_cache_dir()
-    if isdir(cache_dir)
-        rm(cache_dir, recursive=true, force=true)
-        mkpath(cache_dir)
+    isdir(cache_dir) || return nothing
+    # A cached cdylib that this session has loaded is mapped into the process,
+    # and Windows will not delete a mapped file — `force = true` forgives a
+    # missing file, not a locked one. Clearing the cache must not throw because
+    # of that, exactly as `_clear_cache_unlocked` already tolerates it for the
+    # rustc cache; whatever is still in use is simply left behind.
+    try
+        rm(cache_dir, recursive = true, force = true)
+    catch e
+        @debug "Could not fully clear the Cargo cache (files may be in use)" cache_dir exception = e
+        for entry in readdir(cache_dir; join = true)
+            try
+                rm(entry, recursive = true, force = true)
+            catch
+            end
+        end
     end
+    mkpath(cache_dir)
+    return nothing
 end
 
 """

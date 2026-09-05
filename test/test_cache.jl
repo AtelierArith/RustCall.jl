@@ -16,6 +16,107 @@ using Test
         @test isdir(metadata_dir)
     end
 
+    @testset "Cache format namespace (#278)" begin
+        # Every cached artifact lives under a directory named for the on-disk
+        # cache format, so a key-formula change (#278 Phase B) cannot serve a
+        # hit written by the previous format.
+        cache_dir = RustCall.get_cache_dir()
+        @test basename(cache_dir) == "v$(RustCall.CACHE_FORMAT_VERSION)"
+        @test basename(RustCall._cache_format_root()) == "RustCall"
+        @test dirname(cache_dir) == RustCall._cache_format_root()
+
+        # The Cargo and metadata trees nest under the versioned directory.
+        @test startswith(RustCall.get_metadata_dir(), cache_dir)
+        @test startswith(RustCall.get_cargo_cache_dir(), cache_dir)
+
+        # Older siblings are swept best-effort; newer ones are left alone.
+        root = RustCall._cache_format_root()
+        old_dir = joinpath(root, "v1")
+        new_dir = joinpath(root, "v$(RustCall.CACHE_FORMAT_VERSION + 1)")
+        mkpath(old_dir)
+        mkpath(new_dir)
+        write(joinpath(old_dir, "x.txt"), "old")
+        try
+            stale = RustCall._stale_cache_format_dirs()
+            @test old_dir in stale
+            @test !(new_dir in stale)
+            @test !(cache_dir in stale)
+
+            RustCall.sweep_stale_cache_formats()
+            @test !isdir(old_dir)
+            @test isdir(new_dir)      # a future format's cache is not ours to delete
+            @test isdir(cache_dir)
+        finally
+            rm(new_dir; recursive = true, force = true)
+            rm(old_dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "The sweep never deletes what RustCall did not write (#287 review)" begin
+        # `_cache_format_root()` is `.../compiled/vX.Y/RustCall` — *Julia's own*
+        # package precompile directory for RustCall, where it keeps `<slug>.ji`
+        # and `<slug>.dylib` native images. Deleting every regular file there
+        # would throw away fresh precompilation output and could race another
+        # Julia process writing it.
+        root = RustCall._cache_format_root()
+        mkpath(root)
+
+        # Named exactly as Julia names them (a package slug: mixed case and an
+        # underscore, so `_LEGACY_CACHE_FILE` cannot match).
+        julia_ji = joinpath(root, "qLtCw_2ChqG.ji")
+        julia_img = joinpath(root, "qLtCw_2ChqG." * (Sys.iswindows() ? "dll" :
+                                                     Sys.isapple() ? "dylib" : "so"))
+        unrelated = joinpath(root, "notes.txt")
+        # ... and a genuine v1 artifact: a `stable_content_hash` key plus the
+        # library extension, which is all v1 ever wrote loose in this directory.
+        v1_key = RustCall.stable_content_hash("a v1 cache entry")
+        legacy_lib = joinpath(root, v1_key * RustCall.get_library_extension())
+        legacy_sum = legacy_lib * ".sha256"
+        legacy_ir = joinpath(root, v1_key * ".ll")
+
+        for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
+            write(f, "x")
+        end
+        try
+            # The classifier is the safety property: only ours match.
+            listed = RustCall._legacy_cache_files()
+            @test legacy_lib in listed
+            @test legacy_sum in listed
+            @test legacy_ir in listed
+            @test !(julia_ji in listed)
+            @test !(julia_img in listed)
+            @test !(unrelated in listed)
+
+            # Off by default: a plain sweep touches no loose file at all, and
+            # neither does an age-based cleanup.
+            RustCall.sweep_stale_cache_formats()
+            @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
+            RustCall.cleanup_old_cache(0)
+            @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
+
+            # Explicitly requested: only the RustCall artifacts go.
+            RustCall.sweep_stale_cache_formats(; legacy_files = true)
+            @test !isfile(legacy_lib)
+            @test !isfile(legacy_sum)
+            @test !isfile(legacy_ir)
+            @test isfile(julia_ji)      # Julia's precompile output survives
+            @test isfile(julia_img)
+            @test isfile(unrelated)
+        finally
+            for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
+                rm(f; force = true)
+            end
+        end
+
+        # The pattern itself, stated directly.
+        @test occursin(RustCall._LEGACY_CACHE_FILE, "$(RustCall.stable_content_hash("k")).ll")
+        for name in ("qLtCw_2ChqG.ji", "qLtCw_2ChqG.dylib", "qLtCw_2ChqG.so",
+                     "notes.txt", "Manifest.toml", "ABCDEF0123456789.dylib",
+                     "deadbeef.stale", "libfoo.dylib")
+            @test !occursin(RustCall._LEGACY_CACHE_FILE, name)
+        end
+    end
+
     @testset "Cache Key Generation" begin
         code1 = """
         #[no_mangle]
@@ -40,13 +141,63 @@ using Test
         key1_again = RustCall.generate_cache_key(code1, compiler)
         @test key1 == key1_again
 
-        # Key must be deterministic (session-stable) — verify by computing expected SHA256
-        using SHA
-        rustc_ver = RustCall._get_rustc_version()
-        pipeline = RustCall.toolchain_fingerprint()
-        config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)_$(pipeline)"
-        expected_key = bytes2hex(sha256("$(code1)\n---\n$(config_str)"))
-        @test key1 == expected_key
+        # The key is `artifact_key` of an ArtifactId and nothing else (#278):
+        # there is no second formula to keep in sync here.
+        expected_id = RustCall.ArtifactId(
+            kind = "rustc",
+            source = code1,
+            target_triple = compiler.target_triple,
+            codegen = RustCall.artifact_codegen_options(compiler),
+            cfg = String[RustCall.stable_content_hash(RustCall._cfg_snapshot(:strict))],
+            build_env = RustCall.artifact_build_env(RustCall.RUSTC_BUILD_ENV_NAMES),
+        )
+        @test key1 == RustCall.artifact_key(expected_id)
+
+        # Compiler settings are part of the key.
+        @test key1 != RustCall.generate_cache_key(
+            code1, RustCall.RustCompiler(optimization_level = 0))
+
+        # The cfg snapshot is part of the key, and an explicit snapshot wins.
+        @test RustCall.generate_cache_key(code1, compiler; cfg_text = "target_os=\"nowhere\"") != key1
+    end
+
+    @testset "The compiler in the key is the compiler that runs (#252)" begin
+        # `artifact_compiler_identity` reads RustToolChain.rustc()/cargo() —
+        # the very commands src/compiler.jl and src/cargobuild.jl invoke — and
+        # raises rather than degrading to the string "unknown".
+        @test !isdefined(RustCall, :_get_rustc_version)
+        @test !isdefined(RustCall, :_cached_rustc_version)
+        @test !isdefined(RustCall, :_get_cargo_version)
+
+        identity_ok = try
+            RustCall.artifact_compiler_identity()
+            true
+        catch
+            false
+        end
+        if !identity_ok
+            @info "Skipping #252 key test: RustToolChain rustc/cargo unavailable"
+        else
+            identity_str = RustCall.artifact_compiler_identity()
+            @test !occursin("unknown", identity_str)
+
+            # Acceptance test from the issue: a changed toolchain fingerprint
+            # must produce a cache miss, not a stale hit.
+            code = "#[no_mangle]\npub extern \"C\" fn fingerprint_probe() -> i32 { 1 }\n"
+            compiler = RustCall.get_default_compiler()
+            key_before = RustCall.generate_cache_key(code, compiler)
+            saved = RustCall._TOOLCHAIN_FINGERPRINT[]
+            try
+                RustCall._TOOLCHAIN_FINGERPRINT[] = RustCall.stable_content_hash("a different toolchain")
+                key_after = RustCall.generate_cache_key(code, compiler)
+                @test key_after != key_before
+                @test !RustCall.is_cache_valid(key_before, code, compiler)
+            finally
+                RustCall._TOOLCHAIN_FINGERPRINT[] = saved
+                RustCall._reset_extractor_state!()
+            end
+            @test RustCall.generate_cache_key(code, compiler) == key_before
+        end
     end
 
     @testset "stable_content_hash utility" begin

@@ -15,7 +15,19 @@ makedocs(
         canonical = "https://atelierarith.github.io/RustCall.jl",
         assets = String[],
         edit_link = :commit,
-        size_threshold = 512000,  # Increase threshold for large API documentation (500 KiB in bytes)
+        # `api.md` is a single generated page that renders every docstring in
+        # the package, so its size is a function of how well documented
+        # RustCall is — and Documenter's limit has already been hit twice by
+        # ordinary docstring additions (the previous bump to 500 KiB, then
+        # #287 at 501.2 KiB). A limit that turns "wrote a docstring" into a red
+        # Documentation job pushes in exactly the wrong direction, so give it
+        # real margin instead of tracking the page upwards a kilobyte at a time.
+        #
+        # This is a stopgap. The proper fix is to split the reference into
+        # per-module pages with their own `@autodocs` `Pages` filters, after
+        # which the threshold can go back near Documenter's default: #288.
+        size_threshold = 1_000 * 2^10,       # 1000 KiB — hard failure
+        size_threshold_warn = 750 * 2^10,    # 750 KiB — warn, act before it fails
     ),
     warnonly = [:missing_docs],
     pages = [

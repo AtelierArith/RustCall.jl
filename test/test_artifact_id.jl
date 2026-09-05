@@ -1,14 +1,13 @@
-# Tests for the single artifact-identity function (issue #278, Phase A).
+# Tests for the single artifact-identity function (issue #278).
 #
 # Two kinds of tests live here:
 #
-# 1. Tests of the new `ArtifactId` / `artifact_key` machinery: injectivity,
-#    order sensitivity of type parameters, toolchain sensitivity.
-# 2. Tests that *document the current defects* of the eight ad-hoc cache-key
-#    sites. Those assert today's (wrong) behaviour on purpose, with the issue
-#    number in a comment, so that Phase B — which migrates the call sites onto
-#    `artifact_key` — turns them into regression tests by flipping the
-#    assertion. Nothing here changes existing behaviour.
+# 1. Tests of the `ArtifactId` / `artifact_key` machinery: injectivity, order
+#    sensitivity of type parameters, toolchain sensitivity, memoization.
+# 2. Regression tests for the defects the twelve ad-hoc key formulas caused.
+#    In Phase A these asserted the *wrong* behaviour on purpose, marked
+#    `DEFECT #<issue>`; Phase B migrated the call sites and flipped them, so
+#    they are named `FIXED #<issue>` and assert the property instead.
 
 using RustCall
 using SHA: sha256
@@ -664,50 +663,52 @@ _id(; kwargs...) = RustCall.ArtifactId(;
     # existing key sites. Phase B flips them into regression tests.
     # ------------------------------------------------------------------
 
-    @testset "DEFECT #247: monomorphization key loses parameter order" begin
-        # Verbatim reproduction of src/generics.jl:191-193 as of this commit:
-        #
-        #     sorted_types = sort(collect(values(type_params)), by=string)
-        #     type_params_tuple = tuple(sorted_types...)
-        #     cache_key = (func_name, type_params_tuple)
-        #
-        # Sorting the *values* discards which parameter got which type, so
-        # pair<T=i32, U=i64> and pair<T=i64, U=i32> share one cache entry and
-        # the second call runs the first one's machine code (#247).
-        current_key(func_name, type_params) = begin
-            sorted_types = sort(collect(values(type_params)), by = string)
-            (func_name, tuple(sorted_types...))
-        end
-
+    @testset "FIXED #247: the monomorphization key keeps parameter order" begin
+        # The key used to be `(func_name, tuple(sort(values(type_params))...))`.
+        # Sorting the *values* discarded which parameter got which type, so
+        # pair<T=i32, U=i64> and pair<T=i64, U=i32> shared one cache entry and
+        # the second call ran the first one's machine code (#247).
         a = Dict{Symbol, Type}(:T => Int32, :U => Int64)
         b = Dict{Symbol, Type}(:T => Int64, :U => Int32)
 
-        # Current behaviour: COLLISION. This @test is expected to fail (and to
-        # be inverted) once Phase B migrates monomorphize_function.
-        @test current_key("pair", a) == current_key("pair", b)
-
-        # The same is true of the symbol suffix built at src/generics.jl:208-224
-        # from the same sorted values, so the two instantiations also want the
-        # same monomorphized symbol name.
-        suffix(tp) = join([string(t) for t in sort(collect(values(tp)), by = string)], "_")
-        @test suffix(a) == suffix(b)
-
-        # The replacement does not collide.
         key_a = RustCall.artifact_key(_id(kind = "monomorphization", source = "pair",
             type_params = RustCall.artifact_type_params([:T, :U], a)))
         key_b = RustCall.artifact_key(_id(kind = "monomorphization", source = "pair",
             type_params = RustCall.artifact_type_params([:T, :U], b)))
         @test key_a != key_b
+
+        # `_monomorphization_id` — the helper both generics.jl call sites use —
+        # has the same property, without needing a toolchain to build one.
+        info = RustCall.GenericFunctionInfo(
+            "pair", "pub fn pair<T, U>(a: T, b: U) -> T { a }", [:T, :U],
+            Dict{Symbol, RustCall.TypeConstraints}(), "", ["T", "U"], "T", "pair",
+            nothing, "")
+        compiler = RustCall.RustCompiler(optimization_level = 2)
+        id_a = RustCall._monomorphization_id(info, "pair", a, compiler)
+        id_b = RustCall._monomorphization_id(info, "pair", b, compiler)
+        @test id_a.type_params == ["T" => "Int32", "U" => "Int64"]
+        @test id_b.type_params == ["T" => "Int64", "U" => "Int32"]
+        @test RustCall.artifact_key(id_a) != RustCall.artifact_key(id_b)
+        # Deterministic, and the compiler snapshot is part of it.
+        @test RustCall.artifact_key(id_a) ==
+              RustCall.artifact_key(RustCall._monomorphization_id(info, "pair", a, compiler))
+        @test RustCall.artifact_key(id_a) != RustCall.artifact_key(
+            RustCall._monomorphization_id(info, "pair", a,
+                                          RustCall.RustCompiler(optimization_level = 0)))
+        # An unbound declared parameter is an error, never a silent key.
+        @test_throws ArgumentError RustCall._monomorphization_id(
+            info, "pair", Dict{Symbol, Type}(:T => Int32), compiler)
     end
 
-    @testset "DEFECT #252: the rustc in the key is not the rustc that compiles" begin
-        # src/cache.jl:97-106 shells out to a bare `rustc` from PATH and returns
-        # "unknown" when that fails, while compilation goes through
-        # RustToolChain.rustc() (src/compiler.jl:212). A key built from the
-        # former therefore need not change when the real toolchain changes.
+    @testset "FIXED #252: the rustc in the key is the rustc that compiles" begin
+        # The PATH-based `_get_rustc_version()` that could degrade to the string
+        # "unknown" is gone; every key now names the toolchain
+        # `RustToolChain.rustc()` / `cargo()` resolve to, and an unidentifiable
+        # compiler is an error rather than a sentinel.
+        @test !isdefined(RustCall, :_get_rustc_version)
+        @test !isdefined(RustCall, :_cached_rustc_version)
+        @test !isdefined(RustCall, :_get_cargo_version)
 
-        # Warm the memoized values before touching PATH, so this test only
-        # observes the divergence and does not perturb anything.
         toolchain_ok = try
             RustCall.artifact_compiler_identity()
             true
@@ -716,43 +717,426 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
 
         if !toolchain_ok
-            @info "Skipping #252 divergence test: RustToolChain rustc/cargo unavailable"
+            @info "Skipping #252 identity test: RustToolChain rustc/cargo unavailable"
         else
             identity_str = RustCall.artifact_compiler_identity()
             @test occursin("rustc=", identity_str)
             @test occursin("cargo=", identity_str)
-            # Never the "unknown" sentinel: an unidentifiable compiler is an error.
-            @test !occursin("rustc=unknown", identity_str)
+            # Never the "unknown" sentinel, anywhere in the identity.
+            @test !occursin("unknown", identity_str)
 
-            saved = RustCall._cached_rustc_version[]
+            # The identity is memoized, so an empty PATH cannot change it back
+            # to a degraded value mid-session ...
             empty_dir = mktempdir()
             try
-                # With no `rustc` on PATH, the cache-key version degrades to
-                # "unknown" while the compiler that would actually run is
-                # unchanged — that is exactly the divergence of #252.
-                RustCall._cached_rustc_version[] = ""
-                path_version = withenv("PATH" => empty_dir) do
-                    RustCall._get_rustc_version()
-                end
-                @test path_version == "unknown"                       # #252, current behaviour
-                @test !occursin(path_version, RustCall.artifact_compiler_identity())
+                @test withenv("PATH" => empty_dir) do
+                    RustCall.artifact_compiler_identity()
+                end == identity_str
             finally
-                RustCall._cached_rustc_version[] = saved
                 rm(empty_dir; force = true, recursive = true)
             end
+
+            # ... and it is what `toolchain_fingerprint` folds in, so the
+            # fingerprint follows the real toolchain (#252).
+            fp = RustCall.toolchain_fingerprint()
+            @test fp == RustCall.toolchain_fingerprint()
+            @test !occursin(RustCall._TOOLCHAIN_COMPILER_UNIDENTIFIED, fp)
+        end
+
+        # `toolchain_fingerprint()` stays total for callers that only need *a*
+        # fingerprint; the compile paths are the ones that raise.
+        @test RustCall._TOOLCHAIN_COMPILER_UNIDENTIFIED != "unknown"
+    end
+
+    @testset "FIXED: truncation happens in exactly one place" begin
+        # No src/ site truncates below ARTIFACT_SHORT_ID_LEN and no truncated
+        # value is a lookup key. The grep-style enforcement of that rule lives
+        # in scripts/lint_artifact_identity.sh; here we assert the properties of
+        # the one truncation function, and that the lookup keys are full length.
+        code = "fn f() -> i32 { 1 }"
+        key = RustCall.artifact_key(_id(kind = "rustc", source = code))
+
+        @test length(key) == 64
+        @test length(RustCall.artifact_short_id(key)) == RustCall.ARTIFACT_SHORT_ID_LEN
+        @test RustCall.artifact_short_id(key) == first(key, RustCall.ARTIFACT_SHORT_ID_LEN)
+        # Names may ask for fewer characters explicitly; lookups never do.
+        @test length(RustCall.artifact_short_id(key, 12)) == 12
+        @test_throws ArgumentError RustCall.artifact_short_id(key, 0)
+        @test_throws ArgumentError RustCall.artifact_short_id(key, 65)
+
+        # And the grep-style rule itself holds on this tree: no file outside
+        # src/artifact_id.jl concatenates key material, truncates a digest, or
+        # names an artifact with Julia's session-randomized `hash()`.
+        lint = joinpath(pkgdir(RustCall), "scripts", "lint_artifact_identity.sh")
+        @test isfile(lint)
+        if !Sys.iswindows() && Sys.which("bash") !== nothing
+            @test success(pipeline(`bash $lint $(joinpath(pkgdir(RustCall), "src"))`;
+                                   stdout = devnull, stderr = devnull))
+        end
+
+        # The migrated adapters all return the full digest.
+        compiler = RustCall.RustCompiler(optimization_level = 2)
+        for k in (RustCall._cargo_block_identity("fn f() {}", "deps", ""),
+                  RustCall.artifact_key(RustCall._cargo_block_id("fn f() {}",
+                                                                 RustCall.DependencySpec[], "")))
+            @test length(k) == 64
+        end
+        if RustCall.check_rustc_available()
+            @test length(RustCall.generate_cache_key("fn f() {}", compiler)) == 64
+            @test length(RustCall._rustc_block_identity("fn f() {}", compiler, "")) == 64
         end
     end
 
-    @testset "DEFECT: existing key sites truncate inconsistently" begin
-        # Inventory of the truncation lengths currently in use (issue #278).
-        # The new function truncates in one place only, and never for lookup.
-        code = "fn f() -> i32 { 1 }"
+    @testset "Path-dependency digests are memoized (#278 §8)" begin
+        # `artifact_path_dependency_digest` shells out to `cargo tree` and reads
+        # every file of every local crate. Paying that on a warm re-evaluation
+        # would add hundreds of milliseconds to a no-op, so the resolved graph is
+        # memoized on the crate's Cargo.toml / Cargo.lock stats and file contents
+        # on `(path, mtime, size)`.
+        dir = mktempdir()
+        try
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"),
+                  "[package]\nname = \"memo_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+            write(joinpath(dir, "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
 
-        @test length(RustCall.stable_content_hash(code)[1:16]) == 16   # src/ruststr.jl:227
-        @test length(bytes2hex(sha256("$(code)_deps_release"))[1:32]) == 32  # src/ruststr.jl:381
+            RustCall._artifact_reset_digest_caches!()
+            before = RustCall.CARGO_TREE_INVOCATIONS[]
+            d1 = RustCall.artifact_path_dependency_digest(dir)
+            after_cold = RustCall.CARGO_TREE_INVOCATIONS[]
 
-        # artifact_key is full length; only artifact_short_id truncates.
-        @test length(RustCall.artifact_key(_id(kind = "rustc", source = code))) == 64
+            # The warm call resolves no graph again.
+            d2 = RustCall.artifact_path_dependency_digest(dir)
+            @test d1 == d2
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == after_cold
+            # (When cargo is unavailable the cold call spawns nothing either;
+            #  what matters is that the warm one adds no invocation.)
+            @test after_cold >= before
+
+            # An edited source still changes the digest: only *unchanged* files
+            # skip the re-read, and the walk always happens.
+            sleep(0.01)
+            write(joinpath(dir, "src", "lib.rs"), "pub fn f() -> i32 { 2 }\n")
+            RustCall._artifact_reset_digest_caches!()
+            @test RustCall.artifact_path_dependency_digest(dir) != d1
+
+            # A new file changes it too.
+            d3 = RustCall.artifact_path_dependency_digest(dir)
+            write(joinpath(dir, "src", "extra.rs"), "// new input\n")
+            RustCall._artifact_reset_digest_caches!()
+            @test RustCall.artifact_path_dependency_digest(dir) != d3
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "A same-length edit under an unchanged mtime still rebuilds (#287 review)" begin
+        # A `(mtime, size)` stamp is a fine invalidation hint and a terrible
+        # identity: a coarse-timestamp filesystem, a metadata-preserving tool,
+        # or a same-length edit inside one timestamp tick all alias distinct
+        # contents. Here the consequence would be running machine code compiled
+        # from source that no longer exists, so file contents are never
+        # memoized — every call reads every byte.
+        dir = mktempdir()
+        try
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"),
+                  "[package]\nname = \"alias_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+            src = joinpath(dir, "src", "lib.rs")
+            original = "pub fn f() -> i32 { 1 }\n"
+            replacement = "pub fn f() -> i32 { 2 }\n"
+            @test length(original) == length(replacement)   # same size, by construction
+
+            # Nothing memoizes file contents, so nothing *can* alias them.
+            @test !isdefined(RustCall, :_FILE_CONTENT_DIGEST_CACHE)
+
+            write(src, original)
+            key_before = RustCall.artifact_path_dependency_digest(dir)
+            @test RustCall.artifact_path_dependency_digest(dir) == key_before
+            digest_before = RustCall._file_content_digest(src)
+
+            # A reference file carrying the *exact* original timestamp of `src`,
+            # so it can be copied back at full precision afterwards.
+            reference = joinpath(dir, "mtime_reference")
+            write(reference, "")
+            can_restore = !Sys.iswindows() && Sys.which("touch") !== nothing &&
+                success(pipeline(`touch -r $(src) $(reference)`; stderr = devnull))
+            before_stat = (mtime(src), filesize(src))
+
+            # Different bytes, same length; then the original mtime restored, so
+            # the `(mtime, size)` pair a stamp would see is byte-for-byte what
+            # it was — the exact aliasing Codex flagged.
+            write(src, replacement)
+            @test filesize(src) == before_stat[2]
+            if can_restore
+                run(pipeline(`touch -r $(reference) $(src)`; stderr = devnull))
+                @test (mtime(src), filesize(src)) == before_stat   # indistinguishable by stat
+            else
+                @info "same-length alias probe: cannot restore mtime here; " *
+                      "the contents assertion below still holds"
+            end
+
+            # The graph is still cached (no manifest changed) and no cache was
+            # reset — the *contents* are re-read regardless, so the key moves.
+            @test RustCall._file_content_digest(src) != digest_before
+            @test RustCall.artifact_path_dependency_digest(dir) != key_before
+        finally
+            rm(dir; recursive = true, force = true)
+        end
+    end
+
+    @testset "A transitive manifest change re-resolves the graph (#287 review)" begin
+        # The graph cache used to be validated against the root's Cargo.toml /
+        # Cargo.lock only. A crate *inside* the graph that grows a new path
+        # dependency changes its own manifest while the root's files stay
+        # untouched, so the cached directory list would keep omitting the new
+        # crate — and edits to it would never reach the key again.
+        root = mktempdir()
+        try
+            function crate!(name, deps = "")
+                d = joinpath(root, name)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                      "\n[dependencies]\n" * deps)
+                write(joinpath(d, "src", "lib.rs"), "pub fn $(name)_f() -> i32 { 1 }\n")
+                return d
+            end
+            grand = crate!("grand")
+            child = crate!("child")
+            parent = crate!("parent", "child = { path = \"../child\" }\n")
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(parent)
+            _, dirs_before = RustCall.local_path_dependency_dirs(parent)
+            @test any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(child), dirs_before)
+            @test !any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(grand), dirs_before)
+
+            # Warm: the graph is cached, no process spawn.
+            warm = RustCall.CARGO_TREE_INVOCATIONS[]
+            @test RustCall.artifact_path_dependency_digest(parent) == key_before
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == warm
+
+            # A *transitive* crate grows a path dependency. The root's manifest
+            # and lockfile are untouched.
+            root_stamp = RustCall._graph_stamp(parent)
+            write(joinpath(child, "Cargo.toml"),
+                  "[package]\nname = \"child\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                  "\n[dependencies]\ngrand = { path = \"../grand\" }\n")
+            @test RustCall._graph_stamp(parent) == root_stamp
+
+            # ... which invalidates the cached graph and costs a re-resolution.
+            before_resolve = RustCall.CARGO_TREE_INVOCATIONS[]
+            _, dirs_after = RustCall.local_path_dependency_dirs(parent)
+            @test RustCall.CARGO_TREE_INVOCATIONS[] > before_resolve
+            @test any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(grand), dirs_after)
+
+            key_after = RustCall.artifact_path_dependency_digest(parent)
+            @test key_after != key_before
+
+            # And the new crate is now a real input: editing it changes the key.
+            write(joinpath(grand, "src", "lib.rs"), "pub fn grand_f() -> i32 { 99 }\n")
+            @test RustCall.artifact_path_dependency_digest(parent) != key_after
+
+            # Removing it again is noticed too (the child's manifest changes).
+            write(joinpath(child, "Cargo.toml"),
+                  "[package]\nname = \"child\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n")
+            _, dirs_removed = RustCall.local_path_dependency_dirs(parent)
+            @test !any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(grand), dirs_removed)
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
+    @testset "A workspace manifest change re-resolves the graph (#287 review)" begin
+        # A member inherits `dep = { workspace = true }` from
+        # `[workspace.dependencies]` in the *workspace root* manifest — which,
+        # for a virtual workspace, is not a package and can never appear in the
+        # package list Cargo reports. Stamping only the crates in the graph
+        # therefore misses every edit to it.
+        root = mktempdir()
+        try
+            function member!(name, deps = "")
+                d = joinpath(root, name)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                      "\n[dependencies]\n" * deps)
+                write(joinpath(d, "src", "lib.rs"), "pub fn $(name)_f() -> i32 { 1 }\n")
+                return d
+            end
+            shared = member!("shared")
+            shared2 = member!("shared2")
+            app = member!("app", "shared = { workspace = true }\n")
+
+            workspace_manifest = joinpath(root, "Cargo.toml")
+            write(workspace_manifest,
+                  "[workspace]\nmembers = [\"app\", \"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared\" }\n")
+
+            # The workspace root is part of the validation set even though it is
+            # not a package in the graph.
+            @test RustCall._workspace_root_dir(app) == RustCall._canonical_dir(root) ||
+                  RustCall._canonical_dir(RustCall._workspace_root_dir(app)) ==
+                      RustCall._canonical_dir(root)
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(app)
+            stamped = first.(RustCall._graph_stamps(RustCall.local_path_dependency_dirs(app)[2]))
+            @test RustCall._canonical_dir(root) in stamped
+
+            # Warm: no re-resolution.
+            warm = RustCall.CARGO_TREE_INVOCATIONS[]
+            @test RustCall.artifact_path_dependency_digest(app) == key_before
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == warm
+
+            # Repoint the inherited dependency in the *workspace* manifest. The
+            # member's own manifest is untouched.
+            member_stamp = RustCall._graph_stamp(app)
+            write(workspace_manifest,
+                  "[workspace]\nmembers = [\"app\", \"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared2\" }\n")
+            @test RustCall._graph_stamp(app) == member_stamp
+
+            # ... which must still invalidate the cached graph.
+            @test RustCall.artifact_path_dependency_digest(app) != key_before
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
+    @testset "A same-length manifest edit under an unchanged mtime re-resolves (#287 review)" begin
+        # Manifests were stat-stamped, which is the same aliasing this file
+        # refuses to accept for sources: a same-length `Cargo.toml` edit under a
+        # preserved timestamp would swap a path dependency with no
+        # re-resolution. They are hashed now — a manifest is a few hundred
+        # bytes, so there is nothing to trade.
+        root = mktempdir()
+        try
+            for name in ("one", "two")
+                d = joinpath(root, name)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+                write(joinpath(d, "src", "lib.rs"), "pub fn f() -> i32 { $(name == "one" ? 1 : 2) }\n")
+            end
+            parent = joinpath(root, "parent")
+            mkpath(joinpath(parent, "src"))
+            write(joinpath(parent, "src", "lib.rs"), "pub fn p() -> i32 { 0 }\n")
+            manifest = joinpath(parent, "Cargo.toml")
+            header = "[package]\nname = \"parent\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n"
+            # The two bodies differ only in one character, so they are the same
+            # length by construction.
+            write(manifest, header * "dep = { path = \"../one\" }\n")
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(parent)
+            _, dirs_before = RustCall.local_path_dependency_dirs(parent)
+            @test any(d -> basename(rstrip(RustCall._canonical_dir(d), '/')) == "one", dirs_before)
+
+            reference = joinpath(root, "mtime_reference")
+            write(reference, "")
+            can_restore = !Sys.iswindows() && Sys.which("touch") !== nothing &&
+                success(pipeline(`touch -r $(manifest) $(reference)`; stderr = devnull))
+            before_stat = (mtime(manifest), filesize(manifest))
+
+            write(manifest, header * "dep = { path = \"../two\" }\n")
+            @test filesize(manifest) == before_stat[2]      # same length
+            if can_restore
+                run(pipeline(`touch -r $(reference) $(manifest)`; stderr = devnull))
+                @test (mtime(manifest), filesize(manifest)) == before_stat   # stat-identical
+            end
+
+            # Re-resolved anyway, and the swapped crate is what is hashed now.
+            _, dirs_after = RustCall.local_path_dependency_dirs(parent)
+            @test any(d -> basename(rstrip(RustCall._canonical_dir(d), '/')) == "two", dirs_after)
+            @test RustCall.artifact_path_dependency_digest(parent) != key_before
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
+    @testset "An explicit [package] workspace = \"...\" is followed (#287 review)" begin
+        # Cargo lets a crate name its workspace root explicitly, and the path
+        # need not be an ancestor — a sibling is legal. An ancestor-only search
+        # misses that root entirely, so `[workspace.dependencies]` edits there
+        # never invalidate.
+        root = mktempdir()
+        try
+            ws = joinpath(root, "ws")
+            shared = joinpath(ws, "shared")
+            shared2 = joinpath(ws, "shared2")
+            member = joinpath(root, "member")     # a *sibling* of the workspace
+            for d in (shared, shared2, member)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
+            end
+            for (d, name) in ((shared, "shared"), (shared2, "shared2"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+            end
+            write(joinpath(member, "Cargo.toml"),
+                  "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                  "workspace = \"../ws\"\n\n[dependencies]\nshared = { workspace = true }\n")
+            ws_manifest = joinpath(ws, "Cargo.toml")
+            write(ws_manifest,
+                  "[workspace]\nmembers = [\"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared\" }\n")
+
+            # The explicit key is followed, and it is not an ancestor of `member`.
+            @test RustCall._canonical_dir(RustCall._workspace_root_dir(member)) ==
+                  RustCall._canonical_dir(ws)
+            @test !startswith(RustCall._canonical_dir(member), RustCall._canonical_dir(ws))
+            @test RustCall._canonical_dir(RustCall._explicit_workspace_root(member)) ==
+                  RustCall._canonical_dir(ws)
+            # A crate with no such key still falls back to the ancestor search.
+            @test RustCall._explicit_workspace_root(shared) === nothing
+            @test RustCall._canonical_dir(RustCall._workspace_root_dir(shared)) ==
+                  RustCall._canonical_dir(ws)
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(member)
+            stamped = first.(RustCall._graph_stamps(
+                RustCall.local_path_dependency_dirs(member)[2]))
+            @test RustCall._canonical_dir(ws) in stamped
+
+            warm = RustCall.CARGO_TREE_INVOCATIONS[]
+            @test RustCall.artifact_path_dependency_digest(member) == key_before
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == warm
+
+            # Repoint the inherited dependency in the sibling workspace root.
+            member_stamp = RustCall._graph_stamp(member)
+            write(ws_manifest,
+                  "[workspace]\nmembers = [\"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared2\" }\n")
+            @test RustCall._graph_stamp(member) == member_stamp
+            @test RustCall.artifact_path_dependency_digest(member) != key_before
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
+    @testset "Hashed relative paths are normalized" begin
+        # A `\\`-spelled path and a `/`-spelled one are the same input; on
+        # Windows so are two spellings that differ only in case.
+        @test RustCall._hashed_relative_path("src\\lib.rs") == "src/lib.rs"
+        @test RustCall._hashed_relative_path("src/lib.rs") == "src/lib.rs"
+        if Sys.iswindows()
+            @test RustCall._hashed_relative_path("SRC/Lib.rs") == "src/lib.rs"
+        else
+            @test RustCall._hashed_relative_path("SRC/Lib.rs") == "SRC/Lib.rs"
+        end
+    end
+
+    @testset "No helper exists for deriving a variant key (#287 review)" begin
+        # `artifact_derive` was added in B4 so `build_cargo_project_cached`
+        # could extend the identity it was handed. That is precisely how the
+        # Cargo path ended up with two keys for one artifact: the builder
+        # derived a richer one than the outer lookup used. The stage that owns
+        # the identity now computes it once, up front, and nothing extends it —
+        # so the helper has no callers and is gone. Its absence is the
+        # guarantee; a lint would only describe it.
+        @test !isdefined(RustCall, :artifact_derive)
     end
 
     @testset "toolchain_fingerprint() is folded in by default" begin

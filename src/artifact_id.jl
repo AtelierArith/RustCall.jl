@@ -1,15 +1,27 @@
 # Artifact identity — one record, one hash function.
 #
 # Background: issue #278. "Which compiled artifact corresponds to this request?"
-# is currently answered independently at eight call sites, each with its own
-# component list, its own concatenation format and its own truncation. That is
+# used to be answered independently at twelve call sites, each with its own
+# component list, its own concatenation format and its own truncation. That was
 # the structural cause of #247 (lossy monomorphization key), #252 (the `rustc`
 # in the key is not the `rustc` that compiles) and of the repeated Cargo cache
 # patches (dependency set, then build environment).
 #
-# This file is Phase A of the fix and is deliberately ADDITIVE: it introduces
-# the record and the hash function, but no call site has been migrated yet.
-# Phase B replaces the eight ad-hoc formulas with `artifact_key`.
+# Since Phase B this file is the only place identity is computed. Every key,
+# library name and temporary project name in the package comes from
+# `artifact_key` / `artifact_short_id`:
+#
+#   direct rustc    `generate_cache_key`, `_rustc_block_identity` (src/cache.jl,
+#                   src/ruststr.jl) — one value for the disk key and the name
+#   Cargo           `_cargo_block_id`, `_cargo_block_identity`,
+#                   `build_cargo_project_cached`
+#   generics        `_monomorphization_id` (src/generics.jl)
+#   crate bindings  `compute_crate_hash` (src/crate_bindings.jl)
+#   @irust          `_compile_and_call_irust` (src/ruststr.jl)
+#
+# `scripts/lint_artifact_identity.sh` keeps it that way: no other file in src/
+# may concatenate key material, truncate a digest, or name an artifact with
+# Julia's session-randomized `hash()`.
 #
 # Design rules encoded here:
 #
@@ -181,11 +193,13 @@ Identity of the toolchain that actually compiles: the `--version` strings of
 `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` standing between Cargo and rustc,
 since a wrapper changes what is produced.
 
-This is deliberately *not* `_get_rustc_version()` in `src/cache.jl`, which
-shells out to a bare `rustc` from `PATH` and degrades to `"unknown"`; upgrading
-the real toolchain then need not invalidate anything (#252). Here a version that
-cannot be determined throws a `RustError` instead, because an
-unidentifiable compiler cannot produce a trustworthy cache key.
+This deliberately replaced `_get_rustc_version()` (deleted from `src/cache.jl`
+in #278 Phase B), which shelled out to a bare `rustc` from `PATH` and degraded
+to the string `"unknown"`, so upgrading the real toolchain need not invalidate
+anything (#252). Here a version that cannot be determined throws a `RustError`
+instead, because an unidentifiable compiler cannot produce a trustworthy cache
+key. `toolchain_fingerprint` catches that and stays total; the paths about to
+compile do not.
 
 The result is memoized for the session.
 """
@@ -360,10 +374,10 @@ distinct specs can never collapse onto the same string.
 # How each kind of dependency is identified
 
 - **Registry** dependencies: name, version requirement and feature set. The
-  *resolved* version from `Cargo.lock` is deliberately out of scope for Phase A
-  (see #256); folding lockfile resolution into the key is a Phase B item.
+  *resolved* version from `Cargo.lock` is deliberately out of scope (see #256);
+  folding lockfile resolution into the key is tracked there.
 - **Git** dependencies: name and the git URL (plus rev/branch/tag when the spec
-  carries them). Resolving a floating branch to a commit is likewise Phase B.
+  carries them). Resolving a floating branch to a commit is likewise #256.
 - **Local path** dependencies: a content digest of the crate's inputs (see
   `artifact_path_dependency_digest`), **not** the path text. Editing a
   local dependency's sources therefore changes the key, while moving the
@@ -398,6 +412,207 @@ function artifact_dependency_strings(deps)::Vector{String}
     return sort!(out)
 end
 
+# ----------------------------------------------------------------------------
+# Memoization (issue #278 §8)
+#
+# `artifact_path_dependency_digest` is on the hot path of every Cargo-backed
+# `rust"""` evaluation, and it spawns `cargo tree`. A warm no-op re-evaluation
+# must not pay for that.
+#
+# Exactly one thing is cached, and it is the process spawn: the resolved
+# dependency *graph*. File contents are **never** cached — every call reads and
+# hashes every input byte.
+#
+# That asymmetry is deliberate. A `(mtime, size)` stamp is a fine invalidation
+# hint and a terrible identity: a coarse-timestamp filesystem, a tool that
+# preserves metadata, or a same-length edit inside one timestamp tick all alias
+# distinct contents, and the consequence here is not a slow rebuild but running
+# machine code compiled from source that no longer exists. Measured on the
+# largest real crate tree to hand (142 files, 6 MB), reading and hashing every
+# byte costs ~13 ms against ~0.3 ms to stat them — nothing next to the hundreds
+# of milliseconds a `cargo tree` spawn costs, which is what §8 of #278 was
+# actually about.
+#
+# The graph cache is validated against every manifest that can *decide* the
+# graph, and by content rather than by stat:
+#
+#   * every crate in the cached graph, not only the root's — a transitive local
+#     crate that grows a path dependency changes its own manifest while the
+#     root's files stay untouched, and missing that drops a crate from the key
+#     permanently;
+#   * the **workspace root** each of those crates belongs to — a member inherits
+#     `dep = { workspace = true }` from `[workspace.dependencies]` in a manifest
+#     that is not in the package list at all, and for a *virtual* workspace that
+#     manifest is not a package to begin with;
+#   * hashed, not stat'd. A `(mtime, size)` pair aliases a same-length
+#     `Cargo.toml` edit under a preserved timestamp — exactly the failure this
+#     file refuses to accept for sources, and a manifest is a few hundred bytes,
+#     so there is nothing to trade.
+#
+# A stamp is only ever a *rebuild trigger* here: re-resolving a graph that had
+# not really changed costs one process spawn.
+#
+# The whole computation is skipped when a block declares no `path =` dependency:
+# `artifact_dependency_strings` only asks for a digest when a spec carries one.
+# ----------------------------------------------------------------------------
+
+const _ARTIFACT_DIGEST_LOCK = ReentrantLock()
+
+# canonical crate dir => (manifest stamps of every crate in the graph,
+#                          (strategy, dirs))
+const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}()
+
+"""
+    CARGO_TREE_INVOCATIONS
+
+How many times `cargo tree` has been spawned this session. A test hook for the
+performance requirement of #278.
+"""
+const CARGO_TREE_INVOCATIONS = Ref(0)
+
+"""
+    _artifact_reset_digest_caches!()
+
+Forget the memoized dependency graphs. Nothing else is memoized, so this only
+ever forces a re-resolution.
+"""
+function _artifact_reset_digest_caches!()
+    lock(_ARTIFACT_DIGEST_LOCK) do
+        empty!(_PATH_DEP_GRAPH_CACHE)
+    end
+    return nothing
+end
+
+# Content digest of one manifest, or a marker when it is not there. Hashed
+# rather than stat'd: see the note above on same-length edits.
+_manifest_digest(path::AbstractString) =
+    isfile(path) ? _file_content_digest(path) : "absent"
+
+# What decides one crate's contribution to a resolved local-dependency graph.
+_graph_stamp(dir::AbstractString) =
+    (_manifest_digest(joinpath(String(dir), "Cargo.toml")),
+     _manifest_digest(joinpath(String(dir), "Cargo.lock")))
+
+"""
+    _workspace_root_dir(dir) -> Union{String, Nothing}
+
+The directory of the workspace `dir` belongs to, or `nothing` when it belongs to
+none.
+
+That manifest decides the graph without appearing in it: a member writing
+`dep = { workspace = true }` takes the path from `[workspace.dependencies]`
+there, and a *virtual* workspace root is not a package at all, so it can never
+show up in the package list `cargo tree` reports.
+
+Cargo resolves the root two ways, and so does this:
+
+1. an explicit `[package] workspace = "../elsewhere"` in the crate's own
+   manifest, relative to that manifest's directory. It need not be an ancestor —
+   a sibling is legal — so an ancestor-only search misses it entirely;
+2. otherwise, the nearest manifest at or above `dir` declaring a `[workspace]`
+   table.
+
+The explicit key is only consulted on the crate's own manifest, which is where
+Cargo reads it; an ancestor's `package.workspace` describes that ancestor, not
+this crate.
+"""
+function _workspace_root_dir(dir::AbstractString)
+    start = try
+        abspath(String(dir))
+    catch
+        String(dir)
+    end
+
+    explicit = _explicit_workspace_root(start)
+    explicit === nothing || return explicit
+
+    current = start
+    while true
+        manifest = joinpath(current, "Cargo.toml")
+        if isfile(manifest)
+            parsed = _parse_manifest_or_nothing(manifest)
+            if parsed isa AbstractDict && get(parsed, "workspace", nothing) isa AbstractDict
+                return current
+            end
+        end
+        parent = dirname(current)
+        (isempty(parent) || parent == current) && return nothing
+        current = parent
+    end
+end
+
+# `[package] workspace = "../ws"` in this crate's own manifest, resolved against
+# the manifest's directory. Cargo allows any path, ancestor or not.
+function _explicit_workspace_root(dir::AbstractString)
+    manifest = joinpath(String(dir), "Cargo.toml")
+    isfile(manifest) || return nothing
+    parsed = _parse_manifest_or_nothing(manifest)
+    parsed isa AbstractDict || return nothing
+    package = get(parsed, "package", nothing)
+    package isa AbstractDict || return nothing
+    declared = get(package, "workspace", nothing)
+    declared isa AbstractString || return nothing
+    root = try
+        abspath(joinpath(String(dir), String(declared)))
+    catch
+        return nothing
+    end
+    return isdir(root) ? root : nothing
+end
+
+function _parse_manifest_or_nothing(manifest::AbstractString)
+    return try
+        TOML.parsefile(String(manifest))
+    catch
+        nothing
+    end
+end
+
+# The manifest stamps of every crate in a resolved graph *and* of the workspace
+# root each one belongs to, canonical-keyed and sorted so the comparison ignores
+# the order Cargo reported them in. See the note at the top of this section for
+# why both halves are needed.
+function _graph_stamps(dirs)
+    out = Pair{String, Any}[]
+    seen = Set{String}()
+    for d in dirs
+        for candidate in (String(d), _workspace_root_dir(d))
+            candidate === nothing && continue
+            canonical = _canonical_dir(candidate)
+            canonical in seen && continue
+            push!(seen, canonical)
+            push!(out, canonical => _graph_stamp(candidate))
+        end
+    end
+    sort!(out; by = first)
+    return out
+end
+
+# SHA-256 of one file's contents: streamed, so hashing a large crate builds no
+# large intermediate buffer, and never memoized (see the section note above on
+# why a `(mtime, size)` stamp must not stand in for content). An unreadable file
+# gets a marker digest rather than an exception, so a crate whose permissions
+# changed still produces a different key.
+function _file_content_digest(path::AbstractString)::String
+    return try
+        bytes2hex(open(sha256, String(path)))
+    catch
+        "unreadable"
+    end
+end
+
+"""
+    _hashed_relative_path(rel::AbstractString) -> String
+
+A crate-relative path in the form that goes into a digest: forward slashes
+always, case-folded on Windows. Used only for hashed bytes;
+`crate_input_files` still reports the real relative names.
+"""
+function _hashed_relative_path(rel::AbstractString)::String
+    normalized = replace(String(rel), '\\' => '/')
+    return Sys.iswindows() ? lowercase(normalized) : normalized
+end
+
 """
     artifact_path_dependency_digest(path::AbstractString) -> String
 
@@ -421,10 +636,9 @@ results obtained different ways can never collide.
     `#[path = "../../elsewhere/mod.rs"]` module, an `include_str!("../data")` or
     an `include_bytes!` of a file above the package root is compiled into the
     binary and will **not** change this digest. The only complete answer is
-    Cargo's own fingerprint, which this cannot reimplement. Phase B of #278 must
-    therefore treat this digest as a *rebuild* trigger and never as a proof of
-    freshness: a change means stale, but no change does not by itself license
-    reuse.
+    Cargo's own fingerprint, which this cannot reimplement. This digest is
+    therefore a *rebuild* trigger and never a proof of freshness: a change means
+    stale, but no change does not by itself license reuse.
 
 A path that does not exist is recorded as such rather than silently ignored, and
 the function never throws.
@@ -477,9 +691,13 @@ end
 """
     crate_content_digest(dir::AbstractString) -> String
 
-SHA-256 over one crate directory: the sorted relative path and full contents of
-every file `crate_input_files` reports, netstring-framed. Location independent;
-see `artifact_path_dependency_digest`.
+SHA-256 over one crate directory: the sorted relative path and a content digest
+of every file `crate_input_files` reports, netstring-framed. Location
+independent; see `artifact_path_dependency_digest`.
+
+Per-file *digests* rather than raw bytes, netstring-framed exactly as the
+contents were, so the encoding stays injective and the intermediate buffer stays
+small. Every byte is read on every call; file contents are never memoized.
 """
 function crate_content_digest(dir::AbstractString)::String
     io = IOBuffer()
@@ -493,14 +711,13 @@ function crate_content_digest(dir::AbstractString)::String
     _netstring!(io, strategy)
     _netstring!(io, string(length(files)))
     for rel in files
-        _netstring!(io, rel)
+        # Normalized only *inside the digest*: `crate_input_files` keeps
+        # returning the real relative names, which is what callers read.
+        _netstring!(io, _hashed_relative_path(rel))
         f = joinpath(dir, rel)
         if isfile(f)
-            try
-                _netstring_bytes!(io, read(f))
-            catch
-                _netstring!(io, "unreadable")
-            end
+            _netstring!(io, "content")
+            _netstring!(io, _file_content_digest(f))
         else
             _netstring!(io, "not-on-disk")
         end
@@ -596,6 +813,29 @@ never collide with one found the other.
 """
 function local_path_dependency_dirs(root::AbstractString)
     root = String(root)
+    # Memoized so a warm re-evaluation spawns no `cargo tree` (#278 §8), and
+    # validated against the manifests of *every* crate in the cached graph, not
+    # only the root's — see `_graph_stamps`.
+    canonical = _canonical_dir(root)
+    hit = lock(_ARTIFACT_DIGEST_LOCK) do
+        entry = get(_PATH_DEP_GRAPH_CACHE, canonical, nothing)
+        entry === nothing && return nothing
+        stamps, result = entry
+        stamps == _graph_stamps(result[2]) ? result : nothing
+    end
+    hit === nothing || return hit
+    result = _local_path_dependency_dirs_uncached(root)
+    # Stamped *after* resolution on purpose: resolving may itself write
+    # `Cargo.lock` (that is what `cargo tree` without `--locked` does, exactly
+    # as the build that follows would), and stamping before would invalidate the
+    # entry we just filled on every single call.
+    lock(_ARTIFACT_DIGEST_LOCK) do
+        _PATH_DEP_GRAPH_CACHE[canonical] = (_graph_stamps(result[2]), result)
+    end
+    return result
+end
+
+function _local_path_dependency_dirs_uncached(root::String)
     manifest = joinpath(root, "Cargo.toml")
     dirs = String[root]
 
@@ -629,6 +869,7 @@ function _cargo_tree(manifest::AbstractString, locked::Bool)::String
                   "--edges", "normal,build,dev", "--prefix", "none",
                   "--format", fmt, "--manifest-path", String(manifest)]
     locked && push!(args, "--locked")
+    CARGO_TREE_INVOCATIONS[] += 1
     return try
         read(pipeline(`$(cargo()) $(args)`; stderr = devnull), String)
     catch
@@ -731,10 +972,17 @@ function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
     return sort!(unique!(out))
 end
 
-# `[workspace.dependencies]` of this manifest, else of the nearest ancestor
-# manifest that declares a workspace. Returns the table together with the
-# directory of the manifest that declared it, because the `path` values inside
-# it are relative to *that* manifest, not to the member using them.
+# `[workspace.dependencies]` of this manifest, of the workspace its
+# `[package] workspace = "..."` names, else of the nearest ancestor manifest
+# that declares a workspace. Returns the table together with the directory of
+# the manifest that declared it, because the `path` values inside it are
+# relative to *that* manifest, not to the member using them.
+#
+# The explicit key is checked before the ancestor walk for the same reason
+# `_workspace_root_dir` checks it: the named workspace need not be an ancestor,
+# so walking up cannot find it — and here the consequence is that an inherited
+# `dep = { workspace = true }` is never discovered, i.e. a *missing input*
+# rather than a missed invalidation (#287).
 function _workspace_dependency_table(parsed::AbstractDict, dir::AbstractString)
     dir = String(dir)
     ws = get(parsed, "workspace", nothing)
@@ -742,6 +990,19 @@ function _workspace_dependency_table(parsed::AbstractDict, dir::AbstractString)
         deps = get(ws, "dependencies", nothing)
         deps isa AbstractDict && return deps, dir
     end
+
+    explicit = _explicit_workspace_root(dir)
+    if explicit !== nothing
+        other = _parse_manifest_or_nothing(joinpath(explicit, "Cargo.toml"))
+        if other isa AbstractDict
+            ws2 = get(other, "workspace", nothing)
+            if ws2 isa AbstractDict
+                deps2 = get(ws2, "dependencies", nothing)
+                deps2 isa AbstractDict && return deps2, explicit
+            end
+        end
+    end
+
     parent = dirname(dir)
     while !isempty(parent) && parent != dirname(parent)
         candidate = joinpath(parent, "Cargo.toml")
@@ -770,10 +1031,10 @@ end
 Build the `type_params` field from the **declared** parameter names and the
 concrete types bound to them, preserving declaration order.
 
-This is the ordered replacement for the sorted-values key at
-`src/generics.jl:191-193`: sorting the values discards which parameter got which
-type, so `Dict(:T => Int32, :U => Int64)` and `Dict(:T => Int64, :U => Int32)`
-produce the same monomorphization key today (#247).
+This is the ordered replacement for the sorted-values key `src/generics.jl` used
+before #278 Phase B: sorting the values discards which parameter got which type,
+so `Dict(:T => Int32, :U => Int64)` and `Dict(:T => Int64, :U => Int32)` produced
+the same monomorphization key (#247).
 """
 function artifact_type_params(names, types)::Vector{Pair{String, String}}
     names_v = collect(names)
@@ -822,9 +1083,9 @@ cache directory name, or be logged.
 Build-script inputs (`CC`, `CFLAGS`, `PKG_CONFIG_PATH`, …) are a second,
 separately documented allowlist: see `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`.
 
-This mirrors the environment-capture design PR #272 introduces in
-`src/manifest.jl`. That PR is not on `main` yet, so the rule is implemented here
-independently; Phase B of #278 unifies the two into this one place.
+`src/manifest.jl` keeps its own, narrower `_is_cargo_env_key` allowlist for the
+*cfg probe* snapshot that is embedded in generated code and replayed for a
+rebuild; this list is the one that reaches artifact keys. Extend this one.
 """
 const ARTIFACT_BUILD_ENV_PREFIXES = String[
     "CARGO_BUILD_",
@@ -871,10 +1132,9 @@ spelling, which `cc-rs` also accepts, is covered by the prefixes.
 !!! note "Best effort by construction"
     No allowlist can be complete: a build script may read any variable it
     likes, and the only exhaustive answer is Cargo's own fingerprint. This set
-    is therefore a safety net, not a proof. Phase B of #278 must treat a change
-    in the captured set as **rebuild**, never as grounds to reuse an artifact —
-    a captured variable that changed means "stale", while an unchanged captured
-    set does not by itself prove "fresh".
+    is therefore a safety net, not a proof: a change in the captured set means
+    **rebuild**, while an unchanged captured set does not by itself prove
+    "fresh".
 """
 const ARTIFACT_BUILD_SCRIPT_ENV_NAMES = String[
     "AR", "ASFLAGS", "CC", "CFLAGS", "CPPFLAGS", "CXX", "CXXFLAGS",

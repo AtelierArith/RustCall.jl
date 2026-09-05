@@ -67,7 +67,7 @@ Otherwise returns a fixed name since each compilation uses its own temp director
 """
 function _unique_source_name(code::String, compiler::RustCompiler)
     if compiler.debug_mode && compiler.debug_dir !== nothing
-        fingerprint = bytes2hex(sha256(code))[1:RECOVERY_FINGERPRINT_LEN]
+        fingerprint = artifact_short_id(stable_content_hash(code), RECOVERY_FINGERPRINT_LEN)
         return "rust_$(fingerprint)"
     end
     return "rust_code"
@@ -558,7 +558,7 @@ function compile_with_recovery(
         end
 
         # Attempt recovery
-        code_fingerprint = bytes2hex(sha256(wrapped_code))[1:RECOVERY_FINGERPRINT_LEN]
+        code_fingerprint = artifact_short_id(stable_content_hash(wrapped_code), RECOVERY_FINGERPRINT_LEN)
         if compiler.debug_mode
             @warn "Compilation failed, attempting recovery..." code_id=code_fingerprint code_len=ncodeunits(wrapped_code) opt_level=compiler.optimization_level emit_debug_info=compiler.emit_debug_info target=compiler.target_triple
         else

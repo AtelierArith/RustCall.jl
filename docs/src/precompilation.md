@@ -172,7 +172,7 @@ MyPackage.multiply(1.0, 2.0)
 
 ### During Development
 
-- FirstCall.jl caches compiled libraries in `~/.julia/rustcall_cache/`
+- Compiled libraries are cached under `~/.julia/compiled/vX.Y/RustCall/v2/` (see the Performance guide)
 - Cache is keyed by source code hash
 - Rebuilding only happens when source changes
 
@@ -195,7 +195,7 @@ RustCall.get_cache_size()
 RustCall.list_cached_libraries()
 
 # Clean up old cache entries
-RustCall.cleanup_old_cache(max_age_days=30)
+RustCall.cleanup_old_cache(30)
 ```
 
 ## Troubleshooting

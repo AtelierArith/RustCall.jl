@@ -63,15 +63,175 @@ struct CacheMetadata
 end
 
 """
+    CACHE_FORMAT_VERSION
+
+Version of the on-disk cache *layout*, and only of the layout: it names the
+directory every cached artifact lives under (`.../RustCall/v\$(CACHE_FORMAT_VERSION)`).
+
+Bump it whenever the meaning of the files under `get_cache_dir` changes in a way
+that makes older entries unreachable — as issue #278 Phase B does by routing
+every key through `artifact_key`. Namespacing rather than deleting means old
+trees stay on disk for rollback and for bisecting RustCall versions, and no
+intermediate state can serve a stale hit from the previous format.
+
+The identity *record* has its own version, `ARTIFACT_ID_SCHEMA_VERSION`, which is
+part of every key; this constant covers the directory layout only.
+
+Version history:
+- `1` — implicit, pre-#278: cache files directly under `.../RustCall`.
+- `2` — every key produced by `artifact_key` (#278 Phase B).
+"""
+const CACHE_FORMAT_VERSION = 2
+
+"""
+    _cache_format_root() -> String
+
+The parent directory holding one subdirectory per cache format version.
+
+!!! danger "This directory is not RustCall's to empty"
+    It is `\$(DEPOT_PATH[1])/compiled/vX.Y/RustCall` — **Julia's own package
+    precompile directory for RustCall**, where Julia writes `<slug>.ji` and
+    `<slug>.dylib`/`.so`/`.dll` native images (and `.dSYM` bundles beside them).
+    The root is kept here because `get_cache_dir()` has always been under it and
+    moving it would strand every existing cache, but the consequence is that
+    RustCall shares a directory with another program's data.
+
+    Nothing here may be deleted unless RustCall demonstrably wrote it: only its
+    own version subdirectories, and loose files matching the exact naming the
+    pre-#278 layout used (`_LEGACY_CACHE_FILE`). Removing a fresh `.ji` would
+    throw away Julia's precompilation output and can race a concurrent Julia
+    process writing it.
+"""
+function _cache_format_root()
+    return joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "RustCall")
+end
+
+"""
     get_cache_dir() -> String
 
 Get the cache directory for RustCall.jl compiled libraries.
-Uses Julia's standard cache directory structure.
+Uses Julia's standard cache directory structure, namespaced by
+`CACHE_FORMAT_VERSION`.
 """
 function get_cache_dir()
-    cache_root = joinpath(DEPOT_PATH[1], "compiled", "v$(VERSION.major).$(VERSION.minor)", "RustCall")
+    cache_root = joinpath(_cache_format_root(), "v$(CACHE_FORMAT_VERSION)")
     mkpath(cache_root)
     return cache_root
+end
+
+"""
+    _LEGACY_CACHE_DIRS
+
+Subdirectories the pre-#278 (unversioned) layout created directly under
+`_cache_format_root()`: `save_cached_library` wrote metadata to `metadata/` and
+`build_cargo_project_cached` wrote to `cargo/`. Both names are RustCall's own —
+Julia creates no directory there — so they are safe to remove.
+"""
+const _LEGACY_CACHE_DIRS = ("cargo", "metadata")
+
+"""
+    _LEGACY_CACHE_FILE
+
+The exact naming the pre-#278 layout used for loose files in
+`_cache_format_root()`, taken from the code that wrote them, not guessed:
+
+- `save_cached_library`  → `<cache_key><lib_ext>`
+- `_save_checksum`       → `<cache_key><lib_ext>.sha256`
+- `save_cached_llvm_ir`  → `<cache_key>.ll`
+
+`cache_key` was always a `stable_content_hash` digest, i.e. lowercase hex (64
+characters, or 32 for the Cargo-side keys). That is what makes the pattern safe
+to delete by: Julia's precompile images in the same directory are named after a
+package slug (`qLtCw_2ChqG.ji`, `qLtCw_2ChqG.dylib`) which contains uppercase
+letters and an underscore and therefore can never match, and anything else in
+the directory is by definition not ours.
+
+A file that does not match this is never removed, whatever it looks like.
+"""
+const _LEGACY_CACHE_FILE = r"^[0-9a-f]{32,64}(\.(dylib|so|dll)(\.sha256)?|\.ll)$"
+
+"""
+    _stale_cache_format_dirs() -> Vector{String}
+
+Cache *directories* under `_cache_format_root()` that RustCall wrote and can no
+longer read: version subdirectories older than `CACHE_FORMAT_VERSION`, plus the
+`_LEGACY_CACHE_DIRS` of the unversioned pre-#278 layout.
+
+Newer-versioned siblings are deliberately left alone (a future RustCall sharing
+the depot keeps its own cache), and so is every other entry — see the warning on
+`_cache_format_root`.
+"""
+function _stale_cache_format_dirs()
+    root = _cache_format_root()
+    out = String[]
+    isdir(root) || return out
+    for entry in readdir(root)
+        path = joinpath(root, entry)
+        isdir(path) || continue
+        m = match(r"^v(\d+)$", entry)
+        if m !== nothing
+            parse(Int, m.captures[1]) < CACHE_FORMAT_VERSION && push!(out, path)
+        elseif entry in _LEGACY_CACHE_DIRS
+            push!(out, path)
+        end
+    end
+    return out
+end
+
+"""
+    _legacy_cache_files() -> Vector{String}
+
+Loose files directly under `_cache_format_root()` that the pre-#278 layout
+wrote, identified by `_LEGACY_CACHE_FILE` and nothing else. Everything the
+pattern does not match — Julia's `.ji` and native images above all — is not
+RustCall's and is never returned.
+"""
+function _legacy_cache_files()
+    root = _cache_format_root()
+    out = String[]
+    isdir(root) || return out
+    for entry in readdir(root)
+        path = joinpath(root, entry)
+        isfile(path) || continue
+        occursin(_LEGACY_CACHE_FILE, entry) && push!(out, path)
+    end
+    return out
+end
+
+"""
+    sweep_stale_cache_formats(; legacy_files::Bool = false) -> Int
+
+Best-effort removal of cache trees left behind by older cache formats. Returns
+the number of entries removed and never throws: a locked or unreadable entry is
+skipped and simply stays on disk.
+
+Directories are always swept — they are unambiguously RustCall's. Loose files
+from the unversioned pre-#278 layout are swept **only** when `legacy_files` is
+true, because they share a directory with Julia's own precompile output for
+RustCall; see the warning on `_cache_format_root`. Even then, only files
+matching `_LEGACY_CACHE_FILE` are touched.
+"""
+function sweep_stale_cache_formats(; legacy_files::Bool = false)
+    removed = 0
+    for path in _stale_cache_format_dirs()
+        try
+            rm(path, recursive = true, force = true)
+            removed += 1
+        catch e
+            @debug "Could not remove stale cache format directory" path exception = e
+        end
+    end
+    if legacy_files
+        for path in _legacy_cache_files()
+            try
+                rm(path, force = true)
+                removed += 1
+            catch e
+                @debug "Could not remove legacy cache file" path exception = e
+            end
+        end
+    end
+    return removed
 end
 
 """
@@ -87,39 +247,57 @@ function get_metadata_dir()
 end
 
 """
-    _cached_rustc_version
+    RUSTC_BUILD_ENV_NAMES
 
-Cached output of `rustc --version` to avoid repeated process spawns.
-Populated on first call to `generate_cache_key`.
+Environment that changes what a direct `rustc` invocation produces: rustc itself
+ignores `RUSTFLAGS`, but rustup's proxy honours `RUSTUP_TOOLCHAIN`, and
+`RUSTFLAGS` is tracked so a user who sets it sees the same rebuild behaviour as
+with Cargo-backed blocks. An allowlist by name, never a `CARGO_*` sweep, so a
+credential can never reach a key (see `artifact_build_env_captured`).
 """
-const _cached_rustc_version = Ref{String}("")
-
-function _get_rustc_version()::String
-    if isempty(_cached_rustc_version[])
-        try
-            _cached_rustc_version[] = strip(read(`rustc --version`, String))
-        catch
-            _cached_rustc_version[] = "unknown"
-        end
-    end
-    return _cached_rustc_version[]
-end
+const RUSTC_BUILD_ENV_NAMES = ("RUSTFLAGS", "RUSTUP_TOOLCHAIN")
 
 """
-    generate_cache_key(code::String, compiler::RustCompiler) -> String
+    generate_cache_key(code::AbstractString, compiler::RustCompiler; kwargs...) -> String
 
-Generate a cache key based on code hash, compiler settings, target triple,
-and `rustc` version. Uses SHA256 for collision resistance.
+The identity of one direct-`rustc` artifact: `artifact_key` of an `ArtifactId`
+describing the source, the compiler snapshot, the `#[cfg]` set it was expanded
+under, the tracked rustc environment, the toolchain fingerprint and — since
+#252 — the identity of the compiler that actually runs
+(`artifact_compiler_identity`, from `RustToolChain`, never a bare `rustc` on
+`PATH` that could degrade to `"unknown"`).
+
+This is the **only** key formula of the direct-rustc path: the on-disk cache key
+and the in-memory library name (`_rustc_block_identity`) are the same value, so
+the two can no longer drift apart (#278).
+
+# Keyword arguments
+- `cfg_text`: the `#[cfg]` snapshot the wrappers were generated from;
+  `nothing` (the default) means the current strict snapshot, as in
+  `expand_inline`.
+- `dependencies`, `build_env`: extra identity components for callers that have
+  them; both default to empty, and `build_env` is merged with the tracked rustc
+  environment.
+
+Throws a `RustError` when the compiler cannot be identified: a request that is
+about to compile must not be cached under an unidentifiable toolchain (#252).
 """
-function generate_cache_key(code::String, compiler::RustCompiler)
-    rustc_ver = _get_rustc_version()
-    # toolchain_fingerprint() covers the extractor binary, manifest schema and the
-    # rustcall_core/juliacall_macros sources, so regenerating wrappers invalidates
-    # cached libraries even when the user's code is unchanged.
-    pipeline = toolchain_fingerprint()
-    config_str = "$(compiler.optimization_level)_$(compiler.emit_debug_info)_$(compiler.target_triple)_$(rustc_ver)_$(pipeline)"
-    key_data = "$(code)\n---\n$(config_str)"
-    return stable_content_hash(key_data)
+function generate_cache_key(code::AbstractString, compiler::RustCompiler;
+                            cfg_text::Union{Nothing, AbstractString} = nothing,
+                            dependencies = String[],
+                            build_env = Pair{String, String}[])
+    text = cfg_text === nothing ? _cfg_snapshot(:strict) : String(cfg_text)
+    env = vcat(artifact_build_env(RUSTC_BUILD_ENV_NAMES),
+               Pair{String, String}[String(first(p)) => String(last(p)) for p in build_env])
+    return artifact_key(ArtifactId(
+        kind = "rustc",
+        source = String(code),
+        target_triple = compiler.target_triple,
+        codegen = artifact_codegen_options(compiler),
+        cfg = String[stable_content_hash(text)],
+        dependencies = dependencies,
+        build_env = env,
+    ))
 end
 
 """
@@ -398,18 +576,29 @@ function _load_cache_metadata_unlocked(cache_key::String)
 end
 
 """
-    clear_cache()
+    clear_cache(; sweep_legacy::Bool = false)
 
-Clear all cached libraries and metadata.
+Clear all cached libraries and metadata: the current format's tree, plus the
+directories older formats left behind.
+
+Loose files from the unversioned pre-#278 layout are removed only with
+`sweep_legacy = true`. They live in a directory RustCall shares with Julia's own
+precompile output (see `_cache_format_root`), so removing them is opt-in even
+though the naming pattern used is exact.
+
 On Windows, some files may be locked and cannot be deleted immediately.
 """
-function clear_cache()
+function clear_cache(; sweep_legacy::Bool = false)
     lock(CACHE_LOCK) do
-        _clear_cache_unlocked()
+        _clear_cache_unlocked(; sweep_legacy = sweep_legacy)
     end
 end
 
-function _clear_cache_unlocked()
+function _clear_cache_unlocked(; sweep_legacy::Bool = false)
+    # Clearing "the cache" means every format this RustCall is responsible for,
+    # not just the current one, or a `clear_cache()` would leave the pre-#278
+    # tree on disk forever.
+    sweep_stale_cache_formats(; legacy_files = sweep_legacy)
     cache_dir = get_cache_dir()
     if isdir(cache_dir)
         try
@@ -516,6 +705,14 @@ println("Removed \$count old cache entries")
 ```
 """
 function cleanup_old_cache(max_age_days::Int = 30)
+    # Directories written under an older cache format are unreachable by
+    # construction, whatever their age: sweep them first (best effort). Loose
+    # legacy files are never swept from here — an age-based cleanup has no
+    # business deleting files in a directory RustCall shares with Julia's
+    # precompile output; `clear_cache(sweep_legacy = true)` is the explicit
+    # request for that.
+    sweep_stale_cache_formats()
+
     cache_dir = get_cache_dir()
     if !isdir(cache_dir)
         return nothing
@@ -553,13 +750,16 @@ function cleanup_old_cache(max_age_days::Int = 30)
 end
 
 """
-    is_cache_valid(cache_key::String, code::String, compiler::RustCompiler) -> Bool
+    is_cache_valid(cache_key::String, code::String, compiler::RustCompiler; cfg_text = nothing) -> Bool
 
-Check if a cached library is still valid for the given code and compiler settings.
+Check if a cached library is still valid for the given code and compiler
+settings. `cfg_text` must be the same snapshot the key was generated under (see
+`generate_cache_key`), or the recomputed key cannot match by construction.
 """
-function is_cache_valid(cache_key::String, code::String, compiler::RustCompiler)
+function is_cache_valid(cache_key::String, code::String, compiler::RustCompiler;
+                        cfg_text::Union{Nothing, AbstractString} = nothing)
     # Generate expected cache key
-    expected_key = generate_cache_key(code, compiler)
+    expected_key = generate_cache_key(code, compiler; cfg_text = cfg_text)
 
     # Check if keys match
     if cache_key != expected_key

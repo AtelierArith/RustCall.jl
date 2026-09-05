@@ -17,9 +17,56 @@ RustCall.jl automatically caches compiled Rust libraries. This eliminates the ne
 
 ### How Caching Works
 
-- **Cache Key**: Generated from code hash, compiler settings, and target triple
-- **Cache Location**: `~/.julia/compiled/vX.Y/RustCall/`
-- **Automatic Verification**: Automatically checks cache integrity
+- **Cache key**: `RustCall.artifact_key` of a `RustCall.ArtifactId` — the single
+  identity function of the package (`src/artifact_id.jl`). The record names
+  everything that can change the produced binary: the expanded source, generic
+  type parameters *in declaration order*, target triple, codegen options, the
+  `#[cfg]` snapshot, the dependency set (a local `path =` dependency contributes
+  its **content**, not its location), crate features, the tracked build
+  environment, the toolchain fingerprint, and the identity of the `rustc` /
+  `cargo` that actually runs. Fields are netstring-framed, so no two different
+  requests can concatenate to the same bytes.
+- **Cache location**: `~/.julia/compiled/vX.Y/RustCall/v\$(CACHE_FORMAT_VERSION)/`.
+  `CACHE_FORMAT_VERSION` names the on-disk layout; bumping it namespaces a new
+  tree rather than serving or deleting the old one, and
+  `RustCall.sweep_stale_cache_formats()` (called by `clear_cache` and
+  `cleanup_old_cache`) removes older siblings best effort.
+- **Cost**: every input byte is read and hashed on every key computation —
+  file contents are never memoized, because a `(mtime, size)` stamp can alias
+  distinct contents and the cost of being wrong is running machine code built
+  from source that no longer exists. Only the resolved Cargo dependency graph is
+  cached (that is the expensive part: a `cargo tree` process spawn), and it is
+  invalidated by a content change in *any* manifest that decides the graph —
+  every crate in it, plus the workspace root each crate belongs to.
+- **Truncation**: keys are never truncated. `RustCall.artifact_short_id` is the
+  only truncation in the design and exists solely for names a human reads —
+  library names, temporary Cargo project directories, log lines.
+- **Automatic verification**: cached libraries carry a SHA-256 checksum, checked
+  before loading.
+
+### What is not in the key
+
+Two inputs are tracked **best effort** and are documented limits, not proofs:
+
+- **Build environment.** `RustCall.artifact_build_env` captures a documented
+  allowlist (`RUSTFLAGS`, `CARGO_PROFILE_*`, `CC`, `PKG_CONFIG_PATH`, …; never
+  anything that looks like a credential). A build script may read any variable it
+  likes, and the only exhaustive answer is Cargo's own fingerprint. Extend
+  `ARTIFACT_BUILD_ENV_*` in `src/artifact_id.jl` — the one place — if you need
+  more.
+- **Files outside a package directory.** A `#[path = "../../elsewhere.rs"]`
+  module or an `include_str!` above the crate root is compiled in but does not
+  change the path-dependency digest.
+
+A change in either means "stale" and forces a rebuild; no change does not by
+itself license reuse.
+
+### A missing toolchain is an error
+
+The compiler in the key is the compiler that runs: versions come from
+`RustToolChain.rustc()` / `cargo()`, the very commands RustCall invokes. A
+toolchain that cannot be identified raises a `RustError` on any path about to
+compile, rather than caching everything under the string `"unknown"`.
 
 ### Cache Management
 
@@ -39,6 +86,11 @@ RustCall.cleanup_old_cache(30)
 
 # Clear cache completely
 RustCall.clear_cache()
+
+# Also remove loose files left by the pre-v2 cache layout. Off by default:
+# the cache root is Julia's own precompile directory for RustCall, so RustCall
+# only ever deletes files it can prove it wrote.
+RustCall.clear_cache(sweep_legacy = true)
 ```
 
 ### Cache Best Practices

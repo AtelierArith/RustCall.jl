@@ -10,7 +10,7 @@ const RUST_LIBRARIES = Dict{String, Tuple{Ptr{Cvoid}, Dict{String, Ptr{Cvoid}}}}
 Registry for loaded RustModules (LLVM IR).
 Maps code hash to RustModule.
 """
-const RUST_MODULE_REGISTRY = Dict{UInt64, RustModule}()
+const RUST_MODULE_REGISTRY = Dict{String, RustModule}()
 
 """
 Current active library name.
@@ -245,10 +245,22 @@ struct RustBlockSnapshot
     # tracked variable was set, which is still a snapshot to restore — and
     # `nothing` for direct rustc blocks.
     cargo_env::Union{Nothing, String}
-end
+    # Which `ArtifactId` encoding was in force when this snapshot was recorded.
+    # The snapshot stores *inputs*, never a key: `toolchain` and `compiler` are
+    # properties of the loading session, so a precompiled key would pin a rustc
+    # that may since have been upgraded — #252 in reverse. An older schema means
+    # "recompute, then alias", never an error (#278).
+    artifact_schema::Int
 
-RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level) =
-    RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level, nothing)
+    function RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level,
+                               cargo_env = nothing,
+                               artifact_schema = ARTIFACT_ID_SCHEMA_VERSION)
+        return new(String(code), String(cfg_text), String(compiler_target),
+                   Int(compiler_level),
+                   cargo_env === nothing ? nothing : String(cargo_env),
+                   Int(artifact_schema))
+    end
+end
 
 """
     ensure_loaded(lib_name::String, block) -> String
@@ -260,7 +272,12 @@ current default compiler). Returns the name of the loaded library. Useful for
 precompiled modules that need to reload libraries at runtime.
 """
 function ensure_loaded(lib_name::String, block::RustBlockSnapshot)
-    needs_reload = lock(REGISTRY_LOCK) do
+    # A snapshot recorded under an older `ArtifactId` encoding names a library
+    # this session can no longer derive, so the stored name cannot be trusted as
+    # evidence that the right library is loaded: recompute, and let the caller
+    # alias. Never an error.
+    stale_schema = block.artifact_schema != ARTIFACT_ID_SCHEMA_VERSION
+    needs_reload = stale_schema || lock(REGISTRY_LOCK) do
         !haskey(RUST_LIBRARIES, lib_name)
     end
     needs_reload || return lib_name
@@ -325,16 +342,14 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Wrap the code if needed
     wrapped_code = wrap_rust_code(expanded.source)
 
-    # Generate cache key
-    cache_key = generate_cache_key(wrapped_code, compiler)
-
-    # The in-memory library identity covers the compiler snapshot as well as
-    # the source: the same expanded source built at another opt-level, target
-    # or cfg set is another library (see `_rustc_block_identity`), so a lookup
-    # can never hand back a build made under a different configuration.
-    # Use stable_content_hash() — never hash() for persistent identifiers
-    code_hash = _rustc_block_identity(wrapped_code, compiler, cfg_text)[1:16]
-    lib_name = "rust_$(code_hash)"
+    # One identity for this block, used both as the disk cache key and as the
+    # in-memory library name (#278). It covers the compiler snapshot as well as
+    # the source: the same expanded source built at another opt-level, target or
+    # cfg set is another artifact, so a lookup can never hand back a build made
+    # under a different configuration — and the disk key and the registry name
+    # can no longer drift apart, because there is only one formula.
+    cache_key = _rustc_block_identity(wrapped_code, compiler, cfg_text)
+    lib_name = "rust_$(artifact_short_id(cache_key))"
 
     # Check if already compiled and loaded in memory
     is_in_memory = lock(REGISTRY_LOCK) do
@@ -352,7 +367,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
     # Check cache first
     cached_lib = get_cached_library(cache_key)
-    if cached_lib !== nothing && is_cache_valid(cache_key, wrapped_code, compiler)
+    if cached_lib !== nothing && is_cache_valid(cache_key, wrapped_code, compiler; cfg_text)
         # Load from cache
         lib_handle, _ = load_cached_library(cache_key)
 
@@ -464,15 +479,30 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # from the expanded source, so the dependency hash must be part of the
     # identity itself, or two blocks with identical items but different
     # `// cargo-deps:` would share one in-memory library.
-    # Use stable_content_hash() — never hash() for persistent identifiers
-    deps_hash = hash_dependencies(dependencies)
     # `build_env_key` is the environment the build actually runs under: the
-    # snapshot recorded by the macro, or the current one.
-    code_hash = _cargo_block_identity(augmented_code, deps_hash, build_env_key)
+    # snapshot recorded by the macro, or the current one. Local path
+    # dependencies contribute their *content*, so editing one rebuilds.
+    #
+    # The effective Cargo configuration is folded in *here*, not later: the
+    # `.cargo/config.toml` chain above the generated project can set
+    # `[build] rustflags`, so it changes the binary, and a key that omits it
+    # hands back the pre-change build. Generated projects are created with
+    # `mktempdir` directly under `tempdir()` (see `create_cargo_project`), so
+    # that is the directory whose chain reaches the build, and it is knowable
+    # before the project exists — which is what lets this be computed once.
+    cargo_config = _cargo_config_digest(ENV; dir = tempdir())
+    cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
+                               cargo_config = cargo_config)
+    # THE key for this block: the in-memory name, the project name, the disk
+    # lookup, the build and the save all use this one value (#278, #287). If a
+    # second formula ever appears downstream, `build_cargo_project_cached`
+    # refuses the build rather than silently caching under two keys.
+    code_hash = artifact_key(cargo_id)
 
-    # Project and library names
-    project_name = "rustcall_$(code_hash[1:12])"
-    lib_name = "rust_cargo_$(code_hash[1:16])"
+    # Project and library names. `artifact_short_id` is the only truncation in
+    # the design and is never a lookup key (#278).
+    project_name = "rustcall_$(artifact_short_id(code_hash, 12))"
+    lib_name = "rust_cargo_$(artifact_short_id(code_hash, 16))"
 
     # Check if already compiled and loaded in memory
     is_in_memory = lock(REGISTRY_LOCK) do
@@ -487,8 +517,11 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         return lib_name
     end
 
-    cache_key_data = "$(code_hash)_$(deps_hash)_release_$(bytes2hex(sha256(build_env_key)))"
-    cache_key = bytes2hex(sha256(cache_key_data))[1:32]
+    # The block identity *is* the cache key: re-mixing already-mixed material
+    # under a second, hand-rolled formula (and truncating it to 32 characters)
+    # was the Cargo half of #278, and deriving a *richer* key inside the builder
+    # while looking up with the base one was #287 — same bug, other direction.
+    cache_key = code_hash
 
     cached_lib = get_cargo_cached_library(cache_key)
     if !isnothing(cached_lib) && isfile(cached_lib)
@@ -496,7 +529,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         lib_handle = Libdl.dlopen(cached_lib, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
         if lib_handle != C_NULL
             _register_manifest(expanded, lib_name; cargo_backed = true, handle = lib_handle)
-            @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
+            @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=artifact_short_id(cache_key, 8)
 
             return lib_name
         end
@@ -511,7 +544,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # Ensure the code with wrappers is written to the project
         write_rust_code_to_project(project, augmented_code)
 
-        lib_path = build_cargo_project_cached(project, code_hash, release=true, env=build_env)
+        lib_path = build_cargo_project_cached(project, cargo_id, release=true, env=build_env)
 
         # Cache the built library (if it wasn't already in cache)
         try
@@ -550,65 +583,81 @@ end
 
 
 """
-    _block_identity(expanded_source, (name => value)...) -> String
+    _cargo_block_id(expanded_source, dependencies, cargo_env = "") -> ArtifactId
 
-Stable identity of an inline block: the expanded source, the named sections
-describing the configuration it is built under, and the toolchain
-fingerprint. Both the direct-rustc and the Cargo path derive their library
-names from it ([`_rustc_block_identity`], [`_cargo_block_identity`]), so two
-builds of the same source under different configurations are different
-libraries and a registry lookup never aliases one to the other.
+Identity of a Cargo-backed block, as an `ArtifactId`: expanded source, the
+dependency set (`artifact_dependency_strings`, which folds a *local path*
+dependency in by content rather than by location, so editing one rebuilds), the
+Cargo/RUSTFLAGS environment the build runs under (`cargo_env`, see
+`_cargo_cfg_env_key`), the release profile, and — new in #278 — the toolchain
+fingerprint and the identity of the compiler that runs, both defaulted by
+`ArtifactId`.
+
+`cargo_config` is the digest of the effective `.cargo/config.toml` chain above
+the directory the build will run in (`_cargo_config_digest`); the caller passes
+it because it must be the *same* digest the whole evaluation uses.
+
+`artifact_key` of this record is the in-memory library name, the temporary
+project name, the disk cache key, the build key and the save key — one value
+per block evaluation. The Cargo path used to hash the block once and then
+re-mix that digest under a second formula for the cache key (#278); the first
+fix then left `build_cargo_project_cached` deriving a *richer* key than the one
+the outer lookup used, so a Cargo-config change still hit the old binary
+(#287).
 """
-function _block_identity(expanded_source::AbstractString, sections::Pair{String, String}...)
-    io = IOBuffer()
-    write(io, expanded_source)
-    for (name, value) in sections
-        write(io, "\n---", name, "---\n", value)
-    end
-    write(io, "\n---toolchain---\n", toolchain_fingerprint())
-    # Use stable_content_hash() — never hash() for persistent identifiers
-    return stable_content_hash(String(take!(io)))
+function _cargo_block_id(expanded_source::AbstractString, dependencies,
+                         cargo_env::AbstractString = "";
+                         cargo_config::AbstractString = "",
+                         release::Bool = true)
+    return ArtifactId(
+        kind = "cargo",
+        source = String(expanded_source),
+        codegen = Pair{String, String}["profile" => (release ? "release" : "debug")],
+        dependencies = artifact_dependency_strings(dependencies),
+        build_env = Pair{String, String}[
+            "cargo-env" => String(cargo_env),
+            "cargo-config" => String(cargo_config),
+        ],
+    )
 end
 
 """
     _cargo_block_identity(expanded_source, deps_hash, cargo_env = "") -> String
 
-Identity of a Cargo-backed block: expanded source, dependency hash and the
-Cargo/RUSTFLAGS environment the build runs under (`cargo_env`, see
-`_cargo_cfg_env_key`). Used for the in-memory library name, the temporary
-project name and the disk cache key.
+The `artifact_key` of a Cargo-backed block described by an opaque dependency
+digest (`hash_dependencies`) rather than by the specs themselves. Kept for
+callers — and tests — that only have the digest; `_cargo_block_id` is the
+richer form the compile path uses, and the two deliberately produce different
+keys because they describe the dependency set differently.
 """
 function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString,
                               cargo_env::AbstractString = "")
-    return _block_identity(expanded_source, "deps" => String(deps_hash),
-                           "cargo-env" => String(cargo_env))
+    return artifact_key(ArtifactId(
+        kind = "cargo",
+        source = String(expanded_source),
+        codegen = Pair{String, String}["profile" => "release"],
+        dependencies = String[String(deps_hash)],
+        build_env = Pair{String, String}["cargo-env" => String(cargo_env)],
+    ))
 end
-
-# Environment that changes what a direct `rustc` invocation produces: rustc
-# itself ignores `RUSTFLAGS`, but rustup's proxy honours `RUSTUP_TOOLCHAIN`,
-# and RUSTFLAGS is tracked so a user who sets it sees the same rebuild
-# behaviour as with Cargo-backed blocks. Same allowlist discipline as
-# `_is_cargo_env_key`: named variables only, never credentials.
-const _RUSTC_ENV_NAMES = ("RUSTFLAGS", "RUSTUP_TOOLCHAIN")
-
-_rustc_env_key() = join(("$k=$(ENV[k])" for k in _RUSTC_ENV_NAMES if haskey(ENV, k)), "\n")
 
 """
     _rustc_block_identity(wrapped_source, compiler, cfg_text) -> String
 
-Identity of a block built by `rustc` directly: wrapped source, the compiler
-snapshot it was expanded for (target, opt-level, debug info), the cfg text
-the wrappers were derived from and the rustc environment
-([`_rustc_env_key`]). `cfg_text === nothing` means the current strict
-snapshot, as in [`expand_inline`].
+Identity of a block built by `rustc` directly. A thin adapter over
+`generate_cache_key`, which is `artifact_key` of an `ArtifactId`: wrapped
+source, the compiler snapshot it was expanded for (target, opt-level, debug
+info), the cfg text the wrappers were derived from, the tracked rustc
+environment (`RUSTC_BUILD_ENV_NAMES`), the toolchain fingerprint and the
+identity of the compiler that runs. `cfg_text === nothing` means the current
+strict snapshot, as in `expand_inline`.
+
+Since #278 this is the *same value* as the on-disk cache key of the artifact:
+the library name is `artifact_short_id` of it, never a second digest.
 """
 function _rustc_block_identity(wrapped_source::AbstractString, compiler::RustCompiler,
                               cfg_text::Union{Nothing, AbstractString})
-    text = cfg_text === nothing ? _cfg_snapshot(:strict) : String(cfg_text)
-    return _block_identity(wrapped_source,
-                           "compiler" => "$(compiler.target_triple)_$(compiler.optimization_level)_$(compiler.emit_debug_info)",
-                           "cfg" => bytes2hex(sha256(text)),
-                           "rustc-env" => _rustc_env_key())
+    return generate_cache_key(wrapped_source, compiler; cfg_text = cfg_text)
 end
 
 """
@@ -783,11 +832,35 @@ end
 """
     get_rust_module(code::String) -> Union{RustModule, Nothing}
 
-Get the RustModule for a given code string, if available.
+Get the `RustModule` recorded for a given code string, if available.
+
+Keyed by the library name the direct-`rustc` path derives for that source
+(`_rustc_block_identity` through `artifact_short_id`), so the registry and the
+libraries it describes agree. It used to be keyed by Julia's `hash`, which is
+randomized per session and could therefore never match the `rust_<short id>`
+names the compilation path produces.
 """
 function get_rust_module(code::String)
-    code_hash = hash(wrap_rust_code(code))
-    return get(RUST_MODULE_REGISTRY, code_hash, nothing)
+    key = try
+        _rust_module_key(code)
+    catch
+        return nothing
+    end
+    return lock(REGISTRY_LOCK) do
+        get(RUST_MODULE_REGISTRY, key, nothing)
+    end
+end
+
+"""
+    _rust_module_key(code::AbstractString) -> String
+
+The `RUST_MODULE_REGISTRY` key for a block of source: the same library name the
+direct-`rustc` path registers it under.
+"""
+function _rust_module_key(code::AbstractString)
+    compiler = get_default_compiler()
+    key = _rustc_block_identity(wrap_rust_code(String(code)), compiler, nothing)
+    return "rust_$(artifact_short_id(key))"
 end
 
 """
@@ -808,16 +881,11 @@ List all exported functions in a loaded library.
 Note: This uses the LLVM IR module if available, otherwise returns an empty list.
 """
 function list_library_functions(lib_name::String)
-    # Try to find the corresponding RustModule
-    for (hash, mod) in RUST_MODULE_REGISTRY
-        # Check if this module corresponds to the library
-        mod_lib_name = "rust_$(string(hash, base=16))"
-        if mod_lib_name == lib_name
-            return list_functions(mod)
-        end
+    mod = lock(REGISTRY_LOCK) do
+        get(RUST_MODULE_REGISTRY, lib_name, nothing)
     end
-
-    return String[]
+    mod === nothing && return String[]
+    return list_functions(mod)
 end
 
 """
@@ -869,7 +937,7 @@ end
 Registry for irust functions.
 Maps function hash to (library name, function name).
 """
-const IRUST_FUNCTIONS = Dict{UInt64, Tuple{String, String}}()
+const IRUST_FUNCTIONS = Dict{String, Tuple{String, String}}()
 
 """
     @irust(code, args...)
@@ -1012,10 +1080,21 @@ This function provides improved error messages for:
 """
 function _compile_and_call_irust(code::String, args...)
     try
-        # Generate a unique function name based on code and argument types
+        # The identity of this snippet: the source and the argument types it is
+        # being compiled for, through the one identity function (#278). Julia's
+        # `hash` is randomized per session, so a name derived from it could
+        # never be matched again — the rule at the top of src/cache.jl.
         arg_types = collect(map(typeof, args))  # Vector{Type}
-        code_hash = hash((code, Tuple(arg_types)))  # Use Tuple for hash consistency
-        func_name = "irust_func_$(string(code_hash, base=16))"
+        compiler = get_default_compiler()
+        code_hash = artifact_key(ArtifactId(
+            kind = "irust",
+            source = code,
+            type_params = artifact_type_params(
+                ["arg$(i)" for i in eachindex(arg_types)], arg_types),
+            target_triple = compiler.target_triple,
+            codegen = artifact_codegen_options(compiler),
+        ))
+        func_name = "irust_func_$(artifact_short_id(code_hash))"
 
         # Infer Rust types from Julia types (needed for both cached and new functions)
         rust_arg_types = collect(map(_julia_to_rust_type, arg_types))
@@ -1050,7 +1129,6 @@ function _compile_and_call_irust(code::String, args...)
 
         # Compile and load
         wrapped_code = wrap_rust_code(rust_func_code)
-        compiler = get_default_compiler()
 
         local lib_path
         try
@@ -1083,7 +1161,7 @@ function _compile_and_call_irust(code::String, args...)
         end
 
         # Generate a unique library name and register under lock
-        lib_name = "irust_$(string(code_hash, base=16))"
+        lib_name = "irust_$(artifact_short_id(code_hash))"
         lock(REGISTRY_LOCK) do
             RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
             IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
