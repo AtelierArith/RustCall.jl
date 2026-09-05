@@ -276,14 +276,16 @@ println("Result: $result")
 ### Example 3: Manual Registration and Monomorphization
 
 ```@example generics
+# The registered source is an ordinary generic function; the extractor
+# instantiates and exports it on demand. Argument types come from the manifest
+# when a rust""" block is loaded; when registering by hand, pass them explicitly.
 code = """
-#[no_mangle]
-pub extern "C" fn multiply<T>(a: T, b: T) -> T {
+pub fn multiply<T: std::ops::Mul<Output = T>>(a: T, b: T) -> T {
     a * b
 }
 """
 
-RustCall.register_generic_function("multiply", code, [:T])
+RustCall.register_generic_function("multiply", code, [:T]; arg_types = ["T", "T"], return_type = "T")
 
 # Call with automatic monomorphization
 result = RustCall.call_generic_function("multiply", Int32(5), Int32(6))  # => 30

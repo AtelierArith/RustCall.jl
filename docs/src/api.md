@@ -162,7 +162,6 @@ RustCall.register_generic_function
 RustCall.call_generic_function
 RustCall.is_generic_function
 RustCall.monomorphize_function
-RustCall.specialize_generic
 RustCall.infer_type_parameters
 RustCall.julia_type_to_rust_string
 ```
@@ -183,6 +182,7 @@ RustCall.specialize_generic
 RustCall.extractor_path
 RustCall.toolchain_fingerprint
 RustCall.ExtractorError
+RustCall.MANIFEST_SCHEMA_VERSION
 ```
 
 ## Generic Constraints
