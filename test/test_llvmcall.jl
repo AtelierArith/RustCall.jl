@@ -240,6 +240,7 @@ end
 struct _Dep265Pair
     v::Tuple{Float32, Float32}
 end
+primitive type _Dep265Int <: Integer 8 end
 
 @testset "LLVM path deprecation (#265)" begin
     # Every public entry point of the LLVM IR integration path emits a
@@ -279,6 +280,18 @@ end
     @test occursin("<2 x float>", RustCall.generate_llvmcall_ir("f", Tuple{Float32, Float32}, Type[Int32]))
     # Built-ins are untouched
     @test RustCall._llvm_ir_type(Tuple{Float64, Float64}) == "{double, double}"
+    # A broad downstream method does not override more specific built-ins
+    # (original dispatch ordering), but applies to types it alone covers.
+    @eval RustCall.julia_type_to_llvm_ir_string(::Type{T}) where {T<:Integer} = "broad"
+    @test RustCall._llvm_ir_type(Int32) == "i32"
+    @test RustCall._llvm_ir_type(Tuple{Int64, UInt8}) == "{i64, i8}"
+    @test RustCall._llvm_ir_type(_Dep265Int) == "broad"
+    @test RustCall._llvm_ir_type(Tuple{Int32, _Dep265Int}) == "{i32, broad}"
+    @test occursin("i32", RustCall.generate_llvmcall_ir("g", Int32, Type[Int64]))
+    @test !occursin("broad", RustCall.generate_llvmcall_ir("g", Int32, Type[Int64]))
+    # Built-in signatures still warn through the public name.
+    @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Tuple{Int32})) == "{i32}"
+    @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Ptr{Cvoid})) == "ptr"
     # Calls that hit a downstream method dispatch to it directly and therefore do
     # not warn (documented exception).
     if Base.JLOptions().depwarn != 0

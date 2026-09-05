@@ -114,7 +114,9 @@ honoured, also for nested occurrences (tuple elements, struct fields), and
 take precedence over the built-in conversions. Such calls dispatch directly
 to the downstream method, so they do not emit the deprecation warning; they
 stop working when the function is removed together with the rest of the
-LLVM IR integration path.
+LLVM IR integration path. Method specificity between the built-in
+conversions and downstream ones is unchanged (the public name keeps a
+method per built-in signature).
 
 !!! warning "Deprecated"
     The LLVM IR integration path is deprecated and will be removed in a future
@@ -177,12 +179,39 @@ function _julia_type_to_llvm_ir_string(t::Type)
     end
 end
 
-# The single method RustCall itself defines for the public name; any other
-# applicable method was added by downstream code.
-const _PUBLIC_LLVM_IR_FALLBACK = which(julia_type_to_llvm_ir_string, Tuple{Type})
+# The public name keeps one (warning) method per built-in signature, mirroring
+# the private table, so method specificity between built-ins and downstream
+# extensions is exactly what it was before the deprecation: an exact `Int32`
+# built-in still beats a downstream `where T<:Integer`, and a downstream exact
+# `Tuple{Float32, Float32}` still beats the built-in `Type{<:Tuple}`.
+for T in [Bool, Int8, UInt8, Int16, UInt16, Int32, UInt32, Int64, UInt64, Int128, UInt128,
+          Float32, Float64, Nothing]
+    @eval function julia_type_to_llvm_ir_string(t::Type{$T})
+        _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+        return _julia_type_to_llvm_ir_string(t)
+    end
+end
+for ctype in [Cint, Cuint, Clong, Culong, Csize_t, Cssize_t, Cptrdiff_t, Clonglong, Culonglong]
+    if ctype ∉ _LLVM_IR_BASE_TYPES
+        @eval function julia_type_to_llvm_ir_string(t::Type{$ctype})
+            _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+            return _julia_type_to_llvm_ir_string(t)
+        end
+    end
+end
+function julia_type_to_llvm_ir_string(t::Type{<:Ptr})
+    _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+    return _julia_type_to_llvm_ir_string(t)
+end
+function julia_type_to_llvm_ir_string(t::Type{<:Tuple})
+    _llvm_path_depwarn("julia_type_to_llvm_ir_string", :julia_type_to_llvm_ir_string)
+    return _julia_type_to_llvm_ir_string(t)
+end
 
+# Whether the method the public name would dispatch to for `t` was added by
+# downstream code (any module other than RustCall).
 function _has_public_llvm_ir_extension(t::Type)
-    return which(julia_type_to_llvm_ir_string, Tuple{Type{t}}) !== _PUBLIC_LLVM_IR_FALLBACK
+    return parentmodule(which(julia_type_to_llvm_ir_string, Tuple{Type{t}})) !== @__MODULE__
 end
 
 """
