@@ -549,6 +549,9 @@ struct SpecializedFunction
     name::String
     arg_types::Vector{String}
     return_type::String
+    arg_abis::Vector{String}          # manifest `abi` per argument ("string", "str" or "")
+    has_owned_string_helper::Bool     # returns `<name>_RustCallOwnedString`, freed by `<name>_free_rust_string`
+    has_borrowed_string_helper::Bool  # returns `<name>_RustCallBorrowedString`
 end
 
 """
@@ -573,11 +576,15 @@ function specialize_generic(source::String, fn_name::String,
         out = _run_extractor(args)
         manifest = _parse_manifest(read(manifest_path, String))
         fn = only(manifest["functions"])
+        args = get(fn, "args", Any[])
         SpecializedFunction(
             out,
             String(fn["name"]),
-            String[String(a["rust_type"]) for a in get(fn, "args", Any[])],
+            String[String(a["rust_type"]) for a in args],
             String(fn["return_type"]),
+            String[_mstr(a, "abi") for a in args],
+            _mbool(fn, "has_owned_string_helper"),
+            _mbool(fn, "has_borrowed_string_helper"),
         )
     end
 end

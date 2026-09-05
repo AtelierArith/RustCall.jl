@@ -174,10 +174,16 @@ fn extract_crate_items(items: &[Item], manifest: &mut Manifest) {
                 let attribute = rustcall_attribute(&f.attrs);
                 match attribute {
                     Attribute::Julia => manifest.functions.push(function_entry(f, attribute, true)),
-                    // `#[julia_pyo3]` does not wrap Result/Option; report the raw signature.
+                    // `#[julia_pyo3]` exports the signature as written: no
+                    // Result/Option wrapping and no string conversion (the
+                    // attribute is not extended pending #275), so the manifest
+                    // must not advertise the `(ptr, len)` string ABI either.
                     Attribute::JuliaPyo3 => {
                         let mut entry = function_entry(f, attribute, false);
                         entry.exported = !entry.is_generic;
+                        for arg in &mut entry.args {
+                            arg.abi.clear();
+                        }
                         manifest.functions.push(entry);
                     }
                     _ => {}
@@ -232,6 +238,9 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             is_constructor: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
+            // Crate method wrappers (`generate_method_wrapper_crate`) use the
+            // same string ABI as inline ones, with per-method buffer types
+            // (`<Struct>_<method>_RustCallOwnedString` / `_free_rust_string`).
             return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
             generic_wrapper: String::new(),
         })

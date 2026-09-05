@@ -31,6 +31,30 @@ name = "right"
 rust_type = "i32"
 abi = ""
 
+[[functions]]
+name = "dual_len"
+symbol = "dual_len"
+attribute = "julia_pyo3"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
+return_type = "usize"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+line = 24
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "String"
+abi = ""
+
 [[structs]]
 name = "DualCounter"
 attribute = "julia_pyo3"

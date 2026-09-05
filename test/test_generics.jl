@@ -276,3 +276,70 @@ end
         end
     end
 end
+
+@testset "Generic functions with fixed String / &str parameters (#242 review)" begin
+    tag_code = "pub fn tag<T: std::fmt::Display>(x: T, label: String) -> String { format!(\"{label}{x}\") }"
+    # The specialization gets the (ptr, len) wrapper of a non-generic
+    # #[julia] function and the manifest reports the string ABI.
+    specialized = RustCall.specialize_generic(tag_code, "tag", ["T" => "i32"], "tag_i32")
+    @test specialized.arg_types == ["i32", "String"]
+    @test specialized.arg_abis == ["", "string"]
+    @test specialized.has_owned_string_helper
+    @test !specialized.has_borrowed_string_helper
+    @test occursin("tag_i32_free_rust_string", specialized.source)
+    @test occursin("tag_i32_inner", specialized.source)
+    borrowed = RustCall.specialize_generic("pub fn kind_of<T>(_x: T) -> &'static str { \"generic\" }",
+                                           "kind_of", ["T" => "i64"], "kind_of_i64")
+    @test borrowed.has_borrowed_string_helper && !borrowed.has_owned_string_helper
+    plain = RustCall.specialize_generic("pub fn id<T>(x: T) -> T { x }", "id", ["T" => "i32"], "id_i32")
+    @test plain.arg_abis == [""] && !plain.has_owned_string_helper
+
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required for monomorphization"
+    else
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        end
+
+        RustCall.register_generic_function("tag", tag_code, [:T])
+        mono = RustCall.monomorphize_function("tag", Dict(:T => Int32))
+        @test mono.return_type == String
+        @test mono.arg_abis == ["", "string"]
+        @test mono.string_return === :owned
+        @test mono.free_ptr != C_NULL
+        @test RustCall.call_generic_function("tag", Int32(4), "n=") == "n=4"
+        @test RustCall.call_generic_function("tag", 2.5, SubString("v=x", 1, 2)) == "v=2.5"
+        @test RustCall.call_generic_function("tag", Int32(1), "日本") == "日本1"
+        for _ in 1:200
+            @test RustCall.call_generic_function("tag", Int32(0), "k") == "k0"
+        end
+
+        RustCall.register_generic_function(
+            "count_with", "pub fn count_with<T: Copy>(_x: T, s: &str) -> usize { s.chars().count() }", [:T])
+        mono_c = RustCall.monomorphize_function("count_with", Dict(:T => Int32))
+        @test mono_c.string_return === :none
+        @test mono_c.arg_abis == ["", "str"]
+        @test RustCall.call_generic_function("count_with", Int32(0), "日本語") == 3
+
+        RustCall.register_generic_function(
+            "kind_of", "pub fn kind_of<T>(_x: T) -> &'static str { \"generic\" }", [:T])
+        @test RustCall.monomorphize_function("kind_of", Dict(:T => Int64)).string_return === :borrowed
+        @test RustCall.call_generic_function("kind_of", Int64(1)) == "generic"
+
+        # Registered from a rust\"\"\" block and called through @rust
+        rust"""
+        #[julia]
+        pub fn wrap_in<T: std::fmt::Display>(x: T, open: &str, close: String) -> String {
+            format!("{open}{x}{close}")
+        }
+        """
+        @test RustCall.is_generic_function("wrap_in")
+        @test RustCall.call_generic_function("wrap_in", Int32(7), "[", "]") == "[7]"
+
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+            empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        end
+    end
+end

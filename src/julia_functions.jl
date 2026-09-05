@@ -97,11 +97,21 @@ sizeof(s)` for strings). `escape` wraps user-visible symbols (`esc` in macro
 context, `identity` inside a generated module).
 """
 function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
+    return _string_arg_plan(sig.arg_names, sig.arg_types, sig.arg_abis, escape)
+end
+
+# Same plan for a struct method (`RustMethod`), whose arguments follow `self`.
+function _string_arg_plan(method::RustMethod, escape::Function)
+    return _string_arg_plan(method.arg_names, method.arg_types, method.arg_abis, escape)
+end
+
+function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
+                          arg_abis::Vector{String}, escape::Function)
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
-    prefix = _string_temp_prefix(sig.arg_names)
-    for (name, rust_type, abi) in zip(sig.arg_names, sig.arg_types, sig.arg_abis)
+    prefix = _string_temp_prefix(arg_names)
+    for (name, rust_type, abi) in zip(arg_names, arg_types, arg_abis)
         arg_sym = escape(Symbol(name))
         if _is_string_abi(abi)
             bytes = Symbol(prefix, name)

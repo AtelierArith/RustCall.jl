@@ -740,65 +740,63 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
 
     arg_syms = [Symbol(name) for name in method.arg_names]
 
-    # Convert argument types to Julia types for ccall
-    arg_julia_types = [_rust_type_to_julia_type_symbol(t) for t in method.arg_types]
-    # Default to Any if type conversion fails
-    arg_julia_types = [t === nothing ? :Any : t for t in arg_julia_types]
+    # String arguments become (ptr, len) pairs kept alive with GC.@preserve
+    # (see `_string_arg_plan`); the other arguments are converted to the Julia
+    # type of the Rust parameter. The pointer local must not shadow an
+    # argument of the same name.
+    bindings, preserved, converted_args = _string_arg_plan(method, identity)
+    ptr_sym = _generated_local("func_ptr", method.arg_names)
 
-    # Determine if it's a constructor
-    is_constructor = method.is_constructor
+    # Crate method wrappers return strings through per-method buffers:
+    # `<Struct>_<method>_RustCallOwnedString`, released with
+    # `<Struct>_<method>_free_rust_string` (see rustcall_core::codegen).
+    free_name = wrapper_name * "_free_rust_string"
 
-    if method.is_static
-        if is_constructor
-            # Static constructor - returns the wrapper struct
-            quote
-                function $struct_name($(arg_syms...))
-                    func_ptr = _get_func_ptr($wrapper_name)
-                    ptr = ccall(func_ptr, Ptr{Cvoid}, ($(arg_julia_types...),), $(arg_syms...))
-                    $struct_name(ptr)
-                end
-            end
-        else
-            # Static method
-            julia_ret_type = _rust_type_to_julia_type_symbol(method.return_type)
-            if julia_ret_type === nothing
-                julia_ret_type = :Any
-            end
-            quote
-                function $method_name($(arg_syms...))
-                    func_ptr = _get_func_ptr($wrapper_name)
-                    call_rust_function(func_ptr, $julia_ret_type, $(arg_syms...))
-                end
-                export $method_name
-            end
-        end
+    all_args = Any[]
+    method.is_static || push!(all_args, :(getfield(self, :ptr)))
+    append!(all_args, converted_args)
+
+    call = if method.is_constructor
+        # Constructors and `Self`-returning methods get a boxed struct pointer
+        :($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...))))
+    elseif method.return_abi == "string"
+        :(_call_rust_owned_string_ptr($ptr_sym, _get_func_ptr($free_name), $(all_args...)))
+    elseif method.return_abi == "str"
+        :(_call_rust_borrowed_string_ptr($ptr_sym, $(all_args...)))
     else
-        # Instance method
         julia_ret_type = _rust_type_to_julia_type_symbol(method.return_type)
         if julia_ret_type === nothing
-            julia_ret_type = :Cvoid
+            julia_ret_type = method.is_static ? :Any : :Cvoid
         end
+        :(call_rust_function($ptr_sym, $julia_ret_type, $(all_args...)))
+    end
+    body = quote
+        $(bindings...)
+        $ptr_sym = _get_func_ptr($wrapper_name)
+        GC.@preserve $(preserved...) $call
+    end
 
-        if is_constructor
-            # Method that returns Self
-            quote
-                function $method_name(self::$struct_name, $(arg_syms...))
-                    _check_not_freed(self, $struct_name_str)
-                    func_ptr = _get_func_ptr($wrapper_name)
-                    ptr = ccall(func_ptr, Ptr{Cvoid}, (Ptr{Cvoid}, $(arg_julia_types...),), getfield(self, :ptr), $(arg_syms...))
-                    $struct_name(ptr)
-                end
-                export $method_name
+    if method.is_static && method.is_constructor
+        # Static constructor - returns the wrapper struct
+        quote
+            function $struct_name($(arg_syms...))
+                $body
             end
-        else
-            quote
-                function $method_name(self::$struct_name, $(arg_syms...))
-                    _check_not_freed(self, $struct_name_str)
-                    func_ptr = _get_func_ptr($wrapper_name)
-                    call_rust_function(func_ptr, $julia_ret_type, getfield(self, :ptr), $(arg_syms...))
-                end
-                export $method_name
+        end
+    elseif method.is_static
+        quote
+            function $method_name($(arg_syms...))
+                $body
             end
+            export $method_name
+        end
+    else
+        quote
+            function $method_name(self::$struct_name, $(arg_syms...))
+                _check_not_freed(self, $struct_name_str)
+                $body
+            end
+            export $method_name
         end
     end
 end
@@ -1437,11 +1435,12 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
 end
 
 """
-    _emit_string_arg_plan(func) -> (bindings_str, preserve_str, converted_args_str)
+    _emit_string_arg_plan(func_or_method) -> (bindings_str, preserve_str, converted_args_str)
 
-Source-text counterpart of `_string_arg_plan` for the file emitter.
+Source-text counterpart of `_string_arg_plan` for the file emitter (free
+functions and struct methods alike).
 """
-function _emit_string_arg_plan(func::RustFunctionSignature)
+function _emit_string_arg_plan(func::Union{RustFunctionSignature, RustMethod})
     bindings, preserved, call_args = _string_arg_plan(func, identity)
     bindings_str = join(("    " * string(b) for b in bindings), "\n")
     preserve_str = join(string.(preserved), " ")
@@ -1662,65 +1661,57 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
     method_name = method.name
     wrapper_name = "$(struct_name)_$(method_name)"
 
-    arg_names = method.arg_names
-    arg_types = method.arg_types
+    arg_syms = join(method.arg_names, ", ")
 
-    # Convert argument types to Julia types
-    arg_julia_types = [_rust_type_to_julia_type_symbol(t) for t in arg_types]
-    arg_julia_types = [t === nothing ? :Any : t for t in arg_julia_types]
-    arg_types_str = join([string(t) for t in arg_julia_types], ", ")
+    # Same shape as `_generate_crate_method_wrapper`: string arguments are
+    # (ptr, len) pairs under GC.@preserve, string results come back through
+    # the per-method `<Struct>_<method>_RustCallOwnedString` buffer.
+    bindings_str, preserve_str, converted_args_str = _emit_string_arg_plan(method)
+    prologue = isempty(bindings_str) ? "" : bindings_str * "\n"
+    ptr_var = _generated_local("func_ptr", method.arg_names)
+    free_name = wrapper_name * "_free_rust_string"
 
-    arg_syms = join(arg_names, ", ")
+    all_args = String[]
+    method.is_static || push!(all_args, "getfield(self, :ptr)")
+    isempty(converted_args_str) || push!(all_args, converted_args_str)
+    args_str = join(all_args, ", ")
 
-    is_constructor = method.is_constructor
-
-    if method.is_static
-        if is_constructor
-            # Static constructor
-            return """
-function $struct_name($arg_syms)
-    func_ptr = _get_func_ptr("$wrapper_name")
-    ptr = ccall(func_ptr, Ptr{Cvoid}, ($arg_types_str,), $arg_syms)
-    $struct_name(ptr)
-end"""
-        else
-            # Static method
-            julia_ret_type = _rust_type_to_julia_type_symbol(method.return_type)
-            ret_type_str = julia_ret_type !== nothing ? string(julia_ret_type) : "Any"
-            return """
-function $method_name($arg_syms)
-    func_ptr = _get_func_ptr("$wrapper_name")
-    call_rust_function(func_ptr, $ret_type_str, $arg_syms)
-end
-export $method_name"""
-        end
+    call = if method.is_constructor
+        "$struct_name(call_rust_function($ptr_var, Ptr{Cvoid}, $args_str))"
+    elseif method.return_abi == "string"
+        "_call_rust_owned_string_ptr($ptr_var, _get_func_ptr(\"$free_name\"), $args_str)"
+    elseif method.return_abi == "str"
+        "_call_rust_borrowed_string_ptr($ptr_var, $args_str)"
     else
-        # Instance method
         julia_ret_type = _rust_type_to_julia_type_symbol(method.return_type)
-        ret_type_str = julia_ret_type !== nothing ? string(julia_ret_type) : "Cvoid"
+        ret_type_str = julia_ret_type !== nothing ? string(julia_ret_type) :
+                       (method.is_static ? "Any" : "Cvoid")
+        "call_rust_function($ptr_var, $ret_type_str, $args_str)"
+    end
+    body = """
+$(prologue)    $ptr_var = _get_func_ptr("$wrapper_name")
+    GC.@preserve $preserve_str $call"""
 
-        if is_constructor
-            # Method returning Self
-            self_args = isempty(arg_syms) ? "" : ", $arg_syms"
-            arg_types_with_ptr = isempty(arg_types_str) ? "Ptr{Cvoid}" : "Ptr{Cvoid}, $arg_types_str"
-            return """
-function $method_name(self::$struct_name$self_args)
-    _check_not_freed(self, "$struct_name")
-    func_ptr = _get_func_ptr("$wrapper_name")
-    ptr = ccall(func_ptr, Ptr{Cvoid}, ($arg_types_with_ptr,), getfield(self, :ptr)$self_args)
-    $struct_name(ptr)
+    if method.is_static && method.is_constructor
+        # Static constructor
+        return """
+function $struct_name($arg_syms)
+$body
+end"""
+    elseif method.is_static
+        return """
+function $method_name($arg_syms)
+$body
 end
 export $method_name"""
-        else
-            self_args = isempty(arg_syms) ? "" : ", $arg_syms"
-            return """
+    else
+        self_args = isempty(arg_syms) ? "" : ", $arg_syms"
+        return """
 function $method_name(self::$struct_name$self_args)
     _check_not_freed(self, "$struct_name")
-    func_ptr = _get_func_ptr("$wrapper_name")
-    call_rust_function(func_ptr, $ret_type_str, getfield(self, :ptr)$self_args)
+$body
 end
 export $method_name"""
-        end
     end
 end
 

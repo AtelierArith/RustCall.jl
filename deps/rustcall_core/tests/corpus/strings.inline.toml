@@ -1,6 +1,5 @@
 schema_version = 1
 mode = "inline"
-structs = []
 
 [[functions]]
 name = "shout"
@@ -124,6 +123,131 @@ line = 28
 module_path = []
 
 [[functions.args]]
+name = "s"
+rust_type = "String"
+abi = "string"
+
+[[functions]]
+name = "consume"
+symbol = "consume"
+attribute = "julia"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
+return_type = "usize"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+line = 36
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "String"
+abi = "string"
+
+[[functions]]
+name = "paren_ref"
+symbol = "paren_ref"
+attribute = "julia"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
+return_type = "usize"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+line = 41
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "&(str)"
+abi = "str"
+
+[[structs]]
+name = "Greeter"
+attribute = "julia"
+cfg = ""
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = true
+has_borrowed_string_helper = true
+context_source = ""
+generic_wrappers = []
+line = 47
+module_path = []
+
+[[structs.fields]]
+name = "count"
+rust_type = "u32"
+ffi_compatible = true
+getter = "Greeter_get_count"
+setter = "Greeter_set_count"
+
+[[structs.methods]]
+name = "new"
+symbol = "Greeter_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "count"
+rust_type = "u32"
+abi = ""
+
+[[structs.methods]]
+name = "shout"
+symbol = "Greeter_shout"
+is_static = false
+is_mutable = false
+is_constructor = false
+return_type = "String"
+return_abi = "string"
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "suffix"
+rust_type = "&str"
+abi = "str"
+
+[[structs.methods]]
+name = "label"
+symbol = "Greeter_label"
+is_static = false
+is_mutable = false
+is_constructor = false
+args = []
+return_type = "&str"
+return_abi = "str"
+generic_wrapper = ""
+
+[[structs.methods]]
+name = "take"
+symbol = "Greeter_take"
+is_static = false
+is_mutable = true
+is_constructor = false
+return_type = "usize"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
 name = "s"
 rust_type = "String"
 abi = "string"

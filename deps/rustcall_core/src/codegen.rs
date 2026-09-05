@@ -163,13 +163,16 @@ fn string_arg_conversions(func: &ItemFn, names: &[Ident]) -> StringArgs {
 
 /// `#[julia] fn f(s: String, t: &str) -> String` (#242).
 ///
+/// Also applied by [`crate::specialize`] to the instantiation of a generic
+/// function whose fixed parameters are strings.
+///
 /// Same ABI as the struct method wrappers: every `String` / `&str` argument
 /// becomes a `(*const u8, usize)` pair (UTF-8, not NUL-terminated); a `String`
 /// return becomes `<fn>_RustCallOwnedString { ptr, len, cap }` released with
 /// `<fn>_free_rust_string(ptr, len, cap)`; a `&str` return becomes
 /// `<fn>_RustCallBorrowedString { ptr, len }` (the caller keeps the borrowed
 /// data alive). The original function is kept as `<fn>_inner`.
-fn transform_string_function(func: ItemFn) -> TokenStream2 {
+pub fn transform_string_function(func: ItemFn) -> TokenStream2 {
     let inner_fn = func.clone();
     let mut func = func;
     let names = normalize_arg_patterns(&mut func);
@@ -639,115 +642,40 @@ pub fn is_constructor(struct_name: &Ident, method: &syn::ImplItemFn, is_static: 
 }
 
 /// Generate the FFI wrapper for a method (crate flavour).
+///
+/// Same wrapper as the inline flavour ([`inline_method_wrapper`]): `String` /
+/// `&str` arguments arrive as `(ptr, len)` pairs, a string result leaves as an
+/// owned or borrowed buffer. The proc-macro transforms one impl block at a time
+/// and cannot see the struct or sibling impl blocks, so the buffer types are
+/// per method rather than per struct:
+/// `<Struct>_<method>_RustCallOwnedString` released through
+/// `<Struct>_<method>_free_rust_string`, and
+/// `<Struct>_<method>_RustCallBorrowedString`.
 pub fn generate_method_wrapper_crate(
     struct_name: &Ident,
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
-    let method_name = &method.sig.ident;
-    let wrapper_name = format_ident!("{}_{}", struct_name, method_name);
+    let model = MethodModel::from_fn(method);
+    let wrapper_name = format_ident!("{}_{}", struct_name, method.sig.ident);
+    let owned_helper = format_ident!("{}_RustCallOwnedString", wrapper_name);
+    let owned_free = format_ident!("{}_free_rust_string", wrapper_name);
+    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", wrapper_name);
 
-    let is_static = !method
-        .sig
-        .inputs
-        .iter()
-        .any(|arg| matches!(arg, FnArg::Receiver(_)));
-    let is_constructor = is_constructor(struct_name, method, is_static);
-
-    let mut wrapper_args = Vec::new();
-    let mut call_args = Vec::new();
-    let mut self_handling = TokenStream2::new();
-
-    for (i, arg) in method.sig.inputs.iter().enumerate() {
-        match arg {
-            FnArg::Receiver(r) => {
-                if r.mutability.is_some() {
-                    wrapper_args.push(quote! { ptr: *mut #struct_name });
-                    self_handling = quote! { let self_ref = unsafe { &mut *ptr }; };
-                } else {
-                    wrapper_args.push(quote! { ptr: *const #struct_name });
-                    self_handling = quote! { let self_ref = unsafe { &*ptr }; };
-                }
-            }
-            FnArg::Typed(pat_type) => {
-                let ty = &pat_type.ty;
-                let arg_name: Ident = match pat_type.pat.as_ref() {
-                    Pat::Ident(pat_ident) => pat_ident.ident.clone(),
-                    _ => format_ident!("arg{}", i),
-                };
-                wrapper_args.push(quote! { #arg_name: #ty });
-                call_args.push(quote! { #arg_name });
-            }
+    let mut out = TokenStream2::new();
+    if !inline_method_is_ctor(struct_name, &model) {
+        if method_returns_string(&model) || method_copies_str(&model) {
+            out.extend(owned_string_helper(&owned_helper, &owned_free));
+        } else if method_returns_borrowed_str(&model) {
+            out.extend(borrowed_string_helper(&borrowed_helper));
         }
     }
-
-    let return_type = &method.sig.output;
-
-    if is_constructor {
-        quote! {
-            #[no_mangle]
-            pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> *mut #struct_name {
-                let obj = #struct_name::#method_name(#(#call_args),*);
-                Box::into_raw(Box::new(obj))
-            }
-        }
-    } else if is_static {
-        match return_type {
-            ReturnType::Default => quote! {
-                #[no_mangle]
-                pub extern "C" fn #wrapper_name(#(#wrapper_args),*) {
-                    #struct_name::#method_name(#(#call_args),*);
-                }
-            },
-            ReturnType::Type(_, ty) => {
-                if is_self_type(ty, struct_name) {
-                    quote! {
-                        #[no_mangle]
-                        pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> *mut #struct_name {
-                            let obj = #struct_name::#method_name(#(#call_args),*);
-                            Box::into_raw(Box::new(obj))
-                        }
-                    }
-                } else {
-                    quote! {
-                        #[no_mangle]
-                        pub extern "C" fn #wrapper_name(#(#wrapper_args),*) #return_type {
-                            #struct_name::#method_name(#(#call_args),*)
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        match return_type {
-            ReturnType::Default => quote! {
-                #[no_mangle]
-                pub extern "C" fn #wrapper_name(#(#wrapper_args),*) {
-                    #self_handling
-                    self_ref.#method_name(#(#call_args),*);
-                }
-            },
-            ReturnType::Type(_, ty) => {
-                if is_self_type(ty, struct_name) {
-                    quote! {
-                        #[no_mangle]
-                        pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> *mut #struct_name {
-                            #self_handling
-                            let obj = self_ref.#method_name(#(#call_args),*);
-                            Box::into_raw(Box::new(obj))
-                        }
-                    }
-                } else {
-                    quote! {
-                        #[no_mangle]
-                        pub extern "C" fn #wrapper_name(#(#wrapper_args),*) #return_type {
-                            #self_handling
-                            self_ref.#method_name(#(#call_args),*)
-                        }
-                    }
-                }
-            }
-        }
-    }
+    out.extend(inline_method_wrapper(
+        struct_name,
+        &model,
+        &owned_helper,
+        &borrowed_helper,
+    ));
+    out
 }
 
 // ============================================================================
@@ -894,6 +822,37 @@ fn method_returns_borrowed_str(m: &MethodModel) -> bool {
     returns_borrowed_str(&m.func.sig)
 }
 
+/// The owned string buffer `<name> { ptr, len, cap }` and the `extern "C"`
+/// function that releases it (the Rust `Vec` is reconstructed and dropped).
+fn owned_string_helper(owned_helper: &Ident, owned_free: &Ident) -> TokenStream2 {
+    quote! {
+        #[repr(C)]
+        pub struct #owned_helper {
+            ptr: *mut u8,
+            len: usize,
+            cap: usize,
+        }
+
+        #[no_mangle]
+        pub extern "C" fn #owned_free(ptr: *mut u8, len: usize, cap: usize) {
+            if !ptr.is_null() {
+                unsafe { drop(Vec::from_raw_parts(ptr, len, cap)); }
+            }
+        }
+    }
+}
+
+/// The borrowed string view `<name> { ptr, len }`.
+fn borrowed_string_helper(borrowed_helper: &Ident) -> TokenStream2 {
+    quote! {
+        #[repr(C)]
+        pub struct #borrowed_helper {
+            ptr: *const u8,
+            len: usize,
+        }
+    }
+}
+
 fn inline_method_is_ctor(struct_name: &Ident, m: &MethodModel) -> bool {
     // Historical inline rule: `new`, or any method returning Self / the struct type
     // (static or not) is treated as returning a boxed struct.
@@ -939,31 +898,11 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
 
     if needs_owned {
         meta.has_owned_string_helper = true;
-        out.extend(quote! {
-            #[repr(C)]
-            pub struct #owned_helper {
-                ptr: *mut u8,
-                len: usize,
-                cap: usize,
-            }
-
-            #[no_mangle]
-            pub extern "C" fn #owned_free(ptr: *mut u8, len: usize, cap: usize) {
-                if !ptr.is_null() {
-                    unsafe { drop(Vec::from_raw_parts(ptr, len, cap)); }
-                }
-            }
-        });
+        out.extend(owned_string_helper(&owned_helper, &owned_free));
     }
     if needs_borrowed {
         meta.has_borrowed_string_helper = true;
-        out.extend(quote! {
-            #[repr(C)]
-            pub struct #borrowed_helper {
-                ptr: *const u8,
-                len: usize,
-            }
-        });
+        out.extend(borrowed_string_helper(&borrowed_helper));
     }
 
     // Field accessors (skipped when a method wrapper would take the same symbol).

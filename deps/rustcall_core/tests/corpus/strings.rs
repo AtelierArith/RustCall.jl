@@ -30,3 +30,45 @@ pub fn greeting() -> &'static str {
 pub fn unix_name(s: String) -> String {
     s
 }
+
+// Parentheses and invisible groups name the same type (`(String)` is `String`).
+#[julia]
+pub fn consume(s: (String)) -> usize {
+    s.len()
+}
+
+#[julia]
+pub fn paren_ref(s: &(str)) -> (usize) {
+    s.len()
+}
+
+// Struct methods with string arguments and returns: in crate mode the
+// wrappers use per-method buffer types (`Greeter_shout_RustCallOwnedString`).
+#[julia]
+pub struct Greeter {
+    pub count: u32,
+}
+
+#[julia]
+impl Greeter {
+    #[julia]
+    pub fn new(count: u32) -> Self {
+        Self { count }
+    }
+
+    #[julia]
+    pub fn shout(&self, suffix: &str) -> String {
+        format!("{}{}", self.count, suffix)
+    }
+
+    #[julia]
+    pub fn label(&self) -> &str {
+        "greeter"
+    }
+
+    #[julia]
+    pub fn take(&mut self, s: String) -> usize {
+        self.count += 1;
+        s.len()
+    }
+}

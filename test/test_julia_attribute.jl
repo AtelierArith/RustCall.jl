@@ -488,3 +488,53 @@ end
         @test shadow_twice(Int32(21)) == Int32(42)
     end
 end
+
+@testset "#[julia] parenthesized types and #[julia_pyo3] string ABI (#242 review)" begin
+    # `(String)` and `&(str)` are Type::Paren to syn; they name the same types.
+    code = """
+    #[julia]
+    pub fn consume(s: (String)) -> usize { s.len() }
+    #[julia]
+    pub fn paren_ref(s: &(str)) -> (usize) { s.chars().count() }
+    #[julia]
+    pub fn paren_ret(s: String) -> (String) { s.to_uppercase() }
+    """
+    sigs = Dict(s.name => s for s in RustCall.manifest_function_signatures(RustCall.expand_inline(code).manifest))
+    @test sigs["consume"].arg_abis == ["string"]
+    @test sigs["consume"].arg_types == ["String"]
+    @test sigs["paren_ref"].arg_abis == ["str"]
+    @test sigs["paren_ref"].return_type == "usize"
+    @test sigs["paren_ret"].has_owned_string_helper
+    @test sigs["paren_ret"].return_type == "String"
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #![allow(unused_parens)]
+        #[julia]
+        pub fn consume(s: (String)) -> usize { s.len() }
+        #[julia]
+        pub fn paren_ref(s: &(str)) -> (usize) { s.chars().count() }
+        #[julia]
+        pub fn paren_ret(s: String) -> (String) { s.to_uppercase() }
+        """
+        @test consume("abc") == 3
+        @test paren_ref("日本語") == 3
+        @test paren_ret("abc") == "ABC"
+    end
+
+    # `#[julia_pyo3]` free functions are exported as written (no string
+    # conversion, pending #275): the crate manifest reports an empty ABI so
+    # the Julia wrapper does not pass (ptr, len) to a function taking `String`.
+    pyo3 = RustCall.extract_manifest("""
+    #[julia_pyo3]
+    pub fn py_len(s: String) -> usize { s.len() }
+    #[julia_pyo3]
+    pub fn py_plain(x: i32) -> i32 { x }
+    """; mode = "crate")
+    py = Dict(s.name => s for s in RustCall.manifest_function_signatures(pyo3))
+    @test py["py_len"].arg_types == ["String"]
+    @test py["py_len"].arg_abis == [""]
+    @test !py["py_len"].has_owned_string_helper
+    @test !RustCall._uses_string_ffi(py["py_len"])
+    @test py["py_plain"].arg_abis == [""]
+end

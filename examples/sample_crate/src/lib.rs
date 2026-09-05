@@ -247,6 +247,56 @@ impl Counter {
 }
 
 // ============================================================================
+// Labeler Struct (methods with String / &str arguments and returns, #242)
+// ============================================================================
+
+/// Counts the labels it produced
+#[julia]
+pub struct Labeler {
+    pub count: u32,
+}
+
+#[julia]
+impl Labeler {
+    /// Create a labeler
+    #[julia]
+    pub fn new(count: u32) -> Self {
+        Labeler { count }
+    }
+
+    /// Owned `String` return built from a borrowed argument
+    #[julia]
+    pub fn label(&mut self, name: &str) -> String {
+        self.count += 1;
+        format!("{}#{}", name, self.count)
+    }
+
+    /// `String` argument, plain return
+    #[julia]
+    pub fn byte_len(&self, s: String) -> usize {
+        s.len()
+    }
+
+    /// Borrowed `&str` return (no string arguments)
+    #[julia]
+    pub fn kind(&self) -> &str {
+        "labeler"
+    }
+
+    /// `&str` return that may borrow from the argument: copied out
+    #[julia]
+    pub fn echo<'a>(&self, s: &'a str) -> &'a str {
+        s
+    }
+
+    /// Static method with a string argument
+    #[julia]
+    pub fn shout(s: &str) -> String {
+        s.to_uppercase()
+    }
+}
+
+// ============================================================================
 // Rectangle Struct (demonstrates computed properties)
 // ============================================================================
 

@@ -768,3 +768,56 @@ end
         end
     end
 end
+
+@testset "Crate bindings: struct methods with String / &str (#242 review)" begin
+    manifest = RustCall.extract_manifest([joinpath(SAMPLE_CRATE_PATH, "src", "lib.rs")]; mode = "crate")
+    labeler = only(filter(s -> s.name == "Labeler", RustCall.manifest_struct_infos(manifest)))
+    methods = Dict(m.name => m for m in labeler.methods)
+    @test methods["label"].arg_abis == ["str"]
+    @test methods["label"].return_abi == "string"
+    @test methods["byte_len"].arg_abis == ["string"]
+    @test methods["byte_len"].return_abi == ""
+    @test methods["kind"].return_abi == "str"
+    @test methods["echo"].return_abi == "string"   # may borrow from the argument: copied
+    @test methods["shout"].is_static && methods["shout"].return_abi == "string"
+
+    # The source emitter passes (ptr, len) pairs and reads the per-method buffers
+    info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+    code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
+    @test occursin("__rustcall_str_name = String(name)", code)
+    @test occursin("GC.@preserve __rustcall_str_name _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_label_free_rust_string\"), getfield(self, :ptr), pointer(__rustcall_str_name), sizeof(__rustcall_str_name) % Csize_t)", code)
+    @test occursin("GC.@preserve  _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", code)
+    @test occursin("_call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_shout_free_rust_string\"), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("call_rust_function(func_ptr, Csize_t, getfield(self, :ptr), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    # Constructors still return the boxed struct
+    @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)))", code)
+    @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)))", code)
+    @test Meta.parse(code) isa Expr
+
+    if RustCall.check_rustc_available()
+        # The module is evaluated in this world; go through invokelatest for
+        # the struct wrappers (their outer constructors are newer methods).
+        let bindings = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateLabeler"
+            call(f, args...) = Base.invokelatest(f, args...)
+            l = call(bindings.Labeler, UInt32(0))
+            @test call(bindings.label, l, "x") == "x#1"
+            @test call(bindings.label, l, "日本") == "日本#2"
+            @test call(getproperty, l, :count) == 2
+            @test call(bindings.byte_len, l, "abc") == 3
+            @test call(bindings.byte_len, l, "日本語") == 9
+            @test call(bindings.byte_len, l, SubString("xabc", 2)) == 3
+            @test call(bindings.kind, l) == "labeler"
+            @test call(bindings.echo, l, "λ") == "λ"
+            @test call(bindings.shout, "hi") == "HI"
+            for _ in 1:200
+                @test call(bindings.label, l, "y") isa String
+            end
+            # Non-string methods and constructors are unchanged
+            p = call(bindings.Point, 3.0, 4.0)
+            @test call(bindings.distance_from_origin, p) == 5.0
+            c = call(bindings.Counter, Int32(1))
+            call(bindings.add, c, Int32(4))
+            @test call(bindings.get, c) == Int32(5)
+        end
+    end
+end

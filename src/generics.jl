@@ -282,8 +282,28 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         ret_type = _specialized_return_type(specialized.return_type)
         arg_types = Type[_specialized_arg_type(t, type_params) for t in specialized.arg_types]
 
+        # Fixed `String` / `&str` parameters and returns use the string ABI
+        # (#242): the specialized wrapper takes `(ptr, len)` pairs and returns
+        # an owned buffer (released through `<name>_free_rust_string`) or a
+        # borrowed view; see `_call_monomorphized`.
+        string_return = :none
+        free_ptr = C_NULL
+        if specialized.has_owned_string_helper
+            string_return = :owned
+            ret_type = String
+            free_name = specialized_name * "_free_rust_string"
+            free_ptr = Libdl.dlsym(lib_handle, free_name; throw_error=false)
+            if free_ptr === nothing || free_ptr == C_NULL
+                error("Function '$free_name' not found in library '$lib_path'")
+            end
+        elseif specialized.has_borrowed_string_helper
+            string_return = :borrowed
+            ret_type = String
+        end
+
         # Create FunctionInfo
-        info = FunctionInfo(specialized_name, lib_name, ret_type, arg_types, func_ptr)
+        info = FunctionInfo(specialized_name, lib_name, ret_type, arg_types, func_ptr,
+                            specialized.arg_abis, string_return, free_ptr)
 
         # Cache the monomorphized function
         MONOMORPHIZED_FUNCTIONS[cache_key] = info
@@ -424,12 +444,48 @@ function call_generic_function(func_name::String, args...)
     # Monomorphize (or get cached version)
     info = monomorphize_function(func_name, type_params)
 
-    # Call the monomorphized function using the specialized name
-    # The specialized function is in a new library, so we need to get its pointer
-    func_ptr = info.func_ptr
+    return _call_monomorphized(info, args...)
+end
 
-    # Call using the standard call_rust_function
-    return call_rust_function(func_ptr, info.return_type, args...)
+"""
+    _call_monomorphized(info::FunctionInfo, args...)
+
+Call a monomorphized function through its `FunctionInfo`. String arguments
+(`info.arg_abis`) are passed as `(ptr, len)` byte pairs kept alive for the
+duration of the call, and a string return (`info.string_return`) is copied out
+of the owned or borrowed buffer, exactly as the generated wrappers of
+non-generic `#[julia]` functions do.
+"""
+function _call_monomorphized(info::FunctionInfo, args...)
+    if info.string_return === :none && !any(_is_string_abi, info.arg_abis)
+        return call_rust_function(info.func_ptr, info.return_type, args...)
+    end
+    if length(info.arg_abis) != length(args)
+        error("Function '$(info.name)' takes $(length(info.arg_abis)) argument(s) but $(length(args)) were given")
+    end
+    # The converted strings are collected in a vector, which is what
+    # GC.@preserve keeps alive (and, through it, every string).
+    strings = String[]
+    call_args = Any[]
+    for (arg, abi) in zip(args, info.arg_abis)
+        if _is_string_abi(abi)
+            s = String(arg)
+            push!(strings, s)
+            push!(call_args, pointer(s))
+            push!(call_args, sizeof(s) % Csize_t)
+        else
+            push!(call_args, arg)
+        end
+    end
+    GC.@preserve strings begin
+        if info.string_return === :owned
+            _call_rust_owned_string_ptr(info.func_ptr, info.free_ptr, call_args...)
+        elseif info.string_return === :borrowed
+            _call_rust_borrowed_string_ptr(info.func_ptr, call_args...)
+        else
+            call_rust_function(info.func_ptr, info.return_type, call_args...)
+        end
+    end
 end
 
 """

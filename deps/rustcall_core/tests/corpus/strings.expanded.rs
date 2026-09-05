@@ -152,3 +152,128 @@ pub extern "C" fn unix_name(
     std::mem::forget(rustcall_bytes);
     rustcall_ret
 }
+#[allow(clippy::ptr_arg)]
+fn consume_inner(s: (String)) -> usize {
+    s.len()
+}
+#[no_mangle]
+pub extern "C" fn consume(s_ptr: *const u8, s_len: usize) -> usize {
+    let s = unsafe {
+        let slice = std::slice::from_raw_parts(s_ptr, s_len);
+        String::from_utf8_lossy(slice).into_owned()
+    };
+    consume_inner(s)
+}
+#[allow(clippy::ptr_arg)]
+fn paren_ref_inner(s: &(str)) -> (usize) {
+    s.len()
+}
+#[no_mangle]
+pub extern "C" fn paren_ref(s_ptr: *const u8, s_len: usize) -> (usize) {
+    let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
+    let s_cow = String::from_utf8_lossy(s_bytes);
+    let s: &str = &s_cow;
+    paren_ref_inner(s)
+}
+pub struct Greeter {
+    pub count: u32,
+}
+#[no_mangle]
+pub extern "C" fn Greeter_free(ptr: *mut Greeter) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
+    }
+}
+#[repr(C)]
+pub struct Greeter_RustCallOwnedString {
+    ptr: *mut u8,
+    len: usize,
+    cap: usize,
+}
+#[no_mangle]
+pub extern "C" fn Greeter_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(ptr, len, cap));
+        }
+    }
+}
+#[repr(C)]
+pub struct Greeter_RustCallBorrowedString {
+    ptr: *const u8,
+    len: usize,
+}
+#[no_mangle]
+pub extern "C" fn Greeter_get_count(ptr: *const Greeter) -> u32 {
+    unsafe { (*ptr).count }
+}
+#[no_mangle]
+pub extern "C" fn Greeter_set_count(ptr: *mut Greeter, value: u32) {
+    unsafe {
+        (*ptr).count = value;
+    }
+}
+#[no_mangle]
+pub extern "C" fn Greeter_new(count: u32) -> *mut Greeter {
+    let obj = Greeter::new(count);
+    Box::into_raw(Box::new(obj))
+}
+#[no_mangle]
+pub extern "C" fn Greeter_shout(
+    ptr: *const Greeter,
+    suffix_ptr: *const u8,
+    suffix_len: usize,
+) -> Greeter_RustCallOwnedString {
+    let suffix_bytes = unsafe { std::slice::from_raw_parts(suffix_ptr, suffix_len) };
+    let suffix_cow = String::from_utf8_lossy(suffix_bytes);
+    let suffix: &str = &suffix_cow;
+    let self_obj = unsafe { &*ptr };
+    let rustcall_value = self_obj.shout(suffix);
+    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
+    let rustcall_ret = Greeter_RustCallOwnedString {
+        ptr: rustcall_bytes.as_mut_ptr(),
+        len: rustcall_bytes.len(),
+        cap: rustcall_bytes.capacity(),
+    };
+    std::mem::forget(rustcall_bytes);
+    rustcall_ret
+}
+#[no_mangle]
+pub extern "C" fn Greeter_label(ptr: *const Greeter) -> Greeter_RustCallBorrowedString {
+    let self_obj = unsafe { &*ptr };
+    let rustcall_value = self_obj.label();
+    Greeter_RustCallBorrowedString {
+        ptr: rustcall_value.as_ptr(),
+        len: rustcall_value.len(),
+    }
+}
+#[no_mangle]
+pub extern "C" fn Greeter_take(
+    ptr: *mut Greeter,
+    s_ptr: *const u8,
+    s_len: usize,
+) -> usize {
+    let s = unsafe {
+        let slice = std::slice::from_raw_parts(s_ptr, s_len);
+        String::from_utf8_lossy(slice).into_owned()
+    };
+    let self_obj = unsafe { &mut *ptr };
+    self_obj.take(s)
+}
+impl Greeter {
+    pub fn new(count: u32) -> Self {
+        Self { count }
+    }
+    pub fn shout(&self, suffix: &str) -> String {
+        format!("{}{}", self.count, suffix)
+    }
+    pub fn label(&self) -> &str {
+        "greeter"
+    }
+    pub fn take(&mut self, s: String) -> usize {
+        self.count += 1;
+        s.len()
+    }
+}
