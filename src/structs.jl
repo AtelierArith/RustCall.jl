@@ -317,7 +317,8 @@ function emit_julia_definitions(info::RustStructInfo)
     # 2. Add constructors and methods
     for m in info.methods
         fname = esc(Symbol(m.name))
-        wrapper_name = struct_name_str * "_" * m.name
+        # Exported symbol of the method wrapper, `rustcall_<Struct>_<method>` (#279).
+        wrapper_name = m.symbol
 
         is_ctor = m.is_constructor
 

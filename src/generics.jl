@@ -262,10 +262,13 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             end
         end
 
-        func_ptr = Libdl.dlsym(lib_handle, specialized_name; throw_error=false)
+        # The exported symbol is the additive wrapper the extractor emitted
+        # next to the instantiation, never the instantiation's own name (#279).
+        specialized_symbol = specialized.symbol
+        func_ptr = Libdl.dlsym(lib_handle, specialized_symbol; throw_error=false)
         if func_ptr === nothing || func_ptr == C_NULL
             error("""
-            Function '$specialized_name' not found in library '$lib_path'.
+            Function '$(specialized_symbol)' not found in library '$lib_path'.
 
             Specialized code was:
             $specialized_code
@@ -274,7 +277,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
 
         lock(REGISTRY_LOCK) do
             _, func_cache = RUST_LIBRARIES[lib_name]
-            func_cache[specialized_name] = func_ptr
+            func_cache[specialized_symbol] = func_ptr
         end
 
         # Return and argument types come from the manifest of the specialized
@@ -291,7 +294,8 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         if specialized.has_owned_string_helper
             string_return = :owned
             ret_type = String
-            free_name = specialized_name * "_free_rust_string"
+            # The string helpers keep the instantiation's own name (#279).
+            free_name = ffi_free_symbol(specialized.name)
             free_ptr = Libdl.dlsym(lib_handle, free_name; throw_error=false)
             if free_ptr === nothing || free_ptr == C_NULL
                 error("Function '$free_name' not found in library '$lib_path'")
@@ -302,7 +306,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         end
 
         # Create FunctionInfo
-        info = FunctionInfo(specialized_name, lib_name, ret_type, arg_types, func_ptr,
+        info = FunctionInfo(specialized_symbol, lib_name, ret_type, arg_types, func_ptr,
                             specialized.arg_abis, string_return, free_ptr)
 
         # Cache the monomorphized function

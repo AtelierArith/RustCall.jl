@@ -291,18 +291,22 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     end
 
     # Regular function - use existing logic
+    # `@rust f(...)` names the Rust function; `#[julia]` exports the additive
+    # wrapper next to it (#279), and every registry is keyed by that symbol.
+    symbol = exported_symbol(lib_name, func_name)
+
     # Get function pointer
-    @debug "Calling function '$func_name' from library '$lib_name'"
-    func_ptr = get_function_pointer(lib_name, func_name)
+    @debug "Calling function '$func_name' (symbol '$symbol') from library '$lib_name'"
+    func_ptr = get_function_pointer(lib_name, symbol)
 
     # Try to get type info from registered function info
-    func_info = get_function_info(lib_name, func_name)
+    func_info = get_function_info(lib_name, symbol)
     if func_info !== nothing && func_info.return_type !== Any
         return call_rust_function(func_ptr, func_info.return_type, args...)
     end
 
     # Try to get return type from registries (library-scoped first, then fallback)
-    ret_type = get_function_return_type(lib_name, func_name)
+    ret_type = get_function_return_type(lib_name, symbol)
     if ret_type !== nothing
         @debug "Using registered return type for $func_name: $ret_type"
         return call_rust_function(func_ptr, ret_type, args...)

@@ -75,7 +75,7 @@ using RustCall
         infos = RustCall.manifest_struct_infos(RustCall.extract_manifest(code_no_where; mode = "inline"))
         @test infos[1].name == "Plain"
         @test isempty(infos[1].type_params)
-        @test infos[1].methods[1].symbol == "Plain_new"
+        @test infos[1].methods[1].symbol == "rustcall_Plain_new"
         @test infos[1].methods[1].is_constructor
     end
 

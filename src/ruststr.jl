@@ -60,6 +60,11 @@ loaded libraries as a fallback. This enables using functions from multiple
 `rust\"\"\"` blocks.
 """
 function get_function_pointer(lib_name::String, func_name::String)
+    # `#[julia]` is additive (#279): a Rust item named `add` is exported as
+    # `rustcall_add`. Resolve the manifest-recorded symbol first; an unmapped
+    # name (a plain `#[no_mangle]` function, or an already-resolved symbol) is
+    # looked up as given.
+    func_name = exported_symbol(lib_name, func_name)
     lock(REGISTRY_LOCK) do
         # First, try the specified library
         if haskey(RUST_LIBRARIES, lib_name)
@@ -643,6 +648,10 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing, carg
                                       path = qualified_name(sig.module_path, sig.name), compiler, blocked)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         elseif sig.exported
+            # `@rust f(...)` names the Rust function; the library exports the
+            # additive wrapper (#279), so record the mapping before anything
+            # tries to resolve it.
+            register_function_symbol(lib_name, sig.name, sig.symbol)
             _register_return_type(sig, lib_name)
         end
     end

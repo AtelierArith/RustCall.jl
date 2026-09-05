@@ -39,6 +39,16 @@ fib20 = SampleCratePyo3.fibonacci(20)
 println("fibonacci(20) = $fib20")
 @assert fib20 == 6765
 
+# `#[julia]` stacked with `#[pyfunction]` (#279): one definition, one Julia
+# binding, and a Python binding under `--features python`.
+shouted = SampleCratePyo3.shout("hello")
+println("shout(\"hello\") = $shouted")
+@assert shouted == "HELLO"
+
+twice = SampleCratePyo3.shout_twice("hi")
+println("shout_twice(\"hi\") = $twice")
+@assert twice == "HI HI"
+
 println("\n✅ Basic functions work!\n")
 
 # ============================================================================
@@ -101,6 +111,8 @@ Summary of available bindings (all from #[julia_pyo3]):
   Functions:
     - add(a, b) -> Int32
     - fibonacci(n) -> UInt64
+    - shout(s) -> String            (#[julia] + #[pyfunction], #279)
+    - shout_twice(s) -> String
 
   Point struct:
     - Point(x::Float64, y::Float64) -> Point

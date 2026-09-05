@@ -141,7 +141,7 @@ signature_for(code, name; mode = "inline") = only(
         @test sig.name == "nested_comments"
         @test sig.arg_types == ["i32"]
         @test sig.return_type == "i32"
-        @test occursin("pub extern \"C\" fn nested_comments", expanded.source)
+        @test occursin("pub extern \"C\" fn rustcall_nested_comments", expanded.source)
     end
 
     @testset "derive(JuliaStruct) multiline/order metadata" begin
@@ -220,7 +220,7 @@ signature_for(code, name; mode = "inline") = only(
         )
         @test specialized.arg_types == ["i32"]
         @test specialized.return_type == "i32"
-        @test occursin("pub extern \"C\" fn identity_i32", specialized.source)
+        @test occursin("pub extern \"C\" fn rustcall_identity_i32", specialized.source)
     end
 
     @testset "Const expressions containing comparison operators (#233)" begin

@@ -149,9 +149,17 @@ impl Counter {
 }
 ```
 
-This generates FFI wrappers:
-- `Counter_new(initial)` - Returns `*mut Counter`
-- `Counter_get(ptr)` - Takes `*const Counter`, returns `i32`
+`#[julia]` is additive (#279): the `impl` block above is left exactly as
+written — `Counter::new` and `Counter::get` keep their Rust signatures for
+other callers, `#[test]`s and other proc-macros — and the FFI wrappers are
+emitted next to it under `rustcall_`-prefixed symbols:
+
+- `rustcall_Counter_new(initial)` - Returns `*mut Counter`
+- `rustcall_Counter_get(ptr)` - Takes `*const Counter`, returns `i32`
+
+The generated Julia bindings keep the Rust names (`Counter(1)`, `get(c)`);
+they resolve the exported symbol through the manifest, so nothing in the Julia
+API changes.
 
 ## Property Access Syntax
 

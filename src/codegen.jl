@@ -48,6 +48,53 @@ Maps (library name, function name) to return type.
 const FUNCTION_RETURN_TYPES_BY_LIB = Dict{Tuple{String, String}, Type}()
 
 """
+Rust item name to exported C symbol, per library.
+
+`#[julia]` is additive since #279: the annotated function keeps its own name
+and the library exports the wrapper `rustcall_<name>` next to it. `@rust
+add(1, 2)` names the *Rust function*, so the lookup has to go through this
+mapping, which is filled from the manifest (`Function.symbol`) — never by
+string surgery on the name.
+"""
+const FUNCTION_SYMBOLS_BY_LIB = Dict{Tuple{String, String}, String}()
+
+"""
+Library-agnostic fallback of `FUNCTION_SYMBOLS_BY_LIB`, mirroring the other
+registries so that `@rust` keeps working across `rust\"\"\"` blocks.
+"""
+const FUNCTION_SYMBOLS = Dict{String, String}()
+
+"""
+    register_function_symbol(lib_name, name, symbol)
+
+Record that the Rust item `name` of `lib_name` is exported as `symbol`.
+A symbol equal to the name is not recorded.
+"""
+function register_function_symbol(lib_name::AbstractString, name::AbstractString,
+                                  symbol::AbstractString)
+    (isempty(symbol) || symbol == name) && return nothing
+    lock(REGISTRY_LOCK) do
+        FUNCTION_SYMBOLS_BY_LIB[(String(lib_name), String(name))] = String(symbol)
+        FUNCTION_SYMBOLS[String(name)] = String(symbol)
+    end
+    return nothing
+end
+
+"""
+    exported_symbol(lib_name, name) -> String
+
+The exported C symbol of the Rust item `name`, or `name` itself when nothing
+was recorded (a plain `#[no_mangle] extern "C"` function, or a symbol that is
+already the exported one).
+"""
+function exported_symbol(lib_name::AbstractString, name::AbstractString)
+    lock(REGISTRY_LOCK) do
+        get(FUNCTION_SYMBOLS_BY_LIB, (String(lib_name), String(name)),
+            get(FUNCTION_SYMBOLS, String(name), String(name)))
+    end
+end
+
+"""
     register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
 
 Register a function with its type signature for later calling.

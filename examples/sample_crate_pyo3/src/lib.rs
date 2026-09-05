@@ -6,7 +6,11 @@
 //! This example demonstrates the unified `#[julia_pyo3]` macro that generates
 //! both Julia FFI bindings and Python/PyO3 bindings from a single definition.
 
-use juliacall_macros::julia_pyo3;
+// The generated `extern "C"` wrappers take the raw `*const Struct` / `*mut
+// Struct` pointers Julia hands back; that is the FFI contract, not an oversight.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
+use juliacall_macros::{julia, julia_pyo3};
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
@@ -37,6 +41,40 @@ fn fibonacci(n: u32) -> u64 {
             }
             b
         }
+    }
+}
+
+// ============================================================================
+// Stacking `#[julia]` with `#[pyfunction]` directly (#279)
+//
+// `#[julia]` is additive: it keeps `shout` exactly as written and emits the C
+// entry point `rustcall_shout` next to it. PyO3's own wrapper therefore still
+// sees `fn shout(String) -> String`, and so does the in-crate caller below.
+// This is what makes `#[julia_pyo3]` redundant (#275 Phase 3).
+// ============================================================================
+
+#[julia]
+#[cfg_attr(feature = "python", pyo3::pyfunction)]
+pub fn shout(s: String) -> String {
+    s.to_uppercase()
+}
+
+/// A plain in-crate caller of the annotated function.
+#[julia]
+pub fn shout_twice(s: String) -> String {
+    format!("{} {}", shout(s.clone()), shout(s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The annotated items keep their Rust signature for `#[test]` too (#279).
+    #[test]
+    fn annotated_functions_are_callable_from_rust() {
+        assert_eq!(shout("hi".to_string()), "HI");
+        assert_eq!(shout_twice("hi".to_string()), "HI HI");
+        assert_eq!(add(2, 3), 5);
     }
 }
 
@@ -92,6 +130,7 @@ impl Point {
 fn sample_crate_pyo3(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add, m)?)?;
     m.add_function(wrap_pyfunction!(fibonacci, m)?)?;
+    m.add_function(wrap_pyfunction!(shout, m)?)?;
     m.add_class::<Point>()?;
     Ok(())
 }

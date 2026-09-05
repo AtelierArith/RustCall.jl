@@ -178,7 +178,8 @@ end
         @test specialized.name == "pair_i32_f64"
         @test specialized.arg_types == ["i32", "f64"]
         @test specialized.return_type == "i32"
-        @test occursin("pub extern \"C\" fn pair_i32_f64", specialized.source)
+        @test specialized.symbol == "rustcall_pair_i32_f64"
+        @test occursin("pub extern \"C\" fn rustcall_pair_i32_f64", specialized.source)
         # the generic original is kept so that other callers in the block still compile
         @test occursin("fn pair<T", specialized.source)
     end
@@ -234,7 +235,7 @@ end
         )
 
         mono = RustCall.monomorphize_function("test_identity", Dict(:T => Int32))
-        @test mono.name == "test_identity_i32"
+        @test mono.name == "rustcall_test_identity_i32"
         @test mono.return_type == Int32
         @test mono.arg_types == [Int32]
         @test mono.func_ptr != C_NULL
@@ -287,7 +288,9 @@ end
     @test specialized.has_owned_string_helper
     @test !specialized.has_borrowed_string_helper
     @test occursin("tag_i32_free_rust_string", specialized.source)
-    @test occursin("tag_i32_inner", specialized.source)
+    # The instantiation keeps its own plain signature next to the wrapper (#279).
+    @test occursin("pub fn tag_i32(x: i32, label: String) -> String", specialized.source)
+    @test occursin("pub extern \"C\" fn rustcall_tag_i32", specialized.source)
     borrowed = RustCall.specialize_generic("pub fn kind_of<T>(_x: T) -> &'static str { \"generic\" }",
                                            "kind_of", ["T" => "i64"], "kind_of_i64")
     @test borrowed.has_borrowed_string_helper && !borrowed.has_owned_string_helper
