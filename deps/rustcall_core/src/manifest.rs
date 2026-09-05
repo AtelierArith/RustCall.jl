@@ -117,6 +117,10 @@ pub struct Function {
     pub source: String,
     /// 1-based line of the item in the input file.
     pub line: usize,
+    /// Enclosing inline modules (`mod api { mod deep { fn f } }` -> `["api", "deep"]`).
+    /// `specialize` locates the function by `module_path::name` in the expanded source.
+    #[serde(default)]
+    pub module_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,8 +185,15 @@ pub struct Struct {
     #[serde(default)]
     pub generic_wrappers: Vec<GenericWrapper>,
     pub line: usize,
+    /// Enclosing inline modules of the struct (see [`Function::module_path`]).
+    #[serde(default)]
+    pub module_path: Vec<String>,
 }
 
+/// A generic wrapper of a generic inline struct. In inline mode the wrapper is
+/// also emitted (non-exported) into the expanded source next to the struct so
+/// that `specialize` can instantiate it in place with all module-scoped names
+/// available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GenericWrapper {
     pub name: String,

@@ -18,6 +18,7 @@ source text.
 - `return_kind`: `:plain`, `:unit`, `:result` or `:option`
 - `ok_type`/`err_type`/`inner_type`: components of `Result`/`Option` returns
 - `source`: function source (generic functions only), used for monomorphization
+- `module_path`: enclosing inline modules (`["api", "deep"]`)
 """
 struct RustFunctionSignature
     name::String
@@ -35,6 +36,7 @@ struct RustFunctionSignature
     inner_type::String
     source::String
     constraints::Dict{Symbol, TypeConstraints}
+    module_path::Vector{String}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -44,11 +46,19 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                return_kind::Symbol = return_type == "()" ? :unit : :plain,
                                ok_type::String = "", err_type::String = "", inner_type::String = "",
                                source::String = "",
-                               constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}())
+                               constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
+                               module_path::Vector{String} = String[])
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
-                          source, constraints)
+                          source, constraints, module_path)
 end
+
+"""
+    qualified_name(sig_or_info) -> String
+
+`module_path::name` of a manifest entry, as accepted by `rustcall-extract specialize`.
+"""
+qualified_name(module_path::Vector{String}, name::String) = join(vcat(module_path, [name]), "::")
 
 """
     emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature}) -> Expr

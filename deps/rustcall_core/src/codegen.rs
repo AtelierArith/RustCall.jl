@@ -1007,6 +1007,26 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         });
     }
 
+    // Accessor and free wrappers are emitted generically into the expanded
+    // source, so they must type-check for every `T`: carry the struct's own
+    // `where` predicates and state what the getter body needs (`Copy` to read
+    // the field out through the raw pointer, `Clone` for String/Vec).
+    let struct_predicates: Vec<syn::WherePredicate> = generics
+        .where_clause
+        .as_ref()
+        .map(|w| w.predicates.iter().cloned().collect())
+        .unwrap_or_default();
+    let where_of = |extra: Option<syn::WherePredicate>| -> TokenStream2 {
+        let mut preds = struct_predicates.clone();
+        preds.extend(extra);
+        if preds.is_empty() {
+            quote! {}
+        } else {
+            quote! { where #(#preds),* }
+        }
+    };
+    let struct_where = where_of(None);
+
     let method_symbols: Vec<String> = wrappers.iter().map(|w| w.name.clone()).collect();
     for (field_name, field_ty) in model.named_fields() {
         if !is_inline_accessible_field_type(&field_ty) {
@@ -1017,16 +1037,22 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
             continue;
         }
         let setter = format_ident!("{}_set_{}", struct_name, field_name);
-        let body = if is_string_type(&field_ty) || is_vec_type(&field_ty) {
-            quote! { unsafe { (*ptr).#field_name.clone() } }
+        let (body, getter_where) = if is_string_type(&field_ty) || is_vec_type(&field_ty) {
+            (
+                quote! { unsafe { (*ptr).#field_name.clone() } },
+                where_of(Some(syn::parse_quote!(#field_ty: Clone))),
+            )
         } else {
-            quote! { unsafe { (*ptr).#field_name } }
+            (
+                quote! { unsafe { (*ptr).#field_name } },
+                where_of(Some(syn::parse_quote!(#field_ty: Copy))),
+            )
         };
         let g: ItemFn = syn::parse_quote! {
-            pub fn #getter #decl_generics (ptr: *const #struct_name #ty_generics) -> #field_ty { #body }
+            pub fn #getter #decl_generics (ptr: *const #struct_name #ty_generics) -> #field_ty #getter_where { #body }
         };
         let s: ItemFn = syn::parse_quote! {
-            pub fn #setter #decl_generics (ptr: *mut #struct_name #ty_generics, value: #field_ty) {
+            pub fn #setter #decl_generics (ptr: *mut #struct_name #ty_generics, value: #field_ty) #struct_where {
                 unsafe { (*ptr).#field_name = value; }
             }
         };
@@ -1042,7 +1068,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
 
     let free_name = format_ident!("{}_free", struct_name);
     let f: ItemFn = syn::parse_quote! {
-        pub fn #free_name #decl_generics (ptr: *mut #struct_name #ty_generics) {
+        pub fn #free_name #decl_generics (ptr: *mut #struct_name #ty_generics) #struct_where {
             if !ptr.is_null() {
                 unsafe { drop(Box::from_raw(ptr)); }
             }

@@ -16,6 +16,7 @@ err_type = "i32"
 inner_type = ""
 source = ""
 line = 25
+module_path = []
 
 [[functions.args]]
 name = "value"
@@ -35,6 +36,7 @@ err_type = ""
 inner_type = "i32"
 source = ""
 line = 30
+module_path = []
 
 [[functions.args]]
 name = "value"

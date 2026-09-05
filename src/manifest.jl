@@ -397,6 +397,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             inner_type = _mstr(f, "inner_type"),
             source = _mstr(f, "source"),
             constraints = manifest_constraints(f),
+            module_path = String[String(m) for m in _mvec(f, "module_path")],
         ))
     end
     return sigs
@@ -457,6 +458,7 @@ function manifest_struct_infos(manifest::Dict)
             generic_wrappers = Tuple{String, String}[(_mstr(w, "name"), _mstr(w, "source"))
                                                      for w in _mvec(s, "generic_wrappers")],
             constraints = manifest_constraints(s),
+            module_path = String[String(m) for m in _mvec(s, "module_path")],
         ))
     end
     return infos

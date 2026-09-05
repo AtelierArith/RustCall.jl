@@ -21,6 +21,7 @@ where
 }
 """
 line = 30
+module_path = []
 
 [[functions.type_params]]
 name = "T"
@@ -43,6 +44,7 @@ has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
 line = 1
+module_path = []
 
 [[structs.type_params]]
 name = "T"

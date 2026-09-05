@@ -52,7 +52,7 @@ fn unparse_file(attrs: Vec<syn::Attribute>, items: Vec<Item>) -> String {
 pub fn expand(source: &str) -> Result<Expanded, syn::Error> {
     let file = syn::parse_file(source)?;
     let mut manifest = Manifest::new(Mode::Inline);
-    let out = expand_items(&file.items, &mut manifest)?;
+    let out = expand_items(&file.items, &mut manifest, &[])?;
 
     Ok(Expanded {
         // Crate-level inner attributes (`#![allow(...)]`, `//!` docs) are kept;
@@ -65,9 +65,17 @@ pub fn expand(source: &str) -> Result<Expanded, syn::Error> {
 /// Expand one level of items. Inline modules (`mod m { ... }`) are expanded
 /// recursively so `#[julia]` items inside them are transformed and reported;
 /// `#[no_mangle]` symbols are unaffected by the module path.
-fn expand_items(items: &[Item], manifest: &mut Manifest) -> Result<Vec<Item>, syn::Error> {
+fn expand_items(
+    items: &[Item],
+    manifest: &mut Manifest,
+    module_path: &[String],
+) -> Result<Vec<Item>, syn::Error> {
     let models = collect_struct_models_in(items, Mode::Inline);
     let mut out: Vec<Item> = Vec::new();
+    let push_fn = |manifest: &mut Manifest, mut entry: crate::manifest::Function| {
+        entry.module_path = module_path.to_vec();
+        manifest.functions.push(entry);
+    };
 
     for item in items {
         match item {
@@ -79,19 +87,15 @@ fn expand_items(items: &[Item], manifest: &mut Manifest) -> Result<Vec<Item>, sy
                         strip_rustcall_attrs(&mut f.attrs);
                         if has_type_params(&f.sig.generics) {
                             f.vis = Visibility::Public(Default::default());
-                            manifest
-                                .functions
-                                .push(function_entry(&f, attribute, false));
+                            push_fn(manifest, function_entry(&f, attribute, false));
                             out.push(Item::Fn(f));
                         } else {
-                            manifest.functions.push(function_entry(&f, attribute, true));
+                            push_fn(manifest, function_entry(&f, attribute, true));
                             out.extend(items_of(transform_function(f))?);
                         }
                     }
                     _ => {
-                        manifest
-                            .functions
-                            .push(function_entry(f, Attribute::None, false));
+                        push_fn(manifest, function_entry(f, Attribute::None, false));
                         out.push(item.clone());
                     }
                 }
@@ -108,11 +112,22 @@ fn expand_items(items: &[Item], manifest: &mut Manifest) -> Result<Vec<Item>, sy
                 out.push(Item::Struct(s.clone()));
 
                 if model.is_generic() {
-                    manifest.structs.push(generic_struct_entry(model, &s));
+                    let mut entry = generic_struct_entry(model, &s);
+                    // Emit the generic wrappers (not exported) next to the struct so
+                    // `specialize` can instantiate them in place, with every
+                    // module-scoped name in reach.
+                    for w in &entry.generic_wrappers {
+                        let f: syn::File = syn::parse_str(&w.source)?;
+                        out.extend(f.items);
+                    }
+                    entry.module_path = module_path.to_vec();
+                    manifest.structs.push(entry);
                 } else {
                     let (tokens, meta) = inline_struct_wrappers(model);
                     out.extend(items_of(tokens)?);
-                    manifest.structs.push(concrete_struct_entry(model, &meta));
+                    let mut entry = concrete_struct_entry(model, &meta);
+                    entry.module_path = module_path.to_vec();
+                    manifest.structs.push(entry);
                 }
             }
             Item::Impl(imp) => {
@@ -128,7 +143,9 @@ fn expand_items(items: &[Item], manifest: &mut Manifest) -> Result<Vec<Item>, sy
             Item::Mod(m) => match &m.content {
                 Some((brace, inner)) => {
                     let mut m = m.clone();
-                    m.content = Some((*brace, expand_items(inner, manifest)?));
+                    let mut path = module_path.to_vec();
+                    path.push(m.ident.to_string());
+                    m.content = Some((*brace, expand_items(inner, manifest, &path)?));
                     out.push(Item::Mod(m));
                 }
                 None => out.push(item.clone()),
@@ -199,6 +216,7 @@ fn concrete_struct_entry(model: &StructModel, meta: &crate::codegen::InlineStruc
         context_source: String::new(),
         generic_wrappers: Vec::new(),
         line: model.line,
+        module_path: Vec::new(),
     }
 }
 
@@ -254,5 +272,6 @@ fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) 
         context_source: unparse_items(context_items),
         generic_wrappers: wrappers,
         line: model.line,
+        module_path: Vec::new(),
     }
 }

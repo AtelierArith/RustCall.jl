@@ -234,7 +234,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
             # Ensure generic functions and return types are registered
             # (the registries are volatile)
-            _register_manifest(manifest, lib_name)
+            _register_manifest(expanded, lib_name)
 
             return lib_name
         end
@@ -253,7 +253,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
         end
 
-        _register_manifest(manifest, lib_name)
+        _register_manifest(expanded, lib_name)
 
         return lib_name
     end
@@ -295,7 +295,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Temporarily disabled LLVM IR loading for stability
     # (LLVM IR is used for type inference and @rust_llvm)
 
-    _register_manifest(manifest, lib_name)
+    _register_manifest(expanded, lib_name)
 
     return lib_name
 end
@@ -369,7 +369,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         end
         @debug "Using cached Cargo library from memory" lib_name=lib_name
 
-        _register_manifest(manifest, lib_name)
+        _register_manifest(expanded, lib_name)
 
         return lib_name
     end
@@ -388,7 +388,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             end
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
 
-            _register_manifest(manifest, lib_name)
+            _register_manifest(expanded, lib_name)
 
             return lib_name
         end
@@ -426,7 +426,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
 
-        _register_manifest(manifest, lib_name)
+        _register_manifest(expanded, lib_name)
     finally
         # Clean up temporary project (keep for debugging if debug mode is enabled)
         compiler = get_default_compiler()
@@ -446,21 +446,26 @@ end
 
 
 """
-    _register_manifest(manifest::Dict, lib_name::String)
+    _register_manifest(expanded::ExpandedInline, lib_name::String)
 
 Register everything the manifest of a compiled block tells us:
 
-- generic free functions and generic struct wrappers, for on-demand monomorphization
+- generic free functions and generic struct wrappers, for on-demand
+  monomorphization. The registered code is the whole expanded block and the
+  function is addressed by its qualified name, so `specialize` instantiates it
+  in place with sibling items, imports and `super::` paths intact.
 - return types of exported functions, so `@rust f(...)` works without `::T`
 """
-function _register_manifest(manifest::Dict, lib_name::String)
+function _register_manifest(expanded, lib_name::String)
+    manifest = expanded.manifest
     for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info)
+        register_generic_struct_wrappers(info, expanded.source)
     end
     for sig in manifest_function_signatures(manifest; only_attributed = false)
         if sig.is_generic
-            register_generic_function(sig.name, sig.source, Symbol.(sig.type_params), sig.constraints, "";
-                                      arg_types = sig.arg_types, return_type = sig.return_type)
+            register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
+                                      arg_types = sig.arg_types, return_type = sig.return_type,
+                                      path = qualified_name(sig.module_path, sig.name))
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         elseif sig.exported
             _register_return_type(sig, lib_name)

@@ -61,6 +61,7 @@ struct RustStructInfo
     has_borrowed_string_helper::Bool
     generic_wrappers::Vector{Tuple{String, String}}
     constraints::Dict{Symbol, TypeConstraints}
+    module_path::Vector{String}
 end
 
 function RustStructInfo(name::String, type_params::Vector{String}, methods::Vector{RustMethod},
@@ -72,10 +73,12 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         has_owned_string_helper::Bool = false,
                         has_borrowed_string_helper::Bool = false,
                         generic_wrappers::Vector{Tuple{String, String}} = Tuple{String, String}[],
-                        constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}())
+                        constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
+                        module_path::Vector{String} = String[])
     RustStructInfo(name, type_params, methods, context_code, fields, has_derive_julia_struct,
                    derive_options, field_getters, field_setters, has_clone,
-                   has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints)
+                   has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
+                   module_path)
 end
 
 """
@@ -86,20 +89,25 @@ Whether the manifest recorded an exported getter for the field.
 field_is_accessible(info::RustStructInfo, field_name::AbstractString) = haskey(info.field_getters, String(field_name))
 
 """
-    register_generic_struct_wrappers(info::RustStructInfo)
+    register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String)
 
-Register the generic wrapper functions of a generic `#[julia]` struct (as
-produced by the extractor) for on-demand monomorphization. Non-generic structs
-have their wrappers compiled into the library directly and need no registration.
+Register the generic wrapper functions of a generic `#[julia]` struct for
+on-demand monomorphization. The extractor emits the (unexported) generic
+wrappers into the expanded source next to the struct, so the registered code
+is the whole expanded block and each wrapper is addressed by its qualified
+name (`module::Struct_method`); `specialize` then instantiates it in place with
+every module-scoped name available. Non-generic structs have their wrappers
+compiled into the library directly and need no registration.
 """
-function register_generic_struct_wrappers(info::RustStructInfo)
+function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String)
     isempty(info.type_params) && return nothing
     type_params = Symbol.(info.type_params)
-    for (wrapper_name, source) in info.generic_wrappers
+    for (wrapper_name, _) in info.generic_wrappers
         m = findfirst(mm -> "$(info.name)_$(mm.name)" == wrapper_name, info.methods)
         arg_types = m === nothing ? String[] : info.methods[m].arg_types
-        register_generic_function(wrapper_name, source, type_params, info.constraints, info.context_code;
-                                  arg_types = arg_types)
+        register_generic_function(wrapper_name, expanded_source, type_params, info.constraints, "";
+                                  arg_types = arg_types,
+                                  path = qualified_name(info.module_path, wrapper_name))
     end
     return nothing
 end

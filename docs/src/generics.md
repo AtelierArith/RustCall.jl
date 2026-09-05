@@ -176,21 +176,6 @@ RustCall.register_generic_function("add", code, [:T], constraints)
 RustCall.register_generic_function("add_legacy", code, [:T], Dict(:T => "Copy + Add<Output = T>"))
 ```
 
-### Converting Constraints to Rust Syntax
-
-You can convert parsed constraints back to Rust syntax:
-
-```julia
-using RustCall
-
-constraints = Dict(:T => RustCall.TypeConstraints([
-    RustCall.TraitBound("Copy", String[]),
-    RustCall.TraitBound("Clone", String[])
-]))
-rust_str = RustCall.constraints_to_rust_string(constraints)
-println(rust_str)  # "T: Copy + Clone"
-```
-
 ## Limitations
 
 ### Trait Bounds Validation
@@ -233,7 +218,6 @@ Trait bounds (`T: Copy + Clone`, `where T: Add<Output = T>`) are read by the
 Rust-side parser and reported in the FFI manifest; Julia receives them as
 `TypeConstraints` on `GenericFunctionInfo.constraints` and never parses them
 from source text.
-- `constraints_to_rust_string(constraints)` - Convert constraints back to Rust syntax
 
 ### Registries
 

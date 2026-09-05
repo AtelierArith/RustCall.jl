@@ -24,6 +24,7 @@ where
 }
 """
 line = 5
+module_path = []
 
 [[functions.type_params]]
 name = "T"
@@ -54,6 +55,7 @@ err_type = ""
 inner_type = ""
 source = ""
 line = 15
+module_path = []
 
 [[functions.args]]
 name = "value"
@@ -74,6 +76,7 @@ err_type = ""
 inner_type = ""
 source = ""
 line = 20
+module_path = []
 
 [[functions]]
 name = "cfg_disabled"
@@ -90,3 +93,4 @@ err_type = ""
 inner_type = ""
 source = ""
 line = 35
+module_path = []

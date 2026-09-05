@@ -192,7 +192,19 @@ mod tests {
         assert!(names.contains(&"Pair_free".to_string()));
         assert!(names.contains(&"Pair_get_a".to_string()));
         assert!(s.context_source.contains("pub struct Pair<T>"));
-        assert!(!e.source.contains("Pair_free"));
+        // generic wrappers are emitted (unexported) so they can be specialized in place
+        assert!(e.source.contains("pub fn Pair_free<T>"));
+        assert!(!e.source.contains("extern \"C\" fn Pair_free"));
+        let sp = specialize::specialize(
+            &e.source,
+            "Pair_first",
+            &[("T".to_string(), "i32".to_string())],
+            "Pair_first_i32",
+        )
+        .unwrap();
+        assert!(sp
+            .source
+            .contains("pub extern \"C\" fn Pair_first_i32(ptr: *const Pair<i32>) -> i32"));
 
         let full = format!("{}\n{}", s.context_source, s.generic_wrappers[0].source);
         let sp = specialize::specialize(
@@ -228,7 +240,9 @@ mod tests {
             .map(|f| f.name.clone())
             .collect();
         assert_eq!(names, vec!["inner_add", "deeper"]);
+        assert_eq!(e.manifest.functions[1].module_path, vec!["api", "deep"]);
         assert_eq!(e.manifest.structs[0].name, "P");
+        assert_eq!(e.manifest.structs[0].module_path, vec!["api"]);
         assert!(e.source.contains("pub extern \"C\" fn inner_add"));
         assert!(e.source.contains("pub extern \"C\" fn P_new"));
         assert!(!e.source.contains("#[julia]"));
@@ -237,6 +251,42 @@ mod tests {
         let c = extract::extract(src, Mode::Crate).unwrap();
         assert_eq!(c.functions.len(), 2);
         assert_eq!(c.structs.len(), 1);
+    }
+
+    #[test]
+    fn generic_wrappers_typecheck_generically() {
+        let src = r#"
+            #[julia]
+            pub struct Bag<T> where T: Copy { items: Vec<Option<T>>, first: T }
+            impl<T> Bag<T> where T: Copy {
+                pub fn new(first: T) -> Self { Self { items: Vec::new(), first } }
+                pub fn first(&self) -> T { self.first }
+            }
+        "#;
+        let e = expand::expand(src).unwrap();
+        assert!(e.source.contains("Vec<Option<T>>: Clone"));
+        assert!(e.source.contains("T: Copy"));
+        // Prove it with rustc when available.
+        if let Ok(rustc) = std::env::var("RUSTC").or_else(|_| Ok::<_, ()>("rustc".to_string())) {
+            let dir =
+                std::env::temp_dir().join(format!("rustcall_core_gen_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let file = dir.join("bag.rs");
+            std::fs::write(&file, format!("#![allow(unused)]\n{}", e.source)).unwrap();
+            if let Ok(out) = std::process::Command::new(rustc)
+                .args(["--crate-type", "cdylib", "--edition", "2021", "-o"])
+                .arg(dir.join("libbag.so"))
+                .arg(&file)
+                .output()
+            {
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

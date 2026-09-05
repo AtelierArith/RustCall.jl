@@ -146,6 +146,28 @@ using TOML
         p = ModPoint(1.5)
         @test p.x == 1.5
         @test get_x(p) == 1.5
+
+        # Generic items inside a module are specialized in place, so sibling
+        # items and `use` imports stay in scope during monomorphization.
+        rust"""
+        mod gen {
+            use std::ops::Add;
+            fn offset() -> i32 { 100 }
+            pub fn mod_twice<T: Add<Output = T> + Copy>(x: T) -> T { x + x }
+            pub fn mod_offset<T: Into<i32>>(x: T) -> i32 { let v: i32 = x.into(); v + offset() }
+
+            #[julia]
+            pub struct Cell<T> { value: T }
+            impl<T: Copy> Cell<T> {
+                pub fn new(value: T) -> Self { Self { value } }
+                pub fn get(&self) -> T { self.value }
+            }
+        }
+        """
+        @test (@rust mod_twice(Int32(21))) == 42
+        @test (@rust mod_offset(Int32(5))) == 105
+        c = Cell{Int64}(Int64(9))
+        @test get(c) == 9
     end
 
     @testset "syntax that broke the old parsers (#169, #177/#201, #184, #233)" begin

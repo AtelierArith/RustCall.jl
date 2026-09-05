@@ -21,6 +21,7 @@ where
 }
 """
 line = 1
+module_path = []
 
 [[functions.type_params]]
 name = "T"
@@ -47,6 +48,7 @@ err_type = ""
 inner_type = ""
 source = ""
 line = 38
+module_path = []
 
 [[functions.args]]
 name = "value"
@@ -83,6 +85,7 @@ where
 }
 """
 line = 1
+module_path = []
 
 [[structs.type_params]]
 name = "T"
@@ -205,7 +208,11 @@ where
 [[structs.generic_wrappers]]
 name = "Pair_get_left"
 source = """
-pub fn Pair_get_left<T>(ptr: *const Pair<T>) -> T {
+pub fn Pair_get_left<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+    T: Copy,
+{
     unsafe { (*ptr).left }
 }
 """
@@ -213,7 +220,10 @@ pub fn Pair_get_left<T>(ptr: *const Pair<T>) -> T {
 [[structs.generic_wrappers]]
 name = "Pair_set_left"
 source = """
-pub fn Pair_set_left<T>(ptr: *mut Pair<T>, value: T) {
+pub fn Pair_set_left<T>(ptr: *mut Pair<T>, value: T)
+where
+    T: Clone,
+{
     unsafe {
         (*ptr).left = value;
     }
@@ -223,7 +233,11 @@ pub fn Pair_set_left<T>(ptr: *mut Pair<T>, value: T) {
 [[structs.generic_wrappers]]
 name = "Pair_get_right"
 source = """
-pub fn Pair_get_right<T>(ptr: *const Pair<T>) -> T {
+pub fn Pair_get_right<T>(ptr: *const Pair<T>) -> T
+where
+    T: Clone,
+    T: Copy,
+{
     unsafe { (*ptr).right }
 }
 """
@@ -231,7 +245,10 @@ pub fn Pair_get_right<T>(ptr: *const Pair<T>) -> T {
 [[structs.generic_wrappers]]
 name = "Pair_set_right"
 source = """
-pub fn Pair_set_right<T>(ptr: *mut Pair<T>, value: T) {
+pub fn Pair_set_right<T>(ptr: *mut Pair<T>, value: T)
+where
+    T: Clone,
+{
     unsafe {
         (*ptr).right = value;
     }
@@ -241,7 +258,10 @@ pub fn Pair_set_right<T>(ptr: *mut Pair<T>, value: T) {
 [[structs.generic_wrappers]]
 name = "Pair_free"
 source = """
-pub fn Pair_free<T>(ptr: *mut Pair<T>) {
+pub fn Pair_free<T>(ptr: *mut Pair<T>)
+where
+    T: Clone,
+{
     if !ptr.is_null() {
         unsafe {
             drop(Box::from_raw(ptr));

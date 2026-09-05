@@ -15,6 +15,7 @@ err_type = "i32"
 inner_type = ""
 source = ""
 line = 26
+module_path = []
 
 [[functions.args]]
 name = "value"
@@ -34,6 +35,7 @@ err_type = ""
 inner_type = "i32"
 source = ""
 line = 31
+module_path = []
 
 [[functions.args]]
 name = "value"
@@ -50,6 +52,7 @@ has_borrowed_string_helper = true
 context_source = ""
 generic_wrappers = []
 line = 1
+module_path = []
 
 [[structs.fields]]
 name = "name"

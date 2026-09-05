@@ -21,11 +21,11 @@ signature_for(code, name; mode = "inline") = only(
         code_i32 = "#[no_mangle] pub extern \"C\" fn same_name() -> i32 { 1 }"
         code_f64 = "#[no_mangle] pub extern \"C\" fn same_name() -> f64 { 1.0 }"
 
-        RustCall._register_manifest(RustCall.extract_manifest(code_i32; mode = "inline"), "lib_i32")
+        RustCall._register_manifest(RustCall.expand_inline(code_i32), "lib_i32")
         @test RustCall.FUNCTION_RETURN_TYPES["same_name"] == Int32
         @test RustCall.get_function_return_type("lib_i32", "same_name") == Int32
 
-        RustCall._register_manifest(RustCall.extract_manifest(code_f64; mode = "inline"), "lib_f64")
+        RustCall._register_manifest(RustCall.expand_inline(code_f64), "lib_f64")
         @test RustCall.FUNCTION_RETURN_TYPES["same_name"] == Float64
         @test RustCall.get_function_return_type("lib_i32", "same_name") == Int32
         @test RustCall.get_function_return_type("lib_f64", "same_name") == Float64

@@ -121,12 +121,19 @@ pub fn specialize(
     let mut file: syn::File =
         syn::parse_file(source).map_err(|e| SpecializeError::Parse(e.to_string()))?;
 
-    let position = file
-        .items
-        .iter()
-        .position(|item| matches!(item, Item::Fn(f) if f.sig.ident == fn_name))
+    // `fn_name` may be qualified with the enclosing inline modules
+    // (`api::deep::f`); the function is replaced where it lives so sibling
+    // items, `use` imports and `super::` paths keep resolving.
+    let segments: Vec<&str> = fn_name.split("::").collect();
+    let (module_path, bare_name) = segments.split_at(segments.len() - 1);
+    let bare_name = bare_name[0];
+    let items = locate_items(&mut file.items, module_path)
         .ok_or_else(|| SpecializeError::FunctionNotFound(fn_name.to_string()))?;
-    let original = match &file.items[position] {
+    let position = items
+        .iter()
+        .position(|item| matches!(item, Item::Fn(f) if f.sig.ident == bare_name))
+        .ok_or_else(|| SpecializeError::FunctionNotFound(fn_name.to_string()))?;
+    let original = match &items[position] {
         Item::Fn(f) => f.clone(),
         _ => unreachable!(),
     };
@@ -204,8 +211,10 @@ pub fn specialize(
     func.vis = syn::Visibility::Public(Default::default());
     func.sig.abi = Some(syn::parse_quote!(extern "C"));
 
-    let entry = function_entry(&func);
-    file.items[position] = Item::Fn(func);
+    let mut entry = function_entry(&func);
+    entry.module_path = module_path.iter().map(|s| s.to_string()).collect();
+    let items = locate_items(&mut file.items, module_path).expect("module path resolved above");
+    items[position] = Item::Fn(func);
 
     let mut manifest = Manifest::new(Mode::Inline);
     manifest.functions.push(entry);
@@ -214,6 +223,23 @@ pub fn specialize(
         source: prettyplease::unparse(&file),
         manifest,
     })
+}
+
+/// Item list of the inline module chain `path` (empty path = file root).
+fn locate_items<'a>(items: &'a mut Vec<Item>, path: &[&str]) -> Option<&'a mut Vec<Item>> {
+    let Some((head, rest)) = path.split_first() else {
+        return Some(items);
+    };
+    for item in items.iter_mut() {
+        if let Item::Mod(m) = item {
+            if m.ident == head {
+                if let Some((_, inner)) = &mut m.content {
+                    return locate_items(inner, rest);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn function_entry(func: &ItemFn) -> Function {
@@ -252,6 +278,7 @@ fn function_entry(func: &ItemFn) -> Function {
         inner_type: String::new(),
         source: String::new(),
         line: 0,
+        module_path: Vec::new(),
     }
 }
 
@@ -310,6 +337,33 @@ mod tests {
         assert!(out
             .source
             .contains("pub extern \"C\" fn Point_new_i64(x: i64) -> *mut Point<i64>"));
+    }
+
+    #[test]
+    fn specializes_inside_inline_modules() {
+        let src =
+            "mod api { fn helper() -> i32 { 7 } pub fn f<T>(x: T) -> T { let _ = helper(); x } }";
+        let out = specialize(
+            src,
+            "api::f",
+            &[("T".to_string(), "i32".to_string())],
+            "f_i32",
+        )
+        .unwrap();
+        assert!(out.source.contains("mod api {"));
+        assert!(out
+            .source
+            .contains("pub extern \"C\" fn f_i32(x: i32) -> i32"));
+        assert!(!out.source.contains("pub fn f<T>"));
+        assert_eq!(out.manifest.functions[0].module_path, vec!["api"]);
+        assert!(matches!(
+            specialize(src, "api::nope", &[], "n").unwrap_err(),
+            SpecializeError::FunctionNotFound(_)
+        ));
+        assert!(matches!(
+            specialize(src, "other::f", &[], "n").unwrap_err(),
+            SpecializeError::FunctionNotFound(_)
+        ));
     }
 
     #[test]

@@ -114,6 +114,7 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
             String::new()
         },
         line: func.span().start().line,
+        module_path: Vec::new(),
     }
 }
 
@@ -207,5 +208,6 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         context_source: String::new(),
         generic_wrappers: Vec::new(),
         line: model.line,
+        module_path: Vec::new(),
     }
 }
