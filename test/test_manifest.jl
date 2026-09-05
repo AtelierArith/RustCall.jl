@@ -472,8 +472,14 @@ using TOML
             @test haskey(RustCall.RUST_LIBRARIES, resolved) && haskey(RustCall.RUST_LIBRARIES, stale_name)
             @test RustCall.RUST_LIBRARIES[stale_name] === RustCall.RUST_LIBRARIES[resolved]
             @test stale_mod.__RUSTCALL_ACTIVE_LIB[] == resolved
-            # The stored key now short-circuits `ensure_loaded` (no second reload) ...
-            @test RustCall.ensure_loaded(stale_name, stale_mod.__RUSTCALL_LIBS[stale_name]) == stale_name
+            # `__RUSTCALL_LIBS` is *rebound*, not merely aliased (#278 B6): the
+            # entry moves to the name the manifest was registered under, so the
+            # next `_resolve_lib` does not walk the reload path again ...
+            @test haskey(stale_mod.__RUSTCALL_LIBS, resolved)
+            @test !haskey(stale_mod.__RUSTCALL_LIBS, stale_name)
+            # ... and the stored key still short-circuits `ensure_loaded`
+            # through the RUST_LIBRARIES alias, for callers that name it.
+            @test RustCall.ensure_loaded(stale_name, stale_mod.__RUSTCALL_LIBS[resolved]) == stale_name
             @test RustCall._resolve_lib(stale_mod, "") == resolved
             @test RustCall._resolve_lib(stale_mod, stale_name) == stale_name
             # ... and both names reach the symbol without the global fallback search.

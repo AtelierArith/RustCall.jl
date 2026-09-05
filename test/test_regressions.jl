@@ -1242,6 +1242,69 @@ end
     @test RustCall.MONOMORPHIZED_FUNCTIONS isa Dict{String, RustCall.FunctionInfo}
 end
 
+# #278 B6: a precompiled module stores the *inputs* of a `rust"""` block, never
+# a key — `toolchain` and `compiler` are properties of the loading session, so a
+# stored key would pin a rustc that may since have been upgraded. The name a
+# later session derives therefore routinely differs from the stored one, and
+# `_resolve_lib` has to rebind the registry entry rather than only alias it.
+@testset "#278: a reloaded block rebinds its stored name" begin
+    @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2).artifact_schema ==
+          RustCall.ARTIFACT_ID_SCHEMA_VERSION
+    @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2, "").cargo_env == ""
+    @test RustCall.RustBlockSnapshot("fn f() {}", "", "t", 2, nothing, 0).artifact_schema == 0
+
+    if RustCall.check_rustc_available()
+        code = """
+        #[no_mangle]
+        pub extern "C" fn rc278_snapshot_probe() -> i32 { 7 }
+        """
+        compiler = RustCall.get_default_compiler()
+        cfg = RustCall._cfg_snapshot(:strict)
+        actual = RustCall._compile_and_load_rust(code, "snapshot", 0; cfg_text = cfg,
+                                                 compiler_target = compiler.target_triple,
+                                                 compiler_level = compiler.optimization_level)
+        block = RustCall.RustBlockSnapshot(code, cfg, compiler.target_triple,
+                                           compiler.optimization_level)
+        @test RustCall.ensure_loaded(actual, block) == actual
+
+        # A stale name that happens to be registered short-circuits ...
+        stale = "rust_rc278_stale_name"
+        lock(RustCall.REGISTRY_LOCK) do
+            RustCall.RUST_LIBRARIES[stale] = RustCall.RUST_LIBRARIES[actual]
+        end
+        try
+            @test RustCall.ensure_loaded(stale, block) == stale
+            # ... unless the snapshot predates the current identity encoding,
+            # in which case the stored name is not evidence of anything:
+            # recompute, and let the caller alias. Never an error.
+            old = RustCall.RustBlockSnapshot(code, cfg, compiler.target_triple,
+                                             compiler.optimization_level, nothing, 0)
+            @test RustCall.ensure_loaded(stale, old) == actual
+
+            # `_resolve_lib` rebinds __RUSTCALL_LIBS and the module's active
+            # library to the name the manifest was registered under, keeping the
+            # alias in RUST_LIBRARIES for callers that still name the old one.
+            mod = Module(:RC278ResolveProbe)
+            Core.eval(mod, :(const __RUSTCALL_LIBS = Dict{String, Any}()))
+            Core.eval(mod, :(const __RUSTCALL_ACTIVE_LIB = Ref("")))
+            libs = getfield(mod, :__RUSTCALL_LIBS)
+            libs[stale] = old
+            getfield(mod, :__RUSTCALL_ACTIVE_LIB)[] = stale
+
+            RustCall._resolve_lib(mod, "")
+            @test haskey(libs, actual)
+            @test !haskey(libs, stale)
+            @test getfield(mod, :__RUSTCALL_ACTIVE_LIB)[] == actual
+            @test lock(() -> haskey(RustCall.RUST_LIBRARIES, stale), RustCall.REGISTRY_LOCK)
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, stale)
+                RustCall.clear_library_metadata!(stale)
+            end
+        end
+    end
+end
+
 # #249: the free symbol is per-owner, so two libraries can both export
 # `X_free_rust_string`. Picking it by name from a global table frees a buffer
 # through the wrong allocator; it must be resolved inside the library that

@@ -245,10 +245,22 @@ struct RustBlockSnapshot
     # tracked variable was set, which is still a snapshot to restore — and
     # `nothing` for direct rustc blocks.
     cargo_env::Union{Nothing, String}
-end
+    # Which `ArtifactId` encoding was in force when this snapshot was recorded.
+    # The snapshot stores *inputs*, never a key: `toolchain` and `compiler` are
+    # properties of the loading session, so a precompiled key would pin a rustc
+    # that may since have been upgraded — #252 in reverse. An older schema means
+    # "recompute, then alias", never an error (#278).
+    artifact_schema::Int
 
-RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level) =
-    RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level, nothing)
+    function RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level,
+                               cargo_env = nothing,
+                               artifact_schema = ARTIFACT_ID_SCHEMA_VERSION)
+        return new(String(code), String(cfg_text), String(compiler_target),
+                   Int(compiler_level),
+                   cargo_env === nothing ? nothing : String(cargo_env),
+                   Int(artifact_schema))
+    end
+end
 
 """
     ensure_loaded(lib_name::String, block) -> String
@@ -260,7 +272,12 @@ current default compiler). Returns the name of the loaded library. Useful for
 precompiled modules that need to reload libraries at runtime.
 """
 function ensure_loaded(lib_name::String, block::RustBlockSnapshot)
-    needs_reload = lock(REGISTRY_LOCK) do
+    # A snapshot recorded under an older `ArtifactId` encoding names a library
+    # this session can no longer derive, so the stored name cannot be trusted as
+    # evidence that the right library is loaded: recompute, and let the caller
+    # alias. Never an error.
+    stale_schema = block.artifact_schema != ARTIFACT_ID_SCHEMA_VERSION
+    needs_reload = stale_schema || lock(REGISTRY_LOCK) do
         !haskey(RUST_LIBRARIES, lib_name)
     end
     needs_reload || return lib_name

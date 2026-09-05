@@ -196,9 +196,22 @@ function _resolve_lib(mod::Module, lib_name::String)
     # This is needed because get_function_pointer does fallback search across all libraries
     if isdefined(mod, :__RUSTCALL_LIBS)
         libs = getfield(mod, :__RUSTCALL_LIBS)
-        for (lname, code) in libs
+        # `collect` first: a reload rebinds entries, and a Dict must not be
+        # mutated while it is iterated.
+        for (lname, code) in collect(libs)
             actual = ensure_loaded(lname, code)
-            actual == lname || _alias_reloaded_library(mod, lname, actual)
+            actual == lname && continue
+            # The stored name no longer describes what was loaded — routine
+            # since #278, because the identity covers the toolchain and the
+            # compiler snapshot, and either may have changed since
+            # precompilation. Alias so old callers still resolve, *and* rebind
+            # the registry entry (and the module's active library, via
+            # `_alias_reloaded_library`) to the name the manifest was actually
+            # registered under, so the next `_resolve_lib` does not walk the
+            # reload path all over again.
+            _alias_reloaded_library(mod, lname, actual)
+            libs[actual] = code
+            delete!(libs, lname)
         end
     end
 
