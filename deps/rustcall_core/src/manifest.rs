@@ -94,6 +94,11 @@ pub struct Function {
     pub attribute: Attribute,
     /// True when the generated code carries `#[no_mangle] extern "C"`.
     pub exported: bool,
+    /// `#[cfg(...)]` predicate of the item (`unix`, `all(unix, feature = "x")`),
+    /// empty when unconditional. Items whose predicate is false under the
+    /// configuration given to the extractor are not reported at all.
+    #[serde(default)]
+    pub cfg: String,
     pub is_generic: bool,
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
@@ -115,6 +120,14 @@ pub struct Function {
     /// runtime monomorphization via `specialize`.
     #[serde(default)]
     pub source: String,
+    /// Whether the body contains a `#[cfg(...)]` / `#[cfg_attr(...)]`
+    /// attribute or a `cfg!(...)` macro. Item-level pruning never resolves
+    /// those, so the body still depends on the configuration it is compiled
+    /// under; a caller that later compiles the (specialized) source under
+    /// another configuration than the one the item was extracted for must
+    /// refuse rather than guess.
+    #[serde(default)]
+    pub body_has_cfg: bool,
     /// 1-based line of the item in the input file.
     pub line: usize,
     /// Enclosing inline modules (`mod api { mod deep { fn f } }` -> `["api", "deep"]`).
@@ -160,6 +173,9 @@ pub struct Method {
 pub struct Struct {
     pub name: String,
     pub attribute: Attribute,
+    /// `#[cfg(...)]` predicate of the struct item, see [`Function::cfg`].
+    #[serde(default)]
+    pub cfg: String,
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
     #[serde(default)]

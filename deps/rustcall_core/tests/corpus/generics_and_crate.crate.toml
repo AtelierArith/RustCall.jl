@@ -6,6 +6,7 @@ name = "generic_identity"
 symbol = "generic_identity"
 attribute = "julia"
 exported = false
+cfg = ""
 is_generic = true
 return_type = "T"
 return_kind = "plain"
@@ -20,6 +21,7 @@ where
     value
 }
 """
+body_has_cfg = false
 line = 30
 module_path = []
 
@@ -37,6 +39,7 @@ rust_type = "T"
 [[structs]]
 name = "Pair"
 attribute = "julia"
+cfg = ""
 derives = []
 has_clone = false
 has_owned_string_helper = false

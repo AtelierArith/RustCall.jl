@@ -142,7 +142,22 @@ macro rust_str(code)
     # The extractor expands #[julia] items and reports every signature in a
     # manifest. Julia definitions are emitted from that manifest at macro
     # expansion time; the expanded Rust source is compiled at run time.
-    expanded = expand_inline(String(code))
+    # Blocks with dependencies are built by Cargo, whose cfg set (features,
+    # profile) is not known here: decide only target predicates for them.
+    code_str = String(code)
+    cfg_mode = has_dependencies(code_str) ? :cargo : :strict
+    # One configuration for both phases: the Julia wrappers emitted here and
+    # the run-time expansion *and compilation* must agree on which items exist,
+    # so the cfg snapshot and the compiler settings it was derived from travel
+    # into the generated code.
+    cfg_text = _cfg_snapshot(cfg_mode)
+    snapshot_compiler = get_default_compiler()
+    # Cargo-backed blocks also record the Cargo/RUSTFLAGS environment that
+    # produced `cfg_text`, so a reload can rebuild under it. An empty snapshot
+    # is a real snapshot ("nothing was set"); `nothing` marks direct rustc
+    # blocks, which have no Cargo environment.
+    cargo_env = cfg_mode === :cargo ? _cargo_cfg_env_key() : nothing
+    expanded = expand_inline(code_str; cfg = cfg_mode, cfg_text = cfg_text)
     struct_infos = manifest_struct_infos(expanded.manifest)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
 
@@ -150,15 +165,24 @@ macro rust_str(code)
     julia_func_wrappers = emit_julia_function_wrappers(julia_func_signatures)
 
     return quote
-        lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line))
+        lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line);
+                                          cfg_text = $cfg_text,
+                                          compiler_target = $(snapshot_compiler.target_triple),
+                                          compiler_level = $(snapshot_compiler.optimization_level),
+                                          cargo_env = $cargo_env)
 
-        # Store library information in the calling module for precompilation support
+        # Store the block (source plus the cfg/compiler snapshot it was expanded
+        # under) in the calling module for precompilation support: a reload in a
+        # later session rebuilds the very same configuration, see `ensure_loaded`.
         if !isdefined($__module__, :__RUSTCALL_LIBS)
             # Use Core.eval to define the constant if it doesn't exist
             # Note: We use a Dict to support multiple blocks
-            @eval $__module__ const __RUSTCALL_LIBS = Dict{String, String}()
+            @eval $__module__ const __RUSTCALL_LIBS = Dict{String, Any}()
         end
-        $__module__.__RUSTCALL_LIBS[lib_name] = $(esc(code))
+        $__module__.__RUSTCALL_LIBS[lib_name] = RustCall.RustBlockSnapshot(
+            $(esc(code)), $cfg_text,
+            $(snapshot_compiler.target_triple), $(snapshot_compiler.optimization_level),
+            $cargo_env)
 
         # Track the "current" library for this module
         # Use Ref{String} so the binding is const but the value can be mutated
@@ -180,19 +204,68 @@ macro rust_str(code)
 end
 
 """
-    ensure_loaded(lib_name::String, code::String)
+    RustBlockSnapshot
 
-Ensure that a Rust library is loaded in the current session.
-Useful for precompiled modules that need to reload libraries at runtime.
+What a `rust\"\"\"` block records in the calling module's `__RUSTCALL_LIBS`:
+the source and the cfg / compiler configuration it was expanded under, so a
+reload after precompilation (`ensure_loaded`) rebuilds exactly the library the
+emitted Julia wrappers were generated for.
 """
+struct RustBlockSnapshot
+    code::String
+    cfg_text::String
+    compiler_target::String
+    compiler_level::Int
+    # `_cargo_cfg_env_key()` for Cargo-backed blocks — possibly "" when no
+    # tracked variable was set, which is still a snapshot to restore — and
+    # `nothing` for direct rustc blocks.
+    cargo_env::Union{Nothing, String}
+end
+
+RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level) =
+    RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level, nothing)
+
+"""
+    ensure_loaded(lib_name::String, block) -> String
+
+Ensure that a Rust library is loaded in the current session; `block` is the
+`RustBlockSnapshot` stored by the macro (a plain source string is
+accepted for modules precompiled by older versions, and is rebuilt under the
+current default compiler). Returns the name of the loaded library. Useful for
+precompiled modules that need to reload libraries at runtime.
+"""
+function ensure_loaded(lib_name::String, block::RustBlockSnapshot)
+    needs_reload = lock(REGISTRY_LOCK) do
+        !haskey(RUST_LIBRARIES, lib_name)
+    end
+    needs_reload || return lib_name
+    return _compile_and_load_rust(block.code, "reload", 0;
+                                  cfg_text = block.cfg_text,
+                                  compiler_target = block.compiler_target,
+                                  compiler_level = block.compiler_level,
+                                  cargo_env = block.cargo_env)
+end
+
 function ensure_loaded(lib_name::String, code::String)
     needs_reload = lock(REGISTRY_LOCK) do
         !haskey(RUST_LIBRARIES, lib_name)
     end
-    if needs_reload
-        _compile_and_load_rust(code, "reload", 0)
-    end
-    return nothing
+    needs_reload || return lib_name
+    return _compile_and_load_rust(code, "reload", 0)
+end
+
+"""
+    _snapshot_compiler(target, level) -> RustCompiler
+
+The default compiler with the target triple and optimization level captured
+at macro-expansion time (the settings that decided the cfg snapshot); the
+default compiler itself when no snapshot is given.
+"""
+function _snapshot_compiler(target, level)
+    default = get_default_compiler()
+    (target === nothing || level === nothing) && return default
+    return RustCompiler(String(target), Int(level), default.emit_debug_info,
+                        default.debug_mode, default.debug_dir)
 end
 
 """
@@ -204,27 +277,38 @@ Uses caching to avoid recompilation when possible.
 Phase 3: Automatically detects dependencies in the code and uses Cargo for building
 when external crates are required.
 """
-function _compile_and_load_rust(code::String, source_file::String, source_line::Int)
+function _compile_and_load_rust(code::String, source_file::String, source_line::Int;
+                                cfg_text::Union{Nothing, AbstractString} = nothing,
+                                compiler_target::Union{Nothing, AbstractString} = nothing,
+                                compiler_level::Union{Nothing, Integer} = nothing,
+                                cargo_env::Union{Nothing, AbstractString} = nothing)
     # Phase 3: Check for dependencies in the code
     if has_dependencies(code)
-        return _compile_and_load_rust_with_cargo(code, source_file, source_line)
+        return _compile_and_load_rust_with_cargo(code, source_file, source_line; cfg_text, cargo_env)
     end
 
     # Expand #[julia] items (functions, structs, accessors, method wrappers)
     # ahead of rustc. The manifest describes exactly what was generated.
-    expanded = expand_inline(code)
+    # `cfg_text` is the snapshot captured by the macro (see `_cfg_snapshot`)
+    # and `compiler` the settings it was derived from, so the library is built
+    # with the configuration the Julia wrappers were emitted for even if
+    # `set_default_compiler` ran in between.
+    compiler = _snapshot_compiler(compiler_target, compiler_level)
+    expanded = expand_inline(code; cfg = :strict, cfg_text = cfg_text)
     manifest = expanded.manifest
 
     # Wrap the code if needed
     wrapped_code = wrap_rust_code(expanded.source)
 
     # Generate cache key
-    compiler = get_default_compiler()
     cache_key = generate_cache_key(wrapped_code, compiler)
 
-    # Generate a unique library name based on a deterministic code hash
+    # The in-memory library identity covers the compiler snapshot as well as
+    # the source: the same expanded source built at another opt-level, target
+    # or cfg set is another library (see `_rustc_block_identity`), so a lookup
+    # can never hand back a build made under a different configuration.
     # Use stable_content_hash() — never hash() for persistent identifiers
-    code_hash = stable_content_hash(wrapped_code)[1:16]
+    code_hash = _rustc_block_identity(wrapped_code, compiler, cfg_text)[1:16]
     lib_name = "rust_$(code_hash)"
 
     # Check if already compiled and loaded in memory
@@ -234,7 +318,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
             # Ensure generic functions and return types are registered
             # (the registries are volatile)
-            _register_manifest(expanded, lib_name)
+            _register_manifest(expanded, lib_name; compiler)
 
             return lib_name
         end
@@ -253,7 +337,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
         end
 
-        _register_manifest(expanded, lib_name)
+        _register_manifest(expanded, lib_name; compiler)
 
         return lib_name
     end
@@ -295,7 +379,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Temporarily disabled LLVM IR loading for stability
     # (LLVM IR is used for type inference and @rust_llvm)
 
-    _register_manifest(expanded, lib_name)
+    _register_manifest(expanded, lib_name; compiler)
 
     return lib_name
 end
@@ -320,7 +404,13 @@ Phase 3: Supports rustscript-style dependency specifications.
    // cargo-deps: ndarray="0.15", serde="1.0"
    ```
 """
-function _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int)
+function _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int;
+                                           cfg_text::Union{Nothing, AbstractString} = nothing,
+                                           cargo_env::Union{Nothing, AbstractString} = nothing)
+    # The Cargo/RUSTFLAGS environment the block was expanded under and the
+    # text identifying it (see `_cargo_build_env_for`). An empty snapshot is
+    # not "the current environment": it clears every tracked variable.
+    build_env, build_env_key = _cargo_build_env_for(cargo_env)
     # Parse dependencies from the code
     dependencies = parse_dependencies_from_code(code)
 
@@ -345,7 +435,9 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     # Expand #[julia] items ahead of Cargo. The dependency comments are read
     # from the original source above; the expanded source no longer needs them.
-    expanded = expand_inline(code)
+    # RustCall generates this Cargo project (release profile), so target and
+    # profile predicates are pruned; features and build-script cfgs are kept.
+    expanded = expand_inline(code; cfg = :cargo, cfg_text = cfg_text)
     manifest = expanded.manifest
     augmented_code = expanded.source
 
@@ -356,7 +448,9 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # `// cargo-deps:` would share one in-memory library.
     # Use stable_content_hash() — never hash() for persistent identifiers
     deps_hash = hash_dependencies(dependencies)
-    code_hash = _cargo_block_identity(augmented_code, deps_hash)
+    # `build_env_key` is the environment the build actually runs under: the
+    # snapshot recorded by the macro, or the current one.
+    code_hash = _cargo_block_identity(augmented_code, deps_hash, build_env_key)
 
     # Project and library names
     project_name = "rustcall_$(code_hash[1:12])"
@@ -372,12 +466,12 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         end
         @debug "Using cached Cargo library from memory" lib_name=lib_name
 
-        _register_manifest(expanded, lib_name)
+        _register_manifest(expanded, lib_name; cargo_backed = true)
 
         return lib_name
     end
 
-    cache_key_data = "$(code_hash)_$(deps_hash)_release"
+    cache_key_data = "$(code_hash)_$(deps_hash)_release_$(bytes2hex(sha256(build_env_key)))"
     cache_key = bytes2hex(sha256(cache_key_data))[1:32]
 
     cached_lib = get_cargo_cached_library(cache_key)
@@ -391,7 +485,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             end
             @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=cache_key[1:8]
 
-            _register_manifest(expanded, lib_name)
+            _register_manifest(expanded, lib_name; cargo_backed = true)
 
             return lib_name
         end
@@ -406,7 +500,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # Ensure the code with wrappers is written to the project
         write_rust_code_to_project(project, augmented_code)
 
-        lib_path = build_cargo_project_cached(project, code_hash, release=true)
+        lib_path = build_cargo_project_cached(project, code_hash, release=true, env=build_env)
 
         # Cache the built library (if it wasn't already in cache)
         try
@@ -429,7 +523,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
 
-        _register_manifest(expanded, lib_name)
+        _register_manifest(expanded, lib_name; cargo_backed = true)
     finally
         # Clean up temporary project (keep for debugging if debug mode is enabled)
         compiler = get_default_compiler()
@@ -449,15 +543,65 @@ end
 
 
 """
-    _cargo_block_identity(expanded_source, deps_hash) -> String
+    _block_identity(expanded_source, (name => value)...) -> String
 
-Stable identity of a Cargo-backed inline block: expanded source, dependency
-hash and toolchain fingerprint. Used for the in-memory library name, the
-temporary project name and the disk cache key.
+Stable identity of an inline block: the expanded source, the named sections
+describing the configuration it is built under, and the toolchain
+fingerprint. Both the direct-rustc and the Cargo path derive their library
+names from it ([`_rustc_block_identity`], [`_cargo_block_identity`]), so two
+builds of the same source under different configurations are different
+libraries and a registry lookup never aliases one to the other.
 """
-function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString)
-    return stable_content_hash(string(expanded_source, "\n---deps---\n", deps_hash,
-                                      "\n---toolchain---\n", toolchain_fingerprint()))
+function _block_identity(expanded_source::AbstractString, sections::Pair{String, String}...)
+    io = IOBuffer()
+    write(io, expanded_source)
+    for (name, value) in sections
+        write(io, "\n---", name, "---\n", value)
+    end
+    write(io, "\n---toolchain---\n", toolchain_fingerprint())
+    # Use stable_content_hash() — never hash() for persistent identifiers
+    return stable_content_hash(String(take!(io)))
+end
+
+"""
+    _cargo_block_identity(expanded_source, deps_hash, cargo_env = "") -> String
+
+Identity of a Cargo-backed block: expanded source, dependency hash and the
+Cargo/RUSTFLAGS environment the build runs under (`cargo_env`, see
+`_cargo_cfg_env_key`). Used for the in-memory library name, the temporary
+project name and the disk cache key.
+"""
+function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString,
+                              cargo_env::AbstractString = "")
+    return _block_identity(expanded_source, "deps" => String(deps_hash),
+                           "cargo-env" => String(cargo_env))
+end
+
+# Environment that changes what a direct `rustc` invocation produces: rustc
+# itself ignores `RUSTFLAGS`, but rustup's proxy honours `RUSTUP_TOOLCHAIN`,
+# and RUSTFLAGS is tracked so a user who sets it sees the same rebuild
+# behaviour as with Cargo-backed blocks. Same allowlist discipline as
+# `_is_cargo_env_key`: named variables only, never credentials.
+const _RUSTC_ENV_NAMES = ("RUSTFLAGS", "RUSTUP_TOOLCHAIN")
+
+_rustc_env_key() = join(("$k=$(ENV[k])" for k in _RUSTC_ENV_NAMES if haskey(ENV, k)), "\n")
+
+"""
+    _rustc_block_identity(wrapped_source, compiler, cfg_text) -> String
+
+Identity of a block built by `rustc` directly: wrapped source, the compiler
+snapshot it was expanded for (target, opt-level, debug info), the cfg text
+the wrappers were derived from and the rustc environment
+([`_rustc_env_key`]). `cfg_text === nothing` means the current strict
+snapshot, as in [`expand_inline`].
+"""
+function _rustc_block_identity(wrapped_source::AbstractString, compiler::RustCompiler,
+                              cfg_text::Union{Nothing, AbstractString})
+    text = cfg_text === nothing ? _cfg_snapshot(:strict) : String(cfg_text)
+    return _block_identity(wrapped_source,
+                           "compiler" => "$(compiler.target_triple)_$(compiler.optimization_level)_$(compiler.emit_debug_info)",
+                           "cfg" => bytes2hex(sha256(text)),
+                           "rustc-env" => _rustc_env_key())
 end
 
 """
@@ -471,16 +615,32 @@ Register everything the manifest of a compiled block tells us:
   in place with sibling items, imports and `super::` paths intact.
 - return types of exported functions, so `@rust f(...)` works without `::T`
 """
-function _register_manifest(expanded, lib_name::String)
+function _register_manifest(expanded, lib_name::String; compiler = nothing, cargo_backed::Bool = false)
     manifest = expanded.manifest
     for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source)
+        register_generic_struct_wrappers(info, expanded.source; compiler)
     end
     for sig in manifest_function_signatures(manifest; only_attributed = false)
         if sig.is_generic
+            # Generic functions are compiled lazily; keep the compiler they were
+            # expanded for so a later `set_default_compiler` cannot drop
+            # #[cfg]-gated items from the specialization.
+            #
+            # A lazy specialization is a direct `rustc` build. For a Cargo-backed
+            # block that is a different configuration (profile, `panic`,
+            # RUSTFLAGS `--cfg`s) from the one the block was expanded and built
+            # under. Item-level pruning has resolved the `#[cfg]`s on items and
+            # signatures, but a `#[cfg]` statement or `cfg!` inside the body
+            # would be decided anew by rustc: refuse such a generic rather than
+            # build it under the wrong configuration.
+            blocked = cargo_backed && sig.body_has_cfg ?
+                "generic function `$(sig.name)` comes from a `// cargo-deps:` block and its body " *
+                "contains `#[cfg]` or `cfg!`, which the lazy specialization (a direct rustc build) " *
+                "would evaluate under a different configuration than the Cargo build; move the " *
+                "configuration-dependent code out of the generic body or into a non-generic helper" : ""
             register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
                                       arg_types = sig.arg_types, return_type = sig.return_type,
-                                      path = qualified_name(sig.module_path, sig.name))
+                                      path = qualified_name(sig.module_path, sig.name), compiler, blocked)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         elseif sig.exported
             _register_return_type(sig, lib_name)

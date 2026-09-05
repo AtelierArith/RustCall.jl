@@ -1,0 +1,113 @@
+schema_version = 1
+mode = "crate"
+
+[[functions]]
+name = "unix_only"
+symbol = "unix_only"
+attribute = "julia"
+exported = true
+cfg = "unix"
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+body_has_cfg = false
+line = 5
+module_path = []
+
+[[functions.args]]
+name = "x"
+rust_type = "i32"
+
+[[functions]]
+name = "windows_wide"
+symbol = "windows_wide"
+attribute = "julia"
+exported = true
+cfg = 'all(windows, feature = "wide")'
+is_generic = false
+type_params = []
+args = []
+return_type = "Result<u32, i32>"
+return_kind = "result"
+ok_type = "u32"
+err_type = "i32"
+inner_type = ""
+source = ""
+body_has_cfg = false
+line = 11
+module_path = []
+
+[[functions]]
+name = "maybe"
+symbol = "maybe"
+attribute = "julia"
+exported = true
+cfg = 'not(target_os = "freebsd")'
+is_generic = false
+type_params = []
+return_type = "Option<f64>"
+return_kind = "option"
+ok_type = ""
+err_type = ""
+inner_type = "f64"
+source = ""
+body_has_cfg = false
+line = 17
+module_path = []
+
+[[functions.args]]
+name = "x"
+rust_type = "f64"
+
+[[functions]]
+name = "bonus"
+symbol = "bonus"
+attribute = "julia"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
+args = []
+return_type = "i32"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+body_has_cfg = false
+line = 43
+module_path = []
+
+[[structs]]
+name = "Handle"
+attribute = "julia"
+cfg = "unix"
+type_params = []
+methods = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 23
+module_path = []
+
+[[structs.fields]]
+name = "fd"
+rust_type = "i32"
+ffi_compatible = true
+getter = "Handle_get_fd"
+setter = "Handle_set_fd"
+
+[[structs.fields]]
+name = "epoll"
+rust_type = "i32"
+ffi_compatible = true
+getter = "Handle_get_epoll"
+setter = "Handle_set_epoll"

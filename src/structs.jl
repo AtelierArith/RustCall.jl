@@ -101,7 +101,7 @@ name (`module::Struct_method`); `specialize` then instantiates it in place with
 every module-scoped name available. Non-generic structs have their wrappers
 compiled into the library directly and need no registration.
 """
-function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String)
+function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String; compiler = nothing)
     isempty(info.type_params) && return nothing
     for (wrapper_name, _, wrapper_params) in info.generic_wrappers
         # The wrapper's own parameter names, positionally aligned with the
@@ -116,7 +116,7 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
         arg_types = m === nothing ? String[] : info.methods[m].arg_types
         register_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
                                   arg_types = arg_types,
-                                  path = qualified_name(info.module_path, wrapper_name))
+                                  path = qualified_name(info.module_path, wrapper_name), compiler)
     end
     return nothing
 end

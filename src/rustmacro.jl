@@ -150,6 +150,29 @@ function rust_impl_call(mod, expr, ret_type)
 end
 
 """
+    _alias_reloaded_library(mod, stored_name, actual_name)
+
+A reload derived a different library name than the one a precompiled module
+stored (the identity covers the toolchain fingerprint, compiler snapshot and
+cfg text, any of which may have changed since precompilation). Register the
+loaded handle under the stored name too, so the next `ensure_loaded` finds it
+instead of reloading, and symbol lookups through the stored name hit this
+library directly rather than the global fallback search. The module's active
+library moves to the actual name, under which the manifest was registered.
+"""
+function _alias_reloaded_library(mod::Module, stored_name::String, actual_name::String)
+    lock(REGISTRY_LOCK) do
+        entry = get(RUST_LIBRARIES, actual_name, nothing)
+        entry === nothing || (RUST_LIBRARIES[stored_name] = entry)
+    end
+    if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
+        active = getfield(mod, :__RUSTCALL_ACTIVE_LIB)
+        active[] == stored_name && (active[] = actual_name)
+    end
+    return nothing
+end
+
+"""
     _resolve_lib(mod::Module, lib_name::String)
 
 Resolve the actual library name to use, handling session-aware reloading for precompiled modules.
@@ -163,7 +186,8 @@ function _resolve_lib(mod::Module, lib_name::String)
     if isdefined(mod, :__RUSTCALL_LIBS)
         libs = getfield(mod, :__RUSTCALL_LIBS)
         for (lname, code) in libs
-            ensure_loaded(lname, code)
+            actual = ensure_loaded(lname, code)
+            actual == lname || _alias_reloaded_library(mod, lname, actual)
         end
     end
 

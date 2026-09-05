@@ -131,6 +131,7 @@ function toolchain_fingerprint()
                 "rustc=$(_get_rustc_version())",
                 "cargo=$(_get_cargo_version())",
                 "target=$(Sys.MACHINE)",
+                "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
             ]
             _TOOLCHAIN_FINGERPRINT[] = bytes2hex(sha256(join(parts, "\n")))
         end
@@ -216,8 +217,255 @@ struct ExpandedInline
     manifest::Dict{String, Any}
 end
 
-const _EXPANSION_CACHE = Dict{String, ExpandedInline}()
+# Keyed by source, cfg mode and a digest of the cfg set actually used, so a
+# later `set_default_compiler` (other target / opt-level) re-expands.
+const _EXPANSION_CACHE = Dict{Tuple{String, Symbol, String}, ExpandedInline}()
 const _EXPANSION_LOCK = ReentrantLock()
+
+# `rustc --print cfg` output and the file handed to the extractor, keyed by the
+# rustc flags that decide the configuration.
+const _RUSTC_CFG_TEXT = Dict{Vector{String}, String}()
+# cfg files handed to the extractor, keyed by the digest of their content.
+const _RUSTC_CFG_FILE = Dict{String, String}()
+
+"""
+    _cfg_rustc_flags(compiler = get_default_compiler()) -> Vector{String}
+
+The rustc flags that decide `#[cfg]` predicates for direct `rustc` builds:
+the same target and codegen options `compile_rust_to_shared_lib` passes
+(`--target`, `-C opt-level`, `-C panic=abort`), so `debug_assertions`,
+`panic = "..."` and `target_*` agree with the library that is actually built.
+"""
+function _cfg_rustc_flags(compiler = get_default_compiler())
+    return String[
+        "--target=$(compiler.target_triple)",
+        "-C", "opt-level=$(compiler.optimization_level)",
+        "-C", "panic=abort",
+    ]
+end
+
+# Cargo-side cfg: obtained from Cargo itself so profile overrides
+# (`CARGO_PROFILE_RELEASE_*`), `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS` and
+# `.cargo/config` settings are reflected. Cached per session and environment.
+const _CARGO_CFG_TEXT = Dict{String, String}()
+
+"""
+    _cargo_probe_profile() -> String
+
+The `[profile.release]` section RustCall writes into every Cargo project it
+generates (`// cargo-deps:` blocks, `@rust_crate` wrapper crates).
+"""
+_cargo_probe_profile() = "[profile.release]\nopt-level = 3\nlto = true\n"
+
+"""
+    _cargo_cfg_env_key() -> String
+
+The environment that can change Cargo's effective rustc configuration.
+"""
+# Environment variables that change rustc's configuration for a Cargo build.
+# Deliberately an allowlist: `CARGO_*` also holds registry credentials
+# (`CARGO_REGISTRIES_<name>_TOKEN`, `CARGO_REGISTRY_TOKEN`), which must never
+# end up in a snapshot embedded in generated code or a precompile cache.
+const _CARGO_CFG_ENV_PREFIXES = ("CARGO_PROFILE_", "CARGO_BUILD_", "CARGO_CFG_",
+                                 "CARGO_ENCODED_RUSTFLAGS")
+# `CARGO_HOME` is a path, not a secret: it selects the Cargo configuration
+# (`$CARGO_HOME/config.toml`, e.g. `[build] rustflags`) the cfg probe observes.
+const _CARGO_CFG_ENV_NAMES = ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTDOCFLAGS",
+                              "RUSTUP_TOOLCHAIN", "CARGO_HOME")
+# Per-target settings, `CARGO_TARGET_<TRIPLE>_<SETTING>`: `_RUSTFLAGS` carries
+# `--cfg` and codegen flags like `RUSTFLAGS` does, `_LINKER` decides what links
+# the cdylib. `_RUNNER` only wraps `cargo run`/`cargo test` and cannot change
+# the artifact, so it is not tracked; neither is `CARGO_TARGET_DIR`.
+const _CARGO_TARGET_ENV_SUFFIXES = ("_RUSTFLAGS", "_LINKER")
+const _SECRET_ENV_FRAGMENTS = ("TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "KEY")
+
+function _is_cargo_env_key(k::AbstractString)
+    up = uppercase(String(k))
+    any(f -> occursin(f, up), _SECRET_ENV_FRAGMENTS) && return false
+    up in _CARGO_CFG_ENV_NAMES && return true
+    any(p -> startswith(up, p), _CARGO_CFG_ENV_PREFIXES) && return true
+    return startswith(up, "CARGO_TARGET_") && any(s -> endswith(up, s), _CARGO_TARGET_ENV_SUFFIXES)
+end
+
+"""
+    _cargo_config_digest(env = ENV) -> String
+
+Digest of the effective Cargo home configuration file
+(`\$CARGO_HOME/config.toml`, falling back to `config`; `~/.cargo` when
+`CARGO_HOME` is unset), or `"absent"`. The file can set `[build] rustflags`
+and friends, which the cfg probe observes, so its content is part of the
+environment snapshot: the same `CARGO_HOME` with an edited config is a
+different configuration.
+"""
+function _cargo_config_digest(env = ENV)
+    home = get(env, "CARGO_HOME", joinpath(homedir(), ".cargo"))
+    for name in ("config.toml", "config")
+        path = joinpath(home, name)
+        isfile(path) && return bytes2hex(sha256(read(path)))
+    end
+    return "absent"
+end
+
+# The environment snapshot is `NAME=value` lines; lines starting with `#` are
+# metadata that describes the environment without being a variable.
+const _CARGO_CONFIG_LINE = "#cargo-config="
+
+function _cargo_cfg_env_key()
+    keys = sort!(filter(_is_cargo_env_key, collect(Base.keys(ENV))))
+    lines = String["$k=$(ENV[k])" for k in keys]
+    push!(lines, _CARGO_CONFIG_LINE * _cargo_config_digest())
+    return join(lines, "\n")
+end
+
+"""
+    _cargo_build_env(snapshot::AbstractString) -> Dict{String, String}
+
+The process environment with the Cargo/RUSTFLAGS settings replaced by those
+recorded in `snapshot` (a `_cargo_cfg_env_key` text): variables
+absent from the snapshot are removed, recorded ones restored. Used to build a
+`// cargo-deps:` block under the configuration its wrappers were generated for.
+"""
+function _cargo_build_env(snapshot::AbstractString)
+    env = Dict{String, String}(k => v for (k, v) in ENV if !_is_cargo_env_key(k))
+    for line in split(snapshot, '\n'; keepempty = false)
+        startswith(line, '#') && continue   # metadata, not a variable
+        k, v = split(line, '='; limit = 2)
+        env[String(k)] = String(v)
+    end
+    return env
+end
+
+"""
+    _cargo_build_env_for(cargo_env) -> (env, key)
+
+The environment a Cargo-backed block is built under and the snapshot text that
+identifies it. `cargo_env === nothing` means no snapshot was recorded (a
+reload of a block stored by an older RustCall): build under the current
+environment. A `String` is the snapshot recorded at macro-expansion time and
+is authoritative even when empty: `""` means *no* tracked Cargo variable was
+set then, so any `RUSTFLAGS` / profile override present now is cleared rather
+than inherited — the wrappers were generated for the configuration without it.
+"""
+function _cargo_build_env_for(cargo_env::Union{Nothing, AbstractString})
+    cargo_env === nothing && return (nothing, _cargo_cfg_env_key())
+    snapshot = String(cargo_env)
+    return (_cargo_build_env(snapshot), snapshot)
+end
+
+"""
+    _cargo_cfg_text() -> String
+
+`rustc --print cfg` as Cargo runs rustc for the release builds RustCall
+performs: a dependency-free probe crate with the same `[profile.release]`
+is built once per session (and per Cargo/RUSTFLAGS environment) with
+`cargo rustc --release --lib -- --print cfg`, so `debug_assertions`,
+`panic`, `overflow_checks` and `target_*` match the real Cargo build. Empty
+when cargo is unavailable or the probe fails.
+"""
+function _cargo_cfg_text()
+    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key()
+    lock(_EXTRACTOR_LOCK) do
+        get!(_CARGO_CFG_TEXT, key) do
+            try
+                mktempdir() do dir
+                    mkpath(joinpath(dir, "src"))
+                    write(joinpath(dir, "src", "lib.rs"), "")
+                    write(joinpath(dir, "Cargo.toml"),
+                          "[package]\nname = \"rustcall_cfg_probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n" *
+                          "[lib]\npath = \"src/lib.rs\"\n\n" * _cargo_probe_profile())
+                    out = read(setenv(`$(cargo()) rustc -q --release --lib -- --print cfg`; dir = dir), String)
+                    # Keep only cfg lines (`name` or `name="value"`).
+                    join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
+                end
+            catch
+                ""
+            end
+        end
+    end
+end
+
+"""
+    _rustc_cfg_text(flags = _cfg_rustc_flags()) -> String
+
+Output of `rustc --print cfg` under `flags` (cached per session and flag set).
+Empty when rustc is unavailable; the extractor then treats every item as
+active, which is the pre-#264 behaviour.
+"""
+function _rustc_cfg_text(flags::Vector{String} = _cfg_rustc_flags())
+    lock(_EXTRACTOR_LOCK) do
+        get!(_RUSTC_CFG_TEXT, flags) do
+            try
+                read(`$(rustc()) --print cfg $flags`, String)
+            catch
+                ""
+            end
+        end
+    end
+end
+
+"""
+    _cfg_mode(cfg) -> Symbol
+
+Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
+configuration of the actual compiler invocation), `:cargo` (Cargo projects
+RustCall generates for `// cargo-deps:` blocks: also a full evaluation, but of
+Cargo's effective configuration, see [`_cargo_cfg_text`] — RustCall writes that
+project itself, so it has no build script and declares no features and the
+probe is authoritative), `:lenient` (`@rust_crate`, an external crate with its
+own features and possibly a build script: only target predicates are decided,
+the cfg text still comes from Cargo) or `:none` (report everything, used for
+the platform-independent golden corpus). `true`/`false` map to `:strict`/`:none`.
+"""
+_cfg_mode(cfg::Symbol) = cfg in (:strict, :cargo, :lenient, :none) ? cfg :
+    throw(ArgumentError("cfg must be :strict, :cargo, :lenient or :none"))
+_cfg_mode(cfg::Bool) = cfg ? :strict : :none
+
+"""
+    _cfg_snapshot(cfg) -> String
+
+The cfg text (`rustc --print cfg` under the current default compiler's flags)
+that expansion under `cfg` uses; empty for `:none`. The `rust` string macro captures it at
+macro-expansion time and hands the same snapshot to the run-time compile step,
+so the Julia wrappers emitted by the macro and the source compiled later are
+derived from one configuration even if `set_default_compiler` ran in between.
+"""
+function _cfg_snapshot(cfg)
+    mode = _cfg_mode(cfg)
+    mode === :none && return ""
+    mode === :strict && return _rustc_cfg_text()
+    return _cargo_cfg_text()
+end
+
+"""
+    _cfg_file_args(cfg; cfg_text = _cfg_snapshot(cfg)) -> Vector{String}
+
+`--cfg-file FILE [--cfg-lenient]` for the extractor, so `#[cfg]`-disabled
+items are dropped from manifests and expanded sources (see [`_cfg_mode`]).
+The file holds `cfg_text` and is written once per distinct text. Empty for
+`:none`, or when rustc is unavailable (empty text).
+"""
+function _cfg_file_args(cfg; cfg_text::AbstractString = _cfg_snapshot(cfg))
+    mode = _cfg_mode(cfg)
+    mode === :none && return String[]
+    text = String(cfg_text)
+    isempty(text) && return String[]
+    digest = bytes2hex(sha256(text))
+    path = lock(_EXTRACTOR_LOCK) do
+        existing = get(_RUSTC_CFG_FILE, digest, "")
+        if isempty(existing) || !isfile(existing)
+            existing, io = mktemp()
+            write(io, text)
+            close(io)
+            _RUSTC_CFG_FILE[digest] = existing
+        end
+        existing
+    end
+    args = ["--cfg-file", path]
+    # Only an external crate (`@rust_crate`) needs lenient evaluation; for a
+    # Cargo project RustCall generates the probe text is the whole truth.
+    mode === :lenient && push!(args, "--cfg-lenient")
+    return args
+end
 
 """
     expand_inline(code::String) -> ExpandedInline
@@ -225,10 +473,21 @@ const _EXPANSION_LOCK = ReentrantLock()
 Expand `#[julia]` items of an inline block ahead of `rustc` and return the
 manifest. Results are memoized per source text so macro expansion and the later
 compile step spawn the extractor only once.
+
+`cfg` selects how `#[cfg(...)]` predicates are evaluated (see [`_cfg_mode`]):
+`:strict` (default) drops every item the direct `rustc` build would not
+compile, `:lenient` decides only target predicates (for blocks built by Cargo),
+`:none` keeps everything (golden corpus comparison). `cfg_text` is the cfg
+snapshot to evaluate against (default: the current compiler's, see
+[`_cfg_snapshot`]); the memo key is `(code, mode, digest(cfg_text))`.
 """
-function expand_inline(code::String)
+function expand_inline(code::String; cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing)
+    mode = _cfg_mode(cfg)
+    text = cfg_text === nothing ? _cfg_snapshot(mode) : String(cfg_text)
+    mode === :none && (text = "")
+    key = (code, mode, isempty(text) ? "" : bytes2hex(sha256(text)))
     cached = lock(_EXPANSION_LOCK) do
-        get(_EXPANSION_CACHE, code, nothing)
+        get(_EXPANSION_CACHE, key, nothing)
     end
     cached === nothing || return cached
 
@@ -236,12 +495,13 @@ function expand_inline(code::String)
         src = joinpath(dir, "block.rs")
         manifest_path = joinpath(dir, "manifest.toml")
         write(src, code)
-        source = _run_extractor(["expand", "--manifest", manifest_path, src])
+        args = vcat(["expand", "--manifest", manifest_path], _cfg_file_args(mode; cfg_text = text), [src])
+        source = _run_extractor(args)
         manifest = _parse_manifest(read(manifest_path, String))
         ExpandedInline(source, manifest)
     end
     lock(_EXPANSION_LOCK) do
-        _EXPANSION_CACHE[code] = result
+        _EXPANSION_CACHE[key] = result
     end
     return result
 end
@@ -253,13 +513,15 @@ Run the extractor over source files (`mode` is `"inline"` or `"crate"`).
 With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
 """
-function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false)
+function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
+                          cfg = :strict)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
     args = ["manifest", "--mode", mode]
     skip_unparsable && push!(args, "--skip-unparsable")
+    append!(args, _cfg_file_args(cfg))
     text = _run_extractor(vcat(args, files))
     return _parse_manifest(text)
 end
@@ -269,11 +531,11 @@ end
 
 Run the extractor over a single source string.
 """
-function extract_manifest(code::String; mode::String)
+function extract_manifest(code::String; mode::String, cfg = :strict)
     mktempdir() do dir
         src = joinpath(dir, "source.rs")
         write(src, code)
-        extract_manifest([src]; mode = mode)
+        extract_manifest([src]; mode = mode, cfg = cfg)
     end
 end
 
@@ -402,6 +664,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             source = _mstr(f, "source"),
             constraints = manifest_constraints(f),
             module_path = String[String(m) for m in _mvec(f, "module_path")],
+            body_has_cfg = _mbool(f, "body_has_cfg"),
         ))
     end
     return sigs

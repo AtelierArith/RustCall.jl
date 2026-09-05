@@ -10,6 +10,7 @@ use syn::spanned::Spanned;
 use syn::{FnArg, Item, ItemFn, Pat, ReturnType};
 
 use crate::attrs::{has_no_mangle, rustcall_attribute};
+use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
 use crate::codegen::returns_boxed_struct;
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
@@ -22,9 +23,19 @@ use crate::types::{
 };
 
 pub fn extract(source: &str, mode: Mode) -> Result<Manifest, syn::Error> {
+    extract_with_cfg(source, mode, None)
+}
+
+/// Like [`extract`], but items disabled under `cfg` are dropped first
+/// (see [`crate::cfg::CfgSet::prune_items`]).
+pub fn extract_with_cfg(
+    source: &str,
+    mode: Mode,
+    cfg: Option<&CfgSet>,
+) -> Result<Manifest, syn::Error> {
     match mode {
-        Mode::Inline => crate::expand::expand(source).map(|e| e.manifest),
-        Mode::Crate => extract_crate(source),
+        Mode::Inline => crate::expand::expand_with_cfg(source, cfg).map(|e| e.manifest),
+        Mode::Crate => extract_crate_with_cfg(source, cfg),
     }
 }
 
@@ -99,6 +110,7 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         symbol: func.sig.ident.to_string(),
         attribute,
         exported,
+        cfg: predicate_string(&func.attrs),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
         args: fn_args(&func.sig),
@@ -114,6 +126,7 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         } else {
             String::new()
         },
+        body_has_cfg: body_has_cfg(&func.block),
         line: func.span().start().line,
         module_path: Vec::new(),
     }
@@ -121,7 +134,14 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
 
 /// Manifest for a crate source file (proc-macro semantics).
 pub fn extract_crate(source: &str) -> Result<Manifest, syn::Error> {
-    let file = syn::parse_file(source)?;
+    extract_crate_with_cfg(source, None)
+}
+
+pub fn extract_crate_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Manifest, syn::Error> {
+    let mut file = syn::parse_file(source)?;
+    if let Some(set) = cfg {
+        crate::cfg::prune_file_or_error(set, &mut file)?;
+    }
     let mut manifest = Manifest::new(Mode::Crate);
     extract_crate_items(&file.items, &mut manifest);
     Ok(manifest)
@@ -197,6 +217,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         })
         .collect();
     Struct {
+        cfg: predicate_string(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
         type_params: generics_to_type_params(&model.item.generics),

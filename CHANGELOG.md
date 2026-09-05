@@ -26,6 +26,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`deps/rustcall_core`, `deps/rustcall_extract`), which emits a TOML FFI
   manifest ([#264](https://github.com/AtelierArith/RustCall.jl/issues/264),
   [#266](https://github.com/AtelierArith/RustCall.jl/pull/266)).
+- `#[cfg(...)]`-disabled items are no longer reported by the FFI manifest:
+  `rustcall-extract manifest`/`expand` take `--cfg-file` (the output of
+  `rustc --print cfg`), evaluate `all`/`any`/`not`/`name`/`name = "value"`
+  predicates on items, impl methods, struct fields and inline modules, and drop
+  what rustc would not compile. Every reported item records its predicate in a
+  new `cfg` field. For direct `rustc` builds Julia queries the configuration
+  with the same target and codegen flags as the compilation (`:strict`); for
+  the Cargo projects RustCall generates (`// cargo-deps:` blocks) it evaluates
+  the same way against Cargo's effective configuration, probed with a throwaway
+  crate (`:cargo`). Only external crates (`@rust_crate`), whose features and
+  build script RustCall does not control, decide target predicates alone
+  (`--cfg-lenient`, `:lenient`). The cfg set is part of the toolchain fingerprint (follow-up of #264).
+- Function parameters carrying their own `#[cfg]`
+  (`fn f(a: i32, #[cfg(any())] b: i32)`) are pruned like items, so the manifest
+  and the generated wrapper match the C ABI rustc actually compiles
+  (follow-up of #264).
+- Crate-level `#![cfg(...)]` / `#![cfg_attr(...)]` is evaluated before the
+  items: a block or crate disabled at file level compiles to nothing, so
+  nothing is reported instead of emitting bindings for symbols that never
+  exist (follow-up of #264).
+- `cfg_attr` expansion runs until nothing changes, so any nesting depth
+  reaches its `cfg`; the remaining safety limit (64 levels) is an error, never
+  a partial expansion (follow-up of #264).
+- Cargo-backed `rust"""` blocks record the tracked Cargo environment as a
+  snapshot that is authoritative even when empty: a build or precompiled
+  reload clears a `RUSTFLAGS` / profile override that was not set at
+  expansion time instead of inheriting it. `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`
+  and `CARGO_TARGET_<TRIPLE>_LINKER` are now tracked as well (credential-like
+  names stay excluded).
+- The in-memory identity of a direct-`rustc` block (`rust_<hash>`) now covers
+  the compiler snapshot (target, opt-level, debug info), the cfg text and the
+  rustc environment (`RUSTFLAGS`, `RUSTUP_TOOLCHAIN`), through the same
+  `_block_identity` helper Cargo-backed blocks use, so the same source built
+  under two configurations is two libraries and a lookup never returns the
+  other build.
+- `#[cfg]`-disabled generic parameters (`fn f<#[cfg(any())] T, U>`, lifetimes
+  and const generics, on functions, impls, structs, enums and traits) are
+  pruned like items and function parameters (follow-up of #264).
+- `--cfg-file` values are parsed as Rust string literals and unescaped exactly
+  once, so `custom="\"quoted\""` is no longer conflated with
+  `custom="quoted"`; a malformed value is an error.
+- `CARGO_HOME` is part of the tracked Cargo environment, together with a
+  digest of the effective `$CARGO_HOME/config.toml` (whose `[build] rustflags`
+  the cfg probe observes), so a block precompiled under one Cargo home is
+  rebuilt rather than reused under another.
+- Generic functions of a `// cargo-deps:` block whose body contains `#[cfg]`
+  or `cfg!` (reported by the new `body_has_cfg` manifest field) refuse lazy
+  specialization with a `RustError`: the specialization is a direct `rustc`
+  build under a different configuration than the Cargo build, so the body
+  could take another branch. Move such code out of the generic body.
+- After a reload that derives a new library name (toolchain or snapshot
+  changed since precompilation), the loaded handle is aliased under the
+  stored name and the module's active library is updated, so later calls no
+  longer reload on every call or fall back to the global symbol search.
+- The `CResult_<fn>` / `COption_<fn>` wrappers store the inactive payload as
+  `MaybeUninit<T>`, so zero-filling it is no longer undefined behaviour for
+  types with invalid zero bit patterns (`NonZeroU32`, references). The C
+  layout is unchanged. Rust code reading the wrappers must use the new
+  `ok()`, `err()` and `some()` accessors instead of the raw fields
+  (follow-up of #264).
+- `#[julia]` functions returning `Result`/`Option` keep their `#[cfg]`
+  attributes on every generated item (wrapper struct, inner fn, extern fn),
+  including the `#[cfg_attr(pred, cfg(...))]` form, which decides whether the
+  function is compiled just like a direct `#[cfg]`.
+- `rustcall-extract` reads its arguments as `OsString`, so non-UTF-8 file
+  paths work on Windows (follow-up of #264).
 
 ### Added
 - CI/CD pipeline with GitHub Actions

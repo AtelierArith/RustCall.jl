@@ -6,6 +6,7 @@ name = "dual_add"
 symbol = "dual_add"
 attribute = "julia_pyo3"
 exported = true
+cfg = ""
 is_generic = false
 type_params = []
 return_type = "i32"
@@ -14,6 +15,7 @@ ok_type = ""
 err_type = ""
 inner_type = ""
 source = ""
+body_has_cfg = false
 line = 1
 module_path = []
 
@@ -28,6 +30,7 @@ rust_type = "i32"
 [[structs]]
 name = "DualCounter"
 attribute = "julia_pyo3"
+cfg = ""
 type_params = []
 derives = []
 has_clone = false

@@ -22,7 +22,8 @@ Build a Cargo project and return the path to the compiled library.
 # Throws
 - `CargoBuildError` if the build fails
 """
-function build_cargo_project(project::CargoProject; release::Bool = true)
+function build_cargo_project(project::CargoProject; release::Bool = true,
+                             env::Union{Nothing, AbstractDict} = nothing)
     # Build command
     cargo_cmd = cargo()
     build_args = ["build"]
@@ -38,6 +39,9 @@ function build_cargo_project(project::CargoProject; release::Bool = true)
             stdout_io = IOBuffer()
 
             cmd = `$cargo_cmd $build_args`
+            # A recorded Cargo environment (precompiled block reload) replaces
+            # the inherited one so profile overrides and RUSTFLAGS match.
+            env === nothing || (cmd = setenv(cmd, env))
             proc = run(pipeline(cmd, stdout=stdout_io, stderr=stderr_io), wait=false)
             wait(proc)
 
@@ -183,7 +187,8 @@ the cached library path. Otherwise, builds the project and caches the result.
 function build_cargo_project_cached(
     project::CargoProject,
     code_hash::AbstractString;
-    release::Bool = true
+    release::Bool = true,
+    env::Union{Nothing, AbstractDict} = nothing
 )
     # Generate cache key from code hash, dependency hash, and build mode
     deps_hash = hash_dependencies(project.dependencies)
@@ -201,7 +206,7 @@ function build_cargo_project_cached(
     end
 
     # Build the project
-    lib_path = build_cargo_project(project, release=release)
+    lib_path = build_cargo_project(project, release=release, env=env)
 
     # Cache the result
     try
