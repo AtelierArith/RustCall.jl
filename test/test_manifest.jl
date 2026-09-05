@@ -136,7 +136,9 @@ using TOML
         @test length(args) == 2 && args[1] == "--cfg-file"
         @test read(args[2], String) == RustCall._rustc_cfg_text()
         @test RustCall._cfg_file_args(true) == args
-        @test RustCall._cfg_file_args(:lenient) == vcat(args, ["--cfg-lenient"])
+        lenient_args = RustCall._cfg_file_args(:lenient)
+        @test lenient_args[[1, 3]] == ["--cfg-file", "--cfg-lenient"]
+        @test read(lenient_args[2], String) == RustCall._cfg_snapshot(:lenient)
         @test isempty(RustCall._cfg_file_args(false))
         @test isempty(RustCall._cfg_file_args(:none))
         @test_throws ArgumentError RustCall._cfg_file_args(:bogus)
@@ -167,6 +169,12 @@ using TOML
         # profile predicates keep their items.
         lenient_names = names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))
         @test Set(lenient_names) == Set(["dbg_only", "abort_only", "feature_only"])
+        # Cargo projects RustCall generates use the release profile, so profile
+        # predicates are decided there; features stay unknown.
+        cargo_names = names(RustCall.extract_manifest(profile_code; mode = "inline", cfg = :cargo))
+        @test Set(cargo_names) == Set(["feature_only"])   # unwind, no debug_assertions
+        @test RustCall._cfg_file_args(:cargo)[end] == "--cfg-profile"
+        @test occursin("panic=\"unwind\"", RustCall._cfg_snapshot(:cargo))
         lenient_host = RustCall.extract_manifest(code; mode = "crate", cfg = :lenient)
         @test Set(names(lenient_host)) == Set(expected)
         @test RustCall.expand_inline(code; cfg = :lenient).manifest != RustCall.expand_inline(code).manifest ||
@@ -192,16 +200,23 @@ using TOML
             # The manifest never saw the disabled item, so no Julia wrapper exists.
             @test !isdefined(@__MODULE__, :cfg_never_compiled)
 
-            # The macro hands its cfg snapshot to the run-time compile step; a
-            # stale snapshot (compiler changed in between) is reported.
-            plain = """
+            # The macro hands its cfg snapshot *and* the compiler settings it was
+            # derived from to the run-time step, so a `set_default_compiler` in
+            # between cannot desynchronize wrappers and library: a block expanded
+            # at opt-level 0 (debug_assertions on) is also compiled at opt-level 0.
+            dbg_block = """
+            #[cfg(debug_assertions)]
             #[julia]
-            pub fn cfg_snapshot_plain() -> i32 { 7 }
+            pub fn cfg_snapshot_debug_only() -> i32 { 11 }
             """
-            other = RustCall._rustc_cfg_text(RustCall._cfg_rustc_flags(RustCall.RustCompiler(optimization_level = 0)))
-            @test other != RustCall._cfg_snapshot(:strict)
-            @test_logs (:warn, r"different rustc configuration") match_mode = :any RustCall._compile_and_load_rust(plain, "snapshot", 0; cfg_text = other)
-            @test_logs RustCall._compile_and_load_rust(plain, "snapshot", 0; cfg_text = RustCall._cfg_snapshot(:strict))
+            o0 = RustCall.RustCompiler(optimization_level = 0)
+            snapshot_o0 = RustCall._rustc_cfg_text(RustCall._cfg_rustc_flags(o0))
+            @test snapshot_o0 != RustCall._cfg_snapshot(:strict)   # default is opt-level 2
+            lib = RustCall._compile_and_load_rust(dbg_block, "snapshot", 0; cfg_text = snapshot_o0,
+                                                  compiler_target = o0.target_triple, compiler_level = 0)
+            @test RustCall.get_function_pointer(lib, "cfg_snapshot_debug_only") != C_NULL
+            @test RustCall._snapshot_compiler(nothing, nothing) === RustCall.get_default_compiler()
+            @test RustCall._snapshot_compiler(o0.target_triple, 0).optimization_level == 0
         end
     end
 

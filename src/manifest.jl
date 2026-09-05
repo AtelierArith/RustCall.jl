@@ -245,6 +245,18 @@ function _cfg_rustc_flags(compiler = get_default_compiler())
 end
 
 """
+    _cfg_rustc_flags_for(mode::Symbol) -> Vector{String}
+
+Flags for the cfg query of a mode: `:strict` follows the default compiler;
+`:cargo` and `:lenient` follow the Cargo builds RustCall runs (host target,
+release profile: `opt-level = 3`, default `panic = "unwind"`).
+"""
+function _cfg_rustc_flags_for(mode::Symbol)
+    mode === :strict && return _cfg_rustc_flags()
+    return String["-C", "opt-level=3"]
+end
+
+"""
     _rustc_cfg_text(flags = _cfg_rustc_flags()) -> String
 
 Output of `rustc --print cfg` under `flags` (cached per session and flag set).
@@ -267,14 +279,15 @@ end
     _cfg_mode(cfg) -> Symbol
 
 Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
-configuration of the actual compiler invocation), `:lenient` (Cargo builds:
-only target predicates are decided, `feature = "..."`, build-script cfgs and
-profile-dependent predicates keep their items) or `:none` (report everything,
-used for the platform-independent golden corpus). `true`/`false` map to
-`:strict`/`:none`.
+configuration of the actual compiler invocation), `:cargo` (Cargo projects
+RustCall generates for `// cargo-deps:` blocks: target and release-profile
+predicates are decided, `feature = "..."` and build-script cfgs keep their
+items), `:lenient` (`@rust_crate`, whose Cargo.toml may override the profile:
+only target predicates are decided) or `:none` (report everything, used for
+the platform-independent golden corpus). `true`/`false` map to `:strict`/`:none`.
 """
-_cfg_mode(cfg::Symbol) = cfg in (:strict, :lenient, :none) ? cfg :
-    throw(ArgumentError("cfg must be :strict, :lenient or :none"))
+_cfg_mode(cfg::Symbol) = cfg in (:strict, :cargo, :lenient, :none) ? cfg :
+    throw(ArgumentError("cfg must be :strict, :cargo, :lenient or :none"))
 _cfg_mode(cfg::Bool) = cfg ? :strict : :none
 
 """
@@ -289,7 +302,7 @@ derived from one configuration even if `set_default_compiler` ran in between.
 function _cfg_snapshot(cfg)
     mode = _cfg_mode(cfg)
     mode === :none && return ""
-    return _rustc_cfg_text()
+    return _rustc_cfg_text(_cfg_rustc_flags_for(mode))
 end
 
 """
@@ -317,7 +330,8 @@ function _cfg_file_args(cfg; cfg_text::AbstractString = _cfg_snapshot(cfg))
         existing
     end
     args = ["--cfg-file", path]
-    mode === :lenient && push!(args, "--cfg-lenient")
+    mode in (:lenient, :cargo) && push!(args, "--cfg-lenient")
+    mode === :cargo && push!(args, "--cfg-profile")
     return args
 end
 

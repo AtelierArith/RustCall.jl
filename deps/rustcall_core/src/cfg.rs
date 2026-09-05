@@ -27,7 +27,14 @@ pub struct CfgSet {
     pairs: HashSet<(String, String)>,
     /// Only target-derived predicates are decidable; others are unknown.
     lenient: bool,
+    /// In lenient mode, also decide the profile predicates (`debug_assertions`,
+    /// `overflow_checks`, `panic`) because the caller controls the Cargo profile.
+    profile: bool,
 }
+
+/// Predicates decided by the build profile (`[profile.*]`, `-C opt-level`,
+/// `-C debug-assertions`, `-C overflow-checks`, `-C panic`).
+const PROFILE_CFG_NAMES: &[&str] = &["debug_assertions", "overflow_checks", "panic"];
 
 /// Three-valued predicate result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +137,16 @@ impl CfgSet {
         self.lenient
     }
 
+    /// In lenient mode, also decide profile predicates (see module docs).
+    pub fn with_profile(mut self) -> CfgSet {
+        self.profile = true;
+        self
+    }
+
+    fn decided(&self, name: &str) -> bool {
+        !self.lenient || target_decided(name) || (self.profile && PROFILE_CFG_NAMES.contains(&name))
+    }
+
     /// Evaluate one `cfg` predicate to a boolean; `Unknown` counts as true
     /// (the item is kept). Prefer [`CfgSet::eval3`] when the distinction matters.
     pub fn eval(&self, meta: &Meta) -> Result<bool, String> {
@@ -137,14 +154,14 @@ impl CfgSet {
     }
 
     fn lookup_name(&self, name: &str) -> Truth {
-        if self.lenient && !target_decided(name) {
+        if !self.decided(name) {
             return Truth::Unknown;
         }
         Truth::from_bool(self.names.contains(name))
     }
 
     fn lookup_pair(&self, name: &str, value: &str) -> Truth {
-        if self.lenient && !target_decided(name) {
+        if !self.decided(name) {
             return Truth::Unknown;
         }
         Truth::from_bool(self.pairs.contains(&(name.to_string(), value.to_string())))
@@ -242,12 +259,58 @@ impl CfgSet {
         Ok(true)
     }
 
+    /// Expand `#[cfg_attr(pred, a, b, ...)]` in place: a true predicate is
+    /// replaced by its attributes (recursively), a false one is dropped, an
+    /// unknown one is kept verbatim (its item is neither pruned nor changed;
+    /// rustc decides). Returns predicates that could not be evaluated.
+    pub fn expand_cfg_attrs(&self, attrs: &mut Vec<Attribute>) -> Vec<String> {
+        let mut errors = Vec::new();
+        // Bounded: each round removes at least one `cfg_attr` level.
+        for _ in 0..8 {
+            let mut changed = false;
+            let mut out: Vec<Attribute> = Vec::with_capacity(attrs.len());
+            for attr in attrs.drain(..) {
+                let Some((pred, inner)) = cfg_attr_parts(&attr) else {
+                    out.push(attr);
+                    continue;
+                };
+                match self.eval3(&pred) {
+                    Ok(Truth::True) => {
+                        changed = true;
+                        for meta in inner {
+                            out.push(syn::parse_quote!(#[#meta]));
+                        }
+                    }
+                    Ok(Truth::False) => changed = true,
+                    Ok(Truth::Unknown) => out.push(attr),
+                    Err(e) => {
+                        errors.push(e);
+                        changed = true;
+                    }
+                }
+            }
+            *attrs = out;
+            if !changed {
+                break;
+            }
+        }
+        errors
+    }
+
     /// Remove every item, impl item and named struct field disabled under this
-    /// configuration. Inline modules are pruned recursively. Returns the
+    /// configuration. Inline modules are pruned recursively. `cfg_attr` is
+    /// expanded first so indirectly disabled items are pruned too. Returns the
     /// predicates that could not be evaluated (their items are removed).
     pub fn prune_items(&self, items: &mut Vec<Item>) -> Vec<String> {
         let mut errors = Vec::new();
         items.retain_mut(|item| {
+            if let Some(attrs) = item_attrs_mut(item) {
+                let errs = self.expand_cfg_attrs(attrs);
+                if !errs.is_empty() {
+                    errors.extend(errs);
+                    return false;
+                }
+            }
             let attrs = item_attrs(item);
             match self.attrs_active(attrs) {
                 Ok(true) => {}
@@ -264,14 +327,19 @@ impl CfgSet {
                     }
                 }
                 Item::Impl(imp) => {
-                    imp.items.retain(|ii| {
+                    imp.items.retain_mut(|ii| {
                         let attrs = match ii {
-                            syn::ImplItem::Fn(f) => &f.attrs,
-                            syn::ImplItem::Const(c) => &c.attrs,
-                            syn::ImplItem::Type(t) => &t.attrs,
-                            syn::ImplItem::Macro(m) => &m.attrs,
+                            syn::ImplItem::Fn(f) => &mut f.attrs,
+                            syn::ImplItem::Const(c) => &mut c.attrs,
+                            syn::ImplItem::Type(t) => &mut t.attrs,
+                            syn::ImplItem::Macro(m) => &mut m.attrs,
                             _ => return true,
                         };
+                        let errs = self.expand_cfg_attrs(attrs);
+                        if !errs.is_empty() {
+                            errors.extend(errs);
+                            return false;
+                        }
                         match self.attrs_active(attrs) {
                             Ok(active) => active,
                             Err(e) => {
@@ -285,8 +353,14 @@ impl CfgSet {
                     if let syn::Fields::Named(named) = &mut s.fields {
                         let mut kept = syn::punctuated::Punctuated::new();
                         for field in named.named.iter() {
+                            let mut field = field.clone();
+                            let errs = self.expand_cfg_attrs(&mut field.attrs);
+                            if !errs.is_empty() {
+                                errors.extend(errs);
+                                continue;
+                            }
                             match self.attrs_active(&field.attrs) {
-                                Ok(true) => kept.push(field.clone()),
+                                Ok(true) => kept.push(field),
                                 Ok(false) => {}
                                 Err(e) => errors.push(e),
                             }
@@ -314,6 +388,22 @@ pub fn prune_or_error(set: &CfgSet, items: &mut Vec<Item>) -> Result<(), syn::Er
             format!("cannot evaluate #[cfg] predicate: {}", errors.join("; ")),
         ))
     }
+}
+
+/// `(predicate, attributes)` of a `#[cfg_attr(pred, a, b)]` attribute.
+pub fn cfg_attr_parts(attr: &Attribute) -> Option<(Meta, Vec<Meta>)> {
+    if !attr.path().is_ident("cfg_attr") {
+        return None;
+    }
+    let Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let nested = list
+        .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        .ok()?;
+    let mut iter = nested.into_iter();
+    let pred = iter.next()?;
+    Some((pred, iter.collect()))
 }
 
 /// The meta of a `#[cfg(...)]` attribute, if `attr` is one.
@@ -389,6 +479,27 @@ pub fn meta_to_string(meta: &Meta) -> String {
             }
         }
     }
+}
+
+fn item_attrs_mut(item: &mut Item) -> Option<&mut Vec<Attribute>> {
+    Some(match item {
+        Item::Const(i) => &mut i.attrs,
+        Item::Enum(i) => &mut i.attrs,
+        Item::ExternCrate(i) => &mut i.attrs,
+        Item::Fn(i) => &mut i.attrs,
+        Item::ForeignMod(i) => &mut i.attrs,
+        Item::Impl(i) => &mut i.attrs,
+        Item::Macro(i) => &mut i.attrs,
+        Item::Mod(i) => &mut i.attrs,
+        Item::Static(i) => &mut i.attrs,
+        Item::Struct(i) => &mut i.attrs,
+        Item::Trait(i) => &mut i.attrs,
+        Item::TraitAlias(i) => &mut i.attrs,
+        Item::Type(i) => &mut i.attrs,
+        Item::Union(i) => &mut i.attrs,
+        Item::Use(i) => &mut i.attrs,
+        _ => return None,
+    })
 }
 
 fn item_attrs(item: &Item) -> &[Attribute] {
@@ -498,6 +609,21 @@ mod tests {
     }
 
     #[test]
+    fn lenient_with_profile_decides_profile_predicates() {
+        let set = CfgSet::parse("unix\npanic=\"unwind\"\n")
+            .lenient()
+            .with_profile();
+        assert_eq!(set.eval3(&pred("debug_assertions")).unwrap(), Truth::False);
+        assert_eq!(set.eval3(&pred("panic = \"unwind\"")).unwrap(), Truth::True);
+        assert_eq!(set.eval3(&pred("panic = \"abort\"")).unwrap(), Truth::False);
+        assert_eq!(set.eval3(&pred("feature = \"x\"")).unwrap(), Truth::Unknown);
+        assert_eq!(
+            set.eval3(&pred("target_feature = \"avx2\"")).unwrap(),
+            Truth::Unknown
+        );
+    }
+
+    #[test]
     fn rejects_unknown_predicates() {
         let set = CfgSet::default();
         assert!(set.eval(&pred("version(\"1.0\")")).is_err());
@@ -532,6 +658,34 @@ mod tests {
         assert!(text.contains("fn stays"));
         assert!(!text.contains("gone"));
         assert!(!text.contains("winonly"));
+    }
+
+    #[test]
+    fn expands_cfg_attr_before_pruning() {
+        let mut file: syn::File = syn::parse_str(
+            r#"
+            #[cfg_attr(unix, cfg(any()))] pub fn indirectly_off() {}
+            #[cfg_attr(windows, cfg(any()))] pub fn stays_on() {}
+            #[cfg_attr(unix, cfg(all()), allow(dead_code))] pub fn on_with_attrs() {}
+            #[cfg_attr(feature = "x", cfg(any()))] pub fn unknown_kept() {}
+            #[cfg_attr(unix, cfg_attr(unix, cfg(any())))] pub fn nested_off() {}
+            pub struct S { #[cfg_attr(unix, cfg(any()))] a: i32, b: i32 }
+            impl S { #[cfg_attr(unix, cfg(any()))] pub fn m(&self) {} pub fn n(&self) {} }
+            "#,
+        )
+        .unwrap();
+        let set = CfgSet::default().with_name("unix").lenient();
+        let errors = set.prune_items(&mut file.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let text = prettyplease::unparse(&file);
+        assert!(!text.contains("indirectly_off"));
+        assert!(text.contains("stays_on"));
+        assert!(text.contains("on_with_attrs"));
+        assert!(text.contains("#[cfg(all())]") && text.contains("#[allow(dead_code)]"));
+        assert!(text.contains("unknown_kept") && text.contains("cfg_attr(feature = \"x\""));
+        assert!(!text.contains("nested_off"));
+        assert!(!text.contains("a: i32") && text.contains("b: i32"));
+        assert!(!text.contains("fn m(") && text.contains("fn n("));
     }
 
     #[test]

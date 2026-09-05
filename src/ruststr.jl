@@ -145,10 +145,13 @@ macro rust_str(code)
     # Blocks with dependencies are built by Cargo, whose cfg set (features,
     # profile) is not known here: decide only target predicates for them.
     code_str = String(code)
-    cfg_mode = has_dependencies(code_str) ? :lenient : :strict
-    # One cfg snapshot for both phases: the Julia wrappers emitted here and the
-    # run-time expansion/compilation must agree on which items exist.
+    cfg_mode = has_dependencies(code_str) ? :cargo : :strict
+    # One configuration for both phases: the Julia wrappers emitted here and
+    # the run-time expansion *and compilation* must agree on which items exist,
+    # so the cfg snapshot and the compiler settings it was derived from travel
+    # into the generated code.
     cfg_text = _cfg_snapshot(cfg_mode)
+    snapshot_compiler = get_default_compiler()
     expanded = expand_inline(code_str; cfg = cfg_mode, cfg_text = cfg_text)
     struct_infos = manifest_struct_infos(expanded.manifest)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
@@ -158,7 +161,9 @@ macro rust_str(code)
 
     return quote
         lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line);
-                                          cfg_text = $cfg_text)
+                                          cfg_text = $cfg_text,
+                                          compiler_target = $(snapshot_compiler.target_triple),
+                                          compiler_level = $(snapshot_compiler.optimization_level))
 
         # Store library information in the calling module for precompilation support
         if !isdefined($__module__, :__RUSTCALL_LIBS)
@@ -204,6 +209,20 @@ function ensure_loaded(lib_name::String, code::String)
 end
 
 """
+    _snapshot_compiler(target, level) -> RustCompiler
+
+The default compiler with the target triple and optimization level captured
+at macro-expansion time (the settings that decided the cfg snapshot); the
+default compiler itself when no snapshot is given.
+"""
+function _snapshot_compiler(target, level)
+    default = get_default_compiler()
+    (target === nothing || level === nothing) && return default
+    return RustCompiler(String(target), Int(level), default.emit_debug_info,
+                        default.debug_mode, default.debug_dir)
+end
+
+"""
     _compile_and_load_rust(code::String, source_file::String, source_line::Int)
 
 Internal function to compile Rust code and load the resulting shared library.
@@ -213,7 +232,9 @@ Phase 3: Automatically detects dependencies in the code and uses Cargo for build
 when external crates are required.
 """
 function _compile_and_load_rust(code::String, source_file::String, source_line::Int;
-                                cfg_text::Union{Nothing, AbstractString} = nothing)
+                                cfg_text::Union{Nothing, AbstractString} = nothing,
+                                compiler_target::Union{Nothing, AbstractString} = nothing,
+                                compiler_level::Union{Nothing, Integer} = nothing)
     # Phase 3: Check for dependencies in the code
     if has_dependencies(code)
         return _compile_and_load_rust_with_cargo(code, source_file, source_line; cfg_text)
@@ -221,13 +242,11 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
     # Expand #[julia] items (functions, structs, accessors, method wrappers)
     # ahead of rustc. The manifest describes exactly what was generated.
-    # `cfg_text` is the snapshot captured by the macro (see `_cfg_snapshot`).
-    if cfg_text !== nothing && !isempty(cfg_text) && cfg_text != _cfg_snapshot(:strict)
-        @warn "This rust\"\"\" block was expanded under a different rustc configuration " *
-              "(target / opt-level) than the current default compiler; #[cfg]-gated items " *
-              "may not match the compiled library. Re-evaluate the block after " *
-              "set_default_compiler." maxlog = 1 source_file source_line
-    end
+    # `cfg_text` is the snapshot captured by the macro (see `_cfg_snapshot`)
+    # and `compiler` the settings it was derived from, so the library is built
+    # with the configuration the Julia wrappers were emitted for even if
+    # `set_default_compiler` ran in between.
+    compiler = _snapshot_compiler(compiler_target, compiler_level)
     expanded = expand_inline(code; cfg = :strict, cfg_text = cfg_text)
     manifest = expanded.manifest
 
@@ -235,7 +254,6 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     wrapped_code = wrap_rust_code(expanded.source)
 
     # Generate cache key
-    compiler = get_default_compiler()
     cache_key = generate_cache_key(wrapped_code, compiler)
 
     # Generate a unique library name based on a deterministic code hash
@@ -362,8 +380,9 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     # Expand #[julia] items ahead of Cargo. The dependency comments are read
     # from the original source above; the expanded source no longer needs them.
-    # Cargo decides features and profile, so only target predicates are pruned.
-    expanded = expand_inline(code; cfg = :lenient, cfg_text = cfg_text)
+    # RustCall generates this Cargo project (release profile), so target and
+    # profile predicates are pruned; features and build-script cfgs are kept.
+    expanded = expand_inline(code; cfg = :cargo, cfg_text = cfg_text)
     manifest = expanded.manifest
     augmented_code = expanded.source
 
