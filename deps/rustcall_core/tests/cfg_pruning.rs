@@ -326,6 +326,75 @@ fn unevaluable_crate_level_predicate_fails_closed() {
     assert!(err.to_string().contains("cannot evaluate #[cfg]"), "{err}");
 }
 
+/// Generic parameters carry attributes too; rustc drops a `#[cfg]`-disabled one.
+#[test]
+fn prunes_disabled_generic_parameters() {
+    let set = CfgSet::default().with_name("unix");
+    let src = r#"
+#[julia]
+pub fn f<#[cfg(any())] T, U: Copy>(x: U) -> U { x }
+
+#[julia]
+pub fn g<#[cfg(any())] 'a, #[cfg(all())] T: Copy>(x: T) -> T { x }
+
+#[julia]
+pub fn h<#[cfg(windows)] const N: usize, T: Copy>(x: T) -> T { x }
+"#;
+    let e = expand_with_cfg(src, Some(&set)).unwrap();
+    let params = |n: &str| -> Vec<String> {
+        e.manifest
+            .functions
+            .iter()
+            .find(|f| f.name == n)
+            .unwrap()
+            .type_params
+            .iter()
+            .map(|p| p.name.clone())
+            .collect()
+    };
+    assert_eq!(params("f"), vec!["U"], "{}", e.source);
+    assert_eq!(params("g"), vec!["T"], "{}", e.source);
+    assert!(!e.source.contains("'a"), "{}", e.source);
+    assert!(!e.source.contains("#[cfg(all())]"), "{}", e.source);
+    // The disabled const parameter is gone, so the function is an ordinary
+    // generic rather than an unsupported const-generic one.
+    assert_eq!(params("h"), vec!["T"], "{}", e.source);
+    assert!(!e.source.contains("const N"), "{}", e.source);
+    assert!(!e.source.contains("compile_error"), "{}", e.source);
+
+    // Struct and impl generics are pruned the same way.
+    let src = r#"
+#[julia]
+pub struct W<#[cfg(any())] T, U: Copy> { pub v: U }
+impl<#[cfg(any())] T, U: Copy> W<U> {
+    pub fn v(&self) -> U { self.v }
+}
+"#;
+    let e = expand_with_cfg(src, Some(&set)).unwrap();
+    assert!(!e.source.contains("T,"), "{}", e.source);
+    assert!(e.source.contains("W<U"), "{}", e.source);
+
+    // Undecided leniently: kept, predicate preserved for rustc.
+    let lenient = CfgSet::default().with_name("unix").lenient();
+    let e = expand_with_cfg(
+        "#[julia]\npub fn f<#[cfg(feature = \"x\")] T, U: Copy>(x: U) -> U { x }\n",
+        Some(&lenient),
+    )
+    .unwrap();
+    assert!(e.source.contains("feature = \"x\""), "{}", e.source);
+}
+
+#[test]
+fn unevaluable_generic_parameter_predicate_fails_closed() {
+    let err = expand_with_cfg(
+        "#[julia]\npub fn f<#[cfg(version(\"1.80\"))] T: Copy>(x: T) -> T { x }\n",
+        Some(&CfgSet::default()),
+    )
+    .err()
+    .expect("unevaluable generic parameter predicate must be an error");
+    assert!(err.to_string().contains("cannot evaluate #[cfg]"), "{err}");
+}
+
 /// `#[cfg_attr(unix, cfg_attr(unix, ... cfg(any())))]` nested `depth` times.
 fn nested_cfg_attr(depth: usize) -> String {
     let mut s = "cfg(any())".to_string();

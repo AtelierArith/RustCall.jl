@@ -55,6 +55,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   expansion time instead of inheriting it. `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`
   and `CARGO_TARGET_<TRIPLE>_LINKER` are now tracked as well (credential-like
   names stay excluded).
+- The in-memory identity of a direct-`rustc` block (`rust_<hash>`) now covers
+  the compiler snapshot (target, opt-level, debug info), the cfg text and the
+  rustc environment (`RUSTFLAGS`, `RUSTUP_TOOLCHAIN`), through the same
+  `_block_identity` helper Cargo-backed blocks use, so the same source built
+  under two configurations is two libraries and a lookup never returns the
+  other build.
+- `#[cfg]`-disabled generic parameters (`fn f<#[cfg(any())] T, U>`, lifetimes
+  and const generics, on functions, impls, structs, enums and traits) are
+  pruned like items and function parameters (follow-up of #264).
+- `--cfg-file` values are parsed as Rust string literals and unescaped exactly
+  once, so `custom="\"quoted\""` is no longer conflated with
+  `custom="quoted"`; a malformed value is an error.
 - The `CResult_<fn>` / `COption_<fn>` wrappers store the inactive payload as
   `MaybeUninit<T>`, so zero-filling it is no longer undefined behaviour for
   types with invalid zero bit patterns (`NonZeroU32`, references). The C

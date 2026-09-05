@@ -74,7 +74,8 @@ fn read_cfg_file(path: Option<&Path>, lenient: bool) -> Result<Option<CfgSet>, S
         Some(p) => {
             let text = fs::read_to_string(p)
                 .map_err(|e| format!("failed to read cfg file {}: {e}", p.display()))?;
-            let mut set = CfgSet::parse(&text);
+            let mut set = CfgSet::parse(&text)
+                .map_err(|e| format!("invalid cfg file {}: {e}", p.display()))?;
             if lenient {
                 set = set.lenient();
             }

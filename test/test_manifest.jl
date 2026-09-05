@@ -319,6 +319,41 @@ using TOML
             lib = RustCall._compile_and_load_rust(dbg_block, "snapshot", 0; cfg_text = snapshot_o0,
                                                   compiler_target = o0.target_triple, compiler_level = 0)
             @test RustCall.get_function_pointer(lib, "cfg_snapshot_debug_only") != C_NULL
+
+            # The library identity includes the compiler snapshot: the same
+            # source built at two opt-levels is two libraries, and the second
+            # load does not alias the first. (The expanded source is identical
+            # here — only the snapshot differs.)
+            same_src = """
+            #[no_mangle]
+            pub extern "C" fn cfg_identity_is_debug() -> i32 { cfg!(debug_assertions) as i32 }
+            """
+            o2 = RustCall.RustCompiler(optimization_level = 2)
+            snapshot_o2 = RustCall._rustc_cfg_text(RustCall._cfg_rustc_flags(o2))
+            lib_o0 = RustCall._compile_and_load_rust(same_src, "identity", 0; cfg_text = snapshot_o0,
+                                                     compiler_target = o0.target_triple, compiler_level = 0)
+            lib_o2 = RustCall._compile_and_load_rust(same_src, "identity", 0; cfg_text = snapshot_o2,
+                                                     compiler_target = o2.target_triple, compiler_level = 2)
+            @test lib_o0 != lib_o2
+            f0 = RustCall.get_function_pointer(lib_o0, "cfg_identity_is_debug")
+            f2 = RustCall.get_function_pointer(lib_o2, "cfg_identity_is_debug")
+            @test f0 != f2
+            @test ccall(f0, Int32, ()) == 1
+            @test ccall(f2, Int32, ()) == 0
+            # A repeated load under the first snapshot is the first library.
+            @test RustCall._compile_and_load_rust(same_src, "identity", 0; cfg_text = snapshot_o0,
+                                                  compiler_target = o0.target_triple, compiler_level = 0) == lib_o0
+            # Every part of the snapshot is in the identity: compiler settings,
+            # cfg text and the rustc environment; both paths share one helper.
+            @test RustCall._rustc_block_identity("x", o0, snapshot_o0) != RustCall._rustc_block_identity("x", o2, snapshot_o0)
+            @test RustCall._rustc_block_identity("x", o0, snapshot_o0) != RustCall._rustc_block_identity("x", o0, snapshot_o2)
+            @test RustCall._rustc_block_identity("x", o0, snapshot_o0) == RustCall._rustc_block_identity("x", o0, snapshot_o0)
+            id_plain = withenv(() -> RustCall._rustc_block_identity("x", o0, snapshot_o0), "RUSTFLAGS" => nothing)
+            id_flags = withenv(() -> RustCall._rustc_block_identity("x", o0, snapshot_o0), "RUSTFLAGS" => "--cfg foo")
+            @test id_plain != id_flags
+            @test RustCall._block_identity("x", "a" => "1") != RustCall._block_identity("x", "a" => "2")
+            @test RustCall._cargo_block_identity("x", "d", "e") == RustCall._block_identity("x", "deps" => "d", "cargo-env" => "e")
+
             @test RustCall._snapshot_compiler(nothing, nothing) === RustCall.get_default_compiler()
             @test RustCall._snapshot_compiler(o0.target_triple, 0).optimization_level == 0
             # Precompiled modules store the snapshot; a reload rebuilds under it.

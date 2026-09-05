@@ -95,7 +95,12 @@ fn target_decided(name: &str) -> bool {
 impl CfgSet {
     /// Parse the output of `rustc --print cfg`: one option per line, either
     /// `name` or `name="value"`. Blank lines are ignored.
-    pub fn parse(text: &str) -> CfgSet {
+    ///
+    /// The value is a Rust string literal (rustc prints it with `{:?}`) and is
+    /// unescaped exactly once, so `custom="\"quoted\""` records the value
+    /// `"quoted"` (with the quotes) and stays distinct from `custom="quoted"`.
+    /// A right-hand side that is not a string literal is an error.
+    pub fn parse(text: &str) -> Result<CfgSet, String> {
         let mut set = CfgSet::default();
         for line in text.lines() {
             let line = line.trim();
@@ -104,16 +109,17 @@ impl CfgSet {
             }
             match line.split_once('=') {
                 Some((name, value)) => {
-                    let value = value.trim().trim_matches('"');
-                    set.pairs
-                        .insert((name.trim().to_string(), value.to_string()));
+                    let lit: syn::LitStr = syn::parse_str(value.trim()).map_err(|e| {
+                        format!("malformed cfg line `{line}`: value is not a string literal ({e})")
+                    })?;
+                    set.pairs.insert((name.trim().to_string(), lit.value()));
                 }
                 None => {
                     set.names.insert(line.to_string());
                 }
             }
         }
-        set
+        Ok(set)
     }
 
     pub fn with_name(mut self, name: &str) -> CfgSet {
@@ -345,6 +351,39 @@ impl CfgSet {
             }
         }
         sig.inputs = kept;
+        self.prune_generics(&mut sig.generics, errors);
+    }
+
+    /// Remove the generic parameters (`<#[cfg(any())] T, 'a, const N: usize>`)
+    /// disabled under this configuration, with the same `cfg_attr` expansion,
+    /// stripping and fail-closed rules as [`CfgSet::prune_signature`]. rustc
+    /// drops such a parameter, so reporting it would break Julia's inference
+    /// and specialization of the generic.
+    fn prune_generics(&self, generics: &mut syn::Generics, errors: &mut Vec<String>) {
+        let mut kept: syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]> =
+            syn::punctuated::Punctuated::new();
+        for param in generics.params.iter() {
+            let mut param = param.clone();
+            let attrs = match &mut param {
+                syn::GenericParam::Lifetime(l) => &mut l.attrs,
+                syn::GenericParam::Type(t) => &mut t.attrs,
+                syn::GenericParam::Const(c) => &mut c.attrs,
+            };
+            let errs = self.expand_cfg_attrs(attrs);
+            if !errs.is_empty() {
+                errors.extend(errs);
+                continue;
+            }
+            match self.attrs_active(attrs) {
+                Ok(true) => {
+                    self.strip_decided_cfgs(attrs);
+                    kept.push(param);
+                }
+                Ok(false) => {}
+                Err(e) => errors.push(e),
+            }
+        }
+        generics.params = kept;
     }
 
     /// Remove every item, impl item and named struct field disabled under this
@@ -381,7 +420,10 @@ impl CfgSet {
                         errors.extend(self.prune_items(inner));
                     }
                 }
+                Item::Enum(e) => self.prune_generics(&mut e.generics, &mut errors),
+                Item::Trait(t) => self.prune_generics(&mut t.generics, &mut errors),
                 Item::Impl(imp) => {
+                    self.prune_generics(&mut imp.generics, &mut errors);
                     imp.items.retain_mut(|ii| {
                         let attrs = match ii {
                             syn::ImplItem::Fn(f) => &mut f.attrs,
@@ -412,6 +454,7 @@ impl CfgSet {
                     });
                 }
                 Item::Struct(s) => {
+                    self.prune_generics(&mut s.generics, &mut errors);
                     if let syn::Fields::Named(named) = &mut s.fields {
                         let mut kept = syn::punctuated::Punctuated::new();
                         for field in named.named.iter() {
@@ -675,12 +718,46 @@ mod tests {
     #[test]
     fn parses_rustc_print_cfg() {
         let set =
-            CfgSet::parse("debug_assertions\npanic=\"unwind\"\ntarget_os=\"macos\"\n\nunix\n");
+            CfgSet::parse("debug_assertions\npanic=\"unwind\"\ntarget_os=\"macos\"\n\nunix\n")
+                .unwrap();
         assert!(set.eval(&pred("unix")).unwrap());
         assert!(set.eval(&pred("debug_assertions")).unwrap());
         assert!(set.eval(&pred("target_os = \"macos\"")).unwrap());
         assert!(!set.eval(&pred("target_os = \"linux\"")).unwrap());
         assert!(!set.eval(&pred("windows")).unwrap());
+    }
+
+    #[test]
+    fn parses_values_as_string_literals() {
+        // rustc prints values with `{:?}`: escapes are decoded exactly once.
+        let set = CfgSet::parse(
+            "plain=\"x\"\nquoted=\"\\\"q\\\"\"\nescaped=\"a\\\\b\\n\"\ntarget_feature=\"sse4.2\"\n",
+        )
+        .unwrap();
+        assert_eq!(set.eval3(&pred("plain = \"x\"")).unwrap(), Truth::True);
+        // The recorded value keeps its literal quote characters ...
+        assert_eq!(
+            set.eval3(&pred("quoted = \"\\\"q\\\"\"")).unwrap(),
+            Truth::True
+        );
+        // ... and is not conflated with the unquoted value.
+        assert_eq!(set.eval3(&pred("quoted = \"q\"")).unwrap(), Truth::False);
+        assert_eq!(
+            set.eval3(&pred("escaped = \"a\\\\b\\n\"")).unwrap(),
+            Truth::True
+        );
+        assert_eq!(
+            set.eval3(&pred("escaped = \"a\\\\\\\\b\\\\n\"")).unwrap(),
+            Truth::False
+        );
+        assert_eq!(
+            set.eval3(&pred("target_feature = \"sse4.2\"")).unwrap(),
+            Truth::True
+        );
+        // Not a string literal: fail rather than guess.
+        assert!(CfgSet::parse("custom=\"\"quoted\"\"").is_err());
+        assert!(CfgSet::parse("custom=quoted").is_err());
+        assert!(CfgSet::parse("custom=\"unterminated").is_err());
     }
 
     #[test]

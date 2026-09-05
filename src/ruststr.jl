@@ -303,9 +303,12 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Generate cache key
     cache_key = generate_cache_key(wrapped_code, compiler)
 
-    # Generate a unique library name based on a deterministic code hash
+    # The in-memory library identity covers the compiler snapshot as well as
+    # the source: the same expanded source built at another opt-level, target
+    # or cfg set is another library (see `_rustc_block_identity`), so a lookup
+    # can never hand back a build made under a different configuration.
     # Use stable_content_hash() — never hash() for persistent identifiers
-    code_hash = stable_content_hash(wrapped_code)[1:16]
+    code_hash = _rustc_block_identity(wrapped_code, compiler, cfg_text)[1:16]
     lib_name = "rust_$(code_hash)"
 
     # Check if already compiled and loaded in memory
@@ -540,19 +543,65 @@ end
 
 
 """
-    _cargo_block_identity(expanded_source, deps_hash) -> String
+    _block_identity(expanded_source, (name => value)...) -> String
 
-Stable identity of a Cargo-backed inline block: expanded source, dependency
-hash, toolchain fingerprint and the Cargo/RUSTFLAGS environment the build runs
-under (`cargo_env`, see `_cargo_cfg_env_key`) — two builds of the same source
-under different flags are different libraries. Used for the in-memory library
-name, the temporary project name and the disk cache key.
+Stable identity of an inline block: the expanded source, the named sections
+describing the configuration it is built under, and the toolchain
+fingerprint. Both the direct-rustc and the Cargo path derive their library
+names from it ([`_rustc_block_identity`], [`_cargo_block_identity`]), so two
+builds of the same source under different configurations are different
+libraries and a registry lookup never aliases one to the other.
+"""
+function _block_identity(expanded_source::AbstractString, sections::Pair{String, String}...)
+    io = IOBuffer()
+    write(io, expanded_source)
+    for (name, value) in sections
+        write(io, "\n---", name, "---\n", value)
+    end
+    write(io, "\n---toolchain---\n", toolchain_fingerprint())
+    # Use stable_content_hash() — never hash() for persistent identifiers
+    return stable_content_hash(String(take!(io)))
+end
+
+"""
+    _cargo_block_identity(expanded_source, deps_hash, cargo_env = "") -> String
+
+Identity of a Cargo-backed block: expanded source, dependency hash and the
+Cargo/RUSTFLAGS environment the build runs under (`cargo_env`, see
+`_cargo_cfg_env_key`). Used for the in-memory library name, the temporary
+project name and the disk cache key.
 """
 function _cargo_block_identity(expanded_source::AbstractString, deps_hash::AbstractString,
                               cargo_env::AbstractString = "")
-    return stable_content_hash(string(expanded_source, "\n---deps---\n", deps_hash,
-                                      "\n---toolchain---\n", toolchain_fingerprint(),
-                                      "\n---cargo-env---\n", cargo_env))
+    return _block_identity(expanded_source, "deps" => String(deps_hash),
+                           "cargo-env" => String(cargo_env))
+end
+
+# Environment that changes what a direct `rustc` invocation produces: rustc
+# itself ignores `RUSTFLAGS`, but rustup's proxy honours `RUSTUP_TOOLCHAIN`,
+# and RUSTFLAGS is tracked so a user who sets it sees the same rebuild
+# behaviour as with Cargo-backed blocks. Same allowlist discipline as
+# `_is_cargo_env_key`: named variables only, never credentials.
+const _RUSTC_ENV_NAMES = ("RUSTFLAGS", "RUSTUP_TOOLCHAIN")
+
+_rustc_env_key() = join(("$k=$(ENV[k])" for k in _RUSTC_ENV_NAMES if haskey(ENV, k)), "\n")
+
+"""
+    _rustc_block_identity(wrapped_source, compiler, cfg_text) -> String
+
+Identity of a block built by `rustc` directly: wrapped source, the compiler
+snapshot it was expanded for (target, opt-level, debug info), the cfg text
+the wrappers were derived from and the rustc environment
+([`_rustc_env_key`]). `cfg_text === nothing` means the current strict
+snapshot, as in [`expand_inline`].
+"""
+function _rustc_block_identity(wrapped_source::AbstractString, compiler::RustCompiler,
+                              cfg_text::Union{Nothing, AbstractString})
+    text = cfg_text === nothing ? _cfg_snapshot(:strict) : String(cfg_text)
+    return _block_identity(wrapped_source,
+                           "compiler" => "$(compiler.target_triple)_$(compiler.optimization_level)_$(compiler.emit_debug_info)",
+                           "cfg" => bytes2hex(sha256(text)),
+                           "rustc-env" => _rustc_env_key())
 end
 
 """
