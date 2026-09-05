@@ -388,8 +388,10 @@ end
         @test RustCall.is_err(parse_num("x"))
         @test RustCall.unwrap(first_char("λx")) == UInt32('λ')
         @test RustCall.is_none(first_char(""))
-        # Lifetime-qualified &str
+        # Lifetime-qualified &str: the result may borrow from the converted
+        # argument, so it comes back as an owned copy (still a String in Julia).
         @test identity_str("kept") == "kept"
+        @test identity_str(String(UInt8[0x41, 0xff])) == "A\ufffd"
         # Invalid UTF-8 is replaced, never handed to Rust as an invalid &str
         @test char_count(String(UInt8[0xff, 0x41])) == 2
         @test shout(String(UInt8[0xc3, 0x28])) == "\ufffd("

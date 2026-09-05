@@ -26,7 +26,8 @@ pub extern "C" fn shout(
         let slice = std::slice::from_raw_parts(input_ptr, input_len);
         String::from_utf8_lossy(slice).into_owned()
     };
-    let mut rustcall_bytes = shout_inner(input).into_bytes();
+    let rustcall_value = shout_inner(input);
+    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
     let rustcall_ret = shout_RustCallOwnedString {
         ptr: rustcall_bytes.as_mut_ptr(),
         len: rustcall_bytes.len(),
@@ -72,7 +73,8 @@ pub extern "C" fn concat(
     let b_bytes = unsafe { std::slice::from_raw_parts(b_ptr, b_len) };
     let b_cow = String::from_utf8_lossy(b_bytes);
     let b: &str = &b_cow;
-    let mut rustcall_bytes = concat_inner(a, b, times).into_bytes();
+    let rustcall_value = concat_inner(a, b, times);
+    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
     let rustcall_ret = concat_RustCallOwnedString {
         ptr: rustcall_bytes.as_mut_ptr(),
         len: rustcall_bytes.len(),
@@ -140,7 +142,8 @@ pub extern "C" fn unix_name(
         let slice = std::slice::from_raw_parts(s_ptr, s_len);
         String::from_utf8_lossy(slice).into_owned()
     };
-    let mut rustcall_bytes = unix_name_inner(s).into_bytes();
+    let rustcall_value = unix_name_inner(s);
+    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
     let rustcall_ret = unix_name_RustCallOwnedString {
         ptr: rustcall_bytes.as_mut_ptr(),
         len: rustcall_bytes.len(),

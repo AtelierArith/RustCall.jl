@@ -21,6 +21,10 @@ pub fn parse_num(s: &str) -> Result<i32, i32> { s.parse().map_err(|_| -1) }
 pub fn first_char(s: String) -> Option<u32> { s.chars().next().map(|c| c as u32) }
 #[julia]
 pub fn identity<'a>(s: &'a str) -> &'a str { s }
+#[julia]
+pub fn qualified(s: std::string::String) -> std::string::String { s }
+#[julia]
+pub fn qualified2(s: ::std::string::String) -> usize { s.len() }
 "#;
 
 #[test]
@@ -55,8 +59,18 @@ fn string_functions_get_ptr_len_wrappers() {
         ),
         "{src}"
     );
-    // Lifetime-qualified &str is a string argument as well.
-    assert!(src.contains("pub extern \"C\" fn identity(s_ptr: *const u8, s_len: usize) -> identity_RustCallBorrowedString"), "{src}");
+    // Lifetime-qualified &str is a string argument as well. Because the result
+    // may borrow from the converted argument, it is copied into an owned buffer.
+    assert!(src.contains("pub extern \"C\" fn identity(s_ptr: *const u8, s_len: usize) -> identity_RustCallOwnedString"), "{src}");
+    assert!(src.contains("pub extern \"C\" fn identity_free_rust_string"));
+    // `greeting()` takes no strings, so its &str result stays borrowed.
+    assert!(src.contains("pub extern \"C\" fn greeting() -> greeting_RustCallBorrowedString"));
+    // Qualified std::string::String is a string type too.
+    assert!(src.contains("pub extern \"C\" fn qualified(s_ptr: *const u8, s_len: usize) -> qualified_RustCallOwnedString"), "{src}");
+    assert!(
+        src.contains("pub extern \"C\" fn qualified2(s_ptr: *const u8, s_len: usize) -> usize"),
+        "{src}"
+    );
     // The lifetime parameter stays on the inner fn.
     assert!(
         src.contains("fn identity_inner<'a>(s: &'a str) -> &'a str"),
@@ -87,6 +101,10 @@ fn manifest_records_string_helpers() {
         assert_eq!(f("parse_num").args[0].abi, "str");
         assert_eq!(f("identity").args[0].rust_type, "&'a str");
         assert_eq!(f("identity").args[0].abi, "str");
-        assert!(f("identity").has_borrowed_string_helper);
+        assert!(f("identity").has_owned_string_helper && !f("identity").has_borrowed_string_helper);
+        assert!(f("greeting").has_borrowed_string_helper);
+        assert_eq!(f("qualified").args[0].abi, "string");
+        assert_eq!(f("qualified2").args[0].abi, "string");
+        assert!(f("qualified").has_owned_string_helper);
     }
 }

@@ -94,7 +94,7 @@ pub extern "C" fn Greeter_greet(
     let prefix: &str = &prefix_cow;
     let self_obj = unsafe { &*ptr };
     let rustcall_value = self_obj.greet(prefix);
-    let mut rustcall_bytes = rustcall_value.into_bytes();
+    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
     let rustcall_ret = Greeter_RustCallOwnedString {
         ptr: rustcall_bytes.as_mut_ptr(),
         len: rustcall_bytes.len(),

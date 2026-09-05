@@ -72,6 +72,29 @@ pub fn function_returns_str_ref(sig: &syn::Signature) -> bool {
     matches!(&sig.output, ReturnType::Type(_, ty) if is_str_ref_type(ty))
 }
 
+/// Whether any argument is passed as a `(ptr, len)` byte pair.
+pub fn has_string_args(sig: &syn::Signature) -> bool {
+    sig.inputs.iter().any(|a| match a {
+        FnArg::Typed(pt) => is_string_type(&pt.ty) || is_str_ref_type(&pt.ty),
+        FnArg::Receiver(_) => false,
+    })
+}
+
+/// A `&str` return may only be handed to Julia as a borrowed view when it
+/// cannot point into a temporary the wrapper itself created: the `(ptr, len)`
+/// argument conversions build owned values (`String::from_utf8_lossy`) that
+/// die with the call, so a function that both takes and returns strings
+/// returns an owned copy instead (#242).
+pub fn returns_borrowed_str(sig: &syn::Signature) -> bool {
+    function_returns_str_ref(sig) && !has_string_args(sig)
+}
+
+/// A `&str`-returning signature whose result must be copied into an owned
+/// buffer (see [`returns_borrowed_str`]).
+pub fn returns_copied_str(sig: &syn::Signature) -> bool {
+    function_returns_str_ref(sig) && has_string_args(sig)
+}
+
 /// Wrapper-side view of a function's arguments: `String` / `&str` become
 /// `(ptr, len)` byte pairs (`conversions` rebuild the Rust value, lossily for
 /// invalid UTF-8, never through `from_utf8_unchecked`), everything else is
@@ -160,7 +183,8 @@ fn transform_string_function(func: ItemFn) -> TokenStream2 {
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", func_name);
     let call = quote! { #inner_fn_name(#(#call_args),*) };
 
-    let (helpers, wrapper) = if function_returns_string(&func.sig) {
+    let returns_owned = function_returns_string(&func.sig) || returns_copied_str(&func.sig);
+    let (helpers, wrapper) = if returns_owned {
         (
             quote! {
                 #(#cfg_attrs)*
@@ -184,7 +208,11 @@ fn transform_string_function(func: ItemFn) -> TokenStream2 {
                 #[no_mangle]
                 pub extern "C" fn #func_name(#(#wrapper_args),*) -> #owned_helper {
                     #(#conversions)*
-                    let mut rustcall_bytes = #call.into_bytes();
+                    let rustcall_value = #call;
+                    // `ToString` covers both `String` and a `&str` result that
+                    // must be copied because it may borrow from a converted
+                    // argument (see `returns_copied_str`).
+                    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
                     let rustcall_ret = #owned_helper {
                         ptr: rustcall_bytes.as_mut_ptr(),
                         len: rustcall_bytes.len(),
@@ -195,7 +223,7 @@ fn transform_string_function(func: ItemFn) -> TokenStream2 {
                 }
             },
         )
-    } else if function_returns_str_ref(&func.sig) {
+    } else if returns_borrowed_str(&func.sig) {
         (
             quote! {
                 #(#cfg_attrs)*
@@ -844,8 +872,14 @@ fn method_returns_string(m: &MethodModel) -> bool {
     matches!(&m.func.sig.output, ReturnType::Type(_, ty) if is_string_type(ty))
 }
 
-fn method_returns_str_ref(m: &MethodModel) -> bool {
-    matches!(&m.func.sig.output, ReturnType::Type(_, ty) if is_str_ref_type(ty))
+/// A method returning `&str` that also takes string arguments: the result may
+/// borrow from a converted argument, so it is copied (see [`returns_borrowed_str`]).
+fn method_copies_str(m: &MethodModel) -> bool {
+    returns_copied_str(&m.func.sig)
+}
+
+fn method_returns_borrowed_str(m: &MethodModel) -> bool {
+    returns_borrowed_str(&m.func.sig)
 }
 
 fn inline_method_is_ctor(struct_name: &Ident, m: &MethodModel) -> bool {
@@ -878,14 +912,14 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
         .collect();
 
     let needs_owned = accessible.iter().any(|(_, ty)| is_string_type(ty))
-        || model
-            .methods
-            .iter()
-            .any(|m| method_returns_string(m) && !inline_method_is_ctor(struct_name, m));
+        || model.methods.iter().any(|m| {
+            (method_returns_string(m) || method_copies_str(m))
+                && !inline_method_is_ctor(struct_name, m)
+        });
     let needs_borrowed = model
         .methods
         .iter()
-        .any(|m| method_returns_str_ref(m) && !inline_method_is_ctor(struct_name, m));
+        .any(|m| method_returns_borrowed_str(m) && !inline_method_is_ctor(struct_name, m));
 
     let owned_helper = format_ident!("{}_RustCallOwnedString", struct_name);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", struct_name);
@@ -1061,6 +1095,10 @@ fn inline_method_wrapper(
         }
     }
 
+    // A `&str` result of a method that takes string arguments may borrow from a
+    // converted argument, so it is copied into the owned representation.
+    let copies_str = method_copies_str(m);
+
     let self_binding = if m.is_static {
         quote! {}
     } else if m.is_mutable {
@@ -1095,23 +1133,25 @@ fn inline_method_wrapper(
                 #call
             }
         },
-        ReturnType::Type(_, ty) if is_string_type(ty) => quote! {
-            #[no_mangle]
-            pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> #owned_helper {
-                #(#conversions)*
-                #self_binding
-                let rustcall_value = #call;
-                let mut rustcall_bytes = rustcall_value.into_bytes();
-                let rustcall_ret = #owned_helper {
-                    ptr: rustcall_bytes.as_mut_ptr(),
-                    len: rustcall_bytes.len(),
-                    cap: rustcall_bytes.capacity(),
-                };
-                std::mem::forget(rustcall_bytes);
-                rustcall_ret
+        ReturnType::Type(_, ty) if is_string_type(ty) || (is_str_ref_type(ty) && copies_str) => {
+            quote! {
+                #[no_mangle]
+                pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> #owned_helper {
+                    #(#conversions)*
+                    #self_binding
+                    let rustcall_value = #call;
+                    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
+                    let rustcall_ret = #owned_helper {
+                        ptr: rustcall_bytes.as_mut_ptr(),
+                        len: rustcall_bytes.len(),
+                        cap: rustcall_bytes.capacity(),
+                    };
+                    std::mem::forget(rustcall_bytes);
+                    rustcall_ret
+                }
             }
-        },
-        ReturnType::Type(_, ty) if is_str_ref_type(ty) => quote! {
+        }
+        ReturnType::Type(_, ty) if is_str_ref_type(ty) && !copies_str => quote! {
             #[no_mangle]
             pub extern "C" fn #wrapper_name(#(#wrapper_args),*) -> #borrowed_helper {
                 #(#conversions)*

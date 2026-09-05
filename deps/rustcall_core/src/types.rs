@@ -167,14 +167,42 @@ pub fn is_inline_accessible_field_type(ty: &Type) -> bool {
     }
 }
 
+/// `String`, however it is spelled: bare, `std::string::String`,
+/// `::std::string::String`, `alloc::string::String`, `core::…`.
 pub fn is_string_type(ty: &Type) -> bool {
-    last_ident(ty).map(|id| id == "String").unwrap_or(false)
-        && matches!(ty, Type::Path(tp) if tp.path.segments.len() == 1)
+    let Type::Path(tp) = ty else { return false };
+    if tp.qself.is_some() {
+        return false;
+    }
+    let segments: Vec<String> = tp
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    if segments.last().map(String::as_str) != Some("String") {
+        return false;
+    }
+    if !matches!(
+        tp.path.segments.last().map(|s| &s.arguments),
+        Some(PathArguments::None)
+    ) {
+        return false;
+    }
+    match segments.len() {
+        1 => true,
+        3 => matches!(segments[0].as_str(), "std" | "alloc" | "core") && segments[1] == "string",
+        _ => false,
+    }
 }
 
+/// A shared `str` reference (`&str`, `&'a str`, `&std::primitive::str`).
+/// `&mut str` is not an FFI string argument.
 pub fn is_str_ref_type(ty: &Type) -> bool {
     match ty {
-        Type::Reference(r) => last_ident(&r.elem).map(|id| id == "str").unwrap_or(false),
+        Type::Reference(r) if r.mutability.is_none() => {
+            last_ident(&r.elem).map(|id| id == "str").unwrap_or(false)
+        }
         _ => false,
     }
 }
