@@ -244,16 +244,59 @@ function _cfg_rustc_flags(compiler = get_default_compiler())
     ]
 end
 
-"""
-    _cfg_rustc_flags_for(mode::Symbol) -> Vector{String}
+# Cargo-side cfg: obtained from Cargo itself so profile overrides
+# (`CARGO_PROFILE_RELEASE_*`), `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS` and
+# `.cargo/config` settings are reflected. Cached per session and environment.
+const _CARGO_CFG_TEXT = Dict{String, String}()
 
-Flags for the cfg query of a mode: `:strict` follows the default compiler;
-`:cargo` and `:lenient` follow the Cargo builds RustCall runs (host target,
-release profile: `opt-level = 3`, default `panic = "unwind"`).
 """
-function _cfg_rustc_flags_for(mode::Symbol)
-    mode === :strict && return _cfg_rustc_flags()
-    return String["-C", "opt-level=3"]
+    _cargo_probe_profile() -> String
+
+The `[profile.release]` section RustCall writes into every Cargo project it
+generates (`// cargo-deps:` blocks, `@rust_crate` wrapper crates).
+"""
+_cargo_probe_profile() = "[profile.release]\nopt-level = 3\nlto = true\n"
+
+"""
+    _cargo_cfg_env_key() -> String
+
+The environment that can change Cargo's effective rustc configuration.
+"""
+function _cargo_cfg_env_key()
+    keys = sort!(filter(k -> startswith(k, "CARGO_") || k in ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN"), collect(Base.keys(ENV))))
+    return join(("$k=$(ENV[k])" for k in keys), "\n")
+end
+
+"""
+    _cargo_cfg_text() -> String
+
+`rustc --print cfg` as Cargo runs rustc for the release builds RustCall
+performs: a dependency-free probe crate with the same `[profile.release]`
+is built once per session (and per Cargo/RUSTFLAGS environment) with
+`cargo rustc --release --lib -- --print cfg`, so `debug_assertions`,
+`panic`, `overflow_checks` and `target_*` match the real Cargo build. Empty
+when cargo is unavailable or the probe fails.
+"""
+function _cargo_cfg_text()
+    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key()
+    lock(_EXTRACTOR_LOCK) do
+        get!(_CARGO_CFG_TEXT, key) do
+            try
+                mktempdir() do dir
+                    mkpath(joinpath(dir, "src"))
+                    write(joinpath(dir, "src", "lib.rs"), "")
+                    write(joinpath(dir, "Cargo.toml"),
+                          "[package]\nname = \"rustcall_cfg_probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n" *
+                          "[lib]\npath = \"src/lib.rs\"\n\n" * _cargo_probe_profile())
+                    out = read(setenv(`$(cargo()) rustc -q --release --lib -- --print cfg`; dir = dir), String)
+                    # Keep only cfg lines (`name` or `name="value"`).
+                    join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
+                end
+            catch
+                ""
+            end
+        end
+    end
 end
 
 """
@@ -280,10 +323,11 @@ end
 
 Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
 configuration of the actual compiler invocation), `:cargo` (Cargo projects
-RustCall generates for `// cargo-deps:` blocks: target and release-profile
-predicates are decided, `feature = "..."` and build-script cfgs keep their
-items), `:lenient` (`@rust_crate`, whose Cargo.toml may override the profile:
-only target predicates are decided) or `:none` (report everything, used for
+RustCall generates for `// cargo-deps:` blocks: target and profile predicates
+are decided from Cargo's effective configuration, see [`_cargo_cfg_text`];
+`feature = "..."` and build-script cfgs keep their items), `:lenient`
+(`@rust_crate`, whose own Cargo.toml may override the profile: only target
+predicates are decided, the cfg text still comes from Cargo) or `:none` (report everything, used for
 the platform-independent golden corpus). `true`/`false` map to `:strict`/`:none`.
 """
 _cfg_mode(cfg::Symbol) = cfg in (:strict, :cargo, :lenient, :none) ? cfg :
@@ -302,7 +346,8 @@ derived from one configuration even if `set_default_compiler` ran in between.
 function _cfg_snapshot(cfg)
     mode = _cfg_mode(cfg)
     mode === :none && return ""
-    return _rustc_cfg_text(_cfg_rustc_flags_for(mode))
+    mode === :strict && return _rustc_cfg_text()
+    return _cargo_cfg_text()
 end
 
 """

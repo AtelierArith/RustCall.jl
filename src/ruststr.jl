@@ -165,13 +165,17 @@ macro rust_str(code)
                                           compiler_target = $(snapshot_compiler.target_triple),
                                           compiler_level = $(snapshot_compiler.optimization_level))
 
-        # Store library information in the calling module for precompilation support
+        # Store the block (source plus the cfg/compiler snapshot it was expanded
+        # under) in the calling module for precompilation support: a reload in a
+        # later session rebuilds the very same configuration, see `ensure_loaded`.
         if !isdefined($__module__, :__RUSTCALL_LIBS)
             # Use Core.eval to define the constant if it doesn't exist
             # Note: We use a Dict to support multiple blocks
-            @eval $__module__ const __RUSTCALL_LIBS = Dict{String, String}()
+            @eval $__module__ const __RUSTCALL_LIBS = Dict{String, Any}()
         end
-        $__module__.__RUSTCALL_LIBS[lib_name] = $(esc(code))
+        $__module__.__RUSTCALL_LIBS[lib_name] = RustCall.RustBlockSnapshot(
+            $(esc(code)), $cfg_text,
+            $(snapshot_compiler.target_triple), $(snapshot_compiler.optimization_level))
 
         # Track the "current" library for this module
         # Use Ref{String} so the binding is const but the value can be mutated
@@ -193,19 +197,46 @@ macro rust_str(code)
 end
 
 """
-    ensure_loaded(lib_name::String, code::String)
+    RustBlockSnapshot
 
-Ensure that a Rust library is loaded in the current session.
-Useful for precompiled modules that need to reload libraries at runtime.
+What a `rust\"\"\"` block records in the calling module's `__RUSTCALL_LIBS`:
+the source and the cfg / compiler configuration it was expanded under, so a
+reload after precompilation (`ensure_loaded`) rebuilds exactly the library the
+emitted Julia wrappers were generated for.
 """
+struct RustBlockSnapshot
+    code::String
+    cfg_text::String
+    compiler_target::String
+    compiler_level::Int
+end
+
+"""
+    ensure_loaded(lib_name::String, block) -> String
+
+Ensure that a Rust library is loaded in the current session; `block` is the
+[`RustBlockSnapshot`](@ref) stored by the macro (a plain source string is
+accepted for modules precompiled by older versions, and is rebuilt under the
+current default compiler). Returns the name of the loaded library. Useful for
+precompiled modules that need to reload libraries at runtime.
+"""
+function ensure_loaded(lib_name::String, block::RustBlockSnapshot)
+    needs_reload = lock(REGISTRY_LOCK) do
+        !haskey(RUST_LIBRARIES, lib_name)
+    end
+    needs_reload || return lib_name
+    return _compile_and_load_rust(block.code, "reload", 0;
+                                  cfg_text = block.cfg_text,
+                                  compiler_target = block.compiler_target,
+                                  compiler_level = block.compiler_level)
+end
+
 function ensure_loaded(lib_name::String, code::String)
     needs_reload = lock(REGISTRY_LOCK) do
         !haskey(RUST_LIBRARIES, lib_name)
     end
-    if needs_reload
-        _compile_and_load_rust(code, "reload", 0)
-    end
-    return nothing
+    needs_reload || return lib_name
+    return _compile_and_load_rust(code, "reload", 0)
 end
 
 """

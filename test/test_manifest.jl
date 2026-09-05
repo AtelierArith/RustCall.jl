@@ -170,11 +170,25 @@ using TOML
         lenient_names = names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))
         @test Set(lenient_names) == Set(["dbg_only", "abort_only", "feature_only"])
         # Cargo projects RustCall generates use the release profile, so profile
-        # predicates are decided there; features stay unknown.
+        # predicates are decided there; features stay unknown. The cfg text comes
+        # from Cargo itself (probe crate), so profile overrides in the environment
+        # and RUSTFLAGS are honoured.
         cargo_names = names(RustCall.extract_manifest(profile_code; mode = "inline", cfg = :cargo))
         @test Set(cargo_names) == Set(["feature_only"])   # unwind, no debug_assertions
         @test RustCall._cfg_file_args(:cargo)[end] == "--cfg-profile"
-        @test occursin("panic=\"unwind\"", RustCall._cfg_snapshot(:cargo))
+        cargo_cfg = RustCall._cfg_snapshot(:cargo)
+        @test occursin("panic=\"unwind\"", cargo_cfg)
+        @test !occursin("debug_assertions", cargo_cfg)
+        @test occursin("target_os=", cargo_cfg) && !occursin("Compiling", cargo_cfg)
+        @test RustCall._cfg_snapshot(:lenient) == cargo_cfg
+        withenv("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => "true", "RUSTFLAGS" => "-C panic=abort") do
+            overridden = RustCall._cargo_cfg_text()
+            @test occursin("debug_assertions", overridden)
+            @test occursin("panic=\"abort\"", overridden)
+            @test Set(names(RustCall.extract_manifest(profile_code; mode = "inline", cfg = :cargo))) ==
+                  Set(["dbg_only", "abort_only", "feature_only"])
+        end
+        @test RustCall._cargo_cfg_text() == cargo_cfg   # cache keyed by environment
         lenient_host = RustCall.extract_manifest(code; mode = "crate", cfg = :lenient)
         @test Set(names(lenient_host)) == Set(expected)
         @test RustCall.expand_inline(code; cfg = :lenient).manifest != RustCall.expand_inline(code).manifest ||
@@ -217,6 +231,13 @@ using TOML
             @test RustCall.get_function_pointer(lib, "cfg_snapshot_debug_only") != C_NULL
             @test RustCall._snapshot_compiler(nothing, nothing) === RustCall.get_default_compiler()
             @test RustCall._snapshot_compiler(o0.target_triple, 0).optimization_level == 0
+            # Precompiled modules store the snapshot; a reload rebuilds under it.
+            block = RustCall.RustBlockSnapshot(dbg_block, snapshot_o0, o0.target_triple, 0)
+            reloaded = RustCall.ensure_loaded("rustcall_no_such_lib_265", block)
+            @test RustCall.get_function_pointer(reloaded, "cfg_snapshot_debug_only") != C_NULL
+            @test RustCall.ensure_loaded(reloaded, block) == reloaded
+            @test (@__MODULE__).__RUSTCALL_LIBS isa Dict{String, Any}
+            @test all(v -> v isa RustCall.RustBlockSnapshot, values((@__MODULE__).__RUSTCALL_LIBS))
         end
     end
 
