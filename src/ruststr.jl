@@ -324,11 +324,13 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     is_in_memory = lock(REGISTRY_LOCK) do
         haskey(RUST_LIBRARIES, lib_name)
     end
-    if is_in_memory
-        # Ensure the symbol mappings, return types and generic functions are
-        # registered (the registries are volatile). The handle is already
-        # published, so only `CURRENT_LIB[]` moves here.
-        _register_manifest(expanded, lib_name; compiler)
+    # Ensure the symbol mappings, return types and generic functions are
+    # registered (the registries are volatile). The handle is already
+    # published, so only `CURRENT_LIB[]` moves here. `require_loaded` re-checks
+    # inside the lock: an `unload_library` racing with the check above must
+    # send us down the compile path, not leave metadata behind for a library
+    # that is gone.
+    if is_in_memory && _register_manifest(expanded, lib_name; compiler, require_loaded = true)
         return lib_name
     end
 
@@ -460,11 +462,12 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     is_in_memory = lock(REGISTRY_LOCK) do
         haskey(RUST_LIBRARIES, lib_name)
     end
-    if is_in_memory
+    # As in the rustc path: the re-check happens inside `_register_manifest`'s
+    # critical section, so a concurrent unload sends us down the build path
+    # rather than leaving metadata for a library that is gone.
+    if is_in_memory &&
+       _register_manifest(expanded, lib_name; cargo_backed = true, require_loaded = true)
         @debug "Using cached Cargo library from memory" lib_name=lib_name
-
-        _register_manifest(expanded, lib_name; cargo_backed = true)
-
         return lib_name
     end
 
@@ -612,6 +615,14 @@ and the manifest-derived lookup tables then become visible in **one**
 resolving `f` to itself and failing (or, worse, hitting another library's `f`).
 Callers must therefore not insert into `RUST_LIBRARIES` themselves.
 
+Pass `require_loaded` instead when re-registering the volatile tables of a
+library that is *already* loaded. The existence check then happens inside the
+same critical section, so an `unload_library` or hot reload racing between a
+caller's `haskey` and this call cannot leave metadata and `CURRENT_LIB[]`
+pointing at a library that is no longer in `RUST_LIBRARIES`. Returns `false`
+when the library turned out to be gone and nothing was registered; the caller
+then falls through to compiling and loading it again.
+
 The generic registrations stay outside the lock: `register_generic_function`
 may shell out to the extractor to recover a signature, which must not run with
 the global registry lock held.
@@ -619,11 +630,15 @@ the global registry lock held.
 function _register_manifest(expanded, lib_name::String; compiler = nothing,
                             cargo_backed::Bool = false,
                             handle::Union{Ptr{Cvoid}, Nothing} = nothing,
-                            set_current::Bool = true)
+                            set_current::Bool = true,
+                            require_loaded::Bool = false)
     manifest = expanded.manifest
     signatures = manifest_function_signatures(manifest; only_attributed = false)
 
-    lock(REGISTRY_LOCK) do
+    registered = lock(REGISTRY_LOCK) do
+        if require_loaded && !haskey(RUST_LIBRARIES, lib_name)
+            return false
+        end
         _register_exported_symbols!(signatures, lib_name)
         # Publishing the handle last is what closes the window: no reader can
         # find the library before its symbol mappings are in place.
@@ -631,7 +646,9 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
             RUST_LIBRARIES[lib_name] = (handle, Dict{String, Ptr{Cvoid}}())
         end
         set_current && (CURRENT_LIB[] = lib_name)
+        return true
     end
+    registered || return false
 
     for info in manifest_struct_infos(manifest)
         register_generic_struct_wrappers(info, expanded.source; compiler)
@@ -660,7 +677,7 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         end
     end
-    return nothing
+    return true
 end
 
 """
@@ -671,16 +688,18 @@ non-generic function of a manifest.
 
 The caller must hold `REGISTRY_LOCK` and publish the library handle in the same
 critical section, so that a task which finds the library in `RUST_LIBRARIES`
-also finds how to resolve its names (#279). The library's previous mappings are
-dropped first: a library re-registered under the same name (a re-run block, a
-hot reload) must not keep the entries of functions it no longer defines.
+also finds how to resolve its names (#279). Everything the registries recorded
+about the library is dropped first (`clear_library_metadata!`: both the symbol
+mappings and the return-type hints), so a library re-registered under the same
+name — a re-run block, a hot reload — keeps nothing about a function it no
+longer defines or now declares differently.
 
 Identity mappings are recorded too, so a plain `#[no_mangle] fn f` is
 explicitly `f => f` for this library and cannot pick up another library's
 `f => rustcall_f`.
 """
 function _register_exported_symbols!(signatures, lib_name::String)
-    clear_function_symbols!(lib_name)
+    clear_library_metadata!(lib_name)
     for sig in signatures
         sig.is_generic && continue
         sig.exported || continue
@@ -794,7 +813,7 @@ function unload_library(lib_name::String)
         delete!(RUST_LIBRARIES, lib_name)
         # A stale name-to-symbol mapping would keep redirecting lookups to a
         # symbol that is no longer loaded (#279).
-        clear_function_symbols!(lib_name)
+        clear_library_metadata!(lib_name)
         if CURRENT_LIB[] == lib_name
             CURRENT_LIB[] = ""
         end

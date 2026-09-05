@@ -60,7 +60,7 @@ The mapping is strictly **per library**, and identity mappings are recorded
 too. One library exporting `#[julia] fn f` as `rustcall_f` must not decide how
 `f` resolves in another library that exports a plain `#[no_mangle] fn f` under
 its own name; a library with no entry for a name resolves it to the name
-itself. Entries are dropped with the library (`clear_function_symbols!`), so an
+itself. Entries are dropped with the library (`clear_library_metadata!`), so an
 unloaded library cannot leave a stale mapping behind.
 
 Guarded by `REGISTRY_LOCK`.
@@ -99,42 +99,67 @@ function exported_symbol(lib_name::AbstractString, name::AbstractString)
 end
 
 """
-    clear_function_symbols!(lib_name)
+    clear_library_metadata!(lib_name)
 
-Drop every name-to-symbol mapping of `lib_name`. Called wherever a library
-leaves `RUST_LIBRARIES` or is replaced under the same name (unload, hot
-reload, re-registration of a `rust\"\"\"` block), so a stale mapping can never
-redirect a later lookup to a symbol that is no longer loaded.
+Drop everything the registries record *about* one library: its name-to-symbol
+mappings and its return-type hints.
+
+Called wherever a library leaves `RUST_LIBRARIES` or is replaced under the same
+name (unload, hot reload, re-registration of a `rust\"\"\"` block). A stale
+mapping would redirect a later lookup to a symbol that is no longer loaded, and
+a stale hint would type a call to a function the rebuilt library no longer
+declares that way — so the two must go together, in the same transaction that
+removes the handle (#279).
+
+The unscoped `FUNCTION_RETURN_TYPES` fallback is pruned as well, but only for
+names no *other* library still declares.
 """
-function clear_function_symbols!(lib_name::AbstractString)
+function clear_library_metadata!(lib_name::AbstractString)
     name = String(lib_name)
     lock(REGISTRY_LOCK) do
+        orphaned = String[]
         for key in collect(keys(FUNCTION_SYMBOLS_BY_LIB))
             first(key) == name && delete!(FUNCTION_SYMBOLS_BY_LIB, key)
+        end
+        for key in collect(keys(FUNCTION_RETURN_TYPES_BY_LIB))
+            if first(key) == name
+                delete!(FUNCTION_RETURN_TYPES_BY_LIB, key)
+                push!(orphaned, last(key))
+            end
+        end
+        for func_name in orphaned
+            any(k -> last(k) == func_name, keys(FUNCTION_RETURN_TYPES_BY_LIB)) && continue
+            delete!(FUNCTION_RETURN_TYPES, func_name)
         end
     end
     return nothing
 end
 
 """
-    copy_function_symbols!(from, to)
+    copy_library_metadata!(from, to)
 
-Give the library `to` the same name-to-symbol mappings as `from`, replacing
-whatever it had.
+Give the library `to` the same name-to-symbol mappings and return-type hints as
+`from`, replacing whatever it had.
 
 Used when one loaded handle is registered under a second name (`@rust`'s reload
-alias, `_alias_reloaded_library`): resolution is per library, so the alias
-needs its own entries or a lookup through it would resolve `f` to `f` and miss
-the `rustcall_f` the library actually exports (#279).
+alias, `_alias_reloaded_library`): both registries are per library, so the alias
+needs its own entries. Without the mappings a lookup through it would resolve
+`f` to `f` and miss the `rustcall_f` the library actually exports; without the
+hints an untyped `@rust f(...)` through the alias would fall back to the
+unscoped table and pick up whatever *another* block last registered for that
+name (#279).
 """
-function copy_function_symbols!(from::AbstractString, to::AbstractString)
+function copy_library_metadata!(from::AbstractString, to::AbstractString)
     source = String(from)
     target = String(to)
     source == target && return nothing
     lock(REGISTRY_LOCK) do
-        clear_function_symbols!(target)
+        clear_library_metadata!(target)
         for ((lib, name), symbol) in collect(FUNCTION_SYMBOLS_BY_LIB)
             lib == source && (FUNCTION_SYMBOLS_BY_LIB[(target, name)] = symbol)
+        end
+        for ((lib, name), ret_type) in collect(FUNCTION_RETURN_TYPES_BY_LIB)
+            lib == source && (FUNCTION_RETURN_TYPES_BY_LIB[(target, name)] = ret_type)
         end
     end
     return nothing

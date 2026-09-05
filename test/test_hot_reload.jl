@@ -212,9 +212,29 @@ end
             state = RustCall.enable_hot_reload(lib_name, SAMPLE_CRATE_PATH)
             @test state !== nothing
 
+            # Metadata a previous build of this library left behind: a
+            # function that no longer exists, and a return-type hint for it.
+            # The reload rebuilds the tables from the rescanned manifest, so
+            # both must be gone afterwards (#279).
+            lock(RustCall.REGISTRY_LOCK) do
+                RustCall.FUNCTION_SYMBOLS_BY_LIB[(lib_name, "ghost_fn")] = "rustcall_ghost_fn"
+                RustCall.FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, "ghost_fn")] = Int32
+                RustCall.FUNCTION_RETURN_TYPES["ghost_fn"] = Int32
+                # A stale hint for a function that *does* still exist, under a
+                # type the crate never declared.
+                RustCall.FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, sig.name)] = Bool
+            end
+
             # Whatever the enable path left behind, a reload must end with the
             # mappings in place next to the new handle.
             RustCall.trigger_reload(lib_name)
+
+            # The stale entries are gone, including the unscoped fallback that
+            # no other library claims.
+            @test RustCall.exported_symbol(lib_name, "ghost_fn") == "ghost_fn"
+            @test RustCall.get_function_return_type(lib_name, "ghost_fn") === nothing
+            # ... and the surviving function's hint was rebuilt, not kept.
+            @test RustCall.get_function_return_type(lib_name, sig.name) !== Bool
 
             @test RustCall.exported_symbol(lib_name, sig.name) == sig.symbol
             @test haskey(RustCall.RUST_LIBRARIES, lib_name)
@@ -226,7 +246,7 @@ end
             empty!(RustCall.HOT_RELOAD_REGISTRY)
             lock(RustCall.REGISTRY_LOCK) do
                 delete!(RustCall.RUST_LIBRARIES, lib_name)
-                RustCall.clear_function_symbols!(lib_name)
+                RustCall.clear_library_metadata!(lib_name)
             end
         end
     end

@@ -657,17 +657,121 @@ end
         @test RustCall.exported_symbol(stored, "aliased_probe") == "rustcall_aliased_probe"
         ptr = RustCall.get_function_pointer(stored, "aliased_probe")
         @test RustCall.call_rust_function(ptr, Int32, Int32(5)) == Int32(4)
+        # The return-type hints travel with the mappings.
+        @test RustCall.get_function_return_type(stored, "aliased_probe") === Int32
 
         # Dropping the alias must not disturb the library it pointed at.
-        RustCall.clear_function_symbols!(stored)
+        RustCall.clear_library_metadata!(stored)
         @test RustCall.exported_symbol(actual, "aliased_probe") == "rustcall_aliased_probe"
+        @test RustCall.get_function_return_type(actual, "aliased_probe") === Int32
     finally
         for name in (stored, actual)
             lock(RustCall.REGISTRY_LOCK) do
                 delete!(RustCall.RUST_LIBRARIES, name)
-                RustCall.clear_function_symbols!(name)
+                RustCall.clear_library_metadata!(name)
             end
         end
         Libdl.dlclose(handle)
+    end
+end
+
+# #279 follow-up: the alias must carry the return-type hints too, not just the
+# symbol mappings. Otherwise an untyped `@rust f(...)` through the stored name
+# misses the library-scoped entry and takes the unscoped fallback, which holds
+# whatever *another* block last registered for that name.
+@testset "#279: an aliased library keeps its return-type hints" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping alias return-type test"
+        return
+    end
+
+    # Two blocks declaring the same Rust name with different return types.
+    expanded_i32 = RustCall.expand_inline("""
+    #[julia]
+    pub fn alias_typed(x: i32) -> i32 { x }
+    """)
+    expanded_f64 = RustCall.expand_inline("""
+    #[julia]
+    pub fn alias_typed(x: i32) -> f64 { x as f64 }
+    """)
+    path_i32 = RustCall.compile_rust_to_shared_lib(expanded_i32.source)
+    path_f64 = RustCall.compile_rust_to_shared_lib(expanded_f64.source)
+    lib_i32 = "test279_ret_i32_" * string(hash(path_i32), base = 16)
+    lib_f64 = "test279_ret_f64_" * string(hash(path_f64), base = 16)
+    stored = "test279_ret_stored_" * string(hash(path_i32), base = 16)
+    handle_i32 = Libdl.dlopen(path_i32, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+    handle_f64 = Libdl.dlopen(path_f64, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+
+    try
+        RustCall._register_manifest(expanded_i32, lib_i32; handle = handle_i32, set_current = false)
+        # Registered second, so the unscoped fallback now says Float64.
+        RustCall._register_manifest(expanded_f64, lib_f64; handle = handle_f64, set_current = false)
+        @test RustCall.get_function_return_type(lib_i32, "alias_typed") === Int32
+        @test RustCall.get_function_return_type(lib_f64, "alias_typed") === Float64
+        @test RustCall.get_function_return_type("test279_ret_unknown", "alias_typed") === Float64
+
+        # Aliasing the i32 block must give the alias *its* type, not the
+        # fallback the f64 block left behind.
+        RustCall._alias_reloaded_library(Main, stored, lib_i32)
+        @test RustCall.get_function_return_type(stored, "alias_typed") === Int32
+        @test RustCall.exported_symbol(stored, "alias_typed") == "rustcall_alias_typed"
+    finally
+        for name in (stored, lib_i32, lib_f64)
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, name)
+                RustCall.clear_library_metadata!(name)
+            end
+        end
+        Libdl.dlclose(handle_i32)
+        Libdl.dlclose(handle_f64)
+    end
+end
+
+# #279 follow-up: the in-memory hit re-registers a library's volatile tables.
+# The existence check and the registration must be one transaction, or an
+# unload racing between them leaves metadata and `CURRENT_LIB[]` pointing at a
+# library that is no longer in `RUST_LIBRARIES`.
+@testset "#279: re-registering an unloaded library is refused" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping unload-race test"
+        return
+    end
+
+    expanded = RustCall.expand_inline("""
+    #[julia]
+    pub fn raced_probe(x: i32) -> i32 { x + 2 }
+    """)
+    path = RustCall.compile_rust_to_shared_lib(expanded.source)
+    lib_name = "test279_raced_" * string(hash(path), base = 16)
+    handle = Libdl.dlopen(path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+    previous_current = RustCall.get_current_library()
+
+    try
+        RustCall._register_manifest(expanded, lib_name; handle = handle, set_current = false)
+        @test RustCall.exported_symbol(lib_name, "raced_probe") == "rustcall_raced_probe"
+
+        # The library goes away between a caller's `haskey` and its
+        # re-registration; the guarded call must decline rather than register
+        # metadata for a name that is no longer loaded.
+        RustCall.unload_library(lib_name)
+        @test !haskey(RustCall.RUST_LIBRARIES, lib_name)
+        @test !RustCall._register_manifest(expanded, lib_name; require_loaded = true)
+
+        # Nothing was left behind, and CURRENT_LIB does not dangle.
+        @test RustCall.exported_symbol(lib_name, "raced_probe") == "raced_probe"
+        @test RustCall.get_function_return_type(lib_name, "raced_probe") === nothing
+        @test RustCall.get_current_library() != lib_name
+
+        # Without the guard the caller is the one publishing the handle, which
+        # is still allowed and still atomic.
+        handle2 = Libdl.dlopen(path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        @test RustCall._register_manifest(expanded, lib_name; handle = handle2, set_current = false)
+        @test RustCall.exported_symbol(lib_name, "raced_probe") == "rustcall_raced_probe"
+    finally
+        haskey(RustCall.RUST_LIBRARIES, lib_name) && RustCall.unload_library(lib_name)
+        lock(RustCall.REGISTRY_LOCK) do
+            RustCall.clear_library_metadata!(lib_name)
+            RustCall.CURRENT_LIB[] = previous_current
+        end
     end
 end

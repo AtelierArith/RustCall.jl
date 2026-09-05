@@ -177,7 +177,7 @@ function _reload_library_locked(state::HotReloadState)
                 delete!(RUST_LIBRARIES, state.lib_name)
                 # The rebuilt library re-registers its own mappings; a stale
                 # entry would redirect a lookup to the unloaded handle (#279).
-                clear_function_symbols!(state.lib_name)
+                clear_library_metadata!(state.lib_name)
                 if CURRENT_LIB[] == state.lib_name
                     CURRENT_LIB[] = ""
                 end

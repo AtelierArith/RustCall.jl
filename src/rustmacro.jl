@@ -164,12 +164,15 @@ function _alias_reloaded_library(mod::Module, stored_name::String, actual_name::
     lock(REGISTRY_LOCK) do
         entry = get(RUST_LIBRARIES, actual_name, nothing)
         if entry !== nothing
-            # Symbol resolution is per library (#279), so the alias needs its
-            # own name-to-symbol entries: without them a lookup through the
+            # Both registries are per library (#279), so the alias needs its
+            # own entries: without the symbol mappings a lookup through the
             # stored name resolves `f` to `f`, misses the `rustcall_f` this
             # library exports, and falls back to the cross-library search —
-            # which another block defining `f` would make ambiguous.
-            copy_function_symbols!(actual_name, stored_name)
+            # which another block defining `f` would make ambiguous; without
+            # the return-type hints an untyped `@rust f(...)` through the alias
+            # would take the unscoped fallback and pick up whatever another
+            # block last registered for that name.
+            copy_library_metadata!(actual_name, stored_name)
             RUST_LIBRARIES[stored_name] = entry
         end
     end
