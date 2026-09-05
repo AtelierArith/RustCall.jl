@@ -260,6 +260,7 @@ primitive type _Dep265Int <: Integer 8 end
     @test converting == positional
 
     @test_deprecated RustCall.set_default_opt_config(RustCall._optimization_config())
+    @test (@test_deprecated RustCall.get_default_opt_config()) isa RustCall.OptimizationConfig
     @test_deprecated RustCall.get_registered_function("no_such_function_265")
     @test (@test_deprecated RustCall.julia_type_to_llvm_ir_string(Int32)) == "i32"
 
@@ -301,6 +302,7 @@ primitive type _Dep265Int <: Integer 8 end
     # Internal helpers used by @rust and by the deprecated wrappers stay silent.
     if Base.JLOptions().depwarn != 0
         @test_logs RustCall._optimization_config()
+        @test_logs RustCall._get_default_opt_config()
         @test_logs RustCall._get_registered_function("no_such_function_265")
         @test_logs RustCall._julia_type_to_llvm_ir_string(Int32)
     end

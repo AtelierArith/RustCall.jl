@@ -75,6 +75,11 @@ end
 const DEFAULT_OPT_CONFIG = Ref{OptimizationConfig}()
 
 function get_default_opt_config()
+    _llvm_path_depwarn("get_default_opt_config", :get_default_opt_config)
+    return _get_default_opt_config()
+end
+
+function _get_default_opt_config()
     if !isassigned(DEFAULT_OPT_CONFIG)
         DEFAULT_OPT_CONFIG[] = _optimization_config()
     end
@@ -97,12 +102,12 @@ Returns the optimized module (modified in place).
     release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
     Use `@rust` instead.
 """
-function optimize_module!(mod::LLVM.Module; config::OptimizationConfig = get_default_opt_config())
+function optimize_module!(mod::LLVM.Module; config::OptimizationConfig = _get_default_opt_config())
     _llvm_path_depwarn("optimize_module!", :optimize_module!)
     return _optimize_module!(mod; config)
 end
 
-function _optimize_module!(mod::LLVM.Module; config::OptimizationConfig = get_default_opt_config())
+function _optimize_module!(mod::LLVM.Module; config::OptimizationConfig = _get_default_opt_config())
     if config.level == 0 && config.size_level == 0
         return mod
     end
@@ -151,7 +156,7 @@ Apply optimization passes to a single LLVM function.
     release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
     Use `@rust` instead.
 """
-function optimize_function!(fn::LLVM.Function; config::OptimizationConfig = get_default_opt_config())
+function optimize_function!(fn::LLVM.Function; config::OptimizationConfig = _get_default_opt_config())
     _llvm_path_depwarn("optimize_function!", :optimize_function!)
     mod = LLVM.parent(fn)
 
