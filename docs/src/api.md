@@ -439,3 +439,19 @@ Filter = t -> begin
     return !(name in excluded_names)
 end
 ```
+
+## Loading and lifetime
+
+Every compiled artifact is opened, registered and unloaded through one path
+(`src/loadpolicy.jl`). The user-facing halves of it:
+
+- `RustCall.unload_library(name)` / `RustCall.unload_all_libraries()` — drop a
+  library and everything the registries record about it, retiring the objects it
+  produced.
+- `RustCall.list_loaded_libraries()` — the registered library names, which now
+  include `@rust_crate` libraries.
+- `RustCall.RustPanicError` — a Rust `panic!` caught at the FFI boundary.
+- `RustCall.finalizer_failure_count()` — how many Rust destructors raised while
+  being called from a finalizer (non-zero means objects leaked).
+
+See [Panics, Visibility and Lifetime](panics.md) for the semantics these guarantee.

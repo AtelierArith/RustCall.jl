@@ -8,6 +8,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **One load/registration path** ([#277](https://github.com/AtelierArith/RustCall.jl/issues/277),
+  Phase B). Twelve `dlopen` sites with four different flag sets and eight
+  open-coded `RUST_LIBRARIES[...] = ...` writes became one:
+  `RustCall.load_artifact!` (`src/loadpolicy.jl`), with `unload_artifact!` and
+  `alias_artifact!` as the reverse and the aliasing operations.
+  `scripts/lint_load_path.sh` keeps it that way in CI. Five user-visible
+  consequences:
+
+  - **Every artifact is `RTLD_LOCAL` now**
+    ([#250](https://github.com/AtelierArith/RustCall.jl/issues/250)). A
+    compiled block no longer publishes its symbols into the process-global
+    namespace, so two `rust"""` blocks that both export `f` stop shadowing one
+    another and which one a call reaches no longer depends on load order. It
+    also stops depending on whether the block happened to declare
+    `// cargo-deps:`, which used to flip the same construct from `RTLD_LOCAL`
+    to `RTLD_GLOBAL`. Calling across blocks does not need global symbols —
+    `@rust f(...)` searches the loaded libraries by handle. Code that relied
+    on the old behaviour can set `RUSTCALL_DLOPEN_GLOBAL=1` for one minor
+    release, with a warning; the variable will be removed. On Windows nothing
+    changes: `LoadLibrary` has no LOCAL/GLOBAL distinction.
+
+  - **A Rust panic is now a catchable Julia exception**
+    ([#244](https://github.com/AtelierArith/RustCall.jl/issues/244)). A
+    `panic!`, a failed `assert!`, an `unwrap()` on `None` or an out-of-bounds
+    index inside a `#[julia]` function raises `RustCall.RustPanicError` with
+    the panic message, and the Julia session survives — it used to abort the
+    process. Every generated `extern "C"` wrapper runs the body inside
+    `catch_unwind` and exports a `<symbol>_take_panic` channel Julia reads
+    after each call.
+
+    **This changes what RustCall builds, so the first run after upgrading
+    recompiles everything.** `-C panic=abort` is gone from the direct-`rustc`
+    path and `panic = "unwind"` is pinned in every `Cargo.toml` RustCall
+    generates and in `CARGO_PROFILE_<PROFILE>_PANIC` in the environment it
+    passes to Cargo — `catch_unwind` can only catch a panic that unwinds, and
+    an inherited `CARGO_PROFILE_RELEASE_PANIC=abort` would otherwise silently
+    disable the boundary. Two cases still abort, both visible from the source
+    and documented in `docs/src/panics.md`: a raw `#[no_mangle] extern "C" fn`
+    you wrote yourself (RustCall generates no wrapper for it, so there is no
+    boundary — add `#[julia]`), and a `@rust_crate` crate whose own profile
+    pins `panic = "abort"`.
+
+  - **Finalizers of inline `#[julia]` structs now free the Rust allocation**
+    ([#249](https://github.com/AtelierArith/RustCall.jl/issues/249)). They
+    used to leak — the free was disabled with a "diagnose segfault" comment —
+    while the same construct from a `@rust_crate` crate freed. If your code
+    depended on an inline struct's Rust object outliving its Julia wrapper,
+    keep a reference to the wrapper or use `GC.@preserve`. The finalizer is
+    safe to run by construction: it captures the destructor pointer and the
+    library's liveness flag at construction time, so it takes no lock,
+    resolves no symbol and logs nothing; a failure is counted
+    (`RustCall.finalizer_failure_count()`). A method or field access on a
+    finalized object now raises instead of dereferencing `C_NULL`, and an
+    object whose library was unloaded goes inert rather than calling into a
+    closed image.
+
+  - **A failed hot reload keeps the previous library**
+    ([#255](https://github.com/AtelierArith/RustCall.jl/issues/255)). The
+    rebuild, the rescan and the `dlopen` all complete before anything is
+    swapped, so saving a file with a compile error leaves the loaded library
+    working instead of emptying the registry; the error is reported once per
+    distinct failure rather than on every watch tick. Each reload opens its own
+    `<lib>.<generation>.<ext>` copy, which is what makes reloading a *loaded*
+    library work on Windows. The watcher is event-driven
+    (`FileWatching.watch_folder`) with a 100 ms debounce instead of an mtime
+    poll, so an idle watch costs nothing and a burst of saves is one rebuild;
+    `enable_hot_reload(...; poll = true)` restores polling for filesystems the
+    kernel will not watch.
+
+  - **`unload_library` now purges everything a library owns.** Its
+    `RUST_LIBRARIES` entry and pointer cache, its symbol mappings and
+    return-type hints, its `FUNCTION_REGISTRY` rows, the monomorphizations
+    whose pointers point into it, its `@irust` memos and its panic channels —
+    and it flips the library's liveness flag, retiring objects it produced. An
+    `@irust` snippet no longer leaves a stale memo behind. `@rust_crate`
+    libraries are visible to it for the first time: the generated module
+    publishes its handle through the loader instead of keeping it only in a
+    module-local `Ref`.
+
+### Changed
+- Two `rust"""` blocks in **one module** may no longer export the same name.
+  The second block raises, naming the symbol and the library that already owns
+  it. Previously the second Julia wrapper silently replaced the first while
+  both libraries stayed loaded ([#250](https://github.com/AtelierArith/RustCall.jl/issues/250)).
+- A generated wrapper resolves through **its own module's** library rather than
+  through whichever block was compiled last in the session, so two modules that
+  each define `add` call their own `add`.
+- Bindings files written by `write_bindings_to_file` carry
+  `# Bindings format: 2`. Files generated by an older RustCall still work but
+  do not get the unload, panic or lifetime guarantees — regenerate after
+  upgrading.
+- `RustCall.scan_crate` accepts `cfg` / `cfg_text`, and hot reload probes the
+  crate's real build configuration (`cargo rustc --release --lib -- --print
+  cfg` in the crate) before rescanning, so mutually exclusive
+  `#[cfg(feature = ...)]` variants of one `#[julia] fn` collapse to the one
+  that was built and its return type is registered. An unavailable probe falls
+  back to the previous lenient scan.
+- `RustCall.load_cached_library` returns the verified cache *path* instead of
+  opening the library.
+- Ownership operations (`RustBox`, `RustRc`, `RustArc`, `RustVec`) refuse to
+  construct a value when the helper library is missing, naming the operation
+  and the `Pkg.build("RustCall")` that fixes it.
+
+### Added
+- `docs/src/panics.md`: the panic semantics matrix, the symbol-visibility rule
+  and the object-lifetime/allocator contract.
+- `test/test_panics.jl`, `test/test_finalizers.jl`,
+  `test/test_load_conformance.jl`, `test/test_hot_reload_transaction.jl`.
+
+
+### Breaking
 - **One artifact identity** ([#278](https://github.com/AtelierArith/RustCall.jl/issues/278),
   Phase B). Twelve places answered "which compiled artifact corresponds to this
   request?", each with its own component list, its own concatenation format and

@@ -1,7 +1,7 @@
 # Hot reload support for Rust source changes
 # This module provides automatic detection and rebuild when Rust source files change.
 
-using FileWatching
+import FileWatching
 
 # ============================================================================
 # Hot Reload State
@@ -31,7 +31,22 @@ mutable struct HotReloadState
     watch_task::Union{Task, Nothing}
     enabled::Bool
     rebuild_callback::Union{Function, Nothing}
+    # Monotonic reload counter. Each successful rebuild is copied to a fresh
+    # `<lib>.<generation>.<ext>` before it is opened, so the previously loaded
+    # image is never the file Cargo writes to (#255).
+    generation::Int
+    # The last rebuild failure that was reported, so the ordinary dev loop —
+    # save with a typo, save again — does not print the same error on every
+    # watch tick. Cleared by a successful reload.
+    last_failure::String
 end
+
+# Backwards-compatible positional constructor: the two fields below are
+# bookkeeping, never supplied by a caller.
+HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
+               watch_task, enabled, rebuild_callback) =
+    HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
+                   watch_task, enabled, rebuild_callback, 0, "")
 
 """
 Registry of hot-reloadable crates.
@@ -257,7 +272,17 @@ function _reload_library_locked(state::HotReloadState)
         # Rebuild. No registry lock is held here — this takes significant
         # time and must not block other library operations — and the old
         # library stays loaded and usable throughout.
-        new_lib_path = rebuild_crate(state.crate_path)
+        built = rebuild_crate(state.crate_path)
+
+        # Open a *copy* under a fresh name, never the file Cargo just wrote.
+        # On Windows the loaded image is locked, so rebuilding in place fails
+        # outright; everywhere else, opening the same path again can hand back
+        # the already-mapped image instead of the new one, and objects from the
+        # old library can end up freed by code from the new. A generation
+        # counter makes each reload a genuinely different file (#255).
+        state.generation += 1
+        new_lib_path = _generation_path(built, state.generation)
+        cp(built, new_lib_path; force = true)
 
         # Did the sources move under the scan? Then the manifest is not
         # evidence about what was just built.
@@ -289,6 +314,7 @@ function _reload_library_locked(state::HotReloadState)
                 @debug "Hot reload: Cleared $(length(stale)) stale monomorphized functions"
         end
 
+        state.last_failure = ""
         @info "Hot reload: Successfully reloaded $(state.lib_name)"
 
         # Call the callback if provided
@@ -303,7 +329,19 @@ function _reload_library_locked(state::HotReloadState)
         return true
 
     catch e
-        @error "Hot reload: Failed to rebuild $(state.lib_name)" exception=e
+        # Report each distinct failure once. The dev loop is "save, see the
+        # error, fix it, save again"; a watcher that reprints the same compile
+        # error on every tick buries the one that matters. The previous library
+        # is still loaded and still works — that is the point of the ordering
+        # above — so this is informational, not fatal (#255).
+        fingerprint = sprint(showerror, e)
+        if fingerprint != state.last_failure
+            state.last_failure = fingerprint
+            @error "Hot reload: Failed to rebuild $(state.lib_name); " *
+                   "the previously loaded library is still in use" exception=e
+        else
+            @debug "Hot reload: same failure as last time" lib_name=state.lib_name
+        end
 
         # Call the callback with failure
         if state.rebuild_callback !== nothing
@@ -356,6 +394,28 @@ function rebuild_crate(crate_path::String)
 end
 
 """
+    _generation_path(lib_path, generation) -> String
+
+`libfoo.dylib` → `libfoo.3.dylib`, next to the original.
+
+Every reload opens its own file. Rebuilding into the path the loaded image was
+mapped from is the third of #255's problems: on Windows the mapped DLL is
+locked and the build fails, and on every platform re-`dlopen`ing a path that is
+already mapped can hand back the *old* image, so a "reload" silently does
+nothing while objects allocated by the old library start being freed by the
+new.
+
+Living next to the original rather than in a temporary directory matters on
+Windows: a DLL resolves its dependencies relative to its own location.
+"""
+function _generation_path(lib_path::AbstractString, generation::Integer)
+    dir = dirname(lib_path)
+    base = basename(lib_path)
+    stem, ext = splitext(base)
+    return joinpath(dir, "$(stem).$(generation)$(ext)")
+end
+
+"""
     _get_library_filename(crate_name::String) -> String
 
 Get the platform-specific library filename for a crate.
@@ -382,7 +442,8 @@ end
 
 Start a background task that watches for file changes.
 """
-function start_watch_task(state::HotReloadState; interval::Float64=1.0)
+function start_watch_task(state::HotReloadState; interval::Float64=1.0,
+                          poll::Bool=false)
     if state.watch_task !== nothing && !istaskdone(state.watch_task)
         @warn "Watch task already running for $(state.lib_name)"
         return
@@ -393,19 +454,130 @@ function start_watch_task(state::HotReloadState; interval::Float64=1.0)
 
         while state.enabled && HOT_RELOAD_ENABLED[]
             try
-                if check_for_changes(state)
-                    reload_library(state)
+                changed = if poll
+                    sleep(interval)
+                    check_for_changes(state)
+                else
+                    _await_source_change(state, interval)
                 end
+                changed || continue
+                # Debounce. An editor save is rarely one event — write to a
+                # temporary file, rename, touch — and a formatter or a
+                # multi-file refactor produces a burst. Waiting out the burst
+                # turns "two saves within 200 ms" into one rebuild instead of
+                # two, the second of which would race the first (#255).
+                _drain_source_changes(state, HOT_RELOAD_DEBOUNCE_SECONDS[])
+                reload_library(state)
             catch e
+                e isa InterruptException && rethrow()
                 @error "Hot reload watch error: $e"
             end
-
-            sleep(interval)
         end
 
         @info "Hot reload: Stopped watching $(state.lib_name)"
     end
 end
+
+"""
+    HOT_RELOAD_DEBOUNCE_SECONDS
+
+How long to keep coalescing file events after the first one before rebuilding.
+
+100 ms is long enough to swallow an editor's write-rename-touch sequence and a
+multi-file save, and short enough to be invisible in a dev loop. The issue asks
+for two saves within 200 ms to produce one reload, which this satisfies with
+room to spare.
+"""
+const HOT_RELOAD_DEBOUNCE_SECONDS = Ref(0.1)
+
+"""
+    _await_source_change(state, timeout) -> Bool
+
+Block until a `.rs` file under the crate changes, or `timeout` elapses.
+
+This is the difference between an idle watcher costing nothing and one waking
+up every second to `stat` every source file (#255). `FileWatching.watch_folder`
+blocks in the kernel — inotify on Linux, kqueue on the BSDs, ReadDirectoryChanges
+on Windows — so an idle watch task consumes no CPU at all.
+
+The timeout is what lets the task notice `state.enabled` going false, and is
+also the polling interval of the fallback: on a filesystem where the kernel
+notification does not work (NFS, some container mounts), `poll = true` on
+`start_watch_task` restores the old `stat`-based loop.
+
+Returns whether something actually changed — a rename into place and a
+temporary file both produce events, and only the mtime check decides.
+"""
+function _await_source_change(state::HotReloadState, timeout::Real)
+    src_dir = joinpath(state.crate_path, "src")
+    isdir(src_dir) || return (sleep(timeout); check_for_changes(state))
+    try
+        FileWatching.watch_folder(src_dir, timeout)
+    catch e
+        e isa InterruptException && rethrow()
+        # A filesystem the kernel will not watch: fall back to a poll rather
+        # than spinning on the error.
+        @debug "Hot reload: cannot watch $(src_dir); polling instead" exception = e
+        sleep(timeout)
+    end
+    return check_for_changes(state)
+end
+
+"""
+    _drain_source_changes(state, window)
+
+Keep absorbing file events for `window` seconds, so one burst of saves becomes
+one rebuild.
+
+An event seen inside the window restarts it, which is what makes a "save every
+file in the project" refactor rebuild once at the end rather than once per
+file — but only up to `MAX_DEBOUNCE_WINDOWS` extensions. Without that cap a
+directory that produces events continuously (a build writing into it, a watch
+API that hands back an already-queued event immediately) would keep the
+debounce open forever and the reload would never happen.
+
+Whatever arrives is folded into the mtime table, so the wait that follows
+starts from a clean slate.
+"""
+function _drain_source_changes(state::HotReloadState, window::Real)
+    window <= 0 && return nothing
+    src_dir = joinpath(state.crate_path, "src")
+    hard_deadline = time() + window * MAX_DEBOUNCE_WINDOWS
+    deadline = time() + window
+    while time() < deadline && time() < hard_deadline
+        remaining = min(deadline, hard_deadline) - time()
+        remaining <= 0 && break
+        saw_event = false
+        if isdir(src_dir)
+            try
+                FileWatching.watch_folder(src_dir, remaining)
+                saw_event = true
+            catch e
+                e isa InterruptException && rethrow()
+                sleep(min(remaining, 0.01))
+            end
+        else
+            sleep(min(remaining, 0.01))
+        end
+        check_for_changes(state)
+        saw_event && (deadline = time() + window)
+    end
+    return nothing
+end
+
+"""
+    MAX_DEBOUNCE_WINDOWS
+
+How many times a burst of file events may extend the debounce window before
+the rebuild happens anyway.
+
+The cap is what keeps "coalesce a burst" from becoming "never rebuild": some
+platforms hand back an already-queued directory event immediately, so an
+uncapped extension would spin. Ten windows is a tenth of a second times ten —
+long enough for any editor's save sequence, short enough that a pathological
+event source costs one second, not the session.
+"""
+const MAX_DEBOUNCE_WINDOWS = 10
 
 """
     stop_watch_task(state::HotReloadState)
@@ -471,7 +643,8 @@ disable_hot_reload("my_crate")
 """
 function enable_hot_reload(lib_name::String, crate_path::String;
     interval::Float64 = 1.0,
-    callback::Union{Function, Nothing} = nothing
+    callback::Union{Function, Nothing} = nothing,
+    poll::Bool = false
 )
     # Validate inputs
     if !isdir(crate_path)
@@ -528,7 +701,7 @@ function enable_hot_reload(lib_name::String, crate_path::String;
     end
 
     # Start watching
-    start_watch_task(state, interval=interval)
+    start_watch_task(state, interval=interval, poll=poll)
 
     return state
 end

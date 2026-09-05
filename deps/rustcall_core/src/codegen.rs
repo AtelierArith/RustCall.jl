@@ -406,13 +406,22 @@ fn guarded_body(
     prologue: &TokenStream2,
     body: TokenStream2,
     sentinel: TokenStream2,
+    returns_unit: bool,
 ) -> TokenStream2 {
+    // A unit-returning wrapper must not *evaluate* to `()`: clippy's
+    // `unused_unit` fires on the generated `Ok(v) => v` arm, and the match is a
+    // statement there anyway.
+    let ok_arm = if returns_unit {
+        quote! { ::std::result::Result::Ok(_) => {} }
+    } else {
+        quote! { ::std::result::Result::Ok(rustcall_value) => rustcall_value, }
+    };
     quote! {
         match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
             #prologue
             #body
         })) {
-            ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+            #ok_arm
             ::std::result::Result::Err(rustcall_payload) => {
                 // `panic!("...")` with a literal gives `&'static str`; with
                 // arguments, `String`. Anything else came from
@@ -519,7 +528,8 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 &slot,
                 &prologue,
                 quote! { #call },
-                quote! { () },
+                quote! {},
+                true,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -535,7 +545,14 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             // `#[repr(C)]`-compatible and has no niche that makes all-zero
             // invalid (`is_ffi_compatible_type`).
             let sentinel = quote! { unsafe { ::std::mem::zeroed::<#ty>() } };
-            let guarded = guarded_body(&julia_name, &slot, &prologue, quote! { #call }, sentinel);
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                quote! { #call },
+                sentinel,
+                false,
+            );
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -555,6 +572,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 &prologue,
                 body,
                 quote! { ::std::ptr::null_mut() },
+                false,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -591,7 +609,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             let sentinel = quote! {
                 #helper { ptr: ::std::ptr::null_mut(), len: 0, cap: 0 }
             };
-            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel);
+            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -614,7 +632,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             let sentinel = quote! {
                 #helper { ptr: ::std::ptr::null(), len: 0 }
             };
-            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel);
+            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -634,6 +652,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 &prologue,
                 quote! { #name::new(#call) },
                 sentinel,
+                false,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -652,6 +671,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 &prologue,
                 quote! { #name::new(#call) },
                 sentinel,
+                false,
             );
             quote! {
                 #(#cfg_attrs)*

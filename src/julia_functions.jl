@@ -330,7 +330,7 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     return quote
         function $func_name($(arg_syms...))
             $ptr_sym, $lib_sym =
-                RustCall._resolve_call(RustCall.get_current_library(), $symbol_str)
+                RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
             RustCall.guard_rust_panic(
                 RustCall.call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...)),
                 $lib_sym, $symbol_str, $rust_name)
@@ -369,7 +369,7 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
-            $lib_sym = last(RustCall._resolve_call(RustCall.get_current_library(), $symbol_str))
+            $lib_sym = last(RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str))
             GC.@preserve $(preserved...) begin
                 $call
             end
@@ -398,7 +398,7 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
         function $func_name($(arg_syms...))
             $(bindings...)
             $ptr_sym, $lib_sym =
-                RustCall._resolve_call(RustCall.get_current_library(), $symbol_str)
+                RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
             $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.CResultType{$ok_slot, $err_slot}, $(converted_args...))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel must be read before the
@@ -420,7 +420,7 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
         function $func_name($(arg_syms...))
             $(bindings...)
             $ptr_sym, $lib_sym =
-                RustCall._resolve_call(RustCall.get_current_library(), $symbol_str)
+                RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
             $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.COptionType{$inner_slot}, $(converted_args...))
             RustCall.check_rust_panic($lib_sym, $symbol_str, $rust_name)
             RustCall.convert_c_option_to_rust_option($c_sym, $inner_t)

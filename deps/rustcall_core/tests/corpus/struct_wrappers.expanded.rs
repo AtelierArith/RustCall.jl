@@ -193,7 +193,7 @@ pub extern "C" fn rustcall_Greeter_rename(
             self_obj.rename(name)
         }),
     ) {
-        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Ok(_) => {}
         ::std::result::Result::Err(rustcall_payload) => {
             let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
                 s,
@@ -216,7 +216,6 @@ pub extern "C" fn rustcall_Greeter_rename(
                         rustcall_message,
                     );
                 });
-            ()
         }
     }
 }

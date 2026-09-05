@@ -13,9 +13,10 @@
 #
 # Three rules, all scoped to `src/`:
 #
-#   1. `Libdl.dlopen` only in src/loadpolicy.jl. Allowlisted:
+#   1. `Libdl.dlopen` only in src/loadpolicy.jl. The one allowlist is
 #      src/llvmcodegen.jl, the deprecated LLVM IR path scheduled for removal
-#      with #265 Phase 2.
+#      with #265 Phase 2. The two @rust_crate module templates went through
+#      the loader in #277 Phase B5, so they need no exemption.
 #   2. `Libdl.dlclose` only in src/loadpolicy.jl. Closing an image is half of a
 #      registry transaction, never a standalone act.
 #   3. No `RUST_LIBRARIES[...] = ...` outside src/loadpolicy.jl. The handle and
@@ -30,10 +31,6 @@ dir="${1:-src}"
 loader='(^|/)loadpolicy\.jl:'
 # The deprecated LLVM IR path (#265 Phase 2 removes it).
 llvm='(^|/)llvmcodegen\.jl:'
-# The two @rust_crate module templates (the in-memory `quote` and its emitted
-# twin), whose dlopen runs in the *generated* module rather than in RustCall.
-# #277 Phase B5 routes them through the loader and this allowlist goes away.
-template='(^|/)crate_bindings\.jl:'
 status=0
 
 report() {
@@ -50,7 +47,7 @@ report() {
 # only an actual application `dlopen(` counts.
 hits=$(grep -rnE --include='*.jl' 'Libdl\.dlopen\(' "$dir" \
        | grep -viE '^[^:]*:[0-9]+: *#' \
-       | grep -vE "$loader" | grep -vE "$llvm" | grep -vE "$template" || true)
+       | grep -vE "$loader" | grep -vE "$llvm" || true)
 if [[ -n "$hits" ]]; then
     report "A compiled artifact may only be opened by load_artifact! (issue #277)." \
            "Call RustCall.load_artifact!(policy, path; lib_name, ...); the policy owns the dlopen flags." \

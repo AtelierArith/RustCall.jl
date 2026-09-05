@@ -188,6 +188,12 @@ macro rust_str(code)
 
     julia_func_signatures = manifest_function_signatures(expanded.manifest)
     julia_func_wrappers = emit_julia_function_wrappers(julia_func_signatures)
+    # The symbols this block exports, known at macro-expansion time. They are
+    # recorded per *module* so that a wrapper resolves through the library its
+    # own block loaded — not through whichever block ran last anywhere in the
+    # session (#250).
+    block_symbols = String[sig.symbol for sig in julia_func_signatures
+                           if !sig.is_generic && sig.exported && !isempty(sig.symbol)]
 
     return quote
         lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line);
@@ -217,6 +223,18 @@ macro rust_str(code)
         end
         $__module__.__RUSTCALL_ACTIVE_LIB[] = lib_name
 
+        # Which library exported each of this block's symbols, per module. A
+        # generated wrapper resolves through *this* table, so two modules that
+        # each define `add` call their own `add` regardless of which block was
+        # compiled last (#250). Registering a name a second block of the same
+        # module already exported is refused here, with a message.
+        if !isdefined($__module__, :__RUSTCALL_SYMBOL_LIB)
+            @eval $__module__ const __RUSTCALL_SYMBOL_LIB = Dict{String, String}()
+        end
+        RustCall._record_module_symbols!($__module__.__RUSTCALL_SYMBOL_LIB,
+                                         lib_name, $block_symbols,
+                                         $(QuoteNode(nameof(__module__))))
+
         # Track active library for macro expansion in this session
         lock(REGISTRY_LOCK) do
             MODULE_ACTIVE_LIB[$__module__] = lib_name
@@ -226,6 +244,86 @@ macro rust_str(code)
         $(julia_func_wrappers)
         lib_name
     end
+end
+
+"""
+    _record_module_symbols!(table, lib_name, symbols, module_name)
+
+Record that `lib_name` exports `symbols` for one module, refusing a name the
+module already exports from a *different, still-loaded* library.
+
+Two blocks in one module that both export `add` are a genuine ambiguity: the
+Julia wrapper of the second silently replaced the first, and which library the
+call reached depended on load order (#250). Rust-side clashes inside one block
+are already refused by the extractor (`symbol_collisions`, #279); this is the
+Julia-side half, across blocks.
+
+Re-running the *same* block is not a collision — the identity, and therefore
+the library name, is unchanged. Neither is re-running an edited block whose
+previous library has been unloaded.
+"""
+function _record_module_symbols!(table::AbstractDict, lib_name::AbstractString,
+                                 symbols, module_name = :Main)
+    name = String(lib_name)
+    for symbol in symbols
+        sym = String(symbol)
+        owner = get(table, sym, "")
+        if !isempty(owner) && owner != name
+            still_loaded = lock(REGISTRY_LOCK) do
+                haskey(RUST_LIBRARIES, owner)
+            end
+            if still_loaded
+                throw(RustError("""
+                    `$(sym)` is already exported by another `rust\"\"\"` block in module $(module_name).
+
+                    Two blocks of one module exporting the same name is an ambiguity, not an
+                    override: the Julia wrapper of the second would replace the first while both
+                    libraries stayed loaded, and which one a call reached would depend on the
+                    order they were compiled in.
+
+                    Either rename the Rust function, or drop the earlier block first:
+
+                        RustCall.unload_library("$(owner)")
+                    """))
+            end
+        end
+        table[sym] = name
+    end
+    return nothing
+end
+
+"""
+    module_symbol_library(mod::Module, symbol::AbstractString) -> String
+
+The library **this module's** block exported `symbol` from, or the session's
+current library when the module recorded nothing for it.
+
+This is what makes a generated wrapper call its own function. Resolving from
+`get_current_library()` alone meant the wrapper started its search at whichever
+block was compiled last *anywhere*, so a second module defining the same Rust
+name captured the first module's calls (#250).
+"""
+function module_symbol_library(mod::Module, symbol::AbstractString)
+    if isdefined(mod, :__RUSTCALL_SYMBOL_LIB)
+        table = getfield(mod, :__RUSTCALL_SYMBOL_LIB)
+        name = get(table, String(symbol), "")
+        if !isempty(name)
+            loaded = lock(REGISTRY_LOCK) do
+                haskey(RUST_LIBRARIES, name)
+            end
+            loaded && return name
+        end
+    end
+    if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
+        name = getfield(mod, :__RUSTCALL_ACTIVE_LIB)[]
+        if !isempty(name)
+            loaded = lock(REGISTRY_LOCK) do
+                haskey(RUST_LIBRARIES, name)
+            end
+            loaded && return name
+        end
+    end
+    return get_current_library()
 end
 
 """
