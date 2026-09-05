@@ -253,6 +253,10 @@ end
     # Positional construction bypasses the keyword wrapper but must warn too.
     positional = @test_deprecated RustCall.OptimizationConfig(2, 0, 225, true, true, true)
     @test positional.inline_threshold == 225
+    # Convertible argument types still construct (Julia's default converting
+    # constructor is suppressed by the typed inner constructor).
+    converting = @test_deprecated RustCall.OptimizationConfig(Int8(2), Int8(0), Int16(225), true, true, true)
+    @test converting == positional
 
     @test_deprecated RustCall.set_default_opt_config(RustCall._optimization_config())
     @test_deprecated RustCall.get_registered_function("no_such_function_265")

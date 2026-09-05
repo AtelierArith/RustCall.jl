@@ -32,6 +32,16 @@ struct OptimizationConfig
     end
 end
 
+# Defining a typed inner constructor suppresses Julia's default converting
+# outer constructor; keep positional calls with convertible arguments
+# (`OptimizationConfig(Int8(2), Int8(0), Int16(225), true, true, true)`) working.
+function OptimizationConfig(level, size_level, inline_threshold,
+                            enable_vectorization, enable_loop_unrolling, enable_licm)
+    return OptimizationConfig(Int(level), Int(size_level), Int(inline_threshold),
+                              Bool(enable_vectorization), Bool(enable_loop_unrolling),
+                              Bool(enable_licm))
+end
+
 """
     OptimizationConfig(; kwargs...)
 
