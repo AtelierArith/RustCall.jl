@@ -437,7 +437,6 @@ impl Greeter {
     );
 }
 
-
 /// A `String` field cannot cross `extern "C"` by value. Both wrapper flavours
 /// lower its getter to the owned `(ptr, len, cap)` buffer and say so in the
 /// manifest, so Julia never has to re-derive the lowering from the spelling

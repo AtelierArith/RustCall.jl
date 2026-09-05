@@ -273,4 +273,36 @@ RustCall.get_cache_size()
 # Check type mapping
 RustCall.rusttype_to_julia(:i32)  # => Int32
 RustCall.juliatype_to_rust(Int32)  # => "i32"
+
+# What the FFI contract says about a position, including its ABI, its ccall
+# slots and who releases it
+RustCall.ffi_describe("String"; direction = :return, abi = "string")
 ```
+
+### 5. "The FFI contract cannot describe the return type of ..."
+
+RustCall no longer guesses a return type it cannot derive. The message names the
+signature and what the contract knows about the type; see
+[The FFI Type Contract](type_contract.md) for the supported spellings.
+
+Three fixes, in order of preference:
+
+1. change the Rust signature to a supported type — pass an aggregate behind a
+   pointer (`*mut MyType`) rather than by value;
+2. annotate the Julia call site: `@rust f(x)::T`, which bypasses inference
+   entirely;
+3. for `write_bindings_to_file`, pass `strict = :warn` to fall back to `Any` and
+   keep the rest of the crate building while you deal with the offending type.
+   `Any` in a `ccall` slot is not well defined, so treat this as temporary.
+
+### 6. "cannot call a Rust function without a return type"
+
+`@rust f(x)` without `::T` needs a return type from the manifest. A plain
+`#[no_mangle] extern "C"` function compiled outside a `rust"""` block has none;
+either annotate the call (`@rust f(x)::Int32`) or mark the function `#[julia]`
+so the extractor reports its signature.
+
+RustCall used to guess here — the return type was taken from the type of the
+*first argument*, defaulting to `Int64`. That guess is not derivable from an
+argument and reading a return slot at the wrong width is undefined behaviour, so
+it was removed (#245, #246).

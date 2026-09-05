@@ -170,17 +170,25 @@ rect_area = rect.area()  # => 375.0
 
 ### Field Type Mapping
 
-Field types are automatically mapped from Rust to Julia:
+Field types come from the [FFI type contract](type_contract.md), which is the
+same table free functions and methods use — a `u16` field and a `u16` return
+resolve identically. Every Rust primitive is supported, including `i128`,
+`u128` and `char`, plus the `std::os::raw` aliases and raw pointers:
 
 | Rust Type | Julia Type | Notes |
 |-----------|------------|-------|
-| `i32` | `Int32` | |
-| `i64` | `Int64` | |
-| `f32` | `Float32` | |
-| `f64` | `Float64` | |
+| `i8` … `i128`, `u8` … `u128` | `Int8` … `Int128`, `UInt8` … `UInt128` | |
+| `f32`, `f64` | `Float32`, `Float64` | |
 | `bool` | `Bool` | |
-| `String` | `String` | Returned as a copied Julia string |
+| `usize`, `isize` | `Csize_t`, `Cssize_t` | |
+| `char` | `Char` | The C slot is a `UInt32` code point; the value is converted, never reinterpreted |
+| `*const T`, `*mut T` | `Ptr{T}` | Resolved recursively; an opaque pointee degrades to `Ptr{Cvoid}` |
+| `String` | `String` | Read as an owned `(ptr, len, cap)` buffer and released through `<Struct>_free_rust_string` |
 | `&str` | `String` | Method returns are copied to a Julia string |
+
+A field whose type the contract does not cover raises rather than becoming
+`Any`; see [The FFI Type Contract](type_contract.md) for the full matrix and for
+`RustCall.FFI_STRICT[]`.
 
 ## Generic Structs
 

@@ -43,7 +43,8 @@ Based on the repository state on 2026-02-07. Only the summary/test runner status
 
 ### Type and runtime layer
 - `src/types.jl`: Rust wrapper types (`RustResult`, `RustOption`, ownership types).
-- `src/typetranslation.jl`: Rust/Julia type mapping.
+- `src/ffi_contract.jl`: the single source of truth for Rust/Julia type mapping — ABI form, `ccall` slots, surface type, ownership and release symbol (#276).
+- `src/typetranslation.jl`: `rusttype_to_julia` (a shim over the contract) and the Julia-to-Rust direction.
 - `src/exceptions.jl`: error conversion and diagnostics.
 - `src/memory.jl`: ownership helper interop.
 
@@ -101,9 +102,12 @@ Pkg.build("RustCall")
 - Phase 4: Rust struct and method mapping into Julia-facing objects.
 - Phase 5: `#[julia]`-driven wrapper generation.
 - Phase 6: external crate binding generation with `@rust_crate` and the `juliacall_macros` proc-macro crate.
+- Phase 7: manifest schema 4 and the FFI type contract — one table decides every Rust/Julia type mapping, unknown types fail closed instead of becoming `Any`, and an owned value always names the symbol that releases it (#276, #245, #246, #249).
 
 ## Near-Term Priorities
 
 - Remove the deprecated LLVM IR integration path and the `LLVM.jl` dependency (#265, Phase 2).
+- Unify finalizers on the contract's ownership column and re-enable struct finalizers (#277, Phase B).
+- Retire `RustCall.FFI_STRICT[] = :warn` after one minor release.
 - Continue regression hardening for crate binding and hot reload workflows.
 - Prepare distribution tasks for crates.io publication of proc-macro tooling.

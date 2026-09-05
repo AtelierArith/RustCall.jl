@@ -8,6 +8,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **One FFI type contract** ([#276](https://github.com/AtelierArith/RustCall.jl/issues/276)).
+  Five independent tables decided "what does this Rust type mean at the C
+  boundary?", and they disagreed with each other. Every call site now reads
+  `src/ffi_contract.jl`; `_rust_type_to_julia_conversion_type`,
+  `_rust_type_to_julia_type_symbol`, `_RUST_PRIMITIVE_TO_JULIA`,
+  `rust_to_julia_type_sym`, `julia_sym_to_type` and `RUST_TO_JULIA_TYPE_MAP`
+  are deleted. Four user-visible consequences:
+
+  - **Manifest schema 3 → 4.** `Function.return_abi`, `Field.abi` and
+    `Method.returns_boxed_struct` are new; the `has_*_string_helper` booleans
+    stay for one release, derived from `return_abi`. Run
+    `Pkg.build("RustCall")` to rebuild the extractor — a stale binary is
+    refused with that hint. Every cache key includes the schema, so artifacts
+    are rebuilt.
+  - **`str` and `*const u8` are no longer `Cstring`.** `rusttype_to_julia("str")`
+    is `RustStr` and `rusttype_to_julia("*const u8")` is `Ptr{UInt8}`. A Rust
+    `str` is an unsized UTF-8 slice reached through a `(ptr, len)` fat pointer
+    and a `*const u8` is a plain byte pointer; neither is a NUL-terminated C
+    string, and treating them as one is
+    [#246](https://github.com/AtelierArith/RustCall.jl/issues/246).
+    `julia_to_c_type(::Type{RustString})` / `(::Type{RustStr})` are gone for the
+    same reason.
+  - **Unknown types raise instead of becoming `Any`.** A type the contract
+    cannot describe now stops wrapper generation with a message naming the
+    signature. `RustCall.FFI_STRICT[]` selects `:error` (default), `:warn` (one
+    warning per signature, then `Any` — the pre-#276 behaviour, kept for one
+    minor release) or `:none`; `write_bindings_to_file(...; strict = :warn)`
+    binds it per call. Generated crate bindings also change text: `usize` is
+    spelled `Csize_t`, `*mut i32` is `Ptr{Int32}`, and a `String` field is read
+    as an owned buffer rather than `Any`.
+  - **A `String` field on the crate path is lowered.** Its getter returns an
+    owned `<Struct>_RustCallOwnedString` buffer released through
+    `<Struct>_free_rust_string`, as the inline path already did; it used to be
+    read as `Any` and leaked
+    ([#246](https://github.com/AtelierArith/RustCall.jl/issues/246)).
+
+### Deprecated
+- `call_rust_function_infer` guessed the **return** type from the type of the
+  **first argument** — `Float64` for `fn f(x: f64) -> i32`, `Cstring` for a
+  string argument, `Int64` otherwise. None of that is derivable from an
+  argument, and reading a return slot at the wrong width is undefined
+  behaviour. It now emits a `Base.depwarn` and raises a `RustError` naming the
+  fix ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245),
+  [#246](https://github.com/AtelierArith/RustCall.jl/issues/246)). Pass the
+  return type: `call_rust_function(func_ptr, T, args...)`, or annotate the call
+  site `@rust f(x)::T`. `@rust f(x)` on a function with no manifest-recorded
+  return type raises with the same advice instead of guessing.
+
+### Fixed
+- `i128`, `u128`, `char`, the `std::os::raw` aliases and raw pointers cross the
+  boundary correctly in every position — free functions, methods, struct fields
+  and monomorphized generics. `char` travels as its `UInt32` code point and is
+  converted, never reinterpreted from Julia's left-aligned UTF-8 `Char`
+  ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)).
+- Small-integer and platform-sized struct fields (`u16`, `usize`, …) resolve to
+  their own type instead of `Any`
+  ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)).
+- Every owned string return names the symbol that releases it, and that symbol
+  is resolved inside the library that allocated the buffer — so two libraries
+  exporting the same `<owner>_free_rust_string` no longer free through each
+  other's allocator
+  ([#246](https://github.com/AtelierArith/RustCall.jl/issues/246),
+  [#249](https://github.com/AtelierArith/RustCall.jl/issues/249)).
+
 - `#[julia]` is **additive**: the annotated item is kept exactly as written
   (minus the attribute itself) and the `extern "C"` entry point is emitted
   *next to it* under a distinct symbol

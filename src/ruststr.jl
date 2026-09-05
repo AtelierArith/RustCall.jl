@@ -1153,7 +1153,7 @@ end
 Convert Rust type string to Julia type.
 """
 function _rust_to_julia_type(rust_type::String)
-    return rusttype_to_julia(Symbol(rust_type))
+    return rusttype_to_julia(rust_type)
 end
 
 """

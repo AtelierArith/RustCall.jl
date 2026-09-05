@@ -1,21 +1,22 @@
 # Tests for the single source of truth of the FFI type contract
-# (`src/ffi_contract.jl`, issue #276 Phase A).
+# (`src/ffi_contract.jl`, issue #276).
 #
-# Two jobs:
+# Phase A added the contract next to the five tables that already decided "what
+# does this Rust type mean at the C boundary?", and enumerated every point where
+# they disagreed with it. Phase B migrated every call site onto the contract and
+# deleted those five tables, so the divergence tests became what they were
+# always meant to be: the regression tests for #245, #246 and #249.
 #
-#  1. test the new table and its API directly;
-#  2. **enumerate the disagreements** between the five type tables that exist on
-#     `main` and the new one. Phase A migrates no call site, so the divergence
-#     tests below assert the *current* (in several cases wrong) behaviour and
-#     name the issue each one belongs to. When Phase B moves a call site onto
-#     the contract, the corresponding `@test` here is what must be flipped —
-#     which makes these the regression tests for #245, #246 and #249.
+# What is left of the old tables is `rustcall_core`'s `is_ffi_compatible_type` /
+# `is_non_ffi_type` (mirrored here as `core_is_ffi_compatible` /
+# `core_is_non_ffi`), which stays deliberately — it is the *acceptance gate* on
+# the Rust side, deciding whether a wrapper is generated at all, not a mapping.
 
 using Test
 using RustCall
 
 # ----------------------------------------------------------------------------
-# The five tables, as callable probes
+# The Rust-side acceptance gate, as callable probes
 # ----------------------------------------------------------------------------
 
 # Table 1: `deps/rustcall_core/src/types.rs:85` / `:104`. It lives in Rust, so
@@ -50,8 +51,8 @@ function core_is_non_ffi(s::AbstractString)
     return core_last_ident(s) in CORE_NON_FFI
 end
 
-# The union of the spellings any of the five tables (or the contract) has an
-# opinion about.
+# The union of the spellings any of the retired tables — or the contract — has
+# an opinion about.
 const ALL_SPELLINGS = vcat(
     CORE_PRIMITIVES,
     ["()", "String", "&str", "str", "*const u8", "*mut i32", "*mut c_void", "Vec<f64>"],
@@ -423,14 +424,13 @@ const ALL_SPELLINGS = vcat(
     # statement about what the code should do.
     # ========================================================================
 
-    @testset "divergence: no table covers every spelling" begin
-        # A quick census, so a table gaining an entry shows up as a failure here
-        # rather than silently.
+    @testset "one table covers every spelling" begin
+        # There used to be five of these counts, one per table, and they all
+        # disagreed. One is left: the contract covers everything except the
+        # genuinely unsupported aggregate, which it refuses on purpose.
         covered = Dict(
             "ffi_contract" => count(RustCall.ffi_known, ALL_SPELLINGS),
         )
-        # The contract covers everything except the genuinely unsupported
-        # aggregate, which it refuses on purpose.
         @test covered["ffi_contract"] == length(ALL_SPELLINGS) - 1
     end
 
@@ -491,11 +491,14 @@ const ALL_SPELLINGS = vcat(
         @test core_is_non_ffi("String")
         @test core_is_non_ffi("&str")
         @test core_is_ffi_compatible("String") == false
-        # …yet `rusttype_to_julia`, the sixth table, happily produces a type,
-        # and `bare str` becomes a `Cstring` — the NUL-terminated pointer that
-        # #246 identifies as the wrong shape for a Rust `String`.
+        # …yet `rusttype_to_julia`, the sixth table, happily produced a type,
+        # and `bare str` became a `Cstring` — the NUL-terminated pointer that
+        # #246 identifies as the wrong shape for a Rust string. It is a shim
+        # over the contract now, so both answer the same thing.
         @test RustCall.rusttype_to_julia("String") === RustCall.RustString
-        @test RustCall.rusttype_to_julia("str") === Cstring
+        @test RustCall.rusttype_to_julia("str") === RustCall.RustStr
+        @test RustCall.rusttype_to_julia("str") === RustCall.ffi_surface_type("str")
+        @test RustCall.rusttype_to_julia("*const u8") === Ptr{UInt8}
         # The contract says what neither of them says: the shape and the owner
         # — but only once the manifest says the wrapper lowered the string, so a
         # bare spelling still fails closed.
@@ -699,9 +702,4 @@ const ALL_SPELLINGS = vcat(
         end
     end
 
-    @testset "no existing table was changed" begin
-        # Phase A is additive. If any of these change, a call site was migrated
-        # and the divergence tests above must be revisited.
-        @test length(RustCall.RUST_TO_JULIA_TYPE_MAP) == 26
-    end
 end
