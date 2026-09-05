@@ -962,6 +962,33 @@ function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractStri
 end
 
 """
+    ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
+
+The spelling of the **C slot** a return position occupies, where
+[`ffi_return_symbol_or_throw`](@ref) gives the Julia surface type it is read
+back as.
+
+The two differ only for Rust `char` (a `UInt32` Unicode scalar value read back
+as a `Char`), and a plain return never needs this: `call_rust_function` takes
+the surface type and does the lowering itself. It is needed where the value is
+a **field of a `#[repr(C)]` aggregate** — the `CResult_<fn>` / `COption_<fn>`
+payloads — because the field must be declared with the type Rust actually
+stored, and the conversion to the surface type happens after the call
+(`convert_return`).
+"""
+function ffi_return_slot_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                         ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known
+        c.abi === :void && return :Cvoid
+        if c.abi === :by_value || c.abi === :pointer
+            return _ffi_slot_expr(rust_type, c)
+        end
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any)
+end
+
+"""
     ffi_return_type_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Type
 
 [`ffi_return_symbol_or_throw`](@ref) as a `Type` rather than as a spelling, for
@@ -1057,10 +1084,16 @@ function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback)
             "`RustCall.FFI_STRICT[] = :warn` to fall back to `Any` (see " *
             "https://github.com/AtelierArith/RustCall.jl/issues/276)."))
     end
-    if !(ctx in _FFI_WARNED_CONTEXTS)
-        lock(REGISTRY_LOCK) do
-            push!(_FFI_WARNED_CONTEXTS, String(ctx))
-        end
+    # Test and insert atomically: reading the set outside the lock let two
+    # threads both see the context as new and warn twice — and raced with the
+    # insert itself.
+    first_time = lock(REGISTRY_LOCK) do
+        key = String(ctx)
+        key in _FFI_WARNED_CONTEXTS && return false
+        push!(_FFI_WARNED_CONTEXTS, key)
+        return true
+    end
+    if first_time
         @warn "the FFI contract cannot describe the return type of `$ctx`; \
                emitting `Any`, which is not a well-defined ccall return slot. \
                Set `RustCall.FFI_STRICT[] = :error` to make this fail instead." detail

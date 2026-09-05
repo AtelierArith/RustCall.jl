@@ -68,7 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including monomorphized generics, whose `ccall` signature now comes from the
   slots the manifest recorded rather than from the runtime Julia argument types.
   A slot that is not a Unicode scalar value is refused rather than turned into
-  an invalid `Char`
+  an invalid `Char`. `Result<char, E>` and `Option<char>` payloads convert too:
+  the `CResult_*` / `COption_*` field is declared with the C slot Rust stored
+  and the active payload is read back as its surface type
   ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)). The one
   exception is `i128` / `u128` on `x86_64-pc-windows-msvc`, where MSVC has no
   native 128-bit integer and Rust and Julia disagree on how `extern "C"` passes
