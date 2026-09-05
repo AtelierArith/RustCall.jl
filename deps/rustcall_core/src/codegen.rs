@@ -879,19 +879,25 @@ fn inline_method_wrapper(
 fn wrapper_generics(
     model: &StructModel,
     m: &MethodModel,
-) -> (syn::Generics, Option<syn::WhereClause>) {
-    let owner = model
-        .impls
-        .iter()
-        .find(|imp| {
-            imp.items
-                .iter()
-                .any(|ii| matches!(ii, syn::ImplItem::Fn(f) if f.sig.ident == m.func.sig.ident))
-        })
+) -> (syn::Generics, Option<syn::WhereClause>, Type) {
+    let owner = model.impls.iter().find(|imp| {
+        imp.items
+            .iter()
+            .any(|ii| matches!(ii, syn::ImplItem::Fn(f) if f.sig.ident == m.func.sig.ident))
+    });
+    // The receiver / constructor type must be spelled with the impl block's own
+    // parameter names (`impl<U> Wrapper<U>`), not the struct declaration's.
+    let self_ty: Type = match owner {
+        Some(imp) => (*imp.self_ty).clone(),
+        None => {
+            let name = &model.item.ident;
+            let (_, ty_generics, _) = model.item.generics.split_for_impl();
+            syn::parse_quote!(#name #ty_generics)
+        }
+    };
+    let mut merged = owner
         .map(|imp| imp.generics.clone())
         .unwrap_or_else(|| model.item.generics.clone());
-
-    let mut merged = owner;
     for p in &m.func.sig.generics.params {
         merged.params.push(p.clone());
     }
@@ -915,7 +921,7 @@ fn wrapper_generics(
             predicates: predicates.into_iter().collect(),
         })
     };
-    (merged, where_clause)
+    (merged, where_clause, self_ty)
 }
 
 fn fn_source(func: ItemFn) -> String {
@@ -946,15 +952,15 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         let wrapper_name = format_ident!("{}_{}", struct_name, method_name);
         // The wrapper must satisfy the bounds the impl block and the method
         // themselves declare (`impl<T: Copy>`, `where T: Copy`, `fn f<U>`).
-        let (decl_generics, where_clause) = wrapper_generics(model, m);
+        let (decl_generics, where_clause, self_ty) = wrapper_generics(model, m);
         let where_clause = where_clause.map(|w| quote! { #w }).unwrap_or_default();
         let mut wrapper_args: Vec<TokenStream2> = Vec::new();
         let mut call_args: Vec<TokenStream2> = Vec::new();
         if !m.is_static {
             if m.is_mutable {
-                wrapper_args.push(quote! { ptr: *mut #struct_name #ty_generics });
+                wrapper_args.push(quote! { ptr: *mut #self_ty });
             } else {
-                wrapper_args.push(quote! { ptr: *const #struct_name #ty_generics });
+                wrapper_args.push(quote! { ptr: *const #self_ty });
             }
         }
         for (i, arg) in m.func.sig.inputs.iter().enumerate() {
@@ -972,7 +978,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         let is_ctor = inline_method_is_ctor(struct_name, m);
         let func: ItemFn = if is_ctor {
             syn::parse_quote! {
-                pub fn #wrapper_name #decl_generics (#(#wrapper_args),*) -> *mut #struct_name #ty_generics #where_clause {
+                pub fn #wrapper_name #decl_generics (#(#wrapper_args),*) -> *mut #self_ty #where_clause {
                     let obj = #struct_name::#method_name(#(#call_args),*);
                     Box::into_raw(Box::new(obj))
                 }

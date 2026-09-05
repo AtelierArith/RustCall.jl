@@ -72,6 +72,25 @@ impl TypeSubst {
 }
 
 impl TypeSubst {
+    fn substitute_tokens(&self, tokens: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        use proc_macro2::{Group, TokenTree};
+        tokens
+            .into_iter()
+            .flat_map(|tt| match tt {
+                TokenTree::Ident(ref id) => match self.map.get(&id.to_string()) {
+                    Some(ty) => quote::quote!(#ty).into_iter().collect::<Vec<_>>(),
+                    None => vec![tt],
+                },
+                TokenTree::Group(g) => {
+                    let mut ng = Group::new(g.delimiter(), self.substitute_tokens(g.stream()));
+                    ng.set_span(g.span());
+                    vec![TokenTree::Group(ng)]
+                }
+                other => vec![other],
+            })
+            .collect()
+    }
+
     /// Type parameters declared by an item that shadow outer bindings.
     fn shadowed_by(&self, generics: &syn::Generics) -> Vec<(String, Type)> {
         generics
@@ -131,6 +150,12 @@ impl VisitMut for TypeSubst {
     fn visit_trait_item_fn_mut(&mut self, node: &mut syn::TraitItemFn) {
         let g = node.sig.generics.clone();
         self.with_shadowed(&g, |s| visit_mut::visit_trait_item_fn_mut(s, node));
+    }
+
+    /// Macro bodies are opaque token streams; rewrite bound identifiers there
+    /// too (`assert_eq!(x, T::default())`).
+    fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+        mac.tokens = self.substitute_tokens(mac.tokens.clone());
     }
 
     fn visit_type_mut(&mut self, ty: &mut Type) {
@@ -460,6 +485,15 @@ mod tests {
         let src2 = "pub fn outer<T: Copy>(x: T) -> T { fn inner(y: T) -> T { y } inner(x) }";
         let out2 = specialize(src2, "outer", &[("T".into(), "i32".into())], "outer_i32").unwrap();
         assert!(out2.source.contains("fn inner(y: i32) -> i32"));
+    }
+
+    #[test]
+    fn substitutes_inside_macro_tokens() {
+        let src = "pub fn check<T: Default + PartialEq + std::fmt::Debug>(x: T) -> T { assert_eq!(x, T::default()); let v: Vec<T> = vec![T::default()]; v.into_iter().next().unwrap() }";
+        let out = specialize(src, "check", &[("T".into(), "i32".into())], "check_i32").unwrap();
+        assert!(out.source.contains("assert_eq!(x, i32::default())"));
+        assert!(out.source.contains("vec![i32::default()]"));
+        assert!(!out.source.contains("fn check_i32<"));
     }
 
     #[test]

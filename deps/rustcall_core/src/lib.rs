@@ -311,6 +311,26 @@ mod tests {
     }
 
     #[test]
+    fn impl_with_renamed_parameters() {
+        let src = r#"
+            #[julia]
+            pub struct Wrapper<T> { value: T }
+            impl<U: Copy> Wrapper<U> {
+                pub fn new(value: U) -> Self { Self { value } }
+                pub fn get(&self) -> U { self.value }
+            }
+        "#;
+        let e = expand::expand(src).unwrap();
+        assert!(e
+            .source
+            .contains("pub fn Wrapper_get<U: Copy>(ptr: *const Wrapper<U>) -> U"));
+        assert!(e
+            .source
+            .contains("pub fn Wrapper_new<U: Copy>(value: U) -> *mut Wrapper<U>"));
+        assert!(!e.source.contains("Wrapper<T>) -> U"));
+    }
+
+    #[test]
     fn manifest_roundtrips_through_toml() {
         let e = expand::expand("#[julia] fn a(x: i32) -> i32 { x }").unwrap();
         let toml = e.manifest.to_toml().unwrap();
