@@ -174,8 +174,11 @@ using TOML
         # from Cargo itself (probe crate), so profile overrides in the environment
         # and RUSTFLAGS are honoured.
         cargo_names = names(RustCall.extract_manifest(profile_code; mode = "inline", cfg = :cargo))
-        @test Set(cargo_names) == Set(["feature_only"])   # unwind, no debug_assertions
-        @test RustCall._cfg_file_args(:cargo)[end] == "--cfg-profile"
+        # unwind, no debug_assertions, and the generated crate has no features
+        @test isempty(cargo_names)
+        @test RustCall._cfg_file_args(:cargo)[end-1:end] == ["--cfg-profile", "--cfg-features"]
+        @test Set(names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))) ==
+              Set(["dbg_only", "abort_only", "feature_only"])
         cargo_cfg = RustCall._cfg_snapshot(:cargo)
         @test occursin("panic=\"unwind\"", cargo_cfg)
         @test !occursin("debug_assertions", cargo_cfg)
@@ -186,7 +189,20 @@ using TOML
             @test occursin("debug_assertions", overridden)
             @test occursin("panic=\"abort\"", overridden)
             @test Set(names(RustCall.extract_manifest(profile_code; mode = "inline", cfg = :cargo))) ==
-                  Set(["dbg_only", "abort_only", "feature_only"])
+                  Set(["dbg_only", "abort_only"])
+            # The Cargo environment is recorded with Cargo-backed blocks and can
+            # be restored for a reload.
+            env_key = RustCall._cargo_cfg_env_key()
+            @test occursin("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true", env_key)
+            @test occursin("RUSTFLAGS=-C panic=abort", env_key)
+            restored = withenv("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => nothing, "RUSTFLAGS" => "-C opt-level=1",
+                               "CARGO_TERM_COLOR" => "never") do
+                RustCall._cargo_build_env(env_key)
+            end
+            @test restored["CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS"] == "true"
+            @test restored["RUSTFLAGS"] == "-C panic=abort"
+            @test !haskey(restored, "CARGO_TERM_COLOR")   # not in the snapshot: dropped
+            @test haskey(restored, "PATH")
         end
         @test RustCall._cargo_cfg_text() == cargo_cfg   # cache keyed by environment
         lenient_host = RustCall.extract_manifest(code; mode = "crate", cfg = :lenient)
@@ -238,6 +254,23 @@ using TOML
             @test RustCall.ensure_loaded(reloaded, block) == reloaded
             @test (@__MODULE__).__RUSTCALL_LIBS isa Dict{String, Any}
             @test all(v -> v isa RustCall.RustBlockSnapshot, values((@__MODULE__).__RUSTCALL_LIBS))
+            @test all(v -> v.cargo_env == "", values((@__MODULE__).__RUSTCALL_LIBS))   # direct rustc blocks
+
+            # Generic functions keep the compiler they were expanded for: the
+            # lazy specialization below runs while the default compiler is at
+            # opt-level 2, but the block was expanded (and is compiled) at 0.
+            generic_block = """
+            #[cfg(debug_assertions)]
+            #[julia]
+            pub fn cfg_snapshot_generic_id<T: Copy>(x: T) -> T { x }
+            """
+            RustCall._compile_and_load_rust(generic_block, "snapshot", 0; cfg_text = snapshot_o0,
+                                            compiler_target = o0.target_triple, compiler_level = 0)
+            info = RustCall.GENERIC_FUNCTION_REGISTRY["cfg_snapshot_generic_id"]
+            @test info.compiler !== nothing && info.compiler.optimization_level == 0
+            @test RustCall.get_default_compiler().optimization_level == 2
+            spec = RustCall.monomorphize_function("cfg_snapshot_generic_id", Dict(:T => Int32))
+            @test spec !== nothing
         end
     end
 

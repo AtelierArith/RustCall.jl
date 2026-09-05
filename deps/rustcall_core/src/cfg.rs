@@ -30,6 +30,9 @@ pub struct CfgSet {
     /// In lenient mode, also decide the profile predicates (`debug_assertions`,
     /// `overflow_checks`, `panic`) because the caller controls the Cargo profile.
     profile: bool,
+    /// In lenient mode, also decide `feature = "..."` because the caller
+    /// generated the crate and knows it declares no features.
+    features: bool,
 }
 
 /// Predicates decided by the build profile (`[profile.*]`, `-C opt-level`,
@@ -143,8 +146,17 @@ impl CfgSet {
         self
     }
 
+    /// In lenient mode, also decide `feature = "..."` predicates (see module docs).
+    pub fn with_features(mut self) -> CfgSet {
+        self.features = true;
+        self
+    }
+
     fn decided(&self, name: &str) -> bool {
-        !self.lenient || target_decided(name) || (self.profile && PROFILE_CFG_NAMES.contains(&name))
+        !self.lenient
+            || target_decided(name)
+            || (self.profile && PROFILE_CFG_NAMES.contains(&name))
+            || (self.features && name == "feature")
     }
 
     /// Evaluate one `cfg` predicate to a boolean; `Unknown` counts as true
@@ -621,6 +633,23 @@ mod tests {
             set.eval3(&pred("target_feature = \"avx2\"")).unwrap(),
             Truth::Unknown
         );
+    }
+
+    #[test]
+    fn lenient_with_features_decides_feature_predicates() {
+        let set = CfgSet::parse("unix\nfeature=\"std\"\n")
+            .lenient()
+            .with_features();
+        assert_eq!(set.eval3(&pred("feature = \"std\"")).unwrap(), Truth::True);
+        assert_eq!(
+            set.eval3(&pred("feature = \"extra\"")).unwrap(),
+            Truth::False
+        );
+        assert_eq!(
+            set.eval3(&pred("debug_assertions")).unwrap(),
+            Truth::Unknown
+        );
+        assert_eq!(set.eval3(&pred("custom_cfg")).unwrap(), Truth::Unknown);
     }
 
     #[test]

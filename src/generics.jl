@@ -70,6 +70,7 @@ struct GenericFunctionInfo
     arg_types::Vector{String}  # Rust argument types as recorded in the manifest (e.g. ["T", "i32"])
     return_type::String  # Rust return type as recorded in the manifest
     path::String  # Qualified name inside `code` (`api::deep::f`); equals `name` at the file root
+    compiler::Union{Nothing, RustCompiler}  # compiler the block was expanded for (nothing: default)
 end
 
 """
@@ -234,8 +235,9 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         specialized = specialize_generic(full_source, generic_info.path, bindings, specialized_name)
         specialized_code = specialized.source
 
-        # Compile the specialized function
-        compiler = get_default_compiler()
+        # Compile the specialized function with the compiler the block was
+        # expanded for (its #[cfg] snapshot), falling back to the default.
+        compiler = something(generic_info.compiler, get_default_compiler())
         wrapped_code = wrap_rust_code(specialized_code)
         lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
 
@@ -316,7 +318,8 @@ function register_generic_function(
     context::String="";
     arg_types::Vector{String}=String[],
     return_type::String="",
-    path::String=func_name
+    path::String=func_name,
+    compiler::Union{Nothing, RustCompiler}=nothing
 )
     # Manual registrations usually pass only the source. Recover the argument
     # and return types (and, when not given, the trait bounds) from the
@@ -331,7 +334,7 @@ function register_generic_function(
         end
     end
     lock(REGISTRY_LOCK) do
-        info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types, return_type, path)
+        info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types, return_type, path, compiler)
         GENERIC_FUNCTION_REGISTRY[func_name] = info
         return info
     end

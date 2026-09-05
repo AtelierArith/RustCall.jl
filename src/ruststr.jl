@@ -152,6 +152,9 @@ macro rust_str(code)
     # into the generated code.
     cfg_text = _cfg_snapshot(cfg_mode)
     snapshot_compiler = get_default_compiler()
+    # Cargo-backed blocks also record the Cargo/RUSTFLAGS environment that
+    # produced `cfg_text`, so a reload can rebuild under it.
+    cargo_env = cfg_mode === :cargo ? _cargo_cfg_env_key() : ""
     expanded = expand_inline(code_str; cfg = cfg_mode, cfg_text = cfg_text)
     struct_infos = manifest_struct_infos(expanded.manifest)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
@@ -163,7 +166,8 @@ macro rust_str(code)
         lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line);
                                           cfg_text = $cfg_text,
                                           compiler_target = $(snapshot_compiler.target_triple),
-                                          compiler_level = $(snapshot_compiler.optimization_level))
+                                          compiler_level = $(snapshot_compiler.optimization_level),
+                                          cargo_env = $cargo_env)
 
         # Store the block (source plus the cfg/compiler snapshot it was expanded
         # under) in the calling module for precompilation support: a reload in a
@@ -175,7 +179,8 @@ macro rust_str(code)
         end
         $__module__.__RUSTCALL_LIBS[lib_name] = RustCall.RustBlockSnapshot(
             $(esc(code)), $cfg_text,
-            $(snapshot_compiler.target_triple), $(snapshot_compiler.optimization_level))
+            $(snapshot_compiler.target_triple), $(snapshot_compiler.optimization_level),
+            $cargo_env)
 
         # Track the "current" library for this module
         # Use Ref{String} so the binding is const but the value can be mutated
@@ -209,7 +214,11 @@ struct RustBlockSnapshot
     cfg_text::String
     compiler_target::String
     compiler_level::Int
+    cargo_env::String   # `_cargo_cfg_env_key()` for Cargo-backed blocks, else ""
 end
+
+RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level) =
+    RustBlockSnapshot(code, cfg_text, compiler_target, compiler_level, "")
 
 """
     ensure_loaded(lib_name::String, block) -> String
@@ -228,7 +237,8 @@ function ensure_loaded(lib_name::String, block::RustBlockSnapshot)
     return _compile_and_load_rust(block.code, "reload", 0;
                                   cfg_text = block.cfg_text,
                                   compiler_target = block.compiler_target,
-                                  compiler_level = block.compiler_level)
+                                  compiler_level = block.compiler_level,
+                                  cargo_env = block.cargo_env)
 end
 
 function ensure_loaded(lib_name::String, code::String)
@@ -265,10 +275,11 @@ when external crates are required.
 function _compile_and_load_rust(code::String, source_file::String, source_line::Int;
                                 cfg_text::Union{Nothing, AbstractString} = nothing,
                                 compiler_target::Union{Nothing, AbstractString} = nothing,
-                                compiler_level::Union{Nothing, Integer} = nothing)
+                                compiler_level::Union{Nothing, Integer} = nothing,
+                                cargo_env::Union{Nothing, AbstractString} = nothing)
     # Phase 3: Check for dependencies in the code
     if has_dependencies(code)
-        return _compile_and_load_rust_with_cargo(code, source_file, source_line; cfg_text)
+        return _compile_and_load_rust_with_cargo(code, source_file, source_line; cfg_text, cargo_env)
     end
 
     # Expand #[julia] items (functions, structs, accessors, method wrappers)
@@ -299,7 +310,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
             # Ensure generic functions and return types are registered
             # (the registries are volatile)
-            _register_manifest(expanded, lib_name)
+            _register_manifest(expanded, lib_name; compiler)
 
             return lib_name
         end
@@ -318,7 +329,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
         end
 
-        _register_manifest(expanded, lib_name)
+        _register_manifest(expanded, lib_name; compiler)
 
         return lib_name
     end
@@ -360,7 +371,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # Temporarily disabled LLVM IR loading for stability
     # (LLVM IR is used for type inference and @rust_llvm)
 
-    _register_manifest(expanded, lib_name)
+    _register_manifest(expanded, lib_name; compiler)
 
     return lib_name
 end
@@ -386,7 +397,11 @@ Phase 3: Supports rustscript-style dependency specifications.
    ```
 """
 function _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int;
-                                           cfg_text::Union{Nothing, AbstractString} = nothing)
+                                           cfg_text::Union{Nothing, AbstractString} = nothing,
+                                           cargo_env::Union{Nothing, AbstractString} = nothing)
+    # The Cargo/RUSTFLAGS environment the block was expanded under (see
+    # `_cargo_build_env`); an empty snapshot means "the current environment".
+    build_env = (cargo_env === nothing || isempty(cargo_env)) ? nothing : _cargo_build_env(cargo_env)
     # Parse dependencies from the code
     dependencies = parse_dependencies_from_code(code)
 
@@ -474,7 +489,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # Ensure the code with wrappers is written to the project
         write_rust_code_to_project(project, augmented_code)
 
-        lib_path = build_cargo_project_cached(project, code_hash, release=true)
+        lib_path = build_cargo_project_cached(project, code_hash, release=true, env=build_env)
 
         # Cache the built library (if it wasn't already in cache)
         try
@@ -539,16 +554,19 @@ Register everything the manifest of a compiled block tells us:
   in place with sibling items, imports and `super::` paths intact.
 - return types of exported functions, so `@rust f(...)` works without `::T`
 """
-function _register_manifest(expanded, lib_name::String)
+function _register_manifest(expanded, lib_name::String; compiler = nothing)
     manifest = expanded.manifest
     for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source)
+        register_generic_struct_wrappers(info, expanded.source; compiler)
     end
     for sig in manifest_function_signatures(manifest; only_attributed = false)
         if sig.is_generic
+            # Generic functions are compiled lazily; keep the compiler they were
+            # expanded for so a later `set_default_compiler` cannot drop
+            # #[cfg]-gated items from the specialization.
             register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
                                       arg_types = sig.arg_types, return_type = sig.return_type,
-                                      path = qualified_name(sig.module_path, sig.name))
+                                      path = qualified_name(sig.module_path, sig.name), compiler)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         elseif sig.exported
             _register_return_type(sig, lib_name)

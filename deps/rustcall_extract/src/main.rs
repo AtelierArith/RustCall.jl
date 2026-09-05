@@ -1,8 +1,8 @@
 //! `rustcall-extract`: command-line front end over `rustcall_core`.
 //!
 //! ```text
-//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile]] [--skip-unparsable] FILE...
-//! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile]] FILE
+//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile] [--cfg-features]] [--skip-unparsable] FILE...
+//! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile] [--cfg-features]] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract schema-version
 //! ```
@@ -25,8 +25,8 @@ use rustcall_core::cfg::CfgSet;
 use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 
 const USAGE: &str = "usage:
-  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile]] [--skip-unparsable] FILE...
-  rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile]] FILE
+  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile] [--cfg-features]] [--skip-unparsable] FILE...
+  rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient [--cfg-profile] [--cfg-features]] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract schema-version
 
@@ -37,6 +37,8 @@ from the manifest and the expanded source. Without it every item is reported.
 target_*); feature/profile predicates are unknown and keep their items (Cargo builds).
 --cfg-profile: with --cfg-lenient, also decide debug_assertions, overflow_checks and
 panic (the caller controls the Cargo profile).
+--cfg-features: with --cfg-lenient, also decide feature = \"...\" (the caller generated
+the crate and knows its feature set).
 --skip-unparsable: files that are not a complete Rust module (e.g. include!() fragments)
 are skipped with a warning instead of failing the run.";
 
@@ -75,6 +77,7 @@ fn read_cfg_file(
     path: Option<&Path>,
     lenient: bool,
     profile: bool,
+    features: bool,
 ) -> Result<Option<CfgSet>, String> {
     match path {
         Some(p) => {
@@ -85,6 +88,9 @@ fn read_cfg_file(
                 set = set.lenient();
                 if profile {
                     set = set.with_profile();
+                }
+                if features {
+                    set = set.with_features();
                 }
             }
             Ok(Some(set))
@@ -146,6 +152,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     let mut cfg_file: Option<PathBuf> = None;
     let mut cfg_lenient = false;
     let mut cfg_profile = false;
+    let mut cfg_features = false;
     let mut skip_unparsable = false;
     let mut files: Vec<PathBuf> = Vec::new();
     let mut i = 0;
@@ -160,6 +167,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
             Token::Option("--cfg-file") => cfg_file = Some(take_path(args, &mut i, "--cfg-file")?),
             Token::Option("--cfg-lenient") => cfg_lenient = true,
             Token::Option("--cfg-profile") => cfg_profile = true,
+            Token::Option("--cfg-features") => cfg_features = true,
             Token::Option("--") => {
                 files.extend(args[i + 1..].iter().map(Arg::path));
                 break;
@@ -173,7 +181,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     if files.is_empty() {
         return Err("at least one FILE is required".into());
     }
-    let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient, cfg_profile)?;
+    let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient, cfg_profile, cfg_features)?;
     let mut merged = Manifest::new(mode);
     for f in &files {
         let src = read_source(f)?;
@@ -207,6 +215,7 @@ fn cmd_expand(args: &[Arg]) -> Result<(), String> {
     let mut cfg_file: Option<PathBuf> = None;
     let mut cfg_lenient = false;
     let mut cfg_profile = false;
+    let mut cfg_features = false;
     let mut file: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
@@ -217,13 +226,14 @@ fn cmd_expand(args: &[Arg]) -> Result<(), String> {
             Token::Option("--cfg-file") => cfg_file = Some(take_path(args, &mut i, "--cfg-file")?),
             Token::Option("--cfg-lenient") => cfg_lenient = true,
             Token::Option("--cfg-profile") => cfg_profile = true,
+            Token::Option("--cfg-features") => cfg_features = true,
             Token::Option(f) => return Err(format!("unknown option `{f}`\n{USAGE}")),
             Token::File(f) => single_file(&mut file, f, "expand")?,
         }
         i += 1;
     }
     let file = file.ok_or("FILE is required")?;
-    let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient, cfg_profile)?;
+    let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient, cfg_profile, cfg_features)?;
     let src = read_source(&file)?;
     let expanded = rustcall_core::expand::expand_with_cfg(&src, cfg.as_ref())
         .map_err(|e| format!("{}: {e}", file.display()))?;

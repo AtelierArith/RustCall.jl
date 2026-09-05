@@ -262,9 +262,29 @@ _cargo_probe_profile() = "[profile.release]\nopt-level = 3\nlto = true\n"
 
 The environment that can change Cargo's effective rustc configuration.
 """
+_is_cargo_env_key(k::AbstractString) =
+    startswith(k, "CARGO_") || k in ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN")
+
 function _cargo_cfg_env_key()
-    keys = sort!(filter(k -> startswith(k, "CARGO_") || k in ("RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER", "RUSTUP_TOOLCHAIN"), collect(Base.keys(ENV))))
+    keys = sort!(filter(_is_cargo_env_key, collect(Base.keys(ENV))))
     return join(("$k=$(ENV[k])" for k in keys), "\n")
+end
+
+"""
+    _cargo_build_env(snapshot::AbstractString) -> Dict{String, String}
+
+The process environment with the Cargo/RUSTFLAGS settings replaced by those
+recorded in `snapshot` (a [`_cargo_cfg_env_key`](@ref) text): variables
+absent from the snapshot are removed, recorded ones restored. Used to build a
+`// cargo-deps:` block under the configuration its wrappers were generated for.
+"""
+function _cargo_build_env(snapshot::AbstractString)
+    env = Dict{String, String}(k => v for (k, v) in ENV if !_is_cargo_env_key(k))
+    for line in split(snapshot, '\n'; keepempty = false)
+        k, v = split(line, '='; limit = 2)
+        env[String(k)] = String(v)
+    end
+    return env
 end
 
 """
@@ -324,8 +344,9 @@ end
 Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
 configuration of the actual compiler invocation), `:cargo` (Cargo projects
 RustCall generates for `// cargo-deps:` blocks: target and profile predicates
-are decided from Cargo's effective configuration, see [`_cargo_cfg_text`];
-`feature = "..."` and build-script cfgs keep their items), `:lenient`
+are decided from Cargo's effective configuration, see [`_cargo_cfg_text`], and
+`feature = "..."` is decided too since the generated crate declares no
+features; build-script cfgs keep their items), `:lenient`
 (`@rust_crate`, whose own Cargo.toml may override the profile: only target
 predicates are decided, the cfg text still comes from Cargo) or `:none` (report everything, used for
 the platform-independent golden corpus). `true`/`false` map to `:strict`/`:none`.
@@ -376,7 +397,8 @@ function _cfg_file_args(cfg; cfg_text::AbstractString = _cfg_snapshot(cfg))
     end
     args = ["--cfg-file", path]
     mode in (:lenient, :cargo) && push!(args, "--cfg-lenient")
-    mode === :cargo && push!(args, "--cfg-profile")
+    # The generated Cargo project has a known profile and declares no features.
+    mode === :cargo && append!(args, ["--cfg-profile", "--cfg-features"])
     return args
 end
 
