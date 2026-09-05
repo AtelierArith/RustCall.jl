@@ -237,6 +237,9 @@ primitive type _Dep265Prim 8 end
 struct _Dep265Wrap
     x::_Dep265Prim
 end
+struct _Dep265Pair
+    v::Tuple{Float32, Float32}
+end
 
 @testset "LLVM path deprecation (#265)" begin
     # Every public entry point of the LLVM IR integration path emits a
@@ -262,6 +265,21 @@ end
     @test RustCall._julia_type_to_llvm_ir_string(Tuple{_Dep265Prim}) == "{i8}"
     @test RustCall._julia_type_to_llvm_ir_string(_Dep265Wrap) == "{i8}"
     @test RustCall._julia_type_to_llvm_ir_string(Tuple{Int32, _Dep265Prim}) == "{i32, i8}"
+    # A downstream override of an already supported signature (e.g. a SIMD ABI
+    # for a tuple) also wins, at top level and nested, as it did when the
+    # built-ins were methods of the public name.
+    @eval RustCall.julia_type_to_llvm_ir_string(::Type{Tuple{Float32, Float32}}) = "<2 x float>"
+    @test RustCall._llvm_ir_type(Tuple{Float32, Float32}) == "<2 x float>"
+    @test RustCall._llvm_ir_type(Tuple{Int32, Tuple{Float32, Float32}}) == "{i32, <2 x float>}"
+    @test RustCall._llvm_ir_type(_Dep265Pair) == "{<2 x float>}"
+    @test occursin("<2 x float>", RustCall.generate_llvmcall_ir("f", Tuple{Float32, Float32}, Type[Int32]))
+    # Built-ins are untouched
+    @test RustCall._llvm_ir_type(Tuple{Float64, Float64}) == "{double, double}"
+    # Calls that hit a downstream method dispatch to it directly and therefore do
+    # not warn (documented exception).
+    if Base.JLOptions().depwarn != 0
+        @test_logs RustCall.julia_type_to_llvm_ir_string(_Dep265Prim)
+    end
 
     # Internal helpers used by @rust and by the deprecated wrappers stay silent.
     if Base.JLOptions().depwarn != 0

@@ -83,8 +83,8 @@ This creates a simple wrapper that calls the actual function.
 """
 function generate_llvmcall_ir(func_name::String, ret_type::Type, arg_types::Vector{Type})
     # Map Julia types to LLVM IR types
-    llvm_ret = _julia_type_to_llvm_ir_string(ret_type)
-    llvm_args = [_julia_type_to_llvm_ir_string(t) for t in arg_types]
+    llvm_ret = _llvm_ir_type(ret_type)
+    llvm_args = [_llvm_ir_type(t) for t in arg_types]
 
     # Build argument list
     arg_list = join(["$(llvm_args[i]) %$(i-1)" for i in 1:length(arg_types)], ", ")
@@ -108,6 +108,13 @@ end
 
 Convert a Julia type to its LLVM IR string representation.
 Supports basic types, pointers, tuples, and structs.
+
+Methods that downstream code adds to this name for its own types are still
+honoured, also for nested occurrences (tuple elements, struct fields), and
+take precedence over the built-in conversions. Such calls dispatch directly
+to the downstream method, so they do not emit the deprecation warning; they
+stop working when the function is removed together with the rest of the
+LLVM IR integration path.
 
 !!! warning "Deprecated"
     The LLVM IR integration path is deprecated and will be removed in a future
@@ -163,13 +170,6 @@ _julia_type_to_llvm_ir_string(t::Type{<:Tuple}) = _tuple_type_to_llvm_ir(t)
 
 # Struct types fallback (immutable structs)
 function _julia_type_to_llvm_ir_string(t::Type)
-    # Compatibility hook: downstream code may have extended the public
-    # (deprecated) name for a custom type. Nested conversions (tuple elements,
-    # struct fields) must keep dispatching to such methods, so consult them
-    # before the generic fallbacks.
-    if _has_public_llvm_ir_extension(t)
-        return julia_type_to_llvm_ir_string(t)
-    end
     if isstructtype(t) && !isabstracttype(t) && !isprimitivetype(t)
         return _struct_type_to_llvm_ir(t)
     else
@@ -186,6 +186,22 @@ function _has_public_llvm_ir_extension(t::Type)
 end
 
 """
+    _llvm_ir_type(t::Type) -> String
+
+Conversion entry point used internally (call IR, tuple elements, struct
+fields). Compatibility hook for the deprecation period: a method that
+downstream code added to the public `julia_type_to_llvm_ir_string` wins over
+the built-in conversion, exactly as it did when the built-ins were methods of
+the public name; otherwise the private, warning-free table is used.
+"""
+function _llvm_ir_type(t::Type)
+    if _has_public_llvm_ir_extension(t)
+        return julia_type_to_llvm_ir_string(t)
+    end
+    return _julia_type_to_llvm_ir_string(t)
+end
+
+"""
     _tuple_type_to_llvm_ir(t::Type{<:Tuple}) -> String
 
 Convert a Julia Tuple type to LLVM IR struct representation.
@@ -196,7 +212,7 @@ function _tuple_type_to_llvm_ir(t::Type{<:Tuple})
     end
 
     param_types = t.parameters
-    llvm_types = [_julia_type_to_llvm_ir_string(param) for param in param_types]
+    llvm_types = [_llvm_ir_type(param) for param in param_types]
     return "{$(join(llvm_types, ", "))}"
 end
 
@@ -230,7 +246,7 @@ function _struct_type_to_llvm_ir(t::Type)
                 push!(llvm_fields, "i8")
             end
         end
-        llvm_type = _julia_type_to_llvm_ir_string(ft)
+        llvm_type = _llvm_ir_type(ft)
         push!(llvm_fields, llvm_type)
         current_offset = Int(field_offset) + sizeof(ft)
     end
