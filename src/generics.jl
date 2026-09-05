@@ -316,11 +316,55 @@ function register_generic_function(
     arg_types::Vector{String}=String[],
     return_type::String=""
 )
+    # Manual registrations usually pass only the source. Recover the argument
+    # and return types (and, when not given, the trait bounds) from the
+    # extractor's manifest so that inference and monomorphization work exactly
+    # as for functions loaded from a rust\"\"\" block.
+    if isempty(arg_types) || isempty(return_type) || isempty(constraints)
+        sig = _manifest_signature_for(func_name, code)
+        if sig !== nothing
+            isempty(arg_types) && (arg_types = sig.arg_types)
+            isempty(return_type) && (return_type = sig.return_type)
+            isempty(constraints) && (constraints = sig.constraints)
+        end
+    end
     lock(REGISTRY_LOCK) do
         info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types, return_type)
         GENERIC_FUNCTION_REGISTRY[func_name] = info
         return info
     end
+end
+
+# Backward compatibility: accept `Dict{Symbol, String}` bounds such as
+# `Dict(:T => "Copy + Add<Output = T>")`. The strings are parsed by the Rust-side
+# parser (through the extractor), never by Julia.
+function register_generic_function(
+    func_name::String,
+    code::String,
+    type_params::Vector{Symbol},
+    constraints::Dict{Symbol, String},
+    context::String="";
+    kwargs...
+)
+    return register_generic_function(func_name, code, type_params,
+                                     constraints_from_strings(constraints), context; kwargs...)
+end
+
+"""
+    _manifest_signature_for(func_name, code) -> Union{RustFunctionSignature, Nothing}
+
+Signature of the top-level function `func_name` in `code` according to the
+extractor, or `nothing` when the code cannot be parsed or has no such function.
+"""
+function _manifest_signature_for(func_name::String, code::String)
+    sigs = try
+        manifest_function_signatures(extract_manifest(code; mode = "inline"); only_attributed = false)
+    catch e
+        @debug "Could not extract a manifest for generic function '$func_name'" exception = e
+        return nothing
+    end
+    idx = findfirst(s -> s.name == func_name, sigs)
+    return idx === nothing ? nothing : sigs[idx]
 end
 
 """

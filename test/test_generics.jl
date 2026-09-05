@@ -249,3 +249,29 @@ end
         end
     end
 end
+
+@testset "Manual registration compatibility (PR #266 review)" begin
+    if RustCall.check_rustc_available()
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        end
+        # Three-argument registration: signature is recovered from the source
+        code = "pub fn compat_identity<T: Copy>(x: T) -> T { x }"
+        info = RustCall.register_generic_function("compat_identity", code, [:T])
+        @test info.arg_types == ["T"]
+        @test info.return_type == "T"
+        @test info.constraints[:T].bounds[1].trait_name == "Copy"
+        @test RustCall.infer_type_parameters("compat_identity", Type[Int32]) == Dict(:T => Int32)
+        @test RustCall.call_generic_function("compat_identity", Int32(42)) == 42
+
+        # Legacy string constraints are parsed on the Rust side
+        info2 = RustCall.register_generic_function("compat_legacy", code, [:T],
+                                                   Dict(:T => "Copy + std::ops::Add<Output = T>"))
+        names = [b.trait_name for b in info2.constraints[:T].bounds]
+        @test names == ["Copy", "Add"]
+        @test info2.constraints[:T].bounds[2].type_params == ["Output = T"]
+        lock(RustCall.REGISTRY_LOCK) do
+            empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
+        end
+    end
+end

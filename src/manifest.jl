@@ -348,6 +348,26 @@ function manifest_constraints(entry)
 end
 
 """
+    constraints_from_strings(bounds::Dict{Symbol, String}) -> Dict{Symbol, TypeConstraints}
+
+Convert `Dict(:T => "Copy + Add<Output = T>")` style bounds to `TypeConstraints`.
+The strings are parsed by the Rust-side parser: they are placed on a synthetic
+generic function and read back from its manifest.
+"""
+function constraints_from_strings(bounds::Dict{Symbol, String})
+    isempty(bounds) && return Dict{Symbol, TypeConstraints}()
+    params = join(("$(p): $(strip(b))" for (p, b) in bounds), ", ")
+    snippet = "fn __rustcall_bounds<$(params)>() {}"
+    sigs = manifest_function_signatures(extract_manifest(snippet; mode = "inline"); only_attributed = false)
+    sig = only(sigs)
+    out = Dict{Symbol, TypeConstraints}()
+    for p in keys(bounds)
+        out[p] = get(sig.constraints, p, TypeConstraints())
+    end
+    return out
+end
+
+"""
     manifest_function_signatures(manifest; only_attributed=true) -> Vector{RustFunctionSignature}
 
 Signatures of the free functions in a manifest. With `only_attributed`, only
