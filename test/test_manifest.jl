@@ -36,15 +36,103 @@ using TOML
             for mode in ("inline", "crate")
                 golden = joinpath(corpus, "$name.$mode.toml")
                 isfile(golden) || continue
-                got = _lf(RustCall.extract_manifest([path]; mode = mode))
+                # The corpus is platform independent: no cfg filtering here.
+                got = _lf(RustCall.extract_manifest([path]; mode = mode, cfg = false))
                 want = _lf(TOML.parsefile(golden))
                 @test got == want
             end
             expanded_golden = joinpath(corpus, "$name.expanded.rs")
             if isfile(expanded_golden)
-                got = RustCall.expand_inline(_lf(read(path, String))).source
+                got = RustCall.expand_inline(_lf(read(path, String)); cfg = false).source
                 @test _lf(got) == _lf(read(expanded_golden, String))
             end
+        end
+    end
+
+    @testset "#[cfg]-disabled items are not reported" begin
+        # `any()` is never true, `all()` always is; `unix`/`windows` follow the host.
+        code = """
+        #[cfg(all())]
+        #[julia]
+        pub fn always_on() -> i32 { 1 }
+
+        #[cfg(any())]
+        #[julia]
+        pub fn never_on() -> i32 { 2 }
+
+        #[cfg(not(windows))]
+        #[julia]
+        pub fn on_unix_like() -> i32 { 3 }
+
+        #[cfg(windows)]
+        #[julia]
+        pub fn on_windows() -> i32 { 4 }
+
+        #[cfg(any())]
+        #[julia]
+        pub struct Ghost { pub x: i32 }
+
+        #[cfg(any())]
+        mod ghost_mod {
+            #[julia]
+            pub fn gone() -> i32 { 5 }
+        }
+        """
+        names(m) = String[String(f["name"]) for f in m["functions"]]
+
+        # Without cfg filtering every item is listed with its predicate.
+        raw = RustCall.extract_manifest(code; mode = "inline", cfg = false)
+        @test Set(names(raw)) == Set(["always_on", "never_on", "on_unix_like", "on_windows", "gone"])
+        preds = Dict(String(f["name"]) => String(f["cfg"]) for f in raw["functions"])
+        @test preds["always_on"] == "all()"
+        @test preds["never_on"] == "any()"
+        @test preds["on_windows"] == "windows"
+        @test String(only(raw["structs"])["cfg"]) == "any()"
+
+        # With the host configuration only compiled items remain.
+        host = RustCall.extract_manifest(code; mode = "inline")
+        expected = Sys.iswindows() ? ["always_on", "on_windows"] : ["always_on", "on_unix_like"]
+        @test Set(names(host)) == Set(expected)
+        @test isempty(host["structs"])
+        crate = RustCall.extract_manifest(code; mode = "crate")
+        @test Set(names(crate)) == Set(expected)
+
+        expanded = RustCall.expand_inline(code)
+        @test Set(s.name for s in RustCall.manifest_function_signatures(expanded.manifest)) == Set(expected)
+        @test !occursin("never_on", expanded.source)
+        @test !occursin("Ghost", expanded.source)
+        @test !occursin("ghost_mod", expanded.source)
+
+        # Cache keys differ for the two views of the same source.
+        @test RustCall.expand_inline(code; cfg = false).manifest != expanded.manifest
+        @test RustCall.expand_inline(code) === expanded
+
+        # The cfg file handed to the extractor is `rustc --print cfg`, written once.
+        args = RustCall._cfg_file_args(true)
+        @test length(args) == 2 && args[1] == "--cfg-file"
+        @test read(args[2], String) == RustCall._rustc_cfg_text()
+        @test RustCall._cfg_file_args(true) == args
+        @test isempty(RustCall._cfg_file_args(false))
+    end
+
+    if RustCall.check_rustc_available()
+        @testset "#[cfg] end to end" begin
+            rust"""
+            #[cfg(not(windows))]
+            #[julia]
+            pub fn cfg_platform_value() -> i32 { 10 }
+
+            #[cfg(windows)]
+            #[julia]
+            pub fn cfg_platform_value() -> i32 { 20 }
+
+            #[cfg(any())]
+            #[julia]
+            pub fn cfg_never_compiled() -> i32 { 0 }
+            """
+            @test cfg_platform_value() == (Sys.iswindows() ? Int32(20) : Int32(10))
+            # The manifest never saw the disabled item, so no Julia wrapper exists.
+            @test !isdefined(@__MODULE__, :cfg_never_compiled)
         end
     end
 

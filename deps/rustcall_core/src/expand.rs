@@ -16,6 +16,7 @@
 use syn::{Item, Visibility};
 
 use crate::attrs::{rustcall_attribute, strip_julia_struct_derive, strip_rustcall_attrs};
+use crate::cfg::{predicate_string, CfgSet};
 use crate::codegen::{inline_generic_wrappers, inline_struct_wrappers, transform_function};
 use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
@@ -50,7 +51,17 @@ fn unparse_file(attrs: Vec<syn::Attribute>, items: Vec<Item>) -> String {
 }
 
 pub fn expand(source: &str) -> Result<Expanded, syn::Error> {
-    let file = syn::parse_file(source)?;
+    expand_with_cfg(source, None)
+}
+
+/// Like [`expand`], but items disabled under `cfg` are dropped before
+/// expansion, so the manifest only reports what rustc will compile. Without a
+/// configuration every item is kept and its predicate is recorded.
+pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, syn::Error> {
+    let mut file = syn::parse_file(source)?;
+    if let Some(set) = cfg {
+        crate::cfg::prune_or_error(set, &mut file.items)?;
+    }
     let mut manifest = Manifest::new(Mode::Inline);
     let out = expand_items(&file.items, &mut manifest, &[])?;
 
@@ -224,6 +235,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
 
 fn concrete_struct_entry(model: &StructModel, meta: &crate::codegen::InlineStructMeta) -> Struct {
     Struct {
+        cfg: predicate_string(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
         type_params: Vec::new(),
@@ -280,6 +292,7 @@ fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) 
     }
 
     Struct {
+        cfg: predicate_string(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
         type_params: generics_to_type_params(&model.item.generics),

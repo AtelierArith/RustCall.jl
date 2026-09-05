@@ -355,6 +355,7 @@ fn function_entry(func: &ItemFn) -> Function {
         .collect();
     let return_type = return_type_to_string(&func.sig.output);
     Function {
+        cfg: crate::cfg::predicate_string(&func.attrs),
         name: func.sig.ident.to_string(),
         symbol: func.sig.ident.to_string(),
         attribute: Attribute::None,

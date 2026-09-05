@@ -128,8 +128,29 @@ impl Greeter {
 #[repr(C)]
 pub struct CResult_checked_double {
     pub is_ok: u8,
-    pub ok_value: i32,
-    pub err_value: i32,
+    /// Only initialized when `is_ok == 1`. `MaybeUninit` keeps the
+    /// inactive field free of validity invariants (e.g. `NonZeroU32`).
+    pub ok_value: ::std::mem::MaybeUninit<i32>,
+    /// Only initialized when `is_ok == 0`.
+    pub err_value: ::std::mem::MaybeUninit<i32>,
+}
+impl CResult_checked_double {
+    /// The `Ok` value, if any.
+    pub fn ok(&self) -> Option<&i32> {
+        if self.is_ok == 1 {
+            Some(unsafe { self.ok_value.assume_init_ref() })
+        } else {
+            None
+        }
+    }
+    /// The `Err` value, if any.
+    pub fn err(&self) -> Option<&i32> {
+        if self.is_ok == 0 {
+            Some(unsafe { self.err_value.assume_init_ref() })
+        } else {
+            None
+        }
+    }
 }
 fn checked_double_inner(value: i32) -> Result<i32, i32> {
     value.checked_mul(2).ok_or(value)
@@ -138,23 +159,17 @@ fn checked_double_inner(value: i32) -> Result<i32, i32> {
 pub extern "C" fn checked_double(value: i32) -> CResult_checked_double {
     match checked_double_inner(value) {
         Ok(value) => {
-            let mut result = std::mem::MaybeUninit::<CResult_checked_double>::uninit();
-            let ptr = result.as_mut_ptr();
-            unsafe {
-                std::ptr::addr_of_mut!((* ptr).is_ok).write(1);
-                std::ptr::addr_of_mut!((* ptr).ok_value).write(value);
-                std::ptr::write_bytes(std::ptr::addr_of_mut!((* ptr).err_value), 0, 1);
-                result.assume_init()
+            CResult_checked_double {
+                is_ok: 1,
+                ok_value: ::std::mem::MaybeUninit::new(value),
+                err_value: ::std::mem::MaybeUninit::zeroed(),
             }
         }
         Err(err) => {
-            let mut result = std::mem::MaybeUninit::<CResult_checked_double>::uninit();
-            let ptr = result.as_mut_ptr();
-            unsafe {
-                std::ptr::addr_of_mut!((* ptr).is_ok).write(0);
-                std::ptr::write_bytes(std::ptr::addr_of_mut!((* ptr).ok_value), 0, 1);
-                std::ptr::addr_of_mut!((* ptr).err_value).write(err);
-                result.assume_init()
+            CResult_checked_double {
+                is_ok: 0,
+                ok_value: ::std::mem::MaybeUninit::zeroed(),
+                err_value: ::std::mem::MaybeUninit::new(err),
             }
         }
     }
@@ -162,7 +177,18 @@ pub extern "C" fn checked_double(value: i32) -> CResult_checked_double {
 #[repr(C)]
 pub struct COption_positive {
     pub is_some: u8,
-    pub value: i32,
+    /// Only initialized when `is_some == 1`.
+    pub value: ::std::mem::MaybeUninit<i32>,
+}
+impl COption_positive {
+    /// The `Some` value, if any.
+    pub fn some(&self) -> Option<&i32> {
+        if self.is_some == 1 {
+            Some(unsafe { self.value.assume_init_ref() })
+        } else {
+            None
+        }
+    }
 }
 fn positive_inner(value: i32) -> Option<i32> {
     (value > 0).then_some(value)
@@ -173,16 +199,13 @@ pub extern "C" fn positive(value: i32) -> COption_positive {
         Some(value) => {
             COption_positive {
                 is_some: 1,
-                value,
+                value: ::std::mem::MaybeUninit::new(value),
             }
         }
         None => {
-            let mut opt = std::mem::MaybeUninit::<COption_positive>::uninit();
-            let ptr = opt.as_mut_ptr();
-            unsafe {
-                std::ptr::addr_of_mut!((* ptr).is_some).write(0);
-                std::ptr::write_bytes(std::ptr::addr_of_mut!((* ptr).value), 0, 1);
-                opt.assume_init()
+            COption_positive {
+                is_some: 0,
+                value: ::std::mem::MaybeUninit::zeroed(),
             }
         }
     }

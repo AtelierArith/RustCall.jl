@@ -131,6 +131,7 @@ function toolchain_fingerprint()
                 "rustc=$(_get_rustc_version())",
                 "cargo=$(_get_cargo_version())",
                 "target=$(Sys.MACHINE)",
+                "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
             ]
             _TOOLCHAIN_FINGERPRINT[] = bytes2hex(sha256(join(parts, "\n")))
         end
@@ -216,8 +217,53 @@ struct ExpandedInline
     manifest::Dict{String, Any}
 end
 
-const _EXPANSION_CACHE = Dict{String, ExpandedInline}()
+const _EXPANSION_CACHE = Dict{Tuple{String, Bool}, ExpandedInline}()
 const _EXPANSION_LOCK = ReentrantLock()
+
+const _RUSTC_CFG_TEXT = Ref{String}("")
+const _RUSTC_CFG_FILE = Ref{String}("")
+
+"""
+    _rustc_cfg_text() -> String
+
+Output of `rustc --print cfg` for the default toolchain (cached per session).
+Empty when rustc is unavailable; the extractor then treats every item as
+active, which is the pre-#264 behaviour.
+"""
+function _rustc_cfg_text()
+    lock(_EXTRACTOR_LOCK) do
+        if isempty(_RUSTC_CFG_TEXT[])
+            _RUSTC_CFG_TEXT[] = try
+                read(`$(rustc()) --print cfg`, String)
+            catch
+                ""
+            end
+        end
+        return _RUSTC_CFG_TEXT[]
+    end
+end
+
+"""
+    _cfg_file_args(cfg::Bool) -> Vector{String}
+
+`--cfg-file FILE` for the extractor, so `#[cfg]`-disabled items are dropped
+from manifests and expanded sources. The file holds `rustc --print cfg` and is
+written once per session. Empty when `cfg` is false or rustc is unavailable.
+"""
+function _cfg_file_args(cfg::Bool)
+    cfg || return String[]
+    text = _rustc_cfg_text()
+    isempty(text) && return String[]
+    lock(_EXTRACTOR_LOCK) do
+        if isempty(_RUSTC_CFG_FILE[]) || !isfile(_RUSTC_CFG_FILE[])
+            path, io = mktemp()
+            write(io, text)
+            close(io)
+            _RUSTC_CFG_FILE[] = path
+        end
+        return ["--cfg-file", _RUSTC_CFG_FILE[]]
+    end
+end
 
 """
     expand_inline(code::String) -> ExpandedInline
@@ -225,10 +271,16 @@ const _EXPANSION_LOCK = ReentrantLock()
 Expand `#[julia]` items of an inline block ahead of `rustc` and return the
 manifest. Results are memoized per source text so macro expansion and the later
 compile step spawn the extractor only once.
+
+With `cfg = true` (the default) items disabled by `#[cfg(...)]` for the current
+rustc target are dropped, so the manifest only lists what the compiled library
+will export. `cfg = false` keeps every item and is used to compare against the
+platform-independent golden corpus.
 """
-function expand_inline(code::String)
+function expand_inline(code::String; cfg::Bool = true)
+    key = (code, cfg)
     cached = lock(_EXPANSION_LOCK) do
-        get(_EXPANSION_CACHE, code, nothing)
+        get(_EXPANSION_CACHE, key, nothing)
     end
     cached === nothing || return cached
 
@@ -236,12 +288,13 @@ function expand_inline(code::String)
         src = joinpath(dir, "block.rs")
         manifest_path = joinpath(dir, "manifest.toml")
         write(src, code)
-        source = _run_extractor(["expand", "--manifest", manifest_path, src])
+        args = vcat(["expand", "--manifest", manifest_path], _cfg_file_args(cfg), [src])
+        source = _run_extractor(args)
         manifest = _parse_manifest(read(manifest_path, String))
         ExpandedInline(source, manifest)
     end
     lock(_EXPANSION_LOCK) do
-        _EXPANSION_CACHE[code] = result
+        _EXPANSION_CACHE[key] = result
     end
     return result
 end
@@ -253,13 +306,15 @@ Run the extractor over source files (`mode` is `"inline"` or `"crate"`).
 With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
 """
-function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false)
+function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
+                          cfg::Bool = true)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
     args = ["manifest", "--mode", mode]
     skip_unparsable && push!(args, "--skip-unparsable")
+    append!(args, _cfg_file_args(cfg))
     text = _run_extractor(vcat(args, files))
     return _parse_manifest(text)
 end
@@ -269,11 +324,11 @@ end
 
 Run the extractor over a single source string.
 """
-function extract_manifest(code::String; mode::String)
+function extract_manifest(code::String; mode::String, cfg::Bool = true)
     mktempdir() do dir
         src = joinpath(dir, "source.rs")
         write(src, code)
-        extract_manifest([src]; mode = mode)
+        extract_manifest([src]; mode = mode, cfg = cfg)
     end
 end
 

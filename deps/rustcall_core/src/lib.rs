@@ -11,6 +11,7 @@
 //! produced here.
 
 pub mod attrs;
+pub mod cfg;
 pub mod codegen;
 pub mod expand;
 pub mod extract;

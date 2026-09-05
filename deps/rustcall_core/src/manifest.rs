@@ -94,6 +94,11 @@ pub struct Function {
     pub attribute: Attribute,
     /// True when the generated code carries `#[no_mangle] extern "C"`.
     pub exported: bool,
+    /// `#[cfg(...)]` predicate of the item (`unix`, `all(unix, feature = "x")`),
+    /// empty when unconditional. Items whose predicate is false under the
+    /// configuration given to the extractor are not reported at all.
+    #[serde(default)]
+    pub cfg: String,
     pub is_generic: bool,
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
@@ -160,6 +165,9 @@ pub struct Method {
 pub struct Struct {
     pub name: String,
     pub attribute: Attribute,
+    /// `#[cfg(...)]` predicate of the struct item, see [`Function::cfg`].
+    #[serde(default)]
+    pub cfg: String,
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
     #[serde(default)]

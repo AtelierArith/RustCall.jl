@@ -172,22 +172,22 @@ fn main() {
     // Test divide (success case)
     let div_result = divide(10.0, 2.0);
     assert_eq!(div_result.is_ok, 1);
-    assert!((div_result.ok_value - 5.0).abs() < 1e-10);
+    assert!((*div_result.ok().unwrap() - 5.0).abs() < 1e-10);
 
     // Test divide (error case - division by zero)
     let div_err = divide(10.0, 0.0);
     assert_eq!(div_err.is_ok, 0);
-    assert_eq!(div_err.err_value, -1);
+    assert_eq!(*div_err.err().unwrap(), -1);
 
     // Test parse_positive (success case)
     let parse_result = parse_positive(42);
     assert_eq!(parse_result.is_ok, 1);
-    assert_eq!(parse_result.ok_value, 42);
+    assert_eq!(*parse_result.ok().unwrap(), 42);
 
     // Test parse_positive (error case)
     let parse_err = parse_positive(-5);
     assert_eq!(parse_err.is_ok, 0);
-    assert_eq!(parse_err.err_value, -5);
+    assert_eq!(*parse_err.err().unwrap(), -5);
 
     // Test Option<T> functions
     println!("Testing Option<T> functions...");
@@ -195,7 +195,7 @@ fn main() {
     // Test safe_divide (Some case)
     let opt_result = safe_divide(10.0, 2.0);
     assert_eq!(opt_result.is_some, 1);
-    assert!((opt_result.value - 5.0).abs() < 1e-10);
+    assert!((*opt_result.some().unwrap() - 5.0).abs() < 1e-10);
 
     // Test safe_divide (None case)
     let opt_none = safe_divide(10.0, 0.0);
@@ -204,12 +204,12 @@ fn main() {
     // Test find_first_positive (Some case - first arg)
     let find_result = find_first_positive(5, -3);
     assert_eq!(find_result.is_some, 1);
-    assert_eq!(find_result.value, 5);
+    assert_eq!(*find_result.some().unwrap(), 5);
 
     // Test find_first_positive (Some case - second arg)
     let find_result2 = find_first_positive(-1, 10);
     assert_eq!(find_result2.is_some, 1);
-    assert_eq!(find_result2.value, 10);
+    assert_eq!(*find_result2.some().unwrap(), 10);
 
     // Test find_first_positive (None case)
     let find_none = find_first_positive(-1, -2);

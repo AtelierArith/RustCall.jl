@@ -181,6 +181,11 @@ parameters come from the FFI manifest produced by the `rustcall-extract` CLI
 (`deps/rustcall_extract`), which shares its `syn`-based core
 (`deps/rustcall_core`) with the `juliacall_macros` proc-macro.
 
+Items disabled by `#[cfg(...)]` for the current rustc target are dropped from
+manifests and expanded sources (the extractor evaluates the predicates against
+`rustc --print cfg`, passed as `--cfg-file`); the predicate of every reported
+item is recorded in its `cfg` field.
+
 ```@docs
 RustCall.extract_manifest
 RustCall.expand_inline

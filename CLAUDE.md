@@ -38,7 +38,7 @@ bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax 
 ### Rust syntax is parsed only on the Rust side (issue #264)
 
 - `deps/rustcall_core` — `syn`-based core: FFI manifest model (`manifest.rs`), extraction (`extract.rs`), inline expansion of `#[julia]` items (`expand.rs`), wrapper codegen for both the proc-macro and inline flavours (`codegen.rs`), AST-level generic instantiation (`specialize.rs`). Golden tests in `tests/corpus/`.
-- `deps/rustcall_extract` — the `rustcall-extract` CLI (`manifest`, `expand`, `specialize` subcommands). Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
+- `deps/rustcall_extract` — the `rustcall-extract` CLI (`manifest`, `expand`, `specialize` subcommands; `--cfg-file` takes `rustc --print cfg` so `#[cfg]`-disabled items are dropped). Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
 - `deps/juliacall_macros` — thin proc-macro wrapper over `rustcall_core::codegen` for `@rust_crate` crates.
 - `src/manifest.jl` — runs the CLI, validates `schema_version`, converts the TOML manifest into `RustFunctionSignature` / `RustStructInfo` / `RustMethod`, and computes `toolchain_fingerprint()` (extractor digest + core sources + rustc/cargo versions) that is part of every cache key.
 - Do not add regexes over Rust source in `src/`; `scripts/lint_rust_syntax_regex.sh` fails CI. Allowlisted: `$var` interpolation in `@irust` (`ruststr.jl`), the `// cargo-deps:` DSL (`dependencies.jl`), and the brace-count hint in `exceptions.jl` (diagnostics only).

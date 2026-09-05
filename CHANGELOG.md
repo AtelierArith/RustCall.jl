@@ -26,6 +26,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`deps/rustcall_core`, `deps/rustcall_extract`), which emits a TOML FFI
   manifest ([#264](https://github.com/AtelierArith/RustCall.jl/issues/264),
   [#266](https://github.com/AtelierArith/RustCall.jl/pull/266)).
+- `#[cfg(...)]`-disabled items are no longer reported by the FFI manifest:
+  `rustcall-extract manifest`/`expand` take `--cfg-file` (the output of
+  `rustc --print cfg`), evaluate `all`/`any`/`not`/`name`/`name = "value"`
+  predicates on items, impl methods, struct fields and inline modules, and drop
+  what rustc would not compile. Every reported item records its predicate in a
+  new `cfg` field. Julia passes the host configuration automatically and the
+  cfg set is part of the toolchain fingerprint (follow-up of #264).
+- The `CResult_<fn>` / `COption_<fn>` wrappers store the inactive payload as
+  `MaybeUninit<T>`, so zero-filling it is no longer undefined behaviour for
+  types with invalid zero bit patterns (`NonZeroU32`, references). The C
+  layout is unchanged. Rust code reading the wrappers must use the new
+  `ok()`, `err()` and `some()` accessors instead of the raw fields
+  (follow-up of #264).
+- `#[julia]` functions returning `Result`/`Option` keep their `#[cfg]`
+  attributes on every generated item (wrapper struct, inner fn, extern fn).
+- `rustcall-extract` reads its arguments as `OsString`, so non-UTF-8 file
+  paths work on Windows (follow-up of #264).
 
 ### Added
 - CI/CD pipeline with GitHub Actions

@@ -18,6 +18,7 @@ use syn::{
     Attribute, FnArg, Ident, ItemFn, ItemImpl, ItemStruct, Pat, ReturnType, Type, Visibility,
 };
 
+use crate::cfg::cfg_attrs;
 use crate::manifest::GenericWrapper;
 use crate::model::{MethodModel, StructModel};
 use crate::types::{
@@ -64,8 +65,22 @@ fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) ->
         #[repr(C)]
         pub struct #result_type_name {
             pub is_ok: u8,
-            pub ok_value: #ok_type,
-            pub err_value: #err_type,
+            /// Only initialized when `is_ok == 1`. `MaybeUninit` keeps the
+            /// inactive field free of validity invariants (e.g. `NonZeroU32`).
+            pub ok_value: ::std::mem::MaybeUninit<#ok_type>,
+            /// Only initialized when `is_ok == 0`.
+            pub err_value: ::std::mem::MaybeUninit<#err_type>,
+        }
+
+        impl #result_type_name {
+            /// The `Ok` value, if any.
+            pub fn ok(&self) -> Option<&#ok_type> {
+                if self.is_ok == 1 { Some(unsafe { self.ok_value.assume_init_ref() }) } else { None }
+            }
+            /// The `Err` value, if any.
+            pub fn err(&self) -> Option<&#err_type> {
+                if self.is_ok == 0 { Some(unsafe { self.err_value.assume_init_ref() }) } else { None }
+            }
         }
     }
 }
@@ -76,7 +91,15 @@ fn generate_c_option_type(func_name: &Ident, inner_type: &Type) -> TokenStream2 
         #[repr(C)]
         pub struct #option_type_name {
             pub is_some: u8,
-            pub value: #inner_type,
+            /// Only initialized when `is_some == 1`.
+            pub value: ::std::mem::MaybeUninit<#inner_type>,
+        }
+
+        impl #option_type_name {
+            /// The `Some` value, if any.
+            pub fn some(&self) -> Option<&#inner_type> {
+                if self.is_some == 1 { Some(unsafe { self.value.assume_init_ref() }) } else { None }
+            }
         }
     }
 }
@@ -133,34 +156,31 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
     let body = &inner_fn.block;
     let inner_fn_name = format_ident!("{}_inner", func_name);
     let inner_fn_args = &inner_fn.sig.inputs;
+    // `#[cfg]` must gate every generated item; other attributes (docs, lints)
+    // stay on the exported function.
+    let cfg_attrs = cfg_attrs(&func.attrs);
+    let outer_attrs = &func.attrs;
 
     quote! {
+        #(#cfg_attrs)*
         #c_result_type
 
+        #(#cfg_attrs)*
         fn #inner_fn_name(#inner_fn_args) -> Result<#ok_type, #err_type> #body
 
+        #(#outer_attrs)*
         #[no_mangle]
         pub extern "C" fn #func_name(#(#args),*) -> #result_type_name {
             match #inner_fn_name(#(#names),*) {
-                Ok(value) => {
-                    let mut result = std::mem::MaybeUninit::<#result_type_name>::uninit();
-                    let ptr = result.as_mut_ptr();
-                    unsafe {
-                        std::ptr::addr_of_mut!((*ptr).is_ok).write(1);
-                        std::ptr::addr_of_mut!((*ptr).ok_value).write(value);
-                        std::ptr::write_bytes(std::ptr::addr_of_mut!((*ptr).err_value), 0, 1);
-                        result.assume_init()
-                    }
+                Ok(value) => #result_type_name {
+                    is_ok: 1,
+                    ok_value: ::std::mem::MaybeUninit::new(value),
+                    err_value: ::std::mem::MaybeUninit::zeroed(),
                 },
-                Err(err) => {
-                    let mut result = std::mem::MaybeUninit::<#result_type_name>::uninit();
-                    let ptr = result.as_mut_ptr();
-                    unsafe {
-                        std::ptr::addr_of_mut!((*ptr).is_ok).write(0);
-                        std::ptr::write_bytes(std::ptr::addr_of_mut!((*ptr).ok_value), 0, 1);
-                        std::ptr::addr_of_mut!((*ptr).err_value).write(err);
-                        result.assume_init()
-                    }
+                Err(err) => #result_type_name {
+                    is_ok: 0,
+                    ok_value: ::std::mem::MaybeUninit::zeroed(),
+                    err_value: ::std::mem::MaybeUninit::new(err),
                 },
             }
         }
@@ -190,27 +210,27 @@ fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> Token
     let body = &inner_fn.block;
     let inner_fn_name = format_ident!("{}_inner", func_name);
     let inner_fn_args = &inner_fn.sig.inputs;
+    let cfg_attrs = cfg_attrs(&func.attrs);
+    let outer_attrs = &func.attrs;
 
     quote! {
+        #(#cfg_attrs)*
         #c_option_type
 
+        #(#cfg_attrs)*
         fn #inner_fn_name(#inner_fn_args) -> Option<#inner_type> #body
 
+        #(#outer_attrs)*
         #[no_mangle]
         pub extern "C" fn #func_name(#(#args),*) -> #option_type_name {
             match #inner_fn_name(#(#names),*) {
                 Some(value) => #option_type_name {
                     is_some: 1,
-                    value,
+                    value: ::std::mem::MaybeUninit::new(value),
                 },
-                None => {
-                    let mut opt = std::mem::MaybeUninit::<#option_type_name>::uninit();
-                    let ptr = opt.as_mut_ptr();
-                    unsafe {
-                        std::ptr::addr_of_mut!((*ptr).is_some).write(0);
-                        std::ptr::write_bytes(std::ptr::addr_of_mut!((*ptr).value), 0, 1);
-                        opt.assume_init()
-                    }
+                None => #option_type_name {
+                    is_some: 0,
+                    value: ::std::mem::MaybeUninit::zeroed(),
                 },
             }
         }
