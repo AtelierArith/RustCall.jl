@@ -195,6 +195,42 @@ end
         end
     end
 
+    # #279 follow-up: unloading a library drops its name-to-symbol mappings, so
+    # a reload has to rebuild them from a fresh scan of the crate. Without that,
+    # the first reload leaves `get_function_pointer(lib, "f")` hunting for the
+    # symbol `f` while the rebuilt library exports `rustcall_f`.
+    @testset "reload restores the name -> symbol mappings (#279)" begin
+        empty!(RustCall.HOT_RELOAD_REGISTRY)
+        lib_name = "SampleCrateSymbols"
+
+        # A `#[julia]` function the sample crate exports under a prefixed symbol.
+        attributed = RustCall.scan_crate(SAMPLE_CRATE_PATH).julia_functions
+        sig = first(f for f in attributed if !f.is_generic && f.exported)
+        @test sig.symbol == "rustcall_" * sig.name
+
+        try
+            state = RustCall.enable_hot_reload(lib_name, SAMPLE_CRATE_PATH)
+            @test state !== nothing
+
+            # Whatever the enable path left behind, a reload must end with the
+            # mappings in place next to the new handle.
+            RustCall.trigger_reload(lib_name)
+
+            @test RustCall.exported_symbol(lib_name, sig.name) == sig.symbol
+            @test haskey(RustCall.RUST_LIBRARIES, lib_name)
+            ptr = RustCall.get_function_pointer(lib_name, sig.name)
+            @test ptr != C_NULL
+        finally
+            RustCall.disable_all_hot_reload()
+            sleep(0.1)
+            empty!(RustCall.HOT_RELOAD_REGISTRY)
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, lib_name)
+                RustCall.clear_function_symbols!(lib_name)
+            end
+        end
+    end
+
     @testset "Check for changes" begin
         # Clear registry
         empty!(RustCall.HOT_RELOAD_REGISTRY)

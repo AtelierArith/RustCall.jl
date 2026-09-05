@@ -203,6 +203,19 @@ function _reload_library_locked(state::HotReloadState)
         # Update state
         state.lib_path = new_lib_path
 
+        # The rebuilt crate decides its own exported symbols, so the mappings
+        # the unload dropped are rebuilt from a fresh scan (#279). Scanning
+        # runs the extractor, so it happens before the lock is taken; a scan
+        # failure must not lose the rebuilt library, only its name-to-symbol
+        # mappings (a `#[julia]` function is then unreachable by its Rust name
+        # until the next successful reload).
+        signatures = try
+            scan_crate(state.crate_path).julia_functions
+        catch error
+            @warn "Hot reload: could not rescan $(state.crate_path) for exported symbols" error
+            nothing
+        end
+
         # Re-register the library.  Check that nothing else has registered the
         # same name during the rebuild window.
         lib_handle = Libdl.dlopen(new_lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
@@ -210,6 +223,10 @@ function _reload_library_locked(state::HotReloadState)
             if haskey(RUST_LIBRARIES, state.lib_name)
                 @warn "Hot reload: Library $(state.lib_name) was re-registered during rebuild; overwriting"
             end
+            # Mappings first, handle last: the two must never be observable
+            # apart (#279).
+            signatures === nothing ||
+                _register_exported_symbols!(signatures, state.lib_name)
             RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
         end
 

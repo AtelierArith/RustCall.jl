@@ -624,21 +624,7 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     signatures = manifest_function_signatures(manifest; only_attributed = false)
 
     lock(REGISTRY_LOCK) do
-        # This library's name-to-symbol mappings are rebuilt from scratch: a
-        # block re-registered under the same library name must not keep the
-        # entries of functions it no longer defines (#279).
-        clear_function_symbols!(lib_name)
-        for sig in signatures
-            sig.is_generic && continue
-            sig.exported || continue
-            # `@rust f(...)` names the Rust function; the library exports the
-            # additive wrapper (#279), so record the mapping before the handle
-            # becomes visible. Identity mappings are recorded too, so a plain
-            # `#[no_mangle] fn f` here is explicitly `f => f` for this library
-            # and cannot pick up another library's `f => rustcall_f`.
-            register_function_symbol(lib_name, sig.name, sig.symbol)
-            _register_return_type(sig, lib_name)
-        end
+        _register_exported_symbols!(signatures, lib_name)
         # Publishing the handle last is what closes the window: no reader can
         # find the library before its symbol mappings are in place.
         if handle !== nothing
@@ -673,6 +659,33 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
                                       path = qualified_name(sig.module_path, sig.name), compiler, blocked)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         end
+    end
+    return nothing
+end
+
+"""
+    _register_exported_symbols!(signatures, lib_name)
+
+Record the name-to-symbol mapping and the return type of every exported,
+non-generic function of a manifest.
+
+The caller must hold `REGISTRY_LOCK` and publish the library handle in the same
+critical section, so that a task which finds the library in `RUST_LIBRARIES`
+also finds how to resolve its names (#279). The library's previous mappings are
+dropped first: a library re-registered under the same name (a re-run block, a
+hot reload) must not keep the entries of functions it no longer defines.
+
+Identity mappings are recorded too, so a plain `#[no_mangle] fn f` is
+explicitly `f => f` for this library and cannot pick up another library's
+`f => rustcall_f`.
+"""
+function _register_exported_symbols!(signatures, lib_name::String)
+    clear_function_symbols!(lib_name)
+    for sig in signatures
+        sig.is_generic && continue
+        sig.exported || continue
+        register_function_symbol(lib_name, sig.name, sig.symbol)
+        _register_return_type(sig, lib_name)
     end
     return nothing
 end

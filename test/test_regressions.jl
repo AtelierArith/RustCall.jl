@@ -627,3 +627,47 @@ end
     @test RustCall.exported_symbol(lib_name, "concurrent_probe") == "rustcall_concurrent_probe"
     @test concurrent_probe(Int32(3)) == Int32(21)
 end
+
+# #279 follow-up: registering one loaded handle under a second name has to
+# carry the name-to-symbol mappings over, or a lookup through the alias
+# resolves `f` to `f`, misses `rustcall_f`, and falls back to the ambiguous
+# cross-library search.
+@testset "#279: an aliased library keeps its symbol mappings" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping alias mapping test"
+        return
+    end
+
+    expanded = RustCall.expand_inline("""
+    #[julia]
+    pub fn aliased_probe(x: i32) -> i32 { x - 1 }
+    """)
+    path = RustCall.compile_rust_to_shared_lib(expanded.source)
+    actual = "test279_actual_" * string(hash(path), base = 16)
+    stored = "test279_stored_" * string(hash(path), base = 16)
+    handle = Libdl.dlopen(path, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+
+    try
+        RustCall._register_manifest(expanded, actual; handle = handle, set_current = false)
+        @test RustCall.exported_symbol(actual, "aliased_probe") == "rustcall_aliased_probe"
+        # The alias has nothing of its own yet.
+        @test RustCall.exported_symbol(stored, "aliased_probe") == "aliased_probe"
+
+        RustCall._alias_reloaded_library(Main, stored, actual)
+        @test RustCall.exported_symbol(stored, "aliased_probe") == "rustcall_aliased_probe"
+        ptr = RustCall.get_function_pointer(stored, "aliased_probe")
+        @test RustCall.call_rust_function(ptr, Int32, Int32(5)) == Int32(4)
+
+        # Dropping the alias must not disturb the library it pointed at.
+        RustCall.clear_function_symbols!(stored)
+        @test RustCall.exported_symbol(actual, "aliased_probe") == "rustcall_aliased_probe"
+    finally
+        for name in (stored, actual)
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, name)
+                RustCall.clear_function_symbols!(name)
+            end
+        end
+        Libdl.dlclose(handle)
+    end
+end

@@ -163,7 +163,15 @@ library moves to the actual name, under which the manifest was registered.
 function _alias_reloaded_library(mod::Module, stored_name::String, actual_name::String)
     lock(REGISTRY_LOCK) do
         entry = get(RUST_LIBRARIES, actual_name, nothing)
-        entry === nothing || (RUST_LIBRARIES[stored_name] = entry)
+        if entry !== nothing
+            # Symbol resolution is per library (#279), so the alias needs its
+            # own name-to-symbol entries: without them a lookup through the
+            # stored name resolves `f` to `f`, misses the `rustcall_f` this
+            # library exports, and falls back to the cross-library search —
+            # which another block defining `f` would make ambiguous.
+            copy_function_symbols!(actual_name, stored_name)
+            RUST_LIBRARIES[stored_name] = entry
+        end
     end
     if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
         active = getfield(mod, :__RUSTCALL_ACTIVE_LIB)

@@ -117,6 +117,30 @@ function clear_function_symbols!(lib_name::AbstractString)
 end
 
 """
+    copy_function_symbols!(from, to)
+
+Give the library `to` the same name-to-symbol mappings as `from`, replacing
+whatever it had.
+
+Used when one loaded handle is registered under a second name (`@rust`'s reload
+alias, `_alias_reloaded_library`): resolution is per library, so the alias
+needs its own entries or a lookup through it would resolve `f` to `f` and miss
+the `rustcall_f` the library actually exports (#279).
+"""
+function copy_function_symbols!(from::AbstractString, to::AbstractString)
+    source = String(from)
+    target = String(to)
+    source == target && return nothing
+    lock(REGISTRY_LOCK) do
+        clear_function_symbols!(target)
+        for ((lib, name), symbol) in collect(FUNCTION_SYMBOLS_BY_LIB)
+            lib == source && (FUNCTION_SYMBOLS_BY_LIB[(target, name)] = symbol)
+        end
+    end
+    return nothing
+end
+
+"""
     register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
 
 Register a function with its type signature for later calling.
