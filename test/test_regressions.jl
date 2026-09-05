@@ -2,6 +2,7 @@
 
 using RustCall
 using Test
+using Libdl
 
 all_signatures(code; mode = "inline") = RustCall.manifest_function_signatures(
     RustCall.extract_manifest(code; mode = mode); only_attributed = false
@@ -510,5 +511,75 @@ end
         @test length(checksum) == 64
         @test checksum == RustCall._compute_file_checksum(tmp)
         rm(tmp)
+    end
+end
+
+# Since #279 a Rust item and the C symbol that exposes it can differ, and the
+# mapping between them is recorded per library. It must stay that way: a
+# library exporting `#[julia] fn f` as `rustcall_f` must not decide how a
+# *different* library's plain `#[no_mangle] fn f` resolves, and unloading the
+# first must not leave a mapping that redirects later lookups to a symbol that
+# is gone.
+@testset "#279: name -> symbol resolution is scoped to one library" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping per-library symbol resolution test"
+        return
+    end
+
+    # Library A: `#[julia]`, so the C entry point is `rustcall_scoped_probe`
+    # and the Rust name is not exported at all.
+    expanded_a = RustCall.expand_inline("""
+    #[julia]
+    pub fn scoped_probe(x: i32) -> i32 { x + 1 }
+    """)
+    # Library B: a plain `#[no_mangle]` function of the same Rust name,
+    # exported under that name.
+    expanded_b = RustCall.expand_inline("""
+    #[no_mangle]
+    pub extern "C" fn scoped_probe(x: i32) -> i32 { x + 100 }
+    """)
+
+    path_a = RustCall.compile_rust_to_shared_lib(expanded_a.source)
+    path_b = RustCall.compile_rust_to_shared_lib(expanded_b.source)
+    lib_a = "test279_a_" * string(hash(path_a), base = 16)
+    lib_b = "test279_b_" * string(hash(path_b), base = 16)
+    handle_a = Libdl.dlopen(path_a, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+    handle_b = Libdl.dlopen(path_b, Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+    unloaded = Set{String}()
+    unload!(name) = (name in unloaded || (push!(unloaded, name); RustCall.unload_library(name)))
+
+    try
+        lock(RustCall.REGISTRY_LOCK) do
+            RustCall.RUST_LIBRARIES[lib_a] = (handle_a, Dict{String, Ptr{Cvoid}}())
+            RustCall.RUST_LIBRARIES[lib_b] = (handle_b, Dict{String, Ptr{Cvoid}}())
+        end
+        RustCall._register_manifest(expanded_a, lib_a)
+        RustCall._register_manifest(expanded_b, lib_b)
+
+        # The mapping is not visible across libraries, and a library that
+        # recorded nothing resolves the name to itself.
+        @test RustCall.exported_symbol(lib_a, "scoped_probe") == "rustcall_scoped_probe"
+        @test RustCall.exported_symbol(lib_b, "scoped_probe") == "scoped_probe"
+        @test RustCall.exported_symbol("test279_unknown_lib", "scoped_probe") == "scoped_probe"
+        # A's Rust name really is not a C symbol; B's really is.
+        @test Libdl.dlsym(handle_a, "scoped_probe"; throw_error = false) === nothing
+        @test Libdl.dlsym(handle_b, "rustcall_scoped_probe"; throw_error = false) === nothing
+
+        # Both are callable and each resolves to its own library's symbol.
+        ptr_a = RustCall.get_function_pointer(lib_a, "scoped_probe")
+        ptr_b = RustCall.get_function_pointer(lib_b, "scoped_probe")
+        @test ptr_a != ptr_b
+        @test RustCall.call_rust_function(ptr_a, Int32, Int32(1)) == Int32(2)
+        @test RustCall.call_rust_function(ptr_b, Int32, Int32(1)) == Int32(101)
+
+        # Unloading A drops its mapping; B keeps resolving.
+        unload!(lib_a)
+        @test RustCall.exported_symbol(lib_a, "scoped_probe") == "scoped_probe"
+        @test RustCall.exported_symbol(lib_b, "scoped_probe") == "scoped_probe"
+        ptr_b_again = RustCall.get_function_pointer(lib_b, "scoped_probe")
+        @test RustCall.call_rust_function(ptr_b_again, Int32, Int32(1)) == Int32(101)
+    finally
+        unload!(lib_a)
+        unload!(lib_b)
     end
 end

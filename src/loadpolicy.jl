@@ -757,10 +757,15 @@ end
 """
     unregister_library!(policy::LoadPolicy, lib_name::AbstractString) -> Bool
 
-Remove the `RUST_LIBRARIES` entry and its function-pointer cache under
+Remove the `RUST_LIBRARIES` entry, its function-pointer cache and the
+library's name-to-symbol mappings (`clear_function_symbols!`, #279) under
 `REGISTRY_LOCK`, clearing `CURRENT_LIB[]` if it pointed at `lib_name`.
 Returns whether an entry was removed.  Does not `dlclose`: Phase B decides that
 together with the unload purge described in #250.
+
+Not called from `src/` yet, so the live unload paths purge the symbol mappings
+themselves (`unload_library` in `src/ruststr.jl`, `_reload_library_locked` in
+`src/hot_reload.jl`); Phase B (#277) folds them into this one hook.
 """
 function unregister_library!(policy::LoadPolicy, lib_name::AbstractString)
     name = String(lib_name)
@@ -770,6 +775,7 @@ function unregister_library!(policy::LoadPolicy, lib_name::AbstractString)
         if removed
             delete!(RUST_LIBRARIES, name)
         end
+        clear_function_symbols!(name)
         if CURRENT_LIB[] == name
             CURRENT_LIB[] = ""
         end
