@@ -121,7 +121,10 @@ function scan_crate(crate_path::String)
     # expand it (crate mode); Julia never reads the Rust source itself.
     # `.rs` files that are not complete modules (include!() fragments) are
     # skipped; Cargo is the authority on whether the crate compiles.
-    manifest = extract_manifest(source_files; mode = "crate", skip_unparsable = true)
+    # Cargo builds the crate with its own features and profile; prune only what
+    # the target decides (`unix`, `windows`, `target_*`).
+    manifest = extract_manifest(source_files; mode = "crate", skip_unparsable = true,
+                                cfg = :lenient)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
 

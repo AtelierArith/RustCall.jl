@@ -217,52 +217,90 @@ struct ExpandedInline
     manifest::Dict{String, Any}
 end
 
-const _EXPANSION_CACHE = Dict{Tuple{String, Bool}, ExpandedInline}()
+const _EXPANSION_CACHE = Dict{Tuple{String, Symbol}, ExpandedInline}()
 const _EXPANSION_LOCK = ReentrantLock()
 
-const _RUSTC_CFG_TEXT = Ref{String}("")
-const _RUSTC_CFG_FILE = Ref{String}("")
+# `rustc --print cfg` output and the file handed to the extractor, keyed by the
+# rustc flags that decide the configuration.
+const _RUSTC_CFG_TEXT = Dict{Vector{String}, String}()
+const _RUSTC_CFG_FILE = Dict{Vector{String}, String}()
 
 """
-    _rustc_cfg_text() -> String
+    _cfg_rustc_flags(compiler = get_default_compiler()) -> Vector{String}
 
-Output of `rustc --print cfg` for the default toolchain (cached per session).
+The rustc flags that decide `#[cfg]` predicates for direct `rustc` builds:
+the same target and codegen options `compile_rust_to_shared_lib` passes
+(`--target`, `-C opt-level`, `-C panic=abort`), so `debug_assertions`,
+`panic = "..."` and `target_*` agree with the library that is actually built.
+"""
+function _cfg_rustc_flags(compiler = get_default_compiler())
+    return String[
+        "--target=$(compiler.target_triple)",
+        "-C", "opt-level=$(compiler.optimization_level)",
+        "-C", "panic=abort",
+    ]
+end
+
+"""
+    _rustc_cfg_text(flags = _cfg_rustc_flags()) -> String
+
+Output of `rustc --print cfg` under `flags` (cached per session and flag set).
 Empty when rustc is unavailable; the extractor then treats every item as
 active, which is the pre-#264 behaviour.
 """
-function _rustc_cfg_text()
+function _rustc_cfg_text(flags::Vector{String} = _cfg_rustc_flags())
     lock(_EXTRACTOR_LOCK) do
-        if isempty(_RUSTC_CFG_TEXT[])
-            _RUSTC_CFG_TEXT[] = try
-                read(`$(rustc()) --print cfg`, String)
+        get!(_RUSTC_CFG_TEXT, flags) do
+            try
+                read(`$(rustc()) --print cfg $flags`, String)
             catch
                 ""
             end
         end
-        return _RUSTC_CFG_TEXT[]
     end
 end
 
 """
-    _cfg_file_args(cfg::Bool) -> Vector{String}
+    _cfg_mode(cfg) -> Symbol
 
-`--cfg-file FILE` for the extractor, so `#[cfg]`-disabled items are dropped
-from manifests and expanded sources. The file holds `rustc --print cfg` and is
-written once per session. Empty when `cfg` is false or rustc is unavailable.
+Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
+configuration of the actual compiler invocation), `:lenient` (Cargo builds:
+only target predicates are decided, `feature = "..."`, build-script cfgs and
+profile-dependent predicates keep their items) or `:none` (report everything,
+used for the platform-independent golden corpus). `true`/`false` map to
+`:strict`/`:none`.
 """
-function _cfg_file_args(cfg::Bool)
-    cfg || return String[]
-    text = _rustc_cfg_text()
+_cfg_mode(cfg::Symbol) = cfg in (:strict, :lenient, :none) ? cfg :
+    throw(ArgumentError("cfg must be :strict, :lenient or :none"))
+_cfg_mode(cfg::Bool) = cfg ? :strict : :none
+
+"""
+    _cfg_file_args(cfg) -> Vector{String}
+
+`--cfg-file FILE [--cfg-lenient]` for the extractor, so `#[cfg]`-disabled
+items are dropped from manifests and expanded sources (see [`_cfg_mode`]).
+The file holds `rustc --print cfg` and is written once per session and flag
+set. Empty for `:none` or when rustc is unavailable.
+"""
+function _cfg_file_args(cfg)
+    mode = _cfg_mode(cfg)
+    mode === :none && return String[]
+    flags = _cfg_rustc_flags()
+    text = _rustc_cfg_text(flags)
     isempty(text) && return String[]
-    lock(_EXTRACTOR_LOCK) do
-        if isempty(_RUSTC_CFG_FILE[]) || !isfile(_RUSTC_CFG_FILE[])
-            path, io = mktemp()
+    path = lock(_EXTRACTOR_LOCK) do
+        existing = get(_RUSTC_CFG_FILE, flags, "")
+        if isempty(existing) || !isfile(existing)
+            existing, io = mktemp()
             write(io, text)
             close(io)
-            _RUSTC_CFG_FILE[] = path
+            _RUSTC_CFG_FILE[flags] = existing
         end
-        return ["--cfg-file", _RUSTC_CFG_FILE[]]
+        existing
     end
+    args = ["--cfg-file", path]
+    mode === :lenient && push!(args, "--cfg-lenient")
+    return args
 end
 
 """
@@ -272,13 +310,13 @@ Expand `#[julia]` items of an inline block ahead of `rustc` and return the
 manifest. Results are memoized per source text so macro expansion and the later
 compile step spawn the extractor only once.
 
-With `cfg = true` (the default) items disabled by `#[cfg(...)]` for the current
-rustc target are dropped, so the manifest only lists what the compiled library
-will export. `cfg = false` keeps every item and is used to compare against the
-platform-independent golden corpus.
+`cfg` selects how `#[cfg(...)]` predicates are evaluated (see [`_cfg_mode`]):
+`:strict` (default) drops every item the direct `rustc` build would not
+compile, `:lenient` decides only target predicates (for blocks built by Cargo),
+`:none` keeps everything (golden corpus comparison).
 """
-function expand_inline(code::String; cfg::Bool = true)
-    key = (code, cfg)
+function expand_inline(code::String; cfg = :strict)
+    key = (code, _cfg_mode(cfg))
     cached = lock(_EXPANSION_LOCK) do
         get(_EXPANSION_CACHE, key, nothing)
     end
@@ -307,7 +345,7 @@ With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
-                          cfg::Bool = true)
+                          cfg = :strict)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
@@ -324,7 +362,7 @@ end
 
 Run the extractor over a single source string.
 """
-function extract_manifest(code::String; mode::String, cfg::Bool = true)
+function extract_manifest(code::String; mode::String, cfg = :strict)
     mktempdir() do dir
         src = joinpath(dir, "source.rs")
         write(src, code)

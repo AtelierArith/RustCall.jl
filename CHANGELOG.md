@@ -31,8 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rustc --print cfg`), evaluate `all`/`any`/`not`/`name`/`name = "value"`
   predicates on items, impl methods, struct fields and inline modules, and drop
   what rustc would not compile. Every reported item records its predicate in a
-  new `cfg` field. Julia passes the host configuration automatically and the
-  cfg set is part of the toolchain fingerprint (follow-up of #264).
+  new `cfg` field. For direct `rustc` builds Julia queries the configuration
+  with the same target and codegen flags as the compilation (`:strict`); for
+  Cargo builds (`@rust_crate`, `// cargo-deps:` blocks) only target predicates
+  are decided (`--cfg-lenient`, `:lenient`) because features and profile are
+  Cargo's. The cfg set is part of the toolchain fingerprint (follow-up of #264).
 - The `CResult_<fn>` / `COption_<fn>` wrappers store the inactive payload as
   `MaybeUninit<T>`, so zero-filling it is no longer undefined behaviour for
   types with invalid zero bit patterns (`NonZeroU32`, references). The C

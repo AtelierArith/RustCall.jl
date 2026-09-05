@@ -59,9 +59,15 @@ fn transform_simple_function(mut func: ItemFn) -> TokenStream2 {
     quote! { #func }
 }
 
-fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) -> TokenStream2 {
+fn generate_c_result_type(
+    func_name: &Ident,
+    ok_type: &Type,
+    err_type: &Type,
+    cfg_attrs: &[Attribute],
+) -> TokenStream2 {
     let result_type_name = format_ident!("CResult_{}", func_name);
     quote! {
+        #(#cfg_attrs)*
         #[repr(C)]
         pub struct #result_type_name {
             pub is_ok: u8,
@@ -72,6 +78,7 @@ fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) ->
             pub err_value: ::std::mem::MaybeUninit<#err_type>,
         }
 
+        #(#cfg_attrs)*
         impl #result_type_name {
             /// The `Ok` value, if any.
             pub fn ok(&self) -> Option<&#ok_type> {
@@ -85,9 +92,14 @@ fn generate_c_result_type(func_name: &Ident, ok_type: &Type, err_type: &Type) ->
     }
 }
 
-fn generate_c_option_type(func_name: &Ident, inner_type: &Type) -> TokenStream2 {
+fn generate_c_option_type(
+    func_name: &Ident,
+    inner_type: &Type,
+    cfg_attrs: &[Attribute],
+) -> TokenStream2 {
     let option_type_name = format_ident!("COption_{}", func_name);
     quote! {
+        #(#cfg_attrs)*
         #[repr(C)]
         pub struct #option_type_name {
             pub is_some: u8,
@@ -95,6 +107,7 @@ fn generate_c_option_type(func_name: &Ident, inner_type: &Type) -> TokenStream2 
             pub value: ::std::mem::MaybeUninit<#inner_type>,
         }
 
+        #(#cfg_attrs)*
         impl #option_type_name {
             /// The `Some` value, if any.
             pub fn some(&self) -> Option<&#inner_type> {
@@ -150,19 +163,18 @@ fn transform_result_function(func: ItemFn, result_info: ResultTypeInfo) -> Token
         };
     }
 
-    let c_result_type = generate_c_result_type(func_name, ok_type, err_type);
+    let cfg_attrs = cfg_attrs(&func.attrs);
+    let c_result_type = generate_c_result_type(func_name, ok_type, err_type, &cfg_attrs);
     let result_type_name = format_ident!("CResult_{}", func_name);
     let args: Vec<_> = func.sig.inputs.iter().collect();
     let body = &inner_fn.block;
     let inner_fn_name = format_ident!("{}_inner", func_name);
     let inner_fn_args = &inner_fn.sig.inputs;
-    // `#[cfg]` must gate every generated item; other attributes (docs, lints)
-    // stay on the exported function.
-    let cfg_attrs = cfg_attrs(&func.attrs);
+    // `#[cfg]` must gate every generated item (struct, accessor impl, inner
+    // fn, extern fn); other attributes (docs, lints) stay on the exported fn.
     let outer_attrs = &func.attrs;
 
     quote! {
-        #(#cfg_attrs)*
         #c_result_type
 
         #(#cfg_attrs)*
@@ -204,17 +216,16 @@ fn transform_option_function(func: ItemFn, option_info: OptionTypeInfo) -> Token
         };
     }
 
-    let c_option_type = generate_c_option_type(func_name, inner_type);
+    let cfg_attrs = cfg_attrs(&func.attrs);
+    let c_option_type = generate_c_option_type(func_name, inner_type, &cfg_attrs);
     let option_type_name = format_ident!("COption_{}", func_name);
     let args: Vec<_> = func.sig.inputs.iter().collect();
     let body = &inner_fn.block;
     let inner_fn_name = format_ident!("{}_inner", func_name);
     let inner_fn_args = &inner_fn.sig.inputs;
-    let cfg_attrs = cfg_attrs(&func.attrs);
     let outer_attrs = &func.attrs;
 
     quote! {
-        #(#cfg_attrs)*
         #c_option_type
 
         #(#cfg_attrs)*

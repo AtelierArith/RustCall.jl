@@ -16,6 +16,7 @@ pub struct CResult_windows_wide {
     /// Only initialized when `is_ok == 0`.
     pub err_value: ::std::mem::MaybeUninit<i32>,
 }
+#[cfg(all(windows, feature = "wide"))]
 impl CResult_windows_wide {
     /// The `Ok` value, if any.
     pub fn ok(&self) -> Option<&u32> {
@@ -65,6 +66,7 @@ pub struct COption_maybe {
     /// Only initialized when `is_some == 1`.
     pub value: ::std::mem::MaybeUninit<f64>,
 }
+#[cfg(not(target_os = "freebsd"))]
 impl COption_maybe {
     /// The `Some` value, if any.
     pub fn some(&self) -> Option<&f64> {

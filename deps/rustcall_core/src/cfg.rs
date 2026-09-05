@@ -8,6 +8,13 @@
 //!
 //! When no configuration is supplied every item is considered active and the
 //! predicate is only recorded in the manifest (`cfg` field).
+//!
+//! A *lenient* set decides only the predicates that follow from the target
+//! (`unix`, `windows`, `target_*`); everything else (`feature = "..."`,
+//! build-script `--cfg`s, profile-dependent `debug_assertions`, `panic`) is
+//! unknown and keeps the item. Cargo builds (crate mode, `// cargo-deps:`
+//! blocks) use it because their cfg set is decided by Cargo, not by a bare
+//! `rustc --print cfg`.
 
 use std::collections::HashSet;
 
@@ -18,6 +25,44 @@ use syn::{Attribute, Item, Meta};
 pub struct CfgSet {
     names: HashSet<String>,
     pairs: HashSet<(String, String)>,
+    /// Only target-derived predicates are decidable; others are unknown.
+    lenient: bool,
+}
+
+/// Three-valued predicate result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Truth {
+    True,
+    False,
+    Unknown,
+}
+
+impl Truth {
+    fn from_bool(b: bool) -> Truth {
+        if b {
+            Truth::True
+        } else {
+            Truth::False
+        }
+    }
+
+    fn not(self) -> Truth {
+        match self {
+            Truth::True => Truth::False,
+            Truth::False => Truth::True,
+            Truth::Unknown => Truth::Unknown,
+        }
+    }
+
+    /// Items with an unknown predicate are kept (reported).
+    pub fn keeps_item(self) -> bool {
+        !matches!(self, Truth::False)
+    }
+}
+
+/// Whether a cfg name is decided by the compilation target alone.
+fn target_decided(name: &str) -> bool {
+    name == "unix" || name == "windows" || name.starts_with("target_")
 }
 
 impl CfgSet {
@@ -54,15 +99,45 @@ impl CfgSet {
         self
     }
 
-    /// Evaluate one `cfg` predicate (the meta inside `#[cfg(...)]`).
+    /// Decide only target-derived predicates; see the module docs.
+    pub fn lenient(mut self) -> CfgSet {
+        self.lenient = true;
+        self
+    }
+
+    pub fn is_lenient(&self) -> bool {
+        self.lenient
+    }
+
+    /// Evaluate one `cfg` predicate to a boolean; `Unknown` counts as true
+    /// (the item is kept). Prefer [`CfgSet::eval3`] when the distinction matters.
     pub fn eval(&self, meta: &Meta) -> Result<bool, String> {
+        Ok(self.eval3(meta)?.keeps_item())
+    }
+
+    fn lookup_name(&self, name: &str) -> Truth {
+        if self.lenient && !target_decided(name) {
+            return Truth::Unknown;
+        }
+        Truth::from_bool(self.names.contains(name))
+    }
+
+    fn lookup_pair(&self, name: &str, value: &str) -> Truth {
+        if self.lenient && !target_decided(name) {
+            return Truth::Unknown;
+        }
+        Truth::from_bool(self.pairs.contains(&(name.to_string(), value.to_string())))
+    }
+
+    /// Evaluate one `cfg` predicate (the meta inside `#[cfg(...)]`).
+    pub fn eval3(&self, meta: &Meta) -> Result<Truth, String> {
         match meta {
             Meta::Path(path) => {
                 let name = path
                     .get_ident()
                     .ok_or_else(|| format!("unsupported cfg predicate `{}`", quote::quote!(#path)))?
                     .to_string();
-                Ok(self.names.contains(&name))
+                Ok(self.lookup_name(&name))
             }
             Meta::NameValue(nv) => {
                 let name = nv
@@ -82,7 +157,7 @@ impl CfgSet {
                         ))
                     }
                 };
-                Ok(self.pairs.contains(&(name, value)))
+                Ok(self.lookup_pair(&name, &value))
             }
             Meta::List(list) => {
                 let op = list
@@ -99,26 +174,32 @@ impl CfgSet {
                     .map_err(|e| format!("cannot parse cfg predicate `{op}(...)`: {e}"))?;
                 match op.as_str() {
                     "all" => {
+                        let mut out = Truth::True;
                         for m in &nested {
-                            if !self.eval(m)? {
-                                return Ok(false);
+                            match self.eval3(m)? {
+                                Truth::False => return Ok(Truth::False),
+                                Truth::Unknown => out = Truth::Unknown,
+                                Truth::True => {}
                             }
                         }
-                        Ok(true)
+                        Ok(out)
                     }
                     "any" => {
+                        let mut out = Truth::False;
                         for m in &nested {
-                            if self.eval(m)? {
-                                return Ok(true);
+                            match self.eval3(m)? {
+                                Truth::True => return Ok(Truth::True),
+                                Truth::Unknown => out = Truth::Unknown,
+                                Truth::False => {}
                             }
                         }
-                        Ok(false)
+                        Ok(out)
                     }
                     "not" => {
                         if nested.len() != 1 {
                             return Err("`not(...)` takes exactly one predicate".to_string());
                         }
-                        Ok(!self.eval(&nested[0])?)
+                        Ok(self.eval3(&nested[0])?.not())
                     }
                     other => Err(format!("unsupported cfg predicate `{other}(...)`")),
                 }
@@ -126,13 +207,13 @@ impl CfgSet {
         }
     }
 
-    /// Whether an item with these attributes is compiled: every `#[cfg(...)]`
-    /// must hold. Predicates that cannot be evaluated count as inactive
-    /// (fail closed) and are reported through `Err`.
+    /// Whether an item with these attributes is kept: no `#[cfg(...)]` may be
+    /// false (unknown predicates keep the item). Predicates that cannot be
+    /// parsed are reported through `Err` (fail closed).
     pub fn attrs_active(&self, attrs: &[Attribute]) -> Result<bool, String> {
         for attr in attrs {
             if let Some(meta) = cfg_predicate(attr) {
-                if !self.eval(&meta)? {
+                if !self.eval3(&meta)?.keeps_item() {
                     return Ok(false);
                 }
             }
@@ -344,6 +425,44 @@ mod tests {
         assert!(set
             .eval(&pred("not(any(windows, feature = \"slow\"))"))
             .unwrap());
+    }
+
+    #[test]
+    fn lenient_sets_decide_only_target_predicates() {
+        let set = CfgSet::default()
+            .with_name("unix")
+            .with_name("debug_assertions")
+            .lenient();
+        assert_eq!(set.eval3(&pred("unix")).unwrap(), Truth::True);
+        assert_eq!(set.eval3(&pred("windows")).unwrap(), Truth::False);
+        assert_eq!(set.eval3(&pred("feature = \"x\"")).unwrap(), Truth::Unknown);
+        assert_eq!(
+            set.eval3(&pred("debug_assertions")).unwrap(),
+            Truth::Unknown
+        );
+        assert_eq!(
+            set.eval3(&pred("all(unix, feature = \"x\")")).unwrap(),
+            Truth::Unknown
+        );
+        assert_eq!(
+            set.eval3(&pred("all(windows, feature = \"x\")")).unwrap(),
+            Truth::False
+        );
+        assert_eq!(
+            set.eval3(&pred("any(unix, feature = \"x\")")).unwrap(),
+            Truth::True
+        );
+        assert_eq!(
+            set.eval3(&pred("any(windows, feature = \"x\")")).unwrap(),
+            Truth::Unknown
+        );
+        assert_eq!(
+            set.eval3(&pred("not(feature = \"x\")")).unwrap(),
+            Truth::Unknown
+        );
+        // Unknown keeps the item.
+        assert!(set.eval(&pred("feature = \"x\"")).unwrap());
+        assert!(!set.eval(&pred("windows")).unwrap());
     }
 
     #[test]

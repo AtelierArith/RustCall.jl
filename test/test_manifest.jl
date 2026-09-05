@@ -107,12 +107,47 @@ using TOML
         @test RustCall.expand_inline(code; cfg = false).manifest != expanded.manifest
         @test RustCall.expand_inline(code) === expanded
 
-        # The cfg file handed to the extractor is `rustc --print cfg`, written once.
-        args = RustCall._cfg_file_args(true)
+        # The cfg file handed to the extractor is `rustc --print cfg` under the
+        # flags of the actual compiler invocation, written once per flag set.
+        args = RustCall._cfg_file_args(:strict)
         @test length(args) == 2 && args[1] == "--cfg-file"
         @test read(args[2], String) == RustCall._rustc_cfg_text()
         @test RustCall._cfg_file_args(true) == args
+        @test RustCall._cfg_file_args(:lenient) == vcat(args, ["--cfg-lenient"])
         @test isempty(RustCall._cfg_file_args(false))
+        @test isempty(RustCall._cfg_file_args(:none))
+        @test_throws ArgumentError RustCall._cfg_file_args(:bogus)
+        flags = RustCall._cfg_rustc_flags()
+        @test any(startswith("--target="), flags) && "panic=abort" in flags
+        # Direct rustc builds use opt-level 2 and panic=abort, so the strict set
+        # must reflect that rather than the bare toolchain defaults.
+        strict = RustCall._rustc_cfg_text()
+        @test occursin("panic=\"abort\"", strict)
+        @test !occursin("debug_assertions", strict)
+        @test occursin("debug_assertions", RustCall._rustc_cfg_text(String["-C", "opt-level=0"]))
+
+        # Profile predicates follow the real compiler flags.
+        profile_code = """
+        #[cfg(debug_assertions)]
+        #[julia]
+        pub fn dbg_only() -> i32 { 1 }
+        #[cfg(panic = "abort")]
+        #[julia]
+        pub fn abort_only() -> i32 { 2 }
+        #[cfg(feature = "extra")]
+        #[julia]
+        pub fn feature_only() -> i32 { 3 }
+        """
+        strict_names = names(RustCall.extract_manifest(profile_code; mode = "inline"))
+        @test Set(strict_names) == Set(["abort_only"])
+        # Lenient (Cargo builds): only target predicates are decided; feature and
+        # profile predicates keep their items.
+        lenient_names = names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))
+        @test Set(lenient_names) == Set(["dbg_only", "abort_only", "feature_only"])
+        lenient_host = RustCall.extract_manifest(code; mode = "crate", cfg = :lenient)
+        @test Set(names(lenient_host)) == Set(expected)
+        @test RustCall.expand_inline(code; cfg = :lenient).manifest != RustCall.expand_inline(code).manifest ||
+              Set(names(RustCall.expand_inline(code; cfg = :lenient).manifest)) == Set(expected)
     end
 
     if RustCall.check_rustc_available()

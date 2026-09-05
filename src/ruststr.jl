@@ -142,7 +142,10 @@ macro rust_str(code)
     # The extractor expands #[julia] items and reports every signature in a
     # manifest. Julia definitions are emitted from that manifest at macro
     # expansion time; the expanded Rust source is compiled at run time.
-    expanded = expand_inline(String(code))
+    # Blocks with dependencies are built by Cargo, whose cfg set (features,
+    # profile) is not known here: decide only target predicates for them.
+    code_str = String(code)
+    expanded = expand_inline(code_str; cfg = has_dependencies(code_str) ? :lenient : :strict)
     struct_infos = manifest_struct_infos(expanded.manifest)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
 
@@ -345,7 +348,8 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     # Expand #[julia] items ahead of Cargo. The dependency comments are read
     # from the original source above; the expanded source no longer needs them.
-    expanded = expand_inline(code)
+    # Cargo decides features and profile, so only target predicates are pruned.
+    expanded = expand_inline(code; cfg = :lenient)
     manifest = expanded.manifest
     augmented_code = expanded.source
 

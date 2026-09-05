@@ -123,8 +123,8 @@ fn result_wrappers_keep_cfg_attributes() {
     let src = "#[julia]\n#[cfg(windows)]\npub fn r() -> Result<i32, i32> { Ok(1) }\n#[julia]\n#[cfg(windows)]\npub fn o() -> Option<i32> { None }";
     let e = expand(src).unwrap();
     let gated = e.source.matches("#[cfg(windows)]").count();
-    // CResult struct + inner fn + extern fn, twice.
-    assert_eq!(gated, 6, "{}", e.source);
+    // CResult struct + accessor impl + inner fn + extern fn, twice.
+    assert_eq!(gated, 8, "{}", e.source);
 }
 
 #[test]
