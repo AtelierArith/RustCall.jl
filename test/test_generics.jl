@@ -343,3 +343,58 @@ end
         end
     end
 end
+
+@testset "Generic structs with fixed String / &str parameters (#242 review)" begin
+    # The generic wrapper of an elided `&str` return names its lifetime so the
+    # wrapper compiles before and after specialization.
+    infos = RustCall.manifest_struct_infos(RustCall.expand_inline("""
+    #[julia]
+    pub struct Tagged<T> { tag: String, v: T }
+    impl<T: Copy + std::fmt::Display> Tagged<T> {
+        pub fn new(tag: String, v: T) -> Self { Self { tag, v } }
+        pub fn label(&self, suffix: &str) -> String { format!("{}{}{}", self.tag, self.v, suffix) }
+        pub fn tag_ref(&self) -> &str { &self.tag }
+    }
+    """).manifest)
+    wrappers = Dict(name => src for (name, src, _) in only(infos).generic_wrappers)
+    @test occursin("pub fn Tagged_tag_ref<'rustcall, T: Copy + std::fmt::Display + 'rustcall>", wrappers["Tagged_tag_ref"])
+    @test occursin("-> &'rustcall str", wrappers["Tagged_tag_ref"])
+    @test occursin("-> String", wrappers["Tagged_label"])
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[julia]
+        pub struct Tagged<T> { tag: String, v: T }
+
+        impl<T: Copy + std::fmt::Display> Tagged<T> {
+            pub fn new(tag: String, v: T) -> Self { Self { tag, v } }
+            pub fn label(&self, suffix: &str) -> String { format!("{}{}{}", self.tag, self.v, suffix) }
+            pub fn tag_ref(&self) -> &str { &self.tag }
+            pub fn tag_len(&self, extra: &str) -> usize { self.tag.len() + extra.len() }
+        }
+        """
+        a = Tagged{Int32}("n=", Int32(4))
+        b = Tagged{Float64}("x", 2.5)
+        @test label(a, "!") == "n=4!"
+        @test label(b, "?") == "x2.5?"
+        @test label(a, SubString("z;", 2)) == "n=4;"
+        @test tag_ref(a) == "n="
+        @test tag_ref(b) == "x"
+        @test tag_len(a, "日本") == 8
+        @test tag_len(b, "") == 1
+        # Monomorphized wrappers carry the string ABI
+        info_label = RustCall.get_monomorphized_function("Tagged_label", Dict(:T => Int32))
+        @test info_label !== nothing && info_label.string_return === :owned
+        @test info_label.arg_abis == ["", "str"]
+        info_ref = RustCall.get_monomorphized_function("Tagged_tag_ref", Dict(:T => Float64))
+        @test info_ref !== nothing && info_ref.string_return === :borrowed
+        info_new = RustCall.get_monomorphized_function("Tagged_new", Dict(:T => Int32))
+        @test info_new !== nothing && info_new.arg_abis == ["string", ""]
+        # Temporaries and GC pressure: `self` is preserved during the call
+        for i in 1:200
+            @test tag_ref(Tagged{Int32}("t$i", Int32(i))) == "t$i"
+            @test label(Tagged{Float64}("f", 1.5), "$i") == "f1.5$i"
+            i % 25 == 0 && GC.gc()
+        end
+    end
+end

@@ -785,10 +785,21 @@ end
     info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
     @test occursin("__rustcall_str_name = String(name)", code)
-    @test occursin("GC.@preserve __rustcall_str_name _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_label_free_rust_string\"), getfield(self, :ptr), pointer(__rustcall_str_name), sizeof(__rustcall_str_name) % Csize_t)", code)
-    @test occursin("GC.@preserve  _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", code)
-    @test occursin("_call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_shout_free_rust_string\"), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
-    @test occursin("call_rust_function(func_ptr, Csize_t, getfield(self, :ptr), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    # `self` is in the preserve list of every instance method: a borrowed
+    # `&str` points into the Rust object, which a temporary's finalizer could
+    # otherwise free mid-call.
+    @test occursin("GC.@preserve self __rustcall_str_name _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_label_free_rust_string\"), getfield(self, :ptr), pointer(__rustcall_str_name), sizeof(__rustcall_str_name) % Csize_t)", code)
+    @test occursin("GC.@preserve self _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", code)
+    @test occursin("GC.@preserve __rustcall_str_s _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_shout_free_rust_string\"), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve self __rustcall_str_s call_rust_function(func_ptr, Csize_t, getfield(self, :ptr), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve self call_rust_function(func_ptr, Float64, getfield(self, :ptr))", code)
+    # The in-memory wrapper preserves `self` too
+    labeler_info = only(filter(s -> s.name == "Labeler", info.julia_structs))
+    kind_method = only(filter(m -> m.name == "kind", labeler_info.methods))
+    kind_expr = string(RustCall._generate_crate_method_wrapper(labeler_info, kind_method))
+    @test occursin("GC.@preserve self _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", kind_expr)
+    label_method = only(filter(m -> m.name == "label", labeler_info.methods))
+    @test occursin("GC.@preserve self __rustcall_str_name _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
     # Constructors still return the boxed struct
     @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)))", code)
     @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)))", code)
@@ -811,6 +822,13 @@ end
             @test call(bindings.shout, "hi") == "HI"
             for _ in 1:200
                 @test call(bindings.label, l, "y") isa String
+            end
+            # A borrowed `&str` of a temporary: the wrapper object must stay
+            # alive until the bytes are copied, even under GC pressure.
+            for i in 1:300
+                @test call(bindings.kind, call(bindings.Labeler, UInt32(i))) == "labeler"
+                @test call(bindings.echo, call(bindings.Labeler, UInt32(i)), "tmp$i") == "tmp$i"
+                i % 25 == 0 && GC.gc()
             end
             # Non-string methods and constructors are unchanged
             p = call(bindings.Point, 3.0, 4.0)

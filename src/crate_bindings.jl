@@ -770,6 +770,10 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         end
         :(call_rust_function($ptr_sym, $julia_ret_type, $(all_args...)))
     end
+    # The wrapper object itself is kept alive for the whole call as well: a
+    # borrowed `&str` result points into the Rust object, which the finalizer
+    # of a temporary `self` could otherwise free mid-call.
+    method.is_static || pushfirst!(preserved, :self)
     body = quote
         $(bindings...)
         $ptr_sym = _get_func_ptr($wrapper_name)
@@ -1668,6 +1672,9 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
     # the per-method `<Struct>_<method>_RustCallOwnedString` buffer.
     bindings_str, preserve_str, converted_args_str = _emit_string_arg_plan(method)
     prologue = isempty(bindings_str) ? "" : bindings_str * "\n"
+    # `self` is preserved too: a borrowed `&str` result points into the Rust
+    # object, which the finalizer of a temporary could free mid-call.
+    method.is_static || (preserve_str = strip("self " * preserve_str))
     ptr_var = _generated_local("func_ptr", method.arg_names)
     free_name = wrapper_name * "_free_rust_string"
 

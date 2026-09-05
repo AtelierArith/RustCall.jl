@@ -415,6 +415,14 @@ end
         @test shout(g, "!") == "ADA!"
         @test echo(g, "λ") == "λ"
         @test label(g) == "greeter"
+        @test shout(g, SubString("x!", 2)) == "ADA!"
+        # Borrowed `&str` of a temporary under GC pressure: the inline method
+        # wrapper preserves `self` (and the converted arguments) for the call.
+        for i in 1:300
+            @test label(Greeter("t$i")) == "greeter"
+            @test echo(Greeter("t$i"), "e$i") == "e$i"
+            i % 25 == 0 && GC.gc()
+        end
 
         rust"""
         #[julia]

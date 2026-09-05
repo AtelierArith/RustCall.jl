@@ -47,6 +47,7 @@ inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 24
 module_path = []
 

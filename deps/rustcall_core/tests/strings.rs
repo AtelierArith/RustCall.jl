@@ -244,6 +244,68 @@ impl Holder {
 }
 
 #[test]
+fn generic_struct_wrappers_name_the_lifetime_of_borrowed_str_returns() {
+    // `fn tag_ref(&self) -> &str` elides the lifetime from `&self`; the generic
+    // wrapper receives a raw pointer instead, so it must name one.
+    let src = r#"
+#[julia]
+pub struct Tagged<T> { tag: String, v: T }
+impl<T: Copy> Tagged<T> {
+    pub fn new(tag: String, v: T) -> Self { Self { tag, v } }
+    pub fn tag_ref(&self) -> &str { &self.tag }
+    pub fn label(&self, suffix: &str) -> String { format!("{}{}", self.tag, suffix) }
+    pub fn fixed(&self) -> &'static str { "fixed" }
+    pub fn explicit<'a>(&'a self) -> &'a str { &self.tag }
+}
+"#;
+    let e = expand(src).unwrap();
+    let s = &e.manifest.structs[0];
+    let wrapper = |n: &str| {
+        flat(
+            &s.generic_wrappers
+                .iter()
+                .find(|w| w.name == n)
+                .unwrap()
+                .source,
+        )
+    };
+    assert!(
+        wrapper("Tagged_tag_ref").contains(
+            "pub fn Tagged_tag_ref<'rustcall, T: Copy + 'rustcall>(ptr: *const Tagged<T>) -> &'rustcall str"
+        ),
+        "{}",
+        wrapper("Tagged_tag_ref")
+    );
+    // Explicit lifetimes (the method's own `<'a>` is carried over) and plain
+    // returns are left as written.
+    assert!(wrapper("Tagged_fixed").contains("-> &'static str"));
+    assert!(
+        wrapper("Tagged_explicit").contains("pub fn Tagged_explicit<'a, T: Copy>"),
+        "{}",
+        wrapper("Tagged_explicit")
+    );
+    assert!(wrapper("Tagged_explicit").contains("-> &'a str"));
+    assert!(!wrapper("Tagged_explicit").contains("'rustcall"));
+    assert!(wrapper("Tagged_label").contains("suffix: &str) -> String"));
+    assert!(wrapper("Tagged_new").contains("(tag: String, v: T) -> *mut Tagged<T>"));
+
+    // The specialization of the wrapper gets the string ABI.
+    let out = rustcall_core::specialize::specialize(
+        &wrapper("Tagged_tag_ref"),
+        "Tagged_tag_ref",
+        &[("T".into(), "i32".into())],
+        "Tagged_tag_ref_i32",
+    )
+    .unwrap();
+    assert!(out.manifest.functions[0].has_borrowed_string_helper);
+    assert!(
+        flat(&out.source).contains("pub extern \"C\" fn Tagged_tag_ref_i32(ptr: *const Tagged<i32>) -> Tagged_tag_ref_i32_RustCallBorrowedString"),
+        "{}",
+        flat(&out.source)
+    );
+}
+
+#[test]
 fn julia_pyo3_functions_report_no_string_abi() {
     // `#[julia_pyo3]` exports the signature as written (no string conversion,
     // see #275), so the manifest must not advertise the (ptr, len) ABI.

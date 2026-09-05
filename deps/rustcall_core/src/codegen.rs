@@ -24,7 +24,7 @@ use crate::model::{MethodModel, StructModel};
 use crate::types::{
     extract_option_type, extract_result_type, is_ffi_compatible_type,
     is_inline_accessible_field_type, is_non_ffi_type, is_self_type, is_str_ref_type,
-    is_string_type, is_vec_type, needs_clone_for_getter, OptionTypeInfo, ResultTypeInfo,
+    is_string_type, is_vec_type, needs_clone_for_getter, unparen, OptionTypeInfo, ResultTypeInfo,
 };
 
 // ============================================================================
@@ -1291,6 +1291,28 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
             call_args.push(quote! { #name });
         }
         let is_ctor = inline_method_is_ctor(struct_name, m);
+        // An elided `&str` return borrows from `self`, which the wrapper
+        // receives as a raw pointer; name the lifetime so the wrapper itself
+        // is valid Rust (`&*ptr` is unbounded and coerces to it).
+        let (decl_generics, ret) = match &m.func.sig.output {
+            ReturnType::Type(_, ty)
+                if !m.is_static
+                    && is_str_ref_type(ty)
+                    && matches!(unparen(ty), Type::Reference(r) if r.lifetime.is_none()) =>
+            {
+                let mut g = decl_generics.clone();
+                // `&'rustcall Self<T>` requires every type parameter to outlive it.
+                for param in g.params.iter_mut() {
+                    if let syn::GenericParam::Type(tp) = param {
+                        tp.bounds.push(syn::parse_quote!('rustcall));
+                    }
+                }
+                g.params.insert(0, syn::parse_quote!('rustcall));
+                (g, quote! { -> &'rustcall str })
+            }
+            other => (decl_generics.clone(), quote! { #other }),
+        };
+        let ret = &ret;
         let func: ItemFn = if is_ctor {
             syn::parse_quote! {
                 pub fn #wrapper_name #decl_generics (#(#wrapper_args),*) -> *mut #self_ty #where_clause {
@@ -1299,7 +1321,6 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
                 }
             }
         } else {
-            let ret = &m.func.sig.output;
             if m.is_static {
                 syn::parse_quote! {
                     pub fn #wrapper_name #decl_generics (#(#wrapper_args),*) #ret #where_clause {

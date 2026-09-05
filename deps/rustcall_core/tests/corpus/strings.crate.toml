@@ -17,6 +17,7 @@ inner_type = ""
 has_owned_string_helper = true
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 3
 module_path = []
 
@@ -41,6 +42,7 @@ inner_type = ""
 has_owned_string_helper = true
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 8
 module_path = []
 
@@ -75,6 +77,7 @@ inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 18
 module_path = []
 
@@ -100,6 +103,7 @@ inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = true
 source = ""
+body_has_cfg = false
 line = 23
 module_path = []
 
@@ -119,6 +123,7 @@ inner_type = ""
 has_owned_string_helper = true
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 28
 module_path = []
 
@@ -143,6 +148,7 @@ inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 35
 module_path = []
 
@@ -167,6 +173,7 @@ inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 40
 module_path = []
 
@@ -191,6 +198,7 @@ inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
+body_has_cfg = false
 line = 47
 module_path = []
 
