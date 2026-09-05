@@ -407,19 +407,26 @@ end
 """
     _specialized_return_type(rust_type::String) -> Type
 
-Julia return type of a monomorphized function: raw pointers map to `Ptr{Cvoid}`,
-primitives to their Julia counterpart, anything else to `Any`.
+Julia return type of a monomorphized function, from the FFI contract
+(`src/ffi_contract.jl`): the single C slot the wrapper returns. A raw pointer
+keeps its pointee (`*mut i32` is `Ptr{Int32}`, an opaque pointee degrades to
+`Ptr{Cvoid}`); a spelling the contract does not cover stays `Any`, which
+`FFI_STRICT` turns into an error.
 """
 function _specialized_return_type(rust_type::String)
-    startswith(rust_type, "*") && return Ptr{Cvoid}
-    t = _rust_primitive_to_julia_type(rust_type)
-    return t === nothing ? Any : t
+    c = ffi_return_contract(rust_type)
+    c.known || return Any
+    c.abi === :void && return Cvoid
+    (c.abi === :by_value || c.abi === :pointer) || return Any
+    return only(c.ccall_types)
 end
 
 function _specialized_arg_type(rust_type::String, type_params::Dict{Symbol, <:Type})
-    startswith(rust_type, "*") && return Ptr{Cvoid}
-    t = _rust_primitive_to_julia_type(rust_type)
-    t === nothing || return t
+    c = ffi_argument_contract(rust_type)
+    c.known && c.abi === :void && return Cvoid
+    if c.known && (c.abi === :by_value || c.abi === :pointer)
+        return only(c.ccall_types)
+    end
     p = Symbol(rust_type)
     return haskey(type_params, p) ? type_params[p] : Any
 end

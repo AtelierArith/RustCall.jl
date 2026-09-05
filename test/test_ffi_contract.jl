@@ -53,7 +53,6 @@ end
 # Tables 2-5 are Julia functions and can be called directly.
 table_conversion(s) = RustCall._rust_type_to_julia_conversion_type(s)      # src/julia_functions.jl:193
 table_symbol(s) = RustCall._rust_type_to_julia_type_symbol(s)              # src/julia_functions.jl:220
-table_ruststr(s) = RustCall._rust_primitive_to_julia_type(s)               # src/ruststr.jl:519
 table_structs(s) = RustCall.rust_to_julia_type_sym(s)                      # src/structs.jl:665
 
 # The union of the spellings any of the five tables (or the contract) has an
@@ -435,13 +434,11 @@ const ALL_SPELLINGS = vcat(
         covered = Dict(
             "julia_functions/conversion" => count(s -> table_conversion(s) !== nothing, ALL_SPELLINGS),
             "julia_functions/symbol" => count(s -> table_symbol(s) !== nothing, ALL_SPELLINGS),
-            "ruststr/primitive" => count(s -> table_ruststr(s) !== nothing, ALL_SPELLINGS),
             "structs/type_sym" => count(s -> table_structs(s) !== :Any, ALL_SPELLINGS),
             "ffi_contract" => count(RustCall.ffi_known, ALL_SPELLINGS),
         )
         @test covered["julia_functions/conversion"] == 13
         @test covered["julia_functions/symbol"] == 14
-        @test covered["ruststr/primitive"] == 14
         @test covered["structs/type_sym"] == 10
         # The contract covers everything except the genuinely unsupported
         # aggregate, which it refuses on purpose.
@@ -455,7 +452,6 @@ const ALL_SPELLINGS = vcat(
             # …but every Julia table mistranslates them.
             @test table_conversion(s) === nothing
             @test table_symbol(s) === nothing
-            @test table_ruststr(s) === nothing
             @test table_structs(s) === :Any        # fail-open: `Any` in a ccall
             # The contract knows all three.
             @test RustCall.ffi_known(s)
@@ -487,7 +483,6 @@ const ALL_SPELLINGS = vcat(
         # divergence on any target where `Csize_t !== UInt64`.
         @test table_conversion("usize") === :Csize_t
         @test table_symbol("usize") === :Csize_t
-        @test table_ruststr("usize") === UInt64
         @test table_structs("usize") === :Any
         @test RustCall.ffi_julia_symbol("usize") === :Csize_t
         # Today these coincide; the test records the assumption.
@@ -502,7 +497,6 @@ const ALL_SPELLINGS = vcat(
         # through to the guess path.
         @test table_conversion("()") === nothing
         @test table_symbol("()") === :Cvoid
-        @test table_ruststr("()") === Cvoid
         @test table_structs("()") === :Cvoid
         @test RustCall.ffi_julia_symbol("()") === :Cvoid
     end
@@ -513,10 +507,8 @@ const ALL_SPELLINGS = vcat(
         @test table_structs("&str") === :RustStr
         @test table_conversion("String") === nothing
         @test table_symbol("String") === nothing
-        @test table_ruststr("String") === nothing
         @test table_conversion("&str") === nothing
         @test table_symbol("&str") === nothing
-        @test table_ruststr("&str") === nothing
         # `rustcall_core` classifies both as *non*-FFI…
         @test core_is_non_ffi("String")
         @test core_is_non_ffi("&str")
@@ -548,7 +540,6 @@ const ALL_SPELLINGS = vcat(
             @test core_is_ffi_compatible(s)
             @test table_conversion(s) === nothing
             @test table_symbol(s) === nothing
-            @test table_ruststr(s) === nothing
             @test table_structs(s) === :Any
             @test RustCall.ffi_known(s)
         end
@@ -658,7 +649,6 @@ const ALL_SPELLINGS = vcat(
         @test length(RustCall.RUST_TO_JULIA_TYPE_MAP) == 26
         @test table_symbol("i32") === :Int32
         @test table_conversion("i32") === :Int32
-        @test table_ruststr("i32") === Int32
         @test table_structs("i32") === :Int32
     end
 end
