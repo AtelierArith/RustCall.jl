@@ -174,21 +174,83 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test occursin("Libdl", lint)
         @test occursin("loadpolicy", lint)
 
-        # One policy per axis value, each covering both cache states.
-        rustc_policy = RustCall.inline_rustc_policy()
-        cargo_policy = RustCall.inline_cargo_policy()
-        @test !RustCall.uses_global_symbols(rustc_policy)
-        @test RustCall.uses_global_symbols(cargo_policy)
-        @test "src/cache.jl:270" in rustc_policy.call_sites      # cache hit
-        @test "src/ruststr.jl:284" in rustc_policy.call_sites    # cache miss
-        @test "src/ruststr.jl:386" in cargo_policy.call_sites    # cache hit
-        @test "src/ruststr.jl:419" in cargo_policy.call_sites    # fresh build
-        # ...and the rule is inverted: the helper library, the one library
-        # other artifacts could resolve against, is the LOCAL one.
-        @test !RustCall.uses_global_symbols(RustCall.helper_library_policy())
-        @test RustCall.uses_global_symbols(RustCall.crate_direct_policy())
-        @test RustCall.uses_global_symbols(RustCall.crate_wrapper_policy())
-        @test occursin("RTLD_GLOBAL", RustCall.SYMBOL_VISIBILITY_RULE)
+        # B2: the axis is gone. Every policy is RTLD_LOCAL | RTLD_NOW, so the
+        # same rust""" construct behaves the same whether or not it names a
+        # dependency (#250).
+        for ctor in RustCall.ALL_LOAD_POLICIES
+            p = ctor()
+            @test !RustCall.uses_global_symbols(p)
+            @test p.dlopen_flags == UInt32(Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        end
+        @test occursin("RTLD_LOCAL", RustCall.SYMBOL_VISIBILITY_RULE)
+        # The rule now says the GLOBAL category is empty, and says why.
+        @test occursin("dlsym", RustCall.SYMBOL_VISIBILITY_RULE)
+    end
+
+    # -----------------------------------------------------------------
+    # The deprecated RTLD_GLOBAL escape hatch (#250, one release).
+    # -----------------------------------------------------------------
+    @testset "RUSTCALL_DLOPEN_GLOBAL escape hatch" begin
+        policy = RustCall.inline_rustc_policy()
+        previous = RustCall.DLOPEN_GLOBAL_OVERRIDE[]
+        try
+            @test !RustCall._init_dlopen_global_override!(Dict{String, String}())
+            @test RustCall.dlopen_flags(policy) == policy.dlopen_flags
+
+            @test RustCall._init_dlopen_global_override!(
+                Dict("RUSTCALL_DLOPEN_GLOBAL" => "1"))
+            # One warning, naming the issue, then silence.
+            flags = @test_logs (:warn, r"RUSTCALL_DLOPEN_GLOBAL") match_mode = :any begin
+                RustCall.dlopen_flags(policy)
+            end
+            @test flags == policy.dlopen_flags | UInt32(Libdl.RTLD_GLOBAL)
+            @test RustCall.dlopen_flags(policy) == flags   # no second warning
+            # The *policy* still says LOCAL: the override is not a policy.
+            @test !RustCall.uses_global_symbols(policy)
+
+            # Only an affirmative value turns it on.
+            @test !RustCall._init_dlopen_global_override!(
+                Dict("RUSTCALL_DLOPEN_GLOBAL" => "0"))
+            @test !RustCall._init_dlopen_global_override!(
+                Dict("RUSTCALL_DLOPEN_GLOBAL" => ""))
+        finally
+            RustCall._init_dlopen_global_override!(Dict{String, String}())
+            RustCall.DLOPEN_GLOBAL_OVERRIDE[] = previous
+        end
+    end
+
+    # Symbols of a LOCAL artifact are reachable through its handle and NOT
+    # through the process-global namespace. Windows `LoadLibrary` has no such
+    # distinction, so the negative half is unix-only.
+    @testset "RTLD_LOCAL keeps symbols out of the global namespace" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to build a library to load"
+        else
+            lib = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_visibility_probe() -> i32 { 7 }
+                """)
+            name = "loadpolicy_visibility_$(getpid())"
+            policy = RustCall.inline_rustc_policy()
+            try
+                a = RustCall.load_artifact!(policy, lib; lib_name = name)
+                # Through its own handle: always.
+                ptr = Libdl.dlsym(a.handle, "rustcall_visibility_probe")
+                @test RustCall.call_rust_function(ptr, Int32) == Int32(7)
+                # Through the process-global namespace: not on unix.
+                # RTLD_DEFAULT is NULL on glibc/musl and (void *)-2 on Darwin.
+                # Windows `LoadLibrary` has no LOCAL/GLOBAL distinction at all,
+                # so there is nothing to assert there.
+                if Sys.isunix()
+                    rtld_default = Sys.isapple() ? Ptr{Cvoid}(-2) : C_NULL
+                    found = ccall(:dlsym, Ptr{Cvoid}, (Ptr{Cvoid}, Cstring),
+                                  rtld_default, "rustcall_visibility_probe")
+                    @test found == C_NULL
+                end
+            finally
+                RustCall.unload_artifact!(policy, name)
+            end
+        end
     end
 
     # -----------------------------------------------------------------

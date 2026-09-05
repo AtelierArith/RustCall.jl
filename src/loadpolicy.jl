@@ -38,26 +38,42 @@ Prose statement of the rule Phase B should apply when choosing `RTLD_GLOBAL`
 over `RTLD_LOCAL`.  Kept as data so the tests and the docs quote one text.
 
 The rule: a library is loaded `RTLD_GLOBAL` **only** when other libraries
-loaded later must resolve undefined symbols against it — in practice only the
-ownership helper library (`deps/rust_helpers`, `src/memory.jl`) and, in the
-future, any explicitly declared "provides symbols to other artifacts" library.
-Everything else — inline `rust\"\"\"` blocks, Cargo-backed blocks, `@rust_crate`
-libraries, monomorphized generics, `@irust` snippets — is a leaf artifact whose
-symbols are reached through its own handle via `dlsym`, and must therefore be
-`RTLD_LOCAL` so that two blocks defining the same `#[no_mangle]` name cannot
-shadow one another in the process-global namespace.
+loaded later must resolve undefined symbols against it.  **No artifact RustCall
+loads is in that category, so every policy is `RTLD_LOCAL | RTLD_NOW`** (#277
+Phase B2).
 
-Note that the helper library is one of the few loaded `RTLD_LOCAL` today, and
-the leaf artifacts are mostly loaded `RTLD_GLOBAL` — i.e. current `main` has
-the rule exactly inverted.  The split among inline blocks runs along the
-dependency axis and is stable across cache states: no `// cargo-deps:` means
-`RTLD_LOCAL` on both a cache hit and a miss, `// cargo-deps:` means
-`RTLD_GLOBAL` on both.  Phase A only records this; it changes nothing.
+Why the category is empty:
+
+* Nothing in `src/` writes a `ccall((:name, "lib"), ...)`. Every call goes
+  through a pointer obtained from `Libdl.dlsym` **on a specific handle**, and
+  `dlsym` on a handle works identically whether the image was opened LOCAL or
+  GLOBAL. The cross-library fallback in `_resolve_call` iterates the handles in
+  `RUST_LIBRARIES`, not the process-global namespace, so it keeps working too.
+* Every artifact RustCall builds is a self-contained `cdylib`. Under `RTLD_NOW`
+  a genuinely unresolved symbol fails at load rather than at first call.
+* The ownership helper library (`deps/rust_helpers`) looked like the one
+  exception and is not: every user reaches it through `RUST_HELPERS_LIB[]` plus
+  `dlsym`, and no artifact links against it.
+* PyO3 crates look like an exception and are not: their `Py_*` symbols resolve
+  against libpython, which PythonCall has already loaded globally. RustCall's
+  own flag does not affect that.
+
+What `RTLD_LOCAL` buys: two `rust\"\"\"` blocks that both export `f` no longer
+shadow one another in the process-global namespace, so which one a call reaches
+stops depending on load order (#250).
+
+Before B2 the rule was exactly inverted — leaf artifacts were mostly
+`RTLD_GLOBAL` and the helper library was `RTLD_LOCAL` — and the split among
+inline blocks ran along the dependency axis: no `// cargo-deps:` meant
+`RTLD_LOCAL`, `// cargo-deps:` meant `RTLD_GLOBAL`, for the same construct.
+
+`RUSTCALL_DLOPEN_GLOBAL=1` restores the old process-global behaviour for one
+release; see `dlopen_flags`.
 """
 const SYMBOL_VISIBILITY_RULE = """
-RTLD_GLOBAL is for libraries whose symbols other libraries resolve against \
-(the ownership helper library); every leaf artifact reached through its own \
-handle via dlsym is RTLD_LOCAL.\
+RTLD_GLOBAL is for libraries whose symbols other libraries resolve against; \
+no artifact RustCall loads is one, because every call goes through dlsym on a \
+specific handle, so every artifact is RTLD_LOCAL.\
 """
 
 """
@@ -242,9 +258,8 @@ inline_rustc_policy() = LoadPolicy("inline-rustc";
                   "src/ruststr.jl:284", "src/ruststr.jl:291",
                   "src/compiler.jl:381", "src/structs.jl:282-285"],
     issues = [244, 249, 250],
-    notes = "RTLD_LOCAL on both cache states, while the same construct with " *
-            "// cargo-deps: is RTLD_GLOBAL on both of its; inline #[julia] " *
-            "struct finalizers do not free.")
+    notes = "RTLD_LOCAL on both cache states, as every policy is since B2; " *
+            "inline #[julia] struct finalizers do not free.")
 
 """
     inline_cargo_policy() -> LoadPolicy
@@ -268,7 +283,7 @@ no boundary catches an unwind (#244).  Use `effective_panic_strategy` to
 resolve it; Phase B should pin `panic` in the generated manifest.
 """
 inline_cargo_policy() = LoadPolicy("inline-cargo";
-    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :cargo_default,
     cargo_profile = :release,
     boundary_catches_panics = false,
@@ -282,8 +297,7 @@ inline_cargo_policy() = LoadPolicy("inline-cargo";
                   "src/cargoproject.jl:126-128"],
     issues = [244, 250],
     notes = "Cargo path takes Cargo's release default (unwind, or abort under " *
-            "CARGO_PROFILE_RELEASE_PANIC) while the rustc path always aborts, " *
-            "and loads RTLD_GLOBAL where the rustc path loads RTLD_LOCAL.")
+            "CARGO_PROFILE_RELEASE_PANIC) while the rustc path always aborts.")
 
 """
     crate_direct_policy() -> LoadPolicy
@@ -305,7 +319,7 @@ emitted bindings-file template at `:1360`), not in `RUST_LIBRARIES`, so
 finalizer (`:550`), the opposite of inline structs (#249).
 """
 crate_direct_policy() = LoadPolicy("rust-crate-direct";
-    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :crate_profile,
     cargo_profile = :release,
     boundary_catches_panics = false,
@@ -339,7 +353,7 @@ else — `RTLD_GLOBAL`, the module-local handle, freeing finalizers — matches
 `crate_direct_policy`.
 """
 crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
-    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :cargo_default,
     cargo_profile = :release,
     boundary_catches_panics = false,
@@ -361,9 +375,13 @@ crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
 The ownership helper library `deps/rust_helpers`, loaded by
 `src/memory.jl:215` and `:321` into `RUST_HELPERS_LIB`.
 
-This is the one library other artifacts could legitimately need to resolve
-symbols against (`SYMBOL_VISIBILITY_RULE`), yet it is the one loaded
-`RTLD_LOCAL` today.  Recorded as-is; Phase A changes nothing.
+It looked like the one library other artifacts could legitimately need to
+resolve symbols against, and is not: every user goes through
+`RUST_HELPERS_LIB[]` plus `dlsym` (`src/memory.jl`), and no artifact links
+against it, so nothing would resolve anything against it even if it were
+`RTLD_GLOBAL`.  `SYMBOL_VISIBILITY_RULE`'s "provides symbols to other
+artifacts" category is therefore empty, and this policy stays `RTLD_LOCAL`
+(#277 Phase B2).
 
 Panic strategy is `:cargo_default`, not `:abort`: the helper library is built by
 `deps/build.jl:97-98` with a plain `cargo build --release --manifest-path ...`,
@@ -386,11 +404,11 @@ helper_library_policy() = LoadPolicy("helper-library";
     call_sites = ["src/memory.jl:215", "src/memory.jl:321",
                   "deps/build.jl:97-98", "deps/rust_helpers/Cargo.toml"],
     issues = [244, 250],
-    notes = "RTLD_LOCAL despite being the only library whose symbols other " *
-            "artifacts might resolve against — the visibility rule is " *
-            "inverted; and built by plain `cargo build --release`, so it " *
-            "takes Cargo's release default like the other Cargo-backed " *
-            "artifacts, environment overrides included.")
+    notes = "Every user reaches it through RUST_HELPERS_LIB[] and dlsym and " *
+            "nothing links against it, so RTLD_LOCAL is right after all " *
+            "(B2); built by plain `cargo build --release`, so it takes " *
+            "Cargo's release default like the other Cargo-backed artifacts, " *
+            "environment overrides included.")
 
 """
     generics_policy() -> LoadPolicy
@@ -412,7 +430,7 @@ be the same library anyway, and replacing the entry would swap the live handle
 and throw away the accumulated function-pointer cache.
 """
 generics_policy() = LoadPolicy("generics-monomorphization";
-    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :abort,
     boundary_catches_panics = false,
     registry = :rust_libraries,
@@ -434,7 +452,7 @@ is `artifact_key` of an `ArtifactId` over the source and the argument types it
 is compiled for; it used to be Julia's session-randomized `hash`.
 """
 irust_policy() = LoadPolicy("irust";
-    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :abort,
     boundary_catches_panics = false,
     registry = :rust_libraries,
@@ -443,8 +461,9 @@ irust_policy() = LoadPolicy("irust";
     finalizer_frees = false,
     call_sites = ["src/ruststr.jl (_compile_and_call_irust)"],
     issues = [250, 278],
-    notes = "RTLD_GLOBAL for a leaf artifact; IRUST_FUNCTIONS is updated in " *
-            "the same locked block but is not part of any unload path.")
+    notes = "IRUST_FUNCTIONS is dropped with the library by " *
+            "unload_artifact! since B1, so an unloaded snippet leaves no memo " *
+            "behind.")
 
 """
     hot_reload_policy() -> LoadPolicy
@@ -458,7 +477,7 @@ runs `cargo build --release --manifest-path <user crate>` against their crate
 (`src/hot_reload.jl:264`), so their profile decides.
 """
 hot_reload_policy() = LoadPolicy("hot-reload";
-    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :crate_profile,
     boundary_catches_panics = false,
     registry = :rust_libraries,
@@ -480,7 +499,7 @@ and does not register in `RUST_LIBRARIES` at all.  Scheduled for removal with
 #265 Phase 2; recorded here only so the inventory is complete.
 """
 llvm_policy() = LoadPolicy("llvm-ir";
-    dlopen_flags = Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW,
+    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :abort,
     boundary_catches_panics = false,
     registry = :none,
@@ -514,16 +533,73 @@ const ALL_LOAD_POLICIES = (
 # ---------------------------------------------------------------------------
 
 """
+    DLOPEN_GLOBAL_OVERRIDE
+
+Whether `RUSTCALL_DLOPEN_GLOBAL` was set in the environment at `__init__`.
+
+**Deprecated escape hatch, for one minor release.**  Before #277 Phase B2 most
+artifacts were opened `RTLD_GLOBAL`, so a block could reach another block's
+`#[no_mangle]` symbol through the process-global namespace rather than through
+its own handle.  That is exactly the shadowing #250 is about, and it is not a
+supported way to call across blocks — `_resolve_call`'s cross-library search
+is.  Code that depended on it can set `RUSTCALL_DLOPEN_GLOBAL=1` to get the old
+behaviour while it is being fixed; a single `@warn` names the issue.
+
+Read once, at `__init__`: a load policy must not change halfway through a
+session, or two artifacts of one program would disagree about the namespace
+they published into.
+"""
+const DLOPEN_GLOBAL_OVERRIDE = Ref(false)
+const _DLOPEN_GLOBAL_WARNED = Ref(false)
+
+# Called from `RustCall.__init__`.
+function _init_dlopen_global_override!(env = ENV)
+    value = strip(String(get(env, "RUSTCALL_DLOPEN_GLOBAL", "")))
+    DLOPEN_GLOBAL_OVERRIDE[] = value in ("1", "true", "TRUE", "yes", "on")
+    _DLOPEN_GLOBAL_WARNED[] = false
+    return DLOPEN_GLOBAL_OVERRIDE[]
+end
+
+"""
     dlopen_flags(policy::LoadPolicy) -> UInt32
 
-The flag set to hand to `Libdl.dlopen`.
+The flag set to hand to `Libdl.dlopen`: `policy.dlopen_flags`, which is
+`RTLD_LOCAL | RTLD_NOW` for every policy since #277 Phase B2
+(`SYMBOL_VISIBILITY_RULE`).
+
+`RTLD_GLOBAL` is ORed in when `RUSTCALL_DLOPEN_GLOBAL` was set at `__init__`,
+with one `@warn` per session naming the issue.  On Windows `LoadLibrary` has no
+LOCAL/GLOBAL distinction, so neither the flag nor the override changes anything
+there.
 """
-dlopen_flags(policy::LoadPolicy) = policy.dlopen_flags
+function dlopen_flags(policy::LoadPolicy)
+    DLOPEN_GLOBAL_OVERRIDE[] || return policy.dlopen_flags
+    if !_DLOPEN_GLOBAL_WARNED[]
+        _DLOPEN_GLOBAL_WARNED[] = true
+        @warn """
+        RUSTCALL_DLOPEN_GLOBAL is set: every compiled artifact is being opened \
+        RTLD_GLOBAL, publishing its symbols into the process-global namespace.
+
+        That is the pre-#250 behaviour, in which two `rust\"\"\"` blocks that \
+        both export `f` shadow one another and which one a call reaches depends \
+        on load order. It is deprecated and will be removed in a future \
+        release. Calling across blocks does not need it — `@rust f(...)` \
+        searches the loaded libraries by handle.
+
+        See https://github.com/AtelierArith/RustCall.jl/issues/250
+        """
+    end
+    return policy.dlopen_flags | UInt32(Libdl.RTLD_GLOBAL)
+end
 
 """
     uses_global_symbols(policy::LoadPolicy) -> Bool
 
 Whether this policy publishes the artifact's symbols process-globally.
+
+`false` for every policy since #277 Phase B2 (`SYMBOL_VISIBILITY_RULE`). This
+reports the *policy*, not the deprecated `RUSTCALL_DLOPEN_GLOBAL` override,
+which `dlopen_flags` applies on top.
 """
 uses_global_symbols(policy::LoadPolicy) = policy.global_symbols
 
