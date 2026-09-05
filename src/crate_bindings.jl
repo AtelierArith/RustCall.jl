@@ -337,7 +337,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
 
     # Build the module body as a block
     module_body = quote
-        import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed
+        import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
+                         _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr
         import Libdl
 
         const _LIB_PATH = $lib_path
@@ -394,8 +395,9 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
     # Build argument list
     arg_syms = [Symbol(name) for name in func.arg_names]
 
-    # Build converted arguments with type conversion
-    converted_args = Expr[]
+    # Build converted arguments with type conversion (a bare Symbol when the
+    # argument is passed through unchanged)
+    converted_args = Any[]
     for (name, rust_type) in zip(func.arg_names, func.arg_types)
         julia_type = _rust_type_to_julia_conversion_type(rust_type)
         arg_sym = Symbol(name)
@@ -412,6 +414,8 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
         return _generate_result_function_wrapper(func, arg_syms, converted_args)
     elseif func.return_kind == :option
         return _generate_option_function_wrapper(func, arg_syms, converted_args)
+    elseif _uses_string_ffi(func)
+        return _generate_string_function_wrapper(func, arg_syms)
     else
         # Standard function wrapper
         julia_ret_type = _rust_type_to_julia_type_symbol(func.return_type)
@@ -426,6 +430,38 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
             end
             export $func_name
         end
+    end
+end
+
+"""
+    _generate_string_function_wrapper(func, arg_syms) -> Expr
+
+Wrapper for a `#[julia]` function with `String` / `&str` arguments or return
+(#242): arguments are passed as `(ptr, len)` pairs under `GC.@preserve`, a
+`String` return is copied out of `<fn>_RustCallOwnedString` and released with
+`<fn>_free_rust_string`, a `&str` return is copied out of the borrowed view.
+"""
+function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol})
+    func_name = Symbol(func.name)
+    func_name_str = func.name
+    bindings, preserved, call_args = _string_arg_plan(func, identity)
+    call = if func.has_owned_string_helper
+        free_name = func_name_str * "_free_rust_string"
+        :(_call_rust_owned_string_ptr(_get_func_ptr($func_name_str), _get_func_ptr($free_name), $(call_args...)))
+    elseif func.has_borrowed_string_helper
+        :(_call_rust_borrowed_string_ptr(_get_func_ptr($func_name_str), $(call_args...)))
+    else
+        ret = something(_rust_type_to_julia_type_symbol(func.return_type), :Any)
+        :(call_rust_function(_get_func_ptr($func_name_str), $ret, $(call_args...)))
+    end
+    quote
+        function $func_name($(arg_syms...))
+            $(bindings...)
+            GC.@preserve $(preserved...) begin
+                $call
+            end
+        end
+        export $func_name
     end
 end
 

@@ -21,6 +21,33 @@ fn multiply(a: f64, b: f64) -> f64 {
     a * b
 }
 
+/// Upper-case a string (String argument and return, #242)
+#[julia]
+fn shout(input: String) -> String {
+    input.to_uppercase()
+}
+
+/// Join two borrowed strings with a separator, `times` times
+#[julia]
+fn join_repeat(a: &str, b: &str, sep: &str, times: u32) -> String {
+    let piece = format!("{a}{sep}{b}");
+    std::iter::repeat_n(piece, times as usize)
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
+/// Number of Unicode scalar values (not bytes) in the string
+#[julia]
+fn char_count(s: &str) -> usize {
+    s.chars().count()
+}
+
+/// A static borrowed string
+#[julia]
+fn crate_greeting() -> &'static str {
+    "hello from sample_crate"
+}
+
 /// Calculate the nth Fibonacci number
 #[julia]
 fn fibonacci(n: u32) -> u64 {

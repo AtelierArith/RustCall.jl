@@ -3,12 +3,67 @@ mode = "crate"
 structs = []
 
 [[functions]]
-name = "nested"
-symbol = "nested"
+name = "shout"
+symbol = "shout"
 attribute = "julia"
-exported = false
+exported = true
 cfg = ""
-is_generic = true
+is_generic = false
+type_params = []
+return_type = "String"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = true
+has_borrowed_string_helper = false
+source = ""
+line = 3
+module_path = []
+
+[[functions.args]]
+name = "input"
+rust_type = "String"
+
+[[functions]]
+name = "concat"
+symbol = "concat"
+attribute = "julia"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
+return_type = "String"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = true
+has_borrowed_string_helper = false
+source = ""
+line = 8
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "&str"
+
+[[functions.args]]
+name = "b"
+rust_type = "&str"
+
+[[functions.args]]
+name = "times"
+rust_type = "u32"
+
+[[functions]]
+name = "byte_len"
+symbol = "byte_len"
+attribute = "julia"
+exported = true
+cfg = ""
+is_generic = false
+type_params = []
 return_type = "usize"
 return_kind = "plain"
 ok_type = ""
@@ -16,62 +71,17 @@ err_type = ""
 inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
-source = """
-///An attributed function with nested generic arguments.
-#[inline]
-pub fn nested<T>(value: Vec<Option<Result<T, String>>>) -> usize
-where
-    T: Clone + Send,
-{
-    value.len()
-}
-"""
-body_has_cfg = false
-line = 5
-module_path = []
-
-[[functions.type_params]]
-name = "T"
-
-[[functions.type_params.bounds]]
-trait_name = "Clone"
-type_params = []
-
-[[functions.type_params.bounds]]
-trait_name = "Send"
-type_params = []
-
-[[functions.args]]
-name = "value"
-rust_type = "Vec<Option<Result<T, String>>>"
-
-[[functions]]
-name = "const_expression"
-symbol = "const_expression"
-attribute = "julia"
-exported = true
-cfg = ""
-is_generic = false
-type_params = []
-return_type = "u8"
-return_kind = "plain"
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
 source = ""
-body_has_cfg = false
-line = 15
+line = 18
 module_path = []
 
 [[functions.args]]
-name = "value"
-rust_type = "[u8; { if 1 < 2 { 3 } else { 4 } }]"
+name = "s"
+rust_type = "&str"
 
 [[functions]]
-name = "raw_braces"
-symbol = "raw_braces"
+name = "greeting"
+symbol = "greeting"
 attribute = "julia"
 exported = true
 cfg = ""
@@ -86,27 +96,28 @@ inner_type = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = true
 source = ""
-body_has_cfg = false
-line = 20
+line = 23
 module_path = []
 
 [[functions]]
-name = "cfg_disabled"
-symbol = "cfg_disabled"
+name = "unix_name"
+symbol = "unix_name"
 attribute = "julia"
 exported = true
-cfg = "any()"
+cfg = "unix"
 is_generic = false
 type_params = []
-args = []
-return_type = "i32"
+return_type = "String"
 return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
-has_owned_string_helper = false
+has_owned_string_helper = true
 has_borrowed_string_helper = false
 source = ""
-body_has_cfg = false
-line = 35
+line = 28
 module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "String"

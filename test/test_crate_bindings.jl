@@ -685,3 +685,23 @@ end
         end
     end
 end
+
+@testset "Crate bindings: String / &str functions (#242)" begin
+    manifest = RustCall.extract_manifest([joinpath(SAMPLE_CRATE_PATH, "src", "lib.rs")]; mode = "crate")
+    sigs = Dict(s.name => s for s in RustCall.manifest_function_signatures(manifest))
+    @test sigs["shout"].has_owned_string_helper
+    @test sigs["crate_greeting"].has_borrowed_string_helper
+    @test sigs["char_count"].arg_types == ["&str"]
+
+    if RustCall.check_rustc_available()
+        let bindings = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateStrings"
+            @test bindings.shout("hello") == "HELLO"
+            @test bindings.join_repeat("a", "b", "-", UInt32(2)) == "a-b-a-b"
+            @test bindings.char_count("日本語") == 3
+            @test bindings.crate_greeting() == "hello from sample_crate"
+            for _ in 1:200
+                @test bindings.shout("x") == "X"
+            end
+        end
+    end
+end

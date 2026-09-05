@@ -48,7 +48,172 @@ pub fn transform_function(func: ItemFn) -> TokenStream2 {
         }
     }
 
+    if function_uses_strings(&func.sig) {
+        return transform_string_function(func);
+    }
+
     transform_simple_function(func)
+}
+
+/// Whether a `#[julia]` function takes or returns `String` / `&str` (#242).
+pub fn function_uses_strings(sig: &syn::Signature) -> bool {
+    let arg_strings = sig.inputs.iter().any(|a| match a {
+        FnArg::Typed(pt) => is_string_type(&pt.ty) || is_str_ref_type(&pt.ty),
+        FnArg::Receiver(_) => false,
+    });
+    arg_strings || function_returns_string(sig) || function_returns_str_ref(sig)
+}
+
+pub fn function_returns_string(sig: &syn::Signature) -> bool {
+    matches!(&sig.output, ReturnType::Type(_, ty) if is_string_type(ty))
+}
+
+pub fn function_returns_str_ref(sig: &syn::Signature) -> bool {
+    matches!(&sig.output, ReturnType::Type(_, ty) if is_str_ref_type(ty))
+}
+
+/// `#[julia] fn f(s: String, t: &str) -> String` (#242).
+///
+/// Same ABI as the struct method wrappers: every `String` / `&str` argument
+/// becomes a `(*const u8, usize)` pair (UTF-8, not NUL-terminated); a `String`
+/// return becomes `<fn>_RustCallOwnedString { ptr, len, cap }` released with
+/// `<fn>_free_rust_string(ptr, len, cap)`; a `&str` return becomes
+/// `<fn>_RustCallBorrowedString { ptr, len }` (the caller keeps the borrowed
+/// data alive). The original function is kept as `<fn>_inner`.
+fn transform_string_function(func: ItemFn) -> TokenStream2 {
+    let inner_fn = func.clone();
+    let mut func = func;
+    let names = normalize_arg_patterns(&mut func);
+    let func_name = &func.sig.ident;
+    let inner_fn_name = format_ident!("{}_inner", func_name);
+    let inner_fn_args = &inner_fn.sig.inputs;
+    let inner_output = &inner_fn.sig.output;
+    let body = &inner_fn.block;
+    let cfg_attrs = cfg_attrs(&func.attrs);
+    let outer_attrs = &func.attrs;
+
+    let mut wrapper_args: Vec<TokenStream2> = Vec::new();
+    let mut conversions: Vec<TokenStream2> = Vec::new();
+    let mut call_args: Vec<TokenStream2> = Vec::new();
+    for (arg, name) in func.sig.inputs.iter().zip(names.iter()) {
+        let FnArg::Typed(pat_type) = arg else {
+            continue;
+        };
+        let ty = &pat_type.ty;
+        if is_string_type(ty) {
+            let p = format_ident!("{}_ptr", name);
+            let l = format_ident!("{}_len", name);
+            wrapper_args.push(quote! { #p: *const u8 });
+            wrapper_args.push(quote! { #l: usize });
+            conversions.push(quote! {
+                let #name = unsafe {
+                    let slice = std::slice::from_raw_parts(#p, #l);
+                    String::from_utf8_lossy(slice).into_owned()
+                };
+            });
+        } else if is_str_ref_type(ty) {
+            let p = format_ident!("{}_ptr", name);
+            let l = format_ident!("{}_len", name);
+            let b = format_ident!("{}_bytes", name);
+            wrapper_args.push(quote! { #p: *const u8 });
+            wrapper_args.push(quote! { #l: usize });
+            conversions.push(quote! {
+                let #b = unsafe { std::slice::from_raw_parts(#p, #l) };
+                let #name = unsafe { std::str::from_utf8_unchecked(#b) };
+            });
+        } else {
+            wrapper_args.push(quote! { #name: #ty });
+        }
+        call_args.push(quote! { #name });
+    }
+
+    let owned_helper = format_ident!("{}_RustCallOwnedString", func_name);
+    let owned_free = format_ident!("{}_free_rust_string", func_name);
+    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", func_name);
+    let call = quote! { #inner_fn_name(#(#call_args),*) };
+
+    let (helpers, wrapper) = if function_returns_string(&func.sig) {
+        (
+            quote! {
+                #(#cfg_attrs)*
+                #[repr(C)]
+                pub struct #owned_helper {
+                    pub ptr: *mut u8,
+                    pub len: usize,
+                    pub cap: usize,
+                }
+
+                #(#cfg_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #owned_free(ptr: *mut u8, len: usize, cap: usize) {
+                    if !ptr.is_null() {
+                        unsafe { drop(Vec::from_raw_parts(ptr, len, cap)); }
+                    }
+                }
+            },
+            quote! {
+                #(#outer_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #func_name(#(#wrapper_args),*) -> #owned_helper {
+                    #(#conversions)*
+                    let mut rustcall_bytes = #call.into_bytes();
+                    let rustcall_ret = #owned_helper {
+                        ptr: rustcall_bytes.as_mut_ptr(),
+                        len: rustcall_bytes.len(),
+                        cap: rustcall_bytes.capacity(),
+                    };
+                    std::mem::forget(rustcall_bytes);
+                    rustcall_ret
+                }
+            },
+        )
+    } else if function_returns_str_ref(&func.sig) {
+        (
+            quote! {
+                #(#cfg_attrs)*
+                #[repr(C)]
+                pub struct #borrowed_helper {
+                    pub ptr: *const u8,
+                    pub len: usize,
+                }
+            },
+            quote! {
+                #(#outer_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #func_name(#(#wrapper_args),*) -> #borrowed_helper {
+                    #(#conversions)*
+                    let rustcall_value = #call;
+                    #borrowed_helper {
+                        ptr: rustcall_value.as_ptr(),
+                        len: rustcall_value.len(),
+                    }
+                }
+            },
+        )
+    } else {
+        let output = &func.sig.output;
+        (
+            quote! {},
+            quote! {
+                #(#outer_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #func_name(#(#wrapper_args),*) #output {
+                    #(#conversions)*
+                    #call
+                }
+            },
+        )
+    };
+
+    quote! {
+        #helpers
+
+        #(#cfg_attrs)*
+        #[allow(clippy::ptr_arg)]
+        fn #inner_fn_name(#inner_fn_args) #inner_output #body
+
+        #wrapper
+    }
 }
 
 fn transform_simple_function(mut func: ItemFn) -> TokenStream2 {

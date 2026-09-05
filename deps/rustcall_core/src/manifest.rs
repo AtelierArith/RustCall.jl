@@ -116,6 +116,15 @@ pub struct Function {
     /// `T` of `Option<T>`, empty otherwise.
     #[serde(default)]
     pub inner_type: String,
+    /// The function returns `String`: the wrapper returns
+    /// `<fn>_RustCallOwnedString { ptr, len, cap }`, released through
+    /// `<fn>_free_rust_string(ptr, len, cap)` (#242).
+    #[serde(default)]
+    pub has_owned_string_helper: bool,
+    /// The function returns `&str`: the wrapper returns
+    /// `<fn>_RustCallBorrowedString { ptr, len }` (#242).
+    #[serde(default)]
+    pub has_borrowed_string_helper: bool,
     /// Source of the function item (generic functions only), used for
     /// runtime monomorphization via `specialize`.
     #[serde(default)]

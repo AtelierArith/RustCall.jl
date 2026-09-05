@@ -11,7 +11,7 @@ use syn::{FnArg, Item, ItemFn, Pat, ReturnType};
 
 use crate::attrs::{has_no_mangle, rustcall_attribute};
 use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
-use crate::codegen::returns_boxed_struct;
+use crate::codegen::{function_returns_str_ref, function_returns_string, returns_boxed_struct};
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
 };
@@ -119,6 +119,8 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         ok_type,
         err_type,
         inner_type,
+        has_owned_string_helper: wrapped && !is_generic && function_returns_string(&func.sig),
+        has_borrowed_string_helper: wrapped && !is_generic && function_returns_str_ref(&func.sig),
         source: if is_generic {
             let mut stripped = func.clone();
             crate::attrs::strip_rustcall_attrs(&mut stripped.attrs);

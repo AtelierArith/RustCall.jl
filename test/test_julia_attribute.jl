@@ -331,3 +331,62 @@ using Test
         end
     end
 end
+
+@testset "#[julia] String / &str functions (#242)" begin
+    code = """
+    #[julia]
+    pub fn shout(input: String) -> String { input.to_uppercase() }
+    #[julia]
+    pub fn join_repeat(a: &str, b: &str, sep: &str, times: u32) -> String {
+        let piece = format!("{a}{sep}{b}");
+        std::iter::repeat_n(piece, times as usize).collect::<Vec<_>>().join(sep)
+    }
+    #[julia]
+    pub fn char_count(s: &str) -> usize { s.chars().count() }
+    #[julia]
+    pub fn greeting() -> &'static str { "hello" }
+    #[julia]
+    pub fn with_nul(s: String) -> String { format!("{s}\\0{s}") }
+    """
+    sigs = RustCall.manifest_function_signatures(RustCall.expand_inline(code).manifest)
+    by_name = Dict(s.name => s for s in sigs)
+    @test by_name["shout"].has_owned_string_helper
+    @test !by_name["shout"].has_borrowed_string_helper
+    @test by_name["greeting"].has_borrowed_string_helper
+    @test !by_name["char_count"].has_owned_string_helper
+    @test RustCall._uses_string_ffi(by_name["char_count"])
+    @test !RustCall._uses_string_ffi(by_name["shout"]) == false
+    bindings, preserved, call_args = RustCall._string_arg_plan(by_name["join_repeat"], identity)
+    @test length(bindings) == 3 && length(preserved) == 3 && length(call_args) == 7
+
+    if RustCall.check_rustc_available()
+        rust"""
+        #[julia]
+        pub fn shout(input: String) -> String { input.to_uppercase() }
+        #[julia]
+        pub fn join_repeat(a: &str, b: &str, sep: &str, times: u32) -> String {
+            let piece = format!("{a}{sep}{b}");
+            std::iter::repeat_n(piece, times as usize).collect::<Vec<_>>().join(sep)
+        }
+        #[julia]
+        pub fn char_count(s: &str) -> usize { s.chars().count() }
+        #[julia]
+        pub fn greeting() -> &'static str { "hello" }
+        #[julia]
+        pub fn with_nul(s: String) -> String { format!("{s}\0{s}") }
+        """
+        @test shout("hello, wörld") == "HELLO, WÖRLD"
+        @test shout(SubString("xyz", 2)) == "YZ"
+        @test join_repeat("a", "b", "-", UInt32(2)) == "a-b-a-b"
+        @test join_repeat("日本", "語", "", 1) == "日本語"
+        @test char_count("日本語") == 3
+        @test char_count("") == 0
+        @test greeting() == "hello"
+        # Byte-exact round trip: embedded NUL survives the (ptr, len) ABI.
+        @test with_nul("ab") == "ab\0ab"
+        # Repeated calls do not leak or corrupt (owned strings are freed).
+        for i in 1:1000
+            @test shout("x") == "X"
+        end
+    end
+end

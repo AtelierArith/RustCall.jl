@@ -13,6 +13,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = """
 pub fn generic_identity<T>(value: T) -> T
 where
@@ -49,6 +51,8 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
 line = 38

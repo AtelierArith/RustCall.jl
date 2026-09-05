@@ -528,6 +528,24 @@ function _call_rust_borrowed_string(lib_name::String, func_name::String, args...
     return _crust_str_to_julia(raw)
 end
 
+# Function-pointer variants for bindings that resolve symbols themselves
+# (`@rust_crate` modules).
+function _call_rust_owned_string_ptr(func_ptr::Ptr{Cvoid}, free_ptr::Ptr{Cvoid}, args...)
+    raw = call_rust_function(func_ptr, CRustString, args...)
+    try
+        return _crust_string_to_julia(raw)
+    finally
+        if raw.ptr != C_NULL
+            ccall(free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
+        end
+    end
+end
+
+function _call_rust_borrowed_string_ptr(func_ptr::Ptr{Cvoid}, args...)
+    raw = call_rust_function(func_ptr, CRustStr, args...)
+    return _crust_str_to_julia(raw)
+end
+
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args...)
     ret_type = last(args)
     actual_args = args[1:end-1]

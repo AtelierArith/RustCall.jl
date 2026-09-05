@@ -665,6 +665,8 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             constraints = manifest_constraints(f),
             module_path = String[String(m) for m in _mvec(f, "module_path")],
             body_has_cfg = _mbool(f, "body_has_cfg"),
+            has_owned_string_helper = _mbool(f, "has_owned_string_helper"),
+            has_borrowed_string_helper = _mbool(f, "has_borrowed_string_helper"),
         ))
     end
     return sigs

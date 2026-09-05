@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and rustc tracks a newer LLVM than the one bundled with Julia, so the emitted
   IR cannot be parsed reliably. Use `@rust` instead.
 
+### Added
+- `#[julia]` functions accept `String` / `&str` arguments and return `String` /
+  `&str` ([#242](https://github.com/AtelierArith/RustCall.jl/issues/242)):
+  the wrapper uses the same `(ptr, len)` ABI and `<fn>_RustCallOwnedString` /
+  `<fn>_free_rust_string` helpers as struct methods, the manifest records
+  `has_owned_string_helper` / `has_borrowed_string_helper`, and the Julia
+  wrappers (inline blocks and `@rust_crate`) convert transparently.
+- CI/CD pipeline with GitHub Actions
+- Support for multiple Julia versions (1.10, 1.11, nightly)
+- Cross-platform testing (Linux, macOS, Windows)
+- CompatHelper integration for dependency updates
+- TagBot integration for automated version tagging
+
 ### Changed
 - Rust syntax is no longer parsed on the Julia side. `rust"""` blocks,
   `@rust_crate` and generics go through the `rustcall-extract` CLI
@@ -93,12 +106,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `rustcall-extract` reads its arguments as `OsString`, so non-UTF-8 file
   paths work on Windows (follow-up of #264).
 
-### Added
-- CI/CD pipeline with GitHub Actions
-- Support for multiple Julia versions (1.10, 1.11, nightly)
-- Cross-platform testing (Linux, macOS, Windows)
-- CompatHelper integration for dependency updates
-- TagBot integration for automated version tagging
 
 ## [0.1.0] - 2026-01-XX
 

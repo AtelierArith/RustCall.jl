@@ -19,6 +19,9 @@ source text.
 - `ok_type`/`err_type`/`inner_type`: components of `Result`/`Option` returns
 - `source`: function source (generic functions only), used for monomorphization
 - `module_path`: enclosing inline modules (`["api", "deep"]`)
+- `has_owned_string_helper` / `has_borrowed_string_helper`: the function returns
+  `String` / `&str`; the wrapper returns `<fn>_RustCallOwnedString` (freed with
+  `<fn>_free_rust_string`) / `<fn>_RustCallBorrowedString` (#242)
 """
 struct RustFunctionSignature
     name::String
@@ -40,6 +43,8 @@ struct RustFunctionSignature
     # The body contains `#[cfg]`/`cfg!`, so it still depends on the build
     # configuration after item-level pruning (see `Function::body_has_cfg`).
     body_has_cfg::Bool
+    has_owned_string_helper::Bool
+    has_borrowed_string_helper::Bool
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -51,10 +56,62 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                source::String = "",
                                constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
                                module_path::Vector{String} = String[],
-                               body_has_cfg::Bool = false)
+                               body_has_cfg::Bool = false,
+                               has_owned_string_helper::Bool = false,
+                               has_borrowed_string_helper::Bool = false)
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
-                          source, constraints, module_path, body_has_cfg)
+                          source, constraints, module_path, body_has_cfg,
+                          has_owned_string_helper, has_borrowed_string_helper)
+end
+
+"""
+    _is_rust_string_arg(rust_type) -> Bool
+
+Whether a `#[julia]` function argument is passed as a `(ptr, len)` byte pair
+(`String` or `&str`, see `rustcall_core::codegen::transform_string_function`).
+"""
+_is_rust_string_arg(rust_type::AbstractString) = strip(rust_type) in ("String", "&str")
+
+"""
+    _string_arg_plan(sig) -> (bindings, preserved, call_args)
+
+How the Julia wrapper of `sig` passes its arguments: `bindings` converts each
+argument (`String(x)` for string arguments, `Int32(x)` and friends for
+primitives), `preserved` lists the string bindings to keep alive during the
+call, and `call_args` are the expressions handed to the `ccall` (`pointer(s),
+sizeof(s)` for strings). `escape` wraps user-visible symbols (`esc` in macro
+context, `identity` inside a generated module).
+"""
+function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
+    bindings = Expr[]
+    preserved = Symbol[]
+    call_args = Any[]
+    for (name, rust_type) in zip(sig.arg_names, sig.arg_types)
+        arg_sym = escape(Symbol(name))
+        if _is_rust_string_arg(rust_type)
+            bytes = Symbol("__rustcall_str_", name)
+            push!(bindings, :($bytes = String($arg_sym)))
+            push!(preserved, bytes)
+            push!(call_args, :(pointer($bytes)))
+            push!(call_args, :(sizeof($bytes) % Csize_t))
+        else
+            julia_type = _rust_type_to_julia_conversion_type(rust_type)
+            push!(call_args, julia_type === nothing ? arg_sym : :($julia_type($arg_sym)))
+        end
+    end
+    return bindings, preserved, call_args
+end
+
+"""
+    _uses_string_ffi(sig) -> Bool
+
+Whether the wrapper of `sig` needs the string ABI (string arguments or a
+`String` / `&str` return).
+"""
+function _uses_string_ffi(sig::RustFunctionSignature)
+    return sig.has_owned_string_helper || sig.has_borrowed_string_helper ||
+           any(_is_rust_string_arg, sig.arg_types)
 end
 
 """
@@ -139,6 +196,8 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
         return _generate_inline_result_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
     elseif sig.return_kind == :option
         return _generate_inline_option_wrapper(sig, func_name, func_name_str, arg_syms, converted_args)
+    elseif _uses_string_ffi(sig)
+        return _generate_inline_string_wrapper(sig, func_name, func_name_str, arg_syms)
     end
 
     # Get Julia return type
@@ -154,6 +213,32 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
             lib_name = RustCall.get_current_library()
             func_ptr = RustCall.get_function_pointer(lib_name, $func_name_str)
             RustCall.call_rust_function(func_ptr, $julia_ret_type, $(converted_args...))
+        end
+    end
+end
+
+# String / &str arguments and returns (#242): arguments travel as (ptr, len)
+# byte pairs kept alive with GC.@preserve; a `String` return is an owned
+# `<fn>_RustCallOwnedString` released through `<fn>_free_rust_string`, a `&str`
+# return a borrowed `<fn>_RustCallBorrowedString`.
+function _generate_inline_string_wrapper(sig, func_name, func_name_str, arg_syms)
+    bindings, preserved, call_args = _string_arg_plan(sig, esc)
+    call = if sig.has_owned_string_helper
+        free_name = func_name_str * "_free_rust_string"
+        :(RustCall._call_rust_owned_string(lib_name, $func_name_str, $free_name, $(call_args...)))
+    elseif sig.has_borrowed_string_helper
+        :(RustCall._call_rust_borrowed_string(lib_name, $func_name_str, $(call_args...)))
+    else
+        ret = something(_rust_type_to_julia_type_symbol(sig.return_type), :Any)
+        :(RustCall.call_rust_function(RustCall.get_function_pointer(lib_name, $func_name_str), $ret, $(call_args...)))
+    end
+    quote
+        function $func_name($(arg_syms...))
+            $(bindings...)
+            lib_name = RustCall.get_current_library()
+            GC.@preserve $(preserved...) begin
+                $call
+            end
         end
     end
 end

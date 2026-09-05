@@ -376,6 +376,8 @@ fn function_entry(func: &ItemFn) -> Function {
         source: String::new(),
         body_has_cfg: body_has_cfg(&func.block),
         line: 0,
+        has_owned_string_helper: false,
+        has_borrowed_string_helper: false,
         module_path: Vec::new(),
     }
 }
