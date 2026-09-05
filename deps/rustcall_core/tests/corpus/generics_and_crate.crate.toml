@@ -1,0 +1,93 @@
+schema_version = 1
+mode = "crate"
+
+[[functions]]
+name = "generic_identity"
+symbol = "generic_identity"
+attribute = "julia"
+exported = false
+is_generic = true
+return_type = "T"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = """
+pub fn generic_identity<T>(value: T) -> T
+where
+    T: Clone,
+{
+    value
+}
+"""
+line = 30
+
+[[functions.type_params]]
+name = "T"
+
+[[functions.type_params.bounds]]
+trait_name = "Clone"
+type_params = []
+
+[[functions.args]]
+name = "value"
+rust_type = "T"
+
+[[structs]]
+name = "Pair"
+attribute = "julia"
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 1
+
+[[structs.type_params]]
+name = "T"
+
+[[structs.type_params.bounds]]
+trait_name = "Clone"
+type_params = []
+
+[[structs.fields]]
+name = "left"
+rust_type = "T"
+ffi_compatible = false
+getter = ""
+setter = ""
+
+[[structs.fields]]
+name = "right"
+rust_type = "T"
+ffi_compatible = false
+getter = ""
+setter = ""
+
+[[structs.methods]]
+name = "new"
+symbol = "Pair_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+return_type = "Self"
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "left"
+rust_type = "T"
+
+[[structs.methods.args]]
+name = "right"
+rust_type = "T"
+
+[[structs.methods]]
+name = "first"
+symbol = "Pair_first"
+is_static = false
+is_mutable = false
+is_constructor = false
+args = []
+return_type = "T"
+generic_wrapper = ""

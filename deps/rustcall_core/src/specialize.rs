@@ -1,0 +1,332 @@
+//! AST-level generic instantiation.
+//!
+//! Given a source file, the name of a generic free function in it, and a set of
+//! `TypeParam = concrete type` bindings, produce a copy of the file in which
+//! that function is replaced by a `#[no_mangle] pub extern "C"` instantiation
+//! with the type parameters substituted by the concrete types. Every other
+//! item is kept unchanged so that struct definitions and impl blocks the
+//! wrapper depends on remain available.
+//!
+//! This replaces the historical Julia-side regex substitution
+//! (`specialize_generic_code`).
+
+use std::collections::HashMap;
+
+use syn::visit_mut::{self, VisitMut};
+use syn::{GenericParam, Item, ItemFn, Path, PathArguments, Type, WherePredicate};
+
+use crate::manifest::{Arg, Attribute, Function, Manifest, Mode, ReturnKind};
+use crate::types::{return_type_to_string, type_to_string};
+
+#[derive(Debug)]
+pub enum SpecializeError {
+    Parse(String),
+    FunctionNotFound(String),
+    InvalidType {
+        param: String,
+        ty: String,
+        err: String,
+    },
+    UnboundParams(Vec<String>),
+    InvalidName(String),
+}
+
+impl std::fmt::Display for SpecializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpecializeError::Parse(e) => write!(f, "failed to parse Rust source: {e}"),
+            SpecializeError::FunctionNotFound(n) => {
+                write!(
+                    f,
+                    "generic function `{n}` not found at top level of the source"
+                )
+            }
+            SpecializeError::InvalidType { param, ty, err } => {
+                write!(
+                    f,
+                    "invalid concrete type `{ty}` for parameter `{param}`: {err}"
+                )
+            }
+            SpecializeError::UnboundParams(ps) => {
+                write!(f, "type parameters without a binding: {}", ps.join(", "))
+            }
+            SpecializeError::InvalidName(n) => write!(f, "`{n}` is not a valid Rust identifier"),
+        }
+    }
+}
+
+impl std::error::Error for SpecializeError {}
+
+struct TypeSubst {
+    map: HashMap<String, Type>,
+}
+
+impl TypeSubst {
+    fn concrete_path(&self, name: &str) -> Option<&Path> {
+        match self.map.get(name) {
+            Some(Type::Path(tp)) if tp.qself.is_none() => Some(&tp.path),
+            _ => None,
+        }
+    }
+}
+
+impl VisitMut for TypeSubst {
+    fn visit_type_mut(&mut self, ty: &mut Type) {
+        if let Type::Path(tp) = ty {
+            if tp.qself.is_none() && tp.path.segments.len() == 1 {
+                let seg = &tp.path.segments[0];
+                if matches!(seg.arguments, PathArguments::None) {
+                    if let Some(concrete) = self.map.get(&seg.ident.to_string()) {
+                        *ty = concrete.clone();
+                        return;
+                    }
+                }
+            }
+        }
+        visit_mut::visit_type_mut(self, ty);
+    }
+
+    /// Handle expression paths such as `T::default()` or `T::MAX`.
+    fn visit_path_mut(&mut self, path: &mut Path) {
+        if path.segments.len() > 1 {
+            let first = path.segments[0].ident.to_string();
+            if let Some(concrete) = self.concrete_path(&first) {
+                if matches!(path.segments[0].arguments, PathArguments::None) {
+                    let rest: Vec<_> = path.segments.iter().skip(1).cloned().collect();
+                    let mut segs = concrete.segments.clone();
+                    segs.extend(rest);
+                    path.segments = segs;
+                }
+            }
+        }
+        visit_mut::visit_path_mut(self, path);
+    }
+}
+
+/// Result of a specialization.
+#[derive(Debug)]
+pub struct Specialized {
+    /// Full source: original items plus the specialized function.
+    pub source: String,
+    /// Manifest describing only the specialized function.
+    pub manifest: Manifest,
+}
+
+pub fn specialize(
+    source: &str,
+    fn_name: &str,
+    bindings: &[(String, String)],
+    new_name: &str,
+) -> Result<Specialized, SpecializeError> {
+    let mut file: syn::File =
+        syn::parse_file(source).map_err(|e| SpecializeError::Parse(e.to_string()))?;
+
+    let position = file
+        .items
+        .iter()
+        .position(|item| matches!(item, Item::Fn(f) if f.sig.ident == fn_name))
+        .ok_or_else(|| SpecializeError::FunctionNotFound(fn_name.to_string()))?;
+    let original = match &file.items[position] {
+        Item::Fn(f) => f.clone(),
+        _ => unreachable!(),
+    };
+
+    let mut map = HashMap::new();
+    for (param, ty) in bindings {
+        let parsed: Type = syn::parse_str(ty).map_err(|e| SpecializeError::InvalidType {
+            param: param.clone(),
+            ty: ty.clone(),
+            err: e.to_string(),
+        })?;
+        map.insert(param.clone(), parsed);
+    }
+
+    let new_ident: syn::Ident =
+        syn::parse_str(new_name).map_err(|_| SpecializeError::InvalidName(new_name.to_string()))?;
+    let mut func = original;
+    func.sig.ident = new_ident;
+
+    // Drop the bound type parameters from the generics list.
+    let mut unbound = Vec::new();
+    let remaining: Vec<GenericParam> = func
+        .sig
+        .generics
+        .params
+        .iter()
+        .filter(|p| match p {
+            GenericParam::Type(tp) => {
+                let bound = map.contains_key(&tp.ident.to_string());
+                if !bound {
+                    unbound.push(tp.ident.to_string());
+                }
+                !bound
+            }
+            _ => true,
+        })
+        .cloned()
+        .collect();
+    if !unbound.is_empty() {
+        return Err(SpecializeError::UnboundParams(unbound));
+    }
+    func.sig.generics.params = remaining.into_iter().collect();
+    if let Some(wc) = func.sig.generics.where_clause.take() {
+        let kept: Vec<WherePredicate> = wc
+            .predicates
+            .into_iter()
+            .filter(|p| match p {
+                WherePredicate::Type(pt) => match &pt.bounded_ty {
+                    Type::Path(tp) if tp.path.segments.len() == 1 => {
+                        !map.contains_key(&tp.path.segments[0].ident.to_string())
+                    }
+                    _ => true,
+                },
+                _ => true,
+            })
+            .collect();
+        if !kept.is_empty() {
+            func.sig.generics.where_clause = Some(syn::WhereClause {
+                where_token: wc.where_token,
+                predicates: kept.into_iter().collect(),
+            });
+        }
+    }
+    if func.sig.generics.params.is_empty() {
+        func.sig.generics.lt_token = None;
+        func.sig.generics.gt_token = None;
+    }
+
+    let mut subst = TypeSubst { map };
+    subst.visit_item_fn_mut(&mut func);
+
+    func.attrs
+        .retain(|a| !a.path().is_ident("no_mangle") && !a.path().is_ident("julia"));
+    func.attrs.insert(0, syn::parse_quote!(#[no_mangle]));
+    func.vis = syn::Visibility::Public(Default::default());
+    func.sig.abi = Some(syn::parse_quote!(extern "C"));
+
+    let entry = function_entry(&func);
+    file.items[position] = Item::Fn(func);
+
+    let mut manifest = Manifest::new(Mode::Inline);
+    manifest.functions.push(entry);
+
+    Ok(Specialized {
+        source: prettyplease::unparse(&file),
+        manifest,
+    })
+}
+
+fn function_entry(func: &ItemFn) -> Function {
+    let args = func
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|a| match a {
+            syn::FnArg::Typed(pt) => Some(Arg {
+                name: match pt.pat.as_ref() {
+                    syn::Pat::Ident(pi) => pi.ident.to_string(),
+                    other => quote::quote!(#other).to_string(),
+                },
+                rust_type: type_to_string(&pt.ty),
+            }),
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect();
+    let return_type = return_type_to_string(&func.sig.output);
+    Function {
+        name: func.sig.ident.to_string(),
+        symbol: func.sig.ident.to_string(),
+        attribute: Attribute::None,
+        exported: true,
+        is_generic: false,
+        type_params: Vec::new(),
+        args,
+        return_kind: if return_type == "()" {
+            ReturnKind::Unit
+        } else {
+            ReturnKind::Plain
+        },
+        return_type,
+        ok_type: String::new(),
+        err_type: String::new(),
+        inner_type: String::new(),
+        source: String::new(),
+        line: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn substitutes_type_params_and_exports() {
+        let src = "pub fn identity<T: Copy>(x: T) -> T where T: Clone { let y: T = x; y }";
+        let out = specialize(
+            src,
+            "identity",
+            &[("T".to_string(), "i32".to_string())],
+            "identity_i32",
+        )
+        .unwrap();
+        assert!(out.source.contains("#[no_mangle]"));
+        assert!(out
+            .source
+            .contains("pub extern \"C\" fn identity_i32(x: i32) -> i32"));
+        assert!(!out.source.contains("identity_i32<"));
+        assert!(out.source.contains("let y: i32 = x;"));
+        // The generic original is replaced by the instantiation.
+        assert!(!out.source.contains("pub fn identity<T: Copy>"));
+        let f = &out.manifest.functions[0];
+        assert_eq!(f.name, "identity_i32");
+        assert_eq!(f.return_type, "i32");
+        assert_eq!(f.args[0].rust_type, "i32");
+    }
+
+    #[test]
+    fn substitutes_expression_paths() {
+        let src = "fn zero<T: Default>() -> T { T::default() }";
+        let out = specialize(
+            src,
+            "zero",
+            &[("T".to_string(), "f64".to_string())],
+            "zero_f64",
+        )
+        .unwrap();
+        assert!(out.source.contains("f64::default()"));
+    }
+
+    #[test]
+    fn keeps_struct_context_generic() {
+        let src = "pub struct Point<T> { x: T }\nimpl<T> Point<T> { pub fn new(x: T) -> Self { Self { x } } }\npub fn Point_new<T>(x: T) -> *mut Point<T> { Box::into_raw(Box::new(Point::new(x))) }";
+        let out = specialize(
+            src,
+            "Point_new",
+            &[("T".to_string(), "i64".to_string())],
+            "Point_new_i64",
+        )
+        .unwrap();
+        assert!(out.source.contains("pub struct Point<T>"));
+        assert!(out
+            .source
+            .contains("pub extern \"C\" fn Point_new_i64(x: i64) -> *mut Point<i64>"));
+    }
+
+    #[test]
+    fn missing_function_errors() {
+        let err = specialize("fn a() {}", "b", &[], "b_i32").unwrap_err();
+        assert!(matches!(err, SpecializeError::FunctionNotFound(_)));
+    }
+
+    #[test]
+    fn unbound_param_errors() {
+        let err = specialize(
+            "fn a<T, U>(x: T, y: U) {}",
+            "a",
+            &[("T".into(), "i32".into())],
+            "a_i32",
+        )
+        .unwrap_err();
+        assert!(matches!(err, SpecializeError::UnboundParams(_)));
+    }
+}

@@ -152,6 +152,50 @@ function build_rust_helpers()
 end
 
 """
+    build_rustcall_extract() -> String
+
+Build the `rustcall-extract` CLI (deps/rustcall_extract) and return the path to the
+binary. The CLI is the only component that interprets Rust syntax on behalf of
+Julia: it produces the FFI manifest, expands `#[julia]` items in inline
+`rust\"\"\"` blocks, and instantiates generic functions.
+"""
+function build_rustcall_extract()
+    deps_dir = @__DIR__
+    extract_dir = joinpath(deps_dir, "rustcall_extract")
+    cargo_toml = joinpath(extract_dir, "Cargo.toml")
+
+    if !isfile(cargo_toml)
+        error("Cargo.toml not found at: $cargo_toml")
+    end
+
+    println("Building rustcall-extract CLI...")
+    println("  Directory: $extract_dir")
+
+    try
+        println("  Running: $(cargo()) build --release --manifest-path $cargo_toml")
+        run(`$(cargo()) build --release --manifest-path $cargo_toml`)
+        println("  ✓ Cargo build completed successfully")
+    catch e
+        error("""
+        Failed to build rustcall-extract CLI: $e
+
+        Try running manually:
+            cd $extract_dir
+            cargo build --release
+        """)
+    end
+
+    bin_name = Sys.iswindows() ? "rustcall-extract.exe" : "rustcall-extract"
+    bin_path = joinpath(extract_dir, "target", "release", bin_name)
+    if !isfile(bin_path)
+        error("Built binary not found at expected path: $bin_path")
+    end
+
+    println("  ✓ Built binary: $bin_path")
+    return bin_path
+end
+
+"""
     get_rust_helpers_lib_path() -> Union{String, Nothing}
 
 Get the path to the Rust helpers library if it exists (either built or in a standard location).
@@ -181,7 +225,7 @@ end
 # Main build process
 function main()
     println("=" ^ 60)
-    println("RustCall.jl - Rust Helpers Library Build")
+    println("RustCall.jl - Rust Helpers Library and Extractor CLI Build")
     println("=" ^ 60)
     println()
 
@@ -203,6 +247,10 @@ function main()
 
     # Build the library (always clean + rebuild)
     lib_path = build_rust_helpers()
+    println()
+
+    # Build the extractor CLI used by rust"" blocks, @rust_crate and generics
+    build_rustcall_extract()
     println()
     println("=" ^ 60)
     println("✓ RustCall.jl build completed successfully!")

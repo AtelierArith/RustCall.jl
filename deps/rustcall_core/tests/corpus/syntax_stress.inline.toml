@@ -1,0 +1,131 @@
+schema_version = 1
+mode = "inline"
+structs = []
+
+[[functions]]
+name = "nested"
+symbol = "nested"
+attribute = "julia"
+exported = false
+is_generic = true
+return_type = "usize"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = """
+///An attributed function with nested generic arguments.
+#[inline]
+pub fn nested<T>(value: Vec<Option<Result<T, String>>>) -> usize
+where
+    T: Clone + Send,
+{
+    value.len()
+}
+"""
+line = 5
+
+[[functions.type_params]]
+name = "T"
+
+[[functions.type_params.bounds]]
+trait_name = "Clone"
+type_params = []
+
+[[functions.type_params.bounds]]
+trait_name = "Send"
+type_params = []
+
+[[functions.args]]
+name = "value"
+rust_type = "Vec<Option<Result<T, String>>>"
+
+[[functions]]
+name = "const_expression"
+symbol = "const_expression"
+attribute = "julia"
+exported = true
+is_generic = false
+type_params = []
+return_type = "u8"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+line = 16
+
+[[functions.args]]
+name = "value"
+rust_type = "[u8; { if 1 < 2 { 3 } else { 4 } }]"
+
+[[functions]]
+name = "raw_braces"
+symbol = "raw_braces"
+attribute = "julia"
+exported = true
+is_generic = false
+type_params = []
+args = []
+return_type = "&'static str"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+line = 20
+
+[[functions]]
+name = "marker_in_string_is_not_an_attribute"
+symbol = "marker_in_string_is_not_an_attribute"
+attribute = "none"
+exported = false
+is_generic = false
+type_params = []
+args = []
+return_type = "&'static str"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+line = 26
+
+[[functions]]
+name = "borrow_for"
+symbol = "borrow_for"
+attribute = "none"
+exported = false
+is_generic = false
+type_params = []
+return_type = "&'a str"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+line = 30
+
+[[functions.args]]
+name = "value"
+rust_type = "&'a str"
+
+[[functions.args]]
+name = "fallback"
+rust_type = "&'a str"
+
+[[functions]]
+name = "cfg_disabled"
+symbol = "cfg_disabled"
+attribute = "julia"
+exported = true
+is_generic = false
+type_params = []
+args = []
+return_type = "i32"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+source = ""
+line = 35

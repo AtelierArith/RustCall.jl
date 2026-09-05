@@ -1,0 +1,41 @@
+schema_version = 1
+mode = "crate"
+structs = []
+
+[[functions]]
+name = "checked_double"
+symbol = "checked_double"
+attribute = "julia"
+exported = true
+is_generic = false
+type_params = []
+return_type = "Result<i32, i32>"
+return_kind = "result"
+ok_type = "i32"
+err_type = "i32"
+inner_type = ""
+source = ""
+line = 25
+
+[[functions.args]]
+name = "value"
+rust_type = "i32"
+
+[[functions]]
+name = "positive"
+symbol = "positive"
+attribute = "julia"
+exported = true
+is_generic = false
+type_params = []
+return_type = "Option<i32>"
+return_kind = "option"
+ok_type = ""
+err_type = ""
+inner_type = "i32"
+source = ""
+line = 30
+
+[[functions.args]]
+name = "value"
+rust_type = "i32"
