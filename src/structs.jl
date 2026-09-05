@@ -392,12 +392,16 @@ function emit_julia_definitions(info::RustStructInfo)
                         end
                     end)
                 else
-                    jl_ret_type = rust_to_julia_type_sym(m.return_type)
+                    # The concrete `Type` is resolved here, at macro-expansion
+                    # time, and spliced into the call — no Symbol travels to
+                    # run time to be re-resolved through a second table (#276).
+                    jl_ret_type = ffi_return_type_or_throw(m.return_type, m.return_abi,
+                                                           _ffi_context(m, struct_name_str))
                     push!(exprs, quote
                         function $fname($(esc_args...))
                             $(bindings...)
                             lib = get_current_library()
-                            return GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
+                            return GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...))
                         end
                     end)
                 end
@@ -419,12 +423,16 @@ function emit_julia_definitions(info::RustStructInfo)
                     end
                 end)
             else
-                jl_ret_type = rust_to_julia_type_sym(m.return_type)
-                is_ctor_ret = m.return_type == "Self" || m.return_type == struct_name_str
+                jl_ret_type = ffi_return_type_or_throw(m.return_type, m.return_abi,
+                                                       _ffi_context(m, struct_name_str))
+                # The manifest says whether the wrapper boxes the result
+                # (`Method.returns_boxed_struct`, schema 4); Julia no longer
+                # re-derives it by comparing the spelling against "Self".
+                is_ctor_ret = m.returns_boxed_struct
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
-                        res = GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...), $(QuoteNode(jl_ret_type)))
+                        res = GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...))
                         if $is_ctor_ret
                             return $esc_struct(res, self.lib_name)
                         else
@@ -439,13 +447,17 @@ function emit_julia_definitions(info::RustStructInfo)
     # 3. Add field accessors if derive(JuliaStruct) is present
     if info.has_derive_julia_struct && !isempty(info.fields)
         # Build field accessor mappings
-        field_getters = Dict{Symbol, Tuple{String, String}}()
+        field_getters = Dict{Symbol, Tuple{String, String, Type}}()
         field_setters = Dict{Symbol, String}()
 
         for (field_name, field_type) in info.fields
             field_is_accessible(info, field_name) || continue
             field_sym = Symbol(field_name)
-            field_getters[field_sym] = (info.field_getters[field_name], field_type)
+            # The concrete Julia type is resolved once, here, from the contract.
+            julia_type = ffi_return_type_or_throw(
+                field_type, get(info.field_abis, field_name, ""),
+                _ffi_field_context(info, field_name, field_type))
+            field_getters[field_sym] = (info.field_getters[field_name], field_type, julia_type)
             if haskey(info.field_setters, field_name)
                 field_setters[field_sym] = info.field_setters[field_name]
             end
@@ -474,7 +486,7 @@ function emit_julia_definitions(info::RustStructInfo)
 
                 # Check if it's a field
                 if haskey(field_info, field)
-                    getter_name, rust_field_type = field_info[field]
+                    getter_name, rust_field_type, field_type = field_info[field]
                     lib = self.lib_name
                     if rust_field_type == "String"
                         return GC.@preserve self _call_rust_owned_string(lib, getter_name, $(struct_name_str * "_free_rust_string"), self.ptr)
@@ -482,7 +494,6 @@ function emit_julia_definitions(info::RustStructInfo)
                         return GC.@preserve self _call_rust_borrowed_string(lib, getter_name, self.ptr)
                     else
                         func_ptr = get_function_pointer(lib, getter_name)
-                        field_type = julia_sym_to_type(rust_to_julia_type_sym(rust_field_type))
                         return call_rust_function(func_ptr, field_type, self.ptr)
                     end
                 # Check if it's a method
@@ -601,15 +612,15 @@ function _call_rust_borrowed_string_ptr(func_ptr::Ptr{Cvoid}, args...)
     return _crust_str_to_julia(raw)
 end
 
-function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args...)
-    ret_type = last(args)
-    actual_args = args[1:end-1]
-    real_ret_type = julia_sym_to_type(ret_type)
-
+# The return type is a concrete `Type` spliced by the generator, not a Symbol
+# resolved here: the second lookup was a nine-entry table that turned every
+# small integer into `Any` (#276).
+function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
+                           ret_type::Type, args...)
     if ptr == C_NULL
-        return _rust_call_typed(lib_name, func_name, real_ret_type, actual_args...)
+        return _rust_call_typed(lib_name, func_name, ret_type, args...)
     else
-        return _rust_call_typed(lib_name, func_name, real_ret_type, ptr, actual_args...)
+        return _rust_call_typed(lib_name, func_name, ret_type, ptr, args...)
     end
 end
 
@@ -678,7 +689,7 @@ function _resolve_generic_struct_field_type(field_type::String, type_param_names
         end
     end
 
-    return julia_sym_to_type(rust_to_julia_type_sym(stripped))
+    return ffi_return_type_or_throw(stripped, "", "generic field -> $(stripped)")
 end
 
 function _precompile_generic_free(func_name::String, types::Tuple)
@@ -718,43 +729,6 @@ function _call_generic_free(lib_name::String, func_name::String, ptr::Ptr{Cvoid}
 
     call_rust_function(info.func_ptr, Cvoid, ptr)
 end
-
-function julia_sym_to_type(s::Symbol)
-    m = Dict(
-        :Float64 => Float64,
-        :Float32 => Float32,
-        :Int32 => Int32,
-        :Int64 => Int64,
-        :UInt32 => UInt32,
-        :UInt64 => UInt64,
-        :Bool => Bool,
-        :Cvoid => Cvoid,
-        :Any => Any
-    )
-    return get(m, s, Any)
-end
-
-"""
-    rust_to_julia_type_sym(rust_type::String) -> Symbol
-
-Map Rust type strings to Julia type symbols for code generation.
-"""
-function rust_to_julia_type_sym(rust_type::String)
-    m = Dict(
-        "f64" => :Float64,
-        "f32" => :Float32,
-        "i32" => :Int32,
-        "i64" => :Int64,
-        "u32" => :UInt32,
-        "u64" => :UInt64,
-        "bool" => :Bool,
-        "()" => :Cvoid,
-        "String" => :RustString,
-        "&str" => :RustStr,
-    )
-    return get(m, rust_type, :Any)
-end
-
 
 """
     free_rust_obj(ptr::Ptr{Cvoid}, lib_func::String)

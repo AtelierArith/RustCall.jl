@@ -953,7 +953,28 @@ function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractStri
             return _ffi_slot_expr(rust_type, c)
         end
     end
-    return _ffi_unsupported_return(rust_type, abi, ctx, strict)
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any)
+end
+
+"""
+    ffi_return_type_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Type
+
+[`ffi_return_symbol_or_throw`](@ref) as a `Type` rather than as a spelling, for
+the sites that splice a concrete type into generated code instead of a name —
+`src/structs.jl` used to pass a `Symbol` through the call and re-resolve it at
+run time through a nine-entry table, which is how a `u16` struct field became
+`Any` (#245).
+"""
+function ffi_return_type_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                  ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known
+        c.abi === :void && return Cvoid
+        if c.abi === :by_value || c.abi === :pointer
+            return only(c.ccall_types)
+        end
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, Any)
 end
 
 # The spelling of the single C slot: the contract's own spelling (`:Csize_t`)
@@ -964,10 +985,10 @@ function _ffi_slot_expr(rust_type::AbstractString, c::FFIContract)
     return something(ffi_julia_symbol(rust_type), ffi_type_expr(slot))
 end
 
-function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol)
+function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback)
     strict in (:error, :warn, :none) || throw(ArgumentError(
         "FFI_STRICT must be :error, :warn or :none, got :$strict"))
-    strict === :none && return :Any
+    strict === :none && return fallback
     detail = ffi_describe(rust_type; direction = :return, abi = abi)
     if strict === :error
         throw(RustError(
@@ -985,7 +1006,7 @@ function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol)
                emitting `Any`, which is not a well-defined ccall return slot. \
                Set `RustCall.FFI_STRICT[] = :error` to make this fail instead." detail
     end
-    return :Any
+    return fallback
 end
 
 """

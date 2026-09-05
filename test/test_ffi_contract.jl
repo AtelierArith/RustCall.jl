@@ -50,9 +50,6 @@ function core_is_non_ffi(s::AbstractString)
     return core_last_ident(s) in CORE_NON_FFI
 end
 
-# Tables 2-5 are Julia functions and can be called directly.
-table_structs(s) = RustCall.rust_to_julia_type_sym(s)                      # src/structs.jl:665
-
 # The union of the spellings any of the five tables (or the contract) has an
 # opinion about.
 const ALL_SPELLINGS = vcat(
@@ -430,10 +427,8 @@ const ALL_SPELLINGS = vcat(
         # A quick census, so a table gaining an entry shows up as a failure here
         # rather than silently.
         covered = Dict(
-            "structs/type_sym" => count(s -> table_structs(s) !== :Any, ALL_SPELLINGS),
             "ffi_contract" => count(RustCall.ffi_known, ALL_SPELLINGS),
         )
-        @test covered["structs/type_sym"] == 10
         # The contract covers everything except the genuinely unsupported
         # aggregate, which it refuses on purpose.
         @test covered["ffi_contract"] == length(ALL_SPELLINGS) - 1
@@ -444,7 +439,6 @@ const ALL_SPELLINGS = vcat(
         for s in ("i128", "u128", "char")
             @test core_is_ffi_compatible(s)
             # …but every Julia table mistranslates them.
-            @test table_structs(s) === :Any        # fail-open: `Any` in a ccall
             # The contract knows all three.
             @test RustCall.ffi_known(s)
         end
@@ -461,10 +455,13 @@ const ALL_SPELLINGS = vcat(
         # of type `u16` therefore becomes `:Any` in generated accessor code,
         # while the same type in a free function becomes `:UInt16`.
         for s in ("i8", "i16", "u8", "u16", "i128", "u128", "usize", "isize", "char")
-            @test table_structs(s) === :Any
             @test RustCall.ffi_julia_symbol(s) !== nothing
+            # A struct field accessor resolves the same concrete type a free
+            # function does — `src/structs.jl` no longer has a table of its own.
+            @test RustCall.ffi_return_type_or_throw(s, "", "S::f -> $s") !== Any
         end
         @test RustCall.ffi_julia_symbol("u16") === :UInt16
+        @test RustCall.ffi_return_type_or_throw("u16", "", "S::f -> u16") === UInt16
     end
 
     @testset "divergence: usize / isize spelling (#245 item 2)" begin
@@ -472,7 +469,6 @@ const ALL_SPELLINGS = vcat(
         # one with the fixed-width names. Same type on every supported
         # platform, different spelling in generated code — and a real
         # divergence on any target where `Csize_t !== UInt64`.
-        @test table_structs("usize") === :Any
         @test RustCall.ffi_julia_symbol("usize") === :Csize_t
         # Today these coincide; the test records the assumption.
         @test Csize_t === UInt64
@@ -487,14 +483,10 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_argument_contract("()").abi === :void
         @test RustCall.ffi_return_contract("()").abi === :void
         @test RustCall.ffi_return_ccall_type("()") === Cvoid
-        @test table_structs("()") === :Cvoid
         @test RustCall.ffi_julia_symbol("()") === :Cvoid
     end
 
     @testset "divergence: String / &str (#246)" begin
-        # Only `src/structs.jl` maps the string types at all.
-        @test table_structs("String") === :RustString
-        @test table_structs("&str") === :RustStr
         # `rustcall_core` classifies both as *non*-FFI…
         @test core_is_non_ffi("String")
         @test core_is_non_ffi("&str")
@@ -504,7 +496,6 @@ const ALL_SPELLINGS = vcat(
         # #246 identifies as the wrong shape for a Rust `String`.
         @test RustCall.rusttype_to_julia("String") === RustCall.RustString
         @test RustCall.rusttype_to_julia("str") === Cstring
-        @test table_structs("str") === :Any
         # The contract says what neither of them says: the shape and the owner
         # — but only once the manifest says the wrapper lowered the string.
         # `main`'s free-function wrapper does NOT lower it
@@ -524,19 +515,27 @@ const ALL_SPELLINGS = vcat(
         # path in each of them.
         for s in ("*const u8", "*mut i32", "*mut c_void")
             @test core_is_ffi_compatible(s)
-            @test table_structs(s) === :Any
             @test RustCall.ffi_known(s)
         end
     end
 
-    @testset "divergence: fail-open vs fail-closed (#245 item 1)" begin
-        # `rust_to_julia_type_sym` answers `:Any` for anything it does not know,
-        # which is indistinguishable from a real answer at the call site.
-        @test table_structs("Vec<f64>") === :Any
-        @test table_structs("CompletelyMadeUp") === :Any
-        # The contract answers `nothing`, which a caller cannot mistake for one.
+    @testset "fail-closed, naming the signature (#245 item 1)" begin
+        # `rust_to_julia_type_sym` used to answer `:Any` for anything it did not
+        # know, which is indistinguishable from a real answer at the call site.
+        # The contract answers `nothing`, and the generators raise.
         @test RustCall.ffi_julia_symbol("Vec<f64>") === nothing
         @test RustCall.ffi_return_contract("CompletelyMadeUp").known == false
+        for s in ("Vec<f64>", "CompletelyMadeUp")
+            ctx = "S::f() -> $s"
+            err = try
+                RustCall.ffi_return_type_or_throw(s, "", ctx; strict = :error)
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.RustError
+            @test occursin(ctx, sprint(showerror, err))
+        end
     end
 
     @testset "one return decision: ffi_return_symbol_or_throw (#276 AC 2)" begin
@@ -606,7 +605,6 @@ const ALL_SPELLINGS = vcat(
         # who frees a returned buffer. That absence is why `String` returns leak
         # (#246) and why the drop symbol is chosen from the Julia-side type tag
         # rather than from the allocating library (#249).
-        @test table_structs("String") === :RustString   # a type, no owner
         @test RustCall.ffi_return_contract("String"; abi = "string",
                                            owner = "shout").ownership === :owned_by_rust
         @test RustCall.ffi_argument_contract("String"; abi = "string").ownership ===
@@ -672,6 +670,5 @@ const ALL_SPELLINGS = vcat(
         # Phase A is additive. If any of these change, a call site was migrated
         # and the divergence tests above must be revisited.
         @test length(RustCall.RUST_TO_JULIA_TYPE_MAP) == 26
-        @test table_structs("i32") === :Int32
     end
 end
