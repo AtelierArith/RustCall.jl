@@ -143,6 +143,20 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test RustCall.inline_rustc_policy().panic_strategy === :abort
         @test RustCall.inline_cargo_policy().panic_strategy === :unwind
         @test RustCall.crate_policy().panic_strategy === :unwind
+
+        # Fourth unwinding path: the ownership helper library. deps/build.jl
+        # builds it with a plain `cargo build --release` and
+        # deps/rust_helpers/Cargo.toml declares no [profile.release] / panic
+        # key, so Cargo's unwind default applies (#244).
+        repo_root = dirname(_SRC_DIR)
+        build_jl = read(joinpath(repo_root, "deps", "build.jl"), String)
+        helpers_toml = read(joinpath(repo_root, "deps", "rust_helpers", "Cargo.toml"), String)
+        @test occursin("build --release --manifest-path", build_jl)
+        @test !occursin("panic", build_jl)
+        @test !occursin("panic", helpers_toml)
+        @test !occursin("[profile", helpers_toml)
+        @test RustCall.helper_library_policy().panic_strategy === :unwind
+        @test RustCall.requires_catch_unwind_boundary(RustCall.helper_library_policy())
         # The two inline doors disagree, which is exactly what #244 asks to fix.
         @test RustCall.inline_rustc_policy().panic_strategy !==
               RustCall.inline_cargo_policy().panic_strategy

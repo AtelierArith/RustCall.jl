@@ -57,9 +57,9 @@ handle via dlsym is RTLD_LOCAL.\
 
 One explicit record of the load/compile policy for a single compiled artifact.
 
-Construct one through a named constructor (see [`inline_rustc_policy`](@ref),
-[`inline_cargo_policy`](@ref), [`crate_policy`](@ref),
-[`helper_library_policy`](@ref), [`cache_hit_policy`](@ref)) rather than
+Construct one through a named constructor (see `inline_rustc_policy`,
+`inline_cargo_policy`, `crate_policy`,
+`helper_library_policy`, `cache_hit_policy`) rather than
 calling this constructor directly, so that every front door keeps a name.
 
 # Fields
@@ -71,7 +71,7 @@ calling this constructor directly, so that every front door keeps a name.
 
 - `global_symbols::Bool` — whether the flag set includes `RTLD_GLOBAL`, i.e.
   whether this artifact publishes its symbols into the process-global
-  namespace.  See [`SYMBOL_VISIBILITY_RULE`](@ref) for when that is legitimate.
+  namespace.  See `SYMBOL_VISIBILITY_RULE` for when that is legitimate.
 
 - `panic_strategy::Symbol` — `:abort` or `:unwind`, the panic strategy the
   artifact is *compiled* with.  `:abort` corresponds to `-C panic=abort`
@@ -183,7 +183,7 @@ Inline `rust\"\"\"...\"\"\"` block with no `// cargo-deps:`, compiled straight b
 Subsumes `src/ruststr.jl:284` (dlopen, `RTLD_LOCAL`) and the registration at
 `src/ruststr.jl:291`.  Compiled with `-C panic=abort` (`src/compiler.jl:381`).
 
-Diverges from [`cache_hit_policy`](@ref) — which is the *same block* on a cache
+Diverges from `cache_hit_policy` — which is the *same block* on a cache
 hit — only in the direction of the divergence being invisible to the user
 (#250).
 """
@@ -262,21 +262,32 @@ The ownership helper library `deps/rust_helpers`, loaded by
 `src/memory.jl:215` and `:321` into `RUST_HELPERS_LIB`.
 
 This is the one library other artifacts could legitimately need to resolve
-symbols against ([`SYMBOL_VISIBILITY_RULE`](@ref)), yet it is the one loaded
+symbols against (`SYMBOL_VISIBILITY_RULE`), yet it is the one loaded
 `RTLD_LOCAL` today.  Recorded as-is; Phase A changes nothing.
+
+Panic strategy is `:unwind`, not `:abort`: the helper library is built by
+`deps/build.jl:97-98` with a plain `cargo build --release --manifest-path ...`,
+and `deps/rust_helpers/Cargo.toml` (9 lines, `[package]`/`[lib]`/`[dependencies]`
+only) declares no `[profile.release]` and therefore no `panic` key, so Cargo's
+`unwind` default applies.  Together with the two Cargo-backed inline paths and
+`@rust_crate`, that makes the helper library a fourth unwinding artifact with no
+`catch_unwind` boundary (#244).
 """
 helper_library_policy() = LoadPolicy("helper-library";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :abort,
+    panic_strategy = :unwind,
     boundary_catches_panics = false,
     registry = :helper_slot,
     registry_key_kind = :none,
     sets_current_lib = false,
     finalizer_frees = true,
-    call_sites = ["src/memory.jl:215", "src/memory.jl:321"],
-    issues = [250],
+    call_sites = ["src/memory.jl:215", "src/memory.jl:321",
+                  "deps/build.jl:97-98", "deps/rust_helpers/Cargo.toml"],
+    issues = [244, 250],
     notes = "RTLD_LOCAL despite being the only library whose symbols other " *
-            "artifacts might resolve against — the visibility rule is inverted.")
+            "artifacts might resolve against — the visibility rule is " *
+            "inverted; and built by plain `cargo build --release`, so it " *
+            "unwinds like the other Cargo-backed artifacts.")
 
 """
     cache_hit_policy() -> LoadPolicy
@@ -284,7 +295,7 @@ helper_library_policy() = LoadPolicy("helper-library";
 An inline block served from the artifact cache: `load_cached_library`
 (`src/cache.jl:270`, `RTLD_LOCAL`) with registration at `src/ruststr.jl:251`.
 
-Identical source to [`inline_rustc_policy`](@ref); the pair
+Identical source to `inline_rustc_policy`; the pair
 `src/ruststr.jl:284` (miss) versus `src/ruststr.jl:386` (Cargo hit) is the
 concrete instance of #250 where symbol visibility depends on cache state.
 """
@@ -449,7 +460,7 @@ requires_catch_unwind_boundary(policy::LoadPolicy) =
 """
     registers_in_rust_libraries(policy::LoadPolicy) -> Bool
 
-Whether [`register_library!`](@ref) will write into `RUST_LIBRARIES`.
+Whether `register_library!` will write into `RUST_LIBRARIES`.
 """
 registers_in_rust_libraries(policy::LoadPolicy) = policy.registry === :rust_libraries
 
