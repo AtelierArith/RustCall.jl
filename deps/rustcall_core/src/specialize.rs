@@ -234,6 +234,10 @@ pub fn specialize(
         })
         .cloned()
         .collect();
+    // Const parameters have no binding mechanism; a `#[no_mangle]` function that
+    // is still generic exports no symbol, so refuse instead of silently
+    // producing an unusable library.
+    unbound.extend(crate::types::const_param_names(&func.sig.generics));
     if !unbound.is_empty() {
         return Err(SpecializeError::UnboundParams(unbound));
     }

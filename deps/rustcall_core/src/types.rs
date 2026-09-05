@@ -299,9 +299,23 @@ fn bound_to_manifest(b: &TypeParamBound) -> Option<TraitBound> {
     })
 }
 
+/// Whether the item is generic over types or consts. Lifetimes alone do not
+/// prevent a function from being exported through the C ABI.
 pub fn has_type_params(generics: &Generics) -> bool {
     generics
         .params
         .iter()
-        .any(|p| matches!(p, GenericParam::Type(_)))
+        .any(|p| matches!(p, GenericParam::Type(_) | GenericParam::Const(_)))
+}
+
+/// Names of const generic parameters (`const N: usize` -> `N`).
+pub fn const_param_names(generics: &Generics) -> Vec<String> {
+    generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            GenericParam::Const(c) => Some(c.ident.to_string()),
+            _ => None,
+        })
+        .collect()
 }

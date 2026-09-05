@@ -290,6 +290,27 @@ mod tests {
     }
 
     #[test]
+    fn const_generics_are_not_exported() {
+        let src = r#"
+            #[julia]
+            fn lookup<const N: usize>(x: [u8; N]) -> u8 { x[0] }
+            pub fn plain<const N: usize>() -> usize { N }
+        "#;
+        let e = expand::expand(src).unwrap();
+        let lookup = &e.manifest.functions[0];
+        assert!(!lookup.exported);
+        assert!(lookup.is_generic);
+        assert!(e.source.contains("compile_error!"));
+        assert!(!e.source.contains("extern \"C\" fn lookup"));
+        let plain = &e.manifest.functions[1];
+        assert!(!plain.exported && plain.is_generic);
+        let err = specialize::specialize(&e.source, "plain", &[], "plain_1").unwrap_err();
+        assert!(
+            matches!(err, specialize::SpecializeError::UnboundParams(ref p) if p == &vec!["N".to_string()])
+        );
+    }
+
+    #[test]
     fn manifest_roundtrips_through_toml() {
         let e = expand::expand("#[julia] fn a(x: i32) -> i32 { x }").unwrap();
         let toml = e.manifest.to_toml().unwrap();

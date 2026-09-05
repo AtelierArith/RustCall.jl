@@ -21,7 +21,7 @@ use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
 use crate::model::{collect_struct_models_in, StructModel};
 use crate::types::{
-    generics_to_type_params, has_type_params, is_inline_accessible_field_type,
+    const_param_names, generics_to_type_params, has_type_params, is_inline_accessible_field_type,
     return_type_to_string, type_to_string,
 };
 
@@ -85,7 +85,21 @@ fn expand_items(
                     Attribute::Julia | Attribute::JuliaPyo3 => {
                         let mut f = f.clone();
                         strip_rustcall_attrs(&mut f.attrs);
-                        if has_type_params(&f.sig.generics) {
+                        let consts = const_param_names(&f.sig.generics);
+                        if !consts.is_empty() {
+                            // Const generics cannot be instantiated from Julia and a
+                            // `#[no_mangle]` const-generic fn exports no symbol: fail
+                            // at compile time rather than at the first call.
+                            let name = f.sig.ident.to_string();
+                            let msg = format!(
+                                "#[julia] function `{name}` has const generic parameter(s) {}; const generics are not supported by RustCall",
+                                consts.join(", ")
+                            );
+                            out.push(syn::parse_quote! { compile_error!(#msg); });
+                            f.vis = Visibility::Public(Default::default());
+                            push_fn(manifest, function_entry(&f, attribute, false));
+                            out.push(Item::Fn(f));
+                        } else if has_type_params(&f.sig.generics) {
                             f.vis = Visibility::Public(Default::default());
                             push_fn(manifest, function_entry(&f, attribute, false));
                             out.push(Item::Fn(f));
