@@ -1041,14 +1041,19 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     if handle == C_NULL
         throw(RustError("Failed to load $(policy.name) library: $(lib_path)"))
     end
-    return adopt_artifact!(policy, handle; lib_name, path = lib_path, kwargs...)
+    # `load_artifact!` opened this handle, so `load_artifact!` owns it: if the
+    # registration turns out not to need it (`:insert_only` lost the race), it
+    # is this call's job to close it. `adopt_artifact!` never closes a handle
+    # it was merely handed.
+    return adopt_artifact!(policy, handle; lib_name, path = lib_path,
+                           close_duplicate = true, kwargs...)
 end
 
 """
     adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
                     lib_name, path = "", symbols = (), return_types = (),
                     eager = (), snapshot_env = nothing,
-                    on_replace = :keep_handle,
+                    on_replace = :keep_handle, close_duplicate = false,
                     set_current = policy.sets_current_lib) -> LoadedArtifact
 
 The registration half of `load_artifact!`, for a handle that is already open.
@@ -1058,6 +1063,13 @@ two is what lets a caller that obtained a handle some other way — a test
 registering a preopened image, a generated `@rust_crate` module that keeps its
 own module-local `Ref` — publish it through exactly the same transaction, with
 the same eviction, liveness and `CURRENT_LIB` semantics.
+
+**It never closes the handle it was given.** An `:insert_only` policy whose key
+is already taken keeps the incumbent and hands the caller's handle back
+unused, but *closing* it is only correct for a caller that opened it — which is
+`load_artifact!`, and which therefore passes `close_duplicate = true`. Closing
+a handle the caller still owns, or one that was never a real `dlopen` result,
+is a segfault inside the dynamic loader.
 """
 function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
                          lib_name::AbstractString,
@@ -1067,6 +1079,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
                          eager = (),
                          snapshot_env = nothing,
                          on_replace::Symbol = :keep_handle,
+                         close_duplicate::Bool = false,
                          set_current::Bool = policy.sets_current_lib)
     on_replace in (:keep_handle, :dlclose) ||
         throw(ArgumentError("invalid on_replace $(on_replace); expected :keep_handle or :dlclose"))
@@ -1107,8 +1120,9 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         return LoadedArtifact(name, handle, lib_path, policy, alive, assumed)
     end
 
-    # dlclose outside the lock: it runs destructors in the image.
-    duplicate == C_NULL || Libdl.dlclose(duplicate)
+    # dlclose outside the lock: it runs destructors in the image. Only a
+    # handle this call is responsible for — see `close_duplicate`.
+    (close_duplicate && duplicate != C_NULL) && Libdl.dlclose(duplicate)
     (replaced != C_NULL && on_replace === :dlclose) && Libdl.dlclose(replaced)
     return artifact
 end

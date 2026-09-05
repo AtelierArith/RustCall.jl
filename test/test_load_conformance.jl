@@ -275,5 +275,64 @@ end
 
             @test RustCall.finalizer_failure_count() == 0
         end
+
+        # ------------------------------------------------------------------
+        # The third door: `@rust_crate`. It reaches the same boundary — which
+        # it did not until the crate wrappers learned to read the panic
+        # channel (the in-memory module and the emitted template both).
+        # ------------------------------------------------------------------
+        if !_CONF_CARGO
+            @test_skip "cargo is required for the @rust_crate conformance test"
+        else
+            @testset "@rust_crate reaches the same boundary" begin
+                crate = joinpath(dirname(dirname(pathof(RustCall))),
+                                 "examples", "sample_crate")
+                if !isdir(crate)
+                    @test_skip "examples/sample_crate not found"
+                else
+                    bindings = @rust_crate crate name="ConformanceCrate"
+
+                    # The crate's library is in the registry, which it was not
+                    # before B5: `@rust_crate` kept its handle module-locally
+                    # and `unload_library` could not see it (#250).
+                    crate_libs = filter(n -> startswith(n, "rust_crate_"),
+                                        RustCall.list_loaded_libraries())
+                    @test !isempty(crate_libs)
+
+                    @test Base.invokelatest(bindings.add, Int32(2), Int32(3)) == Int32(5)
+
+                    thrown = try
+                        Base.invokelatest(bindings.panicky, Int32(-4))
+                        nothing
+                    catch e
+                        e
+                    end
+                    @test thrown isa RustCall.RustPanicError
+                    @test occursin("negative value: -4", thrown.message)
+                    # ...and the library still works.
+                    @test Base.invokelatest(bindings.panicky, Int32(5)) == Int32(10)
+
+                    # A failed `assert!` in a crate function, and a panicking
+                    # method, reach it too.
+                    @test_throws RustCall.RustPanicError Base.invokelatest(
+                        bindings.panicky_assert, Int32(-1))
+                    @test_throws RustCall.RustPanicError Base.invokelatest(
+                        bindings.panicky_string, Int32(-1))
+
+                    counter = Base.invokelatest(bindings.PanicCounter, Int32(-2))
+                    @test_throws RustCall.RustPanicError Base.invokelatest(
+                        bindings.checked, counter)
+                    ok = Base.invokelatest(bindings.PanicCounter, Int32(4))
+                    @test Base.invokelatest(bindings.checked, ok) == Int32(4)
+
+                    # And the lifetime rule holds on this door as well.
+                    @test getfield(counter, :free_ptr) != C_NULL
+                    @test getfield(counter, :alive)[]
+                    finalize(counter)
+                    @test getfield(counter, :ptr) == C_NULL
+                    @test RustCall.finalizer_failure_count() == 0
+                end
+            end
+        end
     end
 end

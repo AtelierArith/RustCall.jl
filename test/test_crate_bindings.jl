@@ -820,10 +820,18 @@ end
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
     @test occursin("_call_rust_owned_string_ptr(_get_func_ptr(\"rustcall_shout\"), _get_func_ptr(\"shout_free_rust_string\")", code)
     @test occursin("__rustcall_str_input = String(input)", code)
-    @test occursin("GC.@preserve __rustcall_str_input", code)
+    @test occursin("GC.@preserve(__rustcall_str_input", code)
     @test occursin("_call_rust_borrowed_string_ptr(_get_func_ptr(\"rustcall_crate_greeting\")", code)
-    @test occursin("GC.@preserve __rustcall_str_s call_rust_function(func_ptr, CResult_parse_int, pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
-    @test occursin("GC.@preserve  call_rust_function(func_ptr, Int32, Int32(a), Int32(b))", code)
+    @test occursin("GC.@preserve(__rustcall_str_s, call_rust_function(func_ptr, CResult_parse_int, pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t))", code)
+    # Nothing to preserve: `GC.@preserve` is omitted entirely rather than
+    # emitted with an empty object list, because the call is now nested inside
+    # `_guard_panic(...)` and the parenthesized form needs at least one object
+    # (#244, #277 Phase B5).
+    @test occursin("_guard_panic(call_rust_function(func_ptr, Int32, Int32(a), Int32(b)), \"rustcall_add\", \"add\")", code)
+    # Every generated call reads its wrapper's panic channel.
+    @test occursin("_guard_panic(", code)
+    @test occursin("_panic_channel(", code)
+    @test occursin("RustCall.guard_rust_panic_ptr", code)
     # and the emitted module parses
     @test Meta.parse(code) isa Expr
 end
@@ -845,12 +853,12 @@ end
 
     # Result return: func_ptr and c_result are both argument names
     @test occursin("__rustcall_func_ptr = _get_func_ptr(\"rustcall_shadow_parse_int\")", code)
-    @test occursin("__rustcall_c_result = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, CResult_shadow_parse_int,", code)
+    @test occursin("__rustcall_c_result = GC.@preserve(__rustcall_str_func_ptr, call_rust_function(__rustcall_func_ptr, CResult_shadow_parse_int,", code)
     @test occursin("if __rustcall_c_result.is_ok == 1", code)
 
     # Option return: func_ptr and c_option are both argument names
     @test occursin("__rustcall_func_ptr = _get_func_ptr(\"rustcall_shadow_first_char\")", code)
-    @test occursin("__rustcall_c_option = GC.@preserve __rustcall_str_func_ptr call_rust_function(__rustcall_func_ptr, COption_shadow_first_char,", code)
+    @test occursin("__rustcall_c_option = GC.@preserve(__rustcall_str_func_ptr, call_rust_function(__rustcall_func_ptr, COption_shadow_first_char,", code)
     @test occursin("if __rustcall_c_option.is_some == 1", code)
 
     # No strings, but still a colliding argument name
@@ -893,18 +901,18 @@ end
     # `self` is in the preserve list of every instance method: a borrowed
     # `&str` points into the Rust object, which a temporary's finalizer could
     # otherwise free mid-call.
-    @test occursin("GC.@preserve self __rustcall_str_name _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_label_free_rust_string\"), getfield(self, :ptr), pointer(__rustcall_str_name), sizeof(__rustcall_str_name) % Csize_t)", code)
-    @test occursin("GC.@preserve self _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", code)
-    @test occursin("GC.@preserve __rustcall_str_s _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_shout_free_rust_string\"), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
-    @test occursin("GC.@preserve self __rustcall_str_s call_rust_function(func_ptr, Csize_t, getfield(self, :ptr), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
-    @test occursin("GC.@preserve self call_rust_function(func_ptr, Float64, getfield(self, :ptr))", code)
+    @test occursin("GC.@preserve(self, __rustcall_str_name, _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_label_free_rust_string\"), getfield(self, :ptr), pointer(__rustcall_str_name), sizeof(__rustcall_str_name) % Csize_t)", code)
+    @test occursin("GC.@preserve(self, _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", code)
+    @test occursin("GC.@preserve(__rustcall_str_s, _call_rust_owned_string_ptr(func_ptr, _get_func_ptr(\"Labeler_shout_free_rust_string\"), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve(self, __rustcall_str_s, call_rust_function(func_ptr, Csize_t, getfield(self, :ptr), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
+    @test occursin("GC.@preserve(self, call_rust_function(func_ptr, Float64, getfield(self, :ptr))", code)
     # The in-memory wrapper preserves `self` too
     labeler_info = only(filter(s -> s.name == "Labeler", info.julia_structs))
     kind_method = only(filter(m -> m.name == "kind", labeler_info.methods))
     kind_expr = string(RustCall._generate_crate_method_wrapper(labeler_info, kind_method))
-    @test occursin("GC.@preserve self _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", kind_expr)
+    @test occursin("GC.@preserve(self, _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", kind_expr)
     label_method = only(filter(m -> m.name == "label", labeler_info.methods))
-    @test occursin("GC.@preserve self __rustcall_str_name _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
+    @test occursin("GC.@preserve(self, __rustcall_str_name, _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
     # Constructors still return the boxed struct
     @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)))", code)
     @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)))", code)

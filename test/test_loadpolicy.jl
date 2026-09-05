@@ -682,7 +682,11 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             @test b.alive[]
             @test RustCall.exported_symbol(name, "f") == "f"   # metadata replaced
 
-            # :insert_only keeps the incumbent and reports it.
+            # :insert_only keeps the incumbent and reports it — and does not
+            # close the handle it was handed, which is only `load_artifact!`'s
+            # to close because only `load_artifact!` opened it. `handle` here
+            # is a bookkeeping value, never a real image, so closing it would
+            # segfault inside the dynamic loader.
             insert_only = RustCall.LoadPolicy("test-loader-insert";
                                               registration_mode = :insert_only)
             c = RustCall.adopt_artifact!(insert_only, handle; lib_name = name)

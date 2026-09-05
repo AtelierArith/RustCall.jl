@@ -395,6 +395,24 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
             end
         end
 
+        # Panic channels (#244). Each generated wrapper exports
+        # `<symbol>_take_panic`; a panicking call returns a sentinel and leaves
+        # its message there, and `_guard_panic` turns that into a
+        # `RustPanicError` rather than letting the caller use the sentinel.
+        # Resolved once per symbol, negative answers cached too: a crate built
+        # by an older RustCall has no channels and must not be probed on every
+        # call.
+        const _PANIC_CHANNELS = Dict{String, Ptr{Cvoid}}()
+
+        function _panic_channel(symbol::String)
+            get!(_PANIC_CHANNELS, symbol) do
+                _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))
+            end
+        end
+
+        _guard_panic(value, symbol::String, name::String) =
+            RustCall.guard_rust_panic_ptr(value, _panic_channel(symbol), name)
+
         $func_defs
         $struct_defs
     end
@@ -458,7 +476,9 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
         quote
             function $func_name($(arg_syms...))
                 $ptr_sym = _get_func_ptr($symbol_str)
-                call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...))
+                _guard_panic(
+                    call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...)),
+                    $symbol_str, $func_name_str)
             end
             export $func_name
         end
@@ -493,6 +513,10 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
                                          _ffi_context(func))
         :(call_rust_function(_get_func_ptr($symbol_str), $ret, $(call_args...)))
     end
+    # The string paths return a buffer the wrapper filled; on a panic it is the
+    # empty sentinel, which would decode to `""`, so the channel is read before
+    # the value is used (#244).
+    call = :(_guard_panic($call, $symbol_str, $func_name_str))
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
@@ -546,6 +570,10 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
             $(bindings...)
             $ptr_sym = _get_func_ptr($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
+            # A panic returns `CResult::panicked()` — the Err discriminant with
+            # an uninitialized payload — so the channel is read before the
+            # payload is decoded (#244).
+            _guard_panic(nothing, $symbol_str, $func_name_str)
             # Convert to RustResult
             if $c_sym.is_ok == 1
                 RustResult{$ok_julia_type, $err_julia_type}(true, convert_return($ok_julia_type, $c_sym.ok_value))
@@ -594,6 +622,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
             $(bindings...)
             $ptr_sym = _get_func_ptr($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...))
+            _guard_panic(nothing, $symbol_str, $func_name_str)
             # Convert to RustOption
             if $c_sym.is_some == 1
                 RustOption{$inner_julia_type}(true, convert_return($inner_julia_type, $c_sym.value))
@@ -863,10 +892,11 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # borrowed `&str` result points into the Rust object, which the finalizer
     # of a temporary `self` could otherwise free mid-call.
     method.is_static || pushfirst!(preserved, :self)
+    method_label = "$(struct_name_str)::$(method.name)"
     body = quote
         $(bindings...)
         $ptr_sym = _get_func_ptr($wrapper_name)
-        GC.@preserve $(preserved...) $call
+        _guard_panic($(_quote_preserved(preserved, call)), $wrapper_name, $method_label)
     end
 
     if method.is_static && method.is_constructor
@@ -1604,6 +1634,22 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "end")
     push!(lines, "")
 
+    # Panic channels (#244): each generated wrapper exports
+    # `<symbol>_take_panic`, and a panicking call returns a sentinel with its
+    # message waiting there. Resolved once per symbol, negative answers cached
+    # too — a crate built before #244 has no channels.
+    push!(lines, "const _PANIC_CHANNELS = Dict{String, Ptr{Cvoid}}()")
+    push!(lines, "")
+    push!(lines, "function _panic_channel(symbol::String)")
+    push!(lines, "    get!(_PANIC_CHANNELS, symbol) do")
+    push!(lines, "        _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))")
+    push!(lines, "    end")
+    push!(lines, "end")
+    push!(lines, "")
+    push!(lines, "_guard_panic(value, symbol::String, name::String) =")
+    push!(lines, "    RustCall.guard_rust_panic_ptr(value, _panic_channel(symbol), name)")
+    push!(lines, "")
+
     # Generate function wrappers
     for func in info.julia_functions
         if func.is_generic
@@ -1666,13 +1712,13 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     elseif ffi_owned_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
-$(prologue)    GC.@preserve $preserve_str _call_rust_owned_string_ptr(_get_func_ptr("$sym"), _get_func_ptr("$(_ffi_function_return(func).free_symbol)"), $converted_args_str)
+$(prologue)    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_owned_string_ptr(_get_func_ptr(\"$sym\"), _get_func_ptr(\"$(_ffi_function_return(func).free_symbol)\"), $converted_args_str)")), "$sym", "$func_name")
 end
 export $func_name"""
     elseif ffi_borrowed_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
-$(prologue)    GC.@preserve $preserve_str _call_rust_borrowed_string_ptr(_get_func_ptr("$sym"), $converted_args_str)
+$(prologue)    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr(_get_func_ptr(\"$sym\"), $converted_args_str)")), "$sym", "$func_name")
 end
 export $func_name"""
     else
@@ -1684,7 +1730,7 @@ export $func_name"""
         return """
 function $func_name($arg_syms)
 $(prologue)    $ptr_var = _get_func_ptr("$sym")
-    GC.@preserve $preserve_str call_rust_function($ptr_var, $ret_type_str, $converted_args_str)
+    _guard_panic($(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $ret_type_str, $converted_args_str)")), "$sym", "$func_name")
 end
 export $func_name"""
     end
@@ -1714,7 +1760,8 @@ end
 
 function $func_name($arg_syms)
 $(prologue)    $ptr_var = _get_func_ptr("$sym")
-    $c_var = GC.@preserve $preserve_str call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)
+    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)"))
+    _guard_panic(nothing, "$sym", "$func_name")
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, $err_type_str}(true, convert_return($ok_type_str, $c_var.ok_value))
     else
@@ -1745,7 +1792,8 @@ end
 
 function $func_name($arg_syms)
 $(prologue)    $ptr_var = _get_func_ptr("$sym")
-    $c_var = GC.@preserve $preserve_str call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)
+    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)"))
+    _guard_panic(nothing, "$sym", "$func_name")
     if $c_var.is_some == 1
         RustOption{$inner_type_str}(true, convert_return($inner_type_str, $c_var.value))
     else
@@ -1850,6 +1898,35 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
 end
 
 """
+    _quote_preserved(preserved, call) -> Expr
+
+`GC.@preserve <objects> <call>`, or just `call` when `preserved` is empty.
+The expression twin of `_emit_preserved`: `GC.@preserve` needs at least one
+object, so an empty list must not produce the macro call at all.
+"""
+_quote_preserved(preserved, call) =
+    isempty(preserved) ? call : Expr(:macrocall, Expr(:., :GC, QuoteNode(Symbol("@preserve"))),
+                                     nothing, preserved..., call)
+
+"""
+    _emit_preserved(preserve_str, call) -> String
+
+`GC.@preserve <objects>, <call>` as source text, or just `<call>` when there is
+nothing to preserve.
+
+`GC.@preserve` takes at least one object followed by the expression, so the
+empty case has to omit the macro entirely rather than emit
+`GC.@preserve(, call)`. The parenthesized form is used because the result is
+nested inside `_guard_panic(...)`, and it needs the objects **comma**-separated
+where the statement form separates them by spaces.
+"""
+function _emit_preserved(preserve_str::AbstractString, call::AbstractString)
+    objects = filter(!isempty, split(strip(preserve_str)))
+    isempty(objects) && return call
+    return "GC.@preserve($(join(objects, ", ")), $call)"
+end
+
+"""
     _emit_method_code(struct_info::RustStructInfo, method::RustMethod) -> String
 
 Generate Julia code for a method wrapper as a string.
@@ -1893,9 +1970,10 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
                                                          strict = strict))
         "call_rust_function($ptr_var, $ret_type_str, $args_str)"
     end
+    method_label = "$(struct_name)::$(method_name)"
     body = """
 $(prologue)    $ptr_var = _get_func_ptr("$wrapper_name")
-    GC.@preserve $preserve_str $call"""
+    _guard_panic($(_emit_preserved(preserve_str, call)), "$wrapper_name", "$method_label")"""
 
     if method.is_static && method.is_constructor
         # Static constructor

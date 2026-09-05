@@ -536,17 +536,19 @@ fn panicky_result(a: i32) -> Result<i32, i32> {
 
 /// A struct whose method panics, to cover the method wrapper.
 #[julia]
-struct PanicCounter {
-    value: i32,
+pub struct PanicCounter {
+    pub value: i32,
 }
 
 #[julia]
 impl PanicCounter {
-    fn new(value: i32) -> Self {
+    #[julia]
+    pub fn new(value: i32) -> Self {
         PanicCounter { value }
     }
 
-    fn checked(&self) -> i32 {
+    #[julia]
+    pub fn checked(&self) -> i32 {
         assert!(
             self.value > 0,
             "PanicCounter is not positive: {}",

@@ -232,6 +232,23 @@ function check_rust_panic(lib_name::AbstractString, symbol::AbstractString,
 end
 
 """
+    guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name)
+
+`value`, unless the wrapper whose channel is `channel` panicked.
+
+The pointer form, for callers that resolve symbols themselves and keep their
+own channel cache rather than going through `RUST_LIBRARIES` — the modules
+`@rust_crate` generates, and the bindings files `write_bindings_to_file`
+emits. `C_NULL` means "this artifact has no channel" (built before #244, or a
+raw `#[no_mangle]` function), and the guard is then a no-op.
+"""
+function guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name::AbstractString)
+    message = take_rust_panic(channel)
+    message === nothing && return value
+    throw(RustPanicError(String(func_name), message))
+end
+
+"""
     guard_rust_panic(value, lib_name, symbol, func_name = symbol)
 
 `value`, unless the wrapper `symbol` panicked — in which case the sentinel

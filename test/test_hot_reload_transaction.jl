@@ -73,12 +73,18 @@ end
     #     overwrite the image that is currently mapped.
     # ------------------------------------------------------------------
     @testset "each reload opens a fresh path" begin
-        @test RustCall._generation_path("/tmp/libfoo.dylib", 1) == "/tmp/libfoo.1.dylib"
-        @test RustCall._generation_path("/tmp/libfoo.so", 12) == "/tmp/libfoo.12.so"
+        # `joinpath` on both sides: the separator is the platform's, and this
+        # test also runs on Windows.
+        @test RustCall._generation_path(joinpath("tmp", "libfoo.dylib"), 1) ==
+              joinpath("tmp", "libfoo.1.dylib")
+        @test RustCall._generation_path(joinpath("tmp", "libfoo.so"), 12) ==
+              joinpath("tmp", "libfoo.12.so")
         # Next to the original, not in a temp directory: on Windows a DLL
         # resolves its dependencies relative to its own location.
-        @test dirname(RustCall._generation_path("/a/b/libfoo.so", 2)) == "/a/b"
-        @test basename(RustCall._generation_path("/a/b/foo.dll", 7)) == "foo.7.dll"
+        @test dirname(RustCall._generation_path(joinpath("a", "b", "libfoo.so"), 2)) ==
+              joinpath("a", "b")
+        @test basename(RustCall._generation_path(joinpath("a", "b", "foo.dll"), 7)) ==
+              "foo.7.dll"
 
         @test occursin("_generation_path(built, state.generation)", _HRT_SRC)
         @test occursin("cp(built, new_lib_path; force = true)", _HRT_SRC)
