@@ -731,9 +731,15 @@ Returns `lib_name`.  A no-op returning `lib_name` for policies that do not use
 `RUST_LIBRARIES` (`:module_local`, `:helper_slot`, `:none`), so a Phase B call
 site can call it unconditionally.
 
-Subsumes the eight open-coded `RUST_LIBRARIES[...] = ...` sites:
-`src/ruststr.jl:335`, `:375`, `:483`, `:520`, `:997`, `src/generics.jl:261`,
-`src/hot_reload.jl:210`, and the reload alias `src/rustmacro.jl:166` (#272).  Not called from `src/` yet (Phase A is additive).
+Subsumes the five remaining open-coded `RUST_LIBRARIES[...] = ...` sites:
+`_register_manifest` and the `@irust` loader in `src/ruststr.jl`,
+`src/generics.jl`, `src/hot_reload.jl`, and the reload alias in
+`src/rustmacro.jl` (#272).  The four inline-block sites collapsed into
+`_register_manifest`, which publishes the handle together with the manifest's
+name-to-symbol mappings so the two cannot be observed apart (#279); a Phase B
+`register_library!` has to keep that guarantee, which is what the `symbols`
+argument this function will grow is for.  Not called from `src/` yet (Phase A
+is additive).
 """
 function register_library!(policy::LoadPolicy, lib_name::AbstractString, handle::Ptr{Cvoid})
     name = String(lib_name)
@@ -758,7 +764,8 @@ end
     unregister_library!(policy::LoadPolicy, lib_name::AbstractString) -> Bool
 
 Remove the `RUST_LIBRARIES` entry, its function-pointer cache and the
-library's name-to-symbol mappings (`clear_function_symbols!`, #279) under
+library's registry metadata — its name-to-symbol mappings and return-type
+hints (`clear_library_metadata!`, #279) — under
 `REGISTRY_LOCK`, clearing `CURRENT_LIB[]` if it pointed at `lib_name`.
 Returns whether an entry was removed.  Does not `dlclose`: Phase B decides that
 together with the unload purge described in #250.
@@ -775,7 +782,7 @@ function unregister_library!(policy::LoadPolicy, lib_name::AbstractString)
         if removed
             delete!(RUST_LIBRARIES, name)
         end
-        clear_function_symbols!(name)
+        clear_library_metadata!(name)
         if CURRENT_LIB[] == name
             CURRENT_LIB[] = ""
         end

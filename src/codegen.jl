@@ -36,14 +36,18 @@ Maps (library name, function name) to FunctionInfo.
 const FUNCTION_REGISTRY_BY_LIB = Dict{Tuple{String, String}, FunctionInfo}()
 
 """
-Registry for function return types (for functions without full signature registration).
-Maps function name to return type.
-"""
-const FUNCTION_RETURN_TYPES = Dict{String, Type}()
+Registry for function return types (for functions without full signature
+registration), keyed by `(library name, function name)`.
 
-"""
-Library-scoped registry for function return types.
-Maps (library name, function name) to return type.
+There is deliberately **no** name-only fallback table, and no cross-library
+search. A name-keyed hint outlives the library that wrote it: clearing or
+reloading that library would leave its return type answering for every other
+library's function of the same name, and a rebuilt library that no longer
+declares the function that way would be typed by the stale value (#279).
+Lookups go through the library `_resolve_call` took the pointer from, so a
+call's pointer and its ABI always come from the same build.
+
+Guarded by `REGISTRY_LOCK`.
 """
 const FUNCTION_RETURN_TYPES_BY_LIB = Dict{Tuple{String, String}, Type}()
 
@@ -60,7 +64,7 @@ The mapping is strictly **per library**, and identity mappings are recorded
 too. One library exporting `#[julia] fn f` as `rustcall_f` must not decide how
 `f` resolves in another library that exports a plain `#[no_mangle] fn f` under
 its own name; a library with no entry for a name resolves it to the name
-itself. Entries are dropped with the library (`clear_function_symbols!`), so an
+itself. Entries are dropped with the library (`clear_library_metadata!`), so an
 unloaded library cannot leave a stale mapping behind.
 
 Guarded by `REGISTRY_LOCK`.
@@ -99,18 +103,59 @@ function exported_symbol(lib_name::AbstractString, name::AbstractString)
 end
 
 """
-    clear_function_symbols!(lib_name)
+    clear_library_metadata!(lib_name)
 
-Drop every name-to-symbol mapping of `lib_name`. Called wherever a library
-leaves `RUST_LIBRARIES` or is replaced under the same name (unload, hot
-reload, re-registration of a `rust\"\"\"` block), so a stale mapping can never
-redirect a later lookup to a symbol that is no longer loaded.
+Drop everything the registries record *about* one library: its name-to-symbol
+mappings and its return-type hints.
+
+Called wherever a library leaves `RUST_LIBRARIES` or is replaced under the same
+name (unload, hot reload, re-registration of a `rust\"\"\"` block). A stale
+mapping would redirect a later lookup to a symbol that is no longer loaded, and
+a stale hint would type a call to a function the rebuilt library no longer
+declares that way — so the two must go together, in the same transaction that
+removes the handle (#279).
+
+Both registries are keyed by library, so dropping a library's rows is all there
+is to it: nothing it recorded can outlive it under a name-only key.
 """
-function clear_function_symbols!(lib_name::AbstractString)
+function clear_library_metadata!(lib_name::AbstractString)
     name = String(lib_name)
     lock(REGISTRY_LOCK) do
         for key in collect(keys(FUNCTION_SYMBOLS_BY_LIB))
             first(key) == name && delete!(FUNCTION_SYMBOLS_BY_LIB, key)
+        end
+        for key in collect(keys(FUNCTION_RETURN_TYPES_BY_LIB))
+            first(key) == name && delete!(FUNCTION_RETURN_TYPES_BY_LIB, key)
+        end
+    end
+    return nothing
+end
+
+"""
+    copy_library_metadata!(from, to)
+
+Give the library `to` the same name-to-symbol mappings and return-type hints as
+`from`, replacing whatever it had.
+
+Used when one loaded handle is registered under a second name (`@rust`'s reload
+alias, `_alias_reloaded_library`): both registries are per library, so the alias
+needs its own entries. Without the mappings a lookup through it would resolve
+`f` to `f` and miss the `rustcall_f` the library actually exports; without the
+hints an untyped `@rust f(...)` through the alias would fall back to the
+unscoped table and pick up whatever *another* block last registered for that
+name (#279).
+"""
+function copy_library_metadata!(from::AbstractString, to::AbstractString)
+    source = String(from)
+    target = String(to)
+    source == target && return nothing
+    lock(REGISTRY_LOCK) do
+        clear_library_metadata!(target)
+        for ((lib, name), symbol) in collect(FUNCTION_SYMBOLS_BY_LIB)
+            lib == source && (FUNCTION_SYMBOLS_BY_LIB[(target, name)] = symbol)
+        end
+        for ((lib, name), ret_type) in collect(FUNCTION_RETURN_TYPES_BY_LIB)
+            lib == source && (FUNCTION_RETURN_TYPES_BY_LIB[(target, name)] = ret_type)
         end
     end
     return nothing
@@ -151,15 +196,24 @@ end
 """
     get_function_return_type(lib_name::String, func_name::String) -> Union{Type, Nothing}
 
-Get a registered return type for a function in a specific library.
-Falls back to global function-name mapping for backward compatibility.
+The return type `lib_name` itself registered for `func_name`, or `nothing`.
+
+**Only that library's own entry is consulted.** No name-only fallback, and no
+search of the other libraries: a hint must never describe a function in a
+library other than the one the call actually reaches. `lib_name` here is the
+*owning* library — the one `_resolve_call` took the pointer from — so the
+pointer and the ABI it is called with always come from the same build.
+
+Borrowing would be worse than having no hint: a library whose `f` returns
+`Result<i32, i32>` deliberately records nothing (the wrapper returns a
+`CResult_f` struct, and `@rust` callers must be explicit), so any hint found
+elsewhere for the name `f` is not merely unrelated but the wrong ABI. Absent a
+hint the caller infers from the arguments or demands an explicit `::T` (#279).
 """
 function get_function_return_type(lib_name::String, func_name::String)
-    by_lib = get(FUNCTION_RETURN_TYPES_BY_LIB, (lib_name, func_name), nothing)
-    if by_lib !== nothing
-        return by_lib
+    lock(REGISTRY_LOCK) do
+        get(FUNCTION_RETURN_TYPES_BY_LIB, (lib_name, func_name), nothing)
     end
-    return get(FUNCTION_RETURN_TYPES, func_name, nothing)
 end
 
 """

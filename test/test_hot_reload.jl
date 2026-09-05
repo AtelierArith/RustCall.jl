@@ -195,6 +195,60 @@ end
         end
     end
 
+    # #279 follow-up: unloading a library drops its name-to-symbol mappings, so
+    # a reload has to rebuild them from a fresh scan of the crate. Without that,
+    # the first reload leaves `get_function_pointer(lib, "f")` hunting for the
+    # symbol `f` while the rebuilt library exports `rustcall_f`.
+    @testset "reload restores the name -> symbol mappings (#279)" begin
+        empty!(RustCall.HOT_RELOAD_REGISTRY)
+        lib_name = "SampleCrateSymbols"
+
+        # A `#[julia]` function the sample crate exports under a prefixed symbol.
+        attributed = RustCall.scan_crate(SAMPLE_CRATE_PATH).julia_functions
+        sig = first(f for f in attributed if !f.is_generic && f.exported)
+        @test sig.symbol == "rustcall_" * sig.name
+
+        try
+            state = RustCall.enable_hot_reload(lib_name, SAMPLE_CRATE_PATH)
+            @test state !== nothing
+
+            # Metadata a previous build of this library left behind: a
+            # function that no longer exists, and a return-type hint for it.
+            # The reload rebuilds the tables from the rescanned manifest, so
+            # both must be gone afterwards (#279).
+            lock(RustCall.REGISTRY_LOCK) do
+                RustCall.FUNCTION_SYMBOLS_BY_LIB[(lib_name, "ghost_fn")] = "rustcall_ghost_fn"
+                RustCall.FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, "ghost_fn")] = Int32
+                # A stale hint for a function that *does* still exist, under a
+                # type the crate never declared.
+                RustCall.FUNCTION_RETURN_TYPES_BY_LIB[(lib_name, sig.name)] = Bool
+            end
+
+            # Whatever the enable path left behind, a reload must end with the
+            # mappings in place next to the new handle.
+            RustCall.trigger_reload(lib_name)
+
+            # The stale entries are gone.
+            @test RustCall.exported_symbol(lib_name, "ghost_fn") == "ghost_fn"
+            @test RustCall.get_function_return_type(lib_name, "ghost_fn") === nothing
+            # ... and the surviving function's hint was rebuilt, not kept.
+            @test RustCall.get_function_return_type(lib_name, sig.name) !== Bool
+
+            @test RustCall.exported_symbol(lib_name, sig.name) == sig.symbol
+            @test haskey(RustCall.RUST_LIBRARIES, lib_name)
+            ptr = RustCall.get_function_pointer(lib_name, sig.name)
+            @test ptr != C_NULL
+        finally
+            RustCall.disable_all_hot_reload()
+            sleep(0.1)
+            empty!(RustCall.HOT_RELOAD_REGISTRY)
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, lib_name)
+                RustCall.clear_library_metadata!(lib_name)
+            end
+        end
+    end
+
     @testset "Check for changes" begin
         # Clear registry
         empty!(RustCall.HOT_RELOAD_REGISTRY)

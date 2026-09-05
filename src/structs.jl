@@ -10,7 +10,9 @@
 
 A method of a `#[julia]` struct as recorded in the manifest.
 
-- `symbol`: exported wrapper symbol (`Struct_method`); empty for generic structs
+- `symbol`: exported wrapper symbol (`rustcall_<Struct>_<method>`, #279); empty
+  for generic structs, and for a method built by hand rather than read from a
+  manifest, where the emitters fall back to `method_wrapper_symbol`
 - `is_constructor`: static `new`, or any method returning `Self`/the struct type
 - `generic_wrapper`: generic wrapper source registered for monomorphization
 """
@@ -36,6 +38,23 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     return_abi::String = _default_return_abi(return_type, arg_abis))
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi)
+end
+
+"""
+    method_wrapper_symbol(struct_name, method::RustMethod) -> String
+
+The exported symbol the Julia wrapper of a **concrete** struct method calls.
+
+Manifest-backed methods carry it in `symbol` (`rustcall_<Struct>_<method>`
+since #279). The six-argument `RustMethod` constructor cannot know the struct
+name, so a hand-built method records none; rather than emit `_get_func_ptr("")`
+the symbol is derived from the same scheme here. Generic structs never take
+this path: their wrappers are monomorphized by name and are addressed through
+`generic_wrapper`, not through a symbol.
+"""
+function method_wrapper_symbol(struct_name::AbstractString, method::RustMethod)
+    isempty(method.symbol) || return method.symbol
+    return ffi_method_symbol(struct_name, method.name)
 end
 
 """
@@ -317,8 +336,9 @@ function emit_julia_definitions(info::RustStructInfo)
     # 2. Add constructors and methods
     for m in info.methods
         fname = esc(Symbol(m.name))
-        # Exported symbol of the method wrapper, `rustcall_<Struct>_<method>` (#279).
-        wrapper_name = m.symbol
+        # Exported symbol of the method wrapper, `rustcall_<Struct>_<method>`
+        # (#279); derived when a hand-built `RustMethod` carries none.
+        wrapper_name = method_wrapper_symbol(struct_name_str, m)
 
         is_ctor = m.is_constructor
 

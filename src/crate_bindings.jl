@@ -750,7 +750,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     method_name = Symbol(method.name)
     # Exported symbol of the method wrapper (`rustcall_<Struct>_<method>`, #279);
     # the per-method string buffers stay named after the method itself.
-    wrapper_name = method.symbol
+    wrapper_name = method_wrapper_symbol(struct_name_str, method)
     helper_owner = "$(struct_name_str)_$(method.name)"
 
     arg_syms = [Symbol(name) for name in method.arg_names]
@@ -1685,7 +1685,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod)
     method_name = method.name
     # Exported symbol (`rustcall_<Struct>_<method>`, #279); the per-method
     # string buffers stay named after the method itself.
-    wrapper_name = method.symbol
+    wrapper_name = method_wrapper_symbol(struct_name, method)
     helper_owner = "$(struct_name)_$(method_name)"
 
     arg_syms = join(method.arg_names, ", ")

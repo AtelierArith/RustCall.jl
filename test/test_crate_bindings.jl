@@ -591,6 +591,50 @@ end
         @test occursin("_check_not_freed", code)
     end
 
+    # #279 follow-up: the six-argument `RustMethod` constructor cannot know the
+    # struct name, so a hand-built method carries no `symbol`. The emitters must
+    # derive `rustcall_<Struct>_<method>` rather than emit `_get_func_ptr("")`.
+    @testset "hand-built RustMethod falls back to the rustcall_ symbol" begin
+        ctor = RustCall.RustMethod("new", true, false, ["x", "y"], ["f64", "f64"], "Self")
+        getter = RustCall.RustMethod("norm", false, false, String[], String[], "f64")
+        shout = RustCall.RustMethod("shout", false, false, ["s"], ["String"], "String")
+        @test ctor.symbol == ""
+        @test RustCall.method_wrapper_symbol("Point", ctor) == "rustcall_Point_new"
+        @test RustCall.method_wrapper_symbol("Point", getter) == "rustcall_Point_norm"
+        # A manifest-backed symbol always wins over the derived one.
+        manifest_backed = RustCall.RustMethod("norm", false, false, String[], String[], "f64";
+                                              symbol = "rustcall_Other_norm")
+        @test RustCall.method_wrapper_symbol("Point", manifest_backed) == "rustcall_Other_norm"
+
+        struct_info = RustCall.RustStructInfo(
+            "Point", String[], [ctor, getter, shout], "",
+            [("x", "f64"), ("y", "f64")], true, Dict{String, Bool}()
+        )
+
+        # Source-text emitter (write_bindings_to_file).
+        for m in struct_info.methods
+            code = RustCall._emit_method_code(struct_info, m)
+            @test occursin("_get_func_ptr(\"rustcall_Point_$(m.name)\")", code)
+            @test !occursin("_get_func_ptr(\"\")", code)
+        end
+        # The string buffers stay named after the method, not after the symbol.
+        @test occursin("_get_func_ptr(\"Point_shout_free_rust_string\")",
+                       RustCall._emit_method_code(struct_info, shout))
+
+        # In-memory emitter (@rust_crate).
+        for m in struct_info.methods
+            expr = string(RustCall._generate_crate_method_wrapper(struct_info, m))
+            @test occursin("rustcall_Point_$(m.name)", expr)
+            @test !occursin("_get_func_ptr(\"\")", expr)
+        end
+
+        # Julia struct emitter (inline blocks).
+        defs = string(RustCall.emit_julia_definitions(struct_info))
+        @test occursin("rustcall_Point_new", defs)
+        @test occursin("rustcall_Point_norm", defs)
+        @test !occursin("\"\"", defs)
+    end
+
     @testset "_emit_struct_code finalizer is exception-safe" begin
         struct_info = RustCall.RustStructInfo(
             "SafeStruct",
