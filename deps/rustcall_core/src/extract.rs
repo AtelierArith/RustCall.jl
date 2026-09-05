@@ -11,9 +11,7 @@ use syn::{FnArg, Item, ItemFn, Pat, ReturnType};
 
 use crate::attrs::{has_no_mangle, rustcall_attribute};
 use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
-use crate::codegen::{
-    function_returns_string, returns_borrowed_str, returns_boxed_struct, returns_copied_str,
-};
+use crate::codegen::returns_boxed_struct;
 
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
@@ -130,6 +128,13 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         }
         _ => name.clone(),
     };
+    // The wrapper only lowers strings when it is actually generated; a generic
+    // item is wrapped per instantiation (see `specialize`), not here.
+    let return_abi = if wrapped && !is_generic {
+        crate::codegen::return_abi(&func.sig)
+    } else {
+        ""
+    };
     Function {
         name,
         symbol,
@@ -141,13 +146,13 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         args: fn_args(&func.sig),
         return_type,
         return_kind,
+        return_abi: return_abi.to_string(),
         ok_type,
         err_type,
         inner_type,
-        has_owned_string_helper: wrapped
-            && !is_generic
-            && (function_returns_string(&func.sig) || returns_copied_str(&func.sig)),
-        has_borrowed_string_helper: wrapped && !is_generic && returns_borrowed_str(&func.sig),
+        // Derived from the normative `return_abi` column since schema 4 (#276).
+        has_owned_string_helper: return_abi == "string",
+        has_borrowed_string_helper: return_abi == "str",
         source: if is_generic {
             let mut stripped = func.clone();
             crate::attrs::strip_rustcall_attrs(&mut stripped.attrs);
@@ -223,6 +228,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             Field {
                 name: name.to_string(),
                 rust_type: type_to_string(ty),
+                abi: crate::codegen::field_abi(ty).to_string(),
                 ffi_compatible,
                 getter: if ffi_compatible {
                     format!("{}_get_{}", struct_name, name)
@@ -246,6 +252,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             is_static: m.is_static,
             is_mutable: m.is_mutable,
             is_constructor: returns_boxed_struct(struct_name, &m.func),
+            returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
             // Crate method wrappers (`generate_method_wrapper_crate`) use the
@@ -264,7 +271,12 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         methods,
         derives: model.derives.clone(),
         has_clone: false,
-        has_owned_string_helper: false,
+        // A `String` field getter hands back an owned buffer, so the struct
+        // carries `<Struct>_RustCallOwnedString` / `<Struct>_free_rust_string`
+        // in crate mode too (#246).
+        has_owned_string_helper: crate::codegen::crate_struct_needs_owned_string_helper(
+            &model.item,
+        ),
         has_borrowed_string_helper: false,
         context_source: String::new(),
         generic_wrappers: Vec::new(),

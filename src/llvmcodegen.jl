@@ -448,8 +448,15 @@ function _rust_llvm_call(func_name::String, args...)
         try
             lib_name = get_current_library()
             func_ptr = get_function_pointer(lib_name, func_name)
-            # Fall back to ccall-based approach
-            return call_rust_function_infer(func_ptr, args...)
+            # The manifest-recorded return type, never a guess from the first
+            # argument — that was the #245 / #246 shape (#276).
+            ret_type = get_function_return_type(lib_name, func_name)
+            ret_type === nothing && throw(RustError(
+                "`@rust_llvm $func_name(...)` has no return type: the manifest " *
+                "records none for '$func_name' in library '$lib_name', and " *
+                "RustCall no longer guesses one from the arguments (#245, " *
+                "#246). Annotate the call with `::T`."))
+            return call_rust_function(func_ptr, ret_type, args...)
         catch e
             # Provide detailed error message
             error("""

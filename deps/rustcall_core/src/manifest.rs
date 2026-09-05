@@ -27,7 +27,15 @@ use serde::{Deserialize, Serialize};
 ///   (`rustcall_<fn>` / `rustcall_<Struct>_<method>`), not only for generic
 ///   instantiations. A version-2 consumer would `dlsym` the Rust name and find
 ///   nothing.
-pub const SCHEMA_VERSION: u32 = 3;
+/// * 4: one vocabulary for the type contract (#276): `Function.return_abi`
+///   replaces the pair of `has_*_string_helper` booleans as the *normative*
+///   description of a free function's return (the booleans stay, derived, for
+///   one release), `Field.abi` says how a field getter returns its value so
+///   Julia never re-derives it from the type spelling, and
+///   `Method.returns_boxed_struct` states explicitly what Julia used to infer
+///   by comparing `return_type` against `"Self"`. A version-3 consumer would
+///   read a `String` field getter as an opaque value.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Which pipeline produced the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,6 +136,14 @@ pub struct Function {
     /// Return type as written in the source (`i32`, `Result<f64, i32>`, `()`).
     pub return_type: String,
     pub return_kind: ReturnKind,
+    /// How the wrapper returns the value: `""` as written, `"string"` for an
+    /// owned `<fn>_RustCallOwnedString` (a `String`, or a `&str` copied because
+    /// it may borrow from a converted argument), `"str"` for a borrowed
+    /// `<fn>_RustCallBorrowedString`. Same vocabulary as [`Arg::abi`] and
+    /// [`Method::return_abi`]; this is the normative column since schema 4 and
+    /// the `has_*_string_helper` booleans below are derived from it (#276).
+    #[serde(default)]
+    pub return_abi: String,
     /// `T` of `Result<T, E>`, empty otherwise.
     #[serde(default)]
     pub ok_type: String,
@@ -140,10 +156,14 @@ pub struct Function {
     /// The function returns `String`: the wrapper returns
     /// `<fn>_RustCallOwnedString { ptr, len, cap }`, released through
     /// `<fn>_free_rust_string(ptr, len, cap)` (#242).
+    ///
+    /// Derived from [`Function::return_abi`] since schema 4 and kept for one
+    /// release so a consumer that still reads the boolean keeps working (#276).
     #[serde(default)]
     pub has_owned_string_helper: bool,
     /// The function returns `&str`: the wrapper returns
-    /// `<fn>_RustCallBorrowedString { ptr, len }` (#242).
+    /// `<fn>_RustCallBorrowedString { ptr, len }` (#242). Derived from
+    /// [`Function::return_abi`], see [`Function::has_owned_string_helper`].
     #[serde(default)]
     pub has_borrowed_string_helper: bool,
     /// Source of the function item (generic functions only), used for
@@ -170,6 +190,13 @@ pub struct Function {
 pub struct Field {
     pub name: String,
     pub rust_type: String,
+    /// How the generated getter returns the field: `""` as written
+    /// (`rust_type`), `"string"` for an owned `<Struct>_RustCallOwnedString`
+    /// released through `<Struct>_free_rust_string`. Same vocabulary as
+    /// [`Arg::abi`] / [`Method::return_abi`], so Julia never has to re-derive
+    /// the lowering from the type spelling (#276).
+    #[serde(default)]
+    pub abi: String,
     /// Whether Julia may read this field through an exported getter.
     pub ffi_compatible: bool,
     /// Exported symbol that reads the field. Usually `<Struct>_get_<field>`; in
@@ -191,6 +218,12 @@ pub struct Method {
     pub is_static: bool,
     pub is_mutable: bool,
     pub is_constructor: bool,
+    /// Whether the wrapper boxes the result and returns `*mut Struct`
+    /// (`crate::codegen::returns_boxed_struct`). Julia used to infer this by
+    /// comparing `return_type` against `"Self"` and the struct name, which
+    /// disagreed with codegen for a non-static method called `new` (#276).
+    #[serde(default)]
+    pub returns_boxed_struct: bool,
     #[serde(default)]
     pub args: Vec<Arg>,
     pub return_type: String,

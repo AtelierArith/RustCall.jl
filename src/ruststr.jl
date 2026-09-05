@@ -756,7 +756,13 @@ function _register_return_type(sig, lib_name::String)
     ret_type = if sig.return_kind == :unit
         Cvoid
     elseif sig.return_kind == :plain
-        _rust_primitive_to_julia_type(sig.return_type)
+        # One C slot, decided by the contract (`src/ffi_contract.jl`), not by a
+        # private primitive table: `i128`, `u128`, `char`, the `c_*` aliases and
+        # raw pointers all register now. Multi-word returns (a lowered `String`)
+        # are deliberately excluded — `@rust f(x)` without `::T` cannot decode a
+        # `(ptr, len, cap)` buffer, and the generated wrapper handles them.
+        c = ffi_return_contract(sig.return_type; abi = sig.return_abi)
+        c.known && (c.abi === :by_value || c.abi === :pointer) ? only(c.ccall_types) : nothing
     else
         # Result/Option wrappers return `CResult_<fn>`/`COption_<fn>` structs; the
         # generated Julia wrapper handles them, `@rust` callers must be explicit.
@@ -773,22 +779,6 @@ function _register_return_type(sig, lib_name::String)
     @debug "Registered return type for function: $(sig.name) (symbol $(sig.symbol)) => $ret_type (library: $lib_name)"
     return nothing
 end
-
-const _RUST_PRIMITIVE_TO_JULIA = Dict{String, Type}(
-    "i8" => Int8, "i16" => Int16, "i32" => Int32, "i64" => Int64,
-    "u8" => UInt8, "u16" => UInt16, "u32" => UInt32, "u64" => UInt64,
-    "f32" => Float32, "f64" => Float64,
-    "bool" => Bool,
-    "usize" => Csize_t, "isize" => Cssize_t,
-    "()" => Cvoid,
-)
-
-"""
-    _rust_primitive_to_julia_type(rust_type::AbstractString) -> Union{Type, Nothing}
-
-Julia type of a primitive Rust type name recorded in the manifest, or `nothing`.
-"""
-_rust_primitive_to_julia_type(rust_type::AbstractString) = get(_RUST_PRIMITIVE_TO_JULIA, strip(rust_type), nothing)
 
 """
     get_rust_module(code::String) -> Union{RustModule, Nothing}
@@ -1163,7 +1153,7 @@ end
 Convert Rust type string to Julia type.
 """
 function _rust_to_julia_type(rust_type::String)
-    return rusttype_to_julia(Symbol(rust_type))
+    return rusttype_to_julia(rust_type)
 end
 
 """

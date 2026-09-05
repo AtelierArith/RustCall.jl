@@ -254,8 +254,11 @@ julia_to_c_type(::Type{Bool}) = Bool
 julia_to_c_type(::Type{T}) where {T<:Ptr} = Ptr{Cvoid}
 julia_to_c_type(::Type{String}) = Cstring
 julia_to_c_type(::Type{Cstring}) = Cstring
-julia_to_c_type(::Type{RustString}) = Cstring
-julia_to_c_type(::Type{RustStr}) = Cstring
+# `RustString` / `RustStr` deliberately have NO `Cstring` lowering: a Rust
+# `String` is a `(ptr, len, cap)` buffer and a `&str` a `(ptr, len)` view,
+# neither of which is a NUL-terminated C string. That coercion was the wrong
+# shape #246 is about, and since #276 every string position is described by
+# `ffi_return_contract` / `ffi_argument_contract` instead.
 julia_to_c_type(::Type{T}) where {T<:AbstractString} = Cstring
 
 # Helper functions for ccall type handling (using multiple dispatch)
@@ -265,6 +268,12 @@ ccall_return_type(::Type{Cstring}) = Cstring
 ccall_return_type(::Type{String}) = Cstring
 # Rust's bool type in C ABI is represented as UInt8 (1 byte)
 ccall_return_type(::Type{Bool}) = UInt8
+# Rust `char` is a Unicode scalar value in 4 bytes; Julia's `Char` stores UTF-8
+# code units left-aligned, so the slot is a `UInt32` code point and the value is
+# converted here rather than reinterpreted (#245). This is the single place the
+# contract's slot-to-surface conversion happens: every return site asks
+# `ffi_return_symbol_or_throw` for the SURFACE type and lands in this dispatch.
+ccall_return_type(::Type{Char}) = UInt32
 ccall_return_type(::Type{T}) where {T} = T
 
 convert_return(::Type{Cvoid}, _) = nothing
@@ -273,6 +282,7 @@ convert_return(::Type{String}, value) = cstring_to_julia_string(value)
 # Convert Rust bool (UInt8) to Julia Bool: 0 = false, non-zero = true
 convert_return(::Type{Bool}, value::UInt8) = value != 0x00
 convert_return(::Type{Bool}, value) = Bool(value != 0)
+convert_return(::Type{Char}, value::Integer) = ffi_char_from_code_point(value)
 convert_return(::Type{T}, value) where {T} = value
 
 default_numeric_arg_type(::Type{Bool}) = Int32
@@ -302,6 +312,7 @@ is_supported_arg_type(::Type{T}) where {T<:Ptr} = true
 is_supported_arg_type(::Type{T}) where {T<:Ref} = true
 is_supported_arg_type(::Type{T}) where {T<:AbstractString} = true
 is_supported_arg_type(::Type{Cstring}) = true
+is_supported_arg_type(::Type{Char}) = true
 is_supported_arg_type(::Type{T}) where {T} = isbitstype(T)
 
 is_supported_return_type(::Type{T}) where {T<:Integer} = true
@@ -311,6 +322,7 @@ is_supported_return_type(::Type{Cvoid}) = true  # Note: Cvoid === Nothing
 is_supported_return_type(::Type{String}) = true
 is_supported_return_type(::Type{Cstring}) = true
 is_supported_return_type(::Type{T}) where {T<:Ptr} = true
+is_supported_return_type(::Type{Char}) = true
 is_supported_return_type(::Type{T}) where {T} = isbitstype(T)
 
 ccall_arg_type(::Type{T}) where {T<:AbstractString} = Cstring
@@ -318,6 +330,7 @@ ccall_arg_type(::Type{Cstring}) = Cstring
 ccall_arg_type(::Type{T}) where {T<:Integer} = T
 ccall_arg_type(::Type{T}) where {T<:AbstractFloat} = T
 ccall_arg_type(::Type{Bool}) = Bool
+ccall_arg_type(::Type{Char}) = UInt32
 ccall_arg_type(::Type{Ptr{T}}) where {T} = Ptr{T}
 ccall_arg_type(::Type{Ref{T}}) where {T} = Ref{T}
 ccall_arg_type(::Type{T}) where {T} = T # Pass structs by value
@@ -327,6 +340,7 @@ convert_arg(::Type{Cstring}, x) = x
 convert_arg(::Type{T}, x) where {T<:Integer} = convert(T, x)
 convert_arg(::Type{T}, x) where {T<:AbstractFloat} = convert(T, x)
 convert_arg(::Type{Bool}, x) = Bool(x)
+convert_arg(::Type{Char}, x) = ffi_char_code_point(x)
 convert_arg(::Type{Ptr{T}}, x) where {T} = convert(Ptr{T}, x)
 convert_arg(::Type{Ref{T}}, x) where {T} = convert(Ref{T}, x)
 convert_arg(::Type{T}, x) where {T} = x
@@ -348,7 +362,9 @@ convert_arg(::Type{T}, x) where {T} = x
         push!(arg_exprs, :(convert_arg($T, args[$i])))
     end
     ccall_expr = Expr(:call, :ccall, :func_ptr, ret_ccall, Expr(:tuple, ccall_arg_types...), arg_exprs...)
-    if R == String || R == Cstring || R == Bool
+    # Every return type whose C slot differs from its Julia surface type is
+    # converted here, once, rather than at each generated call site.
+    if R == String || R == Cstring || R == Bool || R == Char
         return :(convert_return($R, $ccall_expr))
     end
     return ccall_expr
@@ -431,28 +447,39 @@ end
 """
     call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
 
-Call a Rust function, inferring the return type from the first argument type.
-Uses @generated function for compile-time optimization based on argument types.
+!!! warning "Deprecated (#276)"
+    This function guessed the **return** type from the type of the **first
+    argument**, defaulting to `Int64` and reading a string argument as a
+    `Cstring` return. Neither is derivable from an argument, and reading a
+    return slot at the wrong width is undefined behaviour, not a fallback
+    (#245, #246). It now always raises.
+
+    Call `call_rust_function(func_ptr, T, args...)` with the return type, or
+    annotate the call site: `@rust f(x)::T`. A `#[julia]` function needs
+    neither — its return type comes from the manifest.
+
+Always throws a [`RustError`](@ref) naming the caller-visible fix.
 """
-@generated function call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
-    if length(args) == 0
-        return :(call_rust_function(func_ptr, Cvoid))
-    end
+function call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
+    Base.depwarn(
+        "call_rust_function_infer guesses the return type from the first " *
+        "argument and is deprecated (#276); pass the return type explicitly, " *
+        "e.g. call_rust_function(func_ptr, T, args...) or `@rust f(x)::T`.",
+        :call_rust_function_infer)
+    guessed = isempty(args) ? "Cvoid" : ffi_describe(juliatype_to_rust_or_name(typeof(first(args))))
+    throw(RustError(
+        "cannot call a Rust function without a return type: the return type " *
+        "was previously guessed from the first argument " *
+        "($(isempty(args) ? "no arguments" : guessed)), which is not " *
+        "derivable from it (#245, #246). Annotate the call site with " *
+        "`::T`, or call `call_rust_function(func_ptr, T, args...)`."))
+end
 
-    # Infer return type from first argument type at compile time
-    ret_type = if args[1] <: Integer
-        args[1]
-    elseif args[1] <: AbstractFloat
-        args[1]
-    elseif args[1] === Bool
-        Bool
-    elseif args[1] <: AbstractString || args[1] === Cstring
-        Cstring
-    else
-        Int64  # Default fallback
-    end
-
-    return :(call_rust_function(func_ptr, $ret_type, args...))
+# The Rust spelling of a Julia argument type, for the message above; falls back
+# to the Julia name when there is no Rust counterpart, so `ffi_describe` still
+# renders something useful.
+function juliatype_to_rust_or_name(::Type{T}) where {T}
+    return get(JULIA_TO_RUST_TYPE_MAP, T, string(nameof(T)))
 end
 
 """

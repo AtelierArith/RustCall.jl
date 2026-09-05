@@ -428,7 +428,8 @@ RustCall.write_bindings_to_file(
     output_path::String;
     output_module_name = nothing,
     build_release = true,
-    relative_lib_path = nothing
+    relative_lib_path = nothing,
+    strict = RustCall.FFI_STRICT[]
 ) -> String
 ```
 
@@ -439,6 +440,32 @@ RustCall.write_bindings_to_file(
 | `output_module_name` | `String` | Name for the generated module |
 | `build_release` | `Bool` | Build in release mode |
 | `relative_lib_path` | `String` | Path for library relative to output file |
+| `strict` | `Symbol` | What to do when the [FFI type contract](type_contract.md) cannot describe a return type: `:error` (default), `:warn`, `:none` |
+
+#### Unsupported types in a crate
+
+Every return type in the generated module is resolved through the FFI contract.
+A type the contract does not cover — a `Vec<T>` returned by value, say — used to
+be emitted as `Any`, which is not a well-defined `ccall` slot; it now raises,
+naming the signature:
+
+```
+the FFI contract cannot describe the return type of `mycrate::histogram(u32) -> Vec<f64>`
+```
+
+Change the Rust signature to something that can cross the boundary (return the
+aggregate behind a `*mut`, or expose accessors), or, to keep the rest of the
+crate building while you deal with it:
+
+```julia
+RustCall.write_bindings_to_file(crate_path, output_path; strict = :warn)
+```
+
+`:warn` restores the pre-#276 behaviour — one warning per signature and `Any` in
+the slot — for one minor release. The generated text also changed in two ways
+worth knowing about if you diff it against an older run: `usize` is spelled
+`Csize_t`, `*mut i32` is `Ptr{Int32}` rather than `Ptr{Cvoid}`, and a `String`
+field is read as an owned buffer instead of `Any`.
 
 #### `emit_crate_module_code`
 

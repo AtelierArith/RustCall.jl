@@ -1,6 +1,11 @@
 using Documenter
 using RustCall
 
+# The supported-type matrix is generated from the contract itself, so the page
+# cannot drift from the table generated code consults (#276, #245 item 4).
+include("generate_type_matrix.jl")
+generate_type_matrix(joinpath(@__DIR__, "src", "type_contract.md"))
+
 makedocs(
     sitename = "RustCall.jl",
     modules = [RustCall],
@@ -20,6 +25,7 @@ makedocs(
             "Examples" => "examples.md",
         ],
         "User Guide" => [
+            "The FFI Type Contract" => "type_contract.md",
             "Struct Mapping" => "struct_mapping.md",
             "Generics" => "generics.md",
             "External Crate Bindings" => "crate_bindings.md",

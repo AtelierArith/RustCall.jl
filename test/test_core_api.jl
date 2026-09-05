@@ -25,12 +25,19 @@ using Test
         @test RustCall.rusttype_to_julia("*const i32") == Ptr{Int32}
         @test RustCall.rusttype_to_julia("*mut f64") == Ptr{Float64}
 
-        # Test string types
+        # Test string types. `rusttype_to_julia` is a shim over the FFI contract
+        # since #276, and two spellings changed meaning with it: a Rust `str` is
+        # an unsized UTF-8 slice reached through a `(ptr, len)` fat pointer and a
+        # `*const u8` is a plain byte pointer — neither is the NUL-terminated
+        # `Cstring` the old table claimed (#246).
         @test RustCall.rusttype_to_julia("String") == RustCall.RustString
         @test RustCall.rusttype_to_julia("&str") == RustCall.RustStr  # &str is a fat pointer (issue #89)
-        @test RustCall.rusttype_to_julia("str") == Cstring    # bare str maps to Cstring
-        @test RustCall.rusttype_to_julia("*const u8") == Cstring
+        @test RustCall.rusttype_to_julia("str") == RustCall.RustStr
+        @test RustCall.rusttype_to_julia("*const u8") == Ptr{UInt8}
         @test RustCall.rusttype_to_julia("*mut u8") == Ptr{UInt8}
+        # A spelling the contract does not cover raises instead of guessing.
+        @test_throws ErrorException RustCall.rusttype_to_julia("Vec<f64>")
+        @test_throws ErrorException RustCall.rusttype_to_julia(:CompletelyMadeUp)
         @test RustCall.juliatype_to_rust(String) == "*const u8"
         @test RustCall.juliatype_to_rust(Cstring) == "*const u8"
         @test RustCall.juliatype_to_rust(RustCall.RustString) == "String"

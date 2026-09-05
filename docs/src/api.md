@@ -288,29 +288,37 @@ RustCall.enable_hot_reload_for_crate
 
 ## Type System
 
-### Type Mapping Constants
+### The FFI type contract
 
-The following constants define the mapping between Rust types and Julia types:
+Rust-to-Julia type mapping lives in one place, `src/ffi_contract.jl`, and is
+documented — with the generated supported-type matrix — under
+[The FFI Type Contract](type_contract.md).
+
+```@docs
+RustCall.FFI_ABI_KINDS
+RustCall.FFI_OWNERSHIP_KINDS
+RustCall.FFIType
+RustCall.FFIContract
+RustCall.FFI_TYPE_TABLE
+RustCall.FFI_STRICT
+RustCall.ffi_lookup
+RustCall.ffi_argument_contract
+RustCall.ffi_return_contract
+RustCall.ffi_return_symbol_or_throw
+RustCall.ffi_describe
+```
+
+`rusttype_to_julia` is a thin shim over that table. Two spellings changed
+meaning when it stopped having a table of its own (#276): `"str"` is `RustStr`
+rather than `Cstring`, and `"*const u8"` is `Ptr{UInt8}` rather than `Cstring`.
+A Rust `str` is an unsized UTF-8 slice reached through a `(ptr, len)` fat
+pointer and a `*const u8` is a plain byte pointer; neither is a NUL-terminated C
+string.
+
+The reverse direction still has a table of its own, since a Julia type does not
+determine a Rust spelling:
 
 ```julia
-# Rust to Julia type mapping
-const RUST_TO_JULIA_TYPE_MAP = Dict{Symbol, Type}(
-    :i8 => Int8,
-    :i16 => Int16,
-    :i32 => Int32,
-    :i64 => Int64,
-    :u8 => UInt8,
-    :u16 => UInt16,
-    :u32 => UInt32,
-    :u64 => UInt64,
-    :f32 => Float32,
-    :f64 => Float64,
-    :bool => Bool,
-    :usize => UInt,
-    :isize => Int,
-    Symbol("()") => Cvoid,
-)
-
 # Julia to Rust type mapping
 const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
     Int8 => "i8",
@@ -352,7 +360,7 @@ Filter = t -> begin
     end
     target_names = [
         :RUST_LIBRARIES, :RUST_MODULE_REGISTRY, :FUNCTION_REGISTRY, :IRUST_FUNCTIONS,
-        :CURRENT_LIB, :RUST_TO_JULIA_TYPE_MAP, :JULIA_TO_RUST_TYPE_MAP
+        :CURRENT_LIB, :JULIA_TO_RUST_TYPE_MAP
     ]
     return name in target_names
 end
@@ -378,6 +386,7 @@ Filter = t -> begin
         # Types (documented in @docs blocks)
         :RustResult, :RustOption, :RustBox, :RustRc, :RustArc, :RustVec, :RustSlice,
         :RustPtr, :RustRef, :RustString, :RustStr,
+        :FFIType, :FFIContract,
         :RustError, :CompilationError, :RuntimeError, :CargoBuildError, :DependencyResolutionError,
         :RustCompiler, :OptimizationConfig, :RustFunctionInfo,
         :DependencySpec, :CargoProject,

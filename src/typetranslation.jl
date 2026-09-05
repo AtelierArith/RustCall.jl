@@ -1,51 +1,6 @@
 # Type translation between Rust and Julia
 
 """
-Mapping from Rust type names (as Symbols) to Julia types.
-"""
-const RUST_TO_JULIA_TYPE_MAP = Dict{Symbol, Type}(
-    # Signed integers
-    :i8 => Int8,
-    :i16 => Int16,
-    :i32 => Int32,
-    :i64 => Int64,
-    :i128 => Int128,
-    :isize => Int,  # Platform-dependent
-
-    # Unsigned integers
-    :u8 => UInt8,
-    :u16 => UInt16,
-    :u32 => UInt32,
-    :u64 => UInt64,
-    :u128 => UInt128,
-    :usize => UInt,  # Platform-dependent
-
-    # Floating point
-    :f32 => Float32,
-    :f64 => Float64,
-
-    # Boolean
-    :bool => Bool,
-
-    # Unit type (void)
-    Symbol("()") => Cvoid,
-
-    # C types (for FFI compatibility)
-    :c_char => Cchar,
-    :c_int => Cint,
-    :c_uint => Cuint,
-    :c_long => Clong,
-    :c_ulong => Culong,
-    :c_longlong => Clonglong,
-    :c_ulonglong => Culonglong,
-    :c_float => Cfloat,
-    :c_double => Cdouble,
-
-    # String types (basic support)
-    :str => Cstring,  # bare :str symbol maps to Cstring for simple FFI
-)
-
-"""
 Mapping from Julia types to Rust type names (as Strings).
 """
 const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
@@ -76,75 +31,44 @@ const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
 )
 
 """
-    rusttype_to_julia(rust_type::Symbol) -> Type
+    rusttype_to_julia(rust_type) -> Type
 
-Convert a Rust type name to the corresponding Julia type.
+The Julia type a Rust type spelling maps to, as a `Symbol` or a `String`.
+
+A thin shim over the FFI contract (`src/ffi_contract.jl`), which is the single
+source of truth since #276: this had its own 26-row table, and the two
+disagreed. Raises for a spelling the contract does not cover, rather than
+guessing.
+
+Two spellings changed meaning with the migration, deliberately (#246):
+
+| spelling     | was       | is        |
+| ------------ | --------- | --------- |
+| `"str"`      | `Cstring` | `RustStr` |
+| `"*const u8"`| `Cstring` | `Ptr{UInt8}` |
+
+A Rust `str` is an unsized UTF-8 slice reached through a `(ptr, len)` fat
+pointer and a `*const u8` is a plain byte pointer; neither is the
+NUL-terminated `Cstring` the old table claimed. Use
+[`ffi_argument_contract`](@ref) / [`ffi_return_contract`](@ref) when you need
+the calling convention rather than just the Julia type.
 
 # Examples
 ```julia
-rusttype_to_julia(:i32)  # => Int32
-rusttype_to_julia(:f64)  # => Float64
-rusttype_to_julia(:bool) # => Bool
+rusttype_to_julia(:i32)          # => Int32
+rusttype_to_julia("*const i32")  # => Ptr{Int32}
+rusttype_to_julia("String")      # => RustString
 ```
 """
-function rusttype_to_julia(rust_type::Symbol)
-    if haskey(RUST_TO_JULIA_TYPE_MAP, rust_type)
-        return RUST_TO_JULIA_TYPE_MAP[rust_type]
-    end
-    error("Unsupported Rust type: $rust_type")
-end
+rusttype_to_julia(rust_type::Symbol) = rusttype_to_julia(String(rust_type))
 
-"""
-    rusttype_to_julia(rust_type::String) -> Type
-
-Convert a Rust type name string to the corresponding Julia type.
-Handles pointer types like `*const i32` and `*mut i32`.
-Also handles string types like `String` and `&str`.
-"""
-function rusttype_to_julia(rust_type::String)
-    rust_type = strip(rust_type)
-
-    # Handle pointer types
-    if startswith(rust_type, "*const ")
-        inner_type = rust_type[8:end]
-        inner_type_stripped = strip(inner_type)
-
-        # Special handling for string pointers
-        if inner_type_stripped == "u8" || inner_type_stripped == "c_char"
-            return Cstring
-        end
-
-        inner_julia_type = rusttype_to_julia(String(inner_type_stripped))
-        return Ptr{inner_julia_type}
-    elseif startswith(rust_type, "*mut ")
-        inner_type = rust_type[6:end]
-        inner_type_stripped = strip(inner_type)
-
-        # Special handling for string pointers
-        if inner_type_stripped == "u8" || inner_type_stripped == "c_char"
-            return Ptr{UInt8}
-        end
-
-        inner_julia_type = rusttype_to_julia(String(inner_type_stripped))
-        return Ptr{inner_julia_type}
-    end
-
-    # Handle string types
-    if rust_type == "String"
-        return RustString
-    elseif rust_type == "&str"
-        return RustStr  # &str is a fat pointer (ptr + len), represented by RustStr
-    elseif rust_type == "str"
-        return Cstring  # bare str symbol maps to Cstring for simple FFI
-    end
-
-    # Handle unit type
-    if rust_type == "()"
-        return Cvoid
-    end
-
-    # Try as a symbol
-    return rusttype_to_julia(Symbol(rust_type))
+function rusttype_to_julia(rust_type::AbstractString)
+    T = ffi_surface_type(rust_type)
+    T === nothing && error(
+        "Unsupported Rust type: $(rust_type). " *
+        "$(ffi_describe(rust_type)); see `RustCall.FFI_TYPE_TABLE` for the " *
+        "spellings the FFI contract covers (#276).")
+    return T
 end
 
 """

@@ -14,9 +14,11 @@ using SHA: sha256
 Manifest schema version this version of RustCall.jl understands. Must match
 `rustcall_core::manifest::SCHEMA_VERSION` (2: string ABI columns `abi`,
 `return_abi` and the string helper flags, #242; 3: `#[julia]` is additive, so
-`symbol` differs from `name` for every wrapped function and method, #279).
+`symbol` differs from `name` for every wrapped function and method, #279;
+4: one vocabulary for the type contract — `Function.return_abi`, `Field.abi`
+and `Method.returns_boxed_struct`, #276).
 """
-const MANIFEST_SCHEMA_VERSION = 3
+const MANIFEST_SCHEMA_VERSION = 4
 
 """
     ExtractorError <: Exception
@@ -679,6 +681,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             has_owned_string_helper = _mbool(f, "has_owned_string_helper"),
             has_borrowed_string_helper = _mbool(f, "has_borrowed_string_helper"),
             arg_abis = String[_mstr(a, "abi") for a in args],
+            return_abi = _mstr(f, "return_abi"),
         ))
     end
     return sigs
@@ -698,6 +701,7 @@ function _manifest_method(m)
         generic_wrapper = _mstr(m, "generic_wrapper"),
         arg_abis = String[_mstr(a, "abi") for a in args],
         return_abi = _mstr(m, "return_abi"),
+        returns_boxed_struct = _mbool(m, "returns_boxed_struct"),
     )
 end
 
@@ -710,11 +714,13 @@ function manifest_struct_infos(manifest::Dict)
     infos = RustStructInfo[]
     for s in _mvec(manifest, "structs")
         fields = Tuple{String, String}[]
+        field_abis = Dict{String, String}()
         getters = Dict{String, String}()
         setters = Dict{String, String}()
         for f in _mvec(s, "fields")
             name = _mstr(f, "name")
             push!(fields, (name, _mstr(f, "rust_type")))
+            field_abis[name] = _mstr(f, "abi")
             if _mbool(f, "ffi_compatible") && !isempty(_mstr(f, "getter"))
                 getters[name] = _mstr(f, "getter")
                 isempty(_mstr(f, "setter")) || (setters[name] = _mstr(f, "setter"))
@@ -733,6 +739,7 @@ function manifest_struct_infos(manifest::Dict)
             fields,
             true,
             derive_options;
+            field_abis = field_abis,
             field_getters = getters,
             field_setters = setters,
             has_clone = _mbool(s, "has_clone"),

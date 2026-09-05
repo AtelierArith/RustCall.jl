@@ -21,7 +21,11 @@ source text.
 - `module_path`: enclosing inline modules (`["api", "deep"]`)
 - `has_owned_string_helper` / `has_borrowed_string_helper`: the function returns
   `String` / `&str`; the wrapper returns `<fn>_RustCallOwnedString` (freed with
-  `<fn>_free_rust_string`) / `<fn>_RustCallBorrowedString` (#242)
+  `<fn>_free_rust_string`) / `<fn>_RustCallBorrowedString` (#242). Derived from
+  `return_abi` since manifest schema 4
+- `return_abi`: manifest `Function.return_abi` — `"string"` (owned buffer),
+  `"str"` (borrowed view) or `""` (as written). The normative description of
+  how the wrapper returns its value (#276)
 """
 struct RustFunctionSignature
     name::String
@@ -46,6 +50,7 @@ struct RustFunctionSignature
     has_owned_string_helper::Bool
     has_borrowed_string_helper::Bool
     arg_abis::Vector{String}
+    return_abi::String
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -60,13 +65,15 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                body_has_cfg::Bool = false,
                                has_owned_string_helper::Bool = false,
                                has_borrowed_string_helper::Bool = false,
-                               arg_abis::Vector{String} = _default_arg_abis(arg_types))
+                               arg_abis::Vector{String} = _default_arg_abis(arg_types),
+                               return_abi::String = _default_return_abi(return_type, arg_abis))
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
-                          has_owned_string_helper, has_borrowed_string_helper, arg_abis)
+                          has_owned_string_helper, has_borrowed_string_helper, arg_abis,
+                          return_abi)
 end
 
 """
@@ -74,9 +81,19 @@ end
 
 The `abi` column for signatures constructed by hand (tests, legacy callers):
 the extractor classifies argument types on the Rust side (`Arg.abi`:
-`"string"`, `"str"` or `""`), this only covers the literal spellings.
+`"string"`, `"str"` or `""`); this reconstructs the column from the FFI
+contract (`src/ffi_contract.jl`), which is the same table the wrapper
+generators consult, so a hand-built signature and a manifest one agree.
 """
-_default_arg_abis(arg_types) = String[t == "String" ? "string" : (t == "&str" ? "str" : "") for t in arg_types]
+_default_arg_abis(arg_types) = String[_default_arg_abi(t) for t in arg_types]
+
+function _default_arg_abi(rust_type::AbstractString)
+    entry = ffi_lookup(rust_type)
+    entry === nothing && return ""
+    entry.surface_type === RustString && return "string"
+    entry.surface_type === RustStr && return "str"
+    return ""
+end
 
 """
     _is_string_abi(abi) -> Bool
@@ -113,15 +130,26 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
     prefix = _string_temp_prefix(arg_names)
     for (name, rust_type, abi) in zip(arg_names, arg_types, arg_abis)
         arg_sym = escape(Symbol(name))
-        if _is_string_abi(abi)
+        # The contract, not the spelling, decides how many C slots this
+        # position occupies and what goes in them (#276).
+        c = ffi_argument_contract(rust_type; abi = abi)
+        if c.abi === :ptr_len || c.abi === :ptr_len_cap
+            # `(ptr, len)` — and, should an owned buffer ever be taken by
+            # value, `(ptr, len, cap)`. Slot-count driven, so a new multi-word
+            # ABI needs no new branch here.
             bytes = Symbol(prefix, name)
             push!(bindings, :($bytes = String($arg_sym)))
             push!(preserved, bytes)
             push!(call_args, :(pointer($bytes)))
             push!(call_args, :(sizeof($bytes) % Csize_t))
+            c.abi === :ptr_len_cap && push!(call_args, :(sizeof($bytes) % Csize_t))
+        elseif c.known && c.abi === :by_value
+            push!(call_args, :($(_ffi_slot_expr(rust_type, c))($arg_sym)))
         else
-            julia_type = _rust_type_to_julia_conversion_type(rust_type)
-            push!(call_args, julia_type === nothing ? arg_sym : :($julia_type($arg_sym)))
+            # A pointer, the unit type, or a spelling the contract does not
+            # cover: hand the value to `call_rust_function`, which applies its
+            # own Julia-type-keyed coercion, exactly as before.
+            push!(call_args, arg_sym)
         end
     end
     return bindings, preserved, call_args
@@ -160,14 +188,55 @@ function _generated_local(base::AbstractString, arg_names)
 end
 
 """
+    _ffi_context(sig_or_method, owner = nothing) -> String
+
+The signature an unsupported return type is reported against, for
+`ffi_return_symbol_or_throw`.
+"""
+_ffi_context(sig::RustFunctionSignature) =
+    ffi_signature_context(sig.name, sig.arg_types, sig.return_type)
+
+_ffi_context(m::RustMethod, owner::AbstractString) =
+    ffi_signature_context(m.name, m.arg_types, m.return_type; owner = owner)
+
+"""
+    _ffi_function_return(sig) -> FFIContract
+
+The return contract of a free function, with the owner set: the string helpers
+are named after the Rust item, so `<fn>_free_rust_string` comes out of the
+contract rather than being spelled at the call site (#246, #249).
+"""
+_ffi_function_return(sig::RustFunctionSignature) =
+    ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.name)
+
+"""
+    _ffi_field_return(info, field_name, field_type) -> FFIContract
+
+The return contract of a struct field getter. `Field.abi` (manifest schema 4)
+says whether the getter hands back an owned buffer, and the struct owns the
+`<Struct>_free_rust_string` that releases it — on both wrapper flavours.
+"""
+_ffi_field_return(info, field_name::AbstractString, field_type::AbstractString) =
+    ffi_return_contract(field_type; abi = get(info.field_abis, field_name, ""),
+                        owner = info.name)
+
+# A field getter reads as `Struct::field -> T`.
+_ffi_field_context(info, field_name::AbstractString, field_type::AbstractString) =
+    string(info.name, "::", field_name, " -> ", field_type)
+
+"""
     _uses_string_ffi(sig) -> Bool
 
 Whether the wrapper of `sig` needs the string ABI (string arguments or a
 `String` / `&str` return).
 """
 function _uses_string_ffi(sig::RustFunctionSignature)
-    return sig.has_owned_string_helper || sig.has_borrowed_string_helper ||
-           any(_is_string_abi, sig.arg_abis)
+    ffi_return_contract(sig.return_type; abi = sig.return_abi).aggregate_type === nothing ||
+        return true
+    return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
+        c = ffi_argument_contract(rust_type; abi = abi)
+        c.abi === :ptr_len || c.abi === :ptr_len_cap
+    end
 end
 
 """
@@ -242,11 +311,10 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
         return _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     end
 
-    # Get Julia return type
-    julia_ret_type = _rust_type_to_julia_type_symbol(sig.return_type)
-    if julia_ret_type === nothing
-        julia_ret_type = :Any
-    end
+    # The one return decision (#276): the contract, or a failure naming the
+    # signature — never a silent `Any`.
+    julia_ret_type = ffi_return_symbol_or_throw(sig.return_type, sig.return_abi,
+                                                _ffi_context(sig))
 
     # Generate the wrapper function using internal API directly
     # This avoids macro expansion issues
@@ -268,14 +336,18 @@ end
 function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     bindings, preserved, call_args = _string_arg_plan(sig, esc)
     lib_sym = _generated_local("lib_name", sig.arg_names)
-    call = if sig.has_owned_string_helper
-        # The string helpers are named after the Rust item, not the symbol.
-        free_name = ffi_free_symbol(sig.name)
+    # The string helpers are named after the Rust item, not the symbol, so the
+    # owner is the function name; the contract turns that into `free_symbol`.
+    c = ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.name)
+    call = if ffi_owned_string_return(c)
+        # The release stays indirect — the symbol is resolved inside the
+        # allocating library, which is the #249 half (#277 swaps the mechanism).
+        free_name = c.free_symbol
         :(RustCall._call_rust_owned_string($lib_sym, $symbol_str, $free_name, $(call_args...)))
-    elseif sig.has_borrowed_string_helper
+    elseif ffi_borrowed_string_return(c)
         :(RustCall._call_rust_borrowed_string($lib_sym, $symbol_str, $(call_args...)))
     else
-        ret = something(_rust_type_to_julia_type_symbol(sig.return_type), :Any)
+        ret = ffi_return_symbol_or_throw(sig.return_type, sig.return_abi, _ffi_context(sig))
         :(RustCall.call_rust_function(RustCall.get_function_pointer($lib_sym, $symbol_str), $ret, $(call_args...)))
     end
     quote
@@ -293,8 +365,15 @@ end
 # extractor generates `CResult_<fn>` / `COption_<fn>` on the Rust side; the
 # wrapper reads that struct and converts it to RustResult / RustOption.
 function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
-    ok_t = something(_rust_type_to_julia_type_symbol(sig.ok_type), :Any)
-    err_t = something(_rust_type_to_julia_type_symbol(sig.err_type), :Any)
+    ctx = _ffi_context(sig)
+    # The payloads are FIELDS of a `#[repr(C)]` aggregate, so they are declared
+    # with the type Rust stored — the C slot — and converted to the surface type
+    # after the call. For `char` those differ: Rust writes a `UInt32` code point
+    # where Julia's `Char` would be a left-aligned UTF-8 bit pattern (#245).
+    ok_t = ffi_return_symbol_or_throw(sig.ok_type, "", ctx)
+    err_t = ffi_return_symbol_or_throw(sig.err_type, "", ctx)
+    ok_slot = ffi_return_slot_symbol_or_throw(sig.ok_type, "", ctx)
+    err_slot = ffi_return_slot_symbol_or_throw(sig.err_type, "", ctx)
     lib_sym = _generated_local("lib_name", sig.arg_names)
     ptr_sym = _generated_local("func_ptr", sig.arg_names)
     c_sym = _generated_local("c_result", sig.arg_names)
@@ -303,14 +382,15 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
             $(bindings...)
             $lib_sym = RustCall.get_current_library()
             $ptr_sym = RustCall.get_function_pointer($lib_sym, $symbol_str)
-            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.CResultType{$ok_t, $err_t}, $(converted_args...))
+            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.CResultType{$ok_slot, $err_slot}, $(converted_args...))
             RustCall.convert_c_result_to_rust_result($c_sym, $ok_t, $err_t)
         end
     end
 end
 
 function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
-    inner_t = something(_rust_type_to_julia_type_symbol(sig.inner_type), :Any)
+    inner_t = ffi_return_symbol_or_throw(sig.inner_type, "", _ffi_context(sig))
+    inner_slot = ffi_return_slot_symbol_or_throw(sig.inner_type, "", _ffi_context(sig))
     lib_sym = _generated_local("lib_name", sig.arg_names)
     ptr_sym = _generated_local("func_ptr", sig.arg_names)
     c_sym = _generated_local("c_option", sig.arg_names)
@@ -319,64 +399,10 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
             $(bindings...)
             $lib_sym = RustCall.get_current_library()
             $ptr_sym = RustCall.get_function_pointer($lib_sym, $symbol_str)
-            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.COptionType{$inner_t}, $(converted_args...))
+            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.COptionType{$inner_slot}, $(converted_args...))
             RustCall.convert_c_option_to_rust_option($c_sym, $inner_t)
         end
     end
-end
-
-"""
-    _rust_type_to_julia_conversion_type(rust_type::String) -> Union{Symbol, Nothing}
-
-Get the Julia type to use for argument conversion from Rust type.
-Returns Nothing if no conversion is needed or type is unknown.
-"""
-function _rust_type_to_julia_conversion_type(rust_type::String)
-    type_map = Dict(
-        "i8" => :Int8,
-        "i16" => :Int16,
-        "i32" => :Int32,
-        "i64" => :Int64,
-        "u8" => :UInt8,
-        "u16" => :UInt16,
-        "u32" => :UInt32,
-        "u64" => :UInt64,
-        "f32" => :Float32,
-        "f64" => :Float64,
-        "bool" => :Bool,
-        "usize" => :Csize_t,
-        "isize" => :Cssize_t,
-    )
-
-    return get(type_map, strip(rust_type), nothing)
-end
-
-"""
-    _rust_type_to_julia_type_symbol(rust_type::String) -> Union{Symbol, Nothing}
-
-Get the Julia type symbol for return type annotation.
-"""
-function _rust_type_to_julia_type_symbol(rust_type::String)
-    rust_type = strip(rust_type)
-
-    type_map = Dict(
-        "i8" => :Int8,
-        "i16" => :Int16,
-        "i32" => :Int32,
-        "i64" => :Int64,
-        "u8" => :UInt8,
-        "u16" => :UInt16,
-        "u32" => :UInt32,
-        "u64" => :UInt64,
-        "f32" => :Float32,
-        "f64" => :Float64,
-        "bool" => :Bool,
-        "usize" => :Csize_t,
-        "isize" => :Cssize_t,
-        "()" => :Cvoid,
-    )
-
-    return get(type_map, rust_type, nothing)
 end
 
 # ============================================================================
@@ -443,10 +469,14 @@ end
 Convert a C-compatible result struct to RustResult{T, E}.
 """
 function convert_c_result_to_rust_result(c_result, ::Type{T}, ::Type{E}) where {T, E}
+    # The payload fields hold the C slot; `convert_return` reads them back as
+    # the surface type (identity for everything but `char`, whose slot is a
+    # `UInt32` code point). Only the ACTIVE payload is converted — the inactive
+    # one is uninitialized on the Rust side and may hold anything.
     if c_result.is_ok == 1
-        RustResult{T, E}(true, c_result.ok_value)
+        RustResult{T, E}(true, convert_return(T, c_result.ok_value))
     else
-        RustResult{T, E}(false, c_result.err_value)
+        RustResult{T, E}(false, convert_return(E, c_result.err_value))
     end
 end
 
@@ -456,8 +486,10 @@ end
 Convert a C-compatible option struct to RustOption{T}.
 """
 function convert_c_option_to_rust_option(c_option, ::Type{T}) where {T}
+    # See `convert_c_result_to_rust_result`: the field holds the C slot, and
+    # only a `Some` payload is initialized.
     if c_option.is_some == 1
-        RustOption{T}(true, c_option.value)
+        RustOption{T}(true, convert_return(T, c_option.value))
     else
         RustOption{T}(false, nothing)
     end

@@ -1,41 +1,35 @@
-# The FFI type contract: single source of truth (issue #276, Phase A)
+# The FFI type contract: single source of truth (issue #276)
 #
-# RustCall currently decides "what does this Rust type mean at the C boundary?"
-# in five independent places, each with its own table and its own domain:
+# RustCall used to decide "what does this Rust type mean at the C boundary?" in
+# five independent places, each with its own table and its own domain — plus
+# `RUST_TO_JULIA_TYPE_MAP`, a sixth and wider one. They disagreed: `u16` was
+# `UInt16` in a free function and `Any` in a struct field, `usize` was
+# `Csize_t` in two of them and `UInt64` in a third, `i128` and `char` were in
+# none of them although the Rust side generates wrappers for both, and `str`
+# was a `Cstring` — a NUL-terminated pointer, which a Rust string is not.
 #
-#   | table                                                    | knows                          |
-#   | -------------------------------------------------------- | ------------------------------ |
-#   | `is_ffi_compatible_type` / `is_non_ffi_type`             | `PRIMITIVES` + `Type::Ptr`     |
-#   | (`deps/rustcall_core/src/types.rs:85,104`)               |                                |
-#   | `_rust_type_to_julia_conversion_type`                    | 13 primitives                  |
-#   | (`src/julia_functions.jl:193`)                           |                                |
-#   | `_rust_type_to_julia_type_symbol`                        | the same 13 plus `()`          |
-#   | (`src/julia_functions.jl:220`)                           |                                |
-#   | `_RUST_PRIMITIVE_TO_JULIA` (`src/ruststr.jl:519`)        | 13 primitives plus `()`        |
-#   | `rust_to_julia_type_sym` (`src/structs.jl:665`)          | 8 primitives, `String`, `&str` |
-#
-# (`RUST_TO_JULIA_TYPE_MAP` in `src/typetranslation.jl` is a sixth, wider one.)
-#
-# This file is the *one* table those five are meant to collapse into. It also
-# makes explicit two things the manifest leaves implicit today:
+# This file is the one table they collapsed into (Phase B). It also makes
+# explicit two things the manifest leaves implicit:
 #
 #   * the **C ABI form** of a value — by value, behind a pointer, as a
 #     `(ptr, len)` pair, as a `(ptr, len, cap)` triple, ...
 #   * **ownership** — who is responsible for releasing the memory a C slot
 #     points at, and through which symbol.
 #
-# Phase A is strictly additive: nothing here is wired into a call site yet, and
-# no existing behaviour changes. `test/test_ffi_contract.jl` enumerates, as
-# executable documentation, every point where the five tables disagree with
-# this one. Phase B migrates the call sites; those tests then become the
-# regression tests for #245, #246 and #249.
+# What remains outside it, deliberately: `is_ffi_compatible_type` /
+# `is_non_ffi_type` (`deps/rustcall_core/src/types.rs`) is the *acceptance
+# gate* on the Rust side — it decides whether a wrapper is generated at all,
+# not what the type means — and `JULIA_TO_RUST_TYPE_MAP` covers the reverse
+# direction, which a Julia type does not determine on its own.
 #
-# Forward compatibility with the `abi` manifest column (#270, PR #274): the
-# extractor is growing an `Arg.abi` / `Method.return_abi` string column whose
-# values are `""` (as written), `"string"` and `"str"`. Every entry point here
-# accepts that column verbatim as the `abi` keyword and lets it override the
-# ABI derived from the Rust type spelling, so wiring the manifest column in
-# later is a parameter pass, not a rewrite.
+# The manifest, not the Rust spelling, is the authority on how a value was
+# lowered. The `abi` column (`Arg.abi`, `Function.return_abi`,
+# `Method.return_abi`, `Field.abi`) takes the values `""` (as written),
+# `"string"` and `"str"`; every entry point here accepts it verbatim as the
+# `abi` keyword and lets it override the ABI derived from the spelling.
+#
+# `test/test_ffi_contract.jl` holds what were the divergence tests and are now
+# the regression tests for #245, #246 and #249.
 
 # ============================================================================
 # Vocabulary
@@ -224,6 +218,11 @@ end
 # The `PRIMITIVES` list of `deps/rustcall_core/src/types.rs:12` in full. The
 # Julia-side tables stop at 13 of them; `i128`, `u128` and `char` are accepted
 # by the Rust side and map to `:Any` on the Julia side today (#245 item 2).
+# `i128` / `u128` do not round-trip on `x86_64-pc-windows-msvc`: MSVC has no
+# native 128-bit integer, so Rust and Julia disagree on how `extern "C"` passes
+# one (rust-lang/rust#54341). That is a platform ABI mismatch, not a mapping
+# choice — the row below is the only honest one, and no Julia-side type would
+# make the two agree.
 for (rust, T) in (
     ("i8", Int8),
     ("i16", Int16),
@@ -244,8 +243,8 @@ end
 
 # `usize` / `isize` are spelled with the C aliases because that is what the
 # generated code emits; `Csize_t === UInt64` and `Cssize_t === Int64` on every
-# platform RustCall supports, so this agrees with `RUST_TO_JULIA_TYPE_MAP`'s
-# `UInt` / `Int` as a *type* while differing as a *spelling*.
+# platform RustCall supports, so this agrees as a *type* with the `UInt` / `Int`
+# the retired `RUST_TO_JULIA_TYPE_MAP` used, while differing as a *spelling*.
 _ffi_register!(_ffi_scalar("usize", Csize_t, :Csize_t))
 _ffi_register!(_ffi_scalar("isize", Cssize_t, :Cssize_t))
 
@@ -260,7 +259,7 @@ _ffi_register!(FFIType(
 # -- The unit type -----------------------------------------------------------
 _ffi_register!(FFIType("()", Cvoid, Cvoid, :Cvoid, :void, :none, ""))
 
-# -- `std::os::raw` aliases (from `RUST_TO_JULIA_TYPE_MAP`) ------------------
+# -- `std::os::raw` aliases --------------------------------------------------
 for (rust, T, sym) in (
     ("c_char", Cchar, :Cchar),
     ("c_int", Cint, :Cint),
@@ -317,11 +316,11 @@ _ffi_register!(FFIType(
     "Fat pointer (ptr, len) when lowered; the manifest abi column says whether it was.",
 ))
 # Bare `str` is unsized and cannot cross the boundary by value; the existing
-# `RUST_TO_JULIA_TYPE_MAP` maps it to `Cstring`, which is recorded here so the
-# divergence tests can see it.
+# it is a `(ptr, len)` view like `&str`, never the `Cstring` the retired
+# `RUST_TO_JULIA_TYPE_MAP` claimed (#246).
 _ffi_register!(FFIType(
     "str", Ptr{UInt8}, RustStr, :RustStr, :unknown, :unknown,
-    "Unsized; only ever reachable behind a reference. RUST_TO_JULIA_TYPE_MAP says Cstring.",
+    "Unsized; only ever reachable behind a reference, so it travels as (ptr, len), never as a Cstring.",
 ))
 
 # ============================================================================
@@ -485,10 +484,11 @@ T = RustCall.ffi_julia_symbol("*const *mut i32")   # :(Ptr{Ptr{Int32}})
 Use [`ffi_julia_type`](@ref) when you want the `Type` itself rather than its
 spelling.
 
-This is the replacement for `_rust_type_to_julia_type_symbol`
-(`src/julia_functions.jl:220`) and `rust_to_julia_type_sym`
-(`src/structs.jl:665`) — except that both of those answer `:Any` for unknown
-types, while this answers `nothing` so the caller can fail closed.
+This replaced `_rust_type_to_julia_type_symbol` (`src/julia_functions.jl`) and
+`rust_to_julia_type_sym` (`src/structs.jl`), both of which answered `:Any` for
+an unknown type; this answers `nothing`, so a caller can fail closed. Return
+sites should call [`ffi_return_symbol_or_throw`](@ref), which does exactly
+that.
 """
 function ffi_julia_symbol(rust_type::AbstractString)
     entry = ffi_lookup(rust_type)
@@ -896,4 +896,235 @@ function ffi_describe(rust_type::AbstractString; direction::Symbol = :return, ab
     c.known || return "$(c.rust_type): not in the FFI contract"
     slots = isempty(c.ccall_types) ? "no slots" : join(string.(c.ccall_types), ", ")
     return "$(c.rust_type) [$(c.direction)]: abi=$(c.abi), slots=($slots), surface=$(c.surface_type), ownership=$(c.ownership)"
+end
+
+# ============================================================================
+# The one return decision (issue #276 Phase B)
+# ============================================================================
+
+"""
+    FFI_STRICT :: Ref{Symbol}
+
+What generated code does when the FFI contract cannot describe a **return**
+position:
+
+| value    | behaviour |
+| -------- | --------- |
+| `:error` | raise a `RustError` naming the signature (the default) |
+| `:warn`  | warn once per signature and emit `Any`, the pre-#276 behaviour |
+| `:none`  | emit `Any` silently |
+
+`Any` in a `ccall` return slot was never well defined — it is the guess #245
+is about — so `:warn` and `:none` exist only to get an existing crate compiling
+again while its unsupported types are dealt with. `write_bindings_to_file`
+binds this per call through its `strict` keyword.
+"""
+const FFI_STRICT = Ref{Symbol}(:error)
+
+const _FFI_WARNED_CONTEXTS = Set{String}()
+
+"""
+    ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
+
+How the return position of `ctx` is spelled in generated code, as a Julia AST
+fragment ready to splice.
+
+This is the single entry point every return site uses — the `Expr` generators
+of `src/crate_bindings.jl` and the source-text emitters alike — so the two
+copies cannot drift apart again (#276 acceptance criterion 2). `ctx` is the
+signature the position belongs to (`"mycrate::shout(s) -> String"`), and it is
+what an unsupported type is reported against.
+
+Multi-word returns are *not* handled here: a lowered `String` / `&str` return
+is a `#[repr(C)]` buffer with an owner, which the caller must take from
+[`ffi_return_contract`](@ref) so it also gets `free_symbol`. Asking for a
+single symbol for one is treated as unsupported.
+
+The C **slot** is what generated code needs, which is not always the surface
+type: Rust `char` arrives as a `UInt32` code point and must be converted, never
+reinterpreted as Julia's left-aligned UTF-8 `Char`.
+"""
+function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                    ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known
+        c.abi === :void && return :Cvoid
+        if c.abi === :by_value || c.abi === :pointer
+            # The **surface** spelling, not the raw C slot: `call_rust_function`
+            # lowers it to the slot and converts the value back
+            # (`ccall_return_type` / `convert_return` in `src/codegen.jl`), so
+            # the slot-to-surface conversion lives in one place instead of at
+            # every return site. Rust `char` is where the two differ.
+            return something(ffi_julia_symbol(rust_type), ffi_type_expr(c.surface_type))
+        end
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any)
+end
+
+"""
+    ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
+
+The spelling of the **C slot** a return position occupies, where
+[`ffi_return_symbol_or_throw`](@ref) gives the Julia surface type it is read
+back as.
+
+The two differ only for Rust `char` (a `UInt32` Unicode scalar value read back
+as a `Char`), and a plain return never needs this: `call_rust_function` takes
+the surface type and does the lowering itself. It is needed where the value is
+a **field of a `#[repr(C)]` aggregate** — the `CResult_<fn>` / `COption_<fn>`
+payloads — because the field must be declared with the type Rust actually
+stored, and the conversion to the surface type happens after the call
+(`convert_return`).
+"""
+function ffi_return_slot_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                         ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known
+        c.abi === :void && return :Cvoid
+        if c.abi === :by_value || c.abi === :pointer
+            return _ffi_slot_expr(rust_type, c)
+        end
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any)
+end
+
+"""
+    ffi_return_type_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Type
+
+[`ffi_return_symbol_or_throw`](@ref) as a `Type` rather than as a spelling, for
+the sites that splice a concrete type into generated code instead of a name —
+`src/structs.jl` used to pass a `Symbol` through the call and re-resolve it at
+run time through a nine-entry table, which is how a `u16` struct field became
+`Any` (#245).
+"""
+function ffi_return_type_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                  ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known
+        c.abi === :void && return Cvoid
+        if c.abi === :by_value || c.abi === :pointer
+            # The surface type; see [`ffi_return_symbol_or_throw`](@ref).
+            return c.surface_type
+        end
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, Any)
+end
+
+"""
+    ffi_char_code_point(c) -> UInt32
+
+The Unicode scalar value of a Julia `Char` (or of an integer already holding
+one), as it must reach a Rust `char` slot. Julia stores a `Char` as left-aligned
+UTF-8 code units, so its bit pattern is **not** the code point and
+reinterpreting it would hand Rust a different character (#245).
+
+Rejects anything that is not a Unicode scalar value: Rust's `char` has that as a
+validity invariant, and constructing one from a surrogate or an out-of-range
+value is undefined behaviour there.
+"""
+function ffi_char_code_point(c::AbstractChar)
+    isvalid(c) || throw(RustError(
+        "cannot pass $(repr(c)) to a Rust `char`: it is not a Unicode scalar value"))
+    return UInt32(c)
+end
+
+ffi_char_code_point(x::Integer) = _ffi_checked_code_point(UInt32(x))
+
+"""
+    ffi_char_from_code_point(value) -> Char
+
+The Julia `Char` a Rust `char` slot denotes — the inverse of
+[`ffi_char_code_point`](@ref), and equally strict. A Rust `char` is always a
+Unicode scalar value, so a slot that is not one did not come from a `char`; it
+is refused rather than turned into an invalid `Char`.
+"""
+ffi_char_from_code_point(value::Integer) = Char(_ffi_checked_code_point(UInt32(value)))
+
+function _ffi_checked_code_point(value::UInt32)
+    isvalid(Char, value) || throw(RustError(
+        "0x$(string(value, base = 16)) is not a Unicode scalar value and so is not a " *
+        "valid Rust `char`: code points above 0x10ffff and the surrogate range " *
+        "0xd800-0xdfff are excluded"))
+    return value
+end
+
+"""
+    ffi_slot_convert(::Type{T}, x)
+
+Convert a Julia value into the C slot type `T` the contract recorded for its
+position. Identity wherever the slot and the surface type agree; Rust `char`,
+whose slot is a `UInt32` code point, is the one case that differs.
+
+Used by the paths that convert at run time — monomorphized generics, which only
+learn their argument types after specialization. The generators splice the same
+conversion at macro-expansion time instead.
+"""
+ffi_slot_convert(::Type{UInt32}, x::AbstractChar) = ffi_char_code_point(x)
+ffi_slot_convert(::Type{Any}, x) = x
+ffi_slot_convert(::Type{T}, x) where {T} = convert(T, x)
+
+# The spelling of the single C slot: the contract's own spelling (`:Csize_t`)
+# when the slot and the surface type agree, the slot otherwise (`char`).
+function _ffi_slot_expr(rust_type::AbstractString, c::FFIContract)
+    slot = only(c.ccall_types)
+    slot === c.surface_type || return ffi_type_expr(slot)
+    return something(ffi_julia_symbol(rust_type), ffi_type_expr(slot))
+end
+
+function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback)
+    strict in (:error, :warn, :none) || throw(ArgumentError(
+        "FFI_STRICT must be :error, :warn or :none, got :$strict"))
+    strict === :none && return fallback
+    detail = ffi_describe(rust_type; direction = :return, abi = abi)
+    if strict === :error
+        throw(RustError(
+            "the FFI contract cannot describe the return type of `$ctx`: $detail. " *
+            "Add a `::T` return annotation at the call site, change the Rust " *
+            "signature to a supported type, or set " *
+            "`RustCall.FFI_STRICT[] = :warn` to fall back to `Any` (see " *
+            "https://github.com/AtelierArith/RustCall.jl/issues/276)."))
+    end
+    # Test and insert atomically: reading the set outside the lock let two
+    # threads both see the context as new and warn twice — and raced with the
+    # insert itself.
+    first_time = lock(REGISTRY_LOCK) do
+        key = String(ctx)
+        key in _FFI_WARNED_CONTEXTS && return false
+        push!(_FFI_WARNED_CONTEXTS, key)
+        return true
+    end
+    if first_time
+        @warn "the FFI contract cannot describe the return type of `$ctx`; \
+               emitting `Any`, which is not a well-defined ccall return slot. \
+               Set `RustCall.FFI_STRICT[] = :error` to make this fail instead." detail
+    end
+    return fallback
+end
+
+"""
+    ffi_owned_string_return(c) -> Bool
+    ffi_borrowed_string_return(c) -> Bool
+
+Whether a return contract describes a lowered **owned** (`CRustString`,
+`(ptr, len, cap)`) or **borrowed** (`CRustStr`, `(ptr, len)`) string buffer.
+
+Every generator branches on these rather than on `return_abi == "string"`, on
+`has_owned_string_helper`, or on the Rust spelling — the three vocabularies
+#276 collapses. An owned contract also carries the `free_symbol` that releases
+it, which is the half #246 and #249 are about.
+"""
+ffi_owned_string_return(c::FFIContract) = c.aggregate_type === CRustString
+ffi_borrowed_string_return(c::FFIContract) = c.aggregate_type === CRustStr
+
+"""
+    ffi_signature_context(name, arg_types, return_type; owner = nothing) -> String
+
+The human-readable signature an unsupported type is reported against:
+`"Struct::method(i32, String) -> Vec<f64>"`.
+"""
+function ffi_signature_context(name::AbstractString, arg_types, return_type::AbstractString;
+                               owner::Union{Nothing, AbstractString} = nothing)
+    prefix = owner === nothing ? "" : string(owner, "::")
+    args = join(arg_types, ", ")
+    return string(prefix, name, "(", args, ") -> ", isempty(return_type) ? "()" : return_type)
 end
