@@ -503,7 +503,10 @@ end
             "",
             [("x", "f64"), ("y", "f64")],
             true,
-            Dict{String, Bool}()
+            Dict{String, Bool}();
+            # accessor symbols come from the manifest; supplied by hand here
+            field_getters = Dict("x" => "Point_get_x", "y" => "Point_get_y"),
+            field_setters = Dict("x" => "Point_set_x", "y" => "Point_set_y"),
         )
 
         code = RustCall._emit_struct_code(struct_info)
