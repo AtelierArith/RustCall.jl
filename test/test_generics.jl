@@ -179,7 +179,8 @@ end
         @test specialized.arg_types == ["i32", "f64"]
         @test specialized.return_type == "i32"
         @test occursin("pub extern \"C\" fn pair_i32_f64", specialized.source)
-        @test !occursin("fn pair<T", specialized.source)
+        # the generic original is kept so that other callers in the block still compile
+        @test occursin("fn pair<T", specialized.source)
     end
 
     @testset "Deeply nested types (#108/#184)" begin
