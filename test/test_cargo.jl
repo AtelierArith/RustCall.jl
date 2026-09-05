@@ -354,3 +354,99 @@ end
         rm(root; recursive = true, force = true)
     end
 end
+
+
+@testset "A Cargo block has exactly one key (#287 review)" begin
+    # The outer lookup/save used the base block identity while
+    # `build_cargo_project_cached` derived a *richer* one (it folded in the
+    # effective `.cargo/config.toml` chain). Two keys for one artifact: after a
+    # Cargo-config change the outer lookup still matched the pre-change binary.
+    #
+    # Observable without any test hook: one evaluation must leave exactly one
+    # entry in the Cargo cache, named after the block's own key. Two keys leave
+    # two.
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc/cargo are required for a Cargo-backed block"
+    else
+        block = """
+        // cargo-deps: itoa="1.0"
+
+        #[no_mangle]
+        pub extern "C" fn rc287_one_key() -> i32 { 7 }
+        """
+        RustCall.clear_cargo_cache()
+        lib = RustCall._compile_and_load_rust(block, "one-key", 0)
+        @test ccall(RustCall.get_function_pointer(lib, "rc287_one_key"), Int32, ()) == 7
+
+        lib_ext = RustCall.get_library_extension()
+        cached = filter(f -> endswith(f, lib_ext), readdir(RustCall.get_cargo_cache_dir()))
+        @test length(cached) == 1
+
+        # ... and that one entry is the key the block itself computes, so the
+        # lookup, the build and the save all agree.
+        expanded = RustCall.expand_inline(block; cfg = :cargo)
+        deps = RustCall.parse_dependencies_from_code(block)
+        _, build_env_key = RustCall._cargo_build_env_for(nothing)
+        id = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
+            cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()))
+        @test only(cached) == RustCall.artifact_key(id) * lib_ext
+        @test lib == "rust_cargo_$(RustCall.artifact_short_id(RustCall.artifact_key(id), 16))"
+
+        # A second evaluation adds nothing: it is the same key.
+        RustCall._compile_and_load_rust(block, "one-key", 0)
+        @test length(filter(f -> endswith(f, lib_ext),
+                            readdir(RustCall.get_cargo_cache_dir()))) == 1
+
+        # The builder refuses a profile that disagrees with the identity it was
+        # handed, rather than quietly caching under a second key.
+        project = RustCall.create_cargo_project("rc287_probe", RustCall.DependencySpec[])
+        try
+            @test_throws ArgumentError RustCall.build_cargo_project_cached(
+                project, id; release = false)
+        finally
+            RustCall.cleanup_cargo_project(project)
+        end
+    end
+end
+
+@testset "A Cargo config change rebuilds the block (#287 review)" begin
+    # `.cargo/config.toml` above the directory the build runs in can set
+    # `[build] rustflags`, so it changes the binary. With two keys the outer
+    # lookup did not see the change and handed back the old library.
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc/cargo are required for a Cargo-backed block"
+    else
+        sandbox = mktempdir()
+        try
+            # Generated projects are created with `mktempdir()`, so pointing
+            # TMPDIR here puts them under a directory whose `.cargo/` chain we
+            # control.
+            block = """
+            // cargo-deps: itoa="1.0"
+
+            #[no_mangle]
+            pub extern "C" fn rc287_cfg_probe() -> i32 { if cfg!(rc287_flag) { 1 } else { 0 } }
+            """
+            config_dir = joinpath(sandbox, ".cargo")
+            mkpath(config_dir)
+
+            value = withenv("TMPDIR" => sandbox) do
+                lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
+                ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
+            end
+            @test value == 0
+
+            # Now the same block under a config that adds `--cfg rc287_flag`.
+            write(joinpath(config_dir, "config.toml"),
+                  "[build]\nrustflags = [\"--cfg\", \"rc287_flag\"]\n")
+            value2 = withenv("TMPDIR" => sandbox) do
+                @test RustCall._cargo_config_digest(ENV; dir = sandbox) != "absent"
+                lib = RustCall._compile_and_load_rust(block, "cfg-probe", 0)
+                ccall(RustCall.get_function_pointer(lib, "rc287_cfg_probe"), Int32, ())
+            end
+            @test value2 == 1     # rebuilt, and the new cfg is visible
+        finally
+            rm(sandbox; recursive = true, force = true)
+        end
+    end
+end

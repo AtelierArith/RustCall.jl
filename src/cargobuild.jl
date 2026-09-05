@@ -163,6 +163,29 @@ function hash_dependencies(deps::Vector{DependencySpec})
 end
 
 """
+    _check_cargo_profile(id::ArtifactId, release::Bool)
+
+Refuse to build when the profile recorded in `id` is not the one being built.
+
+The two must agree because `artifact_key(id)` is the *only* key of the build:
+if they could disagree, the caller's lookup key and the artifact actually
+produced would describe different things — the shape of #287. Better a loud
+error than a cache that quietly holds the wrong binary.
+"""
+function _check_cargo_profile(id::ArtifactId, release::Bool)
+    want = release ? "release" : "debug"
+    recorded = nothing
+    for (k, v) in id.codegen
+        k == "profile" && (recorded = v)
+    end
+    recorded == want && return nothing
+    throw(ArgumentError(
+        "the ArtifactId records profile $(repr(recorded)) but the build was asked for " *
+        "$(repr(want)). A Cargo block must have exactly one key for its lookup, its " *
+        "build and its save (#278, #287); pass `release` to `_cargo_block_id` instead."))
+end
+
+"""
     build_cargo_project_cached(project::CargoProject, id::ArtifactId;
                                release = true, env = nothing) -> String
 
@@ -173,10 +196,11 @@ the project and caches the result.
 
 # Arguments
 - `project::CargoProject`: The Cargo project to build
-- `id::ArtifactId`: identity of what is being built (source, dependency set,
-  build environment, toolchain). The cache key is `artifact_key` of that record
-  extended with the build profile and this project's own dependency set and
-  effective Cargo configuration — never a second hand-rolled digest (#278).
+- `id::ArtifactId`: the complete identity of what is being built — source,
+  dependency set, build environment (including the effective Cargo
+  configuration), build profile and toolchain. The cache key is `artifact_key`
+  of exactly that record: this function never extends or re-derives it, so a
+  Cargo block has one key for its lookup, its build and its save (#278, #287).
 
 # Keyword Arguments
 - `release::Bool`: Build in release mode (default: true)
@@ -191,18 +215,14 @@ function build_cargo_project_cached(
     release::Bool = true,
     env::Union{Nothing, AbstractDict} = nothing
 )
-    mode_str = release ? "release" : "debug"
-    # The build profile and the project's own view of its dependencies and
-    # Cargo configuration extend the caller's identity; everything else (source,
-    # toolchain, compiler, build environment) is already in `id`.
-    cache_key = artifact_key(artifact_derive(id;
-        codegen = vcat(id.codegen, Pair{String, String}["profile" => mode_str]),
-        dependencies = vcat(id.dependencies,
-                            String[hash_dependencies(project.dependencies)]),
-        build_env = vcat(id.build_env,
-                         Pair{String, String}[
-                             "cargo-config" => _cargo_config_digest(ENV; dir = project.path)]),
-    ))
+    # `id` is already the complete identity of this build — the caller computed
+    # it once and looked the artifact up under it. Deriving a *richer* key here
+    # is what #287 caught: the outer lookup then hit the pre-change binary while
+    # the build cached under a key nothing would ever ask for again. So the key
+    # is `artifact_key(id)` and nothing else, and a mismatched profile is an
+    # error rather than a second key.
+    _check_cargo_profile(id, release)
+    cache_key = artifact_key(id)
 
     # Check cache
     cached_lib = get_cargo_cached_library(cache_key)

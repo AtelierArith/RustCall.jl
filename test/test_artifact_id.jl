@@ -1056,6 +1056,66 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
     end
 
+    @testset "An explicit [package] workspace = \"...\" is followed (#287 review)" begin
+        # Cargo lets a crate name its workspace root explicitly, and the path
+        # need not be an ancestor — a sibling is legal. An ancestor-only search
+        # misses that root entirely, so `[workspace.dependencies]` edits there
+        # never invalidate.
+        root = mktempdir()
+        try
+            ws = joinpath(root, "ws")
+            shared = joinpath(ws, "shared")
+            shared2 = joinpath(ws, "shared2")
+            member = joinpath(root, "member")     # a *sibling* of the workspace
+            for d in (shared, shared2, member)
+                mkpath(joinpath(d, "src"))
+                write(joinpath(d, "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
+            end
+            for (d, name) in ((shared, "shared"), (shared2, "shared2"))
+                write(joinpath(d, "Cargo.toml"),
+                      "[package]\nname = \"$(name)\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+            end
+            write(joinpath(member, "Cargo.toml"),
+                  "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n" *
+                  "workspace = \"../ws\"\n\n[dependencies]\nshared = { workspace = true }\n")
+            ws_manifest = joinpath(ws, "Cargo.toml")
+            write(ws_manifest,
+                  "[workspace]\nmembers = [\"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared\" }\n")
+
+            # The explicit key is followed, and it is not an ancestor of `member`.
+            @test RustCall._canonical_dir(RustCall._workspace_root_dir(member)) ==
+                  RustCall._canonical_dir(ws)
+            @test !startswith(RustCall._canonical_dir(member), RustCall._canonical_dir(ws))
+            @test RustCall._canonical_dir(RustCall._explicit_workspace_root(member)) ==
+                  RustCall._canonical_dir(ws)
+            # A crate with no such key still falls back to the ancestor search.
+            @test RustCall._explicit_workspace_root(shared) === nothing
+            @test RustCall._canonical_dir(RustCall._workspace_root_dir(shared)) ==
+                  RustCall._canonical_dir(ws)
+
+            RustCall._artifact_reset_digest_caches!()
+            key_before = RustCall.artifact_path_dependency_digest(member)
+            stamped = first.(RustCall._graph_stamps(
+                RustCall.local_path_dependency_dirs(member)[2]))
+            @test RustCall._canonical_dir(ws) in stamped
+
+            warm = RustCall.CARGO_TREE_INVOCATIONS[]
+            @test RustCall.artifact_path_dependency_digest(member) == key_before
+            @test RustCall.CARGO_TREE_INVOCATIONS[] == warm
+
+            # Repoint the inherited dependency in the sibling workspace root.
+            member_stamp = RustCall._graph_stamp(member)
+            write(ws_manifest,
+                  "[workspace]\nmembers = [\"shared\", \"shared2\"]\nresolver = \"2\"\n" *
+                  "\n[workspace.dependencies]\nshared = { path = \"shared2\" }\n")
+            @test RustCall._graph_stamp(member) == member_stamp
+            @test RustCall.artifact_path_dependency_digest(member) != key_before
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+
     @testset "Hashed relative paths are normalized" begin
         # A `\\`-spelled path and a `/`-spelled one are the same input; on
         # Windows so are two spellings that differ only in case.
@@ -1068,15 +1128,15 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
     end
 
-    @testset "artifact_derive replaces only what it is given" begin
-        base = _id(kind = "cargo", source = "fn f() {}",
-                   codegen = ["profile" => "release"], dependencies = ["serde"])
-        same = RustCall.artifact_derive(base)
-        @test RustCall.artifact_key(same) == RustCall.artifact_key(base)
-        debug = RustCall.artifact_derive(base;
-            codegen = vcat(base.codegen, ["profile" => "debug"]))
-        @test RustCall.artifact_key(debug) != RustCall.artifact_key(base)
-        @test debug.source == base.source && debug.dependencies == base.dependencies
+    @testset "No helper exists for deriving a variant key (#287 review)" begin
+        # `artifact_derive` was added in B4 so `build_cargo_project_cached`
+        # could extend the identity it was handed. That is precisely how the
+        # Cargo path ended up with two keys for one artifact: the builder
+        # derived a richer one than the outer lookup used. The stage that owns
+        # the identity now computes it once, up front, and nothing extends it —
+        # so the helper has no callers and is gone. Its absence is the
+        # guarantee; a lint would only describe it.
+        @test !isdefined(RustCall, :artifact_derive)
     end
 
     @testset "toolchain_fingerprint() is folded in by default" begin

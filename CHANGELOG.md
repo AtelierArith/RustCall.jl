@@ -96,8 +96,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every manifest that can decide the graph — each crate's `Cargo.toml` /
   `Cargo.lock` *and* the workspace root each crate belongs to, since a member
   can inherit a path from `[workspace.dependencies]` in a manifest that is not
-  a package at all. A block that declares no `path =` dependency never resolves
-  a graph, so a warm `rust"""` re-evaluation spawns no `cargo tree`.
+  a package at all — including one named by an explicit
+  `[package] workspace = "../elsewhere"`, which need not be an ancestor. A block
+  that declares no `path =` dependency never resolves a graph, so a warm
+  `rust"""` re-evaluation spawns no `cargo tree`.
 - `clear_cache` gains `sweep_legacy` (default `false`). RustCall's cache root is
   `.../compiled/vX.Y/RustCall`, which is **Julia's own precompile directory for
   RustCall** — its `.ji` and native images live there. The pre-#278 layout's
@@ -105,7 +107,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact naming that layout used; `cleanup_old_cache` never removes them at all,
   and nothing else in that directory is ever touched.
 - `build_cargo_project_cached(project, id::ArtifactId; ...)` takes the artifact
-  identity instead of a code-hash string.
+  identity instead of a code-hash string, and uses `artifact_key(id)` unchanged:
+  a Cargo block has exactly one key for its in-memory name, its disk lookup, its
+  build and its save. The effective Cargo configuration is folded in by the
+  caller, once, so a `.cargo/config.toml` change rebuilds instead of matching
+  the pre-change binary. A profile disagreeing with the identity is an error.
 - `generate_cache_key` and `is_cache_valid` take a `cfg_text` keyword, so the
   disk key and the in-memory library name of a `rust"""` block are one value.
 - New CI lint: `scripts/lint_artifact_identity.sh` fails when Julia source

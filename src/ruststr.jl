@@ -482,7 +482,21 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # `build_env_key` is the environment the build actually runs under: the
     # snapshot recorded by the macro, or the current one. Local path
     # dependencies contribute their *content*, so editing one rebuilds.
-    cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key)
+    #
+    # The effective Cargo configuration is folded in *here*, not later: the
+    # `.cargo/config.toml` chain above the generated project can set
+    # `[build] rustflags`, so it changes the binary, and a key that omits it
+    # hands back the pre-change build. Generated projects are created with
+    # `mktempdir` directly under `tempdir()` (see `create_cargo_project`), so
+    # that is the directory whose chain reaches the build, and it is knowable
+    # before the project exists — which is what lets this be computed once.
+    cargo_config = _cargo_config_digest(ENV; dir = tempdir())
+    cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
+                               cargo_config = cargo_config)
+    # THE key for this block: the in-memory name, the project name, the disk
+    # lookup, the build and the save all use this one value (#278, #287). If a
+    # second formula ever appears downstream, `build_cargo_project_cached`
+    # refuses the build rather than silently caching under two keys.
     code_hash = artifact_key(cargo_id)
 
     # Project and library names. `artifact_short_id` is the only truncation in
@@ -505,7 +519,8 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     # The block identity *is* the cache key: re-mixing already-mixed material
     # under a second, hand-rolled formula (and truncating it to 32 characters)
-    # was the Cargo half of #278.
+    # was the Cargo half of #278, and deriving a *richer* key inside the builder
+    # while looking up with the base one was #287 — same bug, other direction.
     cache_key = code_hash
 
     cached_lib = get_cargo_cached_library(cache_key)
@@ -578,19 +593,31 @@ Cargo/RUSTFLAGS environment the build runs under (`cargo_env`, see
 fingerprint and the identity of the compiler that runs, both defaulted by
 `ArtifactId`.
 
+`cargo_config` is the digest of the effective `.cargo/config.toml` chain above
+the directory the build will run in (`_cargo_config_digest`); the caller passes
+it because it must be the *same* digest the whole evaluation uses.
+
 `artifact_key` of this record is the in-memory library name, the temporary
-project name and the disk cache key. One value, one formula: the Cargo path
-used to hash the block once, then re-mix that digest with the dependency hash
-and the environment under a second formula for the cache key (#278).
+project name, the disk cache key, the build key and the save key — one value
+per block evaluation. The Cargo path used to hash the block once and then
+re-mix that digest under a second formula for the cache key (#278); the first
+fix then left `build_cargo_project_cached` deriving a *richer* key than the one
+the outer lookup used, so a Cargo-config change still hit the old binary
+(#287).
 """
 function _cargo_block_id(expanded_source::AbstractString, dependencies,
-                         cargo_env::AbstractString = "")
+                         cargo_env::AbstractString = "";
+                         cargo_config::AbstractString = "",
+                         release::Bool = true)
     return ArtifactId(
         kind = "cargo",
         source = String(expanded_source),
-        codegen = Pair{String, String}["profile" => "release"],
+        codegen = Pair{String, String}["profile" => (release ? "release" : "debug")],
         dependencies = artifact_dependency_strings(dependencies),
-        build_env = Pair{String, String}["cargo-env" => String(cargo_env)],
+        build_env = Pair{String, String}[
+            "cargo-env" => String(cargo_env),
+            "cargo-config" => String(cargo_config),
+        ],
     )
 end
 

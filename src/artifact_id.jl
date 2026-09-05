@@ -153,36 +153,6 @@ function ArtifactId(;
     )
 end
 
-"""
-    artifact_derive(id::ArtifactId; kwargs...) -> ArtifactId
-
-Copy of `id` with the named fields replaced. For a stage that adds identity
-components to a record it was handed — the build profile a Cargo build settles
-on, the dependency set the generated project actually declares — without
-re-stating the fields it does not touch, and without inventing a second key
-formula for the extension.
-"""
-function artifact_derive(id::ArtifactId;
-    kind = id.kind,
-    source = id.source,
-    type_params = id.type_params,
-    target_triple = id.target_triple,
-    codegen = id.codegen,
-    cfg = id.cfg,
-    dependencies = id.dependencies,
-    features = id.features,
-    build_env = id.build_env,
-    toolchain = id.toolchain,
-    compiler = id.compiler,
-    extra = id.extra,
-)
-    return ArtifactId(
-        String(kind), String(source), _pairs(type_params), String(target_triple),
-        _pairs(codegen), _strings(cfg), _strings(dependencies), _strings(features),
-        _pairs(build_env), String(toolchain), String(compiler), _pairs(extra),
-    )
-end
-
 _strings(xs) = String[string(x) for x in xs]
 
 function _pairs(xs)
@@ -526,28 +496,41 @@ _graph_stamp(dir::AbstractString) =
 """
     _workspace_root_dir(dir) -> Union{String, Nothing}
 
-The directory of the nearest manifest at or above `dir` that declares a
-`[workspace]` table, or `nothing` when `dir` belongs to no workspace.
+The directory of the workspace `dir` belongs to, or `nothing` when it belongs to
+none.
 
 That manifest decides the graph without appearing in it: a member writing
 `dep = { workspace = true }` takes the path from `[workspace.dependencies]`
 there, and a *virtual* workspace root is not a package at all, so it can never
 show up in the package list `cargo tree` reports.
+
+Cargo resolves the root two ways, and so does this:
+
+1. an explicit `[package] workspace = "../elsewhere"` in the crate's own
+   manifest, relative to that manifest's directory. It need not be an ancestor —
+   a sibling is legal — so an ancestor-only search misses it entirely;
+2. otherwise, the nearest manifest at or above `dir` declaring a `[workspace]`
+   table.
+
+The explicit key is only consulted on the crate's own manifest, which is where
+Cargo reads it; an ancestor's `package.workspace` describes that ancestor, not
+this crate.
 """
 function _workspace_root_dir(dir::AbstractString)
-    current = try
+    start = try
         abspath(String(dir))
     catch
         String(dir)
     end
+
+    explicit = _explicit_workspace_root(start)
+    explicit === nothing || return explicit
+
+    current = start
     while true
         manifest = joinpath(current, "Cargo.toml")
         if isfile(manifest)
-            parsed = try
-                TOML.parsefile(manifest)
-            catch
-                nothing
-            end
+            parsed = _parse_manifest_or_nothing(manifest)
             if parsed isa AbstractDict && get(parsed, "workspace", nothing) isa AbstractDict
                 return current
             end
@@ -555,6 +538,33 @@ function _workspace_root_dir(dir::AbstractString)
         parent = dirname(current)
         (isempty(parent) || parent == current) && return nothing
         current = parent
+    end
+end
+
+# `[package] workspace = "../ws"` in this crate's own manifest, resolved against
+# the manifest's directory. Cargo allows any path, ancestor or not.
+function _explicit_workspace_root(dir::AbstractString)
+    manifest = joinpath(String(dir), "Cargo.toml")
+    isfile(manifest) || return nothing
+    parsed = _parse_manifest_or_nothing(manifest)
+    parsed isa AbstractDict || return nothing
+    package = get(parsed, "package", nothing)
+    package isa AbstractDict || return nothing
+    declared = get(package, "workspace", nothing)
+    declared isa AbstractString || return nothing
+    root = try
+        abspath(joinpath(String(dir), String(declared)))
+    catch
+        return nothing
+    end
+    return isdir(root) ? root : nothing
+end
+
+function _parse_manifest_or_nothing(manifest::AbstractString)
+    return try
+        TOML.parsefile(String(manifest))
+    catch
+        nothing
     end
 end
 
@@ -962,10 +972,17 @@ function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
     return sort!(unique!(out))
 end
 
-# `[workspace.dependencies]` of this manifest, else of the nearest ancestor
-# manifest that declares a workspace. Returns the table together with the
-# directory of the manifest that declared it, because the `path` values inside
-# it are relative to *that* manifest, not to the member using them.
+# `[workspace.dependencies]` of this manifest, of the workspace its
+# `[package] workspace = "..."` names, else of the nearest ancestor manifest
+# that declares a workspace. Returns the table together with the directory of
+# the manifest that declared it, because the `path` values inside it are
+# relative to *that* manifest, not to the member using them.
+#
+# The explicit key is checked before the ancestor walk for the same reason
+# `_workspace_root_dir` checks it: the named workspace need not be an ancestor,
+# so walking up cannot find it — and here the consequence is that an inherited
+# `dep = { workspace = true }` is never discovered, i.e. a *missing input*
+# rather than a missed invalidation (#287).
 function _workspace_dependency_table(parsed::AbstractDict, dir::AbstractString)
     dir = String(dir)
     ws = get(parsed, "workspace", nothing)
@@ -973,6 +990,19 @@ function _workspace_dependency_table(parsed::AbstractDict, dir::AbstractString)
         deps = get(ws, "dependencies", nothing)
         deps isa AbstractDict && return deps, dir
     end
+
+    explicit = _explicit_workspace_root(dir)
+    if explicit !== nothing
+        other = _parse_manifest_or_nothing(joinpath(explicit, "Cargo.toml"))
+        if other isa AbstractDict
+            ws2 = get(other, "workspace", nothing)
+            if ws2 isa AbstractDict
+                deps2 = get(ws2, "dependencies", nothing)
+                deps2 isa AbstractDict && return deps2, explicit
+            end
+        end
+    end
+
     parent = dirname(dir)
     while !isempty(parent) && parent != dirname(parent)
         candidate = joinpath(parent, "Cargo.toml")
