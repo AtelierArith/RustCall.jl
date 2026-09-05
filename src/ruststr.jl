@@ -145,7 +145,11 @@ macro rust_str(code)
     # Blocks with dependencies are built by Cargo, whose cfg set (features,
     # profile) is not known here: decide only target predicates for them.
     code_str = String(code)
-    expanded = expand_inline(code_str; cfg = has_dependencies(code_str) ? :lenient : :strict)
+    cfg_mode = has_dependencies(code_str) ? :lenient : :strict
+    # One cfg snapshot for both phases: the Julia wrappers emitted here and the
+    # run-time expansion/compilation must agree on which items exist.
+    cfg_text = _cfg_snapshot(cfg_mode)
+    expanded = expand_inline(code_str; cfg = cfg_mode, cfg_text = cfg_text)
     struct_infos = manifest_struct_infos(expanded.manifest)
     julia_defs = [emit_julia_definitions(info) for info in struct_infos]
 
@@ -153,7 +157,8 @@ macro rust_str(code)
     julia_func_wrappers = emit_julia_function_wrappers(julia_func_signatures)
 
     return quote
-        lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line))
+        lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line);
+                                          cfg_text = $cfg_text)
 
         # Store library information in the calling module for precompilation support
         if !isdefined($__module__, :__RUSTCALL_LIBS)
@@ -207,15 +212,23 @@ Uses caching to avoid recompilation when possible.
 Phase 3: Automatically detects dependencies in the code and uses Cargo for building
 when external crates are required.
 """
-function _compile_and_load_rust(code::String, source_file::String, source_line::Int)
+function _compile_and_load_rust(code::String, source_file::String, source_line::Int;
+                                cfg_text::Union{Nothing, AbstractString} = nothing)
     # Phase 3: Check for dependencies in the code
     if has_dependencies(code)
-        return _compile_and_load_rust_with_cargo(code, source_file, source_line)
+        return _compile_and_load_rust_with_cargo(code, source_file, source_line; cfg_text)
     end
 
     # Expand #[julia] items (functions, structs, accessors, method wrappers)
     # ahead of rustc. The manifest describes exactly what was generated.
-    expanded = expand_inline(code)
+    # `cfg_text` is the snapshot captured by the macro (see `_cfg_snapshot`).
+    if cfg_text !== nothing && !isempty(cfg_text) && cfg_text != _cfg_snapshot(:strict)
+        @warn "This rust\"\"\" block was expanded under a different rustc configuration " *
+              "(target / opt-level) than the current default compiler; #[cfg]-gated items " *
+              "may not match the compiled library. Re-evaluate the block after " *
+              "set_default_compiler." maxlog = 1 source_file source_line
+    end
+    expanded = expand_inline(code; cfg = :strict, cfg_text = cfg_text)
     manifest = expanded.manifest
 
     # Wrap the code if needed
@@ -323,7 +336,8 @@ Phase 3: Supports rustscript-style dependency specifications.
    // cargo-deps: ndarray="0.15", serde="1.0"
    ```
 """
-function _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int)
+function _compile_and_load_rust_with_cargo(code::String, source_file::String, source_line::Int;
+                                           cfg_text::Union{Nothing, AbstractString} = nothing)
     # Parse dependencies from the code
     dependencies = parse_dependencies_from_code(code)
 
@@ -349,7 +363,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # Expand #[julia] items ahead of Cargo. The dependency comments are read
     # from the original source above; the expanded source no longer needs them.
     # Cargo decides features and profile, so only target predicates are pruned.
-    expanded = expand_inline(code; cfg = :lenient)
+    expanded = expand_inline(code; cfg = :lenient, cfg_text = cfg_text)
     manifest = expanded.manifest
     augmented_code = expanded.source
 

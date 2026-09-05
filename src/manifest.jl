@@ -225,7 +225,8 @@ const _EXPANSION_LOCK = ReentrantLock()
 # `rustc --print cfg` output and the file handed to the extractor, keyed by the
 # rustc flags that decide the configuration.
 const _RUSTC_CFG_TEXT = Dict{Vector{String}, String}()
-const _RUSTC_CFG_FILE = Dict{Vector{String}, String}()
+# cfg files handed to the extractor, keyed by the digest of their content.
+const _RUSTC_CFG_FILE = Dict{String, String}()
 
 """
     _cfg_rustc_flags(compiler = get_default_compiler()) -> Vector{String}
@@ -277,37 +278,41 @@ _cfg_mode(cfg::Symbol) = cfg in (:strict, :lenient, :none) ? cfg :
 _cfg_mode(cfg::Bool) = cfg ? :strict : :none
 
 """
-    _cfg_digest(mode::Symbol) -> String
+    _cfg_snapshot(cfg) -> String
 
-Digest of the cfg text the extractor would receive for `mode` (empty for
-`:none`). Part of the expansion cache key.
+The cfg text (`rustc --print cfg` under the current default compiler's flags)
+that expansion under `cfg` uses; empty for `:none`. The `rust` string macro captures it at
+macro-expansion time and hands the same snapshot to the run-time compile step,
+so the Julia wrappers emitted by the macro and the source compiled later are
+derived from one configuration even if `set_default_compiler` ran in between.
 """
-function _cfg_digest(mode::Symbol)
+function _cfg_snapshot(cfg)
+    mode = _cfg_mode(cfg)
     mode === :none && return ""
-    return bytes2hex(sha256(_rustc_cfg_text()))
+    return _rustc_cfg_text()
 end
 
 """
-    _cfg_file_args(cfg) -> Vector{String}
+    _cfg_file_args(cfg; cfg_text = _cfg_snapshot(cfg)) -> Vector{String}
 
 `--cfg-file FILE [--cfg-lenient]` for the extractor, so `#[cfg]`-disabled
 items are dropped from manifests and expanded sources (see [`_cfg_mode`]).
-The file holds `rustc --print cfg` and is written once per session and flag
-set. Empty for `:none` or when rustc is unavailable.
+The file holds `cfg_text` and is written once per distinct text. Empty for
+`:none`, or when rustc is unavailable (empty text).
 """
-function _cfg_file_args(cfg)
+function _cfg_file_args(cfg; cfg_text::AbstractString = _cfg_snapshot(cfg))
     mode = _cfg_mode(cfg)
     mode === :none && return String[]
-    flags = _cfg_rustc_flags()
-    text = _rustc_cfg_text(flags)
+    text = String(cfg_text)
     isempty(text) && return String[]
+    digest = bytes2hex(sha256(text))
     path = lock(_EXTRACTOR_LOCK) do
-        existing = get(_RUSTC_CFG_FILE, flags, "")
+        existing = get(_RUSTC_CFG_FILE, digest, "")
         if isempty(existing) || !isfile(existing)
             existing, io = mktemp()
             write(io, text)
             close(io)
-            _RUSTC_CFG_FILE[flags] = existing
+            _RUSTC_CFG_FILE[digest] = existing
         end
         existing
     end
@@ -326,11 +331,15 @@ compile step spawn the extractor only once.
 `cfg` selects how `#[cfg(...)]` predicates are evaluated (see [`_cfg_mode`]):
 `:strict` (default) drops every item the direct `rustc` build would not
 compile, `:lenient` decides only target predicates (for blocks built by Cargo),
-`:none` keeps everything (golden corpus comparison).
+`:none` keeps everything (golden corpus comparison). `cfg_text` is the cfg
+snapshot to evaluate against (default: the current compiler's, see
+[`_cfg_snapshot`]); the memo key is `(code, mode, digest(cfg_text))`.
 """
-function expand_inline(code::String; cfg = :strict)
+function expand_inline(code::String; cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing)
     mode = _cfg_mode(cfg)
-    key = (code, mode, _cfg_digest(mode))
+    text = cfg_text === nothing ? _cfg_snapshot(mode) : String(cfg_text)
+    mode === :none && (text = "")
+    key = (code, mode, isempty(text) ? "" : bytes2hex(sha256(text)))
     cached = lock(_EXPANSION_LOCK) do
         get(_EXPANSION_CACHE, key, nothing)
     end
@@ -340,7 +349,7 @@ function expand_inline(code::String; cfg = :strict)
         src = joinpath(dir, "block.rs")
         manifest_path = joinpath(dir, "manifest.toml")
         write(src, code)
-        args = vcat(["expand", "--manifest", manifest_path], _cfg_file_args(cfg), [src])
+        args = vcat(["expand", "--manifest", manifest_path], _cfg_file_args(mode; cfg_text = text), [src])
         source = _run_extractor(args)
         manifest = _parse_manifest(read(manifest_path, String))
         ExpandedInline(source, manifest)

@@ -63,6 +63,8 @@ impl Truth {
 /// The built-in cfg names decided by the compilation target alone (rustc
 /// reference, "Set configuration options"). A build script may emit any other
 /// name, including `target_custom`, so the list is closed rather than a prefix.
+/// `target_feature` is deliberately absent: it depends on codegen options
+/// (`-C target-feature`, `RUSTFLAGS`) that Cargo may add.
 const TARGET_CFG_NAMES: &[&str] = &[
     "unix",
     "windows",
@@ -71,7 +73,6 @@ const TARGET_CFG_NAMES: &[&str] = &[
     "target_endian",
     "target_env",
     "target_family",
-    "target_feature",
     "target_has_atomic",
     "target_has_atomic_equal_alignment",
     "target_has_atomic_load_store",
@@ -482,6 +483,11 @@ mod tests {
         );
         // Build scripts may emit arbitrary names, even with a `target_` prefix.
         assert_eq!(set.eval3(&pred("target_custom")).unwrap(), Truth::Unknown);
+        // `-C target-feature` / RUSTFLAGS can enable features Cargo-side.
+        assert_eq!(
+            set.eval3(&pred("target_feature = \"avx2\"")).unwrap(),
+            Truth::Unknown
+        );
         assert_eq!(
             set.eval3(&pred("target_os = \"linux\"")).unwrap(),
             Truth::False

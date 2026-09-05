@@ -119,9 +119,16 @@ using TOML
             @test isempty(RustCall.expand_inline(dbg_code).manifest["functions"])
             RustCall.set_default_compiler(RustCall.RustCompiler(optimization_level = 0))
             @test length(RustCall.expand_inline(dbg_code).manifest["functions"]) == 1
+            # A snapshot captured earlier wins over the current compiler, so the
+            # macro-time and run-time expansions of a block agree.
+            snapshot_o2 = RustCall._rustc_cfg_text(RustCall._cfg_rustc_flags(RustCall.RustCompiler(optimization_level = 2)))
+            @test isempty(RustCall.expand_inline(dbg_code; cfg_text = snapshot_o2).manifest["functions"])
+            @test RustCall._cfg_snapshot(:none) == ""
+            @test RustCall._cfg_snapshot(:strict) == RustCall._rustc_cfg_text()
         finally
             RustCall.set_default_compiler(default_compiler)
         end
+        @test isempty(RustCall._cfg_file_args(:strict; cfg_text = ""))
 
         # The cfg file handed to the extractor is `rustc --print cfg` under the
         # flags of the actual compiler invocation, written once per flag set.
@@ -184,6 +191,17 @@ using TOML
             @test cfg_platform_value() == (Sys.iswindows() ? Int32(20) : Int32(10))
             # The manifest never saw the disabled item, so no Julia wrapper exists.
             @test !isdefined(@__MODULE__, :cfg_never_compiled)
+
+            # The macro hands its cfg snapshot to the run-time compile step; a
+            # stale snapshot (compiler changed in between) is reported.
+            plain = """
+            #[julia]
+            pub fn cfg_snapshot_plain() -> i32 { 7 }
+            """
+            other = RustCall._rustc_cfg_text(RustCall._cfg_rustc_flags(RustCall.RustCompiler(optimization_level = 0)))
+            @test other != RustCall._cfg_snapshot(:strict)
+            @test_logs (:warn, r"different rustc configuration") match_mode = :any RustCall._compile_and_load_rust(plain, "snapshot", 0; cfg_text = other)
+            @test_logs RustCall._compile_and_load_rust(plain, "snapshot", 0; cfg_text = RustCall._cfg_snapshot(:strict))
         end
     end
 
