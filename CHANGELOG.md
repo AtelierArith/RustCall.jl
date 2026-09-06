@@ -74,7 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest and lockfile are then part of the member's artifact identity; a
   package the workspace `exclude`s is its own root; both generated manifests
   declare an empty `[workspace]` so they are roots of their own); the probe
-  runs under the wrapper's panic policy; and
+  runs under the wrapper's panic policy and its memo follows the root's
+  manifest and lockfile; a PyO3 crate that exposes nothing under the
+  requested build falls back to the plain path **under that build's
+  configuration**, so a `#[julia]` item the selected features disable is not
+  bound; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

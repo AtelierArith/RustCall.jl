@@ -418,9 +418,7 @@ function _wrapper_probe_cfg_text(crate_path::AbstractString;
     path = abspath(String(crate_path))
     package = _cargo_package_name(path)
     isempty(package) && return ""
-    key = join(["wrapper-root", path, string(release), join(features, ","),
-                string(default_features), _cargo_cfg_env_key(),
-                _crate_cfg_inputs_digest(path)], "\n")
+    key = _wrapper_probe_memo_key(path, features, default_features, release)
     probe = () -> begin
         try
             # Under the crate's `target/`, with its lockfile and `[patch]`, so
@@ -458,6 +456,23 @@ end
 
 # Memo of `_wrapper_probe_cfg_text`, keyed like `_CRATE_CFG_TEXT`.
 const _WRAPPER_CFG_TEXT = Dict{String, String}()
+
+# The memo key of one probe: everything that decides its answer. On top of
+# `_crate_cfg_inputs_digest` (the crate's manifest, `build.rs` and Cargo
+# config), the inputs the probe takes from the crate's Cargo root — its
+# manifest (`[patch]`, `[workspace.dependencies]`) and lockfile — since a
+# changed resolution can change what a `build.rs` emits, and the probe would
+# otherwise keep answering for the previous one in a long-lived process (#307
+# review). When the crate is its own root these are its own files.
+function _wrapper_probe_memo_key(path::AbstractString, features::Vector{String},
+                                 default_features::Bool, release::Bool)
+    root = _cargo_root_dir(path)
+    return join(["wrapper-root", String(path), string(release), join(features, ","),
+                 string(default_features), _cargo_cfg_env_key(),
+                 _crate_cfg_inputs_digest(path),
+                 _file_content_digest(joinpath(root, "Cargo.toml")),
+                 _file_content_digest(joinpath(root, "Cargo.lock"))], "\n")
+end
 
 # The manifest of a probe project: the generated wrapper's shape, minus the
 # plan-specific comment it does not have yet.
@@ -1094,9 +1109,15 @@ function build_pyo3_wrapper(info::CrateInfo;
                             features::Vector{String} = String[],
                             default_features::Bool = true,
                             release::Bool = true,
-                            cache_enabled::Bool = true)
-    plan = pyo3_link_plan(info.path; features = features, default_features = default_features,
-                          release = release)
+                            cache_enabled::Bool = true,
+                            plan::Union{Nothing, PyO3LinkPlan} = nothing)
+    # A caller that needs the plan afterwards — to rescan under the resolved
+    # configuration when nothing is wrapped (`_resolved_plain_info`) — computes
+    # it once and passes it in.
+    if plan === nothing
+        plan = pyo3_link_plan(info.path; features = features, default_features = default_features,
+                              release = release)
+    end
 
     cargo_toml = parse_cargo_toml(joinpath(info.path, "Cargo.toml"))
     source_files = sort(find_rust_sources(info.path))
@@ -1144,6 +1165,25 @@ function build_pyo3_wrapper(info::CrateInfo;
     end
 
     return PyO3Wrapper(wrapper_info, plan, source, lib_path, lib_name, skipped)
+end
+
+"""
+    _resolved_plain_info(crate_path, info, plan) -> CrateInfo
+
+The crate information the plain (pre-#275) binding path binds when a PyO3
+crate exposes nothing under the requested build and falls back to it.
+
+`info` is the lenient scan, which lists **every** feature variant of a
+`#[julia]` item because it decides only target predicates. When the plan
+resolved the build's configuration, the crate is rescanned under it, so the
+module carries exactly the items that build compiles: an item the selected
+features disable would otherwise be emitted and fail at `dlsym`, and two
+mutually exclusive variants of one function would keep the wrong signature
+(#307 review). An unresolved plan keeps `info`, as before.
+"""
+function _resolved_plain_info(crate_path::AbstractString, info::CrateInfo, plan::PyO3LinkPlan)
+    isempty(plan.cfg_text) && return info
+    return scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text)
 end
 
 """

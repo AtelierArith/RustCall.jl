@@ -1515,14 +1515,21 @@ function generate_bindings(crate_path::String;
     # A crate that carries only PyO3 attributes gets a generated wrapper crate
     # (#275 Phase 2); everything else takes the pre-#275 path unchanged.
     if crate_needs_pyo3_wrapper(info)
+        plan = pyo3_link_plan(crate_path; features = features,
+                              default_features = default_features, release = build_release)
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
-                                     release = build_release, cache_enabled = cache_enabled)
+                                     release = build_release, cache_enabled = cache_enabled,
+                                     plan = plan)
         if wrapper === nothing
             # Under this build's own configuration the crate exposes nothing to
             # PyO3 (every marker is behind a feature that is off), so there is
-            # nothing to wrap and the pre-#275 path applies unchanged.
+            # nothing to wrap and the pre-#275 path applies — under that same
+            # configuration: the lenient scan lists every feature variant of a
+            # `#[julia]` item, the resolved one says which this build compiles
+            # (#307 review).
             @info "No PyO3 item is exposed by this build; binding the crate as before"
+            info = _resolved_plain_info(crate_path, info, plan)
         else
             @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
                   "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
@@ -2106,12 +2113,17 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     lib_name = nothing
     wrapper_lib_path = ""
     if crate_needs_pyo3_wrapper(info)
+        plan = pyo3_link_plan(crate_path; features = features,
+                              default_features = default_features, release = build_release)
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
-                                     release = build_release)
-        # `nothing` when this build exposes nothing to PyO3; see
-        # `generate_bindings`.
-        if wrapper !== nothing
+                                     release = build_release, plan = plan)
+        # `nothing` when this build exposes nothing to PyO3; the plain path
+        # then binds the crate under the resolved configuration, see
+        # `generate_bindings` and `_resolved_plain_info` (#307 review).
+        if wrapper === nothing
+            info = _resolved_plain_info(crate_path, info, plan)
+        else
             info = wrapper.info
             lib_name = wrapper.lib_name
             wrapper_lib_path = wrapper.lib_path

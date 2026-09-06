@@ -376,6 +376,56 @@ _manifest(text::AbstractString) = TOML.parse(text)
             write(joinpath(ws, "Cargo.lock"), "# revised again\n")
             RustCall._artifact_reset_digest_caches!()
             @test RustCall.compute_crate_hash(standalone_info) == key_standalone
+
+            # The probe's memo is keyed on the same root inputs: a changed
+            # root lockfile or manifest is a new probe, not the old answer
+            # (#307 review).
+            memo_before = RustCall._wrapper_probe_memo_key(member, String[], true, true)
+            write(joinpath(ws, "Cargo.lock"), "# revised once more\n")
+            @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_before
+            memo_lock = RustCall._wrapper_probe_memo_key(member, String[], true, true)
+            write(joinpath(ws, "Cargo.toml"),
+                  read(joinpath(ws, "Cargo.toml"), String) * "\n# a root manifest edit\n")
+            @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_lock
+            @test RustCall._wrapper_probe_memo_key(member, String[], true, false) !=
+                  RustCall._wrapper_probe_memo_key(member, String[], true, true)
+        end
+
+        # A PyO3 crate whose requested build exposes nothing falls back to the
+        # plain path — under the resolved configuration, not the lenient scan:
+        # a `#[julia]` item the selected features disable must not be bound.
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "gated_julia"
+            version = "0.1.0"
+            edition = "2021"
+            [features]
+            default = []
+            extra = []
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            #[julia]
+            pub fn plain_fn() -> i32 { 2 }
+
+            #[cfg(feature = "extra")]
+            #[julia]
+            pub fn extra_fn() -> i32 { 1 }
+            """)
+            lenient = RustCall.scan_crate(dir)
+            @test Set(f.name for f in lenient.julia_functions) == Set(["plain_fn", "extra_fn"])
+            # The configuration of a build with `extra` off names no such
+            # feature, so the strict rescan drops `extra_fn`.
+            os = Sys.iswindows() ? "windows" : Sys.isapple() ? "macos" : "linux"
+            family = Sys.iswindows() ? "windows" : "unix"
+            off = RustCall.PyO3LinkPlan(:python_free, String[], "", "test";
+                                        cfg_text = "target_os=\"$(os)\"\n$(family)\n",
+                                        resolved = true)
+            resolved = RustCall._resolved_plain_info(dir, lenient, off)
+            @test Set(f.name for f in resolved.julia_functions) == Set(["plain_fn"])
+            # An unresolved plan changes nothing.
+            unresolved = RustCall.PyO3LinkPlan(:python_free, String[], "", "test")
+            @test RustCall._resolved_plain_info(dir, lenient, unresolved) === lenient
         end
         # And the probe really resolves from inside a workspace: without the
         # `[workspace]` line Cargo refuses it, the plan comes back unresolved,
