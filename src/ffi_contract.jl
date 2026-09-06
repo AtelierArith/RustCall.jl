@@ -1162,3 +1162,48 @@ function ffi_signature_context(name::AbstractString, arg_types, return_type::Abs
     args = join(arg_types, ", ")
     return string(prefix, name, "(", args, ") -> ", isempty(return_type) ? "()" : return_type)
 end
+
+# ============================================================================
+# UTF-8 validity is checked on the Julia side (issue #246)
+# ============================================================================
+
+"""
+    ffi_string_argument(value, arg_name, context) -> String
+
+The `String` a `(ptr, len)` argument slot is built from, checked to be valid
+UTF-8 before the pointer is handed to Rust (#246).
+
+A Julia `String` is a byte vector: `String([0xff, 0xfe])` is a perfectly
+ordinary value that is not UTF-8. The generated wrapper turns a string argument
+into `slice::from_raw_parts` plus `String::from_utf8_lossy`, so an invalid byte
+was silently replaced by U+FFFD and the Rust function ran on data the caller
+never wrote — a wrong answer with no error anywhere. The `from_utf8_lossy` on
+the Rust side stays as defence in depth (a `&str` built from invalid bytes is
+undefined behaviour, and nothing may reach it); this is the check that turns
+the same condition into a catchable Julia exception, at the call site, naming
+the argument that carries the bad bytes.
+
+`arg_name` is the parameter as the Rust signature spells it and `context` the
+function or method it belongs to, so the message points at one argument of one
+function rather than at "a string".
+"""
+function ffi_string_argument(value, arg_name::AbstractString, context::AbstractString)
+    s = String(value)
+    isvalid(s) && return s
+    bad = nothing
+    for (i, c) in pairs(s)
+        if !isvalid(c)
+            bad = i
+            break
+        end
+    end
+    where = bad === nothing ? "" :
+            " (first invalid byte at index $bad, 0x$(string(codeunit(s, bad), base = 16, pad = 2)))"
+    throw(RustError(
+        "argument `$arg_name` of `$context` is not valid UTF-8$where. Rust's " *
+        "`&str` and `String` are UTF-8 by definition, and a Julia `String` is " *
+        "a byte vector that need not be — the bytes would have been silently " *
+        "replaced with U+FFFD on the Rust side, so the function would have run " *
+        "on data you did not pass (#246). Fix the encoding before the call, or " *
+        "pass the bytes as a `Vector{UInt8}` through a slice argument."))
+end

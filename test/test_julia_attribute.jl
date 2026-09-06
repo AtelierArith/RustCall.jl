@@ -462,10 +462,13 @@ end
         # Lifetime-qualified &str: the result may borrow from the converted
         # argument, so it comes back as an owned copy (still a String in Julia).
         @test identity_str("kept") == "kept"
-        @test identity_str(String(UInt8[0x41, 0xff])) == "A\ufffd"
-        # Invalid UTF-8 is replaced, never handed to Rust as an invalid &str
-        @test char_count(String(UInt8[0xff, 0x41])) == 2
-        @test shout(String(UInt8[0xc3, 0x28])) == "\ufffd("
+        # Invalid UTF-8 is refused on the Julia side rather than silently
+        # replaced with U+FFFD on the Rust side (#246): the function would
+        # otherwise have run on bytes the caller never passed. These used to
+        # assert the lossy results `"A\ufffd"`, `2` and `"\ufffd("`.
+        @test_throws RustCall.RustError identity_str(String(UInt8[0x41, 0xff]))
+        @test_throws RustCall.RustError char_count(String(UInt8[0xff, 0x41]))
+        @test_throws RustCall.RustError shout(String(UInt8[0xc3, 0x28]))
         @test shout("hello, wörld") == "HELLO, WÖRLD"
         @test shout(SubString("xyz", 2)) == "YZ"
         @test join_repeat("a", "b", "-", UInt32(2)) == "a-b-a-b"

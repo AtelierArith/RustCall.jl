@@ -358,7 +358,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     module_body = quote
         import RustCall
         import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
-                         _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return
+                         _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,
+                         ffi_string_argument
         import Libdl
 
         const _LIB_PATH = $lib_path
@@ -1706,7 +1707,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # Imports
     push!(lines, "import RustCall")
     push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,")
-    push!(lines, "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return")
+    push!(lines, "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,")
+    push!(lines, "                 ffi_string_argument")
     push!(lines, "import Libdl")
     push!(lines, "")
 

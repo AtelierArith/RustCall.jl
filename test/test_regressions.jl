@@ -1242,6 +1242,99 @@ end
     end
 end
 
+# #246: a Julia `String` is a byte vector and need not be UTF-8, but Rust's
+# `&str` is UTF-8 by definition. The generated wrapper builds the `&str` with
+# `String::from_utf8_lossy`, which *replaces* an invalid byte with U+FFFD — so
+# `f(String([0xff, 0xfe]))` ran the Rust function on data the caller never
+# passed and returned a wrong answer with no error anywhere. The check is now
+# on the Julia side, before the pointer exists; the Rust `from_utf8_lossy`
+# stays as defence in depth, because a `&str` built from invalid bytes is
+# undefined behaviour and nothing may reach it.
+@testset "#246: invalid UTF-8 in a string argument raises, and names the argument" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        rust"""
+        #[julia]
+        pub fn rc246_shout(name: &str) -> String { name.to_uppercase() }
+        #[julia]
+        pub fn rc246_join(head: &str, tail: &str) -> String { format!("{}{}", head, tail) }
+        #[julia]
+        pub struct Rc246Greeter { prefix: usize }
+        impl Rc246Greeter {
+            pub fn new(prefix: usize) -> Self { Self { prefix } }
+            pub fn greet(&self, who: &str) -> String { format!("{}{}", self.prefix, who) }
+        }
+        """
+
+        # Valid UTF-8 still crosses, including multi-byte characters — the
+        # check must not be a length or an ASCII test.
+        @test rc246_shout("world") == "WORLD"
+        @test rc246_shout("héllo ✓") == "HÉLLO ✓"
+        @test rc246_shout("") == ""
+        @test rc246_join("a", "é") == "aé"
+
+        # The acceptance case from the issue.
+        err = try
+            rc246_shout(String([0xff, 0xfe]))
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        msg = sprint(showerror, err)
+        @test occursin("not valid UTF-8", msg)
+        @test occursin("`name`", msg)          # the argument, by its Rust name
+        @test occursin("rc246_shout", msg)     # and the function it belongs to
+        @test occursin("0xff", msg)            # and the byte that is wrong
+        @test occursin("#246", msg)
+
+        # It is the *offending* argument that is named, not the first string
+        # one — a lone continuation byte after valid text, in position 2.
+        err2 = try
+            rc246_join("fine", "ok" * String([0x80]))
+            nothing
+        catch e
+            e
+        end
+        @test err2 isa RustCall.RustError
+        msg2 = sprint(showerror, err2)
+        @test occursin("`tail`", msg2)
+        @test !occursin("`head`", msg2)
+        @test occursin("0x80", msg2)
+
+        # A truncated multi-byte sequence is invalid too, and so is one that is
+        # merely incomplete at the end.
+        @test_throws RustCall.RustError rc246_shout(String(UInt8[0xc3]))
+        @test_throws RustCall.RustError rc246_shout("ok" * String(UInt8[0xe2, 0x9c]))
+
+        # Struct methods take the same path (`_string_arg_plan` is shared), and
+        # report the method rather than a free function.
+        g = Rc246Greeter(UInt(7))
+        @test greet(g, "x") == "7x"
+        err3 = try
+            greet(g, String([0xfe]))
+            nothing
+        catch e
+            e
+        end
+        @test err3 isa RustCall.RustError
+        @test occursin("`who`", sprint(showerror, err3))
+        @test occursin("greet", sprint(showerror, err3))
+
+        # The helper itself, so the contract is pinned independently of any
+        # particular generated wrapper.
+        @test RustCall.ffi_string_argument("ok", "a", "f") == "ok"
+        @test RustCall.ffi_string_argument(SubString("xyz", 1, 2), "a", "f") == "xy"
+        @test_throws RustCall.RustError RustCall.ffi_string_argument(
+            String([0xff]), "a", "f")
+
+        # A rejected call must not have touched Rust at all: the same wrapper
+        # keeps working afterwards, and the argument that was fine is unharmed.
+        @test rc246_shout("still here") == "STILL HERE"
+    end
+end
+
 # #247: the monomorphization key sorted the type *values*, so which parameter
 # got which type never reached the key. `pair<T=i32, U=i64>` and
 # `pair<T=i64, U=i32>` shared one MONOMORPHIZED_FUNCTIONS entry (and one symbol

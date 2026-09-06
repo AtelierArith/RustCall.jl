@@ -114,16 +114,19 @@ sizeof(s)` for strings). `escape` wraps user-visible symbols (`esc` in macro
 context, `identity` inside a generated module).
 """
 function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
-    return _string_arg_plan(sig.arg_names, sig.arg_types, sig.arg_abis, escape)
+    return _string_arg_plan(sig.arg_names, sig.arg_types, sig.arg_abis, escape;
+                            context = sig.name)
 end
 
 # Same plan for a struct method (`RustMethod`), whose arguments follow `self`.
 function _string_arg_plan(method::RustMethod, escape::Function)
-    return _string_arg_plan(method.arg_names, method.arg_types, method.arg_abis, escape)
+    return _string_arg_plan(method.arg_names, method.arg_types, method.arg_abis, escape;
+                            context = method.name)
 end
 
 function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
-                          arg_abis::Vector{String}, escape::Function)
+                          arg_abis::Vector{String}, escape::Function;
+                          context::AbstractString = "")
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
@@ -138,7 +141,11 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             # value, `(ptr, len, cap)`. Slot-count driven, so a new multi-word
             # ABI needs no new branch here.
             bytes = Symbol(prefix, name)
-            push!(bindings, :($bytes = String($arg_sym)))
+            # Validity is checked here, before the pointer exists: a Julia
+            # `String` is a byte vector and need not be UTF-8, and the Rust
+            # wrapper's `from_utf8_lossy` would have replaced the bad bytes
+            # rather than reported them (#246).
+            push!(bindings, :($bytes = ffi_string_argument($arg_sym, $name, $context)))
             push!(preserved, bytes)
             push!(call_args, :(pointer($bytes)))
             push!(call_args, :(sizeof($bytes) % Csize_t))
