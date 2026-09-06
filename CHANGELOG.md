@@ -43,8 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises a `RustError` naming the argument (by its Rust name), the function it
   belongs to and the first offending byte. The Rust-side `from_utf8_lossy`
   stays as defence in depth: a `&str` built from invalid bytes is undefined
-  behaviour, and nothing may reach it. Free functions and struct methods share
-  the path.
+  behaviour, and nothing may reach it. Free functions, struct methods and
+  monomorphized generics share the path; a generic names the argument by
+  position (`argument #1`), since a `FunctionInfo` records ABIs and not
+  parameter names. `BINDINGS_FORMAT_VERSION` goes to `3`: a written-out
+  bindings file now imports `RustCall.ffi_string_argument`, a name an older
+  RustCall does not have, so regenerate after upgrading.
 
 ### Breaking
 - **The compilation cache moved out of `~/.julia/compiled/`**

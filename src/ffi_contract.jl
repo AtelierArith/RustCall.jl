@@ -1185,9 +1185,17 @@ the argument that carries the bad bytes.
 
 `arg_name` is the parameter as the Rust signature spells it and `context` the
 function or method it belongs to, so the message points at one argument of one
-function rather than at "a string".
+function rather than at "a string". A caller that has only the position — a
+monomorphized generic, whose `FunctionInfo` records ABIs but not names — passes
+an `Integer` instead, and the message says `argument #2`.
 """
-function ffi_string_argument(value, arg_name::AbstractString, context::AbstractString)
+ffi_string_argument(value, arg_name::AbstractString, context::AbstractString) =
+    _ffi_string_argument(value, string("`", arg_name, "`"), context)
+
+ffi_string_argument(value, position::Integer, context::AbstractString) =
+    _ffi_string_argument(value, string("#", position), context)
+
+function _ffi_string_argument(value, descriptor::AbstractString, context::AbstractString)
     s = String(value)
     isvalid(s) && return s
     bad = nothing
@@ -1200,7 +1208,7 @@ function ffi_string_argument(value, arg_name::AbstractString, context::AbstractS
     where = bad === nothing ? "" :
             " (first invalid byte at index $bad, 0x$(string(codeunit(s, bad), base = 16, pad = 2)))"
     throw(RustError(
-        "argument `$arg_name` of `$context` is not valid UTF-8$where. Rust's " *
+        "argument $descriptor of `$context` is not valid UTF-8$where. Rust's " *
         "`&str` and `String` are UTF-8 by definition, and a Julia `String` is " *
         "a byte vector that need not be — the bytes would have been silently " *
         "replaced with U+FFFD on the Rust side, so the function would have run " *

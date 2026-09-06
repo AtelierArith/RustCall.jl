@@ -1322,12 +1322,54 @@ end
         @test occursin("`who`", sprint(showerror, err3))
         @test occursin("greet", sprint(showerror, err3))
 
+        # A *generic* `#[julia]` function with a fixed string parameter takes a
+        # third path: `_call_monomorphized` builds its own argument list from
+        # `FunctionInfo.arg_abis` and never goes through `_string_arg_plan`, so
+        # it was the one string argument left reaching `from_utf8_lossy`
+        # (#246 review).
+        rust"""
+        #[julia]
+        pub fn rc246_tag<T: std::fmt::Display>(label: &str, value: T) -> String {
+            format!("{}={}", label, value)
+        }
+        """
+        @test RustCall.is_generic_function("rc246_tag")
+        @test RustCall.call_generic_function("rc246_tag", "n", Int32(7)) == "n=7"
+        @test RustCall.call_generic_function("rc246_tag", "é", 1.5) == "é=1.5"
+        err4 = try
+            RustCall.call_generic_function("rc246_tag", String([0xff, 0x41]), Int32(1))
+            nothing
+        catch e
+            e
+        end
+        @test err4 isa RustCall.RustError
+        msg4 = sprint(showerror, err4)
+        @test occursin("not valid UTF-8", msg4)
+        # A `FunctionInfo` records ABIs, not parameter names, so the position
+        # is what the message can name — and it names the right one.
+        @test occursin("argument #1", msg4)
+        @test occursin("0xff", msg4)
+        @test occursin("#246", msg4)
+        # The specialization still works afterwards: nothing was left half-done.
+        @test RustCall.call_generic_function("rc246_tag", "n", Int32(8)) == "n=8"
+
         # The helper itself, so the contract is pinned independently of any
-        # particular generated wrapper.
+        # particular generated wrapper — in both of its spellings.
         @test RustCall.ffi_string_argument("ok", "a", "f") == "ok"
         @test RustCall.ffi_string_argument(SubString("xyz", 1, 2), "a", "f") == "xy"
+        @test RustCall.ffi_string_argument("ok", 2, "f") == "ok"
         @test_throws RustCall.RustError RustCall.ffi_string_argument(
             String([0xff]), "a", "f")
+        @test_throws RustCall.RustError RustCall.ffi_string_argument(
+            String([0xff]), 2, "f")
+        named_msg = sprint(showerror, try
+            RustCall.ffi_string_argument(String([0xff]), "a", "f")
+        catch e; e end)
+        positional_msg = sprint(showerror, try
+            RustCall.ffi_string_argument(String([0xff]), 2, "f")
+        catch e; e end)
+        @test occursin("argument `a` of `f`", named_msg)
+        @test occursin("argument #2 of `f`", positional_msg)
 
         # A rejected call must not have touched Rust at all: the same wrapper
         # keeps working afterwards, and the argument that was fine is unharmed.

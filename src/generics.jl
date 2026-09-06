@@ -517,10 +517,11 @@ end
     _call_monomorphized(info::FunctionInfo, args...)
 
 Call a monomorphized function through its `FunctionInfo`. String arguments
-(`info.arg_abis`) are passed as `(ptr, len)` byte pairs kept alive for the
-duration of the call, and a string return (`info.string_return`) is copied out
-of the owned or borrowed buffer, exactly as the generated wrappers of
-non-generic `#[julia]` functions do.
+(`info.arg_abis`) are checked to be valid UTF-8 (`ffi_string_argument`, #246)
+and passed as `(ptr, len)` byte pairs kept alive for the duration of the call,
+and a string return (`info.string_return`) is copied out of the owned or
+borrowed buffer, exactly as the generated wrappers of non-generic `#[julia]`
+functions do.
 """
 function _call_monomorphized(info::FunctionInfo, args...)
     # The channel was resolved when `info` was built, against the same handle
@@ -542,7 +543,13 @@ function _call_monomorphized(info::FunctionInfo, args...)
     call_args = Any[]
     for (i, (arg, abi)) in enumerate(zip(args, info.arg_abis))
         if _is_string_abi(abi)
-            s = String(arg)
+            # The same UTF-8 check the non-generic wrappers make (#246). A
+            # `FunctionInfo` records ABIs, not parameter names, so the message
+            # names the position; the specialization's exported symbol is the
+            # context. Without it a generic `#[julia] fn f<T>(s: &str, x: T)`
+            # was the one string path left where invalid bytes reached
+            # `String::from_utf8_lossy` and were silently replaced.
+            s = ffi_string_argument(arg, i, info.name)
             push!(strings, s)
             push!(call_args, pointer(s))
             push!(call_args, sizeof(s) % Csize_t)

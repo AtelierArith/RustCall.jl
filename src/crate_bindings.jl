@@ -1206,17 +1206,23 @@ end
 Format marker carried by every file `write_bindings_to_file` emits.
 
 Bumped when a generated bindings file stops being interchangeable with one an
-older RustCall produced. `2` (#277 Phase B5): the file now loads its library
-through `RustCall.load_artifact!` rather than `Libdl.dlopen`, so the handle is
-registered and `unload_library` can see it, and its struct finalizers capture a
-destructor pointer and the library's liveness flag instead of resolving the
-destructor when they run.
+older RustCall produced.
+
+- `2` (#277 Phase B5): the file loads its library through
+  `RustCall.load_artifact!` rather than `Libdl.dlopen`, so the handle is
+  registered and `unload_library` can see it, and its struct finalizers capture
+  a destructor pointer and the library's liveness flag instead of resolving the
+  destructor when they run.
+- `3` (#246): string arguments are built with `RustCall.ffi_string_argument`,
+  which the file imports, so invalid UTF-8 raises instead of being substituted.
+  That name does not exist in an older RustCall, so a file emitted here does
+  not load against one — the direction the marker is really for.
 
 A file emitted by an older version still *works* — it only uses public API that
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 2
+const BINDINGS_FORMAT_VERSION = 3
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
