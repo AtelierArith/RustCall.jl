@@ -992,7 +992,7 @@ function list_library_functions(lib_name::String)
 end
 
 """
-    unload_library(lib_name::String)
+    unload_library(lib_name::String; close_retired = false)
 
 Unload a Rust library and free its resources.
 
@@ -1006,8 +1006,8 @@ would keep redirecting lookups to a symbol that is no longer loaded, #279), its
 what keeps a finalizer of an object it produced from calling into the closed
 image (#249).
 """
-function unload_library(lib_name::String)
-    if !unload_artifact!(inline_rustc_policy(), lib_name)
+function unload_library(lib_name::String; close_retired::Bool = false)
+    if !unload_artifact!(inline_rustc_policy(), lib_name; close_retired)
         @warn "Library '$lib_name' not loaded"
     end
     return nothing
@@ -1018,7 +1018,7 @@ end
 
 Unload all loaded Rust libraries.
 """
-function unload_all_libraries()
+function unload_all_libraries(; close_retired::Bool = false)
     # One image may sit under several names (`alias_artifact!`), and unloading
     # any of them removes them all and closes the image once. So the loop
     # re-checks rather than warning about a name a previous iteration already
@@ -1028,7 +1028,20 @@ function unload_all_libraries()
             isempty(RUST_LIBRARIES) ? nothing : first(keys(RUST_LIBRARIES))
         end
         name === nothing && break
-        unload_artifact!(inline_rustc_policy(), name)
+        unload_artifact!(inline_rustc_policy(), name; close_retired)
+    end
+    # A library that was hot-reloaded and then unloaded leaves its retired
+    # images behind under a name that is no longer registered; sweep them too
+    # when the caller says it is safe.
+    if close_retired
+        leftovers = lock(REGISTRY_LOCK) do
+            handles = collect(Iterators.flatten(values(RETIRED_HANDLES)))
+            empty!(RETIRED_HANDLES)
+            handles
+        end
+        for handle in leftovers
+            close_artifact_handle!(handle)
+        end
     end
     return nothing
 end

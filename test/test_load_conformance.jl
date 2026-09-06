@@ -359,6 +359,56 @@ end
                     @test RustCall.finalizer_failure_count() == failures
                 end
             end
+
+            # --------------------------------------------------------------
+            # The module's panic-channel cache is a `Dict`, and `get!` is not
+            # safe against a concurrent `get!`: two tasks making the *first*
+            # call to wrappers of a fresh module can rehash it at once. It is
+            # guarded by a module-local lock, which is free to take because
+            # resolution happens before the Rust call.
+            # --------------------------------------------------------------
+            @testset "concurrent first calls into a fresh crate module" begin
+                crate = joinpath(dirname(dirname(pathof(RustCall))),
+                                 "examples", "sample_crate")
+                if !isdir(crate)
+                    @test_skip "examples/sample_crate not found"
+                elseif Threads.nthreads() < 2
+                    @test_skip "needs ≥2 threads; the CI matrix has a " *
+                               "multithreaded Julia entry"
+                else
+                    fresh = @rust_crate crate name="ConformanceCrateRace"
+                    n = 200
+                    results = Vector{Any}(undef, n)
+                    @sync for i in 1:n
+                        Threads.@spawn results[i] = try
+                            # Several distinct wrappers, so several distinct
+                            # cache keys are inserted at once.
+                            if i % 3 == 0
+                                Base.invokelatest(fresh.add, Int32(i), Int32(1))
+                            elseif i % 3 == 1
+                                Base.invokelatest(fresh.multiply, Int32(i), Int32(2))
+                            else
+                                try
+                                    Base.invokelatest(fresh.panicky, Int32(-i))
+                                catch e
+                                    e
+                                end
+                            end
+                        catch e
+                            e
+                        end
+                    end
+                    for i in 1:n
+                        if i % 3 == 0
+                            @test results[i] == Int32(i + 1)
+                        elseif i % 3 == 1
+                            @test results[i] == Int32(2i)
+                        else
+                            @test results[i] isa RustCall.RustPanicError
+                        end
+                    end
+                end
+            end
         end
     end
 end

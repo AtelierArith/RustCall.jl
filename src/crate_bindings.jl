@@ -331,7 +331,9 @@ Generate a Julia module expression containing bindings for the crate.
 # Returns
 - `Expr`: A module expression that can be evaluated
 """
-function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing)
+function emit_crate_module(info::CrateInfo, lib_path::String;
+                           module_name::Union{String, Nothing}=nothing,
+                           build_release::Bool = true)
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -350,7 +352,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
     # `unload_all_libraries` and every registry the rest of RustCall keeps
     # (#250). It goes through `load_artifact!` now, so the module's `Ref` and
     # the registry hold the same handle and the same liveness flag.
-    lib_key = crate_library_name(info)
+    lib_key = crate_library_name(info; release = build_release)
 
     # Build the module body as a block
     module_body = quote
@@ -415,13 +417,21 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
         # by an older RustCall has no channels and must not be probed on every
         # call.
         const _PANIC_CHANNELS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()
+        # `get!` on a `Dict` is not safe against a concurrent `get!`: two tasks
+        # calling a wrapper of this module for the first time can rehash it at
+        # once. Resolution happens *before* the Rust call, so a lock here costs
+        # nothing that matters — it is the read *after* the call that must not
+        # take one (#244).
+        const _PANIC_LOCK = ReentrantLock()
 
         # Keyed by the handle as well as the symbol: a reload swaps the image
         # under the same module, and a channel pointer resolved against the old
         # one would be a call into unmapped code (#244, #277).
         function _panic_channel(symbol::String)
-            get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do
-                _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))
+            lock(_PANIC_LOCK) do
+                get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do
+                    _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))
+                end
             end
         end
 
@@ -1074,7 +1084,8 @@ function generate_bindings(crate_path::String;
 
     # Generate module
     @info "Generating Julia module..."
-    return emit_crate_module(info, lib_path, module_name=output_module_name)
+    return emit_crate_module(info, lib_path; module_name=output_module_name,
+                             build_release=build_release)
 end
 
 """
@@ -1134,10 +1145,17 @@ Regenerate after upgrading; the marker is what makes that visible.
 const BINDINGS_FORMAT_VERSION = 2
 
 """
-    crate_library_name(info::CrateInfo) -> String
+    crate_library_name(info::CrateInfo; release = true) -> String
 
 The `RUST_LIBRARIES` key a `@rust_crate` library is registered under:
-`rust_crate_<crate name>_<short id of the crate identity>`.
+`rust_crate_<crate name>_<short id of the crate identity for that profile>`.
+
+The **profile is part of the name**, exactly as it is part of the cache key
+(`compute_crate_hash(info; release)`). A debug and a release build of one crate
+are two different binaries, and giving them one registry name made them clobber
+each other: the second `@rust_crate` replaced the first\'s entry, retired its
+liveness flag out from under objects that were still alive, and pointed its
+module mirror at the other profile\'s image.
 
 `@rust_crate` used to keep its handle only in a module-local `Ref`, so
 `unload_library`, `unload_all_libraries` and every registry the rest of
@@ -1148,8 +1166,8 @@ objects capture, and unloading it retires them (#277 Phase B5).
 Keyed by the crate identity so two crates — or one crate rebuilt under a
 different toolchain — do not collide on one entry.
 """
-crate_library_name(info::CrateInfo) =
-    "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info)))"
+crate_library_name(info::CrateInfo; release::Bool = true) =
+    "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info; release)))"
 
 """
     compute_crate_hash(info::CrateInfo) -> String
@@ -1551,6 +1569,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     code = emit_crate_module_code(info, lib_path_for_code,
         module_name = output_module_name,
         use_relative_path = relative_lib_path !== nothing,
+        build_release = build_release,
         strict = strict,
     )
 
@@ -1584,6 +1603,7 @@ Generate Julia module code as a string, suitable for writing to a file.
 function emit_crate_module_code(info::CrateInfo, lib_path::String;
     module_name::Union{String, Nothing} = nothing,
     use_relative_path::Bool = false,
+    build_release::Bool = true,
     strict::Symbol = FFI_STRICT[]
 )
     # Determine module name
@@ -1623,7 +1643,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     else
         push!(lines, "const _LIB_PATH = $(repr(lib_path))")
     end
-    push!(lines, "const _LIB_NAME = $(repr(crate_library_name(info)))")
+    push!(lines, "const _LIB_NAME = $(repr(crate_library_name(info; release = build_release)))")
     push!(lines, "const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)")
     # A `Ref` holding the artifact's liveness `Ref`: the artifact does not
     # exist until `__init__` runs and a `const` cannot be rebound, so this
@@ -1672,12 +1692,18 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # message waiting there. Resolved once per symbol, negative answers cached
     # too — a crate built before #244 has no channels.
     push!(lines, "const _PANIC_CHANNELS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()")
+    # `get!` is not safe against a concurrent `get!`. Resolution happens before
+    # the Rust call, so a lock here is free of the constraint that applies to
+    # the read after it (#244).
+    push!(lines, "const _PANIC_LOCK = ReentrantLock()")
     push!(lines, "")
     # Keyed by handle as well as symbol: a reload swaps the image, and a
     # channel pointer resolved against the old one would be unmapped code.
     push!(lines, "function _panic_channel(symbol::String)")
-    push!(lines, "    get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do")
-    push!(lines, "        _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))")
+    push!(lines, "    lock(_PANIC_LOCK) do")
+    push!(lines, "        get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do")
+    push!(lines, "            _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))")
+    push!(lines, "        end")
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "")

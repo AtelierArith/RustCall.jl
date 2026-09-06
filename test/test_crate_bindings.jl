@@ -514,6 +514,67 @@ end
         return
     end
 
+    # The registry name of a @rust_crate library names its build profile, so a
+    # debug and a release build of one crate are two entries rather than one
+    # that clobbers the other — the second used to replace the first's handle,
+    # retire its liveness flag out from under live objects, and repoint its
+    # module mirror at the other profile's image (#277).
+    @testset "crate_library_name distinguishes the build profile" begin
+        info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
+        release = RustCall.crate_library_name(info; release = true)
+        debug = RustCall.crate_library_name(info; release = false)
+        @test release != debug
+        @test startswith(release, "rust_crate_$(info.name)_")
+        @test startswith(debug, "rust_crate_$(info.name)_")
+        # Same profile, same name — it is an identity, not a nonce.
+        @test RustCall.crate_library_name(info; release = true) == release
+        # ...and the default is the release profile, as everywhere else.
+        @test RustCall.crate_library_name(info) == release
+
+        # The emitted module carries the name of the profile it was built for.
+        release_code = RustCall.emit_crate_module_code(info, "/tmp/r.so";
+                                                       build_release = true)
+        debug_code = RustCall.emit_crate_module_code(info, "/tmp/d.so";
+                                                     build_release = false)
+        @test occursin("const _LIB_NAME = $(repr(release))", release_code)
+        @test occursin("const _LIB_NAME = $(repr(debug))", debug_code)
+
+        # Two modules registered under the two names do not disturb each
+        # other: separate registry entries, separate liveness flags, separate
+        # mirrors — so unloading one leaves the other intact.
+        policy = RustCall.crate_direct_policy()
+        h1 = Ptr{Cvoid}(UInt(0xc0de0001))
+        h2 = Ptr{Cvoid}(UInt(0xc0de0002))
+        m1_handle, m1_alive = Ref(Ptr{Cvoid}(C_NULL)), Ref(Ref(true))
+        m2_handle, m2_alive = Ref(Ptr{Cvoid}(C_NULL)), Ref(Ref(true))
+        try
+            RustCall.register_handle_mirror!(release, m1_handle, m1_alive)
+            RustCall.register_handle_mirror!(debug, m2_handle, m2_alive)
+            RustCall.adopt_artifact!(policy, h1; lib_name = release)
+            RustCall.adopt_artifact!(policy, h2; lib_name = debug)
+            @test m1_handle[] == h1
+            @test m2_handle[] == h2
+            @test m1_alive[] !== m2_alive[]
+
+            RustCall.unload_artifact!(policy, release; dlclose = false)
+            @test m1_handle[] == C_NULL
+            @test !m1_alive[][]
+            # The other profile is untouched.
+            @test m2_handle[] == h2
+            @test m2_alive[][]
+            @test haskey(RustCall.RUST_LIBRARIES, debug)
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                for name in (release, debug)
+                    delete!(RustCall.RUST_LIBRARIES, name)
+                    delete!(RustCall.ARTIFACT_ALIVE, name)
+                    delete!(RustCall.HANDLE_MIRRORS, name)
+                    delete!(RustCall.RETIRED_HANDLES, name)
+                end
+            end
+        end
+    end
+
     @testset "emit_crate_module_code" begin
         # Test generating module code as a string
         info = RustCall.scan_crate(SAMPLE_CRATE_PATH)

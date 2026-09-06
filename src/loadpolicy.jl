@@ -1067,6 +1067,59 @@ function _retire_handle_mirrors!(name::String)
 end
 
 """
+    RETIRED_HANDLES
+
+`lib_name` → images that were replaced under that name and are still mapped.
+
+**A replaced image is retired, not closed.** When a hot reload swaps a library,
+some other task may already hold a function pointer it read out of the old
+image — the pointer was resolved before the swap, and the call is in flight.
+Closing the image under it is a use-after-`dlclose`, which is a segfault, and
+RustCall has no per-call reader pin that would make closing safe (adding one
+would put two atomics on every FFI call, on the hot path, to protect against an
+event that happens at most once per rebuild).
+
+So the old image stays mapped. It is never `dlsym`ed again — the registry, the
+metadata tables, the panic channels and the module mirrors all point at the new
+one — so nothing new can enter it, and the calls already inside it finish
+normally. The cost is a few hundred kilobytes per reload that is not reclaimed
+until someone says it is safe to reclaim it.
+
+Saying so is `unload_library(name; close_retired = true)` /
+`unload_all_libraries(; close_retired = true)`: an explicit statement by the
+caller that no call into those images is in flight. The parallel test harness
+uses it; a REPL user editing Rust in a loop does not need to.
+
+Objects produced by a retired image are unaffected either way: a finalizer
+carries the destructor pointer *of its own image* and that image is still
+mapped, so it frees through the code that allocated it — the allocator contract
+holds by construction (#249).
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const RETIRED_HANDLES = Dict{String, Vector{Ptr{Cvoid}}}()
+
+"""
+    retired_handles(lib_name) -> Vector{Ptr{Cvoid}}
+
+The images replaced under `lib_name` that are still mapped. A copy, so the
+caller may inspect it without the lock.
+"""
+retired_handles(lib_name::AbstractString) =
+    lock(() -> copy(get(RETIRED_HANDLES, String(lib_name), Ptr{Cvoid}[])), REGISTRY_LOCK)
+
+# Move a replaced image onto the retired list. Caller holds REGISTRY_LOCK.
+function _retire_handle!(name::String, handle::Ptr{Cvoid})
+    handle == C_NULL && return nothing
+    # A handle that is still live under another name (an alias) is not retired:
+    # it has not been replaced, it is still the current image for that name.
+    isempty(library_names_for_handle(handle)) || return nothing
+    list = get!(() -> Ptr{Cvoid}[], RETIRED_HANDLES, name)
+    handle in list || push!(list, handle)
+    return nothing
+end
+
+"""
     DLCLOSE_COUNT
 
 How many images this session has closed, process-wide.
@@ -1204,8 +1257,8 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
                          on_replace::Symbol = :keep_handle,
                          close_duplicate::Bool = false,
                          set_current::Bool = policy.sets_current_lib)
-    on_replace in (:keep_handle, :dlclose) ||
-        throw(ArgumentError("invalid on_replace $(on_replace); expected :keep_handle or :dlclose"))
+    on_replace in (:keep_handle, :retire) ||
+        throw(ArgumentError("invalid on_replace $(on_replace); expected :keep_handle or :retire"))
     handle == C_NULL &&
         throw(ArgumentError("refusing to register a NULL handle for $(lib_name)"))
     name = String(lib_name)
@@ -1243,14 +1296,21 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         # so a generated `@rust_crate` module's fast path can never read a
         # handle that has been replaced out from under it.
         _update_handle_mirrors!(name, handle, alive)
+        # After the swap, so `library_names_for_handle` sees the *new* mapping:
+        # an old handle that is still live under an alias is not retired.
+        (replaced != C_NULL && on_replace === :retire) &&
+            _retire_handle!(name, replaced)
         set_current && (CURRENT_LIB[] = name)
         return LoadedArtifact(name, handle, lib_path, policy, alive, assumed)
     end
 
     # dlclose outside the lock: it runs destructors in the image. Only a
-    # handle this call is responsible for — see `close_duplicate`.
+    # handle this call is responsible for — see `close_duplicate`. A *duplicate*
+    # is safe to close because nobody has seen it: it was opened moments ago by
+    # this call and lost the `:insert_only` race, so no pointer was ever
+    # resolved from it. A *replaced* image is not safe to close and is never
+    # closed here — see `RETIRED_HANDLES`.
     (close_duplicate && duplicate != C_NULL) && close_artifact_handle!(duplicate)
-    (replaced != C_NULL && on_replace === :dlclose) && close_artifact_handle!(replaced)
     return artifact
 end
 
@@ -1284,8 +1344,8 @@ function register_artifact_metadata!(policy::LoadPolicy, lib_name::AbstractStrin
 end
 
 """
-    unload_artifact!(artifact::LoadedArtifact; dlclose = true) -> Bool
-    unload_artifact!(policy::LoadPolicy, lib_name; dlclose = true) -> Bool
+    unload_artifact!(artifact::LoadedArtifact; dlclose = true, close_retired = false) -> Bool
+    unload_artifact!(policy::LoadPolicy, lib_name; dlclose = true, close_retired = false) -> Bool
 
 Retire a library and everything the registries record about it, in one locked
 block: the `RUST_LIBRARIES` entry and its function-pointer cache, the
@@ -1300,11 +1360,18 @@ library produced inert rather than a jump into freed text.
 to retire the bookkeeping while keeping the image mapped (the caller then owns
 the handle).
 
+`close_retired = true` additionally closes the images this library *replaced*
+and that are still mapped (`RETIRED_HANDLES`).  They are kept by default
+because a call that started before a hot reload may still be running inside
+one; passing `true` is the caller stating that none is.
+
 Returns whether a `RUST_LIBRARIES` entry was actually removed.
 """
-function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; dlclose::Bool = true)
+function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; dlclose::Bool = true,
+                          close_retired::Bool = false)
     name = String(lib_name)
     handle = C_NULL
+    retired = Ptr{Cvoid}[]
     removed = lock(REGISTRY_LOCK) do
         entry = get(RUST_LIBRARIES, name, nothing)
         handle = entry === nothing ? C_NULL : entry[1]
@@ -1320,6 +1387,10 @@ function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; dlclose:
             delete!(RUST_LIBRARIES, each)
             purge_library_state!(each)
             _retire_handle_mirrors!(each)
+            if close_retired
+                append!(retired, get(RETIRED_HANDLES, each, Ptr{Cvoid}[]))
+            end
+            delete!(RETIRED_HANDLES, each)
             if CURRENT_LIB[] == each
                 CURRENT_LIB[] = ""
             end
@@ -1328,11 +1399,17 @@ function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; dlclose:
     end
     # ...and the image is closed exactly once, however many names it had.
     (dlclose && handle != C_NULL) && close_artifact_handle!(handle)
+    # Images this library replaced, only on request: a call that started before
+    # the reload may still be inside one (`RETIRED_HANDLES`).
+    for old_handle in retired
+        old_handle == handle && continue
+        close_artifact_handle!(old_handle)
+    end
     return removed
 end
 
-unload_artifact!(artifact::LoadedArtifact; dlclose::Bool = true) =
-    unload_artifact!(artifact.policy, artifact.name; dlclose)
+unload_artifact!(artifact::LoadedArtifact; dlclose::Bool = true, close_retired::Bool = false) =
+    unload_artifact!(artifact.policy, artifact.name; dlclose, close_retired)
 
 """
     alias_artifact!(policy::LoadPolicy, from, to) -> Bool

@@ -781,8 +781,13 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     # -----------------------------------------------------------------
     @testset "hot reload rebuilds before it swaps (#255)" begin
         src = _src("hot_reload.jl")
-        @test occursin("on_replace = :dlclose", src)
-        @test occursin("_source_stamps", src)          # rescan/build TOCTOU guard
+        # A replaced image is retired, not closed: a call that started before
+        # the reload may still be inside it (#277).
+        @test occursin("on_replace = :retire", src)
+        @test !occursin("on_replace = :dlclose", src)
+        # The rescan/build guard hashes content, not (mtime, size).
+        @test occursin("_source_fingerprint", src)
+        @test occursin("crate_content_digest", src)
         @test occursin("_scan_crate_signatures", src)
         @test !occursin("outside REGISTRY_LOCK", src)  # the old unload-first comment
         # The rescan happens before the build, so the manifest describes the

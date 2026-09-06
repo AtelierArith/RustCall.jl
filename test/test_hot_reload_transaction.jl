@@ -88,9 +88,23 @@ end
               "foo.7.dll"
 
         @test occursin("_generation_path(built, state.generation)", _HRT_SRC)
+        # The generation comes from a process-wide counter, so disabling and
+        # re-enabling hot reload cannot restart at 1 and collide with a `.1.`
+        # file that is still mapped (#255).
+        @test occursin("state.generation = next_reload_generation()", _HRT_SRC)
+        a = RustCall.next_reload_generation()
+        b = RustCall.next_reload_generation()
+        @test b == a + 1
+        # A *fresh* state does not reset it.
+        fresh = RustCall.HotReloadState("/nonexistent", "", "x", String[],
+                                        Dict{String, Float64}(), nothing, true, nothing)
+        @test fresh.generation == 0
+        @test RustCall.next_reload_generation() > b
         @test occursin("cp(built, new_lib_path; force = true)", _HRT_SRC)
-        # The previous handle is closed *after* the swap, not before the build.
-        @test occursin("on_replace = :dlclose", _HRT_SRC)
+        # The previous image is RETIRED after the swap, never closed under a
+        # call that may still be inside it (#277).
+        @test occursin("on_replace = :retire", _HRT_SRC)
+        @test !occursin("on_replace = :dlclose", _HRT_SRC)
         @test findfirst("rebuild_crate(state.crate_path)", _HRT_SRC) <
               findfirst("_generation_path(built", _HRT_SRC) <
               findfirst("load_artifact!(hot_reload_policy()", _HRT_SRC)
@@ -141,6 +155,47 @@ end
     end
 
     # ------------------------------------------------------------------
+    # The scan-vs-build consistency check hashes CONTENT.
+    #
+    # A `(mtime, size)` stamp misses the edit a developer is most likely to
+    # make between the scan and the build: one character for another, with the
+    # mtime restored by an editor, a formatter or a `git checkout`. The
+    # manifest would then describe sources the build did not compile.
+    # ------------------------------------------------------------------
+    @testset "a same-size edit with a restored mtime is detected" begin
+        @test occursin("crate_content_digest", _HRT_SRC)
+        @test !occursin("_source_stamps", _HRT_SRC)
+
+        mktempdir() do dir
+            crate = _hrt_make_crate(joinpath(dir, "digest"), "hrt_digest", 1)
+            src = joinpath(crate, "src", "lib.rs")
+            before = RustCall._source_fingerprint(crate)
+            @test !isempty(before)
+            @test RustCall._source_fingerprint(crate) == before   # stable
+
+            stamp = stat(src)
+            original = read(src, String)
+            # Same length, different content — `1` becomes `2` — and the mtime
+            # is put back where it was.
+            edited = replace(original, "hrt_probe() -> i32 { 1 }" =>
+                                       "hrt_probe() -> i32 { 2 }")
+            @test length(edited) == length(original)
+            write(src, edited)
+            touch(src)
+            try
+                # Restore mtime and atime to the pre-edit values.
+                Base.Filesystem.futime(src, stamp.mtime, stamp.mtime)
+            catch
+                # Not every platform exposes it; the digest does not care.
+            end
+            @test filesize(src) == stamp.size
+
+            after = RustCall._source_fingerprint(crate)
+            @test after != before          # a stamp would have said "unchanged"
+        end
+    end
+
+    # ------------------------------------------------------------------
     # (3) Two saves inside the debounce window are one reload.
     # ------------------------------------------------------------------
     @testset "two saves within 200 ms produce one reload" begin
@@ -165,6 +220,93 @@ end
     end
 
     # ------------------------------------------------------------------
+    # A reload while a call is in flight must not pull the ground out.
+    #
+    # This is why a replaced image is retired rather than closed: the call
+    # below reads its function pointer, enters the old image, and is still
+    # inside it when the reload swaps the library. Closing the image there is a
+    # use-after-`dlclose`.
+    # ------------------------------------------------------------------
+    if !_HRT_CARGO
+        @test_skip "cargo is required for the in-flight reload test"
+    else
+        @testset "a reload does not close an image a call is inside" begin
+            mktempdir() do dir
+                crate = joinpath(dir, "inflight")
+                mkpath(joinpath(crate, "src"))
+                write(joinpath(crate, "Cargo.toml"), """
+                    [package]
+                    name = "hrt_inflight"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [dependencies]
+
+                    [profile.release]
+                    panic = "unwind"
+                    """)
+                # A function that stays inside the image for 200 ms.
+                write(joinpath(crate, "src", "lib.rs"), """
+                    #[no_mangle]
+                    pub extern "C" fn hrt_slow() -> i32 {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        1
+                    }
+                    """)
+                lib_name = "hrt_inflight_lib"
+                state = _hrt_state(crate, lib_name)
+                try
+                    @test RustCall.reload_library(state)
+                    old_handle = lock(() -> RustCall.RUST_LIBRARIES[lib_name][1],
+                                      RustCall.REGISTRY_LOCK)
+                    # The pointer is read *now*, out of the image that is about
+                    # to be replaced — exactly what an in-flight call holds.
+                    slow = RustCall.get_function_pointer(lib_name, "hrt_slow")
+
+                    result = Ref(0)
+                    task = Threads.@spawn begin
+                        result[] = RustCall.call_rust_function(slow, Int32)
+                    end
+
+                    # Reload while it is inside.
+                    sleep(0.05)
+                    write(joinpath(crate, "src", "lib.rs"), """
+                        #[no_mangle]
+                        pub extern "C" fn hrt_slow() -> i32 {
+                            std::thread::sleep(std::time::Duration::from_millis(200));
+                            2
+                        }
+                        """)
+                    @test RustCall.reload_library(state)
+
+                    # The call completes rather than crashing the process.
+                    wait(task)
+                    @test result[] == Int32(1)     # it ran the OLD code, as it must
+
+                    # The old image is retired, still mapped, and not closed.
+                    retired = RustCall.retired_handles(lib_name)
+                    @test old_handle in retired
+                    @test length(retired) == 1
+
+                    # Closing it is explicit, and closes it exactly once.
+                    before = RustCall.DLCLOSE_COUNT[]
+                    RustCall.unload_library(lib_name; close_retired = true)
+                    @test RustCall.DLCLOSE_COUNT[] == before + 2   # live + retired
+                    @test isempty(RustCall.retired_handles(lib_name))
+                finally
+                    try
+                        RustCall.unload_library(lib_name; close_retired = true)
+                    catch
+                    end
+                end
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------
     # (1) A failed rebuild keeps the previous library, and says so once.
     # ------------------------------------------------------------------
     if !_HRT_CARGO
@@ -184,9 +326,12 @@ end
                         RustCall.get_function_pointer(lib_name, "hrt_probe"),
                         Int32) == Int32(41)
                     good_generation = state.generation
-                    @test good_generation == 1
+                    # A process-wide counter, so the value is whatever this
+                    # process is up to — the point is that it is used and that
+                    # the file is named after it (#255).
+                    @test good_generation >= 1
                     @test isfile(state.lib_path)
-                    @test occursin(".1.", basename(state.lib_path))
+                    @test occursin(".$(good_generation).", basename(state.lib_path))
 
                     # Now save a file that does not compile.
                     _hrt_write_broken(crate)
@@ -239,11 +384,33 @@ end
                     @test RustCall.call_rust_function(
                         Libdl.dlsym(handle_ref[], "hrt_probe"), Int32) == Int32(123)
 
-                    # An unload empties it, so a module reading it reports
-                    # "not loaded" rather than calling into a closed image.
+                    # The replaced image is RETIRED, not closed: a call that
+                    # started before the reload may still be running inside it,
+                    # and there is no per-call reader pin that would make
+                    # closing safe. It is kept mapped until someone says it is
+                    # safe to reclaim (#277).
+                    retired = RustCall.retired_handles(lib_name)
+                    @test length(retired) >= 1
+                    @test current in retired            # the pre-reload image
+                    @test !(swapped in retired)         # ...but not the live one
+                    # ...and it is still mapped, so a pointer taken from it
+                    # before the reload still resolves.
+                    @test Libdl.dlsym(current, "hrt_probe"; throw_error = false) !== nothing
+
+                    # An unload empties the mirror, so a module reading it
+                    # reports "not loaded" rather than calling into a closed
+                    # image — and does NOT close the retired ones by default.
+                    closes_before = RustCall.DLCLOSE_COUNT[]
                     RustCall.unload_library(lib_name)
                     @test handle_ref[] == C_NULL
                     @test !alive_ref[][]
+
+                    # `close_retired = true` is the caller stating that nothing
+                    # is in flight; then, and only then, the retired image goes.
+                    remaining = RustCall.retired_handles(lib_name)
+                    RustCall.unload_all_libraries(; close_retired = true)
+                    @test isempty(RustCall.retired_handles(lib_name))
+                    @test RustCall.DLCLOSE_COUNT[] >= closes_before + length(remaining)
                 finally
                     # Windows locks a loaded DLL, so the temp tree can only be
                     # removed after the library is gone. Best effort either way.

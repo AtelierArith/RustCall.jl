@@ -64,6 +64,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     object whose library was unloaded goes inert rather than calling into a
     closed image.
 
+  - **A hot reload retires the image it replaces instead of closing it.** A
+    call that started before the swap may still be running inside the old
+    image, and closing it there is a use-after-`dlclose`; RustCall has no
+    per-call reader pin, and adding one would put two atomics on every FFI
+    call. The old image stays mapped and unreachable — a few hundred kilobytes
+    — until you say it is safe to reclaim:
+    `unload_library(name; close_retired = true)` or
+    `unload_all_libraries(; close_retired = true)`.
+    `RustCall.retired_handles(name)` lists them. Objects allocated by a retired
+    image still free correctly: their finalizer holds their own image's
+    destructor, and that image is still mapped.
+
   - **A failed hot reload keeps the previous library**
     ([#255](https://github.com/AtelierArith/RustCall.jl/issues/255)). The
     rebuild, the rescan and the `dlopen` all complete before anything is
@@ -107,6 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back to the previous lenient scan.
 - `RustCall.load_cached_library` returns the verified cache *path* instead of
   opening the library.
+- A `@rust_crate` library's registry name includes its build profile, so a
+  `build_release = false` and a `build_release = true` module of one crate are
+  two entries rather than one that clobbers the other.
 - Ownership operations (`RustBox`, `RustRc`, `RustArc`, `RustVec`) refuse to
   construct a value when the helper library is missing, naming the operation
   and the `Pkg.build("RustCall")` that fixes it.

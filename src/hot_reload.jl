@@ -31,9 +31,12 @@ mutable struct HotReloadState
     watch_task::Union{Task, Nothing}
     enabled::Bool
     rebuild_callback::Union{Function, Nothing}
-    # Monotonic reload counter. Each successful rebuild is copied to a fresh
-    # `<lib>.<generation>.<ext>` before it is opened, so the previously loaded
-    # image is never the file Cargo writes to (#255).
+    # The generation of the last successful reload, for diagnostics. The value
+    # comes from `next_reload_generation()`, a process-wide counter — a
+    # per-state integer restarted at 0 when hot reload was disabled and
+    # re-enabled, and the reload then tried to write `<lib>.1.<ext>` while the
+    # image of that name was still mapped, which fails outright on Windows
+    # (#255).
     generation::Int
     # The last rebuild failure that was reported, so the ordinary dev loop —
     # save with a typo, save again — does not print the same error on every
@@ -174,26 +177,32 @@ function reload_library(state::HotReloadState)
 end
 
 """
-    _source_stamps(crate_path) -> Vector{Tuple{String, Float64, Int}}
+    _source_fingerprint(crate_path) -> String
 
-`(path, mtime, size)` of every `.rs` file of the crate, sorted.
+A content digest of everything under the crate that decides what gets built.
 
-Used to decide whether the sources a rescan described are still the sources
-that were built. It is a *change detector*, not an identity: it never decides
-what to compile (that is `src/artifact_id.jl`, which hashes content), only
-whether to trust a manifest that was produced a moment ago.
+`crate_content_digest` (`src/artifact_id.jl`) is the same function the artifact
+key uses, so "did the sources change?" is answered by the same evidence that
+answers "is this a different artifact?".
+
+It used to be a `(path, mtime, size)` stamp, which misses exactly the edit a
+developer is most likely to make between a scan and a build: replacing a
+character with another character. Same size, and an editor — or a `git
+checkout`, or a formatter — can restore the mtime. The manifest would then
+describe sources the build did not compile, and RustCall would register one
+build's symbol table against another build's library.
+
+Returns `""` when the digest cannot be taken, which the caller treats as "no
+evidence" and therefore as "unchanged": failing to hash a crate that just built
+successfully should not throw the rebuilt library away.
 """
-function _source_stamps(crate_path::String)
-    stamps = Tuple{String, Float64, Int}[]
-    for f in sort(find_rust_source_files(crate_path))
-        st = try
-            stat(f)
-        catch
-            continue
-        end
-        push!(stamps, (f, st.mtime, Int(st.size)))
+function _source_fingerprint(crate_path::String)
+    return try
+        crate_content_digest(crate_path)
+    catch e
+        @debug "Hot reload: could not fingerprint $(crate_path)" exception = e
+        ""
     end
-    return stamps
 end
 
 """
@@ -254,19 +263,22 @@ after the lock.
 
 The scan describes the sources; the build compiles them. Scanning *after* the
 build would describe sources that may have changed in between and hand the
-freshly built library another build's symbol table. So the source files are
-stamped, scanned, built, and stamped again: if a stamp moved, the scan is
-discarded rather than trusted, and the library is registered with no symbol
-mappings (a `#[julia]` function is then reachable only by its exported symbol
-until the next reload).
+freshly built library another build's symbol table. So the sources are
+fingerprinted by **content** (`crate_content_digest`, the same evidence the
+artifact key uses), scanned, built, and fingerprinted again: if the digest
+moved, the scan is discarded rather than trusted, and the library is registered
+with no symbol mappings (a `#[julia]` function is then reachable only by its
+exported symbol until the next reload). A `(mtime, size)` stamp would miss a
+same-size edit with a restored mtime, which is exactly what an editor or a
+`git checkout` produces.
 """
 function _reload_library_locked(state::HotReloadState)
     @info "Hot reload: Rebuilding $(state.lib_name)..."
 
     try
-        # Stamp the sources, then scan them. Scanning runs the extractor and
-        # must not hold REGISTRY_LOCK.
-        before = _source_stamps(state.crate_path)
+        # Fingerprint the sources by content, then scan them. Scanning runs
+        # the extractor and must not hold REGISTRY_LOCK.
+        before = _source_fingerprint(state.crate_path)
         signatures = _scan_crate_signatures(state.crate_path)
 
         # Rebuild. No registry lock is held here — this takes significant
@@ -280,14 +292,14 @@ function _reload_library_locked(state::HotReloadState)
         # the already-mapped image instead of the new one, and objects from the
         # old library can end up freed by code from the new. A generation
         # counter makes each reload a genuinely different file (#255).
-        state.generation += 1
+        state.generation = next_reload_generation()
         new_lib_path = _generation_path(built, state.generation)
         cp(built, new_lib_path; force = true)
 
-        # Did the sources move under the scan? Then the manifest is not
+        # Did the sources change under the scan? Then the manifest is not
         # evidence about what was just built.
-        after = _source_stamps(state.crate_path)
-        if signatures !== nothing && before != after
+        after = _source_fingerprint(state.crate_path)
+        if signatures !== nothing && !isempty(before) && before != after
             @warn "Hot reload: $(state.crate_path) changed while it was being rebuilt; " *
                   "registering the new library without symbol mappings"
             signatures = nothing
@@ -296,12 +308,15 @@ function _reload_library_locked(state::HotReloadState)
         symbols, return_types = signatures === nothing ? ((), ()) :
                                 _manifest_registry_entries(signatures)
 
-        # The swap. `on_replace = :dlclose` closes the *previous* handle after
-        # the lock is released; a failure anywhere above never reaches here.
+        # The swap. `on_replace = :retire` moves the previous image onto the
+        # retired list instead of closing it: a call that started before the
+        # reload may still be running inside it, and there is no per-call
+        # reader pin that would make closing safe (`RETIRED_HANDLES`). A
+        # failure anywhere above never reaches here.
         state.lib_path = new_lib_path
         load_artifact!(hot_reload_policy(), new_lib_path;
                        lib_name = state.lib_name, symbols, return_types,
-                       on_replace = :dlclose)
+                       on_replace = :retire)
         # Monomorphizations resolved against the previous image hold raw
         # pointers into it (#73); they belong to the replaced artifact, not to
         # the new one.
@@ -392,6 +407,30 @@ function rebuild_crate(crate_path::String)
 
     return lib_path
 end
+
+"""
+    RELOAD_GENERATION
+
+A process-wide, monotonic counter for reload output paths.
+
+Each reload writes its library to `<lib>.<generation>.<ext>` and opens *that*,
+so the image already mapped is never the file Cargo is writing to — the reason
+rebuild-in-place fails on Windows, and the reason re-`dlopen`ing the same path
+elsewhere can hand back the old image.
+
+The counter is per **process**, not per `HotReloadState`: disabling and
+re-enabling hot reload creates a fresh state, and a per-state counter would
+restart at 1 and collide with a `.1.` file that is still mapped from the
+previous session — the exact failure the versioned path exists to avoid.
+"""
+const RELOAD_GENERATION = Threads.Atomic{Int}(0)
+
+"""
+    next_reload_generation() -> Int
+
+The next reload generation. Never repeats within a process.
+"""
+next_reload_generation() = Threads.atomic_add!(RELOAD_GENERATION, 1) + 1
 
 """
     _generation_path(lib_path, generation) -> String

@@ -149,6 +149,36 @@ If you need the Rust object to outlive the Julia wrapper, do not let the
 wrapper be collected — keep a reference, or use `GC.@preserve` around the
 region where the raw pointer is used.
 
+### A replaced library is retired, not closed
+
+When a hot reload swaps a library, the image it replaces stays **mapped**. It
+is never resolved against again — the registry, the symbol tables, the panic
+channels and the generated modules all point at the new one — but it is not
+`dlclose`d.
+
+The reason is that a call can be in flight. A task that read a function pointer
+a moment before the swap is *inside* the old image when it happens, and closing
+it there is a use-after-`dlclose`: a segfault, not an error. Making the close
+safe would need a reader pin on every FFI call — two atomics on the hot path,
+paid by every call, to guard against something that happens at most once per
+rebuild. A retired image costs a few hundred kilobytes instead.
+
+Objects allocated by a retired image are unaffected: their finalizer holds the
+destructor pointer of *their own* image, which is still mapped, so they free
+through the code that allocated them. That is the allocator contract below,
+holding by construction.
+
+To reclaim the memory, say that nothing is in flight:
+
+```julia
+RustCall.unload_library(name; close_retired = true)
+RustCall.unload_all_libraries(; close_retired = true)
+```
+
+`RustCall.retired_handles(name)` lists what is waiting. A REPL session editing
+Rust in a loop never needs this; a long-running process that reloads thousands
+of times, or a test harness, does.
+
 ### The allocator contract
 
 An allocation made by one library must be released by **that same library**. A
