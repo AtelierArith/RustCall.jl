@@ -1201,7 +1201,16 @@ end
 Whether RustCall opened this image and may close it.
 """
 artifact_handle_is_owned(handle::Ptr{Cvoid}) =
-    lock(() -> handle in OWNED_HANDLES, REGISTRY_LOCK)
+    lock(() -> get(OWNED_HANDLES, handle, 0) > 0, REGISTRY_LOCK)
+
+"""
+    artifact_handle_open_count(handle) -> Int
+
+How many times RustCall opened this image and has not yet closed it. `dlopen`
+refcounts, so this is how many `dlclose`s the package still owes.
+"""
+artifact_handle_open_count(handle::Ptr{Cvoid}) =
+    lock(() -> get(OWNED_HANDLES, handle, 0), REGISTRY_LOCK)
 
 """
     DLCLOSE_COUNT
@@ -1218,6 +1227,74 @@ counter to check that unloading a library with an alias closes it once.
 const DLCLOSE_COUNT = Threads.Atomic{Int}(0)
 
 """
+    RELOAD_GENERATION
+
+A process-wide, monotonic counter for the paths RustCall opens.
+
+Every freshly built library is copied to `<lib>.<generation>.<ext>` and *that*
+copy is opened, so the image already mapped is never the file Cargo is about to
+write. The counter is per **process** so a counter restarted with a new
+`HotReloadState` cannot collide with a `.1.` file that is still mapped from an
+earlier session.
+"""
+const RELOAD_GENERATION = Threads.Atomic{Int}(0)
+
+"""
+    next_reload_generation() -> Int
+
+The next generation. Never repeats within a process.
+"""
+next_reload_generation() = Threads.atomic_add!(RELOAD_GENERATION, 1) + 1
+
+"""
+    generation_path(lib_path, generation) -> String
+
+`libfoo.dylib` → `libfoo.3.dylib`, next to the original.
+
+Living beside the original rather than in a temporary directory matters on
+Windows: a DLL resolves its dependencies relative to its own location.
+"""
+function generation_path(lib_path::AbstractString, generation::Integer)
+    dir = dirname(lib_path)
+    stem, ext = splitext(basename(lib_path))
+    return joinpath(dir, "$(stem).$(generation)$(ext)")
+end
+
+"""
+    loadable_library_copy(built_path) -> String
+
+A private copy of a freshly built library, for RustCall to open.
+
+**RustCall never maps the file Cargo writes.** Cargo rewrites its output in
+place on the next build, and on Windows it cannot: overwriting a mapped DLL
+fails with `Access is denied (os error 5)`, so the *build* fails — the whole
+crate becomes unbuildable for the rest of the session once anything has loaded
+it. Everywhere else the failure is quieter and worse: `dlopen` of a path that is
+already mapped hands back the **old** image, so a rebuild silently has no
+effect while objects allocated by the old library start being freed by code
+from the new one.
+
+Copying to `<lib>.<generation>.<ext>` and opening that leaves Cargo's output
+untouched, and makes every load a genuinely distinct file (#255, #277).
+
+Returns the original path when the copy cannot be made, so a platform or a
+filesystem that will not take one degrades to the previous behaviour rather
+than failing the load.
+"""
+function loadable_library_copy(built_path::AbstractString)
+    built = String(built_path)
+    isfile(built) || return built
+    copy_path = generation_path(built, next_reload_generation())
+    try
+        cp(built, copy_path; force = true)
+        return copy_path
+    catch e
+        @debug "Could not copy $(built) for loading; opening it in place" exception = e
+        return built
+    end
+end
+
+"""
     OWNED_HANDLES
 
 The handles RustCall itself opened, and is therefore allowed to close.
@@ -1229,13 +1306,20 @@ closing that would be closing something RustCall does not own. On glibc a
 `dlclose` of a stale or foreign handle segfaults inside `_dl_close` rather than
 returning an error, so "do not close what you did not open" is not a nicety.
 
-Membership is also what makes closing **idempotent**: `close_artifact_handle!`
-checks and removes in one locked step, so a handle is closed at most once no
-matter how many callers race to close it or how many names it had.
+It is a **count**, not a set. `dlopen` refcounts: opening the same path twice
+returns the same handle and needs two `dlclose`s. A set collapsed those into
+one entry, so closing the losing duplicate of an `:insert_only` race deleted
+the only record and the winner could then never be closed — the image stayed
+mapped forever. One increment per `dlopen` this package performs, one
+decrement per close, so the process closes exactly as many times as it opened.
+
+The count is also what makes closing safe under a race: `close_artifact_handle!`
+decrements in the same locked step that decides whether to close, so two callers
+cannot both decide to perform the last close.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const OWNED_HANDLES = Set{Ptr{Cvoid}}()
+const OWNED_HANDLES = Dict{Ptr{Cvoid}, Int}()
 
 """
     close_artifact_handle!(handle) -> Bool
@@ -1251,7 +1335,11 @@ function close_artifact_handle!(handle::Ptr{Cvoid})
     # Ownership is checked and *given up* in one locked step, so a handle can
     # be closed at most once however many callers race to close it.
     owned = lock(REGISTRY_LOCK) do
-        handle in OWNED_HANDLES && (delete!(OWNED_HANDLES, handle); true)
+        remaining = get(OWNED_HANDLES, handle, 0)
+        remaining == 0 && return false
+        remaining == 1 ? delete!(OWNED_HANDLES, handle) :
+                         (OWNED_HANDLES[handle] = remaining - 1)
+        return true
     end
     owned || return false
     Threads.atomic_add!(DLCLOSE_COUNT, 1)
@@ -1336,7 +1424,7 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     # (`OWNED_HANDLES`). A handle that merely arrives through
     # `adopt_artifact!` is never closed by RustCall.
     lock(REGISTRY_LOCK) do
-        push!(OWNED_HANDLES, handle)
+        OWNED_HANDLES[handle] = get(OWNED_HANDLES, handle, 0) + 1
     end
     # `load_artifact!` opened this handle, so `load_artifact!` owns it: if the
     # registration turns out not to need it (`:insert_only` lost the race), it

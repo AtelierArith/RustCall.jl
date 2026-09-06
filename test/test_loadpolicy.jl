@@ -364,13 +364,19 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         # the call and the read would let the task move to another OS thread and
         # miss the panic entirely. `test_panics.jl` asserts the behaviour under
         # concurrency; this pins the shape.
-        for (file, kind) in (("rustmacro.jl", "channel = panic_channel_pointer("),
-                             ("generics.jl", "channel = panic_channel_pointer("),
-                             ("structs.jl", "channel = panic_channel_pointer("),
-                             ("julia_functions.jl", "panic_channel_pointer("),
-                             ("crate_bindings.jl", "_panic_channel("))
+        # ...and pointer + channel come from ONE snapshot, so a call cannot
+        # straddle two generations of a library (#277).
+        for (file, kind) in (("rustmacro.jl", "resolve_call_target("),
+                             ("structs.jl", "resolve_call_target("),
+                             ("julia_functions.jl", "resolve_call_target("),
+                             ("crate_bindings.jl", "_call_target("),
+                             ("generics.jl", "panic_channel_pointer("))
             @test occursin(kind, _src(file))
         end
+        # The owned-`String` release function comes from the same snapshot as
+        # the call that produced the buffer, never a later lookup by name.
+        @test occursin("free_symbol = free_func_name", _src("structs.jl"))
+        @test occursin("target.free_ptr", _src("structs.jl"))
         # ...and the old, resolve-after-the-call entry points are gone.
         for file in readdir(_SRC_DIR)
             endswith(file, ".jl") || continue
@@ -628,15 +634,26 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 @test RustCall.artifact_handle_is_owned(a.handle)
 
                 # Unloading retires; the image is still owned and still mapped.
+                # `dlopen` refcounts, so two opens owe two closes. Ownership
+                # is a *count* for exactly this reason: a set would have
+                # collapsed them, and closing the losing duplicate of an
+                # `:insert_only` race would then have left the winner
+                # unclosable forever (#277).
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+
                 RustCall.unload_artifact!(policy, name)
                 @test RustCall.artifact_handle_is_owned(a.handle)
                 before = RustCall.DLCLOSE_COUNT[]
                 @test RustCall.close_artifact_handle!(a.handle) == true
                 @test RustCall.DLCLOSE_COUNT[] == before + 1
-                # Idempotent: the second close is refused, not performed.
+                @test RustCall.artifact_handle_open_count(a.handle) == 1
+                @test RustCall.close_artifact_handle!(a.handle) == true
+                @test RustCall.DLCLOSE_COUNT[] == before + 2
+                # The debt is paid: a further close is refused, not performed.
                 @test RustCall.close_artifact_handle!(a.handle) == false
-                @test RustCall.DLCLOSE_COUNT[] == before + 1
+                @test RustCall.DLCLOSE_COUNT[] == before + 2
                 @test !RustCall.artifact_handle_is_owned(a.handle)
+                @test RustCall.artifact_handle_open_count(a.handle) == 0
             finally
                 lock(RustCall.REGISTRY_LOCK) do
                     for n in (name, adopted)

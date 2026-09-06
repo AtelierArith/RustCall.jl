@@ -435,6 +435,67 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             end
         end
 
+        # One snapshot per call: the wrapper and its panic channel resolved
+        # against **one** read of the module's handle. Reading the handle twice
+        # could straddle a reload, and the call would then enter the retired
+        # image while the channel came from the replacement (#277).
+        function _call_target(symbol::String)
+            lock(_PANIC_LOCK) do
+                handle = _LIB_HANDLE[]
+                if handle == C_NULL
+                    error("The Rust library backing this module is not loaded. " *
+                          "It was either never initialised, or unloaded with " *
+                          "RustCall.unload_library(\"" * _LIB_NAME * "\").")
+                end
+                func_ptr = Libdl.dlsym(handle, symbol)
+                channel = get!(_PANIC_CHANNELS, (handle, symbol)) do
+                    ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol);
+                                      throw_error = false)
+                    ptr === nothing ? C_NULL : ptr
+                end
+                (func_ptr, channel)
+            end
+        end
+
+        # The owned-`String` arm: the wrapper, its channel **and** the function
+        # that releases the buffer the wrapper returns, from one read of the
+        # handle. Resolving the release function after the call let a reload
+        # land in between, and the buffer was then freed through the
+        # replacement's allocator (#277).
+        function _call_target(symbol::String, free_symbol::String)
+            lock(_PANIC_LOCK) do
+                handle = _LIB_HANDLE[]
+                if handle == C_NULL
+                    error("The Rust library backing this module is not loaded. " *
+                          "It was either never initialised, or unloaded with " *
+                          "RustCall.unload_library(\"" * _LIB_NAME * "\").")
+                end
+                func_ptr = Libdl.dlsym(handle, symbol)
+                channel = get!(_PANIC_CHANNELS, (handle, symbol)) do
+                    ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol);
+                                      throw_error = false)
+                    ptr === nothing ? C_NULL : ptr
+                end
+                (func_ptr, channel, Libdl.dlsym(handle, free_symbol))
+            end
+        end
+
+        # The per-object half: a struct's destructor and the liveness flag of
+        # the image that exports it, from one read of the module's state.
+        function _struct_generation(free_symbol::String)
+            lock(_PANIC_LOCK) do
+                handle = _LIB_HANDLE[]
+                alive = _LIB_ALIVE[]
+                handle == C_NULL && return (C_NULL, alive)
+                ptr = try
+                    Libdl.dlsym(handle, free_symbol; throw_error = false)
+                catch
+                    nothing
+                end
+                (ptr === nothing ? C_NULL : ptr, alive)
+            end
+        end
+
         # The channel is resolved by the *caller*, before the wrapper call:
         # it is a thread-local in the image, so nothing may yield between the
         # call and the read, and `_panic_channel` can allocate (#244).
@@ -504,8 +565,7 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
         channel_sym = _generated_local("panic_channel", func.arg_names)
         quote
             function $func_name($(arg_syms...))
-                $ptr_sym = _get_func_ptr($symbol_str)
-                $channel_sym = _panic_channel($symbol_str)
+                $ptr_sym, $channel_sym = _call_target($symbol_str)
                 _guard_panic(
                     call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...)),
                     $channel_sym, $func_name_str)
@@ -533,24 +593,31 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     # The helper types stay named after the Rust item, so the owner is the
     # function name and the contract derives `free_symbol` from it (#276).
     c = ffi_return_contract(func.return_type; abi = func.return_abi, owner = func_name_str)
+    # Declared before the call expression is built, since it names them.
+    channel_sym = _generated_local("panic_channel", func.arg_names)
+    ptr_sym = _generated_local("func_ptr", func.arg_names)
+    free_sym = _generated_local("free_ptr", func.arg_names)
+    # The owned-string branch snapshots the release function with the call; see
+    # `_call_target`'s two-argument arm.
+    target = :(($ptr_sym, $channel_sym) = _call_target($symbol_str))
     call = if ffi_owned_string_return(c)
-        free_name = c.free_symbol
-        :(_call_rust_owned_string_ptr(_get_func_ptr($symbol_str), _get_func_ptr($free_name), $(call_args...)))
+        target = :(($ptr_sym, $channel_sym, $free_sym) = _call_target($symbol_str, $(c.free_symbol)))
+        :(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(call_args...)))
     elseif ffi_borrowed_string_return(c)
-        :(_call_rust_borrowed_string_ptr(_get_func_ptr($symbol_str), $(call_args...)))
+        :(_call_rust_borrowed_string_ptr($ptr_sym, $(call_args...)))
     else
         ret = ffi_return_symbol_or_throw(func.return_type, func.return_abi,
                                          _ffi_context(func))
-        :(call_rust_function(_get_func_ptr($symbol_str), $ret, $(call_args...)))
+        :(call_rust_function($ptr_sym, $ret, $(call_args...)))
     end
     # The string paths return a buffer the wrapper filled; on a panic it is the
     # empty sentinel, which would decode to `""`, so the channel is read before
-    # the value is used — and resolved before the call (#244).
-    channel_sym = _generated_local("panic_channel", func.arg_names)
+    # the value is used — and resolved, with the pointer, before the call
+    # (#244, #277).
     call = :(_guard_panic($call, $channel_sym, $func_name_str))
     quote
         function $func_name($(arg_syms...))
-            $channel_sym = _panic_channel($symbol_str)
+            $target
             $(bindings...)
             GC.@preserve $(preserved...) begin
                 $call
@@ -601,8 +668,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
             # String arguments are converted first: an argument may be called
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
-            $ptr_sym = _get_func_ptr($symbol_str)
-            $channel_sym = _panic_channel($symbol_str)
+            $ptr_sym, $channel_sym = _call_target($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel is read before the
@@ -655,8 +721,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
             # String arguments are converted first: an argument may be called
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
-            $ptr_sym = _get_func_ptr($symbol_str)
-            $channel_sym = _panic_channel($symbol_str)
+            $ptr_sym, $channel_sym = _call_target($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...))
             _guard_panic(nothing, $channel_sym, $func_name_str)
             # Convert to RustOption
@@ -710,8 +775,8 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
                 # `_LIB_ALIVE` is the module's liveness flag, flipped when the
                 # library is unloaded, so an object that outlives its library
                 # becomes inert instead of calling into a closed image.
-                obj = new(ptr, _struct_free_ptr($(ffi_struct_free_symbol(struct_name_str))),
-                          _LIB_ALIVE[])
+                free_ptr, alive = _struct_generation($(ffi_struct_free_symbol(struct_name_str)))
+                obj = new(ptr, free_ptr, alive)
                 finalizer(RustCall.finalize_rust_object!, obj)
                 return obj
             end
@@ -761,11 +826,18 @@ an owned `<Struct>_RustCallOwnedString` buffer released through the contract's
 `free_symbol`; every other field is a single C slot.
 """
 function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
-                           field_type::AbstractString, ptr_expr, self_ptr_expr)
+                           field_type::AbstractString, getter_symbol::AbstractString,
+                           self_ptr_expr)
     c = _ffi_field_return(info, field_name, field_type)
+    ptr_expr = :(_get_func_ptr($(String(getter_symbol))))
     if ffi_owned_string_return(c)
-        free_expr = :(_get_func_ptr($(c.free_symbol)))
-        return :(_call_rust_owned_string_ptr($ptr_expr, $free_expr, $self_ptr_expr))
+        # Getter and release function from one snapshot: separately resolved,
+        # a reload between them freed the buffer through the wrong image (#277).
+        return quote
+            let (fp, _, freep) = _call_target($(String(getter_symbol)), $(c.free_symbol))
+                _call_rust_owned_string_ptr(fp, freep, $self_ptr_expr)
+            end
+        end
     elseif ffi_borrowed_string_return(c)
         return :(_call_rust_borrowed_string_ptr($ptr_expr, $self_ptr_expr))
     end
@@ -780,11 +852,14 @@ end
 Source-text counterpart of `_crate_field_read` for the file emitter.
 """
 function _crate_field_read_source(info::RustStructInfo, field_name::AbstractString,
-                                  field_type::AbstractString, ptr_expr::String,
+                                  field_type::AbstractString, getter_symbol::AbstractString,
                                   self_ptr::String; strict::Symbol = FFI_STRICT[])
     c = _ffi_field_return(info, field_name, field_type)
+    ptr_expr = "_get_func_ptr(\"$getter_symbol\")"
     if ffi_owned_string_return(c)
-        return "_call_rust_owned_string_ptr($ptr_expr, _get_func_ptr(\"$(c.free_symbol)\"), $self_ptr)"
+        # Getter and release function from one snapshot (#277).
+        return "let (fp, _, freep) = _call_target(\"$getter_symbol\", \"$(c.free_symbol)\"); " *
+               "_call_rust_owned_string_ptr(fp, freep, $self_ptr); end"
     elseif ffi_borrowed_string_return(c)
         return "_call_rust_borrowed_string_ptr($ptr_expr, $self_ptr)"
     end
@@ -818,7 +893,7 @@ function _generate_property_accessors(info::RustStructInfo)
         getter_fn = info.field_getters[field_name]
         # A `String` field getter hands back an owned buffer, on the crate path
         # too since manifest schema 4 — it used to be read as `Any` (#246).
-        read = _crate_field_read(info, field_name, field_type, :(_get_func_ptr($getter_fn)),
+        read = _crate_field_read(info, field_name, field_type, getter_fn,
                                  :(getfield(self, :ptr)))
         push!(getprop_branches, quote
             if field === $field_sym
@@ -912,11 +987,15 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     method.is_static || push!(all_args, :(getfield(self, :ptr)))
     append!(all_args, converted_args)
 
+    channel_sym = _generated_local("panic_channel", method.arg_names)
+    free_sym = _generated_local("free_ptr", method.arg_names)
+    target = :(($ptr_sym, $channel_sym) = _call_target($wrapper_name))
     call = if method.returns_boxed_struct
         # Constructors and `Self`-returning methods get a boxed struct pointer
         :($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...))))
     elseif ffi_owned_string_return(c)
-        :(_call_rust_owned_string_ptr($ptr_sym, _get_func_ptr($(c.free_symbol)), $(all_args...)))
+        target = :(($ptr_sym, $channel_sym, $free_sym) = _call_target($wrapper_name, $(c.free_symbol)))
+        :(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(all_args...)))
     elseif ffi_borrowed_string_return(c)
         :(_call_rust_borrowed_string_ptr($ptr_sym, $(all_args...)))
     else
@@ -929,11 +1008,9 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # of a temporary `self` could otherwise free mid-call.
     method.is_static || pushfirst!(preserved, :self)
     method_label = "$(struct_name_str)::$(method.name)"
-    channel_sym = _generated_local("panic_channel", method.arg_names)
     body = quote
         $(bindings...)
-        $ptr_sym = _get_func_ptr($wrapper_name)
-        $channel_sym = _panic_channel($wrapper_name)
+        $target
         _guard_panic($(_quote_preserved(preserved, call)), $channel_sym, $method_label)
     end
 
@@ -968,7 +1045,7 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     getter_name = info.field_getters[field_name]
     setter_name = get(info.field_setters, field_name, "$(struct_name_str)_set_$(field_name)")
 
-    read = _crate_field_read(info, field_name, field_type, :(_get_func_ptr($getter_name)),
+    read = _crate_field_read(info, field_name, field_type, getter_name,
                              :(self.ptr))
 
     field_sym = Symbol(field_name)
@@ -1081,6 +1158,13 @@ function generate_bindings(crate_path::String;
 
         lib_path
     end
+
+    # RustCall never maps the file Cargo writes: a later build of the same
+    # crate rewrites its output in place, which on Windows *fails* against a
+    # mapped DLL (`Access is denied`) and elsewhere silently hands the old
+    # image back to the next `dlopen`. Opening a private copy leaves Cargo's
+    # output free (#255, #277).
+    lib_path = loadable_library_copy(lib_path)
 
     # Generate module
     @info "Generating Julia module..."
@@ -1707,6 +1791,57 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "")
+    # One snapshot per call, from one read of the module's handle: reading it
+    # twice could straddle a reload (#277).
+    push!(lines, "function _call_target(symbol::String)")
+    push!(lines, "    lock(_PANIC_LOCK) do")
+    push!(lines, "        handle = _LIB_HANDLE[]")
+    push!(lines, "        if handle == C_NULL")
+    push!(lines, "            error(\"The Rust library backing this module is not loaded. \" *")
+    push!(lines, "                  \"It was either never initialised, or unloaded with \" *")
+    push!(lines, "                  \"RustCall.unload_library(\\\"\" * _LIB_NAME * \"\\\").\")")
+    push!(lines, "        end")
+    push!(lines, "        func_ptr = Libdl.dlsym(handle, symbol)")
+    push!(lines, "        channel = get!(_PANIC_CHANNELS, (handle, symbol)) do")
+    push!(lines, "            ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol); throw_error = false)")
+    push!(lines, "            ptr === nothing ? C_NULL : ptr")
+    push!(lines, "        end")
+    push!(lines, "        (func_ptr, channel)")
+    push!(lines, "    end")
+    push!(lines, "end")
+    push!(lines, "")
+    # The owned-`String` arm: release function snapshotted with the call (#277).
+    push!(lines, "function _call_target(symbol::String, free_symbol::String)")
+    push!(lines, "    lock(_PANIC_LOCK) do")
+    push!(lines, "        handle = _LIB_HANDLE[]")
+    push!(lines, "        if handle == C_NULL")
+    push!(lines, "            error(\"The Rust library backing this module is not loaded. \" *")
+    push!(lines, "                  \"It was either never initialised, or unloaded with \" *")
+    push!(lines, "                  \"RustCall.unload_library(\\\"\" * _LIB_NAME * \"\\\").\")")
+    push!(lines, "        end")
+    push!(lines, "        func_ptr = Libdl.dlsym(handle, symbol)")
+    push!(lines, "        channel = get!(_PANIC_CHANNELS, (handle, symbol)) do")
+    push!(lines, "            ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol); throw_error = false)")
+    push!(lines, "            ptr === nothing ? C_NULL : ptr")
+    push!(lines, "        end")
+    push!(lines, "        (func_ptr, channel, Libdl.dlsym(handle, free_symbol))")
+    push!(lines, "    end")
+    push!(lines, "end")
+    push!(lines, "")
+    push!(lines, "function _struct_generation(free_symbol::String)")
+    push!(lines, "    lock(_PANIC_LOCK) do")
+    push!(lines, "        handle = _LIB_HANDLE[]")
+    push!(lines, "        alive = _LIB_ALIVE[]")
+    push!(lines, "        handle == C_NULL && return (C_NULL, alive)")
+    push!(lines, "        ptr = try")
+    push!(lines, "            Libdl.dlsym(handle, free_symbol; throw_error = false)")
+    push!(lines, "        catch")
+    push!(lines, "            nothing")
+    push!(lines, "        end")
+    push!(lines, "        (ptr === nothing ? C_NULL : ptr, alive)")
+    push!(lines, "    end")
+    push!(lines, "end")
+    push!(lines, "")
     # The channel is resolved by the caller, before the wrapper call: it is a
     # thread-local in the image, so nothing may yield between the two (#244).
     push!(lines, "_guard_panic(value, channel::Ptr{Cvoid}, name::String) =")
@@ -1765,6 +1900,10 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     # thread-local in the image, so nothing may yield between the wrapper call
     # and the read of the channel (#244).
     channel_var = _generated_local("panic_channel", arg_names)
+    # Bound in every branch below, not just the plain one: the string branches
+    # call through the same snapshot.
+    ptr_var = _generated_local("func_ptr", arg_names)
+    free_var = _generated_local("free_ptr", arg_names)
 
     # Build argument conversions (string arguments become (ptr, len) pairs)
     arg_syms = join(arg_names, ", ")
@@ -1779,27 +1918,24 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     elseif ffi_owned_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
-$(prologue)    $channel_var = _panic_channel("$sym")
-    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_owned_string_ptr(_get_func_ptr(\"$sym\"), _get_func_ptr(\"$(_ffi_function_return(func).free_symbol)\"), $converted_args_str)")), $channel_var, "$func_name")
+$(prologue)    $ptr_var, $channel_var, $free_var = _call_target("$sym", "$(_ffi_function_return(func).free_symbol)")
+    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_owned_string_ptr($ptr_var, $free_var, $converted_args_str)")), $channel_var, "$func_name")
 end
 export $func_name"""
     elseif ffi_borrowed_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
-$(prologue)    $channel_var = _panic_channel("$sym")
-    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr(_get_func_ptr(\"$sym\"), $converted_args_str)")), $channel_var, "$func_name")
+$(prologue)    $ptr_var, $channel_var = _call_target("$sym")
+    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr($ptr_var, $converted_args_str)")), $channel_var, "$func_name")
 end
 export $func_name"""
     else
         # Standard function
         ret_type_str = string(ffi_return_symbol_or_throw(func.return_type, func.return_abi,
                                                          _ffi_context(func); strict = strict))
-
-        ptr_var = _generated_local("func_ptr", func.arg_names)
         return """
 function $func_name($arg_syms)
-$(prologue)    $ptr_var = _get_func_ptr("$sym")
-    $channel_var = _panic_channel("$sym")
+$(prologue)    $ptr_var, $channel_var = _call_target("$sym")
     _guard_panic($(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $ret_type_str, $converted_args_str)")), $channel_var, "$func_name")
 end
 export $func_name"""
@@ -1830,8 +1966,7 @@ struct $c_result_struct_name
 end
 
 function $func_name($arg_syms)
-$(prologue)    $ptr_var = _get_func_ptr("$sym")
-    $channel_var = _panic_channel("$sym")
+$(prologue)    $ptr_var, $channel_var = _call_target("$sym")
     $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)"))
     _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_ok == 1
@@ -1864,8 +1999,7 @@ struct $c_option_struct_name
 end
 
 function $func_name($arg_syms)
-$(prologue)    $ptr_var = _get_func_ptr("$sym")
-    $channel_var = _panic_channel("$sym")
+$(prologue)    $ptr_var, $channel_var = _call_target("$sym")
     $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)"))
     _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_some == 1
@@ -1897,7 +2031,8 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
     push!(lines, "    alive::Base.RefValue{Bool}")
     push!(lines, "")
     push!(lines, "    function $struct_name(ptr::Ptr{Cvoid})")
-    push!(lines, "        obj = new(ptr, _struct_free_ptr($(repr(ffi_struct_free_symbol(struct_name)))), _LIB_ALIVE[])")
+    push!(lines, "        free_ptr, alive = _struct_generation($(repr(ffi_struct_free_symbol(struct_name))))")
+    push!(lines, "        obj = new(ptr, free_ptr, alive)")
     push!(lines, "        finalizer(RustCall.finalize_rust_object!, obj)")
     push!(lines, "        return obj")
     push!(lines, "    end")
@@ -1932,8 +2067,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
         push!(lines, "    _check_not_freed(self, \"$struct_name\")")
         for (field_name, field_type) in compatible_fields
             getter_fn = info.field_getters[field_name]
-            read = _crate_field_read_source(info, field_name, field_type,
-                                            "_get_func_ptr(\"$getter_fn\")",
+            read = _crate_field_read_source(info, field_name, field_type, getter_fn,
                                             "getfield(self, :ptr)"; strict = strict)
             push!(lines, "    if field === :$field_name")
             push!(lines, "        return $read")
@@ -2032,10 +2166,14 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     isempty(converted_args_str) || push!(all_args, converted_args_str)
     args_str = join(all_args, ", ")
 
+    free_var = _generated_local("free_ptr", method.arg_names)
+    channel_var = _generated_local("panic_channel", method.arg_names)
+    target = "$ptr_var, $channel_var = _call_target(\"$wrapper_name\")"
     call = if method.returns_boxed_struct
         "$struct_name(call_rust_function($ptr_var, Ptr{Cvoid}, $args_str))"
     elseif ffi_owned_string_return(c)
-        "_call_rust_owned_string_ptr($ptr_var, _get_func_ptr(\"$(c.free_symbol)\"), $args_str)"
+        target = "$ptr_var, $channel_var, $free_var = _call_target(\"$wrapper_name\", \"$(c.free_symbol)\")"
+        "_call_rust_owned_string_ptr($ptr_var, $free_var, $args_str)"
     elseif ffi_borrowed_string_return(c)
         "_call_rust_borrowed_string_ptr($ptr_var, $args_str)"
     else
@@ -2045,10 +2183,8 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
         "call_rust_function($ptr_var, $ret_type_str, $args_str)"
     end
     method_label = "$(struct_name)::$(method_name)"
-    channel_var = _generated_local("panic_channel", method.arg_names)
     body = """
-$(prologue)    $ptr_var = _get_func_ptr("$wrapper_name")
-    $channel_var = _panic_channel("$wrapper_name")
+$(prologue)    $target
     _guard_panic($(_emit_preserved(preserve_str, call)), $channel_var, "$method_label")"""
 
     if method.is_static && method.is_constructor

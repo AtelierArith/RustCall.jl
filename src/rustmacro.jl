@@ -315,7 +315,13 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     # library and reports which library the pointer came from, so the return
     # type is read from that same library and never borrowed from another one
     # whose `f` has a different ABI.
-    func_ptr, owning_lib = _resolve_call(lib_name, func_name)
+    # One snapshot: pointer and panic channel from the same generation of the
+    # same library. Resolving them separately let a reload land in between, so
+    # the call entered the retired image and read the replacement's channel.
+    target = resolve_call_target(lib_name, func_name)
+    func_ptr = target.func_ptr
+    channel = target.channel
+    owning_lib = target.lib_name
     @debug "Calling function '$func_name' from library '$owning_lib'"
 
     # Try to get type info from registered function info
@@ -328,9 +334,6 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     # The channel is resolved *here*, before any of the calls below: it is a
     # thread-local in the image, so nothing may yield between the wrapper call
     # and the read of the channel, and the resolution itself takes a lock.
-    symbol = exported_symbol(owning_lib, func_name)
-    channel = panic_channel_pointer(owning_lib, symbol)
-
     func_info = get_function_info(owning_lib, func_name)
     if func_info !== nothing && func_info.return_type !== Any
         return guard_rust_panic_ptr(call_rust_function(func_ptr, func_info.return_type, args...),
@@ -372,10 +375,9 @@ end
 Call a Rust function with explicit return type.
 """
 function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, args...)
-    local func_ptr
-    local owning_lib
+    local target
     try
-        func_ptr, owning_lib = _resolve_call(lib_name, func_name)
+        target = resolve_call_target(lib_name, func_name)
     catch e
         # If not found, check if it's a generic function that needs monomorphization
         if is_generic_function(func_name)
@@ -387,11 +389,10 @@ function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, a
         end
     end
 
-    # ...and the panic channel of the wrapper the pointer came from, resolved
-    # before the call so nothing yields between the two (#244).
-    channel = panic_channel_pointer(owning_lib, exported_symbol(owning_lib, func_name))
-    return guard_rust_panic_ptr(call_rust_function(func_ptr, ret_type, args...),
-                                channel, func_name)
+    # Pointer and channel come from the same snapshot, so the call and the
+    # channel read cannot straddle two generations (#244, #277).
+    return guard_rust_panic_ptr(call_rust_function(target.func_ptr, ret_type, args...),
+                                target.channel, func_name)
 end
 
 """

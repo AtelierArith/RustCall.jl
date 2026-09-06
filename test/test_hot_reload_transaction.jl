@@ -19,6 +19,8 @@ using RustCall
 
 const _HRT_SRC = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
                                "hot_reload.jl"), String)
+_src_loadpolicy() = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
+                                  "loadpolicy.jl"), String)
 
 const _HRT_CARGO = try
     success(run(pipeline(`cargo --version`, devnull, devnull); wait = true))
@@ -57,6 +59,96 @@ _hrt_write_broken(dir) = write(joinpath(dir, "src", "lib.rs"), """
     pub extern "C" fn hrt_probe() -> i32 { this is not rust }
     """)
 
+"""
+The Julia half of a `#[julia]` struct: exactly the fields
+`RustCall.finalize_rust_object!` reads. Like a generated wrapper, it captures
+its destructor and its image's liveness flag at construction — from one
+snapshot, so the two cannot come from different generations (#249, #277).
+"""
+mutable struct StressThing
+    ptr::Ptr{Cvoid}
+    free_ptr::Ptr{Cvoid}
+    alive::Base.RefValue{Bool}
+end
+
+"""The stress crate's source, tagged with the generation it belongs to."""
+_hrt_write_stress(crate, generation) = write(joinpath(crate, "src", "lib.rs"), """
+    use std::cell::RefCell;
+
+    thread_local! {
+        static BOOM_PANIC: RefCell<Option<String>> = RefCell::new(None);
+    }
+
+    /// This image's generation. A call that straddled a swap would return a
+    /// number that was never published.
+    #[no_mangle]
+    pub extern "C" fn stress_generation() -> i32 { $(generation) }
+
+    /// The shape `rustcall_core::codegen` emits: the body runs inside
+    /// `catch_unwind`, a panic is recorded in this wrapper's thread-local
+    /// channel, and a sentinel of the right shape is returned.
+    #[no_mangle]
+    pub extern "C" fn stress_boom() -> i32 {
+        match std::panic::catch_unwind(|| -> i32 {
+            panic!("boom from generation $(generation)")
+        }) {
+            Ok(value) => value,
+            Err(payload) => {
+                let message = match payload.downcast_ref::<&str>() {
+                    Some(s) => s.to_string(),
+                    None => match payload.downcast_ref::<String>() {
+                        Some(s) => s.clone(),
+                        None => "the Rust function panicked".to_string(),
+                    },
+                };
+                BOOM_PANIC.with(|s| *s.borrow_mut() = Some(message));
+                0
+            }
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn stress_boom_take_panic(out: *mut u8, cap: usize) -> usize {
+        BOOM_PANIC.with(|s| {
+            let mut s = s.borrow_mut();
+            let n = match s.as_ref() {
+                Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                None => None,
+            };
+            match n {
+                Some(n) => { *s = None; n }
+                None => 0,
+            }
+        })
+    }
+
+    /// A heap object and the destructor RustCall captures at construction.
+    #[repr(C)]
+    pub struct Thing { generation: i32 }
+
+    #[no_mangle]
+    pub extern "C" fn Thing_new() -> *mut Thing {
+        Box::into_raw(Box::new(Thing { generation: $(generation) }))
+    }
+
+    #[no_mangle]
+    pub extern "C" fn Thing_free(ptr: *mut Thing) {
+        if !ptr.is_null() {
+            unsafe { drop(Box::from_raw(ptr)) };
+        }
+    }
+    """)
+
 function _hrt_state(crate, lib_name)
     state = RustCall.HotReloadState(
         crate, "", lib_name, RustCall.find_rust_source_files(crate),
@@ -76,22 +168,22 @@ end
     @testset "each reload opens a fresh path" begin
         # `joinpath` on both sides: the separator is the platform's, and this
         # test also runs on Windows.
-        @test RustCall._generation_path(joinpath("tmp", "libfoo.dylib"), 1) ==
+        @test RustCall.generation_path(joinpath("tmp", "libfoo.dylib"), 1) ==
               joinpath("tmp", "libfoo.1.dylib")
-        @test RustCall._generation_path(joinpath("tmp", "libfoo.so"), 12) ==
+        @test RustCall.generation_path(joinpath("tmp", "libfoo.so"), 12) ==
               joinpath("tmp", "libfoo.12.so")
         # Next to the original, not in a temp directory: on Windows a DLL
         # resolves its dependencies relative to its own location.
-        @test dirname(RustCall._generation_path(joinpath("a", "b", "libfoo.so"), 2)) ==
+        @test dirname(RustCall.generation_path(joinpath("a", "b", "libfoo.so"), 2)) ==
               joinpath("a", "b")
-        @test basename(RustCall._generation_path(joinpath("a", "b", "foo.dll"), 7)) ==
+        @test basename(RustCall.generation_path(joinpath("a", "b", "foo.dll"), 7)) ==
               "foo.7.dll"
 
-        @test occursin("_generation_path(built, state.generation)", _HRT_SRC)
+        @test occursin("loadable_library_copy(built)", _HRT_SRC)
         # The generation comes from a process-wide counter, so disabling and
         # re-enabling hot reload cannot restart at 1 and collide with a `.1.`
         # file that is still mapped (#255).
-        @test occursin("state.generation = next_reload_generation()", _HRT_SRC)
+        @test occursin("state.generation = RELOAD_GENERATION[]", _HRT_SRC)
         a = RustCall.next_reload_generation()
         b = RustCall.next_reload_generation()
         @test b == a + 1
@@ -100,12 +192,12 @@ end
                                         Dict{String, Float64}(), nothing, true, nothing)
         @test fresh.generation == 0
         @test RustCall.next_reload_generation() > b
-        @test occursin("cp(built, new_lib_path; force = true)", _HRT_SRC)
+        @test occursin("loadable_library_copy", _src_loadpolicy())
         # The previous image is RETIRED after the swap, never closed under a
         # call that may still be inside it (#277).
         @test !occursin("on_replace = :dlclose", _HRT_SRC)
         @test findfirst("rebuild_crate(state.crate_path)", _HRT_SRC) <
-              findfirst("_generation_path(built", _HRT_SRC) <
+              findfirst("loadable_library_copy(built)", _HRT_SRC) <
               findfirst("load_artifact!(hot_reload_policy()", _HRT_SRC)
     end
 
@@ -424,6 +516,160 @@ end
                 finally
                     # Windows locks a loaded DLL, so the temp tree can only be
                     # removed after the library is gone. Best effort either way.
+                    try
+                        RustCall.unload_library(lib_name)
+                    catch
+                    end
+                end
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------
+    # The generation-snapshot rule, under concurrency (#277).
+    #
+    # Every FFI entry point takes ONE snapshot under ONE lock — pointer,
+    # panic channel, destructor, liveness flag — and nothing after the
+    # snapshot looks anything up by library name. This is the adversarial
+    # case for that rule: a reload loop runs against live traffic, and each
+    # of the three kinds of traffic has an observable invariant.
+    #
+    #   * no wrong-generation call — the crate returns its own generation,
+    #     so a call that straddled a swap shows up as a value that was
+    #     never published;
+    #   * no lost panic — a panicking wrapper always raises
+    #     `RustPanicError`; its sentinel never reaches the caller;
+    #   * no finalizer failure — an object frees through the destructor of
+    #     the image that allocated it, or not at all.
+    #
+    # The wrappers are hand-written rather than macro-generated for the
+    # reason given at the top of this file: the ABI is what is under test,
+    # not `#[julia]`, and pulling in `juliacall_macros` would compile `syn`
+    # from scratch on every CI run.
+    # ------------------------------------------------------------------
+    if !_HRT_CARGO
+        @test_skip "cargo is required for the reload stress test"
+    else
+        @testset "calls, panics and objects survive a reload loop (#277)" begin
+            mktempdir() do dir
+                crate = joinpath(dir, "stress")
+                mkpath(joinpath(crate, "src"))
+                write(joinpath(crate, "Cargo.toml"), """
+                    [package]
+                    name = "hrt_stress"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [dependencies]
+
+                    [profile.release]
+                    panic = "unwind"
+                    """)
+
+                lib_name = "hrt_stress_lib"
+                _hrt_write_stress(crate, 1)
+                state = _hrt_state(crate, lib_name)
+
+                try
+                    @test RustCall.reload_library(state)
+
+                    published = Set{Int32}([Int32(1)])
+                    published_lock = ReentrantLock()
+                    stop = Threads.Atomic{Bool}(false)
+                    wrong_generation = Threads.Atomic{Int}(0)
+                    lost_panic = Threads.Atomic{Int}(0)
+                    wrong_panic = Threads.Atomic{Int}(0)
+                    calls = Threads.Atomic{Int}(0)
+                    panics = Threads.Atomic{Int}(0)
+                    objects = Threads.Atomic{Int}(0)
+                    failures_before = RustCall.finalizer_failure_count()
+
+                    # A caller. The value must be a generation that was
+                    # published at some point — never a mixture.
+                    caller = Threads.@spawn begin
+                        while !stop[]
+                            target = RustCall.resolve_call_target(lib_name, "stress_generation")
+                            value = RustCall.call_rust_function(target.func_ptr, Int32)
+                            lock(published_lock) do
+                                value in published || Threads.atomic_add!(wrong_generation, 1)
+                            end
+                            Threads.atomic_add!(calls, 1)
+                            yield()
+                        end
+                    end
+
+                    # A panicker. Pointer and channel come from one snapshot,
+                    # and nothing yields between the call and the read.
+                    panicker = Threads.@spawn begin
+                        while !stop[]
+                            target = RustCall.resolve_call_target(lib_name, "stress_boom")
+                            raised = false
+                            try
+                                RustCall.guard_rust_panic_ptr(
+                                    RustCall.call_rust_function(target.func_ptr, Int32),
+                                    target.channel, "stress_boom")
+                            catch e
+                                raised = true
+                                e isa RustCall.RustPanicError || Threads.atomic_add!(wrong_panic, 1)
+                                occursin("boom from generation", sprint(showerror, e)) ||
+                                    Threads.atomic_add!(wrong_panic, 1)
+                            end
+                            raised || Threads.atomic_add!(lost_panic, 1)
+                            Threads.atomic_add!(panics, 1)
+                            yield()
+                        end
+                    end
+
+                    # An allocator: objects are created and dropped while the
+                    # image under them is replaced.
+                    allocator = Threads.@spawn begin
+                        while !stop[]
+                            target = RustCall.resolve_call_target(lib_name, "Thing_new")
+                            gen = RustCall.artifact_generation_snapshot(lib_name, "Thing")
+                            ptr = RustCall.call_rust_function(target.func_ptr, Ptr{Cvoid})
+                            thing = StressThing(ptr, gen.free_ptr, gen.alive)
+                            finalizer(RustCall.finalize_rust_object!, thing)
+                            Threads.atomic_add!(objects, 1)
+                            thing = nothing
+                            GC.gc(false)
+                            yield()
+                        end
+                    end
+
+                    # ...and the reload loop they all run against.
+                    for generation in 2:5
+                        # Published *before* the source is written: the swap
+                        # commits inside `reload_library`, so a caller can
+                        # legitimately observe the new generation before that
+                        # call returns. The invariant is that no call ever
+                        # returns a value that was never written — a mixture of
+                        # two generations, or a read of freed memory.
+                        lock(published_lock) do
+                            push!(published, Int32(generation))
+                        end
+                        _hrt_write_stress(crate, generation)
+                        RustCall.reload_library(state)
+                    end
+
+                    stop[] = true
+                    wait(caller); wait(panicker); wait(allocator)
+                    GC.gc(true)
+
+                    # The loop really did run against live traffic...
+                    @test calls[] > 0
+                    @test panics[] > 0
+                    @test objects[] > 0
+                    @test length(published) > 1
+
+                    # ...and every invariant held.
+                    @test wrong_generation[] == 0
+                    @test lost_panic[] == 0
+                    @test wrong_panic[] == 0
+                    @test RustCall.finalizer_failure_count() == failures_before
+                finally
                     try
                         RustCall.unload_library(lib_name)
                     catch

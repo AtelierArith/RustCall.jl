@@ -459,7 +459,10 @@ is built once per session (and per Cargo/RUSTFLAGS environment) with
 when cargo is unavailable or the probe fails.
 """
 function _cargo_cfg_text()
-    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key()
+    # The pinned panic strategy is part of the key: it is part of the
+    # environment the probe runs under, so it decides the answer.
+    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key() * "\n" *
+          string(inline_cargo_policy().panic_strategy)
     lock(_EXTRACTOR_LOCK) do
         get!(_CARGO_CFG_TEXT, key) do
             try
@@ -469,7 +472,16 @@ function _cargo_cfg_text()
                     write(joinpath(dir, "Cargo.toml"),
                           "[package]\nname = \"rustcall_cfg_probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n" *
                           "[lib]\npath = \"src/lib.rs\"\n\n" * _cargo_probe_profile())
-                    out = read(setenv(`$(cargo()) rustc -q --release --lib -- --print cfg`; dir = dir), String)
+                    # The probe must run under the same environment the
+                    # build does, or it decides `#[cfg(panic = ...)]` against a
+                    # different profile than the artifact is compiled with:
+                    # RustCall pins `unwind` for the builds it drives (#244),
+                    # while an inherited `CARGO_PROFILE_RELEASE_PANIC` would
+                    # otherwise reach only the probe.
+                    probe_env = _cargo_panic_env(inline_cargo_policy(), nothing, true)
+                    cmd = `$(cargo()) rustc -q --release --lib -- --print cfg`
+                    probe_env === nothing || (cmd = setenv(cmd, probe_env))
+                    out = read(setenv(cmd; dir = dir), String)
                     # Keep only cfg lines (`name` or `name="value"`).
                     join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
                 end

@@ -139,6 +139,60 @@ function clear_library_metadata!(lib_name::AbstractString)
 end
 
 """
+    CallTarget
+
+Everything one FFI call needs, taken from **one generation** of a library.
+
+# Why this is a struct and not three lookups
+
+A library can be replaced between any two lookups — that is what a hot reload
+is — and the pieces of a call belong to *different generations* if they are
+resolved separately. Resolving the function pointer, then the panic channel by
+`(library name, symbol)`, meant a call could enter the retired image and read
+the replacement's channel: the panic it raised would be invisible, and a panic
+the *new* image left there would be reported against a call that never made it.
+The same split applied to a struct's destructor and its liveness flag, and to
+an owned-`String` result whose release function was resolved after the wrapper
+had already returned.
+
+So every entry point takes one snapshot under one lock and uses only that. The
+rule for the whole package: **nothing after the snapshot may look anything up
+by library name.**
+
+# Fields
+
+- `func_ptr` — the wrapper to call.
+- `channel` — that wrapper's panic channel (`C_NULL` when it has none).
+- `free_ptr` — the release function for an owned-`String` result, when the
+  caller asked for one (`C_NULL` otherwise).
+- `lib_name` — the library the pointers came from, for diagnostics and for the
+  return-type hint, which must come from the same generation.
+"""
+struct CallTarget
+    func_ptr::Ptr{Cvoid}
+    channel::Ptr{Cvoid}
+    free_ptr::Ptr{Cvoid}
+    lib_name::String
+end
+
+"""
+    ArtifactGeneration
+
+The per-object half of a snapshot: what a `#[julia]` struct captures at
+construction so its finalizer needs no lookup at all (#249).
+
+`free_ptr` and `alive` must come from **one** generation: taken separately, an
+object could capture the destructor of the image it was allocated by and the
+liveness flag of the image that replaced it, and would then either skip a free
+it should have made or make one into an image that had been closed.
+"""
+struct ArtifactGeneration
+    handle::Ptr{Cvoid}
+    free_ptr::Ptr{Cvoid}
+    alive::Base.RefValue{Bool}
+end
+
+"""
     PANIC_CHANNELS
 
 `(library name, wrapper symbol)` → the pointer to that wrapper's panic-channel

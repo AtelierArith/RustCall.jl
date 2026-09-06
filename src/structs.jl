@@ -360,9 +360,11 @@ function emit_julia_definitions(info::RustStructInfo)
             alive::Base.RefValue{Bool}
 
             function $esc_struct(ptr::Ptr{Cvoid}, lib::String)
-                obj = new(ptr, lib,
-                          RustCall.struct_free_pointer(lib, $struct_name_str),
-                          RustCall.artifact_alive_ref(lib))
+                # One snapshot: the destructor and the liveness flag of the
+                # *same* generation. Two lookups could straddle a reload
+                # (#249, #277).
+                gen = RustCall.artifact_generation_snapshot(lib, $struct_name_str)
+                obj = new(ptr, lib, gen.free_ptr, gen.alive)
                 finalizer(RustCall.finalize_rust_object!, obj)
                 return obj
             end
@@ -633,18 +635,52 @@ it. A null destructor means the finalizer does nothing, which leaks rather than
 crashes: the right trade for a lookup that has already failed.
 """
 function struct_free_pointer(lib_name::AbstractString, struct_name::AbstractString)
+    return artifact_generation_snapshot(lib_name, struct_name).free_ptr
+end
+
+"""
+    artifact_generation_snapshot(lib_name, struct_name) -> ArtifactGeneration
+
+The destructor of `struct_name` **and** the liveness flag of the image that
+exports it, from one generation, under one lock.
+
+This is what a `#[julia]` struct captures at construction so its finalizer
+needs no lookup (#249). The two must come from the same generation: taken
+separately, an object could capture the destructor of the image that allocated
+it and the liveness flag of the image that replaced it, and would then either
+skip a free it should have made or make one into an image that had been closed.
+
+The destructor is resolved on **that library's own handle**, never through the
+cross-library fallback: each `cdylib` links its own allocator shim, so
+borrowing another library's `<Struct>_free` is undefined behaviour dressed up
+as a convenience (the allocator contract in `docs/src/panics.md`).
+
+A missing destructor is `C_NULL`, which makes the finalizer a no-op: a leak
+rather than a free through the wrong allocator.
+"""
+function artifact_generation_snapshot(lib_name::AbstractString,
+                                      struct_name::AbstractString)
+    name = String(lib_name)
     symbol = ffi_struct_free_symbol(struct_name)
-    return try
-        handle = lock(REGISTRY_LOCK) do
-            entry = get(RUST_LIBRARIES, String(lib_name), nothing)
-            entry === nothing ? C_NULL : entry[1]
+    return lock(REGISTRY_LOCK) do
+        alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
+        entry = get(RUST_LIBRARIES, name, nothing)
+        entry === nothing && return ArtifactGeneration(C_NULL, C_NULL, alive)
+        handle, cache = entry
+        free_ptr = get(cache, symbol, C_NULL)
+        if free_ptr == C_NULL
+            found = try
+                Libdl.dlsym(handle, symbol; throw_error = false)
+            catch e
+                @debug "Could not resolve $(symbol) in $(name)" exception = e
+                nothing
+            end
+            if !(found === nothing || found == C_NULL)
+                free_ptr = found
+                cache[symbol] = found
+            end
         end
-        handle == C_NULL && return C_NULL
-        found = Libdl.dlsym(handle, symbol; throw_error = false)
-        (found === nothing || found == C_NULL) ? C_NULL : found
-    catch e
-        @debug "Could not resolve $(symbol) in $(lib_name)" exception = e
-        C_NULL
+        return ArtifactGeneration(handle, free_ptr, alive)
     end
 end
 
@@ -767,10 +803,15 @@ function _crust_str_to_julia(raw::CRustStr)
 end
 
 function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...)
-    func_ptr = get_function_pointer(lib_name, func_name)
-    # Both lookups happen before the call: the channel is a thread-local, so
-    # nothing may yield between the wrapper call and the read (#244).
-    channel = panic_channel_pointer(lib_name, func_name)
+    # One snapshot, taken before the call: the wrapper, its panic channel and
+    # the function that releases the buffer it returns. The release function
+    # used to be resolved by library name *after* the wrapper had returned, so
+    # a reload in between released a buffer allocated by the retired image
+    # through the replacement's allocator — undefined behaviour, and exactly
+    # what the allocator contract forbids (#277).
+    target = resolve_call_target(lib_name, func_name; free_symbol = free_func_name)
+    func_ptr = target.func_ptr
+    channel = target.channel
     raw = call_rust_function(func_ptr, CRustString, args...)
     # A panic returns the empty buffer sentinel, which would decode to `""`.
     # Read the channel before the buffer, so a panicked call raises instead of
@@ -781,16 +822,16 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
     try
         return _crust_string_to_julia(raw)
     finally
-        if raw.ptr != C_NULL
-            free_ptr = get_function_pointer(lib_name, free_func_name)
-            ccall(free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
+        if raw.ptr != C_NULL && target.free_ptr != C_NULL
+            ccall(target.free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
         end
     end
 end
 
 function _call_rust_borrowed_string(lib_name::String, func_name::String, args...)
-    func_ptr = get_function_pointer(lib_name, func_name)
-    channel = panic_channel_pointer(lib_name, func_name)
+    target = resolve_call_target(lib_name, func_name)
+    func_ptr = target.func_ptr
+    channel = target.channel
     raw = call_rust_function(func_ptr, CRustStr, args...)
     check_rust_panic_ptr(channel, func_name)
     return _crust_str_to_julia(raw)

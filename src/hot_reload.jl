@@ -179,18 +179,25 @@ end
 """
     _source_fingerprint(crate_path) -> String
 
-A content digest of everything under the crate that decides what gets built.
+A content digest of exactly what the **scan** reads: the crate's Rust sources
+and its `Cargo.toml`.
 
-`crate_content_digest` (`src/artifact_id.jl`) is the same function the artifact
-key uses, so "did the sources change?" is answered by the same evidence that
-answers "is this a different artifact?".
+The question this answers is narrow — "does the manifest I just produced still
+describe the files that were compiled?" — so the input set is the scan's input
+set, hashed by content (`_file_content_digest`, the same primitive
+`src/artifact_id.jl` uses). Content, not `(mtime, size)`: the edit most likely
+in that window is one character for another, same length, with the mtime
+restored by an editor, a formatter or a version-control checkout.
 
-It used to be a `(path, mtime, size)` stamp, which misses exactly the edit a
-developer is most likely to make between a scan and a build: replacing a
-character with another character. Same size, and an editor — or a `git
-checkout`, or a formatter — can restore the mtime. The manifest would then
-describe sources the build did not compile, and RustCall would register one
-build's symbol table against another build's library.
+It is deliberately **not** `crate_content_digest`, which is the *artifact
+identity* and therefore hashes everything a build reads — including
+`Cargo.lock`. Cargo writes `Cargo.lock` during the very build this check
+straddles, so a crate that does not have one yet (it is ignored by version
+control here, and in most repositories) changed its identity digest between the
+scan and the build every single time. The check then declared the manifest
+untrustworthy and registered the rebuilt library with **no symbol mappings** —
+precisely the failure this function exists to prevent: `@rust f(...)` hunting
+for `f` while the library exports `rustcall_f`.
 
 Returns `""` when the digest cannot be taken, which the caller treats as "no
 evidence" and therefore as "unchanged": failing to hash a crate that just built
@@ -198,7 +205,15 @@ successfully should not throw the rebuilt library away.
 """
 function _source_fingerprint(crate_path::String)
     return try
-        crate_content_digest(crate_path)
+        io = IOBuffer()
+        inputs = String[find_rust_sources(crate_path)...]
+        manifest = joinpath(crate_path, "Cargo.toml")
+        isfile(manifest) && push!(inputs, manifest)
+        for file in sort(unique(inputs))
+            print(io, relpath(file, crate_path), "\0")
+            print(io, isfile(file) ? _file_content_digest(file) : "missing", "\0")
+        end
+        bytes2hex(sha256(take!(io)))
     catch e
         @debug "Hot reload: could not fingerprint $(crate_path)" exception = e
         ""
@@ -264,8 +279,8 @@ after the lock.
 The scan describes the sources; the build compiles them. Scanning *after* the
 build would describe sources that may have changed in between and hand the
 freshly built library another build's symbol table. So the sources are
-fingerprinted by **content** (`crate_content_digest`, the same evidence the
-artifact key uses), scanned, built, and fingerprinted again: if the digest
+fingerprinted by **content** — the scan's own inputs, the Rust sources and the
+manifest — scanned, built, and fingerprinted again: if the digest
 moved, the scan is discarded rather than trusted, and the library is registered
 with no symbol mappings (a `#[julia]` function is then reachable only by its
 exported symbol until the next reload). A `(mtime, size)` stamp would miss a
@@ -286,15 +301,10 @@ function _reload_library_locked(state::HotReloadState)
         # library stays loaded and usable throughout.
         built = rebuild_crate(state.crate_path)
 
-        # Open a *copy* under a fresh name, never the file Cargo just wrote.
-        # On Windows the loaded image is locked, so rebuilding in place fails
-        # outright; everywhere else, opening the same path again can hand back
-        # the already-mapped image instead of the new one, and objects from the
-        # old library can end up freed by code from the new. A generation
-        # counter makes each reload a genuinely different file (#255).
-        state.generation = next_reload_generation()
-        new_lib_path = _generation_path(built, state.generation)
-        cp(built, new_lib_path; force = true)
+        # Open a *copy* under a fresh name, never the file Cargo just wrote
+        # (`loadable_library_copy`).
+        new_lib_path = loadable_library_copy(built)
+        state.generation = RELOAD_GENERATION[]
 
         # Did the sources change under the scan? Then the manifest is not
         # evidence about what was just built.
@@ -404,52 +414,6 @@ function rebuild_crate(crate_path::String)
     end
 
     return lib_path
-end
-
-"""
-    RELOAD_GENERATION
-
-A process-wide, monotonic counter for reload output paths.
-
-Each reload writes its library to `<lib>.<generation>.<ext>` and opens *that*,
-so the image already mapped is never the file Cargo is writing to — the reason
-rebuild-in-place fails on Windows, and the reason re-`dlopen`ing the same path
-elsewhere can hand back the old image.
-
-The counter is per **process**, not per `HotReloadState`: disabling and
-re-enabling hot reload creates a fresh state, and a per-state counter would
-restart at 1 and collide with a `.1.` file that is still mapped from the
-previous session — the exact failure the versioned path exists to avoid.
-"""
-const RELOAD_GENERATION = Threads.Atomic{Int}(0)
-
-"""
-    next_reload_generation() -> Int
-
-The next reload generation. Never repeats within a process.
-"""
-next_reload_generation() = Threads.atomic_add!(RELOAD_GENERATION, 1) + 1
-
-"""
-    _generation_path(lib_path, generation) -> String
-
-`libfoo.dylib` → `libfoo.3.dylib`, next to the original.
-
-Every reload opens its own file. Rebuilding into the path the loaded image was
-mapped from is the third of #255's problems: on Windows the mapped DLL is
-locked and the build fails, and on every platform re-`dlopen`ing a path that is
-already mapped can hand back the *old* image, so a "reload" silently does
-nothing while objects allocated by the old library start being freed by the
-new.
-
-Living next to the original rather than in a temporary directory matters on
-Windows: a DLL resolves its dependencies relative to its own location.
-"""
-function _generation_path(lib_path::AbstractString, generation::Integer)
-    dir = dirname(lib_path)
-    base = basename(lib_path)
-    stem, ext = splitext(base)
-    return joinpath(dir, "$(stem).$(generation)$(ext)")
 end
 
 """
