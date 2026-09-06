@@ -620,15 +620,30 @@ finalizer_failure_count() = FINALIZER_FREE_FAILURES[]
 The destructor of `struct_name` in `lib_name`, resolved **now** so the
 finalizer never has to.
 
+Resolved on **that library's own handle**, never through the cross-library
+fallback search `get_function_pointer` performs. An allocation made by one
+library must be released by the same library — each `cdylib` links its own
+allocator shim — so borrowing another library's `<Struct>_free` because this
+one happens not to export it would be undefined behaviour dressed up as a
+convenience (the allocator contract in `docs/src/panics.md`).
+
 `C_NULL` when the library does not export one — a struct whose destructor was
 `#[cfg]`-ed out, or a hand-registered `RustStructInfo` with no library behind
 it. A null destructor means the finalizer does nothing, which leaks rather than
 crashes: the right trade for a lookup that has already failed.
 """
 function struct_free_pointer(lib_name::AbstractString, struct_name::AbstractString)
+    symbol = ffi_struct_free_symbol(struct_name)
     return try
-        get_function_pointer(String(lib_name), ffi_struct_free_symbol(struct_name))
-    catch
+        handle = lock(REGISTRY_LOCK) do
+            entry = get(RUST_LIBRARIES, String(lib_name), nothing)
+            entry === nothing ? C_NULL : entry[1]
+        end
+        handle == C_NULL && return C_NULL
+        found = Libdl.dlsym(handle, symbol; throw_error = false)
+        (found === nothing || found == C_NULL) ? C_NULL : found
+    catch e
+        @debug "Could not resolve $(symbol) in $(lib_name)" exception = e
         C_NULL
     end
 end
