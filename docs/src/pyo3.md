@@ -121,7 +121,7 @@ plan.reason        # why this mode was chosen
 | --- | --- | --- |
 | `:python_free` | the crate has no pyo3 dependency, or an **optional** one | build with the feature off; nothing links libpython |
 | `:link_libpython` | pyo3 is a **mandatory** dependency | the cdylib hard-links libpython; the interpreter's library directory is added as `-L` and as an rpath, or the build refuses |
-| `:unlinkable` | the crate enables pyo3's `extension-module` feature unconditionally | nothing can be built: refuse with a message saying how to make the feature optional |
+| `:unlinkable` | the crate enables pyo3's `extension-module` feature unconditionally | nothing usable can be built: refuse with a message saying how to make the feature optional |
 
 `RustCall.pyo3_link_rustflags(plan)` turns a plan into the `RUSTFLAGS` pieces a
 wrapper build needs, and raises `RustError` for the two failure modes — an
@@ -141,16 +141,28 @@ Verified in the #275 MWE on macOS: any build of a crate with a non-optional
 pyo3 dependency links libpython — `otool -L` shows
 `@rpath/Python3.framework/Versions/3.9/Python3` — and the cdylib then fails to
 `dlopen` unless the loader can find it. The only genuinely Python-free case is a
-crate whose pyo3 dependency is *itself* optional.
+crate whose pyo3 dependency is *itself* optional — confirmed on Linux too: with
+the feature off, `ldd` on the wrapper `.so` shows only libc and libgcc.
 
-### Why `:unlinkable` is a build error, not a load error
+### Why `:unlinkable` refuses outright
 
-With `extension-module` on, a downstream cdylib does not even link: pyo3 emits
-`-undefined dynamic_lookup` through `cargo:rustc-cdylib-link-arg` from its own
-build script, and that does not reach a dependent crate (which is why maturin
-sets the flag itself). Forcing the link produces a library that fails
-`dlopen` under `RTLD_NOW` *and* under `RTLD_LAZY`, because the missing symbols
-include data symbols (`_PyBaseObject_Type`, `PyExc_*`) that bind eagerly.
+`extension-module` tells pyo3 to leave libpython's symbols unresolved, for the
+Python interpreter to supply when it imports the module. A wrapper cdylib is
+never loaded that way, and the failure looks different on each platform —
+neither of them recoverable:
+
+* **macOS**: the wrapper does not even link. pyo3 emits
+  `-undefined dynamic_lookup` through `cargo:rustc-cdylib-link-arg` from its own
+  build script, and that does not reach a dependent crate (which is why maturin
+  sets the flag itself). Forcing the link produces a library that fails `dlopen`
+  under `RTLD_NOW` *and* `RTLD_LAZY`, because the missing symbols include data
+  symbols (`_PyBaseObject_Type`, `PyExc_*`) that bind eagerly.
+* **Linux**: the wrapper links — ELF tolerates undefined symbols in a shared
+  object — but `dlopen` fails under both flags with
+  `undefined symbol: _Py_Dealloc`.
+
+So the plan refuses before the build rather than producing an artifact that
+cannot be loaded.
 
 ## Making pyo3 optional: the `cfg_attr` limitation
 

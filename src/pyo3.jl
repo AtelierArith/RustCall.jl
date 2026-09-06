@@ -132,7 +132,7 @@ whether it can be built at all (#275 Phase 1.5).
   | --- | --- |
   | `:python_free` | the crate's pyo3 dependency is optional (or absent), so the wrapper is built with the feature **off** and links no libpython |
   | `:link_libpython` | pyo3 is a mandatory dependency: the wrapper cdylib hard-links libpython and only loads if the interpreter's library directory is on the runtime search path |
-  | `:unlinkable` | the crate enables pyo3's `extension-module` feature unconditionally: the wrapper cdylib does not even link |
+  | `:unlinkable` | the crate enables pyo3's `extension-module` feature unconditionally: the wrapper cdylib cannot be loaded (it does not link on macOS, and fails `dlopen` on Linux) |
 
 - `feature_flags::Vector{String}`: Cargo flags the wrapper build must pass for
   the plan to hold (e.g. `--no-default-features`).
@@ -209,14 +209,22 @@ function _pyo3_link_plan(cargo::AbstractDict)
     end
 
     if ext_in_dep
+        # Verified on both platforms for #275. macOS: the wrapper cdylib does
+        # not even link — pyo3 emits `-undefined dynamic_lookup` through
+        # cargo:rustc-cdylib-link-arg from its *own* build script and that does
+        # not reach a dependent crate (which is why maturin sets the flag
+        # itself) — and forcing the link gives a library that fails dlopen
+        # under RTLD_NOW and RTLD_LAZY alike. Linux: the cdylib links (ELF
+        # tolerates undefined symbols) but dlopen fails the same way under both
+        # flags (`undefined symbol: _Py_Dealloc`). Unusable either way.
         return PyO3LinkPlan(:unlinkable, String[], "",
-                            "[dependencies.pyo3] enables the `extension-module` feature unconditionally. " *
-                            "A downstream cdylib then does not even link (pyo3 emits " *
-                            "`-undefined dynamic_lookup` through cargo:rustc-cdylib-link-arg, which does " *
-                            "not reach a dependent crate), and forcing the link produces a library that " *
-                            "cannot be dlopen'd under RTLD_NOW or RTLD_LAZY. Make the feature optional " *
-                            "(`[features] extension-module = [\"pyo3/extension-module\"]`) so the wrapper " *
-                            "build can leave it off.")
+                            "[dependencies.pyo3] enables the `extension-module` feature unconditionally, " *
+                            "which leaves libpython's symbols to be resolved by the Python interpreter " *
+                            "that loads the module. A wrapper cdylib is not loaded that way: on macOS it " *
+                            "does not even link, and on Linux it links but fails to dlopen under both " *
+                            "RTLD_NOW and RTLD_LAZY (undefined symbol: _Py_Dealloc). Make the feature " *
+                            "optional (`[features] extension-module = [\"pyo3/extension-module\"]`) so the " *
+                            "wrapper build can leave it off.")
     end
 
     if ext_feature !== nothing && ext_feature in default_on
