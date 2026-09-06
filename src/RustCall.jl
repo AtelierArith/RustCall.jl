@@ -95,6 +95,9 @@ include("hot_reload.jl")
 export @rust, @rust_str, @irust, @irust_str
 export @rust_llvm
 export @rust_crate
+# The by-value opt-in of #245. A macro, because it must define its method in
+# the *calling* module for that method to survive the caller's precompilation.
+export @register_ffi_struct
 
 # Module initialization
 function __init__()

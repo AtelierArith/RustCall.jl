@@ -99,14 +99,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       x::Float64
       y::Float64
   end
-  RustCall.register_ffi_struct(Point)
+  @register_ffi_struct Point
   ```
 
   Without it the call raises a `RustError` naming the type, its fields and the
   opt-in. Registration is for **concrete types only**: `Point{Float64}` says
   nothing about `Point{Int32}` — a parameter changes sizes, alignment and
   register classes — and registering the `UnionAll` `Point`, or an abstract
-  type, is an error rather than a family-wide claim. Scalars, pointers,
+  type, is an error rather than a family-wide claim. `@register_ffi_struct` is
+  the form to use at a package's top level: it expands in the calling module, so
+  the method it defines is carried by that package's precompile cache whatever
+  `T` is — including a `Tuple`, whose `parentmodule` is `Core` and for which the
+  function form has no home but RustCall itself. Scalars, pointers,
   `Cstring`, `Char` and
   `Bool` are unaffected — their ABI is their width. So are the wrappers
   RustCall generates from a `#[julia] struct`, which cross as opaque handles,

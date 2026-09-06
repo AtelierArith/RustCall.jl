@@ -210,7 +210,7 @@ Declare the Rust struct `#[repr(C)]` — which *does* fix the field order — an
 record the claim once:
 
 ```julia
-RustCall.register_ffi_struct(Point)
+@register_ffi_struct Point
 
 @rust process_point(Point(3.0, 4.0))::Float64   # 25.0
 ```
@@ -219,9 +219,23 @@ RustCall.register_ffi_struct(Point)
 and that its fields line up with the Julia struct's in order and in type.
 RustCall cannot check that for you; the call is where you take responsibility
 for it. The assertion is recorded as a **method** of
-`RustCall.ffi_by_value_layout`, defined in the module that owns the type, so
-calling `register_ffi_struct` at a package's top level survives that package's
-precompilation and holds in every later session.
+`RustCall.ffi_by_value_layout`.
+
+At a package's top level, use the macro:
+
+```julia
+@register_ffi_struct Point
+@register_ffi_struct Tuple{Int32, Float64}
+```
+
+It expands in the *calling* module, so Julia stores the method in that module's
+precompile cache and reinstates it on load, like any other method the package
+defines. The function form, `register_ffi_struct(Point)`, defines the method in
+`parentmodule(T)` — the same thing for a struct the package itself defines, but
+for a type Julia owns (a `Tuple`, whose `parentmodule` is `Core`) it lands in
+RustCall, and a cross-module mutation of a dependency is not replayed from a
+downstream package's cache. Keep the function for the REPL, a script, or inside
+a function; use the macro when the registration has to survive precompilation.
 
 Registration is for **concrete types only**. `register_ffi_struct(Point)` on a
 parametric struct, or on an abstract type, is an error: instantiations of

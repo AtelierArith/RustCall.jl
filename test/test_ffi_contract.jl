@@ -762,6 +762,47 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_is_aggregate(Tuple{Int32, Float64})
         @test RustCall.ffi_by_value_allowed(Tuple{Int32, Float64}) == false
 
+        # The macro form defines the method in the **calling** module, which is
+        # what makes it precompile-safe for a type Julia owns — a `Tuple`,
+        # whose `parentmodule` is `Core` and where the function form has no
+        # home but RustCall (#245 review).
+        try
+            @test (@register_ffi_struct Rc245ByValueTwin) === Rc245ByValueTwin
+            @test RustCall.ffi_by_value_allowed(Rc245ByValueTwin)
+            @test RustCall._ffi_layout_method(Rc245ByValueTwin).module === @__MODULE__
+            @test RustCall._ffi_layout_method(Rc245ByValueTwin).module !== RustCall
+        finally
+            @test RustCall.unregister_ffi_struct(Rc245ByValueTwin)
+        end
+        @test RustCall.ffi_by_value_allowed(Rc245ByValueTwin) == false
+
+        try
+            @test (@register_ffi_struct Tuple{Int8, Int8}) === Tuple{Int8, Int8}
+            @test RustCall.ffi_by_value_allowed(Tuple{Int8, Int8})
+            @test RustCall.ffi_by_value_allowed(Tuple{Int8, Int16}) == false
+            # The function form would have put it in RustCall; the macro does
+            # not, which is the whole point.
+            @test RustCall._ffi_layout_method(Tuple{Int8, Int8}).module === @__MODULE__
+        finally
+            @test RustCall.unregister_ffi_struct(Tuple{Int8, Int8})
+        end
+        @test RustCall.ffi_by_value_allowed(Tuple{Int8, Int8}) == false
+
+        # It refuses exactly what the function refuses, and says so as the
+        # macro rather than as the function.
+        macro_err = try
+            @eval @register_ffi_struct $Rc245Pair
+            nothing
+        catch e
+            e
+        end
+        @test macro_err isa ArgumentError ||
+              (macro_err isa LoadError && macro_err.error isa ArgumentError)
+        @test occursin("@register_ffi_struct", sprint(showerror, macro_err))
+        @test_throws Exception (@eval @register_ffi_struct $Rc245Shape)
+        @test_throws Exception (@eval @register_ffi_struct $Rc245Mutable)
+        @test RustCall.ffi_by_value_allowed(Rc245Pair{Float64}) == false
+
         # The error names the type, its fields and the opt-in call to make.
         err = try
             RustCall.ffi_check_by_value(Int32, Any[Rc245ByValue])
@@ -952,6 +993,20 @@ const ALL_SPELLINGS = vcat(
             b::T
         end
         RustCall.register_ffi_struct(Pair2{Float64})
+
+        # A type Julia owns: `parentmodule(Tuple{...})` is `Core`, so the
+        # function form would define the method in RustCall — a cross-module
+        # mutation of a dependency, which is not replayed from this package's
+        # cache. The macro expands here and defines it here.
+        RustCall.@register_ffi_struct Tuple{Int32, Float64}
+
+        # ...and the macro is the right answer for an ordinary struct too.
+        struct Macro3
+            a::Int32
+            b::Int32
+            c::Int32
+        end
+        RustCall.@register_ffi_struct Macro3
         end
         """)
         try
@@ -963,7 +1018,10 @@ const ALL_SPELLINGS = vcat(
                   isbitstype(M.CResult_probe), " ",
                   RustCall.ffi_by_value_allowed(M.Pt), " ",
                   RustCall.ffi_by_value_allowed(M.Pair2{Float64}), " ",
-                  RustCall.ffi_by_value_allowed(M.Pair2{Int8}))
+                  RustCall.ffi_by_value_allowed(M.Pair2{Int8}), " ",
+                  RustCall.ffi_by_value_allowed(Tuple{Int32, Float64}), " ",
+                  RustCall.ffi_by_value_allowed(Tuple{Int32, Float32}), " ",
+                  RustCall.ffi_by_value_allowed(M.Macro3))
             """
             project = pkgdir(RustCall)
             out = withenv("JULIA_LOAD_PATH" => string(project, Sys.iswindows() ? ";" : ":", depot,
@@ -974,9 +1032,12 @@ const ALL_SPELLINGS = vcat(
             # supertype), and still isbits — a supertype does not change the
             # layout. The user's struct: allowed, because
             # `register_ffi_struct` defined a `ffi_by_value_layout` method in
-            # `Rc245Mirror245`, which its precompile cache carries. And the
-            # concrete parametric registration still licenses only itself.
-            @test out == "true false true true true false"
+            # `Rc245Mirror245`, which its precompile cache carries. The
+            # concrete parametric registration still licenses only itself. And
+            # the macro's two — a `Tuple`, which the function form could only
+            # have registered *in RustCall*, and an ordinary struct — come back
+            # as well, still without licensing a sibling tuple.
+            @test out == "true false true true true false true false true"
         finally
             rm(depot; recursive = true, force = true)
         end

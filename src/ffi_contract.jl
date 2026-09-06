@@ -1374,6 +1374,55 @@ function ffi_is_aggregate(@nospecialize(T::Type))
 end
 
 """
+    _validate_ffi_by_value(T; repr_c = true, form = "register_ffi_struct")
+
+Everything `register_ffi_struct` refuses, in one place, so the macro form
+refuses exactly the same things. `form` is how the call was spelled, so the
+message quotes back what the caller wrote.
+
+Returns `T`, or throws `ArgumentError`.
+"""
+function _validate_ffi_by_value(@nospecialize(T::Type); repr_c::Bool = true,
+                                form::AbstractString = "register_ffi_struct")
+    call = form == "register_ffi_struct" ? "register_ffi_struct($T)" :
+                                           "@register_ffi_struct $T"
+    repr_c || throw(ArgumentError(
+        "$call with `repr_c = false` asserts nothing: a type may " *
+        "only be passed by value when the Rust type it mirrors is declared " *
+        "`#[repr(C)]`. Fix the Rust definition, or pass the value behind a " *
+        "pointer instead."))
+    T isa UnionAll && throw(ArgumentError(
+        "$call: a `UnionAll` cannot be registered. Its " *
+        "instantiations do not share a layout — a type parameter changes field " *
+        "sizes, alignment and even ABI register classes — so asserting one for " *
+        "the whole family would license `$T{...}` instantiations you never " *
+        "matched against a Rust struct, which is the fail-open behaviour this " *
+        "opt-in exists to remove. Register each concrete type you actually " *
+        "pass, e.g. `$T{Float64}`."))
+    (isconcretetype(T) && isstructtype(T)) || throw(ArgumentError(
+        "$call: only a concrete struct type can be passed by " *
+        "value — $T is $(isabstracttype(T) ? "abstract, and its subtypes share " *
+                                             "no layout" : "not a concrete struct type"). " *
+        "Register the concrete types you actually pass."))
+    isbitstype(T) || throw(ArgumentError(
+        "$call: only an `isbitstype` type can be passed by " *
+        "value — $T is not one" *
+        (ismutabletype(T) ? " (it is mutable; a mutable struct is a Julia heap " *
+                            "object, and Rust must receive it behind a " *
+                            "pointer)." : ".")))
+    return T
+end
+
+"""
+    _ffi_by_value_needs_method(T) -> Bool
+
+Whether a `ffi_by_value_layout` method for **exactly** `T` still has to be
+defined. Caller holds `REGISTRY_LOCK`; see `register_ffi_struct` for why only an
+exact duplicate is skipped.
+"""
+_ffi_by_value_needs_method(@nospecialize(T::Type)) = _ffi_layout_method(T) === nothing
+
+"""
     register_ffi_struct(T::Type; repr_c::Bool = true) -> Type
 
 Assert that values of `T` may be passed to and from Rust **by value**, because
@@ -1426,34 +1475,23 @@ the fail-open behaviour this opt-in exists to remove. Register each concrete
 type you actually pass: `register_ffi_struct(Point{Float64})` says exactly that,
 and says nothing about `Point{Int32}`.
 
-See also `unregister_ffi_struct`, `ffi_by_value_registered`,
-`ffi_by_value_layout`.
+!!! warning "Not precompile-safe for a type Julia owns"
+    `parentmodule(Tuple{Int32, Float64})` is `Core`, and there is no method
+    RustCall may add there — so the method lands in RustCall itself, which is a
+    cross-module mutation of a dependency and is **not** replayed from a
+    downstream package's precompile cache. The assertion would hold in the
+    session that compiled the package and be gone in every one after it.
+
+    Use `@register_ffi_struct` at a package's top level. It expands in the
+    *calling* module and is precompile-safe for every `T`. This function is the
+    runtime form: fine in the REPL, in a script, or inside a function.
+
+See also `@register_ffi_struct`, `unregister_ffi_struct`,
+`ffi_by_value_registered`, `ffi_by_value_layout`.
 """
+
 function register_ffi_struct(@nospecialize(T::Type); repr_c::Bool = true)
-    repr_c || throw(ArgumentError(
-        "register_ffi_struct($T; repr_c = false) asserts nothing: a type may " *
-        "only be passed by value when the Rust type it mirrors is declared " *
-        "`#[repr(C)]`. Fix the Rust definition, or pass the value behind a " *
-        "pointer instead."))
-    T isa UnionAll && throw(ArgumentError(
-        "register_ffi_struct($T): a `UnionAll` cannot be registered. Its " *
-        "instantiations do not share a layout — a type parameter changes field " *
-        "sizes, alignment and even ABI register classes — so asserting one for " *
-        "the whole family would license `$T{...}` instantiations you never " *
-        "matched against a Rust struct, which is the fail-open behaviour this " *
-        "opt-in exists to remove. Register each concrete type you actually " *
-        "pass, e.g. `register_ffi_struct($T{Float64})`."))
-    (isconcretetype(T) && isstructtype(T)) || throw(ArgumentError(
-        "register_ffi_struct($T): only a concrete struct type can be passed by " *
-        "value — $T is $(isabstracttype(T) ? "abstract, and its subtypes share " *
-                                             "no layout" : "not a concrete struct type"). " *
-        "Register the concrete types you actually pass."))
-    isbitstype(T) || throw(ArgumentError(
-        "register_ffi_struct($T): only an `isbitstype` type can be passed by " *
-        "value — $T is not one" *
-        (ismutabletype(T) ? " (it is mutable; a mutable struct is a Julia heap " *
-                            "object, and Rust must receive it behind a " *
-                            "pointer)." : ".")))
+    _validate_ffi_by_value(T; repr_c = repr_c)
     # The check and the method definition are **one** transaction under
     # `REGISTRY_LOCK`, paired with the one in `unregister_ffi_struct`. Split,
     # two tasks racing on the same type could both define the method, or an
@@ -1471,6 +1509,71 @@ function register_ffi_struct(@nospecialize(T::Type); repr_c::Bool = true)
                   :($(GlobalRef(@__MODULE__, :ffi_by_value_layout))(::Type{$T}) =
                         $(QuoteNode(:repr_c))))
         return T
+    end
+end
+
+"""
+    @register_ffi_struct T
+
+Assert that values of `T` may cross the boundary **by value** — the same claim
+`register_ffi_struct(T)` makes, recorded in a way that survives *this* module's
+precompilation whatever `T` is.
+
+Use this at a package's top level. It expands to a method definition:
+
+```julia
+RustCall.ffi_by_value_layout(::Type{T}) = :repr_c
+```
+
+written **in the calling module**, so Julia stores it in that module's cache
+image and reinstates it on load, like any other method the package defines.
+
+# Why the macro exists
+
+`register_ffi_struct(T)` is a function and cannot define a method in its
+caller's module; it uses `parentmodule(T)` instead. For a struct the package
+itself defines, that *is* the caller's module and everything works. For a type
+Julia owns — a `Tuple{Int32, Float64}`, whose `parentmodule` is `Core` — there
+is no such home, the method lands in RustCall, and a cross-module mutation of a
+dependency is **not** replayed from a downstream package's cache: the assertion
+would hold in the session that compiled the package and be gone in every one
+after it (#245 review). A macro has the caller's module by construction and has
+neither problem.
+
+```julia
+module MyPkg
+using RustCall
+
+struct Point
+    x::Float64
+    y::Float64
+end
+
+@register_ffi_struct Point
+@register_ffi_struct Tuple{Int32, Float64}
+end
+```
+
+The same rules apply as to the function: concrete, immutable, `isbitstype`
+struct types only, and the Rust type it mirrors must be `#[repr(C)]`. A
+`UnionAll` or an abstract type raises an `ArgumentError` where the macro's
+expansion runs — during precompilation, if that is where you wrote it, so a bad
+assertion fails the build rather than the first call.
+
+See also `register_ffi_struct` (the runtime form), `unregister_ffi_struct`,
+`ffi_by_value_layout`.
+"""
+macro register_ffi_struct(T)
+    ty = esc(T)
+    validate = GlobalRef(@__MODULE__, :_validate_ffi_by_value)
+    layout = GlobalRef(@__MODULE__, :ffi_by_value_layout)
+    return quote
+        # Validation first, and as its own statement: a type that cannot be
+        # asserted must raise rather than leave a method behind. `form` so the
+        # message quotes the macro back at the caller, not the function.
+        $validate($ty; form = "@register_ffi_struct")
+        $layout(::Type{$ty}) = $(QuoteNode(:repr_c))
+        $ty
     end
 end
 
