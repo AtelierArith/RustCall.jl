@@ -94,6 +94,10 @@ export @rust_crate
 
 # Module initialization
 function __init__()
+    # The deprecated RTLD_GLOBAL escape hatch (#250, #277 Phase B2), read once:
+    # a load policy must not change halfway through a session.
+    _init_dlopen_global_override!()
+
     # Check for rustc availability
     if !check_rustc_available()
         @warn "rustc not found in PATH. RustCall.jl requires Rust to be installed."

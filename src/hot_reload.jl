@@ -1,7 +1,7 @@
 # Hot reload support for Rust source changes
 # This module provides automatic detection and rebuild when Rust source files change.
 
-using FileWatching
+import FileWatching
 
 # ============================================================================
 # Hot Reload State
@@ -31,7 +31,25 @@ mutable struct HotReloadState
     watch_task::Union{Task, Nothing}
     enabled::Bool
     rebuild_callback::Union{Function, Nothing}
+    # The generation of the last successful reload, for diagnostics. The value
+    # comes from `next_reload_generation()`, a process-wide counter — a
+    # per-state integer restarted at 0 when hot reload was disabled and
+    # re-enabled, and the reload then tried to write `<lib>.1.<ext>` while the
+    # image of that name was still mapped, which fails outright on Windows
+    # (#255).
+    generation::Int
+    # The last rebuild failure that was reported, so the ordinary dev loop —
+    # save with a typo, save again — does not print the same error on every
+    # watch tick. Cleared by a successful reload.
+    last_failure::String
 end
+
+# Backwards-compatible positional constructor: the two fields below are
+# bookkeeping, never supplied by a caller.
+HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
+               watch_task, enabled, rebuild_callback) =
+    HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
+                   watch_task, enabled, rebuild_callback, 0, "")
 
 """
 Registry of hot-reloadable crates.
@@ -113,6 +131,7 @@ Check if any source files have been modified since last check.
 Updates the last_modified times if changes are detected.
 """
 function check_for_changes(state::HotReloadState)
+    Threads.atomic_add!(SOURCE_SCANS, 1)
     changed = false
 
     for src_file in state.source_files
@@ -159,77 +178,207 @@ function reload_library(state::HotReloadState)
 end
 
 """
+    _source_fingerprint(crate_path) -> String
+
+A content digest of exactly what the **scan** reads: the crate's Rust sources
+and its `Cargo.toml`.
+
+The question this answers is narrow — "does the manifest I just produced still
+describe the files that were compiled?" — so the input set is the scan's input
+set, hashed by content (`_file_content_digest`, the same primitive
+`src/artifact_id.jl` uses). Content, not `(mtime, size)`: the edit most likely
+in that window is one character for another, same length, with the mtime
+restored by an editor, a formatter or a version-control checkout.
+
+It is deliberately **not** `crate_content_digest`, which is the *artifact
+identity* and therefore hashes everything a build reads — including
+`Cargo.lock`. Cargo writes `Cargo.lock` during the very build this check
+straddles, so a crate that does not have one yet (it is ignored by version
+control here, and in most repositories) changed its identity digest between the
+scan and the build every single time. The check then declared the manifest
+untrustworthy and registered the rebuilt library with **no symbol mappings** —
+precisely the failure this function exists to prevent: `@rust f(...)` hunting
+for `f` while the library exports `rustcall_f`.
+
+Returns `""` when the digest cannot be taken, which the caller treats as "no
+evidence" and therefore as "unchanged": failing to hash a crate that just built
+successfully should not throw the rebuilt library away.
+"""
+function _source_fingerprint(crate_path::String)
+    return try
+        io = IOBuffer()
+        inputs = String[find_rust_sources(crate_path)...]
+        manifest = joinpath(crate_path, "Cargo.toml")
+        isfile(manifest) && push!(inputs, manifest)
+        for file in sort(unique(inputs))
+            print(io, relpath(file, crate_path), "\0")
+            print(io, isfile(file) ? _file_content_digest(file) : "missing", "\0")
+        end
+        bytes2hex(sha256(take!(io)))
+    catch e
+        @debug "Hot reload: could not fingerprint $(crate_path)" exception = e
+        ""
+    end
+end
+
+"""
+    _scan_crate_signatures(crate_path) -> Union{Vector, Nothing}
+
+The `#[julia]` function signatures of a crate that RustCall has just built
+`--release`, scanned under **that crate's own build configuration**.
+
+`_crate_build_cfg_text` probes the crate in place (`cargo rustc --release --lib
+-- --print cfg`), so its features and its build script's `cargo:rustc-cfg`
+output decide the `#[cfg]` predicates. Two mutually exclusive
+`#[cfg(feature = ...)]` variants of one `#[julia] fn` then collapse to the one
+that exists, and its return type is registered instead of being suppressed as
+ambiguous (#279).
+
+When the probe comes back empty — cargo unavailable, a crate Cargo will not
+probe — the scan falls back to the lenient one, which decides only target
+predicates. That is the fail-safe: an ambiguous function keeps its symbol
+mapping and loses only its return-type hint, so the call falls through to
+inference or an explicit `::T` rather than to the wrong ABI.
+
+`nothing` when the scan itself fails; the caller then registers the library
+with no mappings rather than losing the rebuilt library.
+"""
+function _scan_crate_signatures(crate_path::String)
+    return try
+        # A reload re-probes rather than trusting the memo: a `build.rs` can
+        # change its `cargo::rustc-cfg` output without any input RustCall is
+        # able to enumerate (#255).
+        cfg_text = _crate_build_cfg_text(crate_path; memo = false)
+        if isempty(cfg_text)
+            @debug "Hot reload: no build cfg for $(crate_path); scanning leniently"
+            scan_crate(crate_path).julia_functions
+        else
+            scan_crate(crate_path; cfg = :cargo, cfg_text).julia_functions
+        end
+    catch error
+        @warn "Hot reload: could not rescan $(crate_path) for exported symbols" error
+        nothing
+    end
+end
+
+"""
     _reload_library_locked(state::HotReloadState) -> Bool
 
 Internal implementation of reload_library, called while holding the
 per-library lock.
+
+# Rebuild first, swap last (#255)
+
+Everything that can fail — the rescan, `cargo build`, the `dlopen` — completes
+**before** the previous library is touched. A failed rebuild therefore leaves
+the old library loaded, with its function-pointer cache, its symbol mappings,
+its monomorphizations and `CURRENT_LIB` intact, instead of emptying the registry
+and leaving the user with no library at all. The swap itself is one
+`load_artifact!` under `REGISTRY_LOCK`, which retires the old artifact (so
+objects it produced go inert), purges its rows and `dlclose`s the old handle
+after the lock.
+
+# Rescan before the build
+
+The scan describes the sources; the build compiles them. Scanning *after* the
+build would describe sources that may have changed in between and hand the
+freshly built library another build's symbol table. So the sources are
+fingerprinted by **content** — the scan's own inputs, the Rust sources and the
+manifest — scanned, built, and fingerprinted again: if the digest
+moved, the scan is discarded rather than trusted, and the library is registered
+with no symbol mappings (a `#[julia]` function is then reachable only by its
+exported symbol until the next reload). A `(mtime, size)` stamp would miss a
+same-size edit with a restored mtime, which is exactly what an editor or a
+`git checkout` produces.
 """
 function _reload_library_locked(state::HotReloadState)
+    # A save that lands *during* the build is not lost. Nothing is subscribed
+    # while `reload_library` runs — the watch task is inside this call, and a
+    # manual `trigger_reload` has no subscription at all — so the event that
+    # would have woken the watcher never arrives, and the library would keep
+    # serving the previous edit until something else happened to change. The
+    # fingerprint taken before the build and compared after it already detects
+    # exactly that; now it also causes another pass rather than only
+    # invalidating the scan.
+    #
+    # Bounded, because "someone is typing" would otherwise be an unbounded
+    # loop: after `MAX_RELOAD_CHASES` the last build stands and the watcher —
+    # subscribed again by then — picks up whatever is still newer.
+    for attempt in 1:MAX_RELOAD_CHASES
+        ok, chase = _reload_library_once(state)
+        ok || return false
+        chase || return true
+        @info "Hot reload: $(state.crate_path) changed during the rebuild; " *
+              "reloading again ($(attempt)/$(MAX_RELOAD_CHASES))"
+    end
+    return true
+end
+
+"""
+    MAX_RELOAD_CHASES
+
+How many times a reload may immediately follow itself because the sources
+changed while it was building.
+
+Three is enough for "save, notice a typo, save again" and small enough that a
+file being written continuously costs three builds, not a livelock.
+"""
+const MAX_RELOAD_CHASES = 3
+
+# One reload transaction. Returns `(succeeded, sources_changed_during_build)`.
+function _reload_library_once(state::HotReloadState)
     @info "Hot reload: Rebuilding $(state.lib_name)..."
 
     try
-        # Unload the old library and clear stale monomorphized functions
-        # atomically under REGISTRY_LOCK to prevent other threads from
-        # observing an inconsistent state between check and unload.
-        lock(REGISTRY_LOCK) do
-            if haskey(RUST_LIBRARIES, state.lib_name)
-                lib_handle, _ = RUST_LIBRARIES[state.lib_name]
-                delete!(RUST_LIBRARIES, state.lib_name)
-                # The rebuilt library re-registers its own mappings; a stale
-                # entry would redirect a lookup to the unloaded handle (#279).
-                clear_library_metadata!(state.lib_name)
-                if CURRENT_LIB[] == state.lib_name
-                    CURRENT_LIB[] = ""
-                end
-                Libdl.dlclose(lib_handle)
-            end
+        # Fingerprint the sources by content, then scan them. Scanning runs
+        # the extractor and must not hold REGISTRY_LOCK.
+        before = _source_fingerprint(state.crate_path)
+        signatures = _scan_crate_signatures(state.crate_path)
 
-            # Clear stale monomorphized function pointers that belonged to the
-            # unloaded library to prevent use-after-free (#73)
-            stale_keys = [k for (k, v) in MONOMORPHIZED_FUNCTIONS
-                          if v.lib_name == state.lib_name]
-            for k in stale_keys
+        # Rebuild. No registry lock is held here — this takes significant
+        # time and must not block other library operations — and the old
+        # library stays loaded and usable throughout.
+        built = rebuild_crate(state.crate_path)
+
+        # Open a *copy* under a fresh name, never the file Cargo just wrote
+        # (`loadable_library_copy`).
+        new_lib_path = loadable_library_copy(built)
+        state.generation = RELOAD_GENERATION[]
+
+        # Did the sources change under the scan? Then the manifest is not
+        # evidence about what was just built — and the build is not evidence
+        # about what is on disk, which is what `chase` says.
+        after = _source_fingerprint(state.crate_path)
+        chase = !isempty(before) && before != after
+        if signatures !== nothing && chase
+            @warn "Hot reload: $(state.crate_path) changed while it was being rebuilt; " *
+                  "registering the new library without symbol mappings"
+            signatures = nothing
+        end
+
+        symbols, return_types = signatures === nothing ? ((), ()) :
+                                _manifest_registry_entries(signatures)
+
+        # The swap. The previous image is retired, not closed: a call that
+        # started before the reload may still be running inside it, and there
+        # is no per-call reader pin that would make closing safe
+        # (`RETIRED_HANDLES`). A failure anywhere above never reaches here.
+        state.lib_path = new_lib_path
+        load_artifact!(hot_reload_policy(), new_lib_path;
+                       lib_name = state.lib_name, symbols, return_types)
+        # Monomorphizations resolved against the previous image hold raw
+        # pointers into it (#73); they belong to the replaced artifact, not to
+        # the new one.
+        lock(REGISTRY_LOCK) do
+            stale = [k for (k, v) in MONOMORPHIZED_FUNCTIONS if v.lib_name == state.lib_name]
+            for k in stale
                 delete!(MONOMORPHIZED_FUNCTIONS, k)
             end
-            if !isempty(stale_keys)
-                @debug "Hot reload: Cleared $(length(stale_keys)) stale monomorphized functions"
-            end
+            isempty(stale) ||
+                @debug "Hot reload: Cleared $(length(stale)) stale monomorphized functions"
         end
 
-        # Rebuild the library (outside REGISTRY_LOCK — this takes significant
-        # time and must not block other library operations).
-        new_lib_path = rebuild_crate(state.crate_path)
-
-        # Update state
-        state.lib_path = new_lib_path
-
-        # The rebuilt crate decides its own exported symbols, so the mappings
-        # the unload dropped are rebuilt from a fresh scan (#279). Scanning
-        # runs the extractor, so it happens before the lock is taken; a scan
-        # failure must not lose the rebuilt library, only its name-to-symbol
-        # mappings (a `#[julia]` function is then unreachable by its Rust name
-        # until the next successful reload).
-        signatures = try
-            scan_crate(state.crate_path).julia_functions
-        catch error
-            @warn "Hot reload: could not rescan $(state.crate_path) for exported symbols" error
-            nothing
-        end
-
-        # Re-register the library.  Check that nothing else has registered the
-        # same name during the rebuild window.
-        lib_handle = Libdl.dlopen(new_lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-        lock(REGISTRY_LOCK) do
-            if haskey(RUST_LIBRARIES, state.lib_name)
-                @warn "Hot reload: Library $(state.lib_name) was re-registered during rebuild; overwriting"
-            end
-            # Mappings first, handle last: the two must never be observable
-            # apart (#279).
-            signatures === nothing ||
-                _register_exported_symbols!(signatures, state.lib_name)
-            RUST_LIBRARIES[state.lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-        end
-
+        state.last_failure = ""
         @info "Hot reload: Successfully reloaded $(state.lib_name)"
 
         # Call the callback if provided
@@ -241,10 +390,22 @@ function _reload_library_locked(state::HotReloadState)
             end
         end
 
-        return true
+        return (true, chase)
 
     catch e
-        @error "Hot reload: Failed to rebuild $(state.lib_name)" exception=e
+        # Report each distinct failure once. The dev loop is "save, see the
+        # error, fix it, save again"; a watcher that reprints the same compile
+        # error on every tick buries the one that matters. The previous library
+        # is still loaded and still works — that is the point of the ordering
+        # above — so this is informational, not fatal (#255).
+        fingerprint = sprint(showerror, e)
+        if fingerprint != state.last_failure
+            state.last_failure = fingerprint
+            @error "Hot reload: Failed to rebuild $(state.lib_name); " *
+                   "the previously loaded library is still in use" exception=e
+        else
+            @debug "Hot reload: same failure as last time" lib_name=state.lib_name
+        end
 
         # Call the callback with failure
         if state.rebuild_callback !== nothing
@@ -255,7 +416,7 @@ function _reload_library_locked(state::HotReloadState)
             end
         end
 
-        return false
+        return (false, false)
     end
 end
 
@@ -323,7 +484,8 @@ end
 
 Start a background task that watches for file changes.
 """
-function start_watch_task(state::HotReloadState; interval::Float64=1.0)
+function start_watch_task(state::HotReloadState; interval::Float64=1.0,
+                          poll::Bool=false)
     if state.watch_task !== nothing && !istaskdone(state.watch_task)
         @warn "Watch task already running for $(state.lib_name)"
         return
@@ -334,19 +496,263 @@ function start_watch_task(state::HotReloadState; interval::Float64=1.0)
 
         while state.enabled && HOT_RELOAD_ENABLED[]
             try
-                if check_for_changes(state)
-                    reload_library(state)
+                changed = if poll
+                    sleep(interval)
+                    check_for_changes(state)
+                else
+                    _await_source_change(state, interval)
                 end
+                changed || continue
+                # Debounce. An editor save is rarely one event — write to a
+                # temporary file, rename, touch — and a formatter or a
+                # multi-file refactor produces a burst. Waiting out the burst
+                # turns "two saves within 200 ms" into one rebuild instead of
+                # two, the second of which would race the first (#255).
+                _drain_source_changes(state, HOT_RELOAD_DEBOUNCE_SECONDS[])
+                reload_library(state)
             catch e
+                e isa InterruptException && rethrow()
                 @error "Hot reload watch error: $e"
             end
-
-            sleep(interval)
         end
 
         @info "Hot reload: Stopped watching $(state.lib_name)"
     end
 end
+
+"""
+    SOURCE_SCANS
+
+How many times a watcher has scanned a crate's sources (`check_for_changes`),
+process-wide.
+
+Diagnostic, and the way the "no polling loop when idle" criterion of #255 is
+actually *checked*: an idle watcher must leave this number alone, however long
+it waits. Before the timeout check in `_await_source_change`, `watch_folder`
+returning "nothing happened" was treated as an event and every interval cost a
+`stat` of every source file.
+"""
+const SOURCE_SCANS = Threads.Atomic{Int}(0)
+
+"""
+    source_scan_count() -> Int
+
+The value of `SOURCE_SCANS`.
+"""
+source_scan_count() = SOURCE_SCANS[]
+
+"""
+    HOT_RELOAD_DEBOUNCE_SECONDS
+
+How long to keep coalescing file events after the first one before rebuilding.
+
+100 ms is long enough to swallow an editor's write-rename-touch sequence and a
+multi-file save, and short enough to be invisible in a dev loop. The issue asks
+for two saves within 200 ms to produce one reload, which this satisfies with
+room to spare.
+"""
+const HOT_RELOAD_DEBOUNCE_SECONDS = Ref(0.1)
+
+"""
+    _await_source_change(state, timeout) -> Bool
+
+Block until a `.rs` file under the crate changes, or `timeout` elapses.
+
+This is the difference between an idle watcher costing nothing and one waking
+up every second to `stat` every source file (#255). `FileWatching.watch_folder`
+blocks in the kernel — inotify on Linux, kqueue on the BSDs, ReadDirectoryChanges
+on Windows — so an idle watch task consumes no CPU at all.
+
+The timeout is what lets the task notice `state.enabled` going false, and is
+also the polling interval of the fallback: on a filesystem where the kernel
+notification does not work (NFS, some container mounts), `poll = true` on
+`start_watch_task` restores the old `stat`-based loop.
+
+Returns whether something actually changed — a rename into place and a
+temporary file both produce events, and only the mtime check decides.
+
+# Every directory, not just `src/`
+
+`watch_folder` is **not recursive** — inotify watches one directory — while
+`find_rust_source_files` tracks the whole tree, `src/foo/mod.rs` included. When
+a timeout still triggered a scan the difference was invisible: the poll caught
+what the watch missed. Now that a timeout does nothing, watching only `src/`
+would mean an edit to a nested module never reloads on Linux at all. So every
+directory that contains a tracked source is watched, and the set is recomputed
+each time — a reload can add files, and new files can be in new directories.
+"""
+function _await_source_change(state::HotReloadState, timeout::Real)
+    dirs = _watched_directories(state)
+    isempty(dirs) && return (sleep(timeout); check_for_changes(state))
+    fired = _wait_for_file_event(dirs, timeout)
+    # A timeout is **not** an event, and must not be answered with a scan.
+    # Returning here is the difference between an event-driven watch and a
+    # `stat` of every source file every `interval` — which is the polling loop
+    # #255 exists to remove, and which an idle project would run forever.
+    fired === false && return false
+    return check_for_changes(state)
+end
+
+"""
+    _watched_directories(state) -> Vector{String}
+
+Every directory holding a source this state tracks, `src/` included even when
+it is empty. Recomputed per wait: a reload can add files, and a new file can be
+in a directory nothing was watching.
+"""
+function _watched_directories(state::HotReloadState)
+    dirs = Set{String}()
+    src_dir = joinpath(state.crate_path, "src")
+    isdir(src_dir) && push!(dirs, src_dir)
+    for file in state.source_files
+        parent = dirname(file)
+        isdir(parent) && push!(dirs, parent)
+    end
+    return sort!(collect(dirs))
+end
+
+"""
+    _wait_for_file_event(dirs, timeout) -> Union{Bool, Nothing}
+
+Wait for a filesystem event in **any** of `dirs`. `true` when one fired,
+`false` when the wait expired everywhere, `nothing` when the directories cannot
+be watched at all (the caller then treats it as a poll and scans).
+
+One task per directory, first one wins. The losers are released with
+`unwatch_folder` rather than left holding a kernel watch until their own
+timeout: a watch task that reloads every few seconds would otherwise
+accumulate them.
+"""
+function _wait_for_file_event(dirs::Vector{String}, timeout::Real)
+    if length(dirs) == 1
+        event = try
+            FileWatching.watch_folder(dirs[1], timeout)
+        catch e
+            e isa InterruptException && rethrow()
+            # A filesystem the kernel will not watch: fall back to a poll
+            # rather than spinning on the error.
+            @debug "Hot reload: cannot watch $(dirs[1]); polling instead" exception = e
+            sleep(timeout)
+            return nothing
+        end
+        return !_watch_timed_out(event)
+    end
+
+    results = Channel{Union{Bool, Nothing}}(length(dirs))
+    tasks = map(dirs) do dir
+        Threads.@spawn begin
+            answer = try
+                event = FileWatching.watch_folder(dir, timeout)
+                !_watch_timed_out(event)
+            catch e
+                e isa InterruptException && rethrow()
+                @debug "Hot reload: cannot watch $(dir)" exception = e
+                nothing
+            end
+            put!(results, answer)
+        end
+    end
+
+    fired = false
+    unwatchable = 0
+    for _ in eachindex(dirs)
+        answer = take!(results)
+        answer === nothing && (unwatchable += 1; continue)
+        if answer
+            fired = true
+            break
+        end
+    end
+    # Release the rest; each `watch_folder` returns as its watch is dropped.
+    for dir in dirs
+        try
+            FileWatching.unwatch_folder(dir)
+        catch e
+            @debug "Hot reload: could not unwatch $(dir)" exception = e
+        end
+    end
+    for task in tasks
+        try
+            wait(task)
+        catch e
+            @debug "Hot reload: watch task failed" exception = e
+        end
+    end
+    close(results)
+    fired && return true
+    # Nothing could be watched at all: the caller should poll instead of
+    # believing that nothing changed.
+    unwatchable == length(dirs) && return nothing
+    return false
+end
+
+# `watch_folder` answers with `path => FileEvent`; the event says whether it
+# fired or the wait expired. `nothing` is the poll fallback above, which does
+# want a scan.
+function _watch_timed_out(event)
+    event === nothing && return false
+    return try
+        fired = last(event)
+        hasproperty(fired, :timedout) ? fired.timedout : false
+    catch
+        false
+    end
+end
+
+"""
+    _drain_source_changes(state, window)
+
+Keep absorbing file events for `window` seconds, so one burst of saves becomes
+one rebuild.
+
+An event seen inside the window restarts it, which is what makes a "save every
+file in the project" refactor rebuild once at the end rather than once per
+file — but only up to `MAX_DEBOUNCE_WINDOWS` extensions. Without that cap a
+directory that produces events continuously (a build writing into it, a watch
+API that hands back an already-queued event immediately) would keep the
+debounce open forever and the reload would never happen.
+
+Whatever arrives is folded into the mtime table, so the wait that follows
+starts from a clean slate.
+"""
+function _drain_source_changes(state::HotReloadState, window::Real)
+    window <= 0 && return nothing
+    hard_deadline = time() + window * MAX_DEBOUNCE_WINDOWS
+    deadline = time() + window
+    while time() < deadline && time() < hard_deadline
+        remaining = min(deadline, hard_deadline) - time()
+        remaining <= 0 && break
+        dirs = _watched_directories(state)
+        # The wait expiring is the *end* of the burst, not another event:
+        # treating it as one restarted the window every time, so a single save
+        # waited out `MAX_DEBOUNCE_WINDOWS` instead of one window (#255).
+        saw_event = false
+        if isempty(dirs)
+            sleep(min(remaining, 0.01))
+        else
+            answer = _wait_for_file_event(dirs, remaining)
+            answer === nothing && sleep(min(remaining, 0.01))
+            saw_event = answer === true
+        end
+        check_for_changes(state)
+        saw_event && (deadline = time() + window)
+    end
+    return nothing
+end
+
+"""
+    MAX_DEBOUNCE_WINDOWS
+
+How many times a burst of file events may extend the debounce window before
+the rebuild happens anyway.
+
+The cap is what keeps "coalesce a burst" from becoming "never rebuild": some
+platforms hand back an already-queued directory event immediately, so an
+uncapped extension would spin. Ten windows is a tenth of a second times ten —
+long enough for any editor's save sequence, short enough that a pathological
+event source costs one second, not the session.
+"""
+const MAX_DEBOUNCE_WINDOWS = 10
 
 """
     stop_watch_task(state::HotReloadState)
@@ -412,7 +818,8 @@ disable_hot_reload("my_crate")
 """
 function enable_hot_reload(lib_name::String, crate_path::String;
     interval::Float64 = 1.0,
-    callback::Union{Function, Nothing} = nothing
+    callback::Union{Function, Nothing} = nothing,
+    poll::Bool = false
 )
     # Validate inputs
     if !isdir(crate_path)
@@ -469,7 +876,7 @@ function enable_hot_reload(lib_name::String, crate_path::String;
     end
 
     # Start watching
-    start_watch_task(state, interval=interval)
+    start_watch_task(state, interval=interval, poll=poll)
 
     return state
 end

@@ -629,6 +629,40 @@ The name of the symbol that releases an `:owned_by_rust` string produced by
 ffi_free_symbol(owner::AbstractString) = string(owner, "_free_rust_string")
 
 """
+    ffi_panic_symbol(symbol::AbstractString) -> String
+
+The panic-channel reader a generated wrapper exports next to itself:
+`<wrapper symbol>_take_panic`, matching
+`rustcall_core::codegen::panic_symbol` (#244).
+
+`(out, cap) -> len` semantics: the length of the pending panic message, or 0
+when the wrapper did not panic. The message is copied into `out` and the slot
+cleared **only** when it fits in `cap`, so a caller that guessed too small a
+buffer calls again with the length it was told. Nothing crosses the boundary
+that has to be freed.
+
+Derived from the wrapper symbol rather than carried in the manifest on
+purpose: the caller already resolved the symbol to make the call, so it can
+resolve the channel without a schema change. A library that predates #244
+simply has no such symbol, and the lookup falls back to "no channel".
+"""
+ffi_panic_symbol(symbol::AbstractString) = string(symbol, "_take_panic")
+
+"""
+    ffi_struct_free_symbol(struct_name::AbstractString) -> String
+
+The destructor of a `#[julia]` struct: `<Struct>_free`, matching what
+`deps/rustcall_core/src/codegen.rs` emits (`crate_free_fn` and its inline
+twin).
+
+One place, because four call sites used to build this string by hand
+(`src/structs.jl` twice, `src/crate_bindings.jl` for the in-memory module and
+for the emitted template) and a finalizer that calls the wrong symbol is a
+leak at best (#249, #277 Phase B4).
+"""
+ffi_struct_free_symbol(struct_name::AbstractString) = string(struct_name, "_free")
+
+"""
 Prefix of every exported symbol that stands in for a user-written Rust item.
 
 `#[julia]` is additive (#279): the annotated item keeps its name and the

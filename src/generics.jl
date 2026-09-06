@@ -284,28 +284,25 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         wrapped_code = wrap_rust_code(specialized_code)
         lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
 
-        # Load the library
-        lib_handle = Libdl.dlopen(lib_path, Libdl.RTLD_GLOBAL | Libdl.RTLD_NOW)
-        if lib_handle == C_NULL
-            error("Failed to load monomorphized function library: $lib_path")
-        end
-
-        # Register the library under its artifact identity. `basename(lib_path)`
-        # used to be the key, but `_unique_source_name` returns the constant
-        # "rust_code" outside debug mode, so *every* instantiation collided on
-        # one RUST_LIBRARIES entry (the `:lib_basename` divergence recorded in
-        # src/loadpolicy.jl).
+        # Load and register the instantiation under its artifact identity.
+        # `basename(lib_path)` used to be the key, but `_unique_source_name`
+        # returns the constant "rust_code" outside debug mode, so *every*
+        # instantiation collided on one RUST_LIBRARIES entry (the
+        # `:lib_basename` divergence recorded in src/loadpolicy.jl).
+        #
+        # `generics_policy()` registers `:insert_only`: two tasks racing on the
+        # same instantiation both compile and both `dlopen`, and the loser's
+        # duplicate handle is closed by `load_artifact!` rather than replacing
+        # a live entry and discarding its function-pointer cache. The exported
+        # symbol is the additive wrapper the extractor emitted next to the
+        # instantiation, never the instantiation's own name (#279); resolving
+        # it eagerly puts it in the winner's cache inside the same transaction.
         lib_name = "rust_generic_$(artifact_short_id(cache_key))"
-        lock(REGISTRY_LOCK) do
-            if !haskey(RUST_LIBRARIES, lib_name)
-                RUST_LIBRARIES[lib_name] = (lib_handle, Dict{String, Ptr{Cvoid}}())
-            end
-        end
-
-        # The exported symbol is the additive wrapper the extractor emitted
-        # next to the instantiation, never the instantiation's own name (#279).
         specialized_symbol = specialized.symbol
-        func_ptr = Libdl.dlsym(lib_handle, specialized_symbol; throw_error=false)
+        artifact = load_artifact!(generics_policy(), lib_path;
+                                  lib_name, eager = (specialized_symbol,))
+
+        func_ptr = Libdl.dlsym(artifact.handle, specialized_symbol; throw_error=false)
         if func_ptr === nothing || func_ptr == C_NULL
             error("""
             Function '$(specialized_symbol)' not found in library '$lib_path'.
@@ -313,11 +310,6 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             Specialized code was:
             $specialized_code
             """)
-        end
-
-        lock(REGISTRY_LOCK) do
-            _, func_cache = RUST_LIBRARIES[lib_name]
-            func_cache[specialized_symbol] = func_ptr
         end
 
         # Return and argument types come from the manifest of the specialized
@@ -337,7 +329,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             string_return = :owned
             # The string helpers keep the instantiation's own name (#279).
             free_name = ffi_free_symbol(specialized.name)
-            free_ptr = Libdl.dlsym(lib_handle, free_name; throw_error=false)
+            free_ptr = Libdl.dlsym(artifact.handle, free_name; throw_error=false)
             if free_ptr === nothing || free_ptr == C_NULL
                 error("Function '$free_name' not found in library '$lib_path'")
             end
@@ -357,9 +349,19 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             String
         end
 
-        # Create FunctionInfo
+        # Create FunctionInfo. It is a *snapshot*: it is cached and used long
+        # after this lookup, so everything the call needs — the panic channel
+        # included — is resolved here, against the handle the pointer came
+        # from. Looking the channel up later by library name could find no
+        # library (an unload between the cache hit and the call) and answer
+        # `C_NULL`, while `func_ptr` still enters the mapped retired image; a
+        # panic would then be read as a successful zero (#244, #277).
+        channel = Libdl.dlsym(artifact.handle, ffi_panic_symbol(specialized_symbol);
+                              throw_error = false)
+        channel = (channel === nothing) ? C_NULL : channel
         info = FunctionInfo(specialized_symbol, lib_name, ret_type, arg_types, func_ptr,
-                            specialized.arg_abis, string_return, free_ptr)
+                            specialized.arg_abis, string_return, free_ptr,
+                            channel, artifact.handle, artifact.generation)
 
         # Cache the monomorphized function
         MONOMORPHIZED_FUNCTIONS[cache_key] = info
@@ -521,9 +523,15 @@ of the owned or borrowed buffer, exactly as the generated wrappers of
 non-generic `#[julia]` functions do.
 """
 function _call_monomorphized(info::FunctionInfo, args...)
+    # The channel was resolved when `info` was built, against the same handle
+    # `func_ptr` came from — so it is the channel of the wrapper that is about
+    # to run, whatever has happened to the library's *name* since (#244, #277).
+    channel = info.channel
     if info.string_return === :none && !any(_is_string_abi, info.arg_abis)
-        return call_rust_function(info.func_ptr, info.return_type,
-                                  _monomorphized_call_args(info, args)...)
+        return guard_rust_panic_ptr(
+            call_rust_function(info.func_ptr, info.return_type,
+                               _monomorphized_call_args(info, args)...),
+            channel, info.name)
     end
     if length(info.arg_abis) != length(args)
         error("Function '$(info.name)' takes $(length(info.arg_abis)) argument(s) but $(length(args)) were given")
@@ -542,14 +550,18 @@ function _call_monomorphized(info::FunctionInfo, args...)
             push!(call_args, _monomorphized_arg(info, i, arg))
         end
     end
+    # A specialization is a wrapper like any other, so its panic channel is
+    # read after the call (#244). `info.name` is the exported symbol of the
+    # instantiation, which is what the channel is named after.
     GC.@preserve strings begin
-        if info.string_return === :owned
+        result = if info.string_return === :owned
             _call_rust_owned_string_ptr(info.func_ptr, info.free_ptr, call_args...)
         elseif info.string_return === :borrowed
             _call_rust_borrowed_string_ptr(info.func_ptr, call_args...)
         else
             call_rust_function(info.func_ptr, info.return_type, call_args...)
         end
+        guard_rust_panic_ptr(result, channel, info.name)
     end
 end
 

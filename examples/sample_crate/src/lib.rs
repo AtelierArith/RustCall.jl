@@ -479,3 +479,81 @@ fn shadow_first_char(func_ptr: String, c_option: u32) -> Option<u32> {
 fn shadow_double(func_ptr: i32) -> i32 {
     func_ptr * 2
 }
+
+// Panic boundary coverage (#244). Every generated `extern "C"` wrapper runs the
+// user body inside `catch_unwind` and records the message in its own channel,
+// so calling these from Julia raises `RustCall.RustPanicError` instead of
+// aborting the process.
+
+/// Panics with a formatted message for a negative argument.
+#[julia]
+fn panicky(a: i32) -> i32 {
+    if a < 0 {
+        panic!("panicky called with a negative value: {}", a);
+    }
+    a * 2
+}
+
+/// Panics through a failed `assert!`.
+#[julia]
+fn panicky_assert(n: i32) -> i32 {
+    assert!(n > 0, "n must be positive, got {}", n);
+    n
+}
+
+/// Panics through `Option::unwrap` on `None`.
+#[julia]
+fn panicky_unwrap(present: bool) -> i32 {
+    let value: Option<i32> = if present { Some(7) } else { None };
+    value.unwrap()
+}
+
+/// Panics through an out-of-bounds index.
+#[julia]
+fn panicky_index(i: usize) -> i32 {
+    let values = vec![10i32, 20, 30];
+    values[i]
+}
+
+/// A `String`-returning function that panics: the wrapper's sentinel is an
+/// empty buffer, so the channel has to be read before the buffer is decoded.
+#[julia]
+fn panicky_string(a: i32) -> String {
+    if a < 0 {
+        panic!("panicky_string refuses {}", a);
+    }
+    format!("value {}", a)
+}
+
+/// A `Result`-returning function that panics rather than returning `Err`.
+#[julia]
+fn panicky_result(a: i32) -> Result<i32, i32> {
+    if a < 0 {
+        panic!("panicky_result refuses {}", a);
+    }
+    Ok(a)
+}
+
+/// A struct whose method panics, to cover the method wrapper.
+#[julia]
+pub struct PanicCounter {
+    pub value: i32,
+}
+
+#[julia]
+impl PanicCounter {
+    #[julia]
+    pub fn new(value: i32) -> Self {
+        PanicCounter { value }
+    }
+
+    #[julia]
+    pub fn checked(&self) -> i32 {
+        assert!(
+            self.value > 0,
+            "PanicCounter is not positive: {}",
+            self.value
+        );
+        self.value
+    }
+}

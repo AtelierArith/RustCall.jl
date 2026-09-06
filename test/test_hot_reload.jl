@@ -225,8 +225,12 @@ end
             end
 
             # Whatever the enable path left behind, a reload must end with the
-            # mappings in place next to the new handle.
-            RustCall.trigger_reload(lib_name)
+            # mappings in place next to the new handle. `trigger_reload`
+            # returns only after the swap has committed, so its answer is what
+            # says the assertions below are allowed to run: a `false` here
+            # means the transaction rolled back and the *old* registration is
+            # still installed, which is a different (also legal) state.
+            @test RustCall.trigger_reload(lib_name) == true
 
             # The stale entries are gone.
             @test RustCall.exported_symbol(lib_name, "ghost_fn") == "ghost_fn"
@@ -234,9 +238,19 @@ end
             # ... and the surviving function's hint was rebuilt, not kept.
             @test RustCall.get_function_return_type(lib_name, sig.name) !== Bool
 
-            @test RustCall.exported_symbol(lib_name, sig.name) == sig.symbol
-            @test haskey(RustCall.RUST_LIBRARIES, lib_name)
-            ptr = RustCall.get_function_pointer(lib_name, sig.name)
+            # Handle, symbol mapping and function pointer are read under ONE
+            # lookup: they are published by the same transaction, so a reader
+            # must never be able to see the new handle without the mappings
+            # that belong to it. Reading them separately is what turned a
+            # missed publication into an intermittent failure under four
+            # threads (#255, #277).
+            symbol, ptr, present = lock(RustCall.REGISTRY_LOCK) do
+                (RustCall.exported_symbol(lib_name, sig.name),
+                 RustCall.get_function_pointer(lib_name, sig.name),
+                 haskey(RustCall.RUST_LIBRARIES, lib_name))
+            end
+            @test present
+            @test symbol == sig.symbol
             @test ptr != C_NULL
         finally
             RustCall.disable_all_hot_reload()

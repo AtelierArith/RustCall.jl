@@ -8,6 +8,201 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **One load/registration path** ([#277](https://github.com/AtelierArith/RustCall.jl/issues/277),
+  Phase B). Twelve `dlopen` sites with four different flag sets and eight
+  open-coded `RUST_LIBRARIES[...] = ...` writes became one:
+  `RustCall.load_artifact!` (`src/loadpolicy.jl`), with `unload_artifact!` and
+  `alias_artifact!` as the reverse and the aliasing operations.
+  `scripts/lint_load_path.sh` keeps it that way in CI. Five user-visible
+  consequences:
+
+  - **Every artifact is `RTLD_LOCAL` now**
+    ([#250](https://github.com/AtelierArith/RustCall.jl/issues/250)). A
+    compiled block no longer publishes its symbols into the process-global
+    namespace, so two `rust"""` blocks that both export `f` stop shadowing one
+    another and which one a call reaches no longer depends on load order. It
+    also stops depending on whether the block happened to declare
+    `// cargo-deps:`, which used to flip the same construct from `RTLD_LOCAL`
+    to `RTLD_GLOBAL`. Calling across blocks does not need global symbols —
+    `@rust f(...)` searches the loaded libraries by handle. Code that relied
+    on the old behaviour can set `RUSTCALL_DLOPEN_GLOBAL=1` for one minor
+    release, with a warning; the variable will be removed. On Windows nothing
+    changes: `LoadLibrary` has no LOCAL/GLOBAL distinction.
+
+  - **A Rust panic is now a catchable Julia exception**
+    ([#244](https://github.com/AtelierArith/RustCall.jl/issues/244)). A
+    `panic!`, a failed `assert!`, an `unwrap()` on `None` or an out-of-bounds
+    index inside a `#[julia]` function raises `RustCall.RustPanicError` with
+    the panic message, and the Julia session survives — it used to abort the
+    process. Every generated `extern "C"` wrapper runs the body inside
+    `catch_unwind` and exports a `<symbol>_take_panic` channel Julia reads
+    after each call.
+
+    **This changes what RustCall builds, so the first run after upgrading
+    recompiles everything.** `-C panic=abort` is gone from the direct-`rustc`
+    path and `panic = "unwind"` is pinned in every `Cargo.toml` RustCall
+    generates and in `CARGO_PROFILE_<PROFILE>_PANIC` in the environment it
+    passes to Cargo — `catch_unwind` can only catch a panic that unwinds, and
+    an inherited `CARGO_PROFILE_RELEASE_PANIC=abort` would otherwise silently
+    disable the boundary. Two cases still abort, both visible from the source
+    and documented in `docs/src/panics.md`: a raw `#[no_mangle] extern "C" fn`
+    you wrote yourself (RustCall generates no wrapper for it, so there is no
+    boundary — add `#[julia]`), and a `@rust_crate` crate whose own profile
+    pins `panic = "abort"`.
+
+  - **Finalizers of inline `#[julia]` structs now free the Rust allocation**
+    ([#249](https://github.com/AtelierArith/RustCall.jl/issues/249)). They
+    used to leak — the free was disabled with a "diagnose segfault" comment —
+    while the same construct from a `@rust_crate` crate freed. If your code
+    depended on an inline struct's Rust object outliving its Julia wrapper,
+    keep a reference to the wrapper or use `GC.@preserve`. The finalizer is
+    safe to run by construction: it captures the destructor pointer and the
+    library's liveness flag at construction time, so it takes no lock,
+    resolves no symbol and logs nothing; a failure is counted
+    (`RustCall.finalizer_failure_count()`). A method or field access on a
+    finalized object now raises instead of dereferencing `C_NULL`, and an
+    object whose library was unloaded goes inert rather than calling into a
+    closed image.
+
+  - **Libraries are retired, not closed.** A hot reload replacing a library
+    and `unload_library` dropping one both remove everything that *reaches*
+    the library and leave the image mapped. A call that started a moment
+    earlier may still be inside it, and closing it there is a
+    use-after-`dlclose`; RustCall has no per-call reader pin, and adding one
+    would put two atomics on every FFI call. The image costs a few hundred
+    kilobytes until you say it is safe to reclaim:
+    `unload_library(name; close = true)` or
+    `unload_all_libraries(; close = true)`. `RustCall.retired_handles()` lists
+    what is waiting.
+
+    While an image is retired its objects keep working — a finalizer holds its
+    own image's destructor and that image is still mapped, so an object
+    allocated before a reload still frees through the code that allocated it.
+    Closing is the moment objects of that image become inert (they leak rather
+    than jumping into unmapped code), so `close = true` says both "no call is
+    in flight" and "I accept that surviving objects will not be freed".
+
+  - **A failed hot reload keeps the previous library**
+    ([#255](https://github.com/AtelierArith/RustCall.jl/issues/255)). The
+    rebuild, the rescan and the `dlopen` all complete before anything is
+    swapped, so saving a file with a compile error leaves the loaded library
+    working instead of emptying the registry; the error is reported once per
+    distinct failure rather than on every watch tick. Each reload opens its own
+    `<lib>.<generation>.<ext>` copy, which is what makes reloading a *loaded*
+    library work on Windows. The watcher is event-driven
+    (`FileWatching.watch_folder`) with a 100 ms debounce instead of an mtime
+    poll, so an idle watch costs nothing and a burst of saves is one rebuild;
+    `enable_hot_reload(...; poll = true)` restores polling for filesystems the
+    kernel will not watch.
+
+  - **`unload_library` now purges everything a library owns.** Its
+    `RUST_LIBRARIES` entry and pointer cache, its symbol mappings and
+    return-type hints, its `FUNCTION_REGISTRY` rows, the monomorphizations
+    whose pointers point into it, its `@irust` memos and its panic channels —
+    and it flips the library's liveness flag, retiring objects it produced. An
+    `@irust` snippet no longer leaves a stale memo behind. `@rust_crate`
+    libraries are visible to it for the first time: the generated module
+    publishes its handle through the loader instead of keeping it only in a
+    module-local `Ref`.
+
+### Changed
+- **A call cannot straddle a hot reload.** Every FFI entry point resolves what
+  it needs — function pointer, panic channel, owned-`String` release function,
+  struct destructor, liveness flag and **return ABI** — in one locked step and
+  then uses only that snapshot, so a library replaced mid-call can no longer
+  have the call enter the retired image while the `free`, the panic channel or
+  the return type belongs to its replacement. In practice this fixes a reload
+  racing a call that returns a `String` (the buffer was released through the
+  wrong image's allocator), a reload racing a struct construction (the object
+  could capture one generation's destructor and another's liveness flag), and a
+  reload racing an untyped `@rust` call (the result of one generation could be
+  read with another's return type — a scalar as a struct). A cached record is a
+  snapshot too: a monomorphized generic's `FunctionInfo` carries the panic
+  channel and the image it was built against, so a panic is still raised after
+  its library has been unloaded, rather than returning the wrapper's zero
+  sentinel as a result. `scripts/lint_generation_snapshot.sh` fails CI if a new
+  entry point resolves a piece on its own. A constructor is part of this: the
+  object it returns captures the destructor and the liveness flag of the
+  generation that **allocated** it, taken from the constructor call's own
+  snapshot, so a reload between the allocation and the object's construction
+  can no longer bind a pointer from the retired image to the replacement's
+  `free`. The same holds for a **generic** struct: its constructor resolves the
+  instantiated destructor in the same step that allocates, preferring the
+  constructor's own image and otherwise taking the destructor's own image's
+  flag, so the flag always describes the image the finalizer will call into.
+  (Each generic instantiation is still its own artifact, so a generic object
+  can be allocated by one image and freed through another: [#291](https://github.com/AtelierArith/RustCall.jl/issues/291).)
+- Two `rust"""` blocks in **one module** may no longer export the same name.
+  The second block raises, naming the symbol and the library that already owns
+  it. Previously the second Julia wrapper silently replaced the first while
+  both libraries stayed loaded ([#250](https://github.com/AtelierArith/RustCall.jl/issues/250)).
+- A generated wrapper resolves through **its own module's** library rather than
+  through whichever block was compiled last in the session, so two modules that
+  each define `add` call their own `add`.
+- A generated `@rust_crate` module keeps its state in one immutable record
+  (`_LIB_GEN`) instead of separate `_LIB_HANDLE` / `_LIB_ALIVE` `Ref`s, so a
+  wrapper reads handle, liveness flag and generation as one value. Regenerate
+  bindings files after upgrading (`# Bindings format: 2`).
+- Bindings files written by `write_bindings_to_file` carry
+  `# Bindings format: 2`. Files generated by an older RustCall still work but
+  do not get the unload, panic or lifetime guarantees — regenerate after
+  upgrading.
+- **One mapped image, one liveness flag — across an unload and a reopen.**
+  `unload_library(name)` retires an image without closing it, so it stays
+  mapped and the objects it produced hold its flag; the next load of the same
+  path gets that same image back from the loader and now keeps that same flag,
+  instead of minting a fresh one that nothing would ever flip.
+- **Closing a retired image closes what the retirement owned**, recorded when
+  it was retired, rather than draining the live counter — a task reopening the
+  same path while the close runs keeps its own reference.
+- **An idle hot-reload watcher now really is idle.** `watch_folder` returning
+  "the wait expired" was treated as a filesystem event, so a watched project
+  with nothing happening still `stat`ed every source file every interval. A
+  timeout is now ignored and only a real event triggers a scan;
+  `RustCall.source_scan_count()` exposes the number so the behaviour is
+  checkable. `enable_hot_reload(...; poll = true)` still polls, as it must.
+- **The crate `#[cfg]` probe is memoized on what decides it**, not on the crate
+  path alone: its `Cargo.toml`, its `build.rs`, and the `.cargo/config.toml`
+  chain. Turning a default feature on or off between two reloads used to reuse
+  the previous answer, so the rescan described `#[cfg]` items the new build did
+  not have and registered the wrong ABI for them. A **hot reload re-probes
+  unconditionally** rather than trusting that digest: a `build.rs` can emit a
+  different `cargo::rustc-cfg` from inputs no digest can enumerate, and a
+  reload has just run a full build anyway.
+- **Closing a retired image drains its loader references.** One file loaded
+  under two names is one image with two `dlopen`s; retirement discarded the
+  record after a single `dlclose`, leaving the last reference unreclaimable and
+  the image mapped for the life of the process. `close_retired_handles!` and
+  `unload_all_libraries(; close = true)` now close once per owned open.
+- Hot reload no longer needs `Cargo.lock` to be stable. The check that the
+  sources did not change under the rescan hashes the scan's own inputs (the
+  Rust sources and `Cargo.toml`); it used to hash the whole crate, including
+  the `Cargo.lock` that the very `cargo build` it straddles writes, so on a
+  fresh checkout the rescan was always discarded and the reloaded library was
+  registered with no symbol mappings.
+- `RustCall.scan_crate` accepts `cfg` / `cfg_text`, and hot reload probes the
+  crate's real build configuration (`cargo rustc --release --lib -- --print
+  cfg` in the crate) before rescanning, so mutually exclusive
+  `#[cfg(feature = ...)]` variants of one `#[julia] fn` collapse to the one
+  that was built and its return type is registered. An unavailable probe falls
+  back to the previous lenient scan.
+- `RustCall.load_cached_library` returns the verified cache *path* instead of
+  opening the library.
+- A `@rust_crate` library's registry name includes its build profile, so a
+  `build_release = false` and a `build_release = true` module of one crate are
+  two entries rather than one that clobbers the other.
+- Ownership operations (`RustBox`, `RustRc`, `RustArc`, `RustVec`) refuse to
+  construct a value when the helper library is missing, naming the operation
+  and the `Pkg.build("RustCall")` that fixes it.
+
+### Added
+- `docs/src/panics.md`: the panic semantics matrix, the symbol-visibility rule
+  and the object-lifetime/allocator contract.
+- `test/test_panics.jl`, `test/test_finalizers.jl`,
+  `test/test_load_conformance.jl`, `test/test_hot_reload_transaction.jl`.
+
+
+### Breaking
 - **One artifact identity** ([#278](https://github.com/AtelierArith/RustCall.jl/issues/278),
   Phase B). Twelve places answered "which compiled artifact corresponds to this
   request?", each with its own component list, its own concatenation format and

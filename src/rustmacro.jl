@@ -161,21 +161,16 @@ library directly rather than the global fallback search. The module's active
 library moves to the actual name, under which the manifest was registered.
 """
 function _alias_reloaded_library(mod::Module, stored_name::String, actual_name::String)
-    lock(REGISTRY_LOCK) do
-        entry = get(RUST_LIBRARIES, actual_name, nothing)
-        if entry !== nothing
-            # Both registries are per library (#279), so the alias needs its
-            # own entries: without the symbol mappings a lookup through the
-            # stored name resolves `f` to `f`, misses the `rustcall_f` this
-            # library exports, and falls back to the cross-library search —
-            # which another block defining `f` would make ambiguous; without
-            # the return-type hints an untyped `@rust f(...)` through the alias
-            # would take the unscoped fallback and pick up whatever another
-            # block last registered for that name.
-            copy_library_metadata!(actual_name, stored_name)
-            RUST_LIBRARIES[stored_name] = entry
-        end
-    end
+    # `alias_artifact!` (src/loadpolicy.jl) owns the two-names-one-handle case:
+    # both registries are per library (#279), so the alias gets its own symbol
+    # mappings and return-type hints — without the mappings a lookup through
+    # the stored name resolves `f` to `f`, misses the `rustcall_f` this library
+    # exports and falls back to the cross-library search, which another block
+    # defining `f` would make ambiguous; without the hints an untyped
+    # `@rust f(...)` through the alias would pick up whatever another block
+    # last registered for that name. The alias also shares the library's
+    # liveness flag, so unloading either name retires both (#277 Phase B).
+    alias_artifact!(inline_rustc_policy(), actual_name, stored_name)
     if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
         active = getfield(mod, :__RUSTCALL_ACTIVE_LIB)
         active[] == stored_name && (active[] = actual_name)
@@ -320,27 +315,51 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     # library and reports which library the pointer came from, so the return
     # type is read from that same library and never borrowed from another one
     # whose `f` has a different ABI.
-    func_ptr, owning_lib = _resolve_call(lib_name, func_name)
-    @debug "Calling function '$func_name' from library '$owning_lib'"
+    # One snapshot: pointer and panic channel from the same generation of the
+    # same library. Resolving them separately let a reload land in between, so
+    # the call entered the retired image and read the replacement's channel.
+    target = resolve_call_target(lib_name, func_name)
+    func_ptr = target.func_ptr
+    channel = target.channel
+    owning_lib = target.lib_name
+    @debug "Calling function '$func_name' from library '$owning_lib'" generation = target.generation
 
     # Try to get type info from registered function info
-    func_info = get_function_info(owning_lib, func_name)
+    # Every call through a generated wrapper is followed by a read of that
+    # wrapper's panic channel: a `#[julia]` function that panicked returned a
+    # sentinel, and `guard_rust_panic_ptr` turns it into a `RustPanicError`
+    # rather than letting the caller use it (#244). The symbol is the one the
+    # pointer was resolved from, so the channel belongs to the same wrapper.
+    #
+    # The channel is resolved *here*, before any of the calls below: it is a
+    # thread-local in the image, so nothing may yield between the wrapper call
+    # and the read of the channel, and the resolution itself takes a lock.
+    # ...and the *return ABI* comes from the same snapshot as the pointer. It
+    # used to be looked up again here, so a reload landing in between could
+    # call the retired generation's wrapper and read its result with the
+    # replacement's return type — a scalar read as a struct (#277).
+    func_info = target.func_info
     if func_info !== nothing && func_info.return_type !== Any
-        return call_rust_function(func_ptr, func_info.return_type, args...)
+        return guard_rust_panic_ptr(call_rust_function(func_ptr, func_info.return_type, args...),
+                                    channel, func_name)
     end
 
-    # Try to get the return type the owning library registered
-    ret_type = get_function_return_type(owning_lib, func_name)
+    # Try to get the return type the owning library registered — again, the one
+    # captured in the snapshot.
+    ret_type = target.return_type
     if ret_type !== nothing
         @debug "Using registered return type for $func_name: $ret_type"
-        return call_rust_function(func_ptr, ret_type, args...)
+        return guard_rust_panic_ptr(call_rust_function(func_ptr, ret_type, args...),
+                                    channel, func_name)
     end
 
     # Try to get type info from LLVM analysis
     try
         ret_type, expected_arg_types = infer_function_types(lib_name, func_name)
-        return call_rust_function(func_ptr, ret_type, args...)
-    catch
+        return guard_rust_panic_ptr(call_rust_function(func_ptr, ret_type, args...),
+                                    channel, func_name)
+    catch e
+        e isa RustPanicError && rethrow()
         # Fall back to inference from arguments
     end
 
@@ -361,9 +380,9 @@ end
 Call a Rust function with explicit return type.
 """
 function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, args...)
-    local func_ptr
+    local target
     try
-        func_ptr = get_function_pointer(lib_name, func_name)
+        target = resolve_call_target(lib_name, func_name)
     catch e
         # If not found, check if it's a generic function that needs monomorphization
         if is_generic_function(func_name)
@@ -375,7 +394,10 @@ function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, a
         end
     end
 
-    return call_rust_function(func_ptr, ret_type, args...)
+    # Pointer and channel come from the same snapshot, so the call and the
+    # channel read cannot straddle two generations (#244, #277).
+    return guard_rust_panic_ptr(call_rust_function(target.func_ptr, ret_type, args...),
+                                target.channel, func_name)
 end
 
 """

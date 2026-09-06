@@ -335,6 +335,14 @@ In Phase 3, we enable the use of external Rust crates (libraries) within `rust""
    end
    ```
 
+!!! note "Superseded by #277 Phase B"
+    The `RTLD_GLOBAL` above is historical. Since #277 Phase B every artifact is
+    opened `RTLD_LOCAL | RTLD_NOW` through `RustCall.load_artifact!`, which is
+    the only place in the package that opens or registers a library. See
+    `docs/src/panics.md` for why the "publishes symbols to other artifacts"
+    category is empty, and for the deprecated `RUSTCALL_DLOPEN_GLOBAL` escape
+    hatch.
+
 2. **Integration with Existing process_rust_string**
 
    ```julia

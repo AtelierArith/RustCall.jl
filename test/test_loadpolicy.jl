@@ -20,7 +20,7 @@ _src(name) = read(joinpath(_SRC_DIR, name), String)
 """Number of non-overlapping occurrences of `needle` in the source of `name`."""
 _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
-@testset "LoadPolicy" begin
+@testset verbose=true "LoadPolicy" begin
 
     @testset "record and defaults" begin
         p = RustCall.LoadPolicy("example")
@@ -52,10 +52,14 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     @testset "panic accessors" begin
         abort = RustCall.LoadPolicy("a"; panic_strategy = :abort)
         unwind = RustCall.LoadPolicy("u"; panic_strategy = :unwind)
+        # Both pinned strategies state themselves, at the compile site and in
+        # the manifest: `unwind` is Cargo's and rustc's default, but a default
+        # is not a pin, and an inherited CARGO_PROFILE_RELEASE_PANIC would
+        # otherwise decide it (#244).
         @test RustCall.rustc_panic_flags(abort) == ["-C", "panic=abort"]
-        @test isempty(RustCall.rustc_panic_flags(unwind))
+        @test RustCall.rustc_panic_flags(unwind) == ["-C", "panic=unwind"]
         @test RustCall.cargo_profile_panic_line(abort) == "panic = \"abort\""
-        @test RustCall.cargo_profile_panic_line(unwind) === nothing
+        @test RustCall.cargo_profile_panic_line(unwind) == "panic = \"unwind\""
         @test !RustCall.requires_catch_unwind_boundary(abort)
         @test RustCall.requires_catch_unwind_boundary(unwind)
         @test !RustCall.requires_catch_unwind_boundary(
@@ -158,156 +162,252 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             local_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", src))
             global_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", src))
         end
-        # Current main: 4 local, 8 global, 12 total. Phase B collapses these
-        # into a single loader; update these numbers as doors move over.
-        @test local_sites == 4
-        @test global_sites == 8
-        @test local_sites + global_sites == 12
+        # B1 finished the migration: every door reads its flags off its
+        # policy. What is left open-coded outside loadpolicy.jl is the
+        # deprecated LLVM path (#265 Phase 2 deletes it) and the two
+        # @rust_crate module templates, whose dlopen runs in the *generated*
+        # module (B5 routes them through the loader too).
+        # Only the deprecated LLVM IR path still opens anything itself
+        # (#265 Phase 2 deletes it).
+        @test local_sites == 0
+        @test global_sites == 1
+        for file in ("cache.jl", "ruststr.jl", "generics.jl", "hot_reload.jl",
+                     "memory.jl", "rustmacro.jl", "crate_bindings.jl")
+            @test !occursin(r"dlopen\(", _src(file))
+        end
+        # ...and scripts/lint_load_path.sh is what keeps it that way.
+        lint = read(joinpath(dirname(_SRC_DIR), "scripts", "lint_load_path.sh"), String)
+        @test occursin("Libdl", lint)
+        @test occursin("loadpolicy", lint)
 
-        # Cache state does not change the flags. The dependency-free door
-        # loads RTLD_LOCAL from both the cache and a fresh compile: cache.jl
-        # has a RTLD_LOCAL dlopen and no RTLD_GLOBAL one at all.
-        cache_src = _src("cache.jl")
-        @test occursin(r"dlopen\([^)]*RTLD_LOCAL", cache_src)
-        @test !occursin(r"dlopen\([^)]*RTLD_GLOBAL", cache_src)
-        # ruststr.jl: exactly one RTLD_LOCAL (the dependency-free cache miss)
-        # and three RTLD_GLOBAL (Cargo cache hit, Cargo build, @irust).
-        ruststr_src = _src("ruststr.jl")
-        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", ruststr_src)) == 1
-        @test count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", ruststr_src)) == 3
-
-        # One policy per axis value, each covering both cache states.
-        rustc_policy = RustCall.inline_rustc_policy()
-        cargo_policy = RustCall.inline_cargo_policy()
-        @test !RustCall.uses_global_symbols(rustc_policy)
-        @test RustCall.uses_global_symbols(cargo_policy)
-        @test "src/cache.jl:270" in rustc_policy.call_sites      # cache hit
-        @test "src/ruststr.jl:284" in rustc_policy.call_sites    # cache miss
-        @test "src/ruststr.jl:386" in cargo_policy.call_sites    # cache hit
-        @test "src/ruststr.jl:419" in cargo_policy.call_sites    # fresh build
-        # ...and the rule is inverted: the helper library, the one library
-        # other artifacts could resolve against, is the LOCAL one.
-        @test !RustCall.uses_global_symbols(RustCall.helper_library_policy())
-        @test RustCall.uses_global_symbols(RustCall.crate_direct_policy())
-        @test RustCall.uses_global_symbols(RustCall.crate_wrapper_policy())
-        @test occursin("RTLD_GLOBAL", RustCall.SYMBOL_VISIBILITY_RULE)
+        # B2: the axis is gone. Every policy is RTLD_LOCAL | RTLD_NOW, so the
+        # same rust""" construct behaves the same whether or not it names a
+        # dependency (#250).
+        for ctor in RustCall.ALL_LOAD_POLICIES
+            p = ctor()
+            @test !RustCall.uses_global_symbols(p)
+            @test p.dlopen_flags == UInt32(Libdl.RTLD_LOCAL | Libdl.RTLD_NOW)
+        end
+        @test occursin("RTLD_LOCAL", RustCall.SYMBOL_VISIBILITY_RULE)
+        # The rule now says the GLOBAL category is empty, and says why.
+        @test occursin("dlsym", RustCall.SYMBOL_VISIBILITY_RULE)
     end
 
     # -----------------------------------------------------------------
-    # Divergence 2: panic strategy and the missing boundary (#244)
-    #
-    # `-C panic=abort` is passed on the direct-rustc path only; the generated
-    # Cargo project sets no panic mode, and there is no catch_unwind anywhere,
-    # so a panic crossing extern "C" on the Cargo path is undefined behaviour.
+    # The deprecated RTLD_GLOBAL escape hatch (#250, one release).
     # -----------------------------------------------------------------
-    @testset "divergence: panic strategy (#244)" begin
-        @test _count_in("compiler.jl", r"panic=abort") == 2
-        @test !occursin("panic", _src("cargoproject.jl"))
+    @testset "RUSTCALL_DLOPEN_GLOBAL escape hatch" begin
+        policy = RustCall.inline_rustc_policy()
+        previous = RustCall.DLOPEN_GLOBAL_OVERRIDE[]
+        try
+            @test !RustCall._init_dlopen_global_override!(Dict{String, String}())
+            @test RustCall.dlopen_flags(policy) == policy.dlopen_flags
 
-        repo = dirname(_SRC_DIR)
-        catch_unwind_hits = String[]
-        for root in (joinpath(repo, "src"), joinpath(repo, "deps"))
-            isdir(root) || continue
-            for (dir, _, files) in walkdir(root)
-                occursin(Base.Filesystem.path_separator * "target" *
-                         Base.Filesystem.path_separator, dir * Base.Filesystem.path_separator) && continue
-                for f in files
-                    (endswith(f, ".jl") || endswith(f, ".rs")) || continue
-                    f == "loadpolicy.jl" && continue   # this file only names the fix
-                    path = joinpath(dir, f)
-                    occursin("catch_unwind", read(path, String)) && push!(catch_unwind_hits, path)
+            @test RustCall._init_dlopen_global_override!(
+                Dict("RUSTCALL_DLOPEN_GLOBAL" => "1"))
+            # One warning, naming the issue, then silence.
+            flags = @test_logs (:warn, r"RUSTCALL_DLOPEN_GLOBAL") match_mode = :any begin
+                RustCall.dlopen_flags(policy)
+            end
+            @test flags == policy.dlopen_flags | UInt32(Libdl.RTLD_GLOBAL)
+            @test RustCall.dlopen_flags(policy) == flags   # no second warning
+            # The *policy* still says LOCAL: the override is not a policy.
+            @test !RustCall.uses_global_symbols(policy)
+
+            # Only an affirmative value turns it on.
+            @test !RustCall._init_dlopen_global_override!(
+                Dict("RUSTCALL_DLOPEN_GLOBAL" => "0"))
+            @test !RustCall._init_dlopen_global_override!(
+                Dict("RUSTCALL_DLOPEN_GLOBAL" => ""))
+        finally
+            RustCall._init_dlopen_global_override!(Dict{String, String}())
+            RustCall.DLOPEN_GLOBAL_OVERRIDE[] = previous
+        end
+    end
+
+    # Symbols of a LOCAL artifact are reachable through its handle and NOT
+    # through the process-global namespace. Windows `LoadLibrary` has no such
+    # distinction, so the negative half is unix-only.
+    @testset "RTLD_LOCAL keeps symbols out of the global namespace" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to build a library to load"
+        else
+            lib = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_visibility_probe() -> i32 { 7 }
+                """)
+            name = "loadpolicy_visibility_$(getpid())"
+            policy = RustCall.inline_rustc_policy()
+            try
+                a = RustCall.load_artifact!(policy, lib; lib_name = name)
+                # Through its own handle: always.
+                ptr = Libdl.dlsym(a.handle, "rustcall_visibility_probe")
+                @test RustCall.call_rust_function(ptr, Int32) == Int32(7)
+                # Through the process-global namespace: not on unix.
+                # RTLD_DEFAULT is NULL on glibc/musl and (void *)-2 on Darwin.
+                # Windows `LoadLibrary` has no LOCAL/GLOBAL distinction at all,
+                # so there is nothing to assert there.
+                if Sys.isunix()
+                    rtld_default = Sys.isapple() ? Ptr{Cvoid}(-2) : C_NULL
+                    found = ccall(:dlsym, Ptr{Cvoid}, (Ptr{Cvoid}, Cstring),
+                                  rtld_default, "rustcall_visibility_probe")
+                    @test found == C_NULL
                 end
+            finally
+                RustCall.unload_artifact!(policy, name)
             end
         end
-        # No FFI boundary contains a panic today (#244).
-        @test isempty(catch_unwind_hits)
+    end
 
-        @test RustCall.inline_rustc_policy().panic_strategy === :abort
+    # -----------------------------------------------------------------
+    # #244: one panic strategy, and a boundary that catches.
+    #
+    # Before B3 the direct-rustc path passed `-C panic=abort` (a panic killed
+    # the session outright), the Cargo path took Cargo's default and could be
+    # flipped by an environment variable, and there was no `catch_unwind`
+    # anywhere. Now every door RustCall owns is pinned to `unwind` — twice: in
+    # the manifest and in the environment Cargo runs under — and the single
+    # wrapper generator catches, records the message in a per-wrapper channel
+    # and returns a sentinel, so Julia raises `RustPanicError`.
+    # -----------------------------------------------------------------
+    @testset "panic: pinned unwind and a catching boundary (#244)" begin
+        # The rustc path no longer hard-codes a strategy: it asks the policy.
+        @test _count_in("compiler.jl", r"panic=abort") == 0
+        @test _count_in("compiler.jl", r"rustc_panic_flags\(inline_rustc_policy\(\)\)") == 2
 
-        # The two Cargo-backed doors RustCall itself drives pin no `panic`, so
-        # they take Cargo's release default — and the CARGO_PROFILE_RELEASE_PANIC
-        # override. src/cargobuild.jl runs `cargo build` with the inherited
-        # environment unless a captured snapshot is replayed (#272 added the
-        # `env === nothing || setenv` branch); deps/build.jl always inherits.
-        # Same source, different artifact depending on the caller's env (#244).
-        @test occursin("env === nothing || (cmd = setenv(cmd, env))", _src("cargobuild.jl"))
-        for policy in (RustCall.inline_cargo_policy(), RustCall.helper_library_policy())
-            @test policy.panic_strategy === :cargo_default
-            @test policy.cargo_profile === :release
-            @test RustCall.cargo_panic_env_var(policy) == "CARGO_PROFILE_RELEASE_PANIC"
-            @test RustCall.effective_panic_strategy(policy; env = Dict()) === :unwind
+        # Every RustCall-owned door: pinned unwind, boundary catches.
+        owned = (RustCall.inline_rustc_policy(), RustCall.inline_cargo_policy(),
+                 RustCall.crate_wrapper_policy(), RustCall.helper_library_policy(),
+                 RustCall.generics_policy())
+        for policy in owned
+            @test policy.panic_strategy === :unwind
+            @test RustCall.effective_panic_strategy(policy) === :unwind
+            # ...and an inherited CARGO_PROFILE_RELEASE_PANIC cannot change it.
             @test RustCall.effective_panic_strategy(
-                policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :abort
-            @test RustCall.must_assume_unwind(policy; env = Dict())
+                policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :unwind
         end
-        # ...while the direct-rustc door pins -C panic=abort and is unaffected.
-        @test RustCall.effective_panic_strategy(
-            RustCall.inline_rustc_policy();
-            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind")) === :abort
-        @test !RustCall.must_assume_unwind(
-            RustCall.inline_rustc_policy();
-            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind"))
-        # Both cargo-backed doors really do build --release.
-        @test occursin("release=true", _src("ruststr.jl"))
-
-        # @rust_crate has TWO build paths with different panic semantics,
-        # chosen by crate_has_cdylib: the direct build runs Cargo with the
-        # USER's manifest as the root (src/crate_bindings.jl:852, :914-925), so
-        # their [profile.release] wins -> :crate_profile; the wrapper build
-        # (:854-868) makes RustCall's generated manifest the root, and that one
-        # sets only opt-level/lto (:266-269) -> :cargo_default. Hot reload
-        # rebuilds the user's manifest (src/hot_reload.jl:264) -> :crate_profile.
-        crate_src = _src("crate_bindings.jl")
-        @test occursin("build_cargo_project(project, release=release)", crate_src)
-        @test occursin("build_cargo_project(wrapper_project, release=build_release)", crate_src)
-        @test occursin("\"[profile.release]\"", crate_src)
-        @test !occursin("panic", crate_src)
-        @test occursin("cargo build --release --manifest-path", _src("hot_reload.jl"))
-
-        @test RustCall.crate_direct_policy().panic_strategy === :crate_profile
-        @test RustCall.crate_wrapper_policy().panic_strategy === :cargo_default
-        @test RustCall.hot_reload_policy().panic_strategy === :crate_profile
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.crate_direct_policy()) === missing
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.crate_wrapper_policy(); env = Dict()) === true
-        @test RustCall.effective_panic_strategy(
-            RustCall.crate_wrapper_policy();
-            env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :abort
-        @test RustCall.must_assume_unwind(RustCall.crate_direct_policy())
-        @test RustCall.must_assume_unwind(RustCall.hot_reload_policy())
-        # The two @rust_crate doors disagree with each other (#244).
-        @test RustCall.crate_direct_policy().panic_strategy !==
-              RustCall.crate_wrapper_policy().panic_strategy
-        # Everything except the panic strategy is shared between them.
-        for f in (:dlopen_flags, :registry, :registry_key_kind, :registration_mode,
-                  :sets_current_lib, :finalizer_frees)
-            @test getfield(RustCall.crate_direct_policy(), f) ==
-                  getfield(RustCall.crate_wrapper_policy(), f)
+        for policy in owned
+            policy.name == "irust" && continue
+            @test policy.boundary_catches_panics
+            @test !RustCall.requires_catch_unwind_boundary(policy)
+            @test !RustCall.must_assume_unwind(policy)
         end
 
-        # Fourth unwinding path: the ownership helper library. deps/build.jl
-        # builds it with a plain `cargo build --release` and
-        # deps/rust_helpers/Cargo.toml declares no [profile.release] / panic
-        # key, so Cargo's unwind default applies (#244).
+        # PARITY: the two inline doors agree, which is the acceptance criterion
+        # "panic behavior is identical regardless of which compile path
+        # produced the library".
+        rustc_policy = RustCall.inline_rustc_policy()
+        cargo_policy = RustCall.inline_cargo_policy()
+        @test rustc_policy.panic_strategy === cargo_policy.panic_strategy
+        @test RustCall.rustc_panic_flags(rustc_policy) ==
+              RustCall.rustc_panic_flags(cargo_policy)
+        @test RustCall.cargo_profile_panic_line(rustc_policy) ==
+              RustCall.cargo_profile_panic_line(cargo_policy)
+        @test RustCall.effective_panic_strategy(rustc_policy; env = Dict()) ===
+              RustCall.effective_panic_strategy(cargo_policy; env = Dict())
+        @test rustc_policy.boundary_catches_panics ==
+              cargo_policy.boundary_catches_panics
+
+        # The manifests RustCall writes pin it; the environment it passes to
+        # Cargo pins it again.
+        @test occursin("cargo_profile_panic_line(inline_cargo_policy())",
+                       _src("cargoproject.jl"))
+        @test occursin("cargo_profile_panic_line(crate_wrapper_policy())",
+                       _src("crate_bindings.jl"))
+        @test occursin("_cargo_panic_env", _src("cargobuild.jl"))
+        @test occursin("build_env === nothing || (cmd = setenv(cmd, build_env))",
+                       _src("cargobuild.jl"))
+        env = RustCall._cargo_panic_env(cargo_policy, Dict("A" => "b"), true)
+        @test env["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"
+        @test env["A"] == "b"
+        @test RustCall._cargo_panic_env(cargo_policy, Dict{String, String}(), false)[
+            "CARGO_PROFILE_DEV_PANIC"] == "unwind"
+        # A user crate's own profile is not overridden from the outside.
+        @test RustCall._cargo_panic_env(RustCall.crate_direct_policy(), nothing, true) === nothing
+
         repo_root = dirname(_SRC_DIR)
         build_jl = read(joinpath(repo_root, "deps", "build.jl"), String)
         helpers_toml = read(joinpath(repo_root, "deps", "rust_helpers", "Cargo.toml"), String)
-        @test occursin("build --release --manifest-path", build_jl)
-        @test !occursin("panic", build_jl)
-        @test !occursin("panic", helpers_toml)
-        @test !occursin("[profile", helpers_toml)
-        @test RustCall.helper_library_policy().panic_strategy === :cargo_default
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.helper_library_policy(); env = Dict())
-        # The two inline doors disagree, which is exactly what #244 asks to fix.
-        @test RustCall.effective_panic_strategy(RustCall.inline_rustc_policy();
-                                                env = Dict()) !==
-              RustCall.effective_panic_strategy(RustCall.inline_cargo_policy();
-                                                env = Dict())
-        @test RustCall.requires_catch_unwind_boundary(
-            RustCall.inline_cargo_policy(); env = Dict())
-        @test !RustCall.requires_catch_unwind_boundary(RustCall.inline_rustc_policy())
+        @test occursin("CARGO_PROFILE_RELEASE_PANIC", build_jl)
+        @test occursin("panic = \"unwind\"", helpers_toml)
+
+        # The two @rust_crate build paths now agree on everything the panic
+        # boundary depends on; only the *strategy* of a user crate stays
+        # unknown, because their manifest decides it.
+        @test RustCall.crate_direct_policy().panic_strategy === :crate_profile
+        @test RustCall.hot_reload_policy().panic_strategy === :crate_profile
+        for p in (RustCall.crate_direct_policy(), RustCall.hot_reload_policy())
+            @test p.boundary_catches_panics
+            @test RustCall.requires_catch_unwind_boundary(p) === false
+            @test !RustCall.must_assume_unwind(p)
+        end
+
+        # The boundary exists: exactly one generator emits it, and it emits the
+        # channel next to it.
+        codegen_rs = read(joinpath(repo_root, "deps", "rustcall_core", "src", "codegen.rs"), String)
+        @test occursin("catch_unwind", codegen_rs)
+        @test occursin("AssertUnwindSafe", codegen_rs)
+        @test occursin("PANIC_SYMBOL_SUFFIX", codegen_rs)
+        # ...in `generate_wrapper`, and nowhere else in src/.
+        @test _count_in("codegen.jl", r"catch_unwind") == 0
+
+        # The Julia half of the channel.
+        @test RustCall.ffi_panic_symbol("rustcall_f") == "rustcall_f_take_panic"
+        @test RustCall.take_rust_panic(C_NULL) === nothing
+        # A library with no channel is a no-op, and the guard passes the value
+        # through untouched.
+        @test RustCall.check_rust_panic_ptr(C_NULL, "no_such_symbol") === nothing
+        @test RustCall.guard_rust_panic_ptr(42, C_NULL, "no_such_symbol") == 42
+        @test RustCall.panic_channel_pointer("no_such_lib", "no_such_symbol") == C_NULL
+        # The channel is resolved BEFORE the wrapper call at every call site:
+        # it is a thread-local in the image, so a lock (which can yield) between
+        # the call and the read would let the task move to another OS thread and
+        # miss the panic entirely. `test_panics.jl` asserts the behaviour under
+        # concurrency; this pins the shape.
+        # ...and pointer + channel come from ONE snapshot, so a call cannot
+        # straddle two generations of a library (#277).
+        for (file, kind) in (("rustmacro.jl", "resolve_call_target("),
+                             ("structs.jl", "resolve_call_target("),
+                             ("julia_functions.jl", "resolve_call_target("),
+                             ("crate_bindings.jl", "_call_target("),
+                             ("generics.jl", "channel, artifact.handle, artifact.generation"))
+            @test occursin(kind, _src(file))
+        end
+        # The owned-`String` release function comes from the same snapshot as
+        # the call that produced the buffer, never a later lookup by name.
+        @test occursin("free_symbol = free_func_name", _src("structs.jl"))
+        @test occursin("target.free_ptr", _src("structs.jl"))
+        # The return ABI is part of the snapshot too: it decides how the return
+        # slot is read, and reading a retired generation's result with the
+        # replacement's ABI is memory corruption, not a wrong answer (#277).
+        @test occursin("return_type = get(FUNCTION_RETURN_TYPES_BY_LIB", _src("ruststr.jl"))
+        @test occursin("ret_type = target.return_type", _src("rustmacro.jl"))
+        @test occursin("func_info = target.func_info", _src("rustmacro.jl"))
+        # ...and a cached `FunctionInfo` is itself a snapshot: it carries the
+        # channel of the image its pointer came from, never a name to look one
+        # up by later.
+        @test occursin("channel = info.channel", _src("generics.jl"))
+        # The generic struct destructor and its liveness flag come from one
+        # locked read, like the non-generic path.
+        @test occursin("generic_struct_generation_snapshot(", _src("structs.jl"))
+        # A constructor allocates, so the object it returns is built from the
+        # constructor's own snapshot — never from a second lookup afterwards.
+        @test occursin("ptr, tgt = GC.@preserve", _src("structs.jl"))
+        @test occursin("\$esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)",
+                       _src("structs.jl"))
+        @test occursin("_ctor_target(", _src("crate_bindings.jl"))
+        @test occursin("alive_ref_for_handle(", _src("structs.jl"))
+        # ...and the old, resolve-after-the-call entry points are gone.
+        for file in readdir(_SRC_DIR)
+            endswith(file, ".jl") || continue
+            src = _src(file)
+            @test !occursin("guard_rust_panic(", src)
+            @test !occursin("check_rust_panic(", src)
+        end
+        e = RustCall.RustPanicError("f", "boom")
+        @test e isa Exception
+        @test occursin("boom", sprint(showerror, e))
+        @test occursin("f", sprint(showerror, e))
     end
 
     # -----------------------------------------------------------------
@@ -321,12 +421,9 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             writes += count(_ -> true,
                             eachmatch(r"RUST_LIBRARIES\[[^\]]*\]\s*=", _src(file)))
         end
-        # Five open-coded registration sites on current main: two in
-        # ruststr.jl (`_register_manifest`, which publishes an inline block's
-        # handle together with its symbol mappings since #279, and the `@irust`
-        # loader), generics.jl, hot_reload.jl, and the reload alias that #272
-        # added in rustmacro.jl (`_alias_reloaded_library`).
-        @test writes == 5
+        # Every door goes through the loader now: nothing outside
+        # loadpolicy.jl writes RUST_LIBRARIES.
+        @test writes == 0
 
         # Each site decides for itself whether CURRENT_LIB moves and what the
         # key looks like; the policies record that disagreement.
@@ -341,24 +438,33 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test RustCall.hot_reload_policy().registry_key_kind === :crate_lib_name
         @test RustCall.inline_rustc_policy().registry_key_kind === :content_hash
 
-        # Two doors bypass RUST_LIBRARIES entirely, so registry-level unload
-        # cannot see them (#250).
-        @test !RustCall.registers_in_rust_libraries(RustCall.crate_direct_policy())
-        @test !RustCall.registers_in_rust_libraries(RustCall.crate_wrapper_policy())
+        # The two @rust_crate doors used to bypass RUST_LIBRARIES entirely, so
+        # registry-level unload could not see them (#250). Since B5 the
+        # generated module publishes its handle through `load_artifact!` and
+        # keeps its own `Ref` as a fast path, so both are visible.
+        @test RustCall.registers_in_rust_libraries(RustCall.crate_direct_policy())
+        @test RustCall.registers_in_rust_libraries(RustCall.crate_wrapper_policy())
+        @test RustCall.crate_direct_policy().registry_key_kind === :crate_lib_name
+        # The helper library's home is RUST_HELPERS_LIB, and the deprecated
+        # LLVM path registers nowhere at all.
         @test !RustCall.registers_in_rust_libraries(RustCall.helper_library_policy())
         @test !RustCall.registers_in_rust_libraries(RustCall.llvm_policy())
 
-        # The hot-reload rebuild happens outside REGISTRY_LOCK (#255).
-        @test occursin("outside REGISTRY_LOCK", _src("hot_reload.jl"))
+        # The hot-reload registry transaction is `load_artifact!`'s, and the
+        # rebuild that precedes it holds no registry lock — see the #255
+        # testset below.
 
         # Generics registers only when the key is absent, and that guard is
         # load-bearing: _unique_source_name returns the fixed base name
         # "rust_code" outside debug mode (src/compiler.jl:68-72), so every
-        # instantiation collides on the same librust_code basename. An
-        # unconditional assignment would swap the live handle and discard the
-        # function-pointer cache filled at src/generics.jl:267 (#250).
+        # instantiation compiles into its own temp directory under the same
+        # librust_code basename. An unconditional assignment would swap a live
+        # handle and discard the function-pointer cache (#250). Since B1 the
+        # guard is `generics_policy()`'s registration mode rather than an
+        # open-coded `if !haskey(...)`, and `load_artifact!` closes the loser's
+        # duplicate handle instead of leaking it.
         @test occursin("return \"rust_code\"", _src("compiler.jl"))
-        @test occursin("if !haskey(RUST_LIBRARIES, lib_name)", _src("generics.jl"))
+        @test occursin("generics_policy()", _src("generics.jl"))
         @test RustCall.generics_policy().registration_mode === :insert_only
         for ctor in RustCall.ALL_LOAD_POLICIES
             p = ctor()
@@ -387,10 +493,12 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             @test_throws ArgumentError RustCall.register_library!(policy, name, C_NULL)
 
             # Policies that do not use RUST_LIBRARIES are a no-op, so a Phase B
-            # call site may call register_library! unconditionally.
-            @test RustCall.register_library!(RustCall.crate_direct_policy(), name, handle) == name
+            # call site may call register_library! unconditionally. (The
+            # helper library is such a policy; the @rust_crate doors stopped
+            # being one in B5.)
+            @test RustCall.register_library!(RustCall.helper_library_policy(), name, handle) == name
             @test !haskey(RustCall.RUST_LIBRARIES, name)
-            @test !RustCall.unregister_library!(RustCall.crate_direct_policy(), name)
+            @test !RustCall.unregister_library!(RustCall.helper_library_policy(), name)
 
             # :insert_only keeps the existing handle and its function-pointer
             # cache; :replace overwrites both (#250, src/generics.jl:250-253).
@@ -429,37 +537,638 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     end
 
     # -----------------------------------------------------------------
-    # Divergence 4: finalizer / ownership policy (#249, #252)
+    # #249: one lifetime rule, and finalizers that are safe to run.
     #
-    # Inline #[julia] struct objects never free ("Temporarily disabled free to
-    # diagnose segfault"); @rust_crate struct objects call <Name>_free.
-    # Same user-visible construct, opposite lifetime semantics.
+    # Inline `#[julia]` struct objects used to leak — the free was disabled
+    # with a "Temporarily disabled free to diagnose segfault" comment — while
+    # `@rust_crate` objects freed. Same construct, opposite semantics. Now
+    # both free, and both do it from a finalizer that takes no lock, resolves
+    # no symbol and logs nothing.
     # -----------------------------------------------------------------
-    @testset "divergence: finalizers (#249, #252)" begin
+    @testset "finalizers free, and are safe to run (#249)" begin
         structs_src = _src("structs.jl")
-        @test _count_in("structs.jl", r"Finalizer: skipped free") == 2
-        @test occursin("Temporarily disabled free", structs_src)
+        @test _count_in("structs.jl", r"Finalizer: skipped free") == 0
+        @test !occursin("Temporarily disabled free", structs_src)
 
-        crate_src = _src("crate_bindings.jl")
-        @test occursin("_free", crate_src)
-        @test occursin("finalizer(obj)", crate_src)
-
-        @test !RustCall.finalizer_frees(RustCall.inline_rustc_policy())
-        @test !RustCall.finalizer_frees(RustCall.inline_cargo_policy())
-        @test RustCall.finalizer_frees(RustCall.crate_direct_policy())
-        @test RustCall.finalizer_frees(RustCall.crate_wrapper_policy())
-        @test RustCall.finalizer_frees(RustCall.inline_rustc_policy()) !==
+        # Every policy frees.
+        for ctor in RustCall.ALL_LOAD_POLICIES
+            p = ctor()
+            p.name in ("irust", "llvm-ir", "generics-monomorphization") && continue
+            @test RustCall.finalizer_frees(p)
+        end
+        @test RustCall.finalizer_frees(RustCall.inline_rustc_policy()) ===
               RustCall.finalizer_frees(RustCall.crate_direct_policy())
+
+        # One destructor symbol, from the contract.
+        @test RustCall.ffi_struct_free_symbol("Point") == "Point_free"
+        for file in ("structs.jl", "crate_bindings.jl")
+            src = _src(file)
+            @test occursin("ffi_struct_free_symbol", src)
+            # ...and no hand-built `<Name>_free` string anywhere.
+            @test !occursin("_free\")", src)
+        end
+
+        # The finalizer body: captured pointer and flag, no lookup, no lock,
+        # no logging (a finalizer may run while the thread holds
+        # REGISTRY_LOCK, and @warn allocates and can yield).
+        body_start = findfirst("function finalize_rust_object!", structs_src)
+        @test body_start !== nothing
+        body = structs_src[first(body_start):end]
+        body = body[1:first(findfirst("\nend", body))]
+        for forbidden in ("dlsym", "REGISTRY_LOCK", "lock(", "@warn", "@info", "@error",
+                          "get_function_pointer")
+            @test !occursin(forbidden, body)
+        end
+        # The order that makes a double free impossible: null the field, then
+        # check liveness, then call.
+        @test findfirst("setfield!(x, :ptr, C_NULL)", body) <
+              findfirst("ccall(free_ptr", body)
+        @test findfirst("getfield(x, :alive)[] || return", body) <
+              findfirst("ccall(free_ptr", body)
+
+        # A failure is counted, not logged.
+        @test RustCall.finalizer_failure_count() isa Int
     end
 
-    @testset "Phase A is additive: no call site migrated yet" begin
-        # loadpolicy.jl is included but nothing in src/ uses it yet.
-        for file in readdir(_SRC_DIR)
-            endswith(file, ".jl") || continue
-            file in ("loadpolicy.jl", "RustCall.jl") && continue
-            src = _src(file)
-            @test !occursin("LoadPolicy", src)
-            @test !occursin("register_library!", src)
+    # -----------------------------------------------------------------
+    # Phase B migration front: which doors already go through the loader.
+    #
+    # Phase A was additive; every commit of Phase B moves one more door onto
+    # `load_artifact!` and shrinks this allow-list. When it is empty the
+    # `Libdl.dlopen` lint (scripts/lint_load_path.sh) is what keeps it that
+    # way.
+    # -----------------------------------------------------------------
+    @testset "Phase B: every door goes through loadpolicy.jl" begin
+        # Each door still names its own policy — that is what makes a later
+        # change of policy one edit rather than a search.
+        @test occursin("inline_rustc_policy()", _src("ruststr.jl"))
+        @test occursin("inline_cargo_policy()", _src("ruststr.jl"))
+        @test occursin("irust_policy()", _src("ruststr.jl"))
+        @test occursin("generics_policy()", _src("generics.jl"))
+        @test occursin("hot_reload_policy()", _src("hot_reload.jl"))
+        @test occursin("helper_library_policy()", _src("memory.jl"))
+        @test occursin("alias_artifact!(", _src("rustmacro.jl"))
+        # unload_library / unload_all_libraries are wrappers now.
+        @test occursin("unload_artifact!(", _src("ruststr.jl"))
+    end
+
+    # -----------------------------------------------------------------
+    # RustCall closes only what RustCall opened.
+    #
+    # `load_artifact!` opens an image and takes ownership of it; a handle that
+    # merely arrives through `adopt_artifact!` belongs to whoever opened it. On
+    # glibc a `dlclose` of a stale or foreign handle segfaults inside
+    # `_dl_close` rather than returning an error, so this is a crash boundary,
+    # not bookkeeping. Ownership is also what makes closing idempotent: it is
+    # checked and given up in one locked step, so a handle is closed at most
+    # once however many callers race to close it.
+    # -----------------------------------------------------------------
+    @testset "only handles RustCall opened are closed" begin
+        # A fabricated handle is never owned, and releasing it closes nothing.
+        fake = Ptr{Cvoid}(UInt(0xdeadbe00))
+        @test !RustCall.artifact_handle_is_owned(fake)
+        before = RustCall.DLCLOSE_COUNT[]
+        @test RustCall.close_artifact_handle!(fake) == false
+        @test RustCall.close_artifact_handle!(C_NULL) == false
+        @test RustCall.DLCLOSE_COUNT[] == before
+
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            lib = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_owned_probe() -> i32 { 1 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_owned_$(getpid())"
+            adopted = "loadpolicy_adopted_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, lib; lib_name = name)
+                @test RustCall.artifact_handle_is_owned(a.handle)
+
+                # Opening the same path again is the same image (`dlopen`
+                # refcounts), and ownership is a set: it is taken once, so the
+                # image is closed once.
+                b = RustCall.load_artifact!(policy, lib; lib_name = adopted)
+                @test b.handle == a.handle
+                @test RustCall.artifact_handle_is_owned(a.handle)
+
+                # Unloading retires; the image is still owned and still mapped.
+                # `dlopen` refcounts, so two opens owe two closes. Ownership
+                # is a *count* for exactly this reason: a set would have
+                # collapsed them, and closing the losing duplicate of an
+                # `:insert_only` race would then have left the winner
+                # unclosable forever (#277).
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+
+                RustCall.unload_artifact!(policy, name)
+                @test RustCall.artifact_handle_is_owned(a.handle)
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.close_artifact_handle!(a.handle) == true
+                @test RustCall.DLCLOSE_COUNT[] == before + 1
+                @test RustCall.artifact_handle_open_count(a.handle) == 1
+                @test RustCall.close_artifact_handle!(a.handle) == true
+                @test RustCall.DLCLOSE_COUNT[] == before + 2
+                # The debt is paid: a further close is refused, not performed.
+                @test RustCall.close_artifact_handle!(a.handle) == false
+                @test RustCall.DLCLOSE_COUNT[] == before + 2
+                @test !RustCall.artifact_handle_is_owned(a.handle)
+                @test RustCall.artifact_handle_open_count(a.handle) == 0
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    for n in (name, adopted)
+                        delete!(RustCall.RUST_LIBRARIES, n)
+                        delete!(RustCall.ARTIFACT_ALIVE, n)
+                    end
+                end
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # An alias is a second name for ONE image, so it needs one close.
+    #
+    # `alias_artifact!` used to insert the same handle under two names with no
+    # bookkeeping, so `unload_all_libraries()` closed it twice — the second
+    # close decrements a refcount that belongs to someone else — and unloading
+    # one name left the other pointing at code that was about to be unmapped.
+    # -----------------------------------------------------------------
+    @testset "an alias is one image, closed once" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to build a library to alias"
+        else
+            lib = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_alias_probe() -> i32 { 5 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_alias_$(getpid())"
+            alias = name * "_second"
+            try
+                a = RustCall.load_artifact!(policy, lib; lib_name = name)
+                @test RustCall.alias_artifact!(policy, name, alias)
+                @test lock(() -> RustCall.RUST_LIBRARIES[alias][1],
+                           RustCall.REGISTRY_LOCK) == a.handle
+                @test RustCall.library_names_for_handle(a.handle) |> Set ==
+                      Set([name, alias])
+
+                # Unloading *either* name removes both. The image is retired,
+                # not closed, and its flag stays true.
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.unload_artifact!(policy, alias)
+                @test RustCall.DLCLOSE_COUNT[] == before
+                @test !haskey(RustCall.RUST_LIBRARIES, alias)
+                @test !haskey(RustCall.RUST_LIBRARIES, name)   # not left dangling
+                @test a.alive[]
+                @test a.handle in RustCall.retired_handles(name)
+
+                # ...and unloading again is a no-op.
+                @test !RustCall.unload_artifact!(policy, name)
+
+                # One image, one close, however many names it had.
+                @test RustCall.close_retired_handles!([a.handle]) == 1
+                @test RustCall.DLCLOSE_COUNT[] == before + 1
+                @test !a.alive[]
+                @test RustCall.close_retired_handles!([a.handle]) == 0
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    delete!(RustCall.RUST_LIBRARIES, name)
+                    delete!(RustCall.RUST_LIBRARIES, alias)
+                    delete!(RustCall.ARTIFACT_ALIVE, name)
+                    delete!(RustCall.ARTIFACT_ALIVE, alias)
+                end
+            end
+
+            # `unload_all_libraries` walks names, so it must survive an alias
+            # disappearing under it.
+            lib2 = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_alias_probe2() -> i32 { 6 }
+                """)
+            name2 = "loadpolicy_alias_all_$(getpid())"
+            alias2 = name2 * "_second"
+            b2 = RustCall.load_artifact!(policy, lib2; lib_name = name2)
+            RustCall.alias_artifact!(policy, name2, alias2)
+            before = RustCall.DLCLOSE_COUNT[]
+            @test_nowarn RustCall.unload_all_libraries(; close = true)
+            @test isempty(RustCall.RUST_LIBRARIES)
+            @test isempty(RustCall.retired_handles())
+            # One close for the aliased image, whatever else was loaded.
+            @test RustCall.DLCLOSE_COUNT[] >= before + 1
+            @test !b2.alive[]
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # A module-local copy of a handle must not go stale (#277).
+    #
+    # -----------------------------------------------------------------
+    # One image, two names: `dlopen` refcounts, so two opens owe two closes.
+    # Retiring the record and closing once left the last loader reference
+    # unreclaimable and the image mapped for the life of the process (#277).
+    # -----------------------------------------------------------------
+    @testset "retiring an image drains its owned opens" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            path = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_drain_probe() -> i32 { 3 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            first_name = "loadpolicy_drain_a_$(getpid())"
+            second_name = "loadpolicy_drain_b_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, path; lib_name = first_name)
+                b = RustCall.load_artifact!(policy, path; lib_name = second_name)
+                # The same file, so `dlopen` hands back the same image twice.
+                @test a.handle == b.handle
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+
+                RustCall.unload_artifact!(policy, first_name)
+                RustCall.unload_artifact!(policy, second_name)
+                @test a.handle in RustCall.retired_handles()
+
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.close_retired_handles!([a.handle]) == 1
+                # Two opens, two closes: the loader holds no reference now.
+                # One close would have left the image mapped for the life of
+                # the process, with its record already discarded.
+                @test RustCall.DLCLOSE_COUNT[] == before + 2
+                @test !RustCall.artifact_handle_is_owned(a.handle)
+                @test RustCall.artifact_handle_open_count(a.handle) == 0
+                @test !(a.handle in RustCall.retired_handles())
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    for name in (first_name, second_name)
+                        delete!(RustCall.RUST_LIBRARIES, name)
+                        delete!(RustCall.ARTIFACT_ALIVE, name)
+                    end
+                end
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # One mapped image, one liveness flag — across an unload and a reopen.
+    # `unload_library(name)` retires without closing, so the image stays
+    # mapped and its objects hold its flag; the next `dlopen` of that path
+    # answers with the same handle (#277).
+    # -----------------------------------------------------------------
+    @testset "reopening a retired image keeps its liveness flag" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            path = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_reopen_probe() -> i32 { 4 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_reopen_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, path; lib_name = name)
+                # An object allocated now would hold this flag.
+                held = a.alive
+                @test held[]
+
+                RustCall.unload_artifact!(policy, name)
+                @test a.handle in RustCall.retired_handles()
+                @test held[]           # retired, not closed: still callable
+
+                # Reopening the same path: the loader hands back the very same
+                # image, so it must keep the very same flag. A fresh one would
+                # leave `held` watching nothing — and a later close of the new
+                # generation would flip a flag no live object holds.
+                b = RustCall.load_artifact!(policy, path; lib_name = name)
+                @test b.handle == a.handle
+                @test b.alive === held
+                @test !(b.handle in RustCall.retired_handles())
+                @test held[]
+
+                # ...and closing it now does reach the objects that held it.
+                RustCall.unload_artifact!(policy, name)
+                RustCall.close_retired_handles!([b.handle])
+                @test !held[]
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    delete!(RustCall.RUST_LIBRARIES, name)
+                    delete!(RustCall.ARTIFACT_ALIVE, name)
+                end
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # The drain closes what the *retirement* owned, never what a reopen
+    # acquired afterwards (#277).
+    # -----------------------------------------------------------------
+    @testset "the retired drain does not steal a reopen's reference" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            path = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_steal_probe() -> i32 { 5 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_steal_$(getpid())"
+            other = "loadpolicy_steal_other_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, path; lib_name = name)
+                RustCall.unload_artifact!(policy, name)
+                record = lock(() -> RustCall.RETIRED_HANDLES[a.handle],
+                              RustCall.REGISTRY_LOCK)
+                # The record remembers what it was retired with...
+                @test record.owned == 1
+
+                # ...and a reopen under another name takes a reference of its
+                # own, which the drain must not touch.
+                b = RustCall.load_artifact!(policy, path; lib_name = other)
+                @test b.handle == a.handle
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+
+                # The reopen removed the retirement, so there is nothing to
+                # drain — and the live reference survives.
+                @test isempty(intersect(RustCall.retired_handles(), [a.handle]))
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.close_retired_handles!([a.handle]) == 0
+                @test RustCall.DLCLOSE_COUNT[] == before
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+                @test RustCall.call_rust_function(
+                    RustCall.resolve_call_target(other, "rustcall_steal_probe").func_ptr,
+                    Int32) == Int32(5)
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    for n in (name, other)
+                        delete!(RustCall.RUST_LIBRARIES, n)
+                        delete!(RustCall.ARTIFACT_ALIVE, n)
+                    end
+                end
+            end
+        end
+    end
+
+    # A generated `@rust_crate` module reads its handle from its own `Ref` on
+    # every call. A hot reload closes the previous image and `unload_library`
+    # closes it outright, so a raw copy would be a `dlsym` into unmapped
+    # memory. The loader keeps registered mirrors in step.
+    # -----------------------------------------------------------------
+    @testset "handle mirrors follow replace and unload" begin
+        policy = RustCall.LoadPolicy("test-mirror"; sets_current_lib = false)
+        name = "loadpolicy_mirror_$(getpid())"
+        # ONE record, not two `Ref`s. Handle, liveness flag and generation are
+        # published together, so a reader's single deref can never pair one
+        # generation's handle with another's flag (#277).
+        gen_ref = Ref(RustCall.CrateGeneration())
+        first_handle = Ptr{Cvoid}(UInt(0xaaaa0000))
+        second_handle = Ptr{Cvoid}(UInt(0xbbbb0000))
+        try
+            RustCall.register_handle_mirror!(name, gen_ref)
+            # Nothing registered yet, so the mirror is untouched.
+            @test gen_ref[].handle == C_NULL
+
+            a = RustCall.adopt_artifact!(policy, first_handle; lib_name = name)
+            @test gen_ref[].handle == first_handle
+            @test gen_ref[].alive === a.alive
+            @test gen_ref[].alive[]
+            @test gen_ref[].generation == a.generation
+            first_generation = gen_ref[].generation
+            @test first_generation > 0
+
+            # A replace — what a hot reload does — moves the mirror to the new
+            # handle, the new liveness flag and the next generation, in one
+            # transaction and as one value.
+            b = RustCall.adopt_artifact!(policy, second_handle; lib_name = name)
+            @test gen_ref[].handle == second_handle
+            @test gen_ref[].alive === b.alive
+            @test gen_ref[].alive[]
+            @test gen_ref[].generation == first_generation + 1
+            # The previous image is retired but still mapped, so its flag stays
+            # true and objects it allocated still free through it.
+            @test a.alive[]
+            @test first_handle in RustCall.retired_handles(name)
+
+            # An unload empties the mirror, so the module's own check reports
+            # "not loaded" instead of dlsym'ing a closed handle.
+            RustCall.unload_artifact!(policy, name)
+            @test gen_ref[].handle == C_NULL
+            # The *mirror's* slot is emptied — the module's library is gone —
+            # while the artifact's own flag stays true until its image closes.
+            @test !gen_ref[].alive[]
+            @test b.alive[]
+
+            # The mirror stays registered: a reload under the same name — which
+            # is what hot reload is — fills it in again.
+            c = RustCall.adopt_artifact!(policy, first_handle; lib_name = name)
+            @test gen_ref[].handle == first_handle
+            @test gen_ref[].alive === c.alive
+            @test gen_ref[].generation == c.generation
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, name)
+                delete!(RustCall.ARTIFACT_ALIVE, name)
+                delete!(RustCall.HANDLE_MIRRORS, name)
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # `load_artifact!` under concurrency (#277 risk 1).
+    #
+    # `dlopen` is deliberately outside REGISTRY_LOCK, so two tasks loading the
+    # same path both open it. The registry transaction decides the winner and
+    # the loser's duplicate handle is closed rather than left mapped or
+    # swapped in over a live entry.
+    # -----------------------------------------------------------------
+    @testset "load_artifact! is safe under concurrency" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to build a library to load concurrently"
+        else
+            mktempdir() do dir
+                src = joinpath(dir, "conc.rs")
+                write(src, """
+                    #[no_mangle]
+                    pub extern "C" fn rustcall_conc_probe(a: i32) -> i32 { a + 1 }
+                    """)
+                lib = RustCall.compile_rust_to_shared_lib(read(src, String))
+
+                for (mode, expect_one_handle) in ((:insert_only, true), (:replace, false))
+                    name = "loadpolicy_conc_$(mode)_$(getpid())"
+                    policy = RustCall.LoadPolicy("test-conc-$(mode)";
+                                                 registration_mode = mode)
+                    try
+                        n = 8
+                        results = Vector{RustCall.LoadedArtifact}(undef, n)
+                        @sync for i in 1:n
+                            Threads.@spawn results[i] = RustCall.load_artifact!(
+                                policy, lib; lib_name = name,
+                                eager = ("rustcall_conc_probe",))
+                        end
+
+                        # Exactly one entry, and it is the handle every
+                        # :insert_only caller was handed.
+                        entry = lock(() -> RustCall.RUST_LIBRARIES[name],
+                                     RustCall.REGISTRY_LOCK)
+                        @test haskey(entry[2], "rustcall_conc_probe")
+                        if expect_one_handle
+                            @test all(r -> r.handle == entry[1], results)
+                            @test length(unique(r -> r.handle, results)) == 1
+                        else
+                            # :replace — the last writer wins. Every earlier
+                            # generation keeps its flag `true`: its image is
+                            # still mapped (retired, not closed), so objects it
+                            # allocated must still free through it (#249, #277).
+                            @test all(r -> r.alive[], results)
+                            @test any(r -> r.handle == entry[1], results)
+                            # One image, opened `n` times: `dlopen` refcounts
+                            # and hands back the same handle, so there is
+                            # nothing to retire.
+                            @test length(unique(r -> r.handle, results)) == 1
+                        end
+
+                        # The function is callable through the registered entry.
+                        ptr = RustCall.get_function_pointer(name, "rustcall_conc_probe")
+                        @test RustCall.call_rust_function(ptr, Int32, Int32(41)) == Int32(42)
+
+                        RustCall.unload_artifact!(policy, name; close = true)
+                        @test all(r -> !r.alive[], results)
+                        @test !haskey(RustCall.RUST_LIBRARIES, name)
+                        @test isempty(RustCall.retired_handles(name))
+                    finally
+                        lock(RustCall.REGISTRY_LOCK) do
+                            delete!(RustCall.RUST_LIBRARIES, name)
+                            delete!(RustCall.ARTIFACT_ALIVE, name)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # #255: a failed hot reload keeps the previous library.
+    #
+    # _reload_library_locked rebuilds, rescans and dlopens *before* anything is
+    # removed, and the swap is one load_artifact! with on_replace = :dlclose.
+    # There is no unload-first block left, and the rebuild no longer runs with
+    # the registry emptied.
+    # -----------------------------------------------------------------
+    @testset "hot reload rebuilds before it swaps (#255)" begin
+        src = _src("hot_reload.jl")
+        # A replaced image is retired, not closed: a call that started before
+        # the reload may still be inside it (#277).
+        # A replaced image is retired, not closed, and so is an unloaded one:
+        # one code path, `RETIRED_HANDLES` (#277).
+        @test !occursin("on_replace", src)
+        @test occursin("RETIRED_HANDLES", _src("loadpolicy.jl"))
+        @test occursin("close_retired_handles!", _src("loadpolicy.jl"))
+        # The rescan/build guard hashes content, not (mtime, size).
+        @test occursin("_source_fingerprint", src)
+        @test occursin("crate_content_digest", src)
+        @test occursin("_scan_crate_signatures", src)
+        @test !occursin("outside REGISTRY_LOCK", src)  # the old unload-first comment
+        # The rescan happens before the build, so the manifest describes the
+        # sources that were compiled.
+        scan_at = findfirst("_scan_crate_signatures(state.crate_path)", src)
+        build_at = findfirst("rebuild_crate(state.crate_path)", src)
+        @test scan_at !== nothing && build_at !== nothing
+        @test first(scan_at) < first(build_at)
+    end
+
+    @testset "load_artifact! / unload_artifact! / alias_artifact!" begin
+        policy = RustCall.LoadPolicy("test-loader"; sets_current_lib = true)
+        name = "loadpolicy_loader_test_$(getpid())"
+        alias = name * "_alias"
+        handle = Ptr{Cvoid}(UInt(0xfeed0000))
+        previous = RustCall.CURRENT_LIB[]
+        try
+            a = RustCall.adopt_artifact!(policy, handle; lib_name = name,
+                                         symbols = ["f" => "rustcall_f"],
+                                         return_types = ["f" => Int32])
+            @test a isa RustCall.LoadedArtifact
+            @test a.handle == handle
+            @test a.alive[]
+            @test RustCall.CURRENT_LIB[] == name
+            @test RustCall.exported_symbol(name, "f") == "rustcall_f"
+            @test RustCall.get_function_return_type(name, "f") === Int32
+            @test occursin("LoadedArtifact(", sprint(show, a))
+
+            # The alias shares the handle, gets its own metadata rows, and
+            # shares the liveness flag.
+            @test RustCall.alias_artifact!(policy, name, alias)
+            @test RustCall.exported_symbol(alias, "f") == "rustcall_f"
+            @test RustCall.artifact_alive_ref(alias) === a.alive
+
+            # A :replace registration retires the previous artifact — and a
+            # retired image keeps its flag `true`, because it is still mapped
+            # and its objects must still free through it. Only *closing* an
+            # image makes its objects inert (#249).
+            other = Ptr{Cvoid}(UInt(0xf00d0000))
+            b = RustCall.adopt_artifact!(policy, other; lib_name = name)
+            @test a.alive[]
+            @test b.alive[]
+            @test a.alive !== b.alive                  # a flag per generation
+            @test RustCall.exported_symbol(name, "f") == "f"   # metadata replaced
+            # `handle` has NOT left the registry: the alias still names it. An
+            # image is retired when no name reaches it any more, which is what
+            # keeps an alias from being turned into a dangling entry.
+            @test !(handle in RustCall.retired_handles(name))
+            @test RustCall.library_names_for_handle(handle) == [alias]
+
+            # :insert_only keeps the incumbent and reports it — and does not
+            # close the handle it was handed, which is only `load_artifact!`'s
+            # to close because only `load_artifact!` opened it. `handle` here
+            # is a bookkeeping value, never a real image, so closing it would
+            # segfault inside the dynamic loader.
+            insert_only = RustCall.LoadPolicy("test-loader-insert";
+                                              registration_mode = :insert_only)
+            c = RustCall.adopt_artifact!(insert_only, handle; lib_name = name)
+            @test c.handle == other
+            @test c.alive === b.alive
+
+            # Unloading retires by default: the registry rows go, the image
+            # stays mapped, the flag stays true.
+            @test RustCall.unload_artifact!(policy, name)
+            @test b.alive[]
+            @test other in RustCall.retired_handles(name)
+            @test RustCall.CURRENT_LIB[] == ""
+            @test !RustCall.unload_artifact!(policy, name)
+
+            # The alias still holds the first image, so unloading it retires
+            # that one too — and only now, with no name reaching it.
+            @test RustCall.unload_artifact!(policy, alias)
+            @test a.alive[]
+            @test handle in RustCall.retired_handles(alias)
+
+            # `close = true` is what makes objects from an image inert. These
+            # handles were *adopted*, never opened by RustCall, so releasing
+            # them retires the bookkeeping and flips the flags but performs no
+            # `dlclose` — closing a value that was never a real image
+            # segfaults inside glibc's `_dl_close` rather than returning an
+            # error, so "do not close what you did not open" is load-bearing.
+            @test !RustCall.artifact_handle_is_owned(handle)
+            @test !RustCall.artifact_handle_is_owned(other)
+            closes_before = RustCall.DLCLOSE_COUNT[]
+            @test RustCall.close_retired_handles!([handle, other]) == 2
+            @test RustCall.DLCLOSE_COUNT[] == closes_before   # nothing closed
+            @test !a.alive[]
+            @test !b.alive[]
+            # Idempotent: the records are gone, so a second release is a no-op
+            # rather than a second `dlclose` of the same value.
+            @test RustCall.close_retired_handles!([handle, other]) == 0
+            @test RustCall.DLCLOSE_COUNT[] == closes_before
+            @test isempty(RustCall.retired_handles(name))
+            @test isempty(RustCall.retired_handles(alias))
+            @test_throws ArgumentError RustCall.adopt_artifact!(policy, C_NULL;
+                                                               lib_name = name)
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, name)
+                delete!(RustCall.RUST_LIBRARIES, alias)
+                delete!(RustCall.ARTIFACT_ALIVE, name)
+                delete!(RustCall.ARTIFACT_ALIVE, alias)
+            end
+            RustCall.CURRENT_LIB[] = previous
         end
     end
 end

@@ -36,6 +36,7 @@
 //! | `Result` / `Option` payload | `CResult_f` / `COption_f` |
 //! | owned string buffer / release | `<owner>_RustCallOwnedString` / `<owner>_free_rust_string` |
 //! | borrowed string view | `<owner>_RustCallBorrowedString` |
+//! | panic channel of a wrapper | `<wrapper symbol>_take_panic` |
 //!
 //! Only the first three wrap a user-written item and so must step aside from
 //! its name; `<owner>` is the free function, `<Struct>_<method>` or `<Struct>`
@@ -301,9 +302,157 @@ pub(crate) struct WrapperSpec {
     pub target: CallTarget,
 }
 
+/// Suffix of the panic-channel reader a wrapper exports next to itself.
+pub const PANIC_SYMBOL_SUFFIX: &str = "_take_panic";
+
+/// The panic-channel reader of the wrapper exported as `symbol`.
+pub fn panic_symbol(symbol: &str) -> String {
+    format!("{symbol}{PANIC_SYMBOL_SUFFIX}")
+}
+
+/// The per-wrapper panic channel: a thread-local message slot and the
+/// `extern "C"` reader Julia polls after every call (#244).
+///
+/// # Why one channel per wrapper rather than one per crate
+///
+/// The obvious design — a single `rustcall_take_last_panic` per library —
+/// cannot be emitted reliably by a proc macro. `#[julia]` expands one item at a
+/// time and has no crate-wide state it may depend on, so "emit these three
+/// items exactly once per crate" is either a mutable static in the macro
+/// (fragile, and silently produces duplicate symbols when it is wrong) or a
+/// convention the user has to follow. Worse, wherever the shared items landed,
+/// a wrapper in a *different module* could not name them: a `#[no_mangle]`
+/// symbol is not a Rust path, and reaching it would need an `extern "C"`
+/// block, which edition 2024 requires to be written `unsafe extern` — so the
+/// generated code would depend on the user crate's edition.
+///
+/// A channel per wrapper has none of those problems: the slot and its reader
+/// sit in the same module as the wrapper that writes them, are named after a
+/// symbol that is already unique, need no crate-wide coordination and no
+/// `extern` block, and make every library self-contained (a generated `cdylib`
+/// does not link `rust_helpers`). The cost is one thread-local and one exported
+/// symbol per `#[julia]` item.
+///
+/// # Protocol
+///
+/// `<symbol>_take_panic(out, cap) -> usize` returns the byte length of the
+/// pending message, or 0 when there is none. The slot is cleared **only** when
+/// the whole message fitted in `cap`, so a caller that guessed too small a
+/// buffer can simply call again with the length it was told. Nothing is
+/// allocated across the boundary and there is nothing to free.
+fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> TokenStream2 {
+    quote! {
+        #(#cfg_attrs)*
+        thread_local! {
+            static #slot: ::std::cell::RefCell<::std::option::Option<::std::string::String>> =
+                ::std::cell::RefCell::new(::std::option::Option::None);
+        }
+
+        #(#cfg_attrs)*
+        #[no_mangle]
+        pub extern "C" fn #reader(out: *mut u8, cap: usize) -> usize {
+            #slot.with(|rustcall_slot| {
+                let mut rustcall_slot = rustcall_slot.borrow_mut();
+                let rustcall_len = match rustcall_slot.as_ref() {
+                    ::std::option::Option::Some(message) => {
+                        let bytes = message.as_bytes();
+                        if bytes.len() <= cap && !out.is_null() {
+                            unsafe {
+                                ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+                            }
+                            Some(bytes.len())
+                        } else {
+                            // Too small a buffer: report the length and keep
+                            // the message so the caller can ask again.
+                            return bytes.len();
+                        }
+                    }
+                    ::std::option::Option::None => ::std::option::Option::None,
+                };
+                match rustcall_len {
+                    ::std::option::Option::Some(n) => {
+                        *rustcall_slot = ::std::option::Option::None;
+                        n
+                    }
+                    ::std::option::Option::None => 0,
+                }
+            })
+        }
+    }
+}
+
+/// The body of a generated wrapper, with the user's code inside
+/// `catch_unwind`.
+///
+/// A panic no longer crosses `extern "C"` at all: it is caught, its message is
+/// recorded in this wrapper's channel, and a sentinel of the right shape is
+/// returned. Julia reads the channel after the call and raises
+/// `RustCall.RustPanicError` — the process survives and the failure is
+/// catchable, which is what #244 asks for.
+///
+/// The prologue (string argument conversion, receiver binding) runs *inside*
+/// the closure: converting a `(ptr, len)` pair can itself panic, and that panic
+/// must be contained too.
+///
+/// `AssertUnwindSafe` is required because the closure captures raw pointers and
+/// `&mut` receivers. The assertion is sound for the use RustCall makes of it:
+/// on the unwind path the sentinel is returned to Julia, which raises
+/// immediately, so no Rust code observes a value the panic may have left
+/// half-updated. What the *user's* `&mut self` looks like afterwards is their
+/// business — the object is still theirs, and the exception says so.
+fn guarded_body(
+    julia_name: &str,
+    slot: &Ident,
+    prologue: &TokenStream2,
+    body: TokenStream2,
+    sentinel: TokenStream2,
+    returns_unit: bool,
+) -> TokenStream2 {
+    // A unit-returning wrapper must not *evaluate* to `()`: clippy's
+    // `unused_unit` fires on the generated `Ok(v) => v` arm, and the match is a
+    // statement there anyway.
+    let ok_arm = if returns_unit {
+        quote! { ::std::result::Result::Ok(_) => {} }
+    } else {
+        quote! { ::std::result::Result::Ok(rustcall_value) => rustcall_value, }
+    };
+    quote! {
+        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+            #prologue
+            #body
+        })) {
+            #ok_arm
+            ::std::result::Result::Err(rustcall_payload) => {
+                // `panic!("...")` with a literal gives `&'static str`; with
+                // arguments, `String`. Anything else came from
+                // `panic_any` and has no text.
+                let rustcall_message: ::std::string::String =
+                    if let ::std::option::Option::Some(s) =
+                        rustcall_payload.downcast_ref::<&'static str>()
+                    {
+                        ::std::string::ToString::to_string(s)
+                    } else if let ::std::option::Option::Some(s) =
+                        rustcall_payload.downcast_ref::<::std::string::String>()
+                    {
+                        s.clone()
+                    } else {
+                        ::std::string::ToString::to_string("Box<dyn Any>")
+                    };
+                let rustcall_message = ::std::format!(
+                    "{} panicked: {}", #julia_name, rustcall_message);
+                #slot.with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() =
+                        ::std::option::Option::Some(rustcall_message);
+                });
+                #sentinel
+            }
+        }
+    }
+}
+
 /// The single `extern "C"` wrapper generator: every entry point of this module
-/// goes through it, so the string ABI, the `#[cfg]` propagation and the
-/// receiver handling cannot diverge between flavours.
+/// goes through it, so the string ABI, the `#[cfg]` propagation, the receiver
+/// handling and the panic boundary cannot diverge between flavours.
 pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
     let WrapperSpec {
         symbol,
@@ -354,33 +503,85 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
     };
     let prologue = quote! { #(#conversions)* #self_binding };
 
+    // The Julia-facing name this wrapper stands for, used in the panic
+    // message. Derived from the call target rather than from the symbol, so
+    // the message reads `Point::area panicked: ...` and not
+    // `rustcall_Point_area panicked: ...`.
+    let julia_name = match &target {
+        CallTarget::Free(name) => name.to_string(),
+        CallTarget::Assoc { ty, method } => format!("{ty}::{method}"),
+        CallTarget::Instance(method) => match &receiver {
+            Some(r) => format!("{}::{}", r.ty, method),
+            None => method.to_string(),
+        },
+    };
+    let slot = format_ident!("__RUSTCALL_PANIC_{}", symbol.to_string().to_uppercase());
+    let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
+
     let mut out = TokenStream2::new();
+    out.extend(panic_channel(&cfg_attrs, &slot, &reader));
+
     let wrapper = match ret {
-        WrapperReturn::Unit => quote! {
-            #(#cfg_attrs)*
-            #[no_mangle]
-            pub extern "C" fn #symbol(#(#wrapper_args),*) {
-                #prologue
-                #call
+        WrapperReturn::Unit => {
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                quote! { #call },
+                quote! {},
+                true,
+            );
+            quote! {
+                #(#cfg_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #symbol(#(#wrapper_args),*) {
+                    #guarded
+                }
             }
-        },
-        WrapperReturn::Plain(ty) => quote! {
-            #(#cfg_attrs)*
-            #[no_mangle]
-            pub extern "C" fn #symbol(#(#wrapper_args),*) -> #ty {
-                #prologue
-                #call
+        }
+        WrapperReturn::Plain(ty) => {
+            // A zeroed primitive / raw pointer is the sentinel: Julia raises
+            // before it is ever read. Every type that reaches `Plain` is
+            // `#[repr(C)]`-compatible and has no niche that makes all-zero
+            // invalid (`is_ffi_compatible_type`).
+            let sentinel = quote! { unsafe { ::std::mem::zeroed::<#ty>() } };
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                quote! { #call },
+                sentinel,
+                false,
+            );
+            quote! {
+                #(#cfg_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #ty {
+                    #guarded
+                }
             }
-        },
-        WrapperReturn::Boxed(ty) => quote! {
-            #(#cfg_attrs)*
-            #[no_mangle]
-            pub extern "C" fn #symbol(#(#wrapper_args),*) -> *mut #ty {
-                #prologue
+        }
+        WrapperReturn::Boxed(ty) => {
+            let body = quote! {
                 let obj = #call;
                 Box::into_raw(Box::new(obj))
+            };
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                body,
+                quote! { ::std::ptr::null_mut() },
+                false,
+            );
+            quote! {
+                #(#cfg_attrs)*
+                #[no_mangle]
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> *mut #ty {
+                    #guarded
+                }
             }
-        },
+        }
         WrapperReturn::OwnedString {
             helper,
             free,
@@ -389,23 +590,31 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             if declare {
                 out.extend(owned_string_helper(&cfg_attrs, &helper, &free));
             }
+            let body = quote! {
+                let rustcall_value = #call;
+                // `ToString` covers both `String` and a `&str` result that
+                // must be copied because it may borrow from a converted
+                // argument (see `returns_copied_str`).
+                let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
+                let rustcall_ret = #helper {
+                    ptr: rustcall_bytes.as_mut_ptr(),
+                    len: rustcall_bytes.len(),
+                    cap: rustcall_bytes.capacity(),
+                };
+                std::mem::forget(rustcall_bytes);
+                rustcall_ret
+            };
+            // An empty buffer: `ptr` is dangling-but-aligned, `cap == 0`, so
+            // the release function is a no-op on it.
+            let sentinel = quote! {
+                #helper { ptr: ::std::ptr::null_mut(), len: 0, cap: 0 }
+            };
+            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
                 pub extern "C" fn #symbol(#(#wrapper_args),*) -> #helper {
-                    #prologue
-                    let rustcall_value = #call;
-                    // `ToString` covers both `String` and a `&str` result that
-                    // must be copied because it may borrow from a converted
-                    // argument (see `returns_copied_str`).
-                    let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
-                    let rustcall_ret = #helper {
-                        ptr: rustcall_bytes.as_mut_ptr(),
-                        len: rustcall_bytes.len(),
-                        cap: rustcall_bytes.capacity(),
-                    };
-                    std::mem::forget(rustcall_bytes);
-                    rustcall_ret
+                    #guarded
                 }
             }
         }
@@ -413,38 +622,62 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             if declare {
                 out.extend(borrowed_string_helper(&cfg_attrs, &helper));
             }
+            let body = quote! {
+                let rustcall_value = #call;
+                #helper {
+                    ptr: rustcall_value.as_ptr(),
+                    len: rustcall_value.len(),
+                }
+            };
+            let sentinel = quote! {
+                #helper { ptr: ::std::ptr::null(), len: 0 }
+            };
+            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
                 pub extern "C" fn #symbol(#(#wrapper_args),*) -> #helper {
-                    #prologue
-                    let rustcall_value = #call;
-                    #helper {
-                        ptr: rustcall_value.as_ptr(),
-                        len: rustcall_value.len(),
-                    }
+                    #guarded
                 }
             }
         }
         WrapperReturn::CResult { name, ok, err } => {
             out.extend(generate_c_result_type(&name, &ok, &err, &cfg_attrs));
+            // `is_ok = 0` with an uninitialized payload: the `Err` branch, and
+            // Julia raises before it decodes either payload.
+            let sentinel = quote! { #name::panicked() };
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                quote! { #name::new(#call) },
+                sentinel,
+                false,
+            );
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
                 pub extern "C" fn #symbol(#(#wrapper_args),*) -> #name {
-                    #prologue
-                    #name::new(#call)
+                    #guarded
                 }
             }
         }
         WrapperReturn::COption { name, inner } => {
             out.extend(generate_c_option_type(&name, &inner, &cfg_attrs));
+            let sentinel = quote! { #name::panicked() };
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                quote! { #name::new(#call) },
+                sentinel,
+                false,
+            );
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
                 pub extern "C" fn #symbol(#(#wrapper_args),*) -> #name {
-                    #prologue
-                    #name::new(#call)
+                    #guarded
                 }
             }
         }
@@ -537,6 +770,20 @@ fn generate_c_result_type(
             pub fn err(&self) -> Option<&#err_type> {
                 if self.is_ok == 0 { Some(unsafe { self.err_value.assume_init_ref() }) } else { None }
             }
+            /// The value returned after a caught panic (#244): the `Err`
+            /// discriminant with **no** payload initialized.
+            ///
+            /// Julia reads this wrapper's panic channel before it decodes
+            /// anything, and raises `RustPanicError`, so neither payload is
+            /// ever observed. Both stay `MaybeUninit::zeroed()`, which is what
+            /// `new` already writes for the inactive side.
+            pub fn panicked() -> Self {
+                Self {
+                    is_ok: 0,
+                    ok_value: ::std::mem::MaybeUninit::zeroed(),
+                    err_value: ::std::mem::MaybeUninit::zeroed(),
+                }
+            }
         }
     }
 }
@@ -579,6 +826,15 @@ fn generate_c_option_type(
             /// The `Some` value, if any.
             pub fn some(&self) -> Option<&#inner_type> {
                 if self.is_some == 1 { Some(unsafe { self.value.assume_init_ref() }) } else { None }
+            }
+            /// The value returned after a caught panic (#244): the `None`
+            /// discriminant with an uninitialized payload. Julia raises
+            /// `RustPanicError` before it looks at either field.
+            pub fn panicked() -> Self {
+                Self {
+                    is_some: 0,
+                    value: ::std::mem::MaybeUninit::zeroed(),
+                }
             }
         }
     }

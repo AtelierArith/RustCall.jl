@@ -261,15 +261,23 @@ const _RUSTC_CFG_FILE = Dict{String, String}()
     _cfg_rustc_flags(compiler = get_default_compiler()) -> Vector{String}
 
 The rustc flags that decide `#[cfg]` predicates for direct `rustc` builds:
-the same target and codegen options `compile_rust_to_shared_lib` passes
-(`--target`, `-C opt-level`, `-C panic=abort`), so `debug_assertions`,
-`panic = "..."` and `target_*` agree with the library that is actually built.
+the same target and codegen options `compile_rust_to_shared_lib` passes, so
+`debug_assertions`, `panic = "..."` and `target_*` agree with the library that
+is actually built.
+
+The panic flag comes from `inline_rustc_policy()` — the same policy the compile
+path reads — rather than being written out again here. When the two disagreed,
+the probe said `panic = "abort"` while the build unwound, so a
+`#[cfg(panic = "unwind")]` item was pruned from the manifest and never reported
+even though rustc compiled it, and a `#[cfg(panic = "abort")]` item was
+reported and then did not exist (#244, #277 Phase B).
 """
 function _cfg_rustc_flags(compiler = get_default_compiler())
+    panic_flags = rustc_panic_flags(inline_rustc_policy())
     return String[
         "--target=$(compiler.target_triple)",
         "-C", "opt-level=$(compiler.optimization_level)",
-        "-C", "panic=abort",
+        (panic_flags === missing ? String[] : panic_flags)...,
     ]
 end
 
@@ -277,6 +285,11 @@ end
 # (`CARGO_PROFILE_RELEASE_*`), `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS` and
 # `.cargo/config` settings are reflected. Cached per session and environment.
 const _CARGO_CFG_TEXT = Dict{String, String}()
+
+# `rustc --print cfg` probed inside a *specific external crate*, keyed by
+# (crate path, profile, Cargo/RUSTFLAGS environment). See
+# `_crate_build_cfg_text`.
+const _CRATE_CFG_TEXT = Dict{String, String}()
 
 """
     _cargo_probe_profile() -> String
@@ -446,7 +459,10 @@ is built once per session (and per Cargo/RUSTFLAGS environment) with
 when cargo is unavailable or the probe fails.
 """
 function _cargo_cfg_text()
-    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key()
+    # The pinned panic strategy is part of the key: it is part of the
+    # environment the probe runs under, so it decides the answer.
+    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key() * "\n" *
+          string(inline_cargo_policy().panic_strategy)
     lock(_EXTRACTOR_LOCK) do
         get!(_CARGO_CFG_TEXT, key) do
             try
@@ -456,7 +472,16 @@ function _cargo_cfg_text()
                     write(joinpath(dir, "Cargo.toml"),
                           "[package]\nname = \"rustcall_cfg_probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n" *
                           "[lib]\npath = \"src/lib.rs\"\n\n" * _cargo_probe_profile())
-                    out = read(setenv(`$(cargo()) rustc -q --release --lib -- --print cfg`; dir = dir), String)
+                    # The probe must run under the same environment the
+                    # build does, or it decides `#[cfg(panic = ...)]` against a
+                    # different profile than the artifact is compiled with:
+                    # RustCall pins `unwind` for the builds it drives (#244),
+                    # while an inherited `CARGO_PROFILE_RELEASE_PANIC` would
+                    # otherwise reach only the probe.
+                    probe_env = _cargo_panic_env(inline_cargo_policy(), nothing, true)
+                    cmd = `$(cargo()) rustc -q --release --lib -- --print cfg`
+                    probe_env === nothing || (cmd = setenv(cmd, probe_env))
+                    out = read(setenv(cmd; dir = dir), String)
                     # Keep only cfg lines (`name` or `name="value"`).
                     join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
                 end
@@ -484,6 +509,94 @@ function _rustc_cfg_text(flags::Vector{String} = _cfg_rustc_flags())
             end
         end
     end
+end
+
+"""
+    _crate_build_cfg_text(crate_path; profile = "release") -> String
+
+`rustc --print cfg` **as Cargo runs it for that crate**: the crate's own
+features (its defaults and whatever its manifest enables), its build script's
+`cargo:rustc-cfg` output, its `[profile]` settings and the `.cargo/config.toml`
+chain above it all decide the result, because the probe runs Cargo *in the
+crate directory*:
+
+    cargo rustc -q --release --lib -- --print cfg
+
+That is the difference from `_cargo_cfg_text`, which probes a dependency-free
+crate RustCall generates and therefore knows nothing about another crate's
+features. It is what lets an external crate be scanned under the configuration
+it is actually built with, so two mutually exclusive `#[cfg(feature = ...)]`
+variants of one `#[julia] fn` collapse to the one that exists instead of
+staying ambiguous (`_manifest_registry_entries`, #279 / #277 Phase B).
+
+Empty when cargo is unavailable or the probe fails — a crate that does not
+build, or a workspace member Cargo refuses to probe. The caller must treat an
+empty result as "unknown" and fall back to the lenient scan; guessing a
+configuration is worse than not deciding one.
+
+Cached per `(crate path, profile, Cargo/RUSTFLAGS environment)` **and the
+content of everything that decides the answer**: the crate's `Cargo.toml` (its
+`[features]` and their defaults), its `build.rs` (which can emit
+`cargo::rustc-cfg`), and the `.cargo/config.toml` chain from the crate up to
+`CARGO_HOME`. Keyed on the path alone, a hot reload after a feature or
+build-script change reused the previous probe and rescanned the crate against
+`#[cfg]`s the new build does not have — registering the wrong ABI for the
+functions it then called (#255, #277).
+
+**A reload passes `memo = false` and always probes.** The digest above covers
+what RustCall can enumerate, and that is not everything: a `build.rs` may read
+an environment variable, a generated file, or a sibling crate, and emit a
+different `cargo::rustc-cfg` with its own source unchanged. A hot reload is
+exactly the workload where that matters and exactly the one that can afford the
+probe — it has just run a full `cargo build`. The memo therefore serves first
+loads, where the crate has not been built under this process before; a reload
+re-probes unconditionally.
+
+`--print cfg` still resolves and builds the crate's dependencies, but every
+caller today has just built the crate anyway.
+"""
+function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
+                               memo::Bool = true)
+    path = abspath(String(crate_path))
+    key = path * "\n" * String(profile) * "\n" * _cargo_cfg_env_key() * "\n" *
+          _crate_cfg_inputs_digest(path)
+    probe = () -> begin
+            try
+                flag = profile == "release" ? `--release` : ``
+                out = read(setenv(`$(cargo()) rustc -q $flag --lib -- --print cfg`; dir = path), String)
+                join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
+            catch e
+                @debug "Could not probe the build cfg of $(path)" exception = e
+                ""
+            end
+    end
+    lock(_EXTRACTOR_LOCK) do
+        memo || return (_CRATE_CFG_TEXT[key] = probe())
+        get!(probe, _CRATE_CFG_TEXT, key)
+    end
+end
+
+"""
+    _crate_cfg_inputs_digest(path) -> String
+
+A digest of everything, other than the environment, that decides what
+`cargo rustc -- --print cfg` answers for the crate at `path`: its `Cargo.toml`,
+its `build.rs`, and the `.cargo/config.toml` chain Cargo would consult from the
+crate directory upwards (including `CARGO_HOME`).
+
+Not the whole crate: the `.rs` sources do not change the cfg set, and hashing
+them would invalidate the memo on every edit during a hot-reload session — the
+one workload that probes most often. `Cargo.lock` is deliberately absent for
+the reason it is absent from the reload fingerprint: the build writes it.
+"""
+function _crate_cfg_inputs_digest(path::AbstractString)
+    io = IOBuffer()
+    for name in ("Cargo.toml", "build.rs")
+        file = joinpath(path, name)
+        print(io, name, "=", isfile(file) ? _file_content_digest(file) : "absent", "\n")
+    end
+    print(io, "cargo-config=", _cargo_config_digest(ENV; dir = path), "\n")
+    return bytes2hex(sha256(take!(io)))
 end
 
 """
@@ -597,14 +710,18 @@ With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
-                          cfg = :strict)
+                          cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
     args = ["manifest", "--mode", mode]
     skip_unparsable && push!(args, "--skip-unparsable")
-    append!(args, _cfg_file_args(cfg))
+    if cfg_text === nothing
+        append!(args, _cfg_file_args(cfg))
+    else
+        append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
+    end
     text = _run_extractor(vcat(args, files))
     return _parse_manifest(text)
 end

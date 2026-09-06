@@ -95,7 +95,13 @@ function build_rust_helpers()
     # Build with cargo using RustToolChain.jl
     try
         println("  Running: $(cargo()) build --release --manifest-path $cargo_toml")
-        run(`$(cargo()) build --release --manifest-path $cargo_toml`)
+        # `panic = "unwind"` is pinned in deps/rust_helpers/Cargo.toml; setting
+        # it here too means an inherited CARGO_PROFILE_RELEASE_PANIC cannot
+        # decide it either (#244). The two agree by construction: the manifest
+        # is what `helper_library_policy()` describes.
+        build_env = copy(ENV)
+        build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
+        run(setenv(`$(cargo()) build --release --manifest-path $cargo_toml`, build_env))
         println("  ✓ Cargo build completed successfully")
     catch e
         error("""
@@ -173,7 +179,13 @@ function build_rustcall_extract()
 
     try
         println("  Running: $(cargo()) build --release --manifest-path $cargo_toml")
-        run(`$(cargo()) build --release --manifest-path $cargo_toml`)
+        # `panic = "unwind"` is pinned in deps/rust_helpers/Cargo.toml; setting
+        # it here too means an inherited CARGO_PROFILE_RELEASE_PANIC cannot
+        # decide it either (#244). The two agree by construction: the manifest
+        # is what `helper_library_policy()` describes.
+        build_env = copy(ENV)
+        build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
+        run(setenv(`$(cargo()) build --release --manifest-path $cargo_toml`, build_env))
         println("  ✓ Cargo build completed successfully")
     catch e
         error("""

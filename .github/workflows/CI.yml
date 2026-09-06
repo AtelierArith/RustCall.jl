@@ -20,6 +20,10 @@ jobs:
         run: bash scripts/lint_rust_syntax_regex.sh src
       - name: Check that artifact identity goes through src/artifact_id.jl
         run: bash scripts/lint_artifact_identity.sh src
+      - name: Check that loading and registration go through src/loadpolicy.jl
+        run: bash scripts/lint_load_path.sh src
+      - name: Check that every FFI entry point takes one generation snapshot
+        run: bash scripts/lint_generation_snapshot.sh src
 
   rust-tests:
     name: Rust ${{ matrix.rust }} - ${{ matrix.os }} - ${{ matrix.crate }}
@@ -56,32 +60,47 @@ jobs:
         run: cargo test --all-features
 
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
+    # The single-threaded jobs keep the historical names: they are the
+    # required status checks in the repository ruleset for `main`.
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        version:
-          # - 'lts' Dropped 1.10 support
-          - '1'
-        os:
-          - ubuntu-latest
-          - windows-latest
-        arch:
-          - x64
         include:
           - os: ubuntu-latest
             arch: x64
             version: '1'
             test_args: --jobs=4
+            threads: '1'
+            suffix: ''
           - os: windows-latest
             arch: x64
             version: '1'
             test_args: --jobs=2
+            threads: '1'
+            suffix: ''
           - os: macos-latest
             arch: aarch64
             version: '1'
             test_args: --jobs=2
+            threads: '1'
+            suffix: ''
+          # A multithreaded run. Several properties this package guarantees are
+          # only *exercised* with more than one thread: the panic channel is a
+          # thread-local, so its "the wrapper call and the channel read happen
+          # on one thread" rule is invisible single-threaded (#244); so is
+          # `load_artifact!`'s behaviour when two tasks load the same path
+          # (#277), and finalizers running on a thread that is not the one
+          # that allocated (#249). The affected testsets skip themselves when
+          # `Threads.nthreads() < 2`, so without this entry they would never
+          # run anywhere.
+          - os: ubuntu-latest
+            arch: x64
+            version: '1'
+            test_args: --jobs=2
+            threads: '4'
+            suffix: ' - 4 threads'
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
@@ -91,5 +110,7 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+        env:
+          JULIA_NUM_THREADS: ${{ matrix.threads }}
         with:
           test_args: ${{ matrix.test_args }}

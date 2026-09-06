@@ -32,6 +32,8 @@ cd deps/juliacall_macros && cargo test --all-features
 bash scripts/lint_interpolation.sh src
 bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax with regexes
 bash scripts/lint_artifact_identity.sh src  # artifact identity only via src/artifact_id.jl
+bash scripts/lint_load_path.sh src          # dlopen/dlclose/RUST_LIBRARIES only via src/loadpolicy.jl
+bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a snapshot, never piecemeal
 ```
 
 ## Architecture
@@ -74,6 +76,13 @@ bash scripts/lint_artifact_identity.sh src  # artifact identity only via src/art
 - `src/julia_functions.jl` — `RustFunctionSignature` and Julia wrappers for `#[julia]` functions (Result/Option aware)
 - `src/crate_bindings.jl` — crate scanning via the extractor (crate mode), Julia wrapper generation, `@rust_crate` macro
 
+### Loading, unloading and registration happen in exactly one place (issue #277)
+
+- `src/loadpolicy.jl` — `LoadPolicy` (the four decisions a front door used to make for itself: `dlopen` flags, panic strategy, registration, finalizer policy) and the one load path: `load_artifact!` / `adopt_artifact!` / `register_artifact_metadata!` / `unload_artifact!` / `alias_artifact!`. Every door names its own policy (`inline_rustc_policy()`, `inline_cargo_policy()`, `irust_policy()`, `generics_policy()`, `hot_reload_policy()`, `crate_direct_policy()`, `crate_wrapper_policy()`, `helper_library_policy()`), so changing a policy is one edit.
+- Every policy is `RTLD_LOCAL | RTLD_NOW`: nothing RustCall loads needs process-global symbols, because every call goes through `dlsym` on a specific handle. `RUSTCALL_DLOPEN_GLOBAL=1` is a deprecated escape hatch.
+- Every policy RustCall builds is pinned to `panic = "unwind"` — on the `rustc` command line, in the generated `Cargo.toml`, and in `CARGO_PROFILE_<PROFILE>_PANIC` — because the generated `catch_unwind` boundary can only catch a panic that unwinds. See `docs/src/panics.md` for the semantics matrix.
+- Do not call `Libdl.dlopen`/`dlclose` or write `RUST_LIBRARIES[...]` in `src/`; `scripts/lint_load_path.sh` fails CI (`src/llvmcodegen.jl` is the one allowlist, pending #265 Phase 2).
+
 ### Other modules
 
 - `src/generics.jl` — generic function registry and monomorphization through `rustcall-extract specialize`
@@ -86,7 +95,33 @@ bash scripts/lint_artifact_identity.sh src  # artifact identity only via src/art
 
 ## Thread Safety
 
-Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `RUST_MODULE_REGISTRY`, and `GENERIC_FUNCTION_REGISTRY`. A separate `LLVM_REGISTRY_LOCK` protects LLVM operations.
+Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `RUST_MODULE_REGISTRY`, `GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables in `src/codegen.jl` and `ARTIFACT_ALIVE`. A separate `LLVM_REGISTRY_LOCK` protects LLVM operations.
+
+**Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
+
+**The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
+
+**One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point resolves everything it needs — function pointer, panic channel, owned-`String` release function, struct destructor, liveness `Ref`, **and the return ABI** — in **one** locked step, and then uses only that snapshot. Nothing after the snapshot may look anything up by library name: a second lookup can land on the other side of a swap, and the call then enters the retired image while the channel, the `free`, or the return type belongs to its replacement — a lost panic, a buffer released through the wrong allocator, or a scalar read as a struct.
+
+There are exactly four snapshot constructors, and `scripts/lint_generation_snapshot.sh` fails CI if anything else resolves a piece on its own:
+
+| constructor | where | what it returns |
+| --- | --- | --- |
+| `resolve_call_target` | `src/ruststr.jl` | `CallTarget`: pointer, panic channel, owned-`String` release fn, handle, return type / `FunctionInfo`, generation |
+| `artifact_generation_snapshot` | `src/structs.jl` | `ArtifactGeneration`: a struct's destructor + the flag of the image that exports it |
+| `generic_struct_generation_snapshot` | `src/structs.jl` | the same, for a monomorphized generic destructor |
+| `_call_target` / `_struct_generation` | the two `@rust_crate` templates | the same two, from **one deref** of the module's `_LIB_GEN` |
+
+Two consequences worth knowing:
+
+- **A constructor's snapshot includes the object's destructor.** `resolve_call_target(lib, ctor; free_symbol = "<Struct>_free")` returns the allocating wrapper *and* the `free_ptr` / `alive` the resulting object captures, so an object can never be bound to a generation other than the one that allocated it. `_call_rust_constructor` returns `(ptr, target)` for exactly this; the crate templates use `_ctor_target`.
+- **A retired image keeps its identity.** An image is retired, not closed, so it stays mapped with live objects holding its flag; loading the same path again gets the same handle back and adopts that same flag (one mapped image, one flag), and a retirement closes exactly the number of owned opens it was retired with — never the live counter, which a concurrent reopen may have raised.
+- **A cached record is a snapshot too.** `FunctionInfo` (a monomorphized generic, `register_function`) carries the channel, the handle and the generation it was built with, because it is called long after the lookup that produced it.
+- **A generated `@rust_crate` module keeps one immutable record, not several `Ref`s.** `_LIB_GEN::Ref{CrateGeneration}` holds handle + liveness flag + generation, replaced wholesale by `_update_handle_mirrors!` inside the `REGISTRY_LOCK` transaction; wrappers read it once per call and take no lock. Two cells written under one lock and read under another are not a snapshot. `__init__` registers the mirror **before** loading and never assigns it afterwards — an assignment after `load_artifact!` would overwrite a newer generation a concurrent reload had already published.
+
+A replaced image is **retired, not closed**, so a call already inside one stays valid; a cached pointer finds its own image's flag through `alive_ref_for_handle`, never through the name. `test/test_hot_reload_transaction.jl` asserts all of this adversarially: a reload loop against tasks that call, panic, allocate and drop — plus one that reads the crate-module record — checking that no call returns an unpublished generation, that no generation number is ever paired with two different results, that no panic is lost and that no finalizer fails.
+
+`load_artifact!` (`src/loadpolicy.jl`) is the one place a library is opened and registered. `dlopen` runs **outside** the lock — it executes arbitrary init code and is slow — and everything else (handle, function-pointer cache, symbol mappings, return-type hints, `CURRENT_LIB`, liveness flag) is installed in one locked block, so no task can observe a half-registered library. Two tasks racing on the same path both open it; the registration mode decides the winner and the loser's duplicate handle is closed.
 
 ## Testing
 
@@ -98,9 +133,14 @@ Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl
 
 ## CI
 
-Two jobs in `.github/workflows/CI.yml`:
-- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/juliacall_macros` (stable + beta, Linux/macOS/Windows)
-- **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64)
+`.github/workflows/CI.yml`:
+- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/rustcall_core`, `deps/rustcall_extract`, `deps/juliacall_macros` (stable + beta, Linux/macOS/Windows)
+- **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64) with `JULIA_NUM_THREADS=1`, plus **one Ubuntu job with `JULIA_NUM_THREADS=4`**
+- **Code Lint**: every `scripts/lint_*.sh`
+
+**Why the 4-thread job exists.** Three guarantees are only *exercised* with more than one thread, and their testsets skip themselves when `Threads.nthreads() < 2`, so without this job they would never run anywhere: (1) the panic channel is a thread-local — the rule that the wrapper `ccall` and the channel-read `ccall` happen on one thread with no yield point between them (#244) is invisible single-threaded; (2) `load_artifact!` racing two tasks on the same path (#277); (3) finalizers running on a thread other than the allocating one (#249). Keep the skip guards and this job together: a new thread-sensitive test must skip below 2 threads *and* be covered by the 4-thread job.
+
+**Job names are load-bearing.** The repository ruleset for `main` lists `Julia 1 - ubuntu-latest - x64`, `Julia 1 - windows-latest - x64` and `Julia 1 - macos-latest - aarch64` as required status checks. The single-threaded jobs must keep exactly those names (the matrix `suffix` is empty for them); renaming them leaves the required checks unreported and blocks every merge. Add new variants with a suffix (` - 4 threads`) instead of renaming.
 
 ## Known Pitfalls
 

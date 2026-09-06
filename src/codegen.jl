@@ -18,10 +18,30 @@ struct FunctionInfo
     arg_abis::Vector{String}
     string_return::Symbol
     free_ptr::Ptr{Cvoid}
+    # The panic channel of the wrapper `func_ptr` points at, resolved when this
+    # record was built (#244, #277). A cached `FunctionInfo` is a snapshot: it
+    # outlives the lookup that produced it, so looking the channel up later by
+    # library name could find no library — the pointer still enters the mapped
+    # retired image — and a panic would then be read as a successful zero.
+    channel::Ptr{Cvoid}
+    # The image the pointers were resolved on, and which generation of
+    # `lib_name` it was. The handle is what finds the *right* liveness flag
+    # later (`alive_ref_for_handle`): the name's flag may by then belong to a
+    # different image, or be freshly invented for a name nothing is registered
+    # under.
+    handle::Ptr{Cvoid}
+    generation::Int
 end
 
 FunctionInfo(name::String, lib_name::String, return_type::Type, arg_types::Vector{Type}, func_ptr::Ptr{Cvoid}) =
-    FunctionInfo(name, lib_name, return_type, arg_types, func_ptr, String[], :none, C_NULL)
+    FunctionInfo(name, lib_name, return_type, arg_types, func_ptr, String[], :none, C_NULL,
+                 C_NULL, C_NULL, 0)
+
+FunctionInfo(name::String, lib_name::String, return_type::Type, arg_types::Vector{Type},
+             func_ptr::Ptr{Cvoid}, arg_abis::Vector{String}, string_return::Symbol,
+             free_ptr::Ptr{Cvoid}) =
+    FunctionInfo(name, lib_name, return_type, arg_types, func_ptr, arg_abis, string_return,
+                 free_ptr, C_NULL, C_NULL, 0)
 
 """
 Registry for function information.
@@ -127,6 +147,276 @@ function clear_library_metadata!(lib_name::AbstractString)
         for key in collect(keys(FUNCTION_RETURN_TYPES_BY_LIB))
             first(key) == name && delete!(FUNCTION_RETURN_TYPES_BY_LIB, key)
         end
+        # A panic-channel pointer points *into the image*. A library replaced
+        # under the same name — a re-run block, a hot reload — is a different
+        # image, so the pointer must be resolved again rather than called into
+        # the one that was closed (#244).
+        for key in collect(keys(PANIC_CHANNELS))
+            first(key) == name && delete!(PANIC_CHANNELS, key)
+        end
+    end
+    return nothing
+end
+
+"""
+    CallTarget
+
+Everything one FFI call needs, taken from **one generation** of a library.
+
+# Why this is a struct and not three lookups
+
+A library can be replaced between any two lookups — that is what a hot reload
+is — and the pieces of a call belong to *different generations* if they are
+resolved separately. Resolving the function pointer, then the panic channel by
+`(library name, symbol)`, meant a call could enter the retired image and read
+the replacement's channel: the panic it raised would be invisible, and a panic
+the *new* image left there would be reported against a call that never made it.
+The same split applied to a struct's destructor and its liveness flag, and to
+an owned-`String` result whose release function was resolved after the wrapper
+had already returned.
+
+So every entry point takes one snapshot under one lock and uses only that. The
+rule for the whole package: **nothing after the snapshot may look anything up
+by library name.**
+
+# Fields
+
+- `func_ptr` — the wrapper to call.
+- `channel` — that wrapper's panic channel (`C_NULL` when it has none).
+- `free_ptr` — the release function for an owned-`String` result, when the
+  caller asked for one (`C_NULL` otherwise).
+- `alive` — the liveness flag of that image. A **constructor** needs it: the
+  object it returns was allocated by this generation, so it must capture this
+  generation's destructor and this generation's flag, not whatever the library
+  name resolves to after the call returns.
+- `handle` — the image they were resolved on. What finds the right liveness
+  flag later, when the library's *name* may have moved on.
+- `lib_name` — the library the pointers came from, for diagnostics.
+- `return_type` — the return-type hint that library registered for this
+  function (`nothing` when it registered none), and `func_info` — the richer
+  `FunctionInfo` when one is registered. **Both are part of the snapshot**: the
+  return ABI decides how the `ccall` reads the return slot, so taking it from a
+  later lookup could call a pointer from the retired generation while reading
+  its result with the replacement's ABI — a scalar read as a struct, which is
+  memory corruption rather than a wrong answer.
+- `generation` — which generation of `lib_name` all of the above came from.
+"""
+struct CallTarget
+    func_ptr::Ptr{Cvoid}
+    channel::Ptr{Cvoid}
+    free_ptr::Ptr{Cvoid}
+    alive::Base.RefValue{Bool}
+    handle::Ptr{Cvoid}
+    lib_name::String
+    return_type::Union{Type, Nothing}
+    func_info::Union{FunctionInfo, Nothing}
+    generation::Int
+end
+
+"""
+    ArtifactGeneration
+
+The per-object half of a snapshot: what a `#[julia]` struct captures at
+construction so its finalizer needs no lookup at all (#249).
+
+`free_ptr` and `alive` must come from **one** generation: taken separately, an
+object could capture the destructor of the image it was allocated by and the
+liveness flag of the image that replaced it, and would then either skip a free
+it should have made or make one into an image that had been closed.
+"""
+struct ArtifactGeneration
+    handle::Ptr{Cvoid}
+    free_ptr::Ptr{Cvoid}
+    alive::Base.RefValue{Bool}
+    generation::Int
+end
+
+"""
+    PANIC_CHANNELS
+
+`(library name, wrapper symbol)` → the pointer to that wrapper's panic-channel
+reader, or `C_NULL` when the library exports none.
+
+A `#[julia]` wrapper catches the panic, records the message in a thread-local
+slot and exports `<symbol>_take_panic` to read it (#244). Julia has to look
+that symbol up once per wrapper — a `dlsym` per call would cost more than the
+call — and remember the answer, including the negative one: an artifact built
+before #244, or a raw `#[no_mangle]` function the user wrote themselves, has no
+channel and must not be probed again.
+
+Entries are dropped with their library (`purge_library_state!`), so a reloaded
+library re-resolves against the image that is actually mapped rather than
+calling a pointer into a `dlclose`d one.
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const PANIC_CHANNELS = Dict{Tuple{String, String}, Ptr{Cvoid}}()
+
+# Buffer for one panic message. Panic text is short; a message longer than this
+# is fetched again with an exact-size buffer (the channel keeps it until it has
+# been read whole).
+const _PANIC_BUFFER_BYTES = 4096
+
+"""
+    panic_channel_pointer(lib_name, symbol) -> Ptr{Cvoid}
+
+The panic-channel reader of `symbol` in `lib_name`, resolved once and cached
+(`C_NULL` when the library has none).
+"""
+function panic_channel_pointer(lib_name::AbstractString, symbol::AbstractString)
+    lib = String(lib_name)
+    sym = String(symbol)
+    lock(REGISTRY_LOCK) do
+        cached = get(PANIC_CHANNELS, (lib, sym), nothing)
+        cached === nothing || return cached
+        entry = get(RUST_LIBRARIES, lib, nothing)
+        ptr = C_NULL
+        if entry !== nothing
+            found = Libdl.dlsym(entry[1], ffi_panic_symbol(sym); throw_error = false)
+            (found === nothing || found == C_NULL) || (ptr = found)
+        end
+        PANIC_CHANNELS[(lib, sym)] = ptr
+        return ptr
+    end
+end
+
+"""
+    take_rust_panic(channel::Ptr{Cvoid}) -> Union{String, Nothing}
+
+Read and clear the pending panic message of one wrapper, or `nothing` when it
+did not panic.
+
+Two `ccall`s at most, and **the first one allocates nothing**: passing a null
+buffer asks the channel for the length only, which it reports without clearing
+the slot. That matters because the answer is almost always "no panic", and
+because the probe has to happen with nothing at all between it and the wrapper
+call that preceded it — see `guard_rust_panic_ptr`.
+
+The second call, made only when there *is* a message, passes a buffer of
+exactly the length the channel reported and clears the slot.
+"""
+function take_rust_panic(channel::Ptr{Cvoid})
+    channel == C_NULL && return nothing
+    len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
+    len == 0 && return nothing
+    return _fetch_rust_panic(channel, Int(len))
+end
+
+# Separate function so the allocation is out of line: `take_rust_panic` stays
+# small enough to inline as one `ccall` plus a branch on the common path.
+@noinline function _fetch_rust_panic(channel::Ptr{Cvoid}, len::Int)
+    buffer = Vector{UInt8}(undef, len)
+    got = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), buffer, length(buffer))
+    # The slot was emptied between the probe and the fetch. That should not
+    # happen — nothing between them yields, so the task cannot have moved off
+    # this thread — but reporting the panic without its text beats reporting no
+    # panic at all.
+    got == 0 && return "the Rust function panicked (message unavailable)"
+    return String(@view buffer[1:min(Int(got), len)])
+end
+
+"""
+    guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name)
+
+`value`, unless the wrapper whose channel is `channel` panicked — in which case
+the sentinel `value` is discarded and `RustPanicError` is raised.
+
+# Why the channel is a pointer and not a `(library, symbol)` pair
+
+The channel is a **thread-local** in the loaded image, so the wrapper call and
+the channel read have to happen on the same OS thread. A Julia task moves
+between threads only at a yield point, so the rule is that nothing between the
+two may yield — and resolving the channel from a `Dict` under `REGISTRY_LOCK`
+does yield when the lock is contended. That is exactly long enough for the task
+to be rescheduled elsewhere, where it would read an empty slot and miss the
+panic entirely, while a later task landing on the original thread would pick up
+a message that does not belong to it.
+
+So the resolution happens **before** the wrapper call, where yielding is
+harmless, and this function is what runs immediately after it: one `ccall` into
+a thread-local read, no lock, no allocation, no logging. The shape every call
+site uses is
+
+    channel = panic_channel_pointer(lib, symbol)   # may yield: before the call
+    value   = call_rust_function(ptr, T, args...)  # cannot yield
+    guard_rust_panic_ptr(value, channel, name)     # cannot yield
+
+`C_NULL` means the artifact has no channel (built before #244, or a raw
+`#[no_mangle]` function the user wrote), and the guard is then a no-op.
+"""
+function guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name::AbstractString)
+    channel == C_NULL && return value
+    len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
+    len == 0 && return value
+    throw(RustPanicError(String(func_name), _fetch_rust_panic(channel, Int(len))))
+end
+
+"""
+    check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name)
+
+`guard_rust_panic_ptr` for a call whose result is decoded separately — a
+`CResult_*` / `COption_*` payload, or a string buffer. Same rule: the channel
+must already be resolved, and nothing may run between the wrapper call and
+this.
+"""
+check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name::AbstractString) =
+    (guard_rust_panic_ptr(nothing, channel, func_name); nothing)
+
+"""
+    install_library_metadata!(lib_name, symbols, return_types)
+
+Replace everything the registries record about `lib_name` with `symbols`
+(`name => exported symbol` pairs) and `return_types` (`name => Type` pairs).
+
+**The caller must hold `REGISTRY_LOCK`**, and must publish the library handle
+in the same critical section: a task that finds the library in
+`RUST_LIBRARIES` has to find how to resolve its names as well (#279). That is
+what `load_artifact!` does; this is its metadata half, factored out so the
+already-loaded re-registration path (`register_artifact_metadata!`) writes
+exactly the same rows.
+
+Whatever the library recorded before is dropped first, so a library
+re-registered under the same name — a re-run block, a hot reload — keeps
+nothing about a function it no longer defines or now declares differently.
+"""
+function install_library_metadata!(lib_name::AbstractString, symbols, return_types)
+    name = String(lib_name)
+    clear_library_metadata!(name)
+    for (rust_name, symbol) in symbols
+        register_function_symbol(name, rust_name, symbol)
+    end
+    for (key, ret_type) in return_types
+        FUNCTION_RETURN_TYPES_BY_LIB[(name, String(key))] = ret_type
+    end
+    return nothing
+end
+
+"""
+    purge_library_state!(lib_name)
+
+Drop *every* registry row that belongs to `lib_name`: its symbol mappings and
+return-type hints (`clear_library_metadata!`), its `FUNCTION_REGISTRY_BY_LIB`
+entries, the `MONOMORPHIZED_FUNCTIONS` entries whose function pointers point
+into it (stale pointers into an unloaded image are a use-after-free, #73) and
+its `IRUST_FUNCTIONS` rows.
+
+The caller must hold `REGISTRY_LOCK`. Called from `unload_artifact!`, which is
+the only place a library leaves `RUST_LIBRARIES` (#277 Phase B).
+"""
+function purge_library_state!(lib_name::AbstractString)
+    name = String(lib_name)
+    clear_library_metadata!(name)
+    for key in collect(keys(FUNCTION_REGISTRY_BY_LIB))
+        first(key) == name && delete!(FUNCTION_REGISTRY_BY_LIB, key)
+    end
+    for (key, info) in collect(FUNCTION_REGISTRY)
+        info.lib_name == name && delete!(FUNCTION_REGISTRY, key)
+    end
+    for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
+        info.lib_name == name && delete!(MONOMORPHIZED_FUNCTIONS, key)
+    end
+    for (key, (lib, _)) in collect(IRUST_FUNCTIONS)
+        lib == name && delete!(IRUST_FUNCTIONS, key)
     end
     return nothing
 end
@@ -167,8 +457,13 @@ end
 Register a function with its type signature for later calling.
 """
 function register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
-    func_ptr = get_function_pointer(lib_name, name)
-    info = FunctionInfo(name, lib_name, ret_type, arg_types, func_ptr)
+    # One snapshot: the record is cached and used long after this call, so it
+    # carries the panic channel and the handle its pointer came from rather
+    # than a name to look them up by later (#277).
+    target = resolve_call_target(lib_name, name)
+    info = FunctionInfo(name, target.lib_name, ret_type, arg_types, target.func_ptr,
+                        String[], :none, C_NULL,
+                        target.channel, target.handle, target.generation)
     FUNCTION_REGISTRY_BY_LIB[(lib_name, name)] = info
     FUNCTION_REGISTRY[name] = info
     return info
@@ -388,8 +683,8 @@ Uses a generated ccall based on normalized argument types.
 
 # Example
 ```julia
-func_ptr = get_function_pointer("mylib", "add")
-result = call_rust_function(func_ptr, Int32, 10, 20)  # Returns Int32
+target = resolve_call_target("mylib", "add")
+result = call_rust_function(target.func_ptr, Int32, 10, 20)  # Returns Int32
 ```
 """
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
@@ -413,8 +708,8 @@ Call a Rust function with explicit argument types.
 
 # Example
 ```julia
-func_ptr = get_function_pointer("mylib", "multiply")
-result = call_rust_function(func_ptr, Float64, [Float64, Float64], 3.14, 2.0)
+target = resolve_call_target("mylib", "multiply")
+result = call_rust_function(target.func_ptr, Float64, [Float64, Float64], 3.14, 2.0)
 ```
 """
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, arg_types::Vector{Type}, args...)
@@ -497,8 +792,11 @@ Low-level macro for calling a Rust function with explicit types.
 macro rust_ccall(func_name, ret_type, arg_types, args...)
     func_name_str = string(func_name)
     return quote
-        lib_name = get_current_library()
-        func_ptr = get_function_pointer(lib_name, $func_name_str)
-        ccall(func_ptr, $(esc(ret_type)), $(esc(arg_types)), $(map(esc, args)...))
+        # One snapshot, like every other door: pointer and panic channel from
+        # the same generation (#277).
+        target = resolve_call_target(get_current_library(), $func_name_str)
+        guard_rust_panic_ptr(
+            ccall(target.func_ptr, $(esc(ret_type)), $(esc(arg_types)), $(map(esc, args)...)),
+            target.channel, $func_name_str)
     end
 end

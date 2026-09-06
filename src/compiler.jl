@@ -216,7 +216,13 @@ function _compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_def
                 "--emit=llvm-ir",
                 "--crate-type=cdylib",
                 "-C", "opt-level=$(compiler.optimization_level)",
-                "-C", "panic=abort",  # Simpler error handling for FFI
+                # Unwinding is what makes the generated `catch_unwind`
+                # boundary able to catch anything at all: an aborting profile
+                # terminates the process before any boundary runs, so a Rust
+                # bug would still take the Julia session with it (#244).
+                # Pinned by the policy, not left to rustc's default, so this
+                # cannot drift from what the Cargo path does.
+                rustc_panic_flags(inline_rustc_policy())...,
                 "--target=$(compiler.target_triple)",
                 "-o", ll_file,
                 rs_file
@@ -378,7 +384,9 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
             [
                 "--crate-type=cdylib",
                 "-C", "opt-level=$(compiler.optimization_level)",
-                "-C", "panic=abort",
+                # See the LLVM-IR path above: unwinding is what the generated
+                # `catch_unwind` boundary needs (#244).
+                rustc_panic_flags(inline_rustc_policy())...,
                 "--target=$(compiler.target_triple)",
                 "-o", lib_file,
                 rs_file
