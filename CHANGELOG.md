@@ -64,17 +64,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     object whose library was unloaded goes inert rather than calling into a
     closed image.
 
-  - **A hot reload retires the image it replaces instead of closing it.** A
-    call that started before the swap may still be running inside the old
-    image, and closing it there is a use-after-`dlclose`; RustCall has no
-    per-call reader pin, and adding one would put two atomics on every FFI
-    call. The old image stays mapped and unreachable — a few hundred kilobytes
-    — until you say it is safe to reclaim:
-    `unload_library(name; close_retired = true)` or
-    `unload_all_libraries(; close_retired = true)`.
-    `RustCall.retired_handles(name)` lists them. Objects allocated by a retired
-    image still free correctly: their finalizer holds their own image's
-    destructor, and that image is still mapped.
+  - **Libraries are retired, not closed.** A hot reload replacing a library
+    and `unload_library` dropping one both remove everything that *reaches*
+    the library and leave the image mapped. A call that started a moment
+    earlier may still be inside it, and closing it there is a
+    use-after-`dlclose`; RustCall has no per-call reader pin, and adding one
+    would put two atomics on every FFI call. The image costs a few hundred
+    kilobytes until you say it is safe to reclaim:
+    `unload_library(name; close = true)` or
+    `unload_all_libraries(; close = true)`. `RustCall.retired_handles()` lists
+    what is waiting.
+
+    While an image is retired its objects keep working — a finalizer holds its
+    own image's destructor and that image is still mapped, so an object
+    allocated before a reload still frees through the code that allocated it.
+    Closing is the moment objects of that image become inert (they leak rather
+    than jumping into unmapped code), so `close = true` says both "no call is
+    in flight" and "I accept that surviving objects will not be freed".
 
   - **A failed hot reload keeps the previous library**
     ([#255](https://github.com/AtelierArith/RustCall.jl/issues/255)). The

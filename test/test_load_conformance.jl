@@ -155,7 +155,10 @@ end
             alive = RustCall.artifact_alive_ref(lib)
             @test alive[]
 
-            RustCall.unload_library(lib)
+            # `close = true`: unloading alone retires the image and keeps its
+            # objects able to free through it; closing is what retires them
+            # too (#249, #277).
+            RustCall.unload_library(lib; close = true)
 
             after = _conformance_registry_rows(lib)
             for (name, count) in after
@@ -335,9 +338,16 @@ end
                     # The module does not hold a *raw* handle: unloading the
                     # library empties its mirror, so the next call reports
                     # "not loaded" instead of `dlsym`ing a closed image (#277).
-                    crate_lib = first(crate_libs)
                     survivor = Base.invokelatest(bindings.PanicCounter, Int32(3))
-                    RustCall.unload_library(crate_lib)
+                    # Ask the *generated module* for its library name rather
+                    # than recomputing it or picking one of the several
+                    # `rust_crate_*` entries this file loads — it is the module
+                    # whose objects are about to be tested.
+                    crate_module = parentmodule(typeof(survivor))
+                    crate_lib = getfield(crate_module, :_LIB_NAME)
+                    @test crate_lib in crate_libs
+                    @test getfield(survivor, :alive) === RustCall.artifact_alive_ref(crate_lib)
+                    RustCall.unload_library(crate_lib; close = true)
                     err = try
                         Base.invokelatest(bindings.add, Int32(1), Int32(1))
                         nothing

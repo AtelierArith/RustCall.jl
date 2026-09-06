@@ -556,7 +556,7 @@ end
             @test m2_handle[] == h2
             @test m1_alive[] !== m2_alive[]
 
-            RustCall.unload_artifact!(policy, release; dlclose = false)
+            RustCall.unload_artifact!(policy, release)
             @test m1_handle[] == C_NULL
             @test !m1_alive[][]
             # The other profile is untouched.

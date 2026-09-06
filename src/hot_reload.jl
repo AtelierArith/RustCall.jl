@@ -308,15 +308,13 @@ function _reload_library_locked(state::HotReloadState)
         symbols, return_types = signatures === nothing ? ((), ()) :
                                 _manifest_registry_entries(signatures)
 
-        # The swap. `on_replace = :retire` moves the previous image onto the
-        # retired list instead of closing it: a call that started before the
-        # reload may still be running inside it, and there is no per-call
-        # reader pin that would make closing safe (`RETIRED_HANDLES`). A
-        # failure anywhere above never reaches here.
+        # The swap. The previous image is retired, not closed: a call that
+        # started before the reload may still be running inside it, and there
+        # is no per-call reader pin that would make closing safe
+        # (`RETIRED_HANDLES`). A failure anywhere above never reaches here.
         state.lib_path = new_lib_path
         load_artifact!(hot_reload_policy(), new_lib_path;
-                       lib_name = state.lib_name, symbols, return_types,
-                       on_replace = :retire)
+                       lib_name = state.lib_name, symbols, return_types)
         # Monomorphizations resolved against the previous image hold raw
         # pointers into it (#73); they belong to the replaced artifact, not to
         # the new one.

@@ -138,10 +138,11 @@ The rules the finalizer follows, and why:
   the free get disabled in the first place.
 * **It cannot double-free.** The pointer is set to `C_NULL` *before* the call,
   so a second finalization is a no-op.
-* **It cannot call into an unloaded library.** `unload_library` flips the
-  library's liveness flag, and a finalizer whose flag is `false` returns
-  without calling. An object outliving its library is inert, not a jump into
-  freed text.
+* **It cannot call into a closed library.** Closing an image flips its
+  liveness flag, and a finalizer whose flag is `false` returns without calling.
+  An object outliving its image is inert, not a jump into freed text. Merely
+  *unloading* does not flip it — the image is still mapped, so the object still
+  frees correctly (see "Libraries are retired, not closed").
 * **A method call on a freed object raises**, rather than dereferencing a null
   pointer.
 
@@ -149,35 +150,43 @@ If you need the Rust object to outlive the Julia wrapper, do not let the
 wrapper be collected — keep a reference, or use `GC.@preserve` around the
 region where the raw pointer is used.
 
-### A replaced library is retired, not closed
+### Libraries are retired, not closed
 
-When a hot reload swaps a library, the image it replaces stays **mapped**. It
-is never resolved against again — the registry, the symbol tables, the panic
-channels and the generated modules all point at the new one — but it is not
-`dlclose`d.
+A library leaves the registry two ways: a hot reload replaces it, or you call
+`unload_library`. **Neither closes the image.** Everything that *reaches* the
+library goes — the registry entry, the symbol tables, the return-type hints,
+the monomorphizations, the panic channels, the generated modules' handles — but
+the image itself stays mapped.
 
-The reason is that a call can be in flight. A task that read a function pointer
-a moment before the swap is *inside* the old image when it happens, and closing
-it there is a use-after-`dlclose`: a segfault, not an error. Making the close
-safe would need a reader pin on every FFI call — two atomics on the hot path,
+The reason is the same in both cases: a call can be in flight. A task that read
+a function pointer a moment earlier is *inside* that image, and closing it
+there is a use-after-`dlclose` — a segfault, not an error. Making the close
+safe would need a reader pin on every FFI call: two atomics on the hot path,
 paid by every call, to guard against something that happens at most once per
-rebuild. A retired image costs a few hundred kilobytes instead.
+reload. A retired image costs a few hundred kilobytes instead.
 
-Objects allocated by a retired image are unaffected: their finalizer holds the
-destructor pointer of *their own* image, which is still mapped, so they free
-through the code that allocated them. That is the allocator contract below,
-holding by construction.
+While an image is retired its objects keep working. A finalizer holds the
+destructor pointer of *its own* image, and that image is still mapped, so an
+object allocated before a reload still frees through the code that allocated
+it. That is the allocator contract below, holding by construction — and it is
+why retirement does not leak: only the code is kept, not the data.
 
 To reclaim the memory, say that nothing is in flight:
 
 ```julia
-RustCall.unload_library(name; close_retired = true)
-RustCall.unload_all_libraries(; close_retired = true)
+RustCall.unload_library(name; close = true)
+RustCall.unload_all_libraries(; close = true)
 ```
 
-`RustCall.retired_handles(name)` lists what is waiting. A REPL session editing
-Rust in a loop never needs this; a long-running process that reloads thousands
-of times, or a test harness, does.
+`RustCall.retired_handles()` lists what is waiting, and
+`RustCall.retired_handles(name)` narrows it to one library. Closing is also the
+moment an image's objects become **inert**: a finalizer whose image has been
+closed does nothing, leaking that object rather than jumping into unmapped
+code. So `close = true` says two things at once — "no call is in flight" and
+"I accept that surviving objects will not be freed".
+
+A REPL session editing Rust in a loop never needs any of this. A long-running
+process that reloads thousands of times, or a test harness, does.
 
 ### The allocator contract
 

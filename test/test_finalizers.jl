@@ -10,6 +10,7 @@
 #   (d) the allocator contract is documented.
 
 using Test
+using Libdl
 using RustCall
 
 const _FIN_SRC = joinpath(dirname(dirname(pathof(RustCall))), "src")
@@ -206,7 +207,80 @@ end
             @test_throws RustCall.RustError obj.value
         end
 
-        @testset "an object outliving its library is inert" begin
+        @testset "an object outliving a *retired* image still frees" begin
+            # A retired image is still mapped, so the destructor an object
+            # captured is still there — and the object must run it, or every
+            # reload would leak everything allocated before it. Only *closing*
+            # the image makes objects from it inert (#249, #277).
+            rust"""
+            use std::sync::atomic::{AtomicI64, Ordering};
+
+            static RETIRE_LIVE: AtomicI64 = AtomicI64::new(0);
+
+            #[julia]
+            pub struct RetireTracked {
+                value: i32,
+            }
+
+            impl RetireTracked {
+                pub fn new(value: i32) -> Self {
+                    RETIRE_LIVE.fetch_add(1, Ordering::SeqCst);
+                    RetireTracked { value }
+                }
+            }
+
+            impl Drop for RetireTracked {
+                fn drop(&mut self) {
+                    RETIRE_LIVE.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+
+            #[julia]
+            fn retire_live() -> i64 {
+                RETIRE_LIVE.load(Ordering::SeqCst)
+            }
+            """
+
+            baseline = retire_live()
+            obj = RetireTracked(Int32(5))
+            survivor = RetireTracked(Int32(6))
+            lib = getfield(obj, :lib_name)
+            alive = getfield(obj, :alive)
+            @test retire_live() == baseline + 2
+            @test alive[]
+
+            # Retire the library — what a hot reload does to the image it
+            # replaces, and what `unload_library` now does too.
+            @test RustCall.unload_artifact!(RustCall.inline_rustc_policy(), lib)
+            retired = RustCall.retired_handles(lib)
+            @test length(retired) == 1
+            # The flag stays true: the image is still mapped.
+            @test alive[]
+
+            # The counter lives *in* the retired image, and reading it through
+            # the retired handle is itself the proof that the image is still
+            # there — the Julia wrapper cannot help, its library is gone from
+            # the registry.
+            probe = Libdl.dlsym(only(retired), "rustcall_retire_live")
+            live() = RustCall.call_rust_function(probe, Int64)
+            @test live() == baseline + 2
+
+            # ...so the destructor runs, through the retired image.
+            finalize(obj)
+            @test live() == baseline + 1
+            @test RustCall.finalizer_failure_count() == 0
+
+            # Closing the image is what makes the *other* object inert: it
+            # leaks rather than jumping into unmapped code.
+            @test RustCall.close_retired_handles!(retired) == 1
+            @test !alive[]
+            @test !getfield(survivor, :alive)[]
+            finalize(survivor)
+            @test getfield(survivor, :ptr) == C_NULL
+            @test RustCall.finalizer_failure_count() == 0
+        end
+
+        @testset "an object outliving a *closed* image is inert" begin
             # A *separate* library, whose counter lives in its own block: the
             # unload below retires that library, so its own `tracked_live`
             # equivalent must not be the thing we then call.
@@ -241,11 +315,11 @@ end
             @test alive[]
             @test free_ptr != C_NULL
 
-            # Retire the library's bookkeeping without closing the image: the
-            # flag flips, so the finalizer declines to call the destructor
-            # instead of jumping into what may be freed text. Leaking one
-            # object is the right trade against a jump into an unmapped page.
-            RustCall.unload_artifact!(RustCall.inline_rustc_policy(), lib; dlclose = false)
+            # Unload *and close*: the image is gone, so the flag flips and the
+            # finalizer declines to call the destructor instead of jumping into
+            # unmapped code. Leaking one object is the right trade.
+            RustCall.unload_artifact!(RustCall.inline_rustc_policy(), lib;
+                                      close = true)
             @test !alive[]
 
             failures_before = RustCall.finalizer_failure_count()

@@ -613,17 +613,24 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 @test RustCall.library_names_for_handle(a.handle) |> Set ==
                       Set([name, alias])
 
-                # Unloading *either* name removes both, and closes once.
+                # Unloading *either* name removes both. The image is retired,
+                # not closed, and its flag stays true.
                 before = RustCall.DLCLOSE_COUNT[]
                 @test RustCall.unload_artifact!(policy, alias)
-                @test RustCall.DLCLOSE_COUNT[] == before + 1
+                @test RustCall.DLCLOSE_COUNT[] == before
                 @test !haskey(RustCall.RUST_LIBRARIES, alias)
                 @test !haskey(RustCall.RUST_LIBRARIES, name)   # not left dangling
-                @test !a.alive[]
+                @test a.alive[]
+                @test a.handle in RustCall.retired_handles(name)
 
-                # ...and unloading again is a no-op rather than a second close.
+                # ...and unloading again is a no-op.
                 @test !RustCall.unload_artifact!(policy, name)
+
+                # One image, one close, however many names it had.
+                @test RustCall.close_retired_handles!([a.handle]) == 1
                 @test RustCall.DLCLOSE_COUNT[] == before + 1
+                @test !a.alive[]
+                @test RustCall.close_retired_handles!([a.handle]) == 0
             finally
                 lock(RustCall.REGISTRY_LOCK) do
                     delete!(RustCall.RUST_LIBRARIES, name)
@@ -641,13 +648,15 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 """)
             name2 = "loadpolicy_alias_all_$(getpid())"
             alias2 = name2 * "_second"
-            RustCall.load_artifact!(policy, lib2; lib_name = name2)
+            b2 = RustCall.load_artifact!(policy, lib2; lib_name = name2)
             RustCall.alias_artifact!(policy, name2, alias2)
             before = RustCall.DLCLOSE_COUNT[]
-            @test_nowarn RustCall.unload_all_libraries()
+            @test_nowarn RustCall.unload_all_libraries(; close = true)
             @test isempty(RustCall.RUST_LIBRARIES)
+            @test isempty(RustCall.retired_handles())
             # One close for the aliased image, whatever else was loaded.
             @test RustCall.DLCLOSE_COUNT[] >= before + 1
+            @test !b2.alive[]
         end
     end
 
@@ -682,14 +691,19 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             @test handle_ref[] == second_handle
             @test alive_ref[] === b.alive
             @test alive_ref[][]
-            @test !a.alive[]              # the previous artifact is retired
+            # The previous image is retired but still mapped, so its flag stays
+            # true and objects it allocated still free through it.
+            @test a.alive[]
+            @test first_handle in RustCall.retired_handles(name)
 
             # An unload empties the mirror, so the module's own check reports
             # "not loaded" instead of dlsym'ing a closed handle.
-            RustCall.unload_artifact!(policy, name; dlclose = false)
+            RustCall.unload_artifact!(policy, name)
             @test handle_ref[] == C_NULL
+            # The *mirror's* slot is emptied — the module's library is gone —
+            # while the artifact's own flag stays true until its image closes.
             @test !alive_ref[][]
-            @test !b.alive[]
+            @test b.alive[]
 
             # The mirror stays registered: a reload under the same name — which
             # is what hot reload is — fills it in again.
@@ -747,19 +761,26 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                             @test all(r -> r.handle == entry[1], results)
                             @test length(unique(r -> r.handle, results)) == 1
                         else
-                            # :replace — the last writer wins, and every
-                            # artifact but the live one has been retired.
-                            @test count(r -> r.alive[], results) == 1
+                            # :replace — the last writer wins. Every earlier
+                            # generation keeps its flag `true`: its image is
+                            # still mapped (retired, not closed), so objects it
+                            # allocated must still free through it (#249, #277).
+                            @test all(r -> r.alive[], results)
                             @test any(r -> r.handle == entry[1], results)
+                            # One image, opened `n` times: `dlopen` refcounts
+                            # and hands back the same handle, so there is
+                            # nothing to retire.
+                            @test length(unique(r -> r.handle, results)) == 1
                         end
 
                         # The function is callable through the registered entry.
                         ptr = RustCall.get_function_pointer(name, "rustcall_conc_probe")
                         @test RustCall.call_rust_function(ptr, Int32, Int32(41)) == Int32(42)
 
-                        RustCall.unload_artifact!(policy, name)
+                        RustCall.unload_artifact!(policy, name; close = true)
                         @test all(r -> !r.alive[], results)
                         @test !haskey(RustCall.RUST_LIBRARIES, name)
+                        @test isempty(RustCall.retired_handles(name))
                     finally
                         lock(RustCall.REGISTRY_LOCK) do
                             delete!(RustCall.RUST_LIBRARIES, name)
@@ -783,8 +804,11 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         src = _src("hot_reload.jl")
         # A replaced image is retired, not closed: a call that started before
         # the reload may still be inside it (#277).
-        @test occursin("on_replace = :retire", src)
-        @test !occursin("on_replace = :dlclose", src)
+        # A replaced image is retired, not closed, and so is an unloaded one:
+        # one code path, `RETIRED_HANDLES` (#277).
+        @test !occursin("on_replace", src)
+        @test occursin("RETIRED_HANDLES", _src("loadpolicy.jl"))
+        @test occursin("close_retired_handles!", _src("loadpolicy.jl"))
         # The rescan/build guard hashes content, not (mtime, size).
         @test occursin("_source_fingerprint", src)
         @test occursin("crate_content_digest", src)
@@ -822,12 +846,21 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             @test RustCall.exported_symbol(alias, "f") == "rustcall_f"
             @test RustCall.artifact_alive_ref(alias) === a.alive
 
-            # A :replace registration retires the previous artifact.
+            # A :replace registration retires the previous artifact — and a
+            # retired image keeps its flag `true`, because it is still mapped
+            # and its objects must still free through it. Only *closing* an
+            # image makes its objects inert (#249).
             other = Ptr{Cvoid}(UInt(0xf00d0000))
             b = RustCall.adopt_artifact!(policy, other; lib_name = name)
-            @test !a.alive[]
+            @test a.alive[]
             @test b.alive[]
+            @test a.alive !== b.alive                  # a flag per generation
             @test RustCall.exported_symbol(name, "f") == "f"   # metadata replaced
+            # `handle` has NOT left the registry: the alias still names it. An
+            # image is retired when no name reaches it any more, which is what
+            # keeps an alias from being turned into a dangling entry.
+            @test !(handle in RustCall.retired_handles(name))
+            @test RustCall.library_names_for_handle(handle) == [alias]
 
             # :insert_only keeps the incumbent and reports it — and does not
             # close the handle it was handed, which is only `load_artifact!`'s
@@ -840,15 +873,28 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             @test c.handle == other
             @test c.alive === b.alive
 
-            @test RustCall.unload_artifact!(policy, name; dlclose = false)
-            @test !b.alive[]
+            # Unloading retires by default: the registry rows go, the image
+            # stays mapped, the flag stays true.
+            @test RustCall.unload_artifact!(policy, name)
+            @test b.alive[]
+            @test other in RustCall.retired_handles(name)
             @test RustCall.CURRENT_LIB[] == ""
-            @test !RustCall.unload_artifact!(policy, name; dlclose = false)
+            @test !RustCall.unload_artifact!(policy, name)
+
+            # The alias still holds the first image, so unloading it retires
+            # that one too — and only now, with no name reaching it.
+            @test RustCall.unload_artifact!(policy, alias)
+            @test a.alive[]
+            @test handle in RustCall.retired_handles(alias)
+
+            # `close = true` is what makes objects from an image inert.
+            @test RustCall.close_retired_handles!([handle, other]) == 2
+            @test !a.alive[]
+            @test !b.alive[]
+            @test isempty(RustCall.retired_handles(name))
+            @test isempty(RustCall.retired_handles(alias))
             @test_throws ArgumentError RustCall.adopt_artifact!(policy, C_NULL;
                                                                lib_name = name)
-            @test_throws ArgumentError RustCall.adopt_artifact!(policy, handle;
-                                                               lib_name = name,
-                                                               on_replace = :burn)
         finally
             lock(RustCall.REGISTRY_LOCK) do
                 delete!(RustCall.RUST_LIBRARIES, name)

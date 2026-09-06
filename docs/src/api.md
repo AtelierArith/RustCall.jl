@@ -445,13 +445,13 @@ end
 Every compiled artifact is opened, registered and unloaded through one path
 (`src/loadpolicy.jl`). The user-facing halves of it:
 
-- `RustCall.unload_library(name; close_retired = false)` /
-  `RustCall.unload_all_libraries(; close_retired = false)` — drop a library and
-  everything the registries record about it, retiring the objects it produced.
-  `close_retired = true` also closes the images previous hot reloads replaced,
-  which are kept mapped by default in case a call is still inside one.
-- `RustCall.retired_handles(name)` — the replaced-but-still-mapped images of a
-  library.
+- `RustCall.unload_library(name; close = false)` /
+  `RustCall.unload_all_libraries(; close = false)` — drop everything the
+  registries record about a library. The image stays mapped by default, because
+  a call may still be inside it; `close = true` reclaims it, and is the caller
+  stating that none is.
+- `RustCall.retired_handles()` / `RustCall.retired_handles(name)` — the images
+  that have left the registry and are still mapped.
 - `RustCall.list_loaded_libraries()` — the registered library names, which now
   include `@rust_crate` libraries.
 - `RustCall.RustPanicError` — a Rust `panic!` caught at the FFI boundary.

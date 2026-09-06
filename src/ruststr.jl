@@ -992,33 +992,41 @@ function list_library_functions(lib_name::String)
 end
 
 """
-    unload_library(lib_name::String; close_retired = false)
+    unload_library(lib_name::String; close = false)
 
-Unload a Rust library and free its resources.
+Retire a Rust library: remove everything the registries record about it.
 
 A thin wrapper over `unload_artifact!` (`src/loadpolicy.jl`), which is the one
-place a library leaves the registry (#277 Phase B). Besides the handle and the
-`RUST_LIBRARIES` entry it drops everything the registries record about the
-library — its name-to-symbol mappings and return-type hints (a stale mapping
-would keep redirecting lookups to a symbol that is no longer loaded, #279), its
-`FUNCTION_REGISTRY` rows, the monomorphizations whose pointers point into it
-(#73) and its `@irust` memos — and flips the library's liveness flag, which is
-what keeps a finalizer of an object it produced from calling into the closed
-image (#249).
+place a library leaves the registry (#277 Phase B). It drops everything the
+registries record about the library — its name-to-symbol mappings and
+return-type hints (a stale mapping would keep redirecting lookups to a symbol
+that is no longer reachable, #279), its `FUNCTION_REGISTRY` rows, the
+monomorphizations whose pointers point into it (#73), its `@irust` memos and
+its panic channels.
+
+**The image stays mapped.** Unloading is the same act as a hot reload replacing
+a library, and unsafe to close for the same reason: a call that started a
+moment ago may still be inside it. The image is retired
+(`RustCall.retired_handles`) and keeps its liveness flag, so an object it
+allocated still runs its destructor through it.
+
+`close = true` reclaims it — the caller stating that no call into it is in
+flight. That, and only that, makes objects from the image inert (#249, #277).
 """
-function unload_library(lib_name::String; close_retired::Bool = false)
-    if !unload_artifact!(inline_rustc_policy(), lib_name; close_retired)
+function unload_library(lib_name::String; close::Bool = false)
+    if !unload_artifact!(inline_rustc_policy(), lib_name; close)
         @warn "Library '$lib_name' not loaded"
     end
     return nothing
 end
 
 """
-    unload_all_libraries()
+    unload_all_libraries(; close = false)
 
-Unload all loaded Rust libraries.
+Retire every loaded Rust library. `close = true` also closes every retired
+image — see `unload_library`.
 """
-function unload_all_libraries(; close_retired::Bool = false)
+function unload_all_libraries(; close::Bool = false)
     # One image may sit under several names (`alias_artifact!`), and unloading
     # any of them removes them all and closes the image once. So the loop
     # re-checks rather than warning about a name a previous iteration already
@@ -1028,21 +1036,12 @@ function unload_all_libraries(; close_retired::Bool = false)
             isempty(RUST_LIBRARIES) ? nothing : first(keys(RUST_LIBRARIES))
         end
         name === nothing && break
-        unload_artifact!(inline_rustc_policy(), name; close_retired)
+        unload_artifact!(inline_rustc_policy(), name; close)
     end
-    # A library that was hot-reloaded and then unloaded leaves its retired
-    # images behind under a name that is no longer registered; sweep them too
-    # when the caller says it is safe.
-    if close_retired
-        leftovers = lock(REGISTRY_LOCK) do
-            handles = collect(Iterators.flatten(values(RETIRED_HANDLES)))
-            empty!(RETIRED_HANDLES)
-            handles
-        end
-        for handle in leftovers
-            close_artifact_handle!(handle)
-        end
-    end
+    # Images retired under a name that is no longer registered — a library that
+    # was hot-reloaded and then unloaded — are swept too, when the caller says
+    # it is safe.
+    close && close_retired_handles!()
     return nothing
 end
 

@@ -103,7 +103,6 @@ end
         @test occursin("cp(built, new_lib_path; force = true)", _HRT_SRC)
         # The previous image is RETIRED after the swap, never closed under a
         # call that may still be inside it (#277).
-        @test occursin("on_replace = :retire", _HRT_SRC)
         @test !occursin("on_replace = :dlclose", _HRT_SRC)
         @test findfirst("rebuild_crate(state.crate_path)", _HRT_SRC) <
               findfirst("_generation_path(built", _HRT_SRC) <
@@ -293,12 +292,12 @@ end
 
                     # Closing it is explicit, and closes it exactly once.
                     before = RustCall.DLCLOSE_COUNT[]
-                    RustCall.unload_library(lib_name; close_retired = true)
+                    RustCall.unload_library(lib_name; close = true)
                     @test RustCall.DLCLOSE_COUNT[] == before + 2   # live + retired
                     @test isempty(RustCall.retired_handles(lib_name))
                 finally
                     try
-                        RustCall.unload_library(lib_name; close_retired = true)
+                        RustCall.unload_library(lib_name; close = true)
                     catch
                     end
                 end
@@ -404,13 +403,24 @@ end
                     RustCall.unload_library(lib_name)
                     @test handle_ref[] == C_NULL
                     @test !alive_ref[][]
+                    # Nothing was closed: unloading retires, exactly as a
+                    # reload does — one code path (#277).
+                    @test RustCall.DLCLOSE_COUNT[] == closes_before
 
-                    # `close_retired = true` is the caller stating that nothing
-                    # is in flight; then, and only then, the retired image goes.
+                    # The records survive the name going away, so they stay
+                    # reclaimable. `close = true` is the caller stating that
+                    # nothing is in flight, and reclaims exactly them.
                     remaining = RustCall.retired_handles(lib_name)
-                    RustCall.unload_all_libraries(; close_retired = true)
+                    @test length(remaining) >= 3     # two reloads + the unload
+                    # Close exactly this library's images, and let the *return
+                    # value* say how many went: `DLCLOSE_COUNT` is process-wide,
+                    # so an exact delta on it would be an assertion about
+                    # whatever else the suite loaded.
+                    @test RustCall.close_retired_handles!(remaining) == length(remaining)
                     @test isempty(RustCall.retired_handles(lib_name))
                     @test RustCall.DLCLOSE_COUNT[] >= closes_before + length(remaining)
+                    # Closing again is a no-op: the records are gone.
+                    @test RustCall.close_retired_handles!(remaining) == 0
                 finally
                     # Windows locks a loaded DLL, so the temp tree can only be
                     # removed after the library is gone. Best effort either way.
