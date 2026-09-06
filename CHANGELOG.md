@@ -28,9 +28,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crossing `extern "C"` aborts the process, so the generated code drops it
   without looking at it.
 
+  A crate carrying **both** kinds of marker keeps both: the wrapper generates
+  entry points for the PyO3 items and links the `#[julia]` ones the crate
+  already exports, and one `@rust_crate` module exposes them together. The
+  Rust path in generated calls is the crate's **library target** name
+  (`[lib] name`), not its package name.
+
+  The scan that feeds the generator runs under the configuration the wrapper is
+  compiled with whenever Cargo could resolve it, so a `#[cfg]`-gated item that
+  the requested feature set enables is wrapped rather than refused; a build that
+  exposes nothing to PyO3 (every marker behind a feature that is off) falls back
+  to the pre-#275 binding path instead of producing an empty cdylib.
+
   `@rust_crate` gains `features=` and `default_features=`, which select the
   feature set the wrapper is built against and are part of the artifact
-  identity (`ArtifactId` kind `pyo3-wrapper`). Anything the generator cannot
+  identity (`ArtifactId` kind `pyo3-wrapper`), together with the build
+  environment the wrapper inherits (`artifact_build_env()`, the #282
+  allowlist). Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
   `py_result_payload`, `cfg_undecided`) instead of being emitted — including a
   plain `Result` / `Option` on a `#[pymethods]` **method**, which the `#[julia]`

@@ -48,6 +48,15 @@ depends on it and exports one `extern "C"` entry point per wrappable item:
   `rustcall_<Class>_get_<field>` / `_set_<field>` for the fields
   `#[pyo3(get, set)]`, `get_all` or `set_all` expose.
 
+A crate may carry **both** kinds of marker. `#[julia]` is additive since #279
+and exports `rustcall_<name>` from the crate itself, so the wrapper generates
+entry points for the PyO3 items and *links* the `#[julia]` ones; one
+`@rust_crate` module exposes both. An item marked both ways belongs to
+`#[julia]`, which already owns that symbol.
+`examples/sample_crate_pyo3_mixed` is that shape — and its `[lib] name`
+deliberately differs from its package name, because Rust code names a
+dependency by its **library target**, which is what the generated calls use.
+
 Every one of those comes out of `rustcall_core::codegen::generate_wrapper` —
 the same generator `#[julia]` goes through since #279 — so the `(ptr, len)`
 string ABI, the `CResult` / `COption` aggregates and the per-wrapper panic
@@ -68,7 +77,9 @@ Sample = @rust_crate "path/to/crate" features=["python"] default_features=false
 of those also pull `extension-module`; see [Choosing a feature
 set](#Choosing-a-feature-set) below. The feature set is part of the artifact
 identity, so two builds of one crate under different features are two different
-cached libraries and two different registry entries.
+cached libraries and two different registry entries — as is the build
+environment the wrapper inherits (`RUSTFLAGS` and the rest of the #282
+allowlist), which reaches `cargo` and so decides the binary.
 
 ### What is not wrapped, and why
 
@@ -82,7 +93,7 @@ signature mentioning a type that needs a live interpreter, a generic, a
 | `unsupported_return:<T>` | a return value that does not cross the C ABI as a single value (a `Vec`, a struct by value, a `Result` payload that is one of those) |
 | `py_result_payload:<T>` | a `PyResult` whose `Ok` type does not fit in the `CResult` aggregate — `PyResult<String>`, `PyResult<Self>`. Widening this is tracked in [#303](https://github.com/AtelierArith/RustCall.jl/issues/303) |
 | `unsupported_return:Result<…>` on a **method** | a plain `Result` / `Option` is wrapped into a `CResult` / `COption` for a free function only. `#[julia]`'s method wrappers have never lowered one either, so Julia's method emitters have no branch that decodes such an aggregate; emitting the symbol anyway would be worse than not wrapping the method. #303 owns widening it on both paths at once |
-| `cfg_undecided:<predicate>` | the item is behind a `#[cfg]` the scan could not decide, so whether the build the wrapper links against has it is unknown |
+| `cfg_undecided:<predicate>` | the item is behind a `#[cfg]` the scan could not decide, so whether the build the wrapper links against has it is unknown. Only reachable when Cargo could not resolve the build (`plan.resolved == false`) |
 
 `scan_report` prints both lists, and the second one with the symbol each wrapped
 item is exported under:
@@ -121,22 +132,31 @@ looking at it and reports a fixed code, and Julia turns that into the sentence
 above. A `PyResult<()>` reports success or failure the same way, with `nothing`
 as its `Ok` value.
 
-### Scanning is lenient, calling is not
+### The wrapper is generated for one build, and scanned under it
 
-The wrapper calls the **item**, not its Python binding, and those can be gated
-differently: `#[cfg_attr(feature = "python", pyfunction)]` makes the *marker*
-conditional while `add` stays an ordinary `pub fn` in every build. So the scan
-that feeds the generator is lenient — otherwise a crate with an optional pyo3
-dependency would report nothing to wrap in the very build where wrapping it is
-most useful.
+The scan that feeds the generator runs under **the configuration the wrapper is
+compiled with**, whenever Cargo could answer (`plan.resolved`). So an item
+behind a `#[cfg]` is *decided*, not refused: asking for `features = ["python"]`
+and then declaring every feature-gated item undecidable would refuse exactly the
+API that was requested.
 
-The price is that an item whose **own** `#[cfg]` predicate is undecided cannot
-be called safely, so it is refused with `cfg_undecided` rather than guessed at.
-When Cargo resolved the build's configuration (`plan.resolved`), that predicate
-is decided and nothing is refused for this reason.
+Only an unresolved plan — no Cargo, an offline registry, a crate that does not
+resolve — falls back to lenient evaluation, and there a `#[cfg]`-carrying item
+is refused with `cfg_undecided` rather than compiled into a call to something
+the build may not have.
 
-`examples/sample_crate_pyo3_optional` is exactly this shape, and its wrapper
-links **no** libpython at all.
+One consequence is worth stating plainly, because it decides what
+`:python_free` is good for. A crate that makes pyo3 optional writes its markers
+as `#[cfg_attr(feature = "python", pyfunction)]`; with the feature **off**, that
+marker is not applied, so the build has no Python API and there is nothing for a
+wrapper crate to export. `@rust_crate` says so and falls back to binding the
+crate the way it did before #275, rather than building an empty cdylib. Turn the
+feature on and the same crate is wrapped in full — as a `:link_libpython` build,
+because activating pyo3 is what puts it in the graph.
+
+`:python_free` therefore means "this build has no pyo3, and so no PyO3 items";
+it is an answer the plan gives, not a mode in which wrappers get built.
+`examples/sample_crate_pyo3_optional` demonstrates both halves.
 
 ## Scanning a crate
 
@@ -484,10 +504,15 @@ method and `#[pyo3(get, set)]` fields, and a `#[pymodule]`. Its link plan is
 `:link_libpython`. It is what `test/test_manifest.jl`,
 `test/test_pyo3_link_plan.jl` and `test/test_pyo3_wrapper.jl` use.
 
-`examples/sample_crate_pyo3_optional` is the `:python_free` counterpart: pyo3 is
+`examples/sample_crate_pyo3_optional` is the optional-pyo3 counterpart: pyo3 is
 an optional dependency and only the `#[pyfunction]` markers are behind a
-feature, so the wrapper builds with pyo3 out of the graph entirely and links no
-libpython. That is the fixture CI exercises everywhere.
+feature. With the feature off its plan is `:python_free` and the build exposes
+nothing to PyO3, so nothing is wrapped; with `features = ["python"]` the same
+crate is wrapped in full.
+
+`examples/sample_crate_pyo3_mixed` carries `#[julia]` and PyO3 markers together,
+one item marked both ways, and a `[lib] name` that differs from its package
+name.
 
 Note that a class needs **one** `#[pymethods]` block unless the crate enables
 pyo3's `multiple-pymethods` feature; the scan matches every block it finds, but

@@ -1346,12 +1346,19 @@ function generate_bindings(crate_path::String;
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
                                      release = build_release, cache_enabled = cache_enabled)
-        @info "Wrapped $(length(wrapper.info.julia_functions)) PyO3 functions and " *
-              "$(length(wrapper.info.julia_structs)) classes ($(wrapper.plan.mode))"
-        return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
-                                 module_name = output_module_name,
-                                 build_release = build_release,
-                                 lib_name = wrapper.lib_name)
+        if wrapper === nothing
+            # Under this build's own configuration the crate exposes nothing to
+            # PyO3 (every marker is behind a feature that is off), so there is
+            # nothing to wrap and the pre-#275 path applies unchanged.
+            @info "No PyO3 item is exposed by this build; binding the crate as before"
+        else
+            @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
+                  "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
+            return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
+                                     module_name = output_module_name,
+                                     build_release = build_release,
+                                     lib_name = wrapper.lib_name)
+        end
     end
 
     # Check cache
@@ -1504,10 +1511,10 @@ different toolchain — do not collide on one entry.
 """
 crate_library_name(info::CrateInfo; release::Bool = true, kind::AbstractString = "crate",
                    features::Vector{String} = String[], default_features::Bool = true,
-                   rustflags::Vector{String} = String[]) =
+                   build_env::Vector{Pair{String, String}} = Pair{String, String}[]) =
     "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info; release = release,
         kind = kind, features = features, default_features = default_features,
-        rustflags = rustflags)))"
+        build_env = build_env)))"
 
 """
     compute_crate_hash(info::CrateInfo) -> String
@@ -1539,7 +1546,7 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
                             kind::AbstractString = "crate",
                             features::Vector{String} = String[],
                             default_features::Bool = true,
-                            rustflags::Vector{String} = String[])
+                            build_env::Vector{Pair{String, String}} = Pair{String, String}[])
     # The dependency digest first, and deliberately so: resolving the graph
     # lets Cargo write `Cargo.lock` into the crate directory (exactly as the
     # build that follows would), and `Cargo.lock` is one of the files
@@ -1555,15 +1562,20 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
     if kind != "crate"
         push!(codegen, "features" => join(features, ","))
         push!(codegen, "default-features" => string(default_features))
-        push!(codegen, "rustflags" => join(rustflags, " "))
     end
+    # `build_env` is the caller's, appended to the Cargo-config digest every
+    # crate build already carries. A #275 wrapper build passes
+    # `artifact_build_env()` plus its own link flags, because it inherits the
+    # ambient `RUSTFLAGS` and the rest of the #282 allowlist — two builds under
+    # different ambient flags are different binaries and must not share a key.
+    env = Pair{String, String}["cargo-config" => _cargo_config_digest(ENV; dir = info.path)]
+    append!(env, build_env)
     return artifact_key(ArtifactId(
         kind = String(kind),
         source = crate_content_digest(info.path),
         codegen = codegen,
         dependencies = String[deps_digest],
-        build_env = Pair{String, String}[
-            "cargo-config" => _cargo_config_digest(ENV; dir = info.path)],
+        build_env = env,
         extra = Pair{String, String}["name" => info.name, "version" => info.version],
     ))
 end
@@ -1892,9 +1904,13 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
                                      release = build_release)
-        info = wrapper.info
-        lib_name = wrapper.lib_name
-        wrapper_lib_path = wrapper.lib_path
+        # `nothing` when this build exposes nothing to PyO3; see
+        # `generate_bindings`.
+        if wrapper !== nothing
+            info = wrapper.info
+            lib_name = wrapper.lib_name
+            wrapper_lib_path = wrapper.lib_path
+        end
     end
 
     # Build the crate

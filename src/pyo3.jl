@@ -780,6 +780,11 @@ It should exactly when the scan found a PyO3 item a wrapper *could* export. A
 crate whose PyO3 items are all skipped, or which has none, takes the pre-#275
 path unchanged — so nothing that worked before now runs a Cargo feature
 resolution it does not need.
+
+This is the cheap pre-check, on the lenient scan `scan_crate` already did.
+`build_pyo3_wrapper` has the final say: under the build's own configuration a
+marker behind a feature that is off is simply not there, and it returns
+`nothing` so the caller falls back to the same pre-#275 path.
 """
 function crate_needs_pyo3_wrapper(info::CrateInfo)
     any(isempty(f.skip_reason) for f in info.pyo3_functions) && return true
@@ -833,24 +838,47 @@ function build_pyo3_wrapper(info::CrateInfo;
                             release::Bool = true,
                             cache_enabled::Bool = true)
     plan = pyo3_link_plan(info.path; features = features, default_features = default_features)
-    # Raises for :unlinkable and for :link_libpython with no interpreter
-    # directory, before anything is generated or compiled.
-    rustflags = pyo3_link_rustflags(plan)
 
     cargo_toml = parse_cargo_toml(joinpath(info.path, "Cargo.toml"))
     source_files = sort(find_rust_sources(info.path))
     lib_root, tree_files = _crate_scan_inputs(info.path, cargo_toml, source_files)
-    source = wrap_crate(tree_files; crate_name = info.name, cfg = :lenient,
+    # The scan that feeds the generator runs under the configuration the build
+    # is actually compiled with whenever Cargo could answer, so an item behind
+    # a `#[cfg]` is *decided* rather than refused: asking for
+    # `features = ["python"]` and then declaring every feature-gated item
+    # undecidable would refuse exactly the API that was requested. Only an
+    # unresolved plan falls back to lenient evaluation, where the generator
+    # does refuse such an item (`cfg_undecided`) rather than call something the
+    # build may not have.
+    cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
+    source = wrap_crate(tree_files; crate_name = crate_rust_identifier(info.name, cargo_toml),
+                        cfg = cfg, cfg_text = cfg_text,
                         crate_root = lib_root, skip_unparsable = true)
 
-    functions, structs, skipped = _pyo3_wrapper_items(source.manifest)
+    functions, structs, skipped, pyo3_exports = _pyo3_wrapper_items(source.manifest)
+    # Nothing PyO3 to wrap under this feature set — a crate whose markers are
+    # all behind a feature that is off exposes no Python API in this build, and
+    # so has nothing for a wrapper crate to export. The caller falls back to the
+    # pre-#275 path rather than building an empty cdylib.
+    pyo3_exports == 0 && return nothing
+
+    # Raises for :unlinkable and for :link_libpython with no interpreter
+    # directory. After generation, which compiles nothing, and before the build.
+    rustflags = pyo3_link_rustflags(plan)
+
     wrapper_info = CrateInfo(info.name, info.path, info.version, info.dependencies,
                              functions, structs, info.source_files,
                              info.pyo3_functions, info.pyo3_structs)
 
+    # The environment the build inherits is part of the artifact, not just the
+    # flags RustCall adds: `RUSTFLAGS` and the rest of the #282 allowlist reach
+    # `cargo` through `_build_pyo3_wrapper_project`, so two builds under
+    # different ambient flags are different binaries.
+    build_env = artifact_build_env()
+    push!(build_env, "rustcall-link-flags" => join(rustflags, " "))
     key = compute_crate_hash(info; release = release, kind = "pyo3-wrapper",
                              features = features, default_features = default_features,
-                             rustflags = rustflags)
+                             build_env = build_env)
     lib_name = "rust_crate_$(info.name)_$(artifact_short_id(key))"
 
     cached = cache_enabled ? get_cargo_cached_library(key) : nothing
@@ -865,28 +893,64 @@ function build_pyo3_wrapper(info::CrateInfo;
 end
 
 """
-    _pyo3_wrapper_items(manifest) -> (functions, structs, skipped)
+    crate_rust_identifier(package_name, cargo_toml) -> String
+
+The name **Rust code** refers to this crate by, which is not always its package
+name: `[lib] name = "..."` renames the library target, and a dependent crate
+then writes `that_name::item`. Cargo also maps `-` to `_` in an identifier.
+
+Generated wrapper code names the dependency by path, so getting this wrong is
+an unresolved-crate compile error in code the user never wrote.
+"""
+function crate_rust_identifier(package_name::AbstractString, cargo_toml::AbstractDict)
+    lib = get(cargo_toml, "lib", nothing)
+    name = lib isa AbstractDict ? String(get(lib, "name", String(package_name))) :
+                                  String(package_name)
+    return replace(name, '-' => '_')
+end
+
+"""
+    _pyo3_wrapper_items(manifest) -> (functions, structs, skipped, pyo3_exports)
 
 Split the wrapper crate's manifest into what Julia binds and what it reports.
+
+**Both origins are bound.** A crate may carry `#[julia]` items *and* PyO3-only
+ones; the wrapper crate exports the second kind and links the first, whose
+`rustcall_*` symbols the dependency's own object code already provides (the
+generated `lib.rs` keeps the glob import that pulls them into the cdylib).
+Returning only the PyO3 entries silently dropped every `#[julia]` function and
+struct of such a crate from the module `@rust_crate` handed back.
 
 Only entries the generator actually emitted are bound: a `skip_reason` means no
 symbol exists, and generating a Julia definition for one would produce a
 `dlsym` failure at the first call instead of a message at scan time. Methods are
 filtered inside their class for the same reason, and the class keeps its fields
 untouched because the generator already cleared the accessors it did not emit.
+
+`pyo3_exports` counts the **PyO3-origin** items that were emitted, which is what
+decides whether a wrapper crate is worth building at all.
 """
 function _pyo3_wrapper_items(manifest::Dict)
     skipped = Any[]
     functions = RustFunctionSignature[]
+    pyo3_exports = 0
+
+    # `#[julia]` items first, unchanged: the wrapper crate does not generate
+    # them, it links them.
+    for f in manifest_function_signatures(manifest)
+        f.is_generic || push!(functions, f)
+    end
     for f in manifest_function_signatures(manifest; origins = PYO3_ATTRIBUTE_ORIGINS)
         if isempty(f.skip_reason) && f.exported && !f.is_generic
             push!(functions, f)
+            pyo3_exports += 1
         else
             push!(skipped, f)
         end
     end
 
     structs = RustStructInfo[]
+    append!(structs, manifest_struct_infos(manifest))
     for st in manifest_struct_infos(manifest; origins = PYO3_ATTRIBUTE_ORIGINS)
         if !isempty(st.skip_reason)
             push!(skipped, st)
@@ -896,6 +960,7 @@ function _pyo3_wrapper_items(manifest::Dict)
         for m in st.methods
             isempty(m.skip_reason) ? push!(kept, m) : push!(skipped, m)
         end
+        pyo3_exports += length(kept) + count(!isempty, values(st.field_getters))
         push!(structs, RustStructInfo(
             st.name, st.type_params, kept, st.context_code, st.fields,
             st.has_derive_julia_struct, st.derive_options;
@@ -908,7 +973,7 @@ function _pyo3_wrapper_items(manifest::Dict)
             skip_reason = st.skip_reason, python_name = st.python_name,
             cfg_features = st.cfg_features))
     end
-    return functions, structs, skipped
+    return functions, structs, skipped, pyo3_exports
 end
 
 """
@@ -1107,12 +1172,19 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             cargo_toml = parse_cargo_toml(joinpath(String(crate_path), "Cargo.toml"))
             source_files = sort(find_rust_sources(String(crate_path)))
             lib_root, tree_files = _crate_scan_inputs(String(crate_path), cargo_toml, source_files)
-            source = wrap_crate(tree_files; crate_name = info.name, cfg = :lenient,
+            cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
+            source = wrap_crate(tree_files;
+                                crate_name = crate_rust_identifier(info.name, cargo_toml),
+                                cfg = cfg, cfg_text = cfg_text,
                                 crate_root = lib_root, skip_unparsable = true)
-            functions, structs, refused = _pyo3_wrapper_items(source.manifest)
+            functions, structs, refused, _ = _pyo3_wrapper_items(source.manifest)
             wrapped = Any[]
-            append!(wrapped, functions)
+            for f in functions
+                String(f.attribute) in PYO3_ATTRIBUTE_ORIGINS || continue
+                push!(wrapped, f)
+            end
             for st in structs
+                String(st.attribute) in PYO3_ATTRIBUTE_ORIGINS || continue
                 push!(wrapped, st)
                 append!(wrapped, st.methods)
             end
