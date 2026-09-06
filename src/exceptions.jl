@@ -21,6 +21,36 @@ struct RustError <: Exception
 end
 
 """
+    SignatureInferenceError
+
+RustCall could not work out a function's signature from the LLVM IR it has for
+it — because it has none, or because the function is not in it.
+
+It exists so the *caller* can catch that, and only that. `_rust_call_dynamic`
+tries LLVM inference as one of several ways to learn a return type, and a bare
+`try`/`catch` there swallowed everything: a `RustError` from the FFI type
+contract (an unregistered by-value aggregate, #245), a `MethodError`, anything
+— and reported "no return type" instead. Swallowing a fail-closed error is the
+fail-open pattern the contract exists to remove, so the catch names this type
+and every other exception propagates.
+
+# Fields
+- `func_name::String`, `lib_name::String` — what was being resolved.
+"""
+struct SignatureInferenceError <: Exception
+    func_name::String
+    lib_name::String
+end
+
+function Base.showerror(io::IO, e::SignatureInferenceError)
+    print(io, "SignatureInferenceError: cannot infer the signature of '",
+          e.func_name, "'")
+    isempty(e.lib_name) || print(io, " in library '", e.lib_name, "'")
+    print(io, " from LLVM IR. Annotate the call site with `::T`, or mark the ",
+          "Rust function `#[julia]` so the manifest reports its signature.")
+end
+
+"""
     RustPanicError <: Exception
 
 A Rust `panic!` that was caught at the FFI boundary (#244).

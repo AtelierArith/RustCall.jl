@@ -371,14 +371,23 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
                                     channel, func_name)
     end
 
-    # Try to get type info from LLVM analysis
-    try
-        ret_type, expected_arg_types = infer_function_types(lib_name, func_name)
-        return guard_rust_panic_ptr(call_rust_function(func_ptr, ret_type, args...),
-                                    channel, func_name)
+    # Try to get type info from LLVM analysis. The `try` covers the *inference*
+    # and nothing else: it used to wrap the call as well, with a catch that
+    # swallowed every exception but `RustPanicError`, so a fail-closed error
+    # from the FFI type contract — an unregistered by-value aggregate (#245),
+    # an invalid-UTF-8 argument (#246) — was replaced by the unrelated "no
+    # return type" message below. Swallowing a fail-closed error is the
+    # fail-open pattern the contract exists to remove.
+    inferred = try
+        infer_function_types(lib_name, func_name)
     catch e
-        e isa RustPanicError && rethrow()
-        # Fall back to inference from arguments
+        e isa SignatureInferenceError || rethrow()
+        nothing
+    end
+    if inferred !== nothing
+        inferred_ret, _ = inferred
+        return guard_rust_panic_ptr(call_rust_function(func_ptr, inferred_ret, args...),
+                                    channel, func_name)
     end
 
     # No last resort. Guessing the return type from the first argument was the
@@ -412,10 +421,82 @@ function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, a
         end
     end
 
+    # An annotation that contradicts the manifest is an error, not an override
+    # (#245). `@rust f(x)::Float64` on a function the manifest records as
+    # `-> i32` used to reinterpret the 32-bit result as a `Float64` and return
+    # silent garbage; the declared type and the recorded one come from the same
+    # snapshot, so comparing them costs nothing.
+    _check_return_annotation(target, func_name, ret_type)
+
     # Pointer and channel come from the same snapshot, so the call and the
     # channel read cannot straddle two generations (#244, #277).
     return guard_rust_panic_ptr(call_rust_function(target.func_ptr, ret_type, args...),
                                 target.channel, func_name)
+end
+
+"""
+    _snapshot_return_type(target) -> Union{Type, Nothing}
+
+The return type the resolved generation records for this symbol: the richer
+`FunctionInfo` first, then the per-library hint, and `nothing` when neither
+says anything. Read from the snapshot only — never looked up again by name,
+which is the #277 rule.
+"""
+function _snapshot_return_type(target)
+    info = target.func_info
+    if info !== nothing && info.return_type !== Any
+        return info.return_type
+    end
+    recorded = target.return_type
+    return recorded === Any ? nothing : recorded
+end
+
+"""
+    _return_annotation_agrees(declared, recorded) -> Bool
+
+Whether a `::T` annotation says the same thing as the return type the manifest
+recorded.
+
+Identity is not the test, because the manifest records the **C slot** while an
+annotation names the **surface** type a caller sees, and the two differ where
+the contract says they do: Rust `char` is a `UInt32` code point in the slot and
+a `Char` on the surface, `bool` is a `UInt8` and a `Bool`. `@rust f()::Char` on
+a `-> char` was a correct call before #245 added this check and must stay one.
+
+Two types agree when they lower to the same `ccall` return slot: the generated
+call is then byte-for-byte the same and only `convert_return` differs, which is
+the conversion the annotation was asking for. `::Float64` on a `-> i32` does
+*not* agree — different slot, and reading one as the other is undefined
+behaviour.
+"""
+_return_annotation_agrees(declared::Type, recorded::Type) =
+    declared === recorded || ccall_return_type(declared) === ccall_return_type(recorded)
+
+"""
+    _check_return_annotation(target, func_name, declared)
+
+Raise when a `::T` annotation disagrees with the return type the manifest
+recorded for `func_name`, naming both (#245).
+
+An annotation exists to supply a return type RustCall does not know. When it
+*is* known, a differing annotation is not an override — the ccall would read
+the return slot at the wrong width or in the wrong register class, which is
+undefined behaviour, not a cast. `Cvoid === Nothing` and `Cstring ===
+Ptr{UInt8}` are the same type to `===`, so aliases never trip this, and neither
+does a **surface** annotation over the slot the manifest records
+(`_return_annotation_agrees`).
+"""
+function _check_return_annotation(target, func_name::AbstractString, declared::Type)
+    recorded = _snapshot_return_type(target)
+    (recorded === nothing || _return_annotation_agrees(declared, recorded)) && return nothing
+    throw(RustError(
+        "return type annotation `::$declared` on `@rust $func_name(...)` " *
+        "disagrees with the manifest, which records `$recorded` for " *
+        "'$func_name' in library '$(target.lib_name)' (#245). Reading a " *
+        "`$recorded` return slot as a `$declared` is undefined behaviour, not " *
+        "a conversion. Drop the annotation and let the manifest decide, " *
+        "write `::$recorded`, or change the Rust signature — and convert the " *
+        "result on the Julia side if you wanted a `$declared`."))
 end
 
 """

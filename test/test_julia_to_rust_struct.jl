@@ -14,6 +14,13 @@ using Test
         y::Float64
     end
 
+    # Passing an aggregate by value is opt-in since #245: `#[repr(C)]` on the
+    # Rust side below is what makes the field order a contract, and this is
+    # where that claim is recorded. Without it the call raises rather than
+    # assuming the two layouts agree. `Point` is concrete, which is the only
+    # thing `register_ffi_struct` accepts.
+    RustCall.register_ffi_struct(Point)
+
     @testset "Passing Struct by Value" begin
         rust"""
         #[repr(C)]

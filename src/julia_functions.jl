@@ -497,6 +497,14 @@ struct COptionType{T}
     value::T
 end
 
+# Both mirror a `#[repr(C)]` aggregate the extractor emits (`CResult_<fn>` /
+# `COption_<fn>`, `deps/rustcall_core/src/codegen.rs`), so the by-value layout
+# assertion #245 requires is one RustCall makes about its own types — for every
+# instantiation, since the shape is the discriminant plus a payload whatever the
+# payload is.
+ffi_by_value_layout(::Type{<:CResultType}) = :repr_c
+ffi_by_value_layout(::Type{<:COptionType}) = :repr_c
+
 """
     generate_c_result_struct_type(func_name::String, ok_type::Symbol, err_type::Symbol) -> Expr
 
@@ -505,7 +513,12 @@ Generate a Julia struct definition for the C-compatible Result type.
 function generate_c_result_struct_type(func_name::String, ok_type::Symbol, err_type::Symbol)
     struct_name = Symbol("CResult_", func_name)
     quote
-        struct $struct_name
+        # `<: FFIByValue` is RustCall's own by-value assertion about a mirror it
+        # generated for the extractor's `#[repr(C)]` `CResult_<fn>` (#245). It
+        # is a supertype rather than a `register_ffi_struct` call because this
+        # code may be precompiled into a downstream package, and Julia does not
+        # replay a dependency's global mutations when loading from cache.
+        struct $struct_name <: $(GlobalRef(RustCall, :FFIByValue))
             is_ok::UInt8
             ok_value::$ok_type
             err_value::$err_type
@@ -521,7 +534,8 @@ Generate a Julia struct definition for the C-compatible Option type.
 function generate_c_option_struct_type(func_name::String, inner_type::Symbol)
     struct_name = Symbol("COption_", func_name)
     quote
-        struct $struct_name
+        # See `generate_c_result_struct_type`: RustCall's own mirror (#245).
+        struct $struct_name <: $(GlobalRef(RustCall, :FFIByValue))
             is_some::UInt8
             value::$inner_type
         end
