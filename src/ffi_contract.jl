@@ -1212,6 +1212,10 @@ function _ffi_string_argument(value, descriptor::AbstractString, context::Abstra
         "`&str` and `String` are UTF-8 by definition, and a Julia `String` is " *
         "a byte vector that need not be — the bytes would have been silently " *
         "replaced with U+FFFD on the Rust side, so the function would have run " *
-        "on data you did not pass (#246). Fix the encoding before the call, or " *
-        "pass the bytes as a `Vector{UInt8}` through a slice argument."))
+        "on data you did not pass (#246). Fix the encoding before the call: " *
+        "`isvalid(s)` says whether a string is UTF-8, and `String(transcode(" *
+        "UInt8, transcode(UInt16, s)))` or an explicit re-encode from the bytes' " *
+        "real encoding produces one that is. To send bytes that are not text at " *
+        "all, take them as a `*const u8` plus a length on the Rust side; a " *
+        "`&[u8]` slice argument is not lowered by the `#[julia]` pipeline."))
 end

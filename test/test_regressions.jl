@@ -1353,6 +1353,45 @@ end
         # The specialization still works afterwards: nothing was left half-done.
         @test RustCall.call_generic_function("rc246_tag", "n", Int32(8)) == "n=8"
 
+        # An argument may legitimately be called `ffi_string_argument`. The
+        # generated wrapper binds a parameter of that name, so an *unqualified*
+        # call to the helper resolved to the caller's string and raised a
+        # `MethodError` before reaching Rust (#246 review). The plan emits a
+        # `GlobalRef`, which no parameter can shadow — and which stringifies as
+        # `RustCall.ffi_string_argument`, so the source-text emitter is covered
+        # by the same line.
+        rust"""
+        #[julia]
+        pub fn rc246_shadow(ffi_string_argument: &str) -> usize {
+            ffi_string_argument.len()
+        }
+        """
+        @test rc246_shadow("abcd") == Csize_t(4)
+        @test rc246_shadow("héllo") == Csize_t(6)   # bytes, not characters
+        err5 = try
+            rc246_shadow(String([0xff]))
+            nothing
+        catch e
+            e
+        end
+        @test err5 isa RustCall.RustError          # not a MethodError
+        @test occursin("not valid UTF-8", sprint(showerror, err5))
+        @test occursin("`ffi_string_argument`", sprint(showerror, err5))
+
+        # And the same for the source-text emitter, checked on the text.
+        let info = RustCall.scan_crate(joinpath(pkgdir(RustCall), "examples", "sample_crate")),
+            code = RustCall.emit_crate_module_code(info, "/tmp/libsample_rc246.so")
+            @test occursin("RustCall.ffi_string_argument(", code)
+            # No unqualified call is left for a parameter to shadow.
+            @test !occursin(r"(?<![.\w])ffi_string_argument\(", code)
+        end
+
+        # The message must not advertise a workaround the pipeline does not
+        # have: `&[u8]` slice arguments are not lowered by `#[julia]`.
+        @test !occursin("slice argument", msg) || occursin("is not lowered", msg)
+        @test occursin("isvalid", msg)
+        @test occursin("*const u8", msg)
+
         # The helper itself, so the contract is pinned independently of any
         # particular generated wrapper — in both of its spellings.
         @test RustCall.ffi_string_argument("ok", "a", "f") == "ok"

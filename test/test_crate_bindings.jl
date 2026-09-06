@@ -933,7 +933,7 @@ end
     # buffer was then freed through the replacement's allocator (#277).
     @test occursin("func_ptr, panic_channel, free_ptr = _call_target(\"rustcall_shout\", \"shout_free_rust_string\")", code)
     @test occursin("_call_rust_owned_string_ptr(func_ptr, free_ptr", code)
-    @test occursin("__rustcall_str_input = ffi_string_argument(input, \"input\", \"shout\")", code)
+    @test occursin("__rustcall_str_input = RustCall.ffi_string_argument(input, \"input\", \"shout\")", code)
     @test occursin("GC.@preserve(__rustcall_str_input", code)
     @test occursin("_call_rust_borrowed_string_ptr(func_ptr", code)
     @test occursin("_call_target(\"rustcall_crate_greeting\")", code)
@@ -966,12 +966,12 @@ end
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
 
     # Plain return, string arguments named func_ptr / lib_name
-    @test occursin("__rustcall_str_func_ptr = ffi_string_argument(func_ptr, \"func_ptr\", \"shadow_str_len\")", code)
-    @test occursin("__rustcall_str_lib_name = ffi_string_argument(lib_name, \"lib_name\", \"shadow_str_len\")", code)
+    @test occursin("__rustcall_str_func_ptr = RustCall.ffi_string_argument(func_ptr, \"func_ptr\", \"shadow_str_len\")", code)
+    @test occursin("__rustcall_str_lib_name = RustCall.ffi_string_argument(lib_name, \"lib_name\", \"shadow_str_len\")", code)
     @test occursin("__rustcall_func_ptr, panic_channel = _call_target(\"rustcall_shadow_str_len\")", code)
     @test occursin("call_rust_function(__rustcall_func_ptr, Csize_t, pointer(__rustcall_str_func_ptr)", code)
     # The conversions come before the pointer lookup
-    @test findfirst("__rustcall_str_func_ptr = ffi_string_argument(func_ptr,", code).start <
+    @test findfirst("__rustcall_str_func_ptr = RustCall.ffi_string_argument(func_ptr,", code).start <
           findfirst("__rustcall_func_ptr, panic_channel = _call_target(\"rustcall_shadow_str_len\")", code).start
 
     # Result return: func_ptr and c_result are both argument names
@@ -1020,7 +1020,7 @@ end
     # The source emitter passes (ptr, len) pairs and reads the per-method buffers
     info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
-    @test occursin("__rustcall_str_name = ffi_string_argument(name, \"name\", \"label\")", code)
+    @test occursin("__rustcall_str_name = RustCall.ffi_string_argument(name, \"name\", \"label\")", code)
     # `self` is in the preserve list of every instance method: a borrowed
     # `&str` points into the Rust object, which a temporary's finalizer could
     # otherwise free mid-call.

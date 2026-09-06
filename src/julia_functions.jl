@@ -145,7 +145,16 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             # `String` is a byte vector and need not be UTF-8, and the Rust
             # wrapper's `from_utf8_lossy` would have replaced the bad bytes
             # rather than reported them (#246).
-            push!(bindings, :($bytes = ffi_string_argument($arg_sym, $name, $context)))
+            #
+            # A `GlobalRef`, not the bare name: a Rust argument may legitimately
+            # be called `ffi_string_argument`, and in the generated wrapper that
+            # parameter would shadow the helper — the call would then try to
+            # call the caller's string and raise a `MethodError` before reaching
+            # Rust (#246 review). It also stringifies as
+            # `RustCall.ffi_string_argument`, so the source-text emitter is
+            # fixed by the same line.
+            helper = GlobalRef(@__MODULE__, :ffi_string_argument)
+            push!(bindings, :($bytes = $helper($arg_sym, $name, $context)))
             push!(preserved, bytes)
             push!(call_args, :(pointer($bytes)))
             push!(call_args, :(sizeof($bytes) % Csize_t))
