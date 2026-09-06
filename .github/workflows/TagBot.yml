@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       lookback:
+        description: How many days back to look for untagged releases.
         default: '3'
 
 # The repository's default workflow token is read-only; TagBot creates the tag
@@ -26,7 +27,13 @@ permissions:
 
 jobs:
   TagBot:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@JuliaTagBot tag'))
+    # `contents: write` above makes this condition a security boundary: in a
+    # public repository anyone can post an issue comment, so matching on the
+    # comment *body* would let any commenter start a job holding a write token.
+    # Gate on the actor instead — the JuliaTagBot account, which is what
+    # comments when a registry pull request merges — as the JuliaRegistries
+    # template does.
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'
     runs-on: ubuntu-latest
     steps:
       - uses: JuliaRegistries/TagBot@v1
@@ -38,3 +45,7 @@ jobs:
           # in this repository; `DOCUMENTER_KEY` is the name the JuliaRegistries
           # template uses, and the one Documenter would share.
           ssh: ${{ secrets.DOCUMENTER_KEY }}
+          # Forwarded, so the dispatch input above is not a knob that does
+          # nothing. Empty on an `issue_comment` run, where it falls back to
+          # the action's own default of 3.
+          lookback: ${{ inputs.lookback || 3 }}
