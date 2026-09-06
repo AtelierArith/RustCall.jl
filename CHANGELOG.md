@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **The compilation cache moved out of `~/.julia/compiled/`**
+  ([#252](https://github.com/AtelierArith/RustCall.jl/issues/252)). RustCall
+  used to write compiled `.dylib`/`.so`/`.dll` files, their `.sha256`
+  checksums, the `metadata/` tree and the Cargo build products into
+  `$(DEPOT_PATH[1])/compiled/vX.Y/RustCall` — **Julia's own package precompile
+  directory**, which Pkg neither tracks nor garbage-collects for foreign files
+  and which is read-only in common deployments (shared/HPC depots, baked
+  container images), where `mkpath` threw and RustCall was simply unusable.
+
+  `RustCall.get_cache_dir()` is now a [Scratch.jl](https://github.com/JuliaPackaging/Scratch.jl)
+  space, `<depot>/scratchspaces/<RustCall UUID>/cache-v2` — writable by
+  construction, accounted for by `Pkg.gc()`, and removable with
+  `Pkg.Scratch.clear_scratchspaces!`. The space name folds in
+  `CACHE_FORMAT_VERSION`, so RustCalls that disagree about the on-disk layout
+  keep separate trees. Three consequences:
+
+  - **Nothing is written under `~/.julia/compiled/` any more.** That directory
+    is read *only* by the opt-in legacy sweep and is never created by RustCall.
+    `RustCall.clear_cache(sweep_legacy = true)` removes the tree the old layout
+    left behind (its `v<n>` and `cargo`/`metadata` directories and loose files
+    matching the exact pre-#278 naming) and nothing else — Julia's `.ji` and
+    native images in the same directory are left alone.
+  - **A read-only `DEPOT_PATH[1]` is no longer fatal.** `Scratch` defaults to
+    the first depot; RustCall scans `DEPOT_PATH` for the first *writable* one.
+    With no writable depot at all the failure is a named `RustError` naming the
+    depots tried, not an `IOError` from inside a file copy.
+  - **`RUSTCALL_CACHE_DIR` overrides the location entirely**, for air-gapped
+    and CI setups that need the cache in a specific place.
+
+  Existing caches are not migrated: the first compile after upgrading rebuilds.
+
 - **One load/registration path** ([#277](https://github.com/AtelierArith/RustCall.jl/issues/277),
   Phase B). Twelve `dlopen` sites with four different flag sets and eight
   open-coded `RUST_LIBRARIES[...] = ...` writes became one:

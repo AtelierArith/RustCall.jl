@@ -172,7 +172,7 @@ MyPackage.multiply(1.0, 2.0)
 
 ### During Development
 
-- Compiled libraries are cached under `~/.julia/compiled/vX.Y/RustCall/v2/` (see the Performance guide)
+- Compiled libraries are cached in a Scratch.jl space, `<depot>/scratchspaces/<RustCall UUID>/cache-v2/` (see the Performance guide)
 - Cache is keyed by source code hash
 - Rebuilding only happens when source changes
 

@@ -3,6 +3,37 @@
 using RustCall
 using Test
 
+"""
+    with_isolated_depot(f)
+
+Run `f(depot)` with a fresh temporary directory in front of `DEPOT_PATH`.
+
+The cache-location testsets look at, create in and sweep two trees that are
+derived from `DEPOT_PATH[1]`: the scratch space `get_cache_dir()` resolves to,
+and the pre-#252 root `_legacy_cache_root()`. In a depot a RustCall has really
+been used in, both hold the user's own files — a leftover `v2/` tree, real
+`cargo/` and `metadata/` directories — which would both break the assertions
+and make the opt-in legacy sweep delete something that is not a fixture. A
+temporary first depot gives those tests a tree nobody else wrote.
+
+Both inputs to the memoized cache directory change here, so the memo is reset on
+the way in and on the way out.
+"""
+function with_isolated_depot(f)
+    depot = mktempdir()
+    saved = copy(DEPOT_PATH)
+    try
+        pushfirst!(DEPOT_PATH, depot)
+        RustCall._reset_cache_dir_memo!()
+        return f(depot)
+    finally
+        empty!(DEPOT_PATH)
+        append!(DEPOT_PATH, saved)
+        RustCall._reset_cache_dir_memo!()
+        rm(depot; recursive = true, force = true)
+    end
+end
+
 @testset "Compilation Caching" begin
     # Clear cache before testing
     RustCall.clear_cache()
@@ -10,110 +41,293 @@ using Test
     @testset "Cache Directory Management" begin
         cache_dir = RustCall.get_cache_dir()
         @test isdir(cache_dir)
-        @test occursin("RustCall", cache_dir)
+        # The scratch space is namespaced by RustCall's package UUID.
+        @test occursin("scratchspaces", cache_dir)
+        @test occursin("7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c", cache_dir)
 
         metadata_dir = RustCall.get_metadata_dir()
         @test isdir(metadata_dir)
     end
 
-    @testset "Cache format namespace (#278)" begin
-        # Every cached artifact lives under a directory named for the on-disk
-        # cache format, so a key-formula change (#278 Phase B) cannot serve a
-        # hit written by the previous format.
-        cache_dir = RustCall.get_cache_dir()
-        @test basename(cache_dir) == "v$(RustCall.CACHE_FORMAT_VERSION)"
-        @test basename(RustCall._cache_format_root()) == "RustCall"
-        @test dirname(cache_dir) == RustCall._cache_format_root()
+    @testset "Cache format namespace (#252, #278)" begin
+        with_isolated_depot() do _depot
+            # Every cached artifact lives in a scratch space named for the on-disk
+            # cache format, so a key-formula change (#278 Phase B) cannot serve a
+            # hit written by the previous format, and two RustCalls that disagree
+            # about the layout keep separate trees.
+            cache_dir = RustCall.get_cache_dir()
+            @test basename(cache_dir) == "cache-v$(RustCall.CACHE_FORMAT_VERSION)"
+            @test RustCall.CACHE_SCRATCH_NAME == "cache-v$(RustCall.CACHE_FORMAT_VERSION)"
 
-        # The Cargo and metadata trees nest under the versioned directory.
-        @test startswith(RustCall.get_metadata_dir(), cache_dir)
-        @test startswith(RustCall.get_cargo_cache_dir(), cache_dir)
+            # The Cargo and metadata trees nest under it.
+            @test startswith(RustCall.get_metadata_dir(), cache_dir)
+            @test startswith(RustCall.get_cargo_cache_dir(), cache_dir)
 
-        # Older siblings are swept best-effort; newer ones are left alone.
-        root = RustCall._cache_format_root()
-        old_dir = joinpath(root, "v1")
-        new_dir = joinpath(root, "v$(RustCall.CACHE_FORMAT_VERSION + 1)")
-        mkpath(old_dir)
-        mkpath(new_dir)
-        write(joinpath(old_dir, "x.txt"), "old")
-        try
-            stale = RustCall._stale_cache_format_dirs()
-            @test old_dir in stale
-            @test !(new_dir in stale)
-            @test !(cache_dir in stale)
+            # Older scratch siblings are swept best-effort; newer ones are left alone.
+            root = dirname(cache_dir)
+            old_dir = joinpath(root, "cache-v1")
+            new_dir = joinpath(root, "cache-v$(RustCall.CACHE_FORMAT_VERSION + 1)")
+            unrelated = joinpath(root, "not-a-cache")
+            mkpath(old_dir)
+            mkpath(new_dir)
+            mkpath(unrelated)
+            write(joinpath(old_dir, "x.txt"), "old")
+            try
+                stale = RustCall._stale_cache_format_dirs()
+                @test old_dir in stale
+                @test !(new_dir in stale)
+                @test !(unrelated in stale)
+                @test !(cache_dir in stale)
 
-            RustCall.sweep_stale_cache_formats()
-            @test !isdir(old_dir)
-            @test isdir(new_dir)      # a future format's cache is not ours to delete
-            @test isdir(cache_dir)
-        finally
-            rm(new_dir; recursive = true, force = true)
-            rm(old_dir; recursive = true, force = true)
+                RustCall.sweep_stale_cache_formats()
+                @test !isdir(old_dir)
+                @test isdir(new_dir)      # a future format's cache is not ours to delete
+                @test isdir(unrelated)    # nor is anything that is not `cache-v<n>`
+                @test isdir(cache_dir)
+            finally
+                rm(new_dir; recursive = true, force = true)
+                rm(old_dir; recursive = true, force = true)
+                rm(unrelated; recursive = true, force = true)
+            end
         end
     end
 
-    @testset "The sweep never deletes what RustCall did not write (#287 review)" begin
-        # `_cache_format_root()` is `.../compiled/vX.Y/RustCall` — *Julia's own*
-        # package precompile directory for RustCall, where it keeps `<slug>.ji`
-        # and `<slug>.dylib` native images. Deleting every regular file there
-        # would throw away fresh precompilation output and could race another
-        # Julia process writing it.
-        root = RustCall._cache_format_root()
-        mkpath(root)
+    @testset "RustCall writes nothing under ~/.julia/compiled (#252)" begin
+        with_isolated_depot() do _depot
+            # Acceptance criterion 1 of #252: the cache is a Scratch.jl space, and
+            # `.../compiled/vX.Y/RustCall` — Julia's own precompile directory — is
+            # read-only for RustCall and is never created by it.
+            cache_dir = RustCall.get_cache_dir()
+            @test !occursin(joinpath("compiled", "v$(VERSION.major).$(VERSION.minor)"), cache_dir)
 
-        # Named exactly as Julia names them (a package slug: mixed case and an
-        # underscore, so `_LEGACY_CACHE_FILE` cannot match).
-        julia_ji = joinpath(root, "qLtCw_2ChqG.ji")
-        julia_img = joinpath(root, "qLtCw_2ChqG." * (Sys.iswindows() ? "dll" :
-                                                     Sys.isapple() ? "dylib" : "so"))
-        unrelated = joinpath(root, "notes.txt")
-        # ... and a genuine v1 artifact: a `stable_content_hash` key plus the
-        # library extension, which is all v1 ever wrote loose in this directory.
-        v1_key = RustCall.stable_content_hash("a v1 cache entry")
-        legacy_lib = joinpath(root, v1_key * RustCall.get_library_extension())
-        legacy_sum = legacy_lib * ".sha256"
-        legacy_ir = joinpath(root, v1_key * ".ll")
+            # The depot is brand new, so if anything appears under
+            # `.../compiled/vX.Y/RustCall` in this testset, RustCall put it
+            # there. The pre-#252 code created that directory in `get_cache_dir`
+            # itself, on the first cache lookup.
+            legacy_root = RustCall._legacy_cache_root()
+            @test startswith(legacy_root, _depot)
+            @test !isdir(legacy_root)
 
-        for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
-            write(f, "x")
-        end
-        try
-            # The classifier is the safety property: only ours match.
-            listed = RustCall._legacy_cache_files()
-            @test legacy_lib in listed
-            @test legacy_sum in listed
-            @test legacy_ir in listed
-            @test !(julia_ji in listed)
-            @test !(julia_img in listed)
-            @test !(unrelated in listed)
-
-            # Off by default: a plain sweep touches no loose file at all, and
-            # neither does an age-based cleanup.
-            RustCall.sweep_stale_cache_formats()
-            @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
-            RustCall.cleanup_old_cache(0)
-            @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
-
-            # Explicitly requested: only the RustCall artifacts go.
-            RustCall.sweep_stale_cache_formats(; legacy_files = true)
-            @test !isfile(legacy_lib)
-            @test !isfile(legacy_sum)
-            @test !isfile(legacy_ir)
-            @test isfile(julia_ji)      # Julia's precompile output survives
-            @test isfile(julia_img)
-            @test isfile(unrelated)
-        finally
-            for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
-                rm(f; force = true)
+            # Every writer on the cache path goes through `get_cache_dir`; exercise
+            # them and assert the legacy root stays absent.
+            key = RustCall.stable_content_hash("#252 storage location probe")
+            payload = joinpath(mktempdir(), "probe" * RustCall.get_library_extension())
+            write(payload, "not really a library")
+            RustCall.save_cached_library(key, payload, RustCall.CacheMetadata(
+                key, key, "probe", "probe-triple", RustCall.Dates.now(), String["probe"]))
+            try
+                @test RustCall.get_cached_library(key) !== nothing
+                @test startswith(RustCall.get_cached_library(key), cache_dir)
+                @test startswith(RustCall.get_cargo_cache_dir(), cache_dir)
+                # Nothing appeared in Julia's precompile directory — not one
+                # file, and not the directory itself.
+                @test !isdir(legacy_root)
+                @test isempty(RustCall._legacy_cache_files())
+                @test isempty(RustCall._legacy_cache_dirs())
+                # A sweep, an age-based cleanup and a plain `clear_cache()` do
+                # not create it either.
+                RustCall.sweep_stale_cache_formats()
+                RustCall.cleanup_old_cache(365)
+                @test !isdir(legacy_root)
+            finally
+                rm(RustCall.get_cached_library(key); force = true)
+                rm(joinpath(cache_dir, key * RustCall.get_library_extension() * ".sha256"); force = true)
+                rm(joinpath(RustCall.get_metadata_dir(), key * ".json"); force = true)
             end
         end
+    end
 
-        # The pattern itself, stated directly.
-        @test occursin(RustCall._LEGACY_CACHE_FILE, "$(RustCall.stable_content_hash("k")).ll")
-        for name in ("qLtCw_2ChqG.ji", "qLtCw_2ChqG.dylib", "qLtCw_2ChqG.so",
-                     "notes.txt", "Manifest.toml", "ABCDEF0123456789.dylib",
-                     "deadbeef.stale", "libfoo.dylib")
-            @test !occursin(RustCall._LEGACY_CACHE_FILE, name)
+    @testset "Read-only DEPOT_PATH[1] with a writable depot behind it (#252)" begin
+        # Acceptance criterion 3 of #252. `Scratch.get_scratch!` defaults to
+        # `first(DEPOT_PATH)`; RustCall scans for the first *writable* depot, so
+        # a read-only depot in front (shared/HPC depots, baked container images)
+        # is not fatal.
+        ro = mktempdir()
+        rw = mktempdir()
+        chmod(ro, 0o500)
+        ro_still_writable = try
+            probe = joinpath(ro, "probe")
+            touch(probe)
+            rm(probe; force = true)
+            true
+        catch
+            false
+        end
+        if Sys.iswindows() || ro_still_writable
+            # Running as root, or on a filesystem where mode bits do not deny
+            # the owner: there is no read-only directory to test against.
+            @info "Skipping read-only depot test: a 0o500 directory is still writable here"
+            chmod(ro, 0o700)
+            rm(ro; recursive = true, force = true)
+            rm(rw; recursive = true, force = true)
+        else
+            saved_depots = copy(DEPOT_PATH)
+            try
+                empty!(DEPOT_PATH)
+                append!(DEPOT_PATH, [ro, rw])
+                RustCall._reset_cache_dir_memo!()
+
+                @test RustCall._depot_is_writable(ro) == false
+                @test RustCall._depot_is_writable(rw) == true
+                @test RustCall._writable_depot() == rw
+
+                dir = RustCall.get_cache_dir()
+                @test isdir(dir)
+                @test startswith(dir, rw)
+                @test basename(dir) == RustCall.CACHE_SCRATCH_NAME
+                @test isempty(readdir(ro))          # the read-only depot stays empty
+
+                # The cache is actually usable from there.
+                write(joinpath(dir, "probe.txt"), "ok")
+                @test read(joinpath(dir, "probe.txt"), String) == "ok"
+                @test startswith(RustCall.get_metadata_dir(), dir)
+                @test startswith(RustCall.get_cargo_cache_dir(), dir)
+
+                # With no writable depot at all, the failure is a named error,
+                # not an IOError from deep inside a copy.
+                empty!(DEPOT_PATH)
+                push!(DEPOT_PATH, ro)
+                RustCall._reset_cache_dir_memo!()
+                @test RustCall._writable_depot() === nothing
+                err = try
+                    RustCall.get_cache_dir()
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa RustCall.RustError
+                @test occursin("DEPOT_PATH", sprint(showerror, err))
+                @test occursin("RUSTCALL_CACHE_DIR", sprint(showerror, err))
+            finally
+                empty!(DEPOT_PATH)
+                append!(DEPOT_PATH, saved_depots)
+                RustCall._reset_cache_dir_memo!()
+                chmod(ro, 0o700)
+                rm(ro; recursive = true, force = true)
+                rm(rw; recursive = true, force = true)
+            end
+        end
+    end
+
+    @testset "RUSTCALL_CACHE_DIR override (#252)" begin
+        override = mktempdir()
+        saved = get(ENV, "RUSTCALL_CACHE_DIR", nothing)
+        try
+            ENV["RUSTCALL_CACHE_DIR"] = override
+            RustCall._reset_cache_dir_memo!()
+            @test RustCall.get_cache_dir() == abspath(override)
+            @test startswith(RustCall.get_metadata_dir(), abspath(override))
+            # An explicitly chosen directory has no sibling namespace to sweep.
+            @test isempty(RustCall._stale_cache_format_dirs())
+        finally
+            if saved === nothing
+                delete!(ENV, "RUSTCALL_CACHE_DIR")
+            else
+                ENV["RUSTCALL_CACHE_DIR"] = saved
+            end
+            RustCall._reset_cache_dir_memo!()
+            rm(override; recursive = true, force = true)
+        end
+    end
+
+    @testset "The legacy sweep never deletes what RustCall did not write (#252, #287)" begin
+        with_isolated_depot() do _depot
+            # `_legacy_cache_root()` is `.../compiled/vX.Y/RustCall` — *Julia's own*
+            # package precompile directory for RustCall, where it keeps `<slug>.ji`
+            # and `<slug>.dylib` native images. Deleting every regular file there
+            # would throw away fresh precompilation output and could race another
+            # Julia process writing it. Since #252 RustCall never writes here at
+            # all; the tree is read for the opt-in legacy sweep and nothing else.
+            root = RustCall._legacy_cache_root()
+            root_existed = isdir(root)
+            mkpath(root)
+
+            # Named exactly as Julia names them (a package slug: mixed case and an
+            # underscore, so `_LEGACY_CACHE_FILE` cannot match).
+            julia_ji = joinpath(root, "qLtCw_2ChqG.ji")
+            julia_img = joinpath(root, "qLtCw_2ChqG." * (Sys.iswindows() ? "dll" :
+                                                         Sys.isapple() ? "dylib" : "so"))
+            unrelated = joinpath(root, "notes.txt")
+            # ... and a genuine v1 artifact: a `stable_content_hash` key plus the
+            # library extension, which is all v1 ever wrote loose in this directory.
+            v1_key = RustCall.stable_content_hash("a v1 cache entry")
+            legacy_lib = joinpath(root, v1_key * RustCall.get_library_extension())
+            legacy_sum = legacy_lib * ".sha256"
+            legacy_ir = joinpath(root, v1_key * ".ll")
+            # Directory shapes both layouts left behind, including the *current*
+            # format version: since #252 nothing under this root is written any
+            # more, so every `v<n>` there is abandoned, not just the older ones.
+            legacy_v1 = joinpath(root, "v1")
+            legacy_vcur = joinpath(root, "v$(RustCall.CACHE_FORMAT_VERSION)")
+            legacy_meta = joinpath(root, "metadata")
+            julia_dir = joinpath(root, "qLtCw_2ChqG.dSYM")
+
+            for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
+                write(f, "x")
+            end
+            for d in (legacy_v1, legacy_vcur, legacy_meta, julia_dir)
+                mkpath(d)
+                write(joinpath(d, "content"), "x")
+            end
+            try
+                # The classifiers are the safety property: only ours match.
+                listed = RustCall._legacy_cache_files()
+                @test legacy_lib in listed
+                @test legacy_sum in listed
+                @test legacy_ir in listed
+                @test !(julia_ji in listed)
+                @test !(julia_img in listed)
+                @test !(unrelated in listed)
+
+                dirs = RustCall._legacy_cache_dirs()
+                @test legacy_v1 in dirs
+                @test legacy_vcur in dirs
+                @test legacy_meta in dirs
+                @test !(julia_dir in dirs)
+
+                # Off by default: a plain sweep touches nothing under this root at
+                # all, and neither does an age-based cleanup.
+                RustCall.sweep_stale_cache_formats()
+                @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
+                @test all(isdir, (legacy_v1, legacy_vcur, legacy_meta, julia_dir))
+                RustCall.cleanup_old_cache(0)
+                @test all(isfile, (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir))
+                @test all(isdir, (legacy_v1, legacy_vcur, legacy_meta, julia_dir))
+
+                # Explicitly requested: only the RustCall artifacts go.
+                RustCall.sweep_stale_cache_formats(; legacy = true)
+                @test !isfile(legacy_lib)
+                @test !isfile(legacy_sum)
+                @test !isfile(legacy_ir)
+                @test !isdir(legacy_v1)
+                @test !isdir(legacy_vcur)
+                @test !isdir(legacy_meta)
+                @test isfile(julia_ji)      # Julia's precompile output survives
+                @test isfile(julia_img)
+                @test isfile(unrelated)
+                @test isdir(julia_dir)
+                @test isdir(root)           # the root itself is never removed
+            finally
+                for f in (julia_ji, julia_img, unrelated, legacy_lib, legacy_sum, legacy_ir)
+                    rm(f; force = true)
+                end
+                for d in (legacy_v1, legacy_vcur, legacy_meta, julia_dir)
+                    rm(d; recursive = true, force = true)
+                end
+                # Do not leave Julia's precompile directory behind if this test
+                # created it: #252 is precisely about not writing here.
+                if !root_existed && isdir(root) && isempty(readdir(root))
+                    rm(root; force = true)
+                end
+            end
+
+            # The pattern itself, stated directly.
+            @test occursin(RustCall._LEGACY_CACHE_FILE, "$(RustCall.stable_content_hash("k")).ll")
+            for name in ("qLtCw_2ChqG.ji", "qLtCw_2ChqG.dylib", "qLtCw_2ChqG.so",
+                         "notes.txt", "Manifest.toml", "ABCDEF0123456789.dylib",
+                         "deadbeef.stale", "libfoo.dylib")
+                @test !occursin(RustCall._LEGACY_CACHE_FILE, name)
+            end
         end
     end
 
