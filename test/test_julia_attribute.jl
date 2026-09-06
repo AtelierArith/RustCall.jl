@@ -165,15 +165,17 @@ using Libdl
     end
 
     @testset "manifest: schema version guard" begin
-        @test RustCall.MANIFEST_SCHEMA_VERSION == 5
-        @test RustCall._parse_manifest("schema_version = 5\nmode = \"inline\"\n")["schema_version"] == 5
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 6
+        @test RustCall._parse_manifest("schema_version = 6\nmode = \"inline\"\n")["schema_version"] == 6
         # Schema 1 predates the string ABI columns (`abi`, `return_abi`, the
         # helper flags), schema 2 predates the additive `symbol` semantics
         # (#279), schema 3 predates the contract columns
         # (`Function.return_abi`, `Field.abi`, `Method.returns_boxed_struct`,
         # #276) and schema 4 predates the PyO3 scan columns (`attribute`
-        # origins, `vis`, `skip_reason`, `py_result`, #275); a consumer must
-        # not fall back to any of them.
+        # origins, `vis`, `skip_reason`, `py_result`, #275) and schema 5
+        # predates `Result`/`Option` on struct methods, which changes the ABI
+        # of a method wrapper rather than only describing it (#268); a consumer
+        # must not fall back to any of them.
         err = try
             RustCall._parse_manifest("schema_version = 1\nmode = \"inline\"\n")
             nothing
@@ -182,10 +184,11 @@ using Libdl
         end
         @test err isa RustCall.ExtractorError
         @test occursin("schema 1", sprint(showerror, err))
-        @test occursin("expects 5", sprint(showerror, err))
+        @test occursin("expects 6", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 3\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 4\nmode = \"inline\"\n")
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 5\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 999\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("mode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("not = [valid toml")

@@ -308,6 +308,97 @@ result2 = multiply(3.0, 4.0) # => 12.0
     Unit struct support is still planned for a future release, so the example
     above uses a regular struct.
 
+## `Result` and `Option` Returning Methods
+
+A method that returns `Result<T, E>` or `Option<T>` is lowered **exactly like a
+free function** (#268): the generated `extern "C"` wrapper returns a
+`#[repr(C)]` `CResult_<Struct>_<method>` / `COption_<Struct>_<method>`
+aggregate, and Julia hands you a `RustResult{T, E}` / `RustOption{T}`. This is
+true on all three paths — an inline `rust"""` block, `@rust_crate`, and the
+file `write_bindings_to_file` writes.
+
+```julia
+rust"""
+#[julia]
+pub struct Divider {
+    pub scale: i32,
+}
+
+impl Divider {
+    pub fn new(scale: i32) -> Self { Divider { scale } }
+
+    pub fn checked_div(&self, d: i32) -> Result<i32, String> {
+        if d == 0 {
+            Err(format!("cannot divide {} by zero", self.scale))
+        } else {
+            Ok(self.scale / d)
+        }
+    }
+
+    pub fn ratio(&self, d: i32) -> Option<f64> {
+        if d == 0 { None } else { Some(self.scale as f64 / d as f64) }
+    }
+
+    pub fn describe(&self, unit: String) -> Result<String, String> {
+        if unit.is_empty() {
+            Err("empty unit".to_string())
+        } else {
+            Ok(format!("{} {}", self.scale, unit))
+        }
+    }
+}
+"""
+
+d = Divider(Int32(10))
+
+RustCall.unwrap(checked_div(d, Int32(2)))   # => 5
+checked_div(d, Int32(0)).value              # => "cannot divide 10 by zero"
+RustCall.unwrap(ratio(d, Int32(4)))         # => 2.5
+RustCall.is_none(ratio(d, Int32(0)))        # => true
+RustCall.unwrap(describe(d, "meters"))      # => "10 meters"
+```
+
+`&mut self` methods, static methods and the free-function form all behave the
+same way.
+
+### String payloads
+
+A `String` or `&str` payload cannot be a field of the C aggregate, so it is
+lowered to the same owned buffer a `String`-returning wrapper already uses:
+`<owner>_RustCallOwnedString { ptr, len, cap }`, released through
+`<owner>_free_rust_string`. The `Result` lowering and the string lowering
+therefore *compose*, and `Result<String, String>` works. `<owner>` is the
+struct for an inline method and `<Struct>_<method>` for a `@rust_crate` one,
+matching the buffer a string-returning method of the same flavour uses.
+
+Julia copies the buffer into a Julia `String` and releases it immediately,
+through the release function resolved in the **same** generation snapshot as the
+call (see [Panics and reloads](panics.md)). Only the active payload is decoded
+and released; the inactive one is uninitialized on the Rust side.
+
+A `&str` payload is *copied* rather than borrowed: unlike a bare `&str` return,
+a payload sits inside an aggregate that outlives the call's temporaries, so one
+owned shape keeps the release rule true in every case.
+
+### Panics
+
+A panic inside a `Result`/`Option`-returning method is caught at the boundary
+exactly as anywhere else: the wrapper returns the `panicked()` sentinel (the
+`Err` / `None` discriminant with **no** payload initialized), Julia reads the
+panic channel *before* it decodes anything, and raises `RustCall.RustPanicError`.
+
+### What is not lowered
+
+- A payload the aggregate cannot carry (`Vec<T>`, `Box<T>`, a `HashMap`, …)
+  keeps the previous behaviour: the method returns the type as written and the
+  manifest reports `return_kind = plain`. On a **free** function the same
+  payload is a compile error, which is the older and stricter rule.
+- A constructor — `new`, or any method returning `Self` — is boxed before the
+  `Result` lowering is consulted, so `fn new(...) -> Result<Self, E>` is not a
+  `RustResult`.
+- The methods of a **generic** struct are monomorphized on demand and return
+  the type as written; `Result`/`Option` lowering does not apply to them.
+
 ## Best Practices
 
 ### 1. Always Use `#[derive(JuliaStruct)]`

@@ -1023,6 +1023,43 @@ function ffi_return_slot_symbol_or_throw(rust_type::AbstractString, abi::Abstrac
 end
 
 """
+    ffi_payload_is_owned_string(rust_type, abi) -> Bool
+
+Whether a `Result` / `Option` **payload** travels as an owned string buffer.
+
+The manifest states this in `ok_abi` / `err_abi` / `inner_abi` (schema 6,
+#268): a `String` or `&str` payload cannot be a field of the `#[repr(C)]`
+aggregate the wrapper returns, so it is lowered to the very
+`<owner>_RustCallOwnedString { ptr, len, cap }` buffer a string-returning
+wrapper hands back, released through `<owner>_free_rust_string`. Exactly the
+active payload is initialized, and exactly it must be released.
+"""
+ffi_payload_is_owned_string(rust_type::AbstractString, abi::AbstractString) =
+    ffi_owned_string_return(ffi_return_contract(rust_type; abi = abi))
+
+"""
+    ffi_payload_symbols(rust_type, abi, ctx; strict = FFI_STRICT[]) -> (surface, slot)
+
+How one `Result` / `Option` payload is spelled in generated code: the Julia
+surface type the caller sees, and the C slot the aggregate field is declared
+with.
+
+For a plain payload these are what the return-position helpers give (they
+differ only for `char`). For a lowered string payload the slot is `CRustString`
+— the buffer the wrapper wrote — and the surface type is `String`, decoded and
+released by `RustCall._result_payload`.
+"""
+function ffi_payload_symbols(rust_type::AbstractString, abi::AbstractString,
+                             ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+    # Qualified: the spelling is spliced into code that lives in the user's
+    # module or in a generated `@rust_crate` module, where only `RustCall`
+    # itself is reliably in scope.
+    ffi_payload_is_owned_string(rust_type, abi) && return (:String, :(RustCall.CRustString))
+    return (ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = strict),
+            ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = strict))
+end
+
+"""
     ffi_return_type_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Type
 
 [`ffi_return_symbol_or_throw`](@ref) as a `Type` rather than as a spelling, for

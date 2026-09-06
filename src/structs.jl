@@ -49,6 +49,14 @@ struct RustMethod
     ok_type::String
     err_type::String
     inner_type::String
+    # Manifest schema 6 (#268): how each payload travels — "" as written,
+    # "string" for an owned `<owner>_RustCallOwnedString` buffer released with
+    # `<owner>_free_rust_string`. The owner is the struct for an inline method
+    # and `<Struct>_<method>` for a crate one, matching the buffer a
+    # string-returning method of the same flavour uses.
+    ok_abi::String
+    err_abi::String
+    inner_abi::String
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -62,11 +70,30 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     python_name::String = "", accessor::String = "",
                     return_kind::Symbol = return_type == "()" ? :unit : :plain,
                     ok_type::String = "", err_type::String = "",
-                    inner_type::String = "")
+                    inner_type::String = "",
+                    ok_abi::String = _default_payload_abi(ok_type),
+                    err_abi::String = _default_payload_abi(err_type),
+                    inner_abi::String = _default_payload_abi(inner_type))
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
-               return_kind, ok_type, err_type, inner_type)
+               return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi)
+end
+
+"""
+    _default_payload_abi(payload_type) -> String
+
+The `ok_abi` / `err_abi` / `inner_abi` of a hand-built signature (tests, legacy
+callers). The extractor classifies the payload on the Rust side
+(`rustcall_core::codegen::payload_abi`); this reconstructs the column from the
+same FFI contract the wrapper generators consult, so a hand-built signature and
+a manifest one agree. `&str` is included: a payload is always copied into an
+owned buffer, never borrowed.
+"""
+function _default_payload_abi(payload_type::AbstractString)
+    entry = ffi_lookup(payload_type)
+    entry === nothing && return ""
+    return entry.surface_type === RustString || entry.surface_type === RustStr ? "string" : ""
 end
 
 """
@@ -462,6 +489,10 @@ function emit_julia_definitions(info::RustStructInfo)
                         return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)
                     end
                 end)
+            elseif m.return_kind === :result || m.return_kind === :option
+                push!(exprs, _inline_method_payload_wrapper(
+                    info, m, fname, wrapper_name, esc_args, bindings, preserved,
+                    expanded_call_args; self = nothing))
             else
                 mc = ffi_return_contract(m.return_type; abi = m.return_abi,
                                          owner = struct_name_str)
@@ -497,6 +528,10 @@ function emit_julia_definitions(info::RustStructInfo)
                     end)
                 end
             end
+        elseif m.return_kind === :result || m.return_kind === :option
+            push!(exprs, _inline_method_payload_wrapper(
+                info, m, fname, wrapper_name, esc_args, bindings, preserved,
+                expanded_call_args; self = esc_struct))
         else
             mc = ffi_return_contract(m.return_type; abi = m.return_abi, owner = struct_name_str)
             if ffi_owned_string_return(mc)
@@ -653,6 +688,71 @@ function emit_julia_definitions(info::RustStructInfo)
     end
 
     return Expr(:block, exprs...)
+end
+
+"""
+    _inline_method_payload_wrapper(info, m, fname, wrapper_name, esc_args, bindings,
+                                   preserved, call_args; self) -> Expr
+
+The Julia wrapper of an inline `#[julia]` struct method returning
+`Result<T, E>` / `Option<T>` (#268).
+
+Identical in shape to the free-function wrapper in `src/julia_functions.jl`:
+one generation snapshot (pointer, panic channel and — when a payload is an
+owned string — the struct's `<Struct>_free_rust_string`), the aggregate read by
+value, the panic channel consulted *before* anything is decoded, and only the
+active payload converted and released.
+
+`self` is the escaped struct type for an instance method and `nothing` for a
+static one; the inline flavour names its string buffer after the **struct**, so
+that is the owner the release symbol comes from.
+"""
+function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fname,
+                                        wrapper_name::AbstractString, esc_args, bindings,
+                                        preserved, call_args; self = nothing)
+    ctx = _ffi_context(m, info.name)
+    if m.return_kind === :result
+        ok_t, ok_slot = ffi_payload_symbols(m.ok_type, m.ok_abi, ctx)
+        err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx)
+        aggregate = :(RustCall.CResultType{$ok_slot, $err_slot})
+        free_sym = _payload_free_symbol(info.name, (m.ok_abi, m.err_abi))
+        decode = (c, tgt) ->
+            :(RustCall.convert_c_result_to_rust_result($c, $ok_t, $err_t, $tgt.free_ptr))
+    else
+        inner_t, inner_slot = ffi_payload_symbols(m.inner_type, m.inner_abi, ctx)
+        aggregate = :(RustCall.COptionType{$inner_slot})
+        free_sym = _payload_free_symbol(info.name, (m.inner_abi,))
+        decode = (c, tgt) ->
+            :(RustCall.convert_c_option_to_rust_option($c, $inner_t, $tgt.free_ptr))
+    end
+    label = string(info.name, "::", m.name)
+    tgt = gensym("target")
+    c = gensym("payload")
+    body(lib, leading_args, preserve) = quote
+        $(bindings...)
+        $tgt = RustCall.resolve_call_target($lib, $wrapper_name; free_symbol = $free_sym)
+        $c = GC.@preserve $(preserve...) RustCall.call_rust_function(
+            $tgt.func_ptr, $aggregate, $(leading_args...), $(call_args...))
+        # The `panicked()` sentinel carries an uninitialized payload, so the
+        # channel is read before anything is decoded (#244).
+        RustCall.check_rust_panic_ptr($tgt.channel, $label)
+        $(decode(c, tgt))
+    end
+    if self === nothing
+        inner = body(:(get_current_library()), (), preserved)
+        return quote
+            function $fname($(esc_args...))
+                $inner
+            end
+        end
+    end
+    inner = body(:(self.lib_name), (:(self.ptr),), (:self, preserved...))
+    return quote
+        function $fname(self::$self, $(esc_args...))
+            RustCall.check_not_freed(self, $(info.name))
+            $inner
+        end
+    end
 end
 
 # ============================================================================
@@ -944,13 +1044,7 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
     # the sentinel owns no allocation.
     check_rust_panic_ptr(channel, func_name)
 
-    try
-        return _crust_string_to_julia(raw)
-    finally
-        if raw.ptr != C_NULL && target.free_ptr != C_NULL
-            ccall(target.free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
-        end
-    end
+    return _take_owned_string(raw, target.free_ptr)
 end
 
 function _call_rust_borrowed_string(lib_name::String, func_name::String, args...)
@@ -966,18 +1060,52 @@ end
 # (`@rust_crate` modules).
 function _call_rust_owned_string_ptr(func_ptr::Ptr{Cvoid}, free_ptr::Ptr{Cvoid}, args...)
     raw = call_rust_function(func_ptr, CRustString, args...)
-    try
-        return _crust_string_to_julia(raw)
-    finally
-        if raw.ptr != C_NULL
-            ccall(free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
-        end
-    end
+    return _take_owned_string(raw, free_ptr)
 end
 
 function _call_rust_borrowed_string_ptr(func_ptr::Ptr{Cvoid}, args...)
     raw = call_rust_function(func_ptr, CRustStr, args...)
     return _crust_str_to_julia(raw)
+end
+
+"""
+    _result_payload(SurfaceType, value, free_ptr) -> value
+
+Read one `Result` / `Option` payload out of the `#[repr(C)]` aggregate a
+wrapper returned (#268).
+
+A plain payload is the C slot Rust stored, converted to the surface type
+(`convert_return`, which is the identity for everything but `char`). A
+`CRustString` payload is an owned buffer the wrapper allocated: it is copied
+into a Julia `String` and released through `free_ptr`, the
+`<owner>_free_rust_string` of the very call that produced it — taken from the
+same generation snapshot, so the buffer is never handed to another image's
+allocator (#277).
+
+Only the **active** payload is ever passed here. The inactive one is
+`MaybeUninit::zeroed()` on the Rust side, so reading it would be undefined and
+freeing it would be a double free.
+"""
+_result_payload(::Type{T}, value, ::Ptr{Cvoid}) where {T} = convert_return(T, value)
+
+_result_payload(::Type{String}, value::CRustString, free_ptr::Ptr{Cvoid}) =
+    _take_owned_string(value, free_ptr)
+
+"""
+    _take_owned_string(raw::CRustString, free_ptr) -> String
+
+Copy an owned Rust string buffer into a Julia `String` and release it. A null
+buffer (the panic sentinel, and the zeroed inactive payload) owns nothing and
+is not released.
+"""
+function _take_owned_string(raw::CRustString, free_ptr::Ptr{Cvoid})
+    try
+        return _crust_string_to_julia(raw)
+    finally
+        if raw.ptr != C_NULL && free_ptr != C_NULL
+            ccall(free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
+        end
+    end
 end
 
 # The return type is a concrete `Type` spliced by the generator, not a Symbol

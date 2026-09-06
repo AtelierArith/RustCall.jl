@@ -1,7 +1,7 @@
-error: #[julia] function `bad_result` returns Result with non-FFI-compatible Ok type `String`. Use a primitive or #[repr(C)] type instead.
- --> tests/ui/non_ffi_result.rs:4:1
+error: #[julia] function `bad_result` returns Result with non-FFI-compatible Ok type `Vec < i32 >`. Use a primitive or #[repr(C)] type instead.
+ --> tests/ui/non_ffi_result.rs:7:1
   |
-4 | #[julia]
+7 | #[julia]
   | ^^^^^^^^
   |
   = note: this error originates in the attribute macro `julia` (in Nightly builds, run with -Z macro-backtrace for more info)

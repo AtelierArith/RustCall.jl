@@ -17,9 +17,13 @@ Manifest schema version this version of RustCall.jl understands. Must match
 `symbol` differs from `name` for every wrapped function and method, #279;
 4: one vocabulary for the type contract — `Function.return_abi`, `Field.abi`
 and `Method.returns_boxed_struct`, #276; 5: the PyO3 crate scan — a `py_*`
-attribute origin, `vis`, `skip_reason` and the `py_result` return kind, #275).
+attribute origin, `vis`, `skip_reason` and the `py_result` return kind, #275;
+6: `Result`/`Option` on struct methods — a method wrapper now returns
+`CResult_<Struct>_<method>` / `COption_<Struct>_<method>` where it used to
+return the type as written, and `ok_abi`/`err_abi`/`inner_abi` say whether a
+payload travels as an owned string buffer, #268).
 """
-const MANIFEST_SCHEMA_VERSION = 5
+const MANIFEST_SCHEMA_VERSION = 6
 
 """
     ExtractorError <: Exception
@@ -912,6 +916,9 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             ok_type = _mstr(f, "ok_type"),
             err_type = _mstr(f, "err_type"),
             inner_type = _mstr(f, "inner_type"),
+            ok_abi = _mstr(f, "ok_abi"),
+            err_abi = _mstr(f, "err_abi"),
+            inner_abi = _mstr(f, "inner_abi"),
             source = _mstr(f, "source"),
             constraints = manifest_constraints(f),
             module_path = String[String(m) for m in _mvec(f, "module_path")],
@@ -954,6 +961,9 @@ function _manifest_method(m)
         ok_type = _mstr(m, "ok_type"),
         err_type = _mstr(m, "err_type"),
         inner_type = _mstr(m, "inner_type"),
+        ok_abi = _mstr(m, "ok_abi"),
+        err_abi = _mstr(m, "err_abi"),
+        inner_abi = _mstr(m, "inner_abi"),
     )
 end
 

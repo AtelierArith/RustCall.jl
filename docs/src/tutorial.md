@@ -270,6 +270,33 @@ RustCall.is_err(err_result)  # => true
 RustCall.unwrap_or(err_result, Int32(0))  # => 0
 ```
 
+### `Result` / `Option` on struct methods
+
+A `#[julia]` struct method that returns `Result<T, E>` or `Option<T>` gives back
+a `RustResult` / `RustOption` just like a free function does, including a
+`String` payload:
+
+```julia
+rust"""
+#[julia]
+pub struct Divider { pub scale: i32 }
+
+impl Divider {
+    pub fn new(scale: i32) -> Self { Divider { scale } }
+    pub fn checked_div(&self, d: i32) -> Result<i32, String> {
+        if d == 0 { Err("division by zero".to_string()) } else { Ok(self.scale / d) }
+    }
+}
+"""
+
+d = Divider(Int32(10))
+RustCall.unwrap(checked_div(d, Int32(2)))   # => 5
+checked_div(d, Int32(0)).value              # => "division by zero"
+```
+
+See [Struct mapping](struct_mapping.md) for the exact lowering, the string
+payload rules and the cases that are still returned as written.
+
 ### Converting to Exceptions
 
 Use `result_to_exception` to convert `Result` to Julia exceptions:

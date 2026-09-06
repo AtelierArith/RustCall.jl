@@ -687,6 +687,10 @@ fn function_entry(
         ok_type,
         err_type,
         inner_type,
+        // Same reason: no wrapper exists yet, so no payload lowering (#268).
+        ok_abi: String::new(),
+        err_abi: String::new(),
+        inner_abi: String::new(),
         has_owned_string_helper: false,
         has_borrowed_string_helper: false,
         source: String::new(),
@@ -825,6 +829,11 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
         ok_type,
         err_type,
         inner_type,
+        // No `#[julia]` wrapper exists for a scanned PyO3 item, so no payload
+        // lowering (#268).
+        ok_abi: String::new(),
+        err_abi: String::new(),
+        inner_abi: String::new(),
         // A `#[new]`, and any other method returning `Self`, hands back the
         // class itself — an opaque handle a wrapper boxes (`#[pyclass]` is
         // never `repr(C)`), decided by the same rule the `#[julia]` path uses.

@@ -45,7 +45,21 @@ use serde::{Deserialize, Serialize};
 ///   syntax. A version-4 consumer would treat a `#[pyfunction]` as an exported
 ///   `#[julia]` function and `dlsym` a symbol that no wrapper crate has emitted
 ///   yet.
-pub const SCHEMA_VERSION: u32 = 5;
+/// * 6: `Result` / `Option` on struct methods (#268). A `#[julia]` method
+///   returning `Result<T, E>` / `Option<T>` is now lowered exactly like a free
+///   function — the wrapper returns `CResult_<Struct>_<method>` /
+///   `COption_<Struct>_<method>` instead of the type as written — so
+///   [`Method::return_kind`] reports [`ReturnKind::Result`] /
+///   [`ReturnKind::Option`] where it always said [`ReturnKind::Plain`], with
+///   the payload types in [`Method::ok_type`] / [`Method::err_type`] /
+///   [`Method::inner_type`]. That is an **ABI change** for those methods, not
+///   just a richer description: a version-5 consumer would read a two-payload
+///   aggregate as the scalar it used to be. The same version adds
+///   [`Function::ok_abi`] / [`Function::err_abi`] / [`Function::inner_abi`] and
+///   their `Method` counterparts, which say whether a payload travels as an
+///   owned `<owner>_RustCallOwnedString` buffer — the composition of the
+///   `Result` and string lowerings that makes `Result<String, String>` work.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -263,6 +277,18 @@ pub struct Function {
     /// `T` of `Option<T>`, empty otherwise.
     #[serde(default)]
     pub inner_type: String,
+    /// How each `Result` / `Option` payload travels: `""` as written,
+    /// `"string"` for an owned `<fn>_RustCallOwnedString` buffer released
+    /// through `<fn>_free_rust_string` (schema 6, #268). This is what makes
+    /// the `Result` and string lowerings composable: `Result<String, String>`
+    /// is one aggregate holding two such buffers, of which exactly the active
+    /// one is initialized and must be released.
+    #[serde(default)]
+    pub ok_abi: String,
+    #[serde(default)]
+    pub err_abi: String,
+    #[serde(default)]
+    pub inner_abi: String,
     /// The function returns `String`: the wrapper returns
     /// `<fn>_RustCallOwnedString { ptr, len, cap }`, released through
     /// `<fn>_free_rust_string(ptr, len, cap)` (#242).
@@ -374,6 +400,18 @@ pub struct Method {
     /// `T` of an `Option<T>` return, empty otherwise (#275).
     #[serde(default)]
     pub inner_type: String,
+    /// How each `Result` / `Option` payload travels: `""` as written,
+    /// `"string"` for an owned `<owner>_RustCallOwnedString` buffer released
+    /// through `<owner>_free_rust_string` (schema 6, #268). The owner is the
+    /// struct for an inline method and `<Struct>_<method>` for a crate one,
+    /// which is the same buffer a string-returning method of the same flavour
+    /// uses.
+    #[serde(default)]
+    pub ok_abi: String,
+    #[serde(default)]
+    pub err_abi: String,
+    #[serde(default)]
+    pub inner_abi: String,
     /// Whether the wrapper boxes the result and returns `*mut Struct`
     /// (`crate::codegen::returns_boxed_struct`). Julia used to infer this by
     /// comparing `return_type` against `"Self"` and the struct name, which

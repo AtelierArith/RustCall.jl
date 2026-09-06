@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`Result` and `Option` returns on `#[julia]` struct methods**
+  ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268)). A method
+  returning `Result<T, E>` / `Option<T>` is now lowered exactly like a free
+  function: the wrapper returns a `#[repr(C)]` `CResult_<Struct>_<method>` /
+  `COption_<Struct>_<method>` aggregate (private fields, `MaybeUninit`
+  payloads, `new` / `is_ok` / `is_some` / `ok` / `err` / `some` / `panicked`
+  accessors) and Julia hands back a `RustResult` / `RustOption`. It used to
+  return the `Result` as written — not FFI-safe — and the manifest reported
+  `return_kind = plain`, so the Julia emitters raised under the default
+  `FFI_STRICT = :error`. Both wrapper flavours (inline `rust"""` and the
+  `@rust_crate` proc-macro) and all three Julia emitters (`src/structs.jl`,
+  the in-memory `@rust_crate` emitter and `write_bindings_to_file`) now agree,
+  with `#[cfg]` / `#[cfg_attr]` propagated to every generated item and the
+  panic channel read before either payload is decoded.
+
+- **`String` / `&str` payloads inside `Result` and `Option`**
+  ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268)). A string
+  payload is lowered to the owned buffer the string ABI already uses —
+  `<owner>_RustCallOwnedString { ptr, len, cap }`, released through
+  `<owner>_free_rust_string` — so the `Result` lowering and the string lowering
+  compose and `Result<String, String>` works. Julia copies the active payload
+  out and releases it through the release function resolved in the **same**
+  generation snapshot as the call; the inactive payload is never touched. This
+  lifts the compile error `#[julia]` used to emit for a `String` payload on a
+  free function too. A `&str` payload is copied rather than borrowed. Payloads
+  the aggregate cannot carry (`Vec<T>`, `Box<T>`, …) are unchanged: a compile
+  error on a free function, returned as written on a method.
+
+### Changed
+- **Manifest schema 6** ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268)).
+  `Method.return_kind` now reports `result` / `option` where it always said
+  `plain`, which is an **ABI change** for those methods and not merely a richer
+  description: a schema-5 consumer would read a two-payload aggregate as the
+  scalar it used to be. `Function` and `Method` also gain `ok_abi` / `err_abi` /
+  `inner_abi`, which say whether a payload travels as an owned string buffer.
+  Rebuild the extractor (`Pkg.build("RustCall")`) after upgrading.
+
+- **Bindings format 5** ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268)).
+  A file written by `write_bindings_to_file` now imports
+  `RustCall._result_payload`, which older RustCall versions do not define.
+  Regenerate after upgrading.
+
 ### Fixed
 - **Re-aliasing a library under a name it already has no longer declares it
   dead** ([#291](https://github.com/AtelierArith/RustCall.jl/issues/291)).
