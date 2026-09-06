@@ -1499,6 +1499,31 @@ function library_names_for_handle(handle::Ptr{Cvoid})
 end
 
 """
+    registered_alive_for_handle(handle) -> Union{Base.RefValue{Bool}, Nothing}
+
+The liveness flag already registered for the image `handle` names, under **any**
+of its names, or `nothing` when it has none. Caller holds `REGISTRY_LOCK`.
+
+The invariant this serves is *one image, one flag* (#291 item 4). A path can be
+loaded under a second name while the first is still live — `dlopen` refcounts
+and answers with the same handle — and minting a fresh flag for that second
+registration would leave two flags describing one lifetime. `unload_artifact!`
+retires the image with **one** of them; the other is dropped from
+`ARTIFACT_ALIVE` and never flipped, so every object that captured it believes
+itself live after `close = true` has unmapped the code its destructor calls
+into. That is a use-after-free reachable without any hot reload: two
+`load_artifact!` calls on one path under two names.
+"""
+function registered_alive_for_handle(handle::Ptr{Cvoid})
+    handle == C_NULL && return nothing
+    for name in library_names_for_handle(handle)
+        ref = get(ARTIFACT_ALIVE, name, nothing)
+        ref === nothing || return ref
+    end
+    return nothing
+end
+
+"""
     load_artifact!(policy::LoadPolicy, path;
                    lib_name, symbols = (), return_types = (), eager = (),
                    snapshot_env = nothing,
@@ -1644,12 +1669,19 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         # closed under a different one. The retired record's flag *is* this
         # image's flag, so it is adopted and the record retired no more.
         retired = get(RETIRED_HANDLES, handle, nothing)
+        # ...and it includes the same path opened under a *second name* while
+        # the first is still live. `dlopen` refcounts and returns the same
+        # image, so this is one lifetime with two registry rows; a fresh flag
+        # here would be a second flag for one image, and `unload_artifact!`
+        # retires with only one of them — the other is dropped and never
+        # flipped, leaving objects that captured it live forever over unmapped
+        # code (#291 item 4).
         alive = if previous_alive !== nothing && replaced == handle
             previous_alive
         elseif retired !== nothing
             retired.alive
         else
-            Ref(true)
+            something(registered_alive_for_handle(handle), Ref(true))
         end
         ARTIFACT_ALIVE[name] = alive
         RUST_LIBRARIES[name] = (handle, cache)
@@ -1810,6 +1842,13 @@ of the handle and closes it once (`library_names_for_handle`). Removing one and
 leaving the other would leave a registry entry pointing at unmapped code, and
 closing once per name would close an image the process opened once.
 
+An alias over a name that pointed at a *different* image **retires** that image
+rather than killing it: it is still mapped, so it keeps its liveness flag `true`
+and its objects still free through it, exactly as a replaced image does
+(`load_artifact!`). It becomes inert only when `close_retired_handles!` actually
+closes it. Aliasing over one of several names of a live image does nothing to
+that image at all.
+
 Returns `false` when `from` is not loaded.
 """
 function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractString)
@@ -1821,12 +1860,49 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         entry = get(RUST_LIBRARIES, source, nothing)
         entry === nothing && return false
         copy_library_metadata!(source, target)
-        _retire_alive!(target)
         alive = get!(() -> Ref(true), ARTIFACT_ALIVE, source)
+        # The image `target` named before this call, and the flag it carried.
+        # Captured now, because both rows are about to be overwritten.
+        existing = get(RUST_LIBRARIES, target, nothing)
+        displaced = existing === nothing ? C_NULL : existing[1]
+        displaced_alive = get(ARTIFACT_ALIVE, target, nothing)
+        # No flag is flipped here, and that is the whole of it (#291 item 4 and
+        # its review). This used to `_retire_alive!(target)` unconditionally,
+        # which was wrong three ways:
+        #
+        #   * when `target` already named *this* image, the flag being flipped
+        #     was this image's own — a live library declared dead, every object
+        #     holding the flag inert and its destructor never run.
+        #     `_alias_reloaded_library` runs on every `_resolve_lib`, so the
+        #     second call through one precompiled module hit exactly that;
+        #   * when `target` named a different image that this alias displaces,
+        #     the image is *retired*, not closed. It is still mapped, so it
+        #     keeps its flag `true` and its objects still free through it —
+        #     `close_retired_handles!` is what makes them inert, and it flips
+        #     the flag itself. Flipping here left a mapped image whose objects
+        #     all skipped their destructors;
+        #   * when that image still had another live name, `_record_retired!`
+        #     rightly declines to retire it — but the flag was already false,
+        #     so a perfectly live library was marked dead.
+        #
+        # Displacement therefore goes through the same path as an unload:
+        # record retired, keep the flag, close later.
         ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
         _update_handle_mirrors!(target, entry[1], alive,
                                 get(ARTIFACT_GENERATIONS, target, 0))
+        # An alias that displaces a *different* image takes a name away from it
+        # — and an image with no name left is unreachable: nothing can unload
+        # it and `close_retired_handles!` cannot see it, so its owned `dlopen`
+        # reference is never given back and it stays mapped for the life of the
+        # process. `load_artifact!` records exactly this on a replace; the alias
+        # path did not (#291 review). Recorded *after* the swap, so
+        # `library_names_for_handle` sees the new mapping — and an image still
+        # live under another name is left alone by `_record_retired!` itself,
+        # which is why nothing above may touch its flag.
+        if displaced != C_NULL && displaced != entry[1]
+            _record_retired!(displaced, String[target], displaced_alive)
+        end
         return true
     end
 end

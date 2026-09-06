@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Re-aliasing a library under a name it already has no longer declares it
+  dead** ([#291](https://github.com/AtelierArith/RustCall.jl/issues/291)).
+  `alias_artifact!` retired whatever was registered under the target name —
+  correct when that name pointed at a *different* image, and destructive when
+  it already pointed at this one, because then the retired flag is this image's
+  own. Every object holding it went inert, its destructor never ran, and every
+  `alive[]` check turned a working call into an error.
+  `_alias_reloaded_library` runs on every `_resolve_lib`, so the second call
+  through one precompiled module reached exactly this. Aliasing a name that
+  already names the same handle with the same flag is now a no-op for
+  liveness; aliasing over a name that pointed elsewhere still retires it.
+
+- **One liveness flag per image, even under two live names**
+  ([#291](https://github.com/AtelierArith/RustCall.jl/issues/291)). Loading the
+  same path under a second name while the first is still registered minted a
+  second flag for one image — `dlopen` refcounts and answers with the same
+  handle, so it is one lifetime with two registry rows. `unload_artifact!`
+  retires the image with **one** of those flags and drops the other from
+  `ARTIFACT_ALIVE` without ever flipping it, so every object that captured the
+  dropped flag believed itself live after `close = true` had unmapped the code
+  its destructor calls into. `load_artifact!` now adopts the flag the image
+  already has (`registered_alive_for_handle`).
+
 ### Breaking
 - **The compilation cache moved out of `~/.julia/compiled/`**
   ([#252](https://github.com/AtelierArith/RustCall.jl/issues/252)). RustCall
