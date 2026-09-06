@@ -276,6 +276,10 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
                 skip_reason: String::new(),
                 python_name: String::new(),
                 accessor: String::new(),
+                return_kind: crate::extract::plain_return_kind(&m.func.sig.output),
+                ok_type: String::new(),
+                err_type: String::new(),
+                inner_type: String::new(),
                 returns_boxed_struct: crate::codegen::returns_boxed_struct(struct_name, &m.func),
                 args: fn_args(&m.func.sig),
                 return_type: return_type_to_string(&m.func.sig.output),
@@ -300,6 +304,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
                 getter: acc.map(|a| a.1.clone()).unwrap_or_default(),
                 setter: acc.map(|a| a.2.clone()).unwrap_or_default(),
                 python_name: String::new(),
+                vis: String::new(),
             }
         })
         .collect()

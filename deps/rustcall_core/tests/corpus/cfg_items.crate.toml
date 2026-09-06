@@ -135,6 +135,7 @@ ffi_compatible = true
 getter = "Handle_get_fd"
 setter = "Handle_set_fd"
 python_name = ""
+vis = ""
 
 [[structs.fields]]
 name = "epoll"
@@ -144,3 +145,4 @@ ffi_compatible = true
 getter = "Handle_get_epoll"
 setter = "Handle_set_epoll"
 python_name = ""
+vis = ""

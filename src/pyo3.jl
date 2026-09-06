@@ -134,8 +134,14 @@ whether it can be built at all (#275 Phase 1.5).
   | `:link_libpython` | pyo3 is a mandatory dependency: the wrapper cdylib hard-links libpython and only loads if the interpreter's library directory is on the runtime search path |
   | `:unlinkable` | the crate enables pyo3's `extension-module` feature unconditionally: the wrapper cdylib cannot be loaded (it does not link on macOS, and fails `dlopen` on Linux) |
 
-- `feature_flags::Vector{String}`: Cargo flags the wrapper build must pass for
-  the plan to hold (e.g. `--no-default-features`).
+- `feature_flags::Vector{String}`: features the wrapper's `[dependencies.<crate>]`
+  entry must enable on the target crate for the plan to hold. Empty in every
+  mode today; the plan turns things *off*, never on.
+- `dependency_default_features::Bool`: what that entry's `default-features` must
+  be. `false` is how a target crate's default features are switched off — the
+  `cargo build --no-default-features` **flag applies to the package being
+  built**, i.e. the wrapper, and does not reach a dependency's defaults, so a
+  plan that needs the target's `default` off says it here.
 - `rpath::String`: the interpreter's library directory for `:link_libpython`,
   empty when it could not be located (then `pyo3_link_rustflags` raises).
 - `reason::String`: why this mode was chosen, in words.
@@ -162,6 +168,27 @@ struct PyO3LinkPlan
     feature_flags::Vector{String}
     rpath::String
     reason::String
+    dependency_default_features::Bool
+end
+
+PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String, reason::String) =
+    PyO3LinkPlan(mode, feature_flags, rpath, reason, true)
+
+"""
+    pyo3_dependency_toml(plan, name, path) -> String
+
+The `[dependencies.<name>]` entry a Phase-2 wrapper crate must write for `plan`
+to hold. This is where `dependency_default_features` takes effect: nothing on
+the `cargo build` command line can turn off a *dependency's* default features.
+"""
+function pyo3_dependency_toml(plan::PyO3LinkPlan, name::AbstractString, path::AbstractString)
+    io = IOBuffer()
+    println(io, "[dependencies.", name, "]")
+    println(io, "path = ", repr(String(path)))
+    plan.dependency_default_features || println(io, "default-features = false")
+    isempty(plan.feature_flags) ||
+        println(io, "features = [", join((repr(f) for f in plan.feature_flags), ", "), "]")
+    return String(take!(io))
 end
 
 """
@@ -200,12 +227,16 @@ function _pyo3_link_plan(cargo::AbstractDict)
     if optional
         # Turning the feature off removes pyo3 entirely: the wrapper links
         # nothing Python-related, which is the only genuinely Python-free case.
+        # When the feature is on by default it is the wrapper's *dependency
+        # entry* that must carry `default-features = false`; the
+        # `--no-default-features` build flag applies to the wrapper package and
+        # would leave the target crate's defaults — and so pyo3 — enabled.
         enabled_by_default = _pyo3_enabled_by_default(cargo, default_on)
-        flags = enabled_by_default ? ["--no-default-features"] : String[]
         note = enabled_by_default ?
-            "; it is on by default, so the wrapper build passes --no-default-features" : ""
-        return PyO3LinkPlan(:python_free, flags, "",
-                            "pyo3 is an optional dependency, so the wrapper is built with it off$(note)")
+            "; it is on by default, so the wrapper's dependency entry sets default-features = false" : ""
+        return PyO3LinkPlan(:python_free, String[], "",
+                            "pyo3 is an optional dependency, so the wrapper is built with it off$(note)",
+                            !enabled_by_default)
     end
 
     if ext_in_dep
@@ -228,10 +259,11 @@ function _pyo3_link_plan(cargo::AbstractDict)
     end
 
     if ext_feature !== nothing && ext_feature in default_on
-        return PyO3LinkPlan(:link_libpython, ["--no-default-features"], _python_library_dir_or_empty(),
+        return PyO3LinkPlan(:link_libpython, String[], _python_library_dir_or_empty(),
                             "pyo3 is a mandatory dependency and the default feature `$(ext_feature)` " *
-                            "enables `extension-module`; the wrapper build must pass " *
-                            "--no-default-features, and the resulting cdylib still links libpython")
+                            "enables `extension-module`; the wrapper's dependency entry must set " *
+                            "default-features = false, and the resulting cdylib still links libpython",
+                            false)
     end
 
     rpath = _python_library_dir_or_empty()
@@ -254,9 +286,12 @@ does not depend on pyo3 at all.
 """
 function _pyo3_dependency_spec(cargo::AbstractDict)
     tables = Any[get(cargo, "dependencies", Dict{String, Any}())]
-    for (_, cfg) in get(cargo, "target", Dict{String, Any}())
-        cfg isa AbstractDict || continue
-        push!(tables, get(cfg, "dependencies", Dict{String, Any}()))
+    targets = get(cargo, "target", Dict{String, Any}())
+    if targets isa AbstractDict
+        for (_, cfg) in targets
+            cfg isa AbstractDict || continue
+            push!(tables, get(cfg, "dependencies", Dict{String, Any}()))
+        end
     end
     for table in tables
         table isa AbstractDict || continue

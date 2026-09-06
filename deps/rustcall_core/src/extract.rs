@@ -57,6 +57,24 @@ pub fn fn_args(sig: &syn::Signature) -> Vec<Arg> {
         .collect()
 }
 
+/// The return kind of a wrapper that does no `Result`/`Option` lowering:
+/// `Unit` for `()` or no return type, `Plain` otherwise. Struct method
+/// wrappers are in that category (`generate_method_wrapper*` never wraps a
+/// `Result`), so their manifest entry says so explicitly rather than leaving a
+/// consumer to infer it from the type spelling (#275, #276).
+pub fn plain_return_kind(output: &ReturnType) -> ReturnKind {
+    match output {
+        ReturnType::Default => ReturnKind::Unit,
+        ReturnType::Type(..) => {
+            if return_type_to_string(output) == "()" {
+                ReturnKind::Unit
+            } else {
+                ReturnKind::Plain
+            }
+        }
+    }
+}
+
 /// The manifest `abi` column of an argument type (see [`Arg::abi`]).
 pub fn arg_abi(ty: &syn::Type) -> &'static str {
     if is_string_type(ty) {
@@ -175,6 +193,22 @@ pub fn extract_crate(source: &str) -> Result<Manifest, syn::Error> {
 }
 
 pub fn extract_crate_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Manifest, syn::Error> {
+    extract_crate_with_cfg_scan(source, cfg, true)
+}
+
+/// Like [`extract_crate_with_cfg`], with the PyO3 scan (#275) switchable.
+///
+/// The scan is on by default: one file, treated as its own root. A caller that
+/// can read files instead walks the crate's module tree with
+/// [`extract_pyo3_file`] — which records the real `module_path` and the
+/// reachability of every enclosing `mod` — and then passes `false` here so the
+/// per-file pass does not report the same items a second time under the wrong
+/// path.
+pub fn extract_crate_with_cfg_scan(
+    source: &str,
+    cfg: Option<&CfgSet>,
+    pyo3_scan: bool,
+) -> Result<Manifest, syn::Error> {
     let mut file = syn::parse_file(source)?;
     if let Some(set) = cfg {
         crate::cfg::prune_file_or_error(set, &mut file)?;
@@ -187,8 +221,33 @@ pub fn extract_crate_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Mani
     // skipped by the scan (see `crate::pyo3`). The scan walks inline modules
     // itself, because unlike the `#[julia]` path it records `module_path`: a
     // wrapper crate has to name the item as `user_crate::module::item`.
-    crate::pyo3::extract_pyo3_items(&file.items, &mut manifest);
+    if pyo3_scan {
+        crate::pyo3::extract_pyo3_items(&file.items, &mut manifest);
+    }
     Ok(manifest)
+}
+
+/// The PyO3 items of one file of a crate's module tree, plus the out-of-line
+/// `mod` declarations it makes (#275).
+///
+/// `module_path` is where this file sits in the tree (empty for the crate
+/// root) and `reachable` says whether every `mod` on the way to it is `pub`.
+/// The caller resolves each returned [`crate::pyo3::PendingModule`] to a file
+/// and calls this again; only it can touch the filesystem.
+pub fn extract_pyo3_file(
+    source: &str,
+    cfg: Option<&CfgSet>,
+    module_path: &[String],
+    reachable: bool,
+) -> Result<(Manifest, Vec<crate::pyo3::PendingModule>), syn::Error> {
+    let mut file = syn::parse_file(source)?;
+    if let Some(set) = cfg {
+        crate::cfg::prune_file_or_error(set, &mut file)?;
+    }
+    let mut manifest = Manifest::new(Mode::Crate);
+    let pending =
+        crate::pyo3::extract_pyo3_items_at(&file.items, module_path, reachable, &mut manifest);
+    Ok((manifest, pending))
 }
 
 /// One level of items; inline modules are visited recursively.
@@ -251,6 +310,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
                     String::new()
                 },
                 python_name: String::new(),
+                vis: String::new(),
             }
         })
         .collect();
@@ -267,6 +327,10 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             skip_reason: String::new(),
             python_name: String::new(),
             accessor: String::new(),
+            return_kind: plain_return_kind(&m.func.sig.output),
+            ok_type: String::new(),
+            err_type: String::new(),
+            inner_type: String::new(),
             returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),

@@ -514,3 +514,37 @@ module_path = ["private_mod"]
 name = "a"
 rust_type = "i32"
 abi = ""
+
+[[functions]]
+name = "gated_add"
+symbol = "gated_add"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 224
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions.args]]
+name = "b"
+rust_type = "i32"
+abi = ""

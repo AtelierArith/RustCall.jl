@@ -292,6 +292,127 @@ fn pymethods_without_a_pyclass_are_ignored() {
     assert!(manifest.structs.is_empty());
 }
 
+/// A crate that makes pyo3 optional writes its markers behind a feature gate.
+/// The crate scan evaluates `#[cfg]` leniently, so the `cfg_attr` is still
+/// there when the scan looks — reading only the outer attribute would hide
+/// exactly the crates on the `:python_free` path.
+#[test]
+fn markers_nested_in_cfg_attr_are_recognised() {
+    let manifest = scan(
+        "#[cfg_attr(feature = \"python\", pyfunction)] pub fn gated(a: i32) -> i32 { a }\n\
+         #[cfg_attr(feature = \"python\", pyo3::pyfunction)] pub fn gated_q(a: i32) -> i32 { a }\n\
+         #[cfg_attr(feature = \"python\", pyclass)] pub struct G { #[cfg_attr(feature = \"python\", pyo3(get, set))] pub x: f64 }\n\
+         #[cfg_attr(feature = \"python\", pymethods)] impl G {\n\
+            #[cfg_attr(feature = \"python\", new)] pub fn new(x: f64) -> Self { G { x } }\n\
+            #[cfg_attr(feature = \"python\", staticmethod)] pub fn zero() -> Self { G { x: 0.0 } }\n\
+         }",
+    );
+    assert_eq!(
+        function(&manifest, "gated").attribute,
+        Attribute::PyFunction
+    );
+    assert_eq!(
+        function(&manifest, "gated_q").attribute,
+        Attribute::PyFunction
+    );
+
+    let g = manifest.structs.iter().find(|s| s.name == "G").unwrap();
+    assert_eq!(g.attribute, Attribute::PyClass);
+    assert_eq!(g.fields[0].getter, "rustcall_G_get_x");
+    assert_eq!(g.fields[0].setter, "rustcall_G_set_x");
+    let by = |n: &str| g.methods.iter().find(|m| m.name == n).unwrap();
+    assert!(by("new").is_constructor);
+    assert!(by("zero").is_static);
+}
+
+/// `#[pyo3(get)]` on a private field gives Python a descriptor, because pyo3
+/// generates it inside the crate. A wrapper crate compiled outside cannot read
+/// `Struct::field`, so the scan must not advertise an accessor for it.
+#[test]
+fn private_pyclass_fields_get_no_accessors() {
+    let manifest = scan(
+        "#[pyclass] pub struct P { #[pyo3(get, set)] pub open: f64, #[pyo3(get, set)] closed: f64 }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let open = p.fields.iter().find(|f| f.name == "open").unwrap();
+    let closed = p.fields.iter().find(|f| f.name == "closed").unwrap();
+    assert_eq!(open.vis, "pub");
+    assert!(open.ffi_compatible);
+    assert_eq!(open.getter, "rustcall_P_get_open");
+    assert_eq!(closed.vis, "");
+    assert!(!closed.ffi_compatible);
+    assert_eq!(closed.getter, "");
+    assert_eq!(closed.setter, "");
+}
+
+/// A `PyResult` method must carry the same structured description a free
+/// function gets: Phase 2 lowers it to an opaque error and must not have to
+/// re-read the Rust type spelling (Rust syntax is parsed only here, #264).
+#[test]
+fn methods_record_their_return_shape() {
+    let manifest = scan(
+        "#[pyclass] pub struct P {}\n\
+         #[pymethods] impl P {\n\
+            pub fn ok(&self) -> PyResult<f64> { unimplemented!() }\n\
+            pub fn plain(&self) -> f64 { 0.0 }\n\
+            pub fn nothing(&self) {}\n\
+            pub fn maybe(&self) -> Option<i32> { None }\n\
+            pub fn fallible(&self) -> Result<i32, u8> { Ok(0) }\n\
+         }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let by = |n: &str| p.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(by("ok").return_kind, ReturnKind::PyResult);
+    assert_eq!(by("ok").ok_type, "f64");
+    assert_eq!(by("ok").skip_reason, "");
+    assert_eq!(by("plain").return_kind, ReturnKind::Plain);
+    assert_eq!(by("nothing").return_kind, ReturnKind::Unit);
+    assert_eq!(by("maybe").return_kind, ReturnKind::Option);
+    assert_eq!(by("maybe").inner_type, "i32");
+    assert_eq!(by("fallible").return_kind, ReturnKind::Result);
+    assert_eq!(by("fallible").ok_type, "i32");
+    assert_eq!(by("fallible").err_type, "u8");
+}
+
+/// A `#[julia]` struct method is reported with a return kind too, so no
+/// consumer has to infer one from the type spelling.
+#[test]
+fn julia_methods_record_a_plain_return_kind() {
+    let manifest = scan(
+        "#[julia] pub struct S { pub v: i32 }\n\
+         #[julia] impl S {\n\
+            #[julia] pub fn get(&self) -> i32 { self.v }\n\
+            #[julia] pub fn set(&mut self, v: i32) { self.v = v; }\n\
+         }",
+    );
+    let s = manifest.structs.iter().find(|s| s.name == "S").unwrap();
+    let by = |n: &str| s.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(by("get").return_kind, ReturnKind::Plain);
+    assert_eq!(by("set").return_kind, ReturnKind::Unit);
+}
+
+/// A single-file scan can only *see* an out-of-line module declaration; it
+/// reports it as pending so a caller that reads files can follow it.
+#[test]
+fn out_of_line_modules_are_reported_as_pending() {
+    let file = syn::parse_file(
+        "pub mod open;\nmod closed;\n#[path = \"other.rs\"] pub mod aliased;\npub mod inline { pub mod deeper; }",
+    )
+    .expect("parse");
+    let mut manifest = Manifest::new(Mode::Crate);
+    let pending = rustcall_core::pyo3::extract_pyo3_items(&file.items, &mut manifest);
+
+    let by = |n: &str| pending.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(pending.len(), 4);
+    assert!(by("open").reachable);
+    assert_eq!(by("open").module_path, vec!["open"]);
+    assert!(!by("closed").reachable);
+    assert_eq!(by("aliased").path_attr.as_deref(), Some("other.rs"));
+    assert_eq!(by("deeper").module_path, vec!["inline", "deeper"]);
+    // The declarations themselves contribute no items.
+    assert!(manifest.functions.is_empty());
+}
+
 /// Inline mode is unaffected: the scan is a crate-mode feature, because only
 /// an external crate is scanned without being rewritten. An inline block still
 /// reports its plain functions so `@rust f(...)` knows their return types, but

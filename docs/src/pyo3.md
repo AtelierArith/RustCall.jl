@@ -61,6 +61,7 @@ Manifest schema 5 adds, for every function, struct and method:
 | `skip_reason` | why the item cannot be wrapped, empty when it can |
 | `python_name` | the name PyO3 exposes it under, when `#[pyo3(name = "...")]` renames it |
 | `accessor` | `getter` / `setter` for a `#[getter]` / `#[setter]` method |
+| `return_kind` + `ok_type` / `err_type` / `inner_type` | on methods too, not just free functions: a `#[pymethods]` method returning `PyResult<T>` is `py_result` with `T`, so Phase 2 never re-reads the Rust type spelling |
 
 A scanned item's `symbol` is the wrapper a Phase-2 wrapper crate *will* export —
 `rustcall_<name>` for a function, `rustcall_<Struct>_<method>` for a method, the
@@ -77,6 +78,14 @@ nothing emits it yet. The manifest describes what Phase 2 will generate.
 | `generic` | a generic item; monomorphizing PyO3 items is out of scope |
 | `owner_skipped:<reason>` | a method whose `#[pyclass]` is itself skipped for `<reason>` |
 
+`not_public` is the reason you will see most often, and it is worth knowing why:
+pyo3 does not require `pub` anywhere. `#[pyfunction] fn add(...)` and a
+`#[pymethods]` block full of `fn`s without `pub` work perfectly for Python,
+because pyo3 generates the wrapper *inside* the crate. A RustCall wrapper crate
+is compiled outside it and hits `E0603`, which is a compile error, not something
+to work around — so the scan reports those items rather than dropping them, and
+adding `pub` in the target crate is the fix.
+
 ### `PyResult<T>` is wrapped, not skipped
 
 `PyResult<T>` is recorded as return kind `py_result` with the `Ok` type in
@@ -90,11 +99,28 @@ code must never format a `PyErr`.
 
 A `#[pyclass]` is never `#[repr(C)]` — pyo3 owns its layout — so it is always
 boxed and reached through accessors. Fields are exposed only when pyo3 exposes
-them, with `#[pyo3(get)]` / `#[pyo3(get, set)]`. Methods are collected from
+them, with `#[pyo3(get)]` / `#[pyo3(get, set)]`, **and only when they are
+`pub`**: pyo3 generates its descriptor inside the crate, so `#[pyo3(get)]` works
+on a private field, but a wrapper crate compiled outside cannot read
+`Struct::field`. A private one is still listed, with no getter and no setter. Methods are collected from
 *every* `#[pymethods]` block for the type: `#[new]` becomes the constructor,
 `#[staticmethod]` and `#[classmethod]` are static, `#[getter]` / `#[setter]`
 are accessors. (A `#[classmethod]` takes a `&Bound<'_, PyType>` first argument,
 so it is normally skipped for using a pyo3 type.)
+
+### Modules are followed, not guessed
+
+An item's `module_path` is what a wrapper crate has to write
+(`user_crate::api::item`), so it has to be right. The extractor therefore
+follows the crate's module tree from `src/lib.rs` (`rustcall-extract manifest
+--crate-root`) rather than treating each `.rs` file as its own root:
+`pub mod api;` backed by `src/api.rs`, `src/deep/mod.rs`, and
+`#[path = "..."]` overrides are all resolved the way rustc resolves them. That
+is also how a private parent is caught — a `mod hidden;` without `pub` makes
+everything inside it `not_public`, however `pub` the items themselves are.
+
+A `mod` declaration whose file does not exist (behind a pruned `#[cfg]`, or
+generated at build time) is skipped rather than failing the scan.
 
 ### An item marked both ways belongs to `#[julia]`
 
@@ -111,15 +137,23 @@ target crate's `Cargo.toml`: will the resulting cdylib link, and will it load?
 
 ```julia
 plan = RustCall.pyo3_link_plan("path/to/crate")
-plan.mode          # :python_free | :link_libpython | :unlinkable
-plan.feature_flags # Cargo flags the wrapper build must pass
-plan.rpath         # the interpreter's library directory, for :link_libpython
-plan.reason        # why this mode was chosen
+plan.mode                        # :python_free | :link_libpython | :unlinkable
+plan.feature_flags               # features to enable on the target crate
+plan.dependency_default_features # what its [dependencies] entry must say
+plan.rpath                       # the interpreter's library directory
+plan.reason                      # why this mode was chosen
 ```
+
+`RustCall.pyo3_dependency_toml(plan, name, path)` renders the
+`[dependencies.<name>]` entry the wrapper crate must write. That entry — not a
+build flag — is where a target crate's default features are switched off:
+`cargo build --no-default-features` applies to the **package being built**, so
+from the wrapper it disables the *wrapper's* defaults and leaves the target
+crate's (and therefore pyo3) enabled.
 
 | mode | when | what the wrapper build does |
 | --- | --- | --- |
-| `:python_free` | the crate has no pyo3 dependency, or an **optional** one | build with the feature off; nothing links libpython |
+| `:python_free` | the crate has no pyo3 dependency, or an **optional** one | build with the feature off (`default-features = false` on the dependency entry when it is on by default); nothing links libpython |
 | `:link_libpython` | pyo3 is a **mandatory** dependency | the cdylib hard-links libpython; the interpreter's library directory is added as `-L` and as an rpath, or the build refuses |
 | `:unlinkable` | the crate enables pyo3's `extension-module` feature unconditionally | nothing usable can be built: refuse with a message saying how to make the feature optional |
 
@@ -174,8 +208,13 @@ The `:python_free` mode is the clean path, but it is rarer than it looks.
 pub fn add(a: i32, b: i32) -> i32 { a + b }
 ```
 
-It does **not** work for pyo3's inner attributes — `new`, `staticmethod`,
-`classmethod`, `getter`, `setter`, `pyo3(get, set)`:
+The scan reads markers through `cfg_attr` (to any nesting depth), because the
+crate scan evaluates `#[cfg]` leniently — a `feature` predicate is deliberately
+left undecided — so a gated `#[pyfunction]` is found rather than silently
+skipped.
+
+`cfg_attr` does **not** work for pyo3's inner attributes — `new`,
+`staticmethod`, `classmethod`, `getter`, `setter`, `pyo3(get, set)`:
 
 ```rust
 #[cfg_attr(feature = "python", pymethods)]

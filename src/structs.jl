@@ -40,6 +40,15 @@ struct RustMethod
     skip_reason::String
     python_name::String
     accessor::String
+    # Shape of the return value, in the same vocabulary as
+    # `RustFunctionSignature.return_kind`: `:plain`, `:unit`, `:result`,
+    # `:option`, or `:py_result` for a scanned `#[pymethods]` method returning
+    # `PyResult{T}` (#275). `ok_type` / `err_type` / `inner_type` carry the
+    # payload types, so nothing downstream re-reads the Rust type spelling.
+    return_kind::Symbol
+    ok_type::String
+    err_type::String
+    inner_type::String
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -50,10 +59,14 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     return_abi::String = _default_return_abi(return_type, arg_abis),
                     returns_boxed_struct::Bool = is_constructor,
                     vis::String = "pub", skip_reason::String = "",
-                    python_name::String = "", accessor::String = "")
+                    python_name::String = "", accessor::String = "",
+                    return_kind::Symbol = return_type == "()" ? :unit : :plain,
+                    ok_type::String = "", err_type::String = "",
+                    inner_type::String = "")
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
-               returns_boxed_struct, vis, skip_reason, python_name, accessor)
+               returns_boxed_struct, vis, skip_reason, python_name, accessor,
+               return_kind, ok_type, err_type, inner_type)
 end
 
 """

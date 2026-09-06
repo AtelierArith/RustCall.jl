@@ -214,3 +214,43 @@ mod private_mod {
         a
     }
 }
+
+// An out-of-line module: its body is in another file, so a single-file scan
+// only records the declaration. `rustcall-extract --crate-root` follows it.
+pub mod out_of_line;
+
+// --- optional pyo3, written with cfg_attr ----------------------------------
+
+/// The `:python_free` shape: the marker is behind a feature gate. The crate
+/// scan evaluates `#[cfg]` leniently, so the `cfg_attr` is still there when the
+/// scan looks and the marker has to be read through it.
+#[cfg_attr(feature = "python", pyfunction)]
+pub fn gated_add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[cfg_attr(feature = "python", pyclass)]
+pub struct GatedPoint {
+    #[cfg_attr(feature = "python", pyo3(get, set))]
+    pub x: f64,
+    /// Private, so pyo3 exposes it to Python but a wrapper crate cannot read it.
+    #[pyo3(get)]
+    hidden_but_gettable: f64,
+}
+
+#[cfg_attr(feature = "python", pymethods)]
+impl GatedPoint {
+    #[cfg_attr(feature = "python", new)]
+    pub fn new(x: f64) -> Self {
+        GatedPoint {
+            x,
+            hidden_but_gettable: 0.0,
+        }
+    }
+
+    /// A `PyResult` method: wrappable, and the manifest records the Ok type so
+    /// Phase 2 need not re-read the Rust type.
+    pub fn checked(&self) -> PyResult<f64> {
+        Ok(self.x)
+    }
+}

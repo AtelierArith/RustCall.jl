@@ -134,6 +134,7 @@ ffi_compatible = true
 getter = "Handle_get_fd"
 setter = "Handle_set_fd"
 python_name = ""
+vis = ""
 
 [[structs.fields]]
 name = "epoll"
@@ -143,6 +144,7 @@ ffi_compatible = true
 getter = "Handle_get_epoll"
 setter = "Handle_set_epoll"
 python_name = ""
+vis = ""
 
 [[structs.methods]]
 name = "fd"
@@ -154,6 +156,10 @@ vis = "pub"
 skip_reason = ""
 python_name = ""
 accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
 returns_boxed_struct = false
 args = []
 return_type = "i32"
@@ -170,6 +176,10 @@ vis = "pub"
 skip_reason = ""
 python_name = ""
 accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
 returns_boxed_struct = false
 args = []
 return_type = "i32"

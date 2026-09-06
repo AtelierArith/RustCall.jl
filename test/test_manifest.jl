@@ -76,12 +76,75 @@ using TOML
         @test methods["origin"].returns_boxed_struct
         @test methods["sum"].accessor == "getter"
 
+        # A `#[pymethods]` method returning `PyResult` carries its return
+        # shape, so Phase 2 never re-reads the Rust type spelling (#264).
+        @test methods["new"].return_kind === :plain
+        @test methods["norm"].return_kind === :plain
+
         # scan_report groups the same items and never throws on a crate it
         # cannot wrap.
         report = sprint(io -> RustCall.scan_report(crate; io = io))
         @test occursin("PyO3 items wrappable by Phase 2", report)
         @test occursin("rustc E0603", report)
         @test occursin("Link plan:", report)
+    end
+
+    @testset "PyO3 scan follows the crate's module tree (#275)" begin
+        # A conventional `pub mod api;` lives in another file. Scanning each
+        # file as its own root would report `api::deep` as a crate-root item
+        # and would miss a private parent module entirely, so the extractor
+        # follows the module graph from `src/lib.rs` (`--crate-root`).
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "deep"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "tree_crate"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            pub mod api;
+            mod hidden;
+            pub mod deep;
+            #[pyfunction]
+            pub fn root_fn() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "api.rs"), """
+            #[pyfunction]
+            pub fn in_api() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "hidden.rs"), """
+            #[pyfunction]
+            pub fn in_hidden() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "deep", "mod.rs"), """
+            pub mod inner;
+            """)
+            write(joinpath(dir, "src", "deep", "inner.rs"), """
+            #[pyfunction]
+            pub fn buried() -> i32 { 0 }
+            """)
+
+            info = RustCall.scan_crate(dir)
+            byname = Dict(f.name => f for f in info.pyo3_functions)
+            @test sort(collect(keys(byname))) == ["buried", "in_api", "in_hidden", "root_fn"]
+
+            # Each item is reported once, with the module path a wrapper crate
+            # would have to write.
+            @test length(info.pyo3_functions) == 4
+            @test byname["root_fn"].module_path == String[]
+            @test byname["in_api"].module_path == ["api"]
+            @test byname["buried"].module_path == ["deep", "inner"]
+
+            # `mod hidden;` is not `pub`, so nothing below it is reachable.
+            @test byname["in_hidden"].module_path == ["hidden"]
+            @test byname["in_hidden"].skip_reason == "not_public"
+            @test byname["in_api"].skip_reason == ""
+            @test byname["buried"].skip_reason == ""
+        end
     end
 
     @testset "schema 4: return_abi, Field.abi, returns_boxed_struct (#276)" begin

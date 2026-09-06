@@ -53,9 +53,43 @@ use crate::types::{
 /// `items` is one level of a parsed file; inline `mod`s are visited
 /// recursively and their names recorded in `module_path`, because a wrapper
 /// crate has to name the item as `user_crate::module::item`.
-pub fn extract_pyo3_items(items: &[Item], manifest: &mut Manifest) {
-    let mut path = Vec::new();
-    extract_pyo3_items_in(items, &mut path, true, manifest);
+///
+/// Returns the **out-of-line** module declarations found on the way
+/// (`pub mod api;` with no body): they live in another file, which only a
+/// caller that can read files — `rustcall-extract --crate-root` — can follow.
+/// Scanning each `.rs` file as its own root instead would report `api::deep` as
+/// a crate-root item and miss a private parent module entirely (#275).
+pub fn extract_pyo3_items(items: &[Item], manifest: &mut Manifest) -> Vec<PendingModule> {
+    extract_pyo3_items_at(items, &[], true, manifest)
+}
+
+/// One out-of-line `mod name;` declaration: where it sits in the module tree,
+/// whether that position is reachable from outside the crate, and the
+/// `#[path = "..."]` override if it has one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingModule {
+    /// Module path of the declaration itself, including its own name.
+    pub module_path: Vec<String>,
+    /// Whether every module on the way here (and this one) is `pub`.
+    pub reachable: bool,
+    /// The module's name, i.e. the last element of `module_path`.
+    pub name: String,
+    /// `#[path = "..."]` on the declaration, if present.
+    pub path_attr: Option<String>,
+}
+
+/// Like [`extract_pyo3_items`], but starting at a given position in the module
+/// tree — used when a file was reached by following a `mod` declaration.
+pub fn extract_pyo3_items_at(
+    items: &[Item],
+    module_path: &[String],
+    reachable: bool,
+    manifest: &mut Manifest,
+) -> Vec<PendingModule> {
+    let mut path = module_path.to_vec();
+    let mut pending = Vec::new();
+    extract_pyo3_items_in(items, &mut path, reachable, manifest, &mut pending);
+    pending
 }
 
 fn extract_pyo3_items_in(
@@ -63,6 +97,7 @@ fn extract_pyo3_items_in(
     module_path: &mut Vec<String>,
     reachable: bool,
     manifest: &mut Manifest,
+    pending: &mut Vec<PendingModule>,
 ) {
     // `#[pyclass]` structs at this level, so a `#[pymethods] impl` below can be
     // matched to one (impl blocks are matched within the same level, as
@@ -107,12 +142,26 @@ fn extract_pyo3_items_in(
                 }
             }
             Item::Mod(m) => {
-                if let Some((_, inner)) = &m.content {
-                    let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
-                    module_path.push(m.ident.to_string());
-                    extract_pyo3_items_in(inner, module_path, inner_reachable, manifest);
-                    module_path.pop();
+                let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
+                module_path.push(m.ident.to_string());
+                match &m.content {
+                    Some((_, inner)) => extract_pyo3_items_in(
+                        inner,
+                        module_path,
+                        inner_reachable,
+                        manifest,
+                        pending,
+                    ),
+                    // `mod name;` — the body is in another file; record where
+                    // it belongs so the caller can follow it.
+                    None => pending.push(PendingModule {
+                        module_path: module_path.clone(),
+                        reachable: inner_reachable,
+                        name: m.ident.to_string(),
+                        path_attr: path_attribute(&m.attrs),
+                    }),
                 }
+                module_path.pop();
             }
             _ => {}
         }
@@ -148,6 +197,23 @@ fn extract_pyo3_items_in(
     manifest.structs.extend(classes);
 }
 
+/// The `#[path = "..."]` override of a `mod` declaration, if it has one.
+fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if !attr.path().is_ident("path") {
+            continue;
+        }
+        if let syn::Meta::NameValue(nv) = &attr.meta {
+            if let syn::Expr::Lit(lit) = &nv.value {
+                if let syn::Lit::Str(s) = &lit.lit {
+                    return Some(s.value());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn impl_target_name(item: &ItemImpl) -> Option<String> {
     if item.trait_.is_some() {
         return None;
@@ -166,29 +232,7 @@ fn function_entry(
     let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
     let return_type = return_type_to_string(&func.sig.output);
 
-    let mut ok_type = String::new();
-    let mut err_type = String::new();
-    let mut inner_type = String::new();
-    let return_kind = match &func.sig.output {
-        ReturnType::Default => ReturnKind::Unit,
-        ReturnType::Type(_, ty) => {
-            if let Some(ok) = py_result_ok_type(ty) {
-                ok_type = type_to_string(&ok);
-                ReturnKind::PyResult
-            } else if let Some(r) = extract_result_type(ty) {
-                ok_type = type_to_string(&r.ok_type);
-                err_type = type_to_string(&r.err_type);
-                ReturnKind::Result
-            } else if let Some(o) = extract_option_type(ty) {
-                inner_type = type_to_string(&o.inner_type);
-                ReturnKind::Option
-            } else if return_type == "()" {
-                ReturnKind::Unit
-            } else {
-                ReturnKind::Plain
-            }
-        }
-    };
+    let (return_kind, ok_type, err_type, inner_type) = return_shape(&func.sig.output);
 
     let reason = if attribute == Attribute::PyModule {
         skip_reason::PYMODULE.to_string()
@@ -246,9 +290,14 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
             if !access.get && !access.set {
                 continue;
             }
-            // A skipped class has no handle type, so its fields have no
-            // accessors either, whatever their types.
+            // A `#[pyo3(get)]` on a private field still gives Python a
+            // descriptor — pyo3 generates it inside the crate — but a wrapper
+            // crate compiled outside cannot read `Struct::field` (E0603), so
+            // only a `pub` field gets accessors. A skipped class has no handle
+            // type, so its fields have none either, whatever their visibility.
+            let field_is_public = matches!(f.vis, syn::Visibility::Public(_));
             let usable = reason.is_empty()
+                && field_is_public
                 && pyo3_type_in(&f.ty).is_none()
                 && (is_ffi_compatible_type(&f.ty) || needs_clone_for_getter(&f.ty));
             fields.push(Field {
@@ -267,6 +316,7 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
                     String::new()
                 },
                 python_name: access.python_name,
+                vis: visibility_string(&f.vis),
             });
         }
     }
@@ -312,10 +362,10 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
     };
 
     let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
-    let return_kind = match &func.sig.output {
-        ReturnType::Type(_, ty) if py_result_ok_type(ty).is_some() => ReturnKind::PyResult,
-        _ => ReturnKind::Plain,
-    };
+    // The same structured description a free function gets, so a Phase-2
+    // wrapper can lower a `PyResult` method without re-reading the Rust type
+    // spelling (Rust syntax is parsed only here, #264).
+    let (return_kind, ok_type, err_type, inner_type) = return_shape(&func.sig.output);
     let reason = if !owner_skip.is_empty() {
         skip_reason::detailed(skip_reason::OWNER_SKIPPED, owner_skip)
     } else {
@@ -337,6 +387,10 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
         skip_reason: reason,
         python_name: pyo3_name(&func.attrs),
         accessor: accessor.to_string(),
+        return_kind,
+        ok_type,
+        err_type,
+        inner_type,
         // A `#[new]`, and any other method returning `Self`, hands back the
         // class itself — an opaque handle a wrapper boxes (`#[pyclass]` is
         // never `repr(C)`), decided by the same rule the `#[julia]` path uses.
@@ -385,6 +439,39 @@ fn signature_skip_reason(sig: &syn::Signature, return_kind: ReturnKind) -> Optio
         }
     }
     None
+}
+
+/// How a scanned PyO3 item returns: `(kind, ok_type, err_type, inner_type)`,
+/// with the same vocabulary a `#[julia]` function's manifest entry uses.
+///
+/// `PyResult<T>` is [`ReturnKind::PyResult`] with `T` as the ok type and no
+/// error type: a `PyErr` is opaque and must never be rendered, so there is
+/// nothing for a consumer to name.
+fn return_shape(output: &ReturnType) -> (ReturnKind, String, String, String) {
+    let mut ok_type = String::new();
+    let mut err_type = String::new();
+    let mut inner_type = String::new();
+    let kind = match output {
+        ReturnType::Default => ReturnKind::Unit,
+        ReturnType::Type(_, ty) => {
+            if let Some(ok) = py_result_ok_type(ty) {
+                ok_type = type_to_string(&ok);
+                ReturnKind::PyResult
+            } else if let Some(r) = extract_result_type(ty) {
+                ok_type = type_to_string(&r.ok_type);
+                err_type = type_to_string(&r.err_type);
+                ReturnKind::Result
+            } else if let Some(o) = extract_option_type(ty) {
+                inner_type = type_to_string(&o.inner_type);
+                ReturnKind::Option
+            } else if return_type_to_string(output) == "()" {
+                ReturnKind::Unit
+            } else {
+                ReturnKind::Plain
+            }
+        }
+    };
+    (kind, ok_type, err_type, inner_type)
 }
 
 /// `T` of a `PyResult<T>` (or `pyo3::PyResult<T>`), if the type is one.

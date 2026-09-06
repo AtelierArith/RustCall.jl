@@ -2,7 +2,8 @@
 //! `#[derive(JuliaStruct)]`, and the PyO3 entry-point attributes scanned by
 //! #275).
 
-use syn::{Attribute, Expr, Lit, Meta, Visibility};
+use syn::punctuated::Punctuated;
+use syn::{Attribute, Expr, Lit, Meta, Token, Visibility};
 
 use crate::manifest::Attribute as ManifestAttribute;
 
@@ -47,11 +48,11 @@ pub enum Pyo3MethodMarker {
     Setter,
 }
 
-/// The path of `attr` written as `pyo3`-qualified or bare: `#[pyfunction]` and
+/// The path of a meta written as `pyo3`-qualified or bare: `#[pyfunction]` and
 /// `#[pyo3::pyfunction]` both yield `Some("pyfunction")`, while a `#[foo::pyfunction]`
 /// from an unrelated crate yields `None`.
-fn pyo3_path_name(attr: &Attribute) -> Option<String> {
-    let segments = &attr.path().segments;
+fn pyo3_path_name(meta: &Meta) -> Option<String> {
+    let segments = &meta.path().segments;
     let last = segments.last()?.ident.to_string();
     match segments.len() {
         1 => Some(last),
@@ -60,12 +61,49 @@ fn pyo3_path_name(attr: &Attribute) -> Option<String> {
     }
 }
 
+/// Every attribute of an item as a [`Meta`], with the *conditional* attributes
+/// of a `#[cfg_attr(predicate, a, b)]` flattened in alongside it.
+///
+/// A crate that makes pyo3 optional writes its markers that way
+/// (`#[cfg_attr(feature = "python", pyfunction)]`), and the crate scan runs
+/// with lenient `cfg` evaluation — a `feature` predicate is deliberately left
+/// undecided, so the `cfg_attr` is still there when the scan looks. Reading
+/// only the outer attribute would make exactly the crates on the
+/// `:python_free` path (#275 Phase 1.5) invisible to the scan.
+///
+/// The predicate itself (the first element) is dropped: it is a `cfg`
+/// predicate, not an attribute. Nesting is followed to any depth.
+pub fn effective_metas(attrs: &[Attribute]) -> Vec<Meta> {
+    let mut out = Vec::with_capacity(attrs.len());
+    for attr in attrs {
+        push_effective_meta(attr.meta.clone(), &mut out);
+    }
+    out
+}
+
+fn push_effective_meta(meta: Meta, out: &mut Vec<Meta>) {
+    if meta.path().is_ident("cfg_attr") {
+        if let Meta::List(list) = &meta {
+            if let Ok(items) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            {
+                for inner in items.into_iter().skip(1) {
+                    push_effective_meta(inner, out);
+                }
+            }
+        }
+        // A `cfg_attr` is never itself a marker, so it is not pushed.
+        return;
+    }
+    out.push(meta);
+}
+
 /// Which PyO3 entry-point attribute marks the item, if any. Both the bare and
-/// the `pyo3::`-qualified spelling are recognised.
+/// the `pyo3::`-qualified spelling are recognised, and a marker nested in a
+/// `#[cfg_attr(...)]` counts (see [`effective_metas`]).
 pub fn pyo3_marker(attrs: &[Attribute]) -> Option<Pyo3Marker> {
-    attrs
+    effective_metas(attrs)
         .iter()
-        .find_map(|a| match pyo3_path_name(a)?.as_str() {
+        .find_map(|m| match pyo3_path_name(m)?.as_str() {
             "pyfunction" => Some(Pyo3Marker::Function),
             "pyclass" => Some(Pyo3Marker::Class),
             "pymethods" => Some(Pyo3Marker::Methods),
@@ -75,19 +113,17 @@ pub fn pyo3_marker(attrs: &[Attribute]) -> Option<Pyo3Marker> {
 }
 
 /// Whether the item carries a PyO3 entry-point attribute (`#[pyfunction]`,
-/// `#[pyo3::pyfunction]`, `#[pymethods]`, `#[pyclass]`, `#[pymodule]`).
-pub fn is_pyo3_attr(attr: &Attribute) -> bool {
-    matches!(
-        pyo3_path_name(attr).as_deref(),
-        Some("pyfunction" | "pymethods" | "pyclass" | "pymodule")
-    )
+/// `#[pyo3::pyfunction]`, `#[pymethods]`, `#[pyclass]`, `#[pymodule]`),
+/// directly or through a `#[cfg_attr(...)]`.
+pub fn has_pyo3_attr(attrs: &[Attribute]) -> bool {
+    pyo3_marker(attrs).is_some()
 }
 
 /// The PyO3 method attributes carried by an `impl` item, in source order.
 pub fn pyo3_method_markers(attrs: &[Attribute]) -> Vec<Pyo3MethodMarker> {
-    attrs
+    effective_metas(attrs)
         .iter()
-        .filter_map(|a| match pyo3_path_name(a)?.as_str() {
+        .filter_map(|m| match pyo3_path_name(m)?.as_str() {
             "new" => Some(Pyo3MethodMarker::New),
             "staticmethod" => Some(Pyo3MethodMarker::StaticMethod),
             "classmethod" => Some(Pyo3MethodMarker::ClassMethod),
@@ -103,22 +139,22 @@ pub fn pyo3_method_markers(attrs: &[Attribute]) -> Vec<Pyo3MethodMarker> {
 /// `#[pyclass(name = "X")]`, and the `#[getter(x)]` / `#[setter(x)]` shorthand.
 /// Empty when the Rust name is used as-is.
 pub fn pyo3_name(attrs: &[Attribute]) -> String {
-    for attr in attrs {
-        let Some(name) = pyo3_path_name(attr) else {
+    for meta in effective_metas(attrs) {
+        let Some(name) = pyo3_path_name(&meta) else {
             continue;
         };
         match name.as_str() {
             "pyo3" | "pyfunction" | "pyclass" | "pymodule" => {
-                if let Some(value) = nested_name_value(attr) {
+                if let Some(value) = nested_name_value(&meta) {
                     return value;
                 }
             }
             "getter" | "setter" => {
                 // `#[getter(python_name)]` / `#[getter(name = "python_name")]`.
-                if let Some(value) = nested_name_value(attr) {
+                if let Some(value) = nested_name_value(&meta) {
                     return value;
                 }
-                if let Meta::List(list) = &attr.meta {
+                if let Meta::List(list) = &meta {
                     if let Ok(id) = syn::parse2::<syn::Ident>(list.tokens.clone()) {
                         return id.to_string();
                     }
@@ -131,8 +167,8 @@ pub fn pyo3_name(attrs: &[Attribute]) -> String {
 }
 
 /// `name = "..."` inside a `#[...(...)]` attribute, if present.
-fn nested_name_value(attr: &Attribute) -> Option<String> {
-    let Meta::List(list) = &attr.meta else {
+fn nested_name_value(meta: &Meta) -> Option<String> {
+    let Meta::List(list) = meta else {
         return None;
     };
     let mut found = None;
@@ -163,11 +199,11 @@ pub struct Pyo3FieldAccess {
 /// Read `#[pyo3(get, set, name = "...")]` off a `#[pyclass]` field.
 pub fn pyo3_field_access(attrs: &[Attribute]) -> Pyo3FieldAccess {
     let mut access = Pyo3FieldAccess::default();
-    for attr in attrs {
-        if pyo3_path_name(attr).as_deref() != Some("pyo3") {
+    for meta in effective_metas(attrs) {
+        if pyo3_path_name(&meta).as_deref() != Some("pyo3") {
             continue;
         }
-        let Meta::List(list) = &attr.meta else {
+        let Meta::List(list) = &meta else {
             continue;
         };
         let _ = list.parse_nested_meta(|meta| {
@@ -227,7 +263,7 @@ pub fn julia_owns_entry_point(attrs: &[Attribute]) -> bool {
 /// carries a PyO3 attribute and `#[julia]` has not already claimed it (see
 /// [`julia_owns_entry_point`]).
 pub fn pyo3_scan_selects(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(is_pyo3_attr) && !julia_owns_entry_point(attrs)
+    has_pyo3_attr(attrs) && !julia_owns_entry_point(attrs)
 }
 
 /// Which RustCall attribute marks the item, if any.

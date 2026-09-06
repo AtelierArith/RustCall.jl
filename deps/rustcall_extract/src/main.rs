@@ -1,7 +1,7 @@
 //! `rustcall-extract`: command-line front end over `rustcall_core`.
 //!
 //! ```text
-//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] FILE...
+//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
 //! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract schema-version
@@ -25,7 +25,7 @@ use rustcall_core::cfg::CfgSet;
 use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 
 const USAGE: &str = "usage:
-  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] FILE...
+  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
   rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract schema-version
@@ -36,7 +36,11 @@ from the manifest and the expanded source. Without it every item is reported.
 --cfg-lenient: with --cfg-file, decide only target predicates (unix, windows,
 target_*); feature/profile predicates are unknown and keep their items (Cargo builds).
 --skip-unparsable: files that are not a complete Rust module (e.g. include!() fragments)
-are skipped with a warning instead of failing the run.";
+are skipped with a warning instead of failing the run.
+--crate-root: crate-mode only. Scan PyO3 items (#275) by following the crate's
+module tree from this file (src/lib.rs) instead of treating every FILE as a root,
+so each item's module_path and the visibility of its enclosing modules are real.
+The FILE list still drives #[julia] extraction.";
 
 /// One command-line argument: either an option/value that must be UTF-8, or a
 /// path that may not be.
@@ -138,6 +142,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     let mut cfg_file: Option<PathBuf> = None;
     let mut cfg_lenient = false;
     let mut skip_unparsable = false;
+    let mut crate_root: Option<PathBuf> = None;
     let mut files: Vec<PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -150,6 +155,9 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
             Token::Option("--out") => out = Some(take_path(args, &mut i, "--out")?),
             Token::Option("--cfg-file") => cfg_file = Some(take_path(args, &mut i, "--cfg-file")?),
             Token::Option("--cfg-lenient") => cfg_lenient = true,
+            Token::Option("--crate-root") => {
+                crate_root = Some(take_path(args, &mut i, "--crate-root")?)
+            }
             Token::Option("--") => {
                 files.extend(args[i + 1..].iter().map(Arg::path));
                 break;
@@ -163,11 +171,25 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     if files.is_empty() {
         return Err("at least one FILE is required".into());
     }
+    if crate_root.is_some() && mode != Mode::Crate {
+        return Err("--crate-root is only meaningful with --mode crate".into());
+    }
     let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient)?;
     let mut merged = Manifest::new(mode);
+    // With --crate-root the PyO3 scan runs once over the module tree below, so
+    // the per-file pass must not report the same items again as crate-root ones.
+    let per_file_pyo3_scan = crate_root.is_none();
     for f in &files {
         let src = read_source(f)?;
-        match rustcall_core::extract::extract_with_cfg(&src, mode, cfg.as_ref()) {
+        let extracted = match mode {
+            Mode::Crate => rustcall_core::extract::extract_crate_with_cfg_scan(
+                &src,
+                cfg.as_ref(),
+                per_file_pyo3_scan,
+            ),
+            Mode::Inline => rustcall_core::extract::extract_with_cfg(&src, mode, cfg.as_ref()),
+        };
+        match extracted {
             Ok(m) => merged.merge(m),
             Err(e) if skip_unparsable => {
                 eprintln!(
@@ -178,10 +200,90 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
             Err(e) => return Err(format!("{}: {e}", f.display())),
         }
     }
-    if files.len() > 1 {
+    if let Some(root) = &crate_root {
+        scan_pyo3_tree(root, cfg.as_ref(), skip_unparsable, &mut merged)?;
+    }
+    if files.len() > 1 || crate_root.is_some() {
         merged.sort();
     }
     write_manifest(&merged, out.as_deref())
+}
+
+/// Scan the PyO3 items of a whole crate by following its module tree from
+/// `root` (#275).
+///
+/// Only this layer touches the filesystem: `rustcall_core` hands back the
+/// out-of-line `mod` declarations of each file and this resolves them the way
+/// rustc does — `#[path = "..."]` first, then `<dir>/<name>.rs`, then
+/// `<dir>/<name>/mod.rs`. A declaration whose file does not exist (a `mod`
+/// behind a `#[cfg]` that was pruned, or a generated file) is skipped rather
+/// than failing the run: the scan describes what it can see.
+fn scan_pyo3_tree(
+    root: &Path,
+    cfg: Option<&CfgSet>,
+    skip_unparsable: bool,
+    manifest: &mut Manifest,
+) -> Result<(), String> {
+    // (file, directory its child modules live in, module path, reachable)
+    let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
+    let mut queue = vec![(root.to_path_buf(), root_dir, Vec::<String>::new(), true)];
+    let mut visited: Vec<PathBuf> = Vec::new();
+
+    while let Some((file, dir, module_path, reachable)) = queue.pop() {
+        let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+        if visited.contains(&canonical) {
+            continue;
+        }
+        visited.push(canonical);
+
+        let src = read_source(&file)?;
+        let (fragment, pending) =
+            match rustcall_core::extract::extract_pyo3_file(&src, cfg, &module_path, reachable) {
+                Ok(v) => v,
+                Err(e) if skip_unparsable => {
+                    eprintln!(
+                        "rustcall-extract: skipping {}: not a complete Rust module ({e})",
+                        file.display()
+                    );
+                    continue;
+                }
+                Err(e) => return Err(format!("{}: {e}", file.display())),
+            };
+        manifest.merge(fragment);
+
+        for m in pending {
+            let Some((child_file, child_dir)) = resolve_module_file(&dir, &m) else {
+                continue;
+            };
+            queue.push((child_file, child_dir, m.module_path.clone(), m.reachable));
+        }
+    }
+    Ok(())
+}
+
+/// Where a `mod name;` declaration's file lives, and the directory its own
+/// child modules would live in. `None` when no candidate exists.
+fn resolve_module_file(
+    dir: &Path,
+    m: &rustcall_core::pyo3::PendingModule,
+) -> Option<(PathBuf, PathBuf)> {
+    if let Some(explicit) = &m.path_attr {
+        let file = dir.join(explicit);
+        if file.is_file() {
+            let child_dir = file.parent().unwrap_or(dir).to_path_buf();
+            return Some((file, child_dir));
+        }
+        return None;
+    }
+    let flat = dir.join(format!("{}.rs", m.name));
+    if flat.is_file() {
+        return Some((flat, dir.join(&m.name)));
+    }
+    let nested = dir.join(&m.name).join("mod.rs");
+    if nested.is_file() {
+        return Some((nested, dir.join(&m.name)));
+    }
+    None
 }
 
 fn single_file(file: &mut Option<PathBuf>, arg: &Arg, cmd: &str) -> Result<(), String> {

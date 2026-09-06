@@ -709,15 +709,29 @@ end
 Run the extractor over source files (`mode` is `"inline"` or `"crate"`).
 With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
+
+`crate_root` (crate mode only) names the crate's root source file, usually
+`src/lib.rs`. The PyO3 scan of #275 then follows the crate's module tree from
+there — recording each item's real `module_path` and whether every enclosing
+`mod` is `pub` — instead of reporting every file's items as crate-root items.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
-                          cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing)
+                          cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
+                          crate_root::Union{Nothing, AbstractString} = nothing)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
     args = ["manifest", "--mode", mode]
     skip_unparsable && push!(args, "--skip-unparsable")
+    # With a crate root the extractor scans PyO3 items (#275) by following the
+    # crate's `mod` tree instead of treating each file as a root, so an item in
+    # `src/api.rs` is reported as `api::item` and a `mod api;` that is not `pub`
+    # makes everything below it unreachable.
+    if crate_root !== nothing
+        push!(args, "--crate-root")
+        push!(args, String(crate_root))
+    end
     if cfg_text === nothing
         append!(args, _cfg_file_args(cfg))
     else
@@ -927,6 +941,12 @@ function _manifest_method(m)
         skip_reason = _mstr(m, "skip_reason"),
         python_name = _mstr(m, "python_name"),
         accessor = _mstr(m, "accessor"),
+        return_kind = Symbol(isempty(_mstr(m, "return_kind")) ?
+                             (_mstr(m, "return_type") == "()" ? "unit" : "plain") :
+                             _mstr(m, "return_kind")),
+        ok_type = _mstr(m, "ok_type"),
+        err_type = _mstr(m, "err_type"),
+        inner_type = _mstr(m, "inner_type"),
     )
 end
 

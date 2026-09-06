@@ -48,12 +48,15 @@ end
             @test plan.mode === :python_free
             # The feature is not in `default`, so nothing has to be turned off.
             @test isempty(plan.feature_flags)
+            @test plan.dependency_default_features
             @test occursin("optional", plan.reason)
             @test RustCall.pyo3_link_rustflags(plan) == String[]
+            entry = RustCall.pyo3_dependency_toml(plan, "optional_pyo3", dir)
+            @test !occursin("default-features", entry)
         end
     end
 
-    @testset "(a) optional pyo3 that is on by default: --no-default-features" begin
+    @testset "(a) optional pyo3 on by default: the dependency entry turns it off" begin
         mktempdir() do dir
             _write_crate(dir, """
             [package]
@@ -70,7 +73,14 @@ end
             """)
             plan = RustCall.pyo3_link_plan(dir)
             @test plan.mode === :python_free
-            @test plan.feature_flags == ["--no-default-features"]
+            # `cargo build --no-default-features` applies to the package being
+            # built — the wrapper — and does NOT disable a dependency's
+            # defaults. Only the dependency entry can do that.
+            @test isempty(plan.feature_flags)
+            @test plan.dependency_default_features == false
+            entry = RustCall.pyo3_dependency_toml(plan, "optional_default_pyo3", dir)
+            @test occursin("default-features = false", entry)
+            @test occursin("[dependencies.optional_default_pyo3]", entry)
         end
     end
 
@@ -174,9 +184,12 @@ end
             """)
             plan = RustCall.pyo3_link_plan(dir)
             # pyo3 itself is mandatory, so libpython is linked either way, but
-            # `extension-module` can be switched off and must be.
+            # `extension-module` can be switched off and must be — through the
+            # wrapper's dependency entry, not a build flag.
             @test plan.mode === :link_libpython
-            @test plan.feature_flags == ["--no-default-features"]
+            @test plan.dependency_default_features == false
+            @test occursin("default-features = false",
+                           RustCall.pyo3_dependency_toml(plan, "default_ext", dir))
         end
     end
 

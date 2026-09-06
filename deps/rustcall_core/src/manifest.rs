@@ -133,10 +133,11 @@ impl Attribute {
 }
 
 /// Shape of a function's return value on the C ABI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReturnKind {
     /// Returned as-is.
+    #[default]
     Plain,
     /// `()` / no return type.
     Unit,
@@ -145,7 +146,7 @@ pub enum ReturnKind {
     /// `Option<T>` wrapped into `COption_<fn>` `{ is_some: u8, value: T }`.
     Option,
     /// `PyResult<T>` (= `Result<T, PyErr>`) of a scanned PyO3 item (#275), with
-    /// `T` in [`Function::ok_type`].
+    /// `T` in [`Function::ok_type`] / [`Method::ok_type`].
     ///
     /// Creating and dropping a `PyErr` without a Python interpreter is safe,
     /// but rendering one is not: `Display`/`Debug` on a `PyErr` panics inside
@@ -299,6 +300,13 @@ pub struct Field {
     /// struct is not a `#[pyclass]` (#275).
     #[serde(default)]
     pub python_name: String,
+    /// Visibility of the field as written, in the vocabulary of
+    /// [`Function::vis`]. A `#[pyo3(get)]` on a **private** field still gives
+    /// Python a descriptor — pyo3 generates it inside the crate — but a wrapper
+    /// crate compiled outside cannot read `Struct::field`, so only a `pub`
+    /// field gets accessors from the PyO3 scan (#275).
+    #[serde(default)]
+    pub vis: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +337,22 @@ pub struct Method {
     /// `#[pymethods]` block, empty otherwise (#275).
     #[serde(default)]
     pub accessor: String,
+    /// Shape of the return value, as for a free function. Method wrappers of
+    /// `#[julia]` structs never wrap `Result`/`Option`, so they are `Plain` or
+    /// `Unit`; a scanned `#[pymethods]` method returning `PyResult<T>` is
+    /// [`ReturnKind::PyResult`] with `T` in [`Method::ok_type`], so a Phase-2
+    /// wrapper never has to re-read the Rust type spelling (#275).
+    #[serde(default)]
+    pub return_kind: ReturnKind,
+    /// `T` of a `PyResult<T>` / `Result<T, E>` return, empty otherwise (#275).
+    #[serde(default)]
+    pub ok_type: String,
+    /// `E` of a `Result<T, E>` return, empty otherwise (#275).
+    #[serde(default)]
+    pub err_type: String,
+    /// `T` of an `Option<T>` return, empty otherwise (#275).
+    #[serde(default)]
+    pub inner_type: String,
     /// Whether the wrapper boxes the result and returns `*mut Struct`
     /// (`crate::codegen::returns_boxed_struct`). Julia used to infer this by
     /// comparing `return_type` against `"Self"` and the struct name, which
