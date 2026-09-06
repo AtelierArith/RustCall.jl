@@ -152,10 +152,7 @@ fn pyo3_wrapper_crates_match_golden_files() {
 
         let scanned = rustcall_core::extract::extract(&source, Mode::Crate)
             .unwrap_or_else(|error| panic!("failed to extract {}: {error}", source_path.display()));
-        let has_pyo3 = scanned
-            .functions
-            .iter()
-            .any(|f| f.attribute.is_pyo3_scan())
+        let has_pyo3 = scanned.functions.iter().any(|f| f.attribute.is_pyo3_scan())
             || scanned.structs.iter().any(|s| s.attribute.is_pyo3_scan());
         if !has_pyo3 {
             continue;

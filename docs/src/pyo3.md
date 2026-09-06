@@ -15,9 +15,120 @@ This page describes what is available today:
 * **Phase 1.5 — the link plan.** `RustCall.pyo3_link_plan` decides, from the
   crate's `Cargo.toml` alone, whether a wrapper cdylib can be linked and loaded
   at all, and under which flags.
+* **Phase 2 — the wrapper crate.** `@rust_crate` and
+  `RustCall.write_bindings_to_file` generate a wrapper crate, build it under the
+  link plan, and bind the result. **This is the part you use**; the two above
+  are what it is built on, and what you reach for when it refuses.
 
-Generating and building the wrapper crate itself is Phase 2 and is not
-implemented yet.
+## Using it
+
+```julia
+using RustCall
+Sample = @rust_crate "examples/sample_crate_pyo3_only"
+
+Sample.add(Int32(2), Int32(3))          # 5
+Sample.shout("hello")                   # "HELLO!"
+Sample.parse("42")                      # RustResult{Int32, String}(true, 42)
+
+p = Sample.Point(3.0, 4.0)              # #[new]
+Sample.norm(p)                          # 5.0
+p.x                                     # 3.0, through #[pyo3(get, set)]
+p.x = 6.0
+Sample.label(p)                         # a String method
+Sample.scaled(p, 2.0)                    # a PyResult method
+```
+
+Nothing in the crate changes. RustCall generates a **second** crate that
+depends on it and exports one `extern "C"` entry point per wrappable item:
+
+* a free `#[pyfunction]` becomes `rustcall_<name>`;
+* a `#[pyclass]` becomes an opaque handle with a `<Class>_free` destructor,
+  `rustcall_<Class>_<method>` for every method of every `#[pymethods]` block
+  (`#[new]`, `#[staticmethod]`, `#[getter]`, `#[setter]` included), and
+  `rustcall_<Class>_get_<field>` / `_set_<field>` for the fields
+  `#[pyo3(get, set)]`, `get_all` or `set_all` expose.
+
+Every one of those comes out of `rustcall_core::codegen::generate_wrapper` —
+the same generator `#[julia]` goes through since #279 — so the `(ptr, len)`
+string ABI, the `CResult` / `COption` aggregates and the per-wrapper panic
+channel are identical to a `#[julia]` crate's, and the Julia side binds both
+with the same emitters. A panic inside a wrapped item is caught and raised as
+`RustCall.RustPanicError`, not an abort.
+
+### Selecting a feature set
+
+The wrapper is built against one feature set of the target crate, named the way
+Cargo names one:
+
+```julia
+Sample = @rust_crate "path/to/crate" features=["python"] default_features=false
+```
+
+`RustCall.pyo3_feature_candidates` says which features activate pyo3 and which
+of those also pull `extension-module`; see [Choosing a feature
+set](#Choosing-a-feature-set) below. The feature set is part of the artifact
+identity, so two builds of one crate under different features are two different
+cached libraries and two different registry entries.
+
+### What is not wrapped, and why
+
+The scan refuses what a wrapper crate could not *name* (a non-`pub` item, a
+signature mentioning a type that needs a live interpreter, a generic, a
+`#[pymodule]`). The generator then refuses what it could not *lower*:
+
+| reason | meaning |
+| --- | --- |
+| `unsupported_arg:<T>` | an argument that is neither FFI-compatible nor a `String` / `&str` |
+| `unsupported_return:<T>` | a return value that does not cross the C ABI as a single value (a `Vec`, a struct by value, a `Result` payload that is one of those) |
+| `py_result_payload:<T>` | a `PyResult` whose `Ok` type does not fit in the `CResult` aggregate — `PyResult<String>`, `PyResult<Self>`. Widening this is tracked in [#303](https://github.com/AtelierArith/RustCall.jl/issues/303) |
+| `cfg_undecided:<predicate>` | the item is behind a `#[cfg]` the scan could not decide, so whether the build the wrapper links against has it is unknown |
+
+`scan_report` prints both lists, and the second one with the symbol each wrapped
+item is exported under:
+
+```julia
+RustCall.scan_report("examples/sample_crate_pyo3_only")
+```
+
+Nothing is guessed: an item that is not listed under "Wrapper crate exports" has
+no symbol, and no Julia definition is generated for it.
+
+### `PyResult<T>`: an opaque error, on purpose
+
+A `PyResult<T>` becomes a Julia `RustResult{T, String}`. On the `Err` side the
+value is always the same sentence:
+
+```julia
+RustCall.PYO3_OPAQUE_ERROR
+# "PyErr (Python-side error; message unavailable without an interpreter)"
+```
+
+That is not laziness. Creating and dropping a `PyErr` without a Python
+interpreter is safe, but **rendering** one is not: `Display`/`Debug` on a
+`PyErr` asserts inside pyo3 that the interpreter is initialized, and the
+resulting panic crossing `extern "C"` aborts the process. Reading only the
+exception *type* would need a `Python` token, which a wrapper crate by
+definition does not have. So the generated code drops the `PyErr` without ever
+looking at it and reports a fixed code, and Julia turns that into the sentence
+above. A `PyResult<()>` reports success or failure the same way, with `nothing`
+as its `Ok` value.
+
+### Scanning is lenient, calling is not
+
+The wrapper calls the **item**, not its Python binding, and those can be gated
+differently: `#[cfg_attr(feature = "python", pyfunction)]` makes the *marker*
+conditional while `add` stays an ordinary `pub fn` in every build. So the scan
+that feeds the generator is lenient — otherwise a crate with an optional pyo3
+dependency would report nothing to wrap in the very build where wrapping it is
+most useful.
+
+The price is that an item whose **own** `#[cfg]` predicate is undecided cannot
+be called safely, so it is refused with `cfg_undecided` rather than guessed at.
+When Cargo resolved the build's configuration (`plan.resolved`), that predicate
+is decided and nothing is refused for this reason.
+
+`examples/sample_crate_pyo3_optional` is exactly this shape, and its wrapper
+links **no** libpython at all.
 
 ## Scanning a crate
 
@@ -28,8 +139,9 @@ RustCall.scan_report("examples/sample_crate_pyo3_only")
 
 ```text
 Crate sample_crate_pyo3_only v0.1.0 (…/examples/sample_crate_pyo3_only)
+  Build scanned: default features
   RustCall items (wrapped today): 0
-  PyO3 items wrappable by Phase 2: 8
+  PyO3 items the scan can name: 13
     fn add -> i32 [py_function]
     fn shout -> String [py_function]
     fn parse -> PyResult<i32> [py_function]
@@ -38,6 +150,12 @@ Crate sample_crate_pyo3_only v0.1.0 (…/examples/sample_crate_pyo3_only)
     method norm -> f64
     method origin -> Self
     method sum -> f64
+    …
+  Wrapper crate exports: 13
+    fn add -> i32 [py_function] -> rustcall_add
+    struct Point [py_class] -> Point_free
+    method new -> Self -> rustcall_Point_new
+    …
   PyO3 items skipped: 3
     fn private_add -> i32 [py_function] — not `pub`, so a wrapper crate cannot name it (rustc E0603)
     fn describe -> i32 [py_function] — the signature uses a type that needs a live Python interpreter (Python<'_>)
@@ -46,9 +164,11 @@ Crate sample_crate_pyo3_only v0.1.0 (…/examples/sample_crate_pyo3_only)
 ```
 
 The scan needs no build and no Python: it runs `rustcall-extract` over the
-crate's sources and reads its `Cargo.toml`. `RustCall.scan_crate` returns the
-same information programmatically, in the `pyo3_functions` and `pyo3_structs`
-fields of the `CrateInfo`.
+crate's sources and reads its `Cargo.toml`. Generating the wrapper's `lib.rs` —
+which is what the "Wrapper crate exports" column reports — compiles nothing
+either; pass `generate = false` for the Phase-1-only report.
+`RustCall.scan_crate` returns the same information programmatically, in the
+`pyo3_functions` and `pyo3_structs` fields of the `CrateInfo`.
 
 ## What the manifest records
 
@@ -288,6 +408,25 @@ neither of them recoverable:
 So the plan refuses before the build rather than producing an artifact that
 cannot be loaded.
 
+### Windows is not Unix here
+
+Two platform differences that the plan and the link flags both encode:
+
+* **`extension-module` is a Unix-only blocker.** A DLL must resolve every import
+  at link time, so pyo3 links the interpreter's import library on Windows
+  whether or not the feature is on, and the wrapper loads like any other
+  `:link_libpython` build. `RustCall.extension_module_is_linkable()` is the
+  predicate.
+* **Windows has no rpath.** `pyo3_link_rustflags` emits only `-L native=<dir>`
+  there; the interpreter's DLL directory has to be on `PATH` when the wrapper is
+  loaded. On Unix an rpath is recorded in the library itself and nothing else is
+  needed.
+
+On macOS a framework build of Python is linked as
+`@rpath/Python3.framework/Versions/3.x/Python3`, so
+`RustCall.python_library_dir()` returns the directory *containing* the
+`.framework` rather than `LIBDIR`, which sits one level inside it.
+
 ## Making pyo3 optional: the `cfg_attr` limitation
 
 The `:python_free` mode is the clean path, but it is rarer than it looks.
@@ -321,13 +460,30 @@ pyo3 mandatory, or duplicate items under `#[cfg]` — which makes
 `:link_libpython` the common case. Do not document `cfg_attr` as the way to
 make a crate's pyo3 dependency optional.
 
+The consequence for Phase 2 is concrete: a crate whose pyo3 dependency is
+optional can expose **free functions** behind a feature and be wrapped with no
+Python at all, but it cannot have a `#[pyclass]` with methods, because those
+inner attributes cannot be gated. So `:python_free` wrappers are free-function
+wrappers, and a class always arrives through a `:link_libpython` build.
+
 ## Example
 
 `examples/sample_crate_pyo3_only` is a crate that carries only PyO3 attributes:
 a mandatory pyo3 dependency with `default-features = false, features =
-["macros"]`, wrappable and skipped functions, a `#[pyclass]` with two
-`#[pymethods]` blocks, and a `#[pymodule]`. It is what the tests in
-`test/test_manifest.jl` and `test/test_pyo3_link_plan.jl` scan.
+["macros"]`, wrappable and skipped functions, a `#[pyclass]` with `#[new]`,
+`#[staticmethod]`, `#[getter]`, `#[setter]`, a `String` method, a `PyResult`
+method and `#[pyo3(get, set)]` fields, and a `#[pymodule]`. Its link plan is
+`:link_libpython`. It is what `test/test_manifest.jl`,
+`test/test_pyo3_link_plan.jl` and `test/test_pyo3_wrapper.jl` use.
+
+`examples/sample_crate_pyo3_optional` is the `:python_free` counterpart: pyo3 is
+an optional dependency and only the `#[pyfunction]` markers are behind a
+feature, so the wrapper builds with pyo3 out of the graph entirely and links no
+libpython. That is the fixture CI exercises everywhere.
+
+Note that a class needs **one** `#[pymethods]` block unless the crate enables
+pyo3's `multiple-pymethods` feature; the scan matches every block it finds, but
+the crate has to compile for a wrapper to be built against it.
 
 `examples/sample_crate_pyo3` is the older, different example: a crate that uses
 RustCall's own `#[julia_pyo3]` attribute for dual Julia/Python bindings. That

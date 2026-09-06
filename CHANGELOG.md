@@ -7,7 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`@rust_crate` binds a PyO3 crate that carries no RustCall attribute**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275), Phase 2).
+  RustCall generates a *second* crate that depends on the target, emits one
+  `extern "C"` entry point per wrappable item, builds it under the Phase-1.5
+  link plan and loads the result. A `#[pyfunction]` becomes `rustcall_<name>`;
+  a `#[pyclass]` becomes an opaque handle with `<Class>_free`, one wrapper per
+  `#[pymethods]` method (`#[new]`, `#[staticmethod]`, `#[getter]`, `#[setter]`
+  included) and accessors for the fields `#[pyo3(get, set)]` / `get_all` /
+  `set_all` expose. Every entry point comes out of
+  `rustcall_core::codegen::generate_wrapper`, the generator `#[julia]` has used
+  since #279, so the string ABI, the `CResult`/`COption` aggregates and the
+  per-wrapper panic channel are identical and the Julia emitters bind both
+  kinds the same way. `write_bindings_to_file` takes the same path.
+
+  A `PyResult<T>` becomes `RustResult{T, String}` whose error is always
+  `RustCall.PYO3_OPAQUE_ERROR`: creating and dropping a `PyErr` without an
+  interpreter is safe, but rendering one panics inside pyo3 and the panic
+  crossing `extern "C"` aborts the process, so the generated code drops it
+  without looking at it.
+
+  `@rust_crate` gains `features=` and `default_features=`, which select the
+  feature set the wrapper is built against and are part of the artifact
+  identity (`ArtifactId` kind `pyo3-wrapper`). Anything the generator cannot
+  lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
+  `py_result_payload`, `cfg_undecided`) instead of being emitted; `scan_report`
+  gains a "wrapper crate exports" column naming each symbol. New extractor
+  subcommand `rustcall-extract wrap`; new example
+  `examples/sample_crate_pyo3_optional`, a crate whose wrapper links no
+  libpython at all.
+
+### Changed
+- **Manifest schema 5 → 6** (`RustCall.MANIFEST_SCHEMA_VERSION`,
+  `rustcall_core::manifest::SCHEMA_VERSION`). A `py_*` entry can now be
+  `exported` with a `return_abi`, a lowered `PyResult` reports the `i32` code in
+  `err_type`, and the skip-reason vocabulary gains the four reasons the wrapper
+  *generator* uses. A schema-5 consumer would read a wrapper manifest as a scan
+  and never call anything. Rebuild with `Pkg.build("RustCall")`.
+
 ### Fixed
+- **`extension-module` is no longer called unlinkable on Windows**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)). A DLL
+  resolves every import at link time, so pyo3 links the interpreter's import
+  library there regardless of the feature and the wrapper loads like any other
+  `:link_libpython` build; only Unix leaves the symbols undefined.
+  `RustCall.extension_module_is_linkable()` is the predicate, and
+  `pyo3_link_rustflags` no longer emits `-Wl,-rpath` — which `link.exe` rejects
+  — on Windows, where the interpreter's DLL directory belongs on `PATH`
+  instead.
+
+- **A link plan whose `--print cfg` probe failed no longer claims to be
+  resolved** ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)).
+  `cargo tree` can answer while `cargo rustc -- --print cfg` does not; the plan
+  then had an empty `cfg_text` with `resolved = true`, and `scan_report`
+  silently fell back to a lenient scan. Such a plan is now `resolved = false`
+  with the probe failure in its `reason`.
+
+- **macOS framework builds of Python get the right rpath**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)). A framework
+  build is linked as `@rpath/Python3.framework/Versions/3.x/Python3`, so
+  `python_library_dir()` now returns the directory *containing* the
+  `.framework` rather than `LIBDIR`, which sits one level inside it and
+  produced a cdylib that could not be loaded.
+
+- **`#[pymethods]` matching keeps the anchor of a written path**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)).
+  `impl crate::a::C` inside module `m` was matched against `m::a::C` first,
+  because the `crate::` prefix was stripped before matching; when both classes
+  existed the block attached to the wrong one. `crate::` now resolves only at
+  the crate root, `self::` only in the enclosing module, and the same
+  distinction applies to `use` paths.
+
 - **Re-aliasing a library under a name it already has no longer declares it
   dead** ([#291](https://github.com/AtelierArith/RustCall.jl/issues/291)).
   `alias_artifact!` retired whatever was registered under the target name —

@@ -835,3 +835,95 @@ fn inline_mode_does_not_scan_pyo3_items() {
     assert_eq!(add.symbol, "add");
     assert_eq!(add.skip_reason, "");
 }
+
+/// `crate::a::C` is the crate root's `a::C`, never the enclosing module's.
+///
+/// A qualifier used to have its anchor stripped, so `impl crate::a::C` written
+/// inside module `m` was matched against `m::a::C` first and attached to the
+/// wrong class whenever both existed. Phase 2 then generated a call to a type
+/// that does not have the method (#294 review).
+#[test]
+fn a_crate_anchored_pymethods_target_is_not_matched_relatively() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod m { pub mod a { #[pyclass] pub struct C {} }\n\
+            #[pymethods] impl crate::a::C { pub fn at_root(&self) -> i32 { 1 } } }",
+    );
+    let root = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .expect("crate-root class");
+    let nested = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "a".to_string()])
+        .expect("nested class");
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["at_root"]
+    );
+    assert!(nested.methods.is_empty());
+}
+
+/// `self::a::C` is the enclosing module's, and only that one.
+#[test]
+fn a_self_anchored_pymethods_target_is_not_matched_absolutely() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod m { pub mod a { #[pyclass] pub struct C {} }\n\
+            #[pymethods] impl self::a::C { pub fn nested(&self) -> i32 { 1 } } }",
+    );
+    let root = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .expect("crate-root class");
+    let nested = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "a".to_string()])
+        .expect("nested class");
+    assert!(root.methods.is_empty());
+    assert_eq!(
+        nested
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["nested"]
+    );
+}
+
+/// The same distinction through a `use`: `use crate::a::C;` names the crate
+/// root's class even when the enclosing module has an `a` of its own.
+#[test]
+fn a_crate_anchored_import_disambiguates_absolutely() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod m { pub mod a { #[pyclass] pub struct C {} }\n\
+            use crate::a::C;\n\
+            #[pymethods] impl C { pub fn at_root(&self) -> i32 { 1 } } }",
+    );
+    let root = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .expect("crate-root class");
+    let nested = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "a".to_string()])
+        .expect("nested class");
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["at_root"]
+    );
+    assert!(nested.methods.is_empty());
+}

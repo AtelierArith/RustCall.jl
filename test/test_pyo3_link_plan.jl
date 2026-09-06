@@ -269,4 +269,58 @@ _manifest(text::AbstractString) = TOML.parse(text)
             end
         end
     end
+
+    # ------------------------------------------------------------------
+    # From the post-merge review of #294 (PR that landed Phase 1 / 1.5).
+    # ------------------------------------------------------------------
+
+    @testset "extension-module is a Unix-only blocker" begin
+        # A DLL must resolve every import at link time, so pyo3 links the
+        # interpreter's import library on Windows regardless of
+        # `extension-module`; the resulting cdylib loads like any other
+        # `:link_libpython` build. On Unix the feature leaves libpython's
+        # symbols undefined and the cdylib cannot be loaded at all.
+        @test RustCall.extension_module_is_linkable() == Sys.iswindows()
+
+        plan = RustCall._pyo3_unresolved_cfg_plan(".", String[], String[],
+                                                  ["extension-module"], true)
+        if Sys.iswindows()
+            @test plan.mode === :link_libpython
+        else
+            @test plan.mode === :unlinkable
+            @test_throws RustCall.RustError RustCall.pyo3_link_rustflags(plan)
+        end
+    end
+
+    @testset "link flags: no rpath where there is no rpath" begin
+        # `-Wl,-rpath` is a GNU/Apple ld option; link.exe rejects it, and
+        # Windows resolves a DLL through PATH rather than a recorded path.
+        plan = RustCall.PyO3LinkPlan(:link_libpython, String[], @__DIR__, "test")
+        flags = RustCall.pyo3_link_rustflags(plan)
+        @test flags[1] == "-L"
+        @test flags[2] == "native=$(@__DIR__)"
+        if Sys.iswindows()
+            @test length(flags) == 2
+            @test !any(f -> occursin("rpath", f), flags)
+        else
+            @test any(f -> occursin("-Wl,-rpath,$(@__DIR__)", f), flags)
+        end
+    end
+
+    @testset "a plan whose cfg probe failed is not `resolved`" begin
+        # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
+        # Saying `resolved = true` with an empty `cfg_text` made `scan_report`
+        # fall back to a lenient scan without ever saying so.
+        for (pyo3_features, pyo3_active, expected) in
+                ((String[], false, :python_free),
+                 (["macros"], true, :link_libpython))
+            plan = RustCall._pyo3_unresolved_cfg_plan(".", String[], ["a"],
+                                                      pyo3_features, pyo3_active)
+            @test plan.resolved == false
+            @test plan.cfg_text == ""
+            @test plan.mode === expected
+            @test plan.crate_features == ["a"]
+            @test occursin("--print cfg", plan.reason)
+        end
+    end
 end
