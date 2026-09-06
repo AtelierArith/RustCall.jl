@@ -14,6 +14,13 @@ using Test
         y::T
     end
 
+    # Opt in to passing it by value (#245). The *concrete* instantiation is
+    # what is registered — the only thing `register_ffi_struct` accepts, since
+    # a type parameter changes field sizes, alignment and even ABI register
+    # classes, so `Point{Float64}` matching the Rust `#[repr(C)] { f64, f64 }`
+    # below says nothing about `Point{Int32}`.
+    RustCall.register_ffi_struct(Point{Float64})
+
     @testset "Passing Generic Struct" begin
         rust"""
         #[repr(C)]

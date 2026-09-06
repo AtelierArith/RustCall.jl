@@ -16,6 +16,48 @@ using Test
 using RustCall
 
 # ----------------------------------------------------------------------------
+# Fixtures for "by-value aggregates are opt-in" (#245 item 3). A `struct` needs
+# module scope, so these live outside the testset that uses them.
+# ----------------------------------------------------------------------------
+
+struct Rc245ByValue
+    x::Int32
+    y::Float64
+end
+
+# Same fields, different type: the layout assertion is per type, not per shape.
+struct Rc245ByValueTwin
+    x::Int32
+    y::Float64
+end
+
+mutable struct Rc245Mutable
+    x::Int32
+end
+
+# A parametric aggregate: the parameter changes the layout, so a concrete
+# registration must not license a different instantiation — and the family
+# itself must not be registrable at all.
+struct Rc245Pair{T}
+    a::T
+    b::T
+end
+
+# An abstract family, whose subtypes share nothing but a name.
+abstract type Rc245Shape{T} end
+
+struct Rc245Square{T} <: Rc245Shape{T}
+    side::T
+end
+
+# Stands in for a mirror a wrapper generator emits: the assertion is in the
+# supertype, so it survives precompilation without touching any registry.
+struct Rc245Mirror <: RustCall.FFIByValue
+    is_ok::UInt8
+    value::Int32
+end
+
+# ----------------------------------------------------------------------------
 # The Rust-side acceptance gate, as callable probes
 # ----------------------------------------------------------------------------
 
@@ -667,6 +709,277 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.FFI_STRICT[] === :error
         @test_throws RustCall.RustError RustCall.ffi_return_symbol_or_throw(
             "Vec<f64>", "", "f() -> Vec<f64>")
+    end
+
+
+    @testset "by-value aggregates are opt-in (#245 item 3)" begin
+        # `is_supported_arg_type(::Type{T}) = isbitstype(T)` and
+        # `ccall_arg_type(::Type{T}) = T` accepted *any* isbits Julia struct as
+        # a by-value argument, on the assumption that its layout matches the
+        # Rust side's. Rust's default `repr(Rust)` layout is unspecified, so the
+        # assumption holds only until a rustc upgrade reorders the fields — and
+        # then it is silent corruption, not an error.
+
+        # Scalars, pointers and singletons are not aggregates: their ABI is
+        # their width, and there is no field order to get wrong.
+        for T in (Int8, Int64, UInt128, Float32, Float64, Bool, Char,
+                  Ptr{Cvoid}, Ptr{Float64}, Cstring, Csize_t)
+            @test RustCall.ffi_is_aggregate(T) == false
+            @test RustCall.ffi_by_value_allowed(T)
+        end
+
+        # RustCall's own `#[repr(C)]` mirrors carry the assertion already.
+        for T in (RustCall.CRustString, RustCall.CRustStr, RustCall.CRustVec,
+                  RustCall.CRustSlice, RustCall.CRustResult, RustCall.CRustOption)
+            @test RustCall.ffi_is_aggregate(T)
+            @test RustCall.ffi_by_value_registered(T)
+        end
+        # RustCall asserts the widening form for its own wrappers, which is
+        # the deliberate case: `RustPtr{T}` is one pointer whatever `T` is.
+        @test RustCall.ffi_by_value_layout(RustCall.CRustString) === :repr_c
+        @test RustCall.ffi_by_value_layout(Rc245ByValue) === :unknown
+        @test RustCall.ffi_by_value_registered(RustCall.RustPtr{Int32})
+        @test RustCall.ffi_by_value_registered(RustCall.RustSlice{Float64})
+        @test RustCall.ffi_by_value_registered(RustCall.CResultType{Int32, Int32})
+        @test RustCall.ffi_by_value_registered(RustCall.COptionType{Float64})
+
+        # The mirrors the wrapper generators emit carry the assertion in their
+        # *supertype*, which needs no call at all. A user's own struct carries
+        # it as a `ffi_by_value_layout` method, defined in the module that owns
+        # the type — both are precompiled, which a mutated global would not be.
+        @test isabstracttype(RustCall.FFIByValue)
+        @test RustCall.ffi_by_value_allowed(Rc245Mirror)
+        @test RustCall.ffi_by_value_registered(Rc245Mirror) == false
+        @test RustCall.ffi_check_by_value(Rc245Mirror, Any[]) === nothing
+        @test isbitstype(Rc245Mirror)   # a supertype does not change the layout
+
+        # An arbitrary user struct is not allowed until someone says so.
+        @test RustCall.ffi_is_aggregate(Rc245ByValue)
+        @test RustCall.ffi_by_value_registered(Rc245ByValue) == false
+        @test RustCall.ffi_by_value_allowed(Rc245ByValue) == false
+        # Tuples are aggregates too — a tuple's parameters *are* its layout, so
+        # registering one tuple type must not license another.
+        @test RustCall.ffi_is_aggregate(Tuple{Int32, Float64})
+        @test RustCall.ffi_by_value_allowed(Tuple{Int32, Float64}) == false
+
+        # The error names the type, its fields and the opt-in call to make.
+        err = try
+            RustCall.ffi_check_by_value(Int32, Any[Rc245ByValue])
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        msg = sprint(showerror, err)
+        @test occursin("Rc245ByValue", msg)
+        @test occursin("argument 1", msg)
+        @test occursin("repr(C)", msg)
+        @test occursin("RustCall.register_ffi_struct(", msg)
+        @test occursin("RustStructInfo", msg)   # the generated-wrapper alternative
+        @test occursin("x::Int32", msg)         # the fields it would have matched
+        @test occursin("y::Float64", msg)
+
+        # Registration is **concrete types only** (#245 review). Instantiations
+        # of a parametric struct do not share a layout — a type parameter
+        # changes field sizes, alignment and even ABI register classes — and
+        # subtypes of an abstract family share even less, so a family-wide
+        # assertion would license values nobody ever matched against a Rust
+        # struct. That is the fail-open behaviour the opt-in exists to remove.
+        for family in (Rc245Pair, Rc245Shape)
+            err_family = try
+                RustCall.register_ffi_struct(family)
+                nothing
+            catch e
+                e
+            end
+            @test err_family isa ArgumentError
+            @test occursin("register_ffi_struct($family)", sprint(showerror, err_family))
+        end
+        @test occursin("UnionAll", sprint(showerror, try
+            RustCall.register_ffi_struct(Rc245Pair); catch e; e end))
+        # An abstract *instantiation* is refused for the same reason.
+        @test_throws ArgumentError RustCall.register_ffi_struct(Rc245Shape{Float64})
+        @test RustCall.ffi_by_value_allowed(Rc245Square{Float64}) == false
+
+        # The concrete registration is accepted, and says nothing about a
+        # sibling instantiation.
+        try
+            RustCall.register_ffi_struct(Rc245Pair{Float64})
+            @test RustCall.ffi_by_value_allowed(Rc245Pair{Float64})
+            @test RustCall.ffi_by_value_allowed(Rc245Pair{Int8}) == false
+            @test RustCall.ffi_by_value_allowed(Rc245Pair{Float32}) == false
+            @test_throws RustCall.RustError RustCall.ffi_check_by_value(
+                Int32, Any[Rc245Pair{Int8}])
+            # Registering it again is idempotent: one method, one withdrawal.
+            @test RustCall.register_ffi_struct(Rc245Pair{Float64}) === Rc245Pair{Float64}
+        finally
+            @test RustCall.unregister_ffi_struct(Rc245Pair{Float64})
+        end
+        @test RustCall.ffi_by_value_allowed(Rc245Pair{Float64}) == false
+        # A withdrawal takes effect in the world that made it, not one later:
+        # being stale-*true* here would be fail-open.
+        @test RustCall.unregister_ffi_struct(Rc245Pair{Float64}) == false
+
+        # RustCall's own covering assertions (`::Type{<:RustPtr}`) are the
+        # package's claim about its own mirrors, not something
+        # `register_ffi_struct` can produce — and not something
+        # `unregister_ffi_struct` can delete by accident either, because it
+        # only ever deletes the exact `Type{T}` method.
+        @test RustCall.unregister_ffi_struct(RustCall.RustPtr{Int32}) == false
+        @test RustCall.ffi_by_value_registered(RustCall.RustPtr{Int32})
+
+        # A tuple is never widened: its parameters *are* its layout.
+        try
+            RustCall.register_ffi_struct(Tuple{Int32, Float64})
+            @test RustCall.ffi_by_value_allowed(Tuple{Int32, Float64})
+            @test RustCall.ffi_by_value_allowed(Tuple{Int32, Float32}) == false
+            @test RustCall.ffi_by_value_allowed(Tuple{Int32}) == false
+        finally
+            @test RustCall.unregister_ffi_struct(Tuple{Int32, Float64})
+        end
+
+        # Return position is reported as such.
+        ret_err = try
+            RustCall.ffi_check_by_value(Rc245ByValue, Any[])
+            nothing
+        catch e
+            e
+        end
+        @test ret_err isa RustCall.RustError
+        @test occursin("the return type", sprint(showerror, ret_err))
+
+        # `call_rust_function` is the runtime door every `@rust` call goes
+        # through, and it refuses before a `ccall` is built — the pointer is
+        # never dereferenced, so a null one is safe here. Both directions:
+        # the aggregate as an argument, and as the return type.
+        @test_throws RustCall.RustError RustCall.call_rust_function(
+            C_NULL, Int32, Rc245ByValue(Int32(1), 2.0))
+        @test_throws RustCall.RustError RustCall.call_rust_function(
+            C_NULL, Rc245ByValue, Int32(1))
+        @test_throws RustCall.RustError RustCall.call_rust_function(
+            C_NULL, Int32, Type[Rc245ByValue], Rc245ByValue(Int32(1), 2.0))
+        @test_throws RustCall.RustError RustCall.call_rust_function(
+            C_NULL, Int32, Tuple{Rc245ByValue}, Rc245ByValue(Int32(1), 2.0))
+
+        # Opting in makes exactly that type acceptable, and withdrawing the
+        # assertion puts it back.
+        try
+            @test RustCall.register_ffi_struct(Rc245ByValue) === Rc245ByValue
+            @test RustCall.ffi_by_value_registered(Rc245ByValue)
+            @test RustCall.ffi_by_value_allowed(Rc245ByValue)
+            @test RustCall.ffi_check_by_value(Int32, Any[Rc245ByValue]) === nothing
+            # A different struct with the same fields is still refused: the
+            # assertion is per type, not per shape.
+            @test RustCall.ffi_by_value_allowed(Rc245ByValueTwin) == false
+        finally
+            @test RustCall.unregister_ffi_struct(Rc245ByValue)
+        end
+        @test RustCall.ffi_by_value_allowed(Rc245ByValue) == false
+        @test RustCall.unregister_ffi_struct(Rc245ByValue) == false
+
+        # The keyword exists so the call site states what it claims; there is
+        # no layout to assert without `#[repr(C)]`, and a mutable struct is a
+        # Julia heap object that cannot be copied into a register pair at all.
+        @test_throws ArgumentError RustCall.register_ffi_struct(Rc245ByValue; repr_c = false)
+        @test_throws ArgumentError RustCall.register_ffi_struct(Rc245Mutable)
+        @test RustCall.ffi_by_value_allowed(Rc245ByValue) == false
+    end
+
+    @testset "a generated mirror survives precompilation (#245 review)" begin
+        # A `register_ffi_struct` call in a generated `@rust_crate` module — or
+        # in a `#[julia]` wrapper expanded inside a downstream package — mutates
+        # a global that lives in *RustCall*. Julia does not replay a
+        # dependency's global mutations when a package is loaded from its
+        # precompile cache, so such a registration would hold in the session
+        # that compiled the package and be gone in every later one: every
+        # `Result`-returning wrapper would then fail in `call_rust_function`
+        # before reaching Rust. `<: FFIByValue` is a property of the type, so
+        # there is nothing to replay.
+
+        # 1. The generators emit the supertype, and no registration call.
+        res = string(RustCall.generate_c_result_struct_type("probe", :Int32, :Int32))
+        opt = string(RustCall.generate_c_option_struct_type("probe", :Float64))
+        for src in (res, opt)
+            @test occursin("FFIByValue", src)
+            @test !occursin("register_ffi_struct", src)
+        end
+
+        # 2. And so does the source-text emitter used for written-out bindings.
+        sig = RustCall.RustFunctionSignature(
+            "probe", ["a"], ["i32"], "Result<i32, i32>", false, String[];
+            symbol = "rustcall_probe", return_kind = :result,
+            ok_type = "i32", err_type = "i32")
+        emitted = RustCall._emit_result_function_code(sig, "a", "Int32(a)")
+        @test occursin("struct CResult_probe <: FFIByValue", emitted)
+        @test !occursin("register_ffi_struct", emitted)
+
+        # 3. The real thing: a package that both defines such a mirror **and**
+        #    registers a struct of its own at top level, loaded in a *fresh*
+        #    process from its precompile cache. Neither assertion may depend on
+        #    the session that compiled the package.
+        depot = mktempdir()
+        pkgdir_ = joinpath(depot, "Rc245Mirror245", "src")
+        mkpath(pkgdir_)
+        write(joinpath(depot, "Rc245Mirror245", "Project.toml"), """
+        name = "Rc245Mirror245"
+        uuid = "4a1d5f2e-9b3c-4c7a-8d6e-1f2a3b4c5d6e"
+        version = "0.1.0"
+
+        [deps]
+        RustCall = "$(Base.PkgId(RustCall).uuid)"
+        """)
+        write(joinpath(pkgdir_, "Rc245Mirror245.jl"), """
+        module Rc245Mirror245
+        import RustCall
+
+        # A mirror the wrapper generators would have emitted.
+        struct CResult_probe <: RustCall.FFIByValue
+            is_ok::UInt8
+            ok_value::Int32
+            err_value::Int32
+        end
+
+        # ...and a user's own struct, registered the documented way: at top
+        # level, next to the struct it is about.
+        struct Pt
+            x::Float64
+            y::Float64
+        end
+        RustCall.register_ffi_struct(Pt)
+
+        struct Pair2{T}
+            a::T
+            b::T
+        end
+        RustCall.register_ffi_struct(Pair2{Float64})
+        end
+        """)
+        try
+            script = """
+            using Rc245Mirror245, RustCall
+            M = Rc245Mirror245
+            print(RustCall.ffi_by_value_allowed(M.CResult_probe), " ",
+                  RustCall.ffi_by_value_registered(M.CResult_probe), " ",
+                  isbitstype(M.CResult_probe), " ",
+                  RustCall.ffi_by_value_allowed(M.Pt), " ",
+                  RustCall.ffi_by_value_allowed(M.Pair2{Float64}), " ",
+                  RustCall.ffi_by_value_allowed(M.Pair2{Int8}))
+            """
+            project = pkgdir(RustCall)
+            out = withenv("JULIA_LOAD_PATH" => string(project, Sys.iswindows() ? ";" : ":", depot,
+                                                      Sys.iswindows() ? ";" : ":", "@stdlib")) do
+                readchomp(`$(Base.julia_cmd()) --startup-file=no -e $script`)
+            end
+            # The mirror: allowed, *not* registered (its assertion is the
+            # supertype), and still isbits — a supertype does not change the
+            # layout. The user's struct: allowed, because
+            # `register_ffi_struct` defined a `ffi_by_value_layout` method in
+            # `Rc245Mirror245`, which its precompile cache carries. And the
+            # concrete parametric registration still licenses only itself.
+            @test out == "true false true true true false"
+        finally
+            rm(depot; recursive = true, force = true)
+        end
     end
 
     @testset "ownership: the contract names the symbol generated code calls" begin

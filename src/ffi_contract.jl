@@ -1219,3 +1219,358 @@ function _ffi_string_argument(value, descriptor::AbstractString, context::Abstra
         "all, take them as a `*const u8` plus a length on the Rust side; a " *
         "`&[u8]` slice argument is not lowered by the `#[julia]` pipeline."))
 end
+
+# By-value aggregates are opt-in (issue #245 item 3)
+# ============================================================================
+
+"""
+    FFIByValue
+
+Marker supertype for the `#[repr(C)]` mirror aggregates **RustCall itself
+generates**: the `CResult_<fn>` / `COption_<fn>` structs the wrapper generators
+emit next to a `Result`- or `Option`-returning function, in every flavour
+(macro-expanded and source-emitted, crate and inline).
+
+They need no registration at all, and must not depend on one: the generated
+code may be precompiled into a downstream package, and a subtype relation is a
+static property of the type — it survives because it *is* the type. (The
+`ffi_by_value_layout` method table exists for the same reason, one level up: a
+method is precompiled too. This is the cheaper answer for types RustCall itself
+emits, because it needs no call at all.)
+"""
+abstract type FFIByValue end
+
+"""
+    ffi_by_value_layout(::Type{T}) -> Symbol
+
+`:repr_c` when someone has asserted that `T` may cross the boundary **by
+value**, `:unknown` otherwise. The registry of #245, expressed as a **method
+table** rather than a container.
+
+`is_supported_arg_type` used to be `isbitstype(T)`, and `ccall_arg_type` the
+identity — so any isbits Julia struct or tuple was passed by value on the
+assumption that its layout matches the Rust side's. Rust's default
+`repr(Rust)` layout is explicitly unspecified (fields may be reordered, niches
+exploited), so that assumption holds only until a rustc upgrade decides
+otherwise, and then it is silent corruption rather than an error. This function
+is the record of who asserted otherwise, and about which type.
+
+# Why dispatch and not a `Set`
+
+Because a registration has to survive precompilation. `register_ffi_struct` is
+meant to be called at a package's top level, next to the struct it is about —
+and a `push!` into a global that lives in **RustCall** happens during that
+package's precompilation and is *not* replayed when the package is later loaded
+from its cache. The assertion would hold in the session that compiled the
+package and be gone in every session after it, with the by-value call failing
+before it reached Rust.
+
+A **method definition** is precompiled: `register_ffi_struct` defines
+`ffi_by_value_layout(::Type{Point}) = :repr_c` in the module that owns `Point`,
+so the method is stored in that module's cache image and reinstated on load,
+exactly like any other method the package defines. Dispatch also expresses the
+narrow and the wide assertion natively — `::Type{Point{Float64}}` for one
+instantiation, `::Type{<:Point}` for all of them — which a keyed container has
+to fake.
+
+Withdrawal (`unregister_ffi_struct`) deletes the method it is about, and only
+that one, so there is no exception list to keep in step with the table — and no
+bookkeeping container of any kind beside it.
+"""
+ffi_by_value_layout(@nospecialize(::Type)) = :unknown
+
+# RustCall's own boundary types mirror `#[repr(C)]` Rust definitions (see the
+# comments beside each in `src/types.jl`), so the layout assertion #245 asks a
+# user to make is one the package already makes about these. The parametric
+# ones are asserted for *every* instantiation deliberately: `RustPtr{T}` is one
+# pointer whatever `T` is.
+ffi_by_value_layout(::Type{CRustResult}) = :repr_c
+ffi_by_value_layout(::Type{CRustOption}) = :repr_c
+ffi_by_value_layout(::Type{CRustString}) = :repr_c
+ffi_by_value_layout(::Type{CRustStr}) = :repr_c
+ffi_by_value_layout(::Type{CRustVec}) = :repr_c
+ffi_by_value_layout(::Type{CRustSlice}) = :repr_c
+ffi_by_value_layout(::Type{RustStr}) = :repr_c
+ffi_by_value_layout(::Type{<:RustSlice}) = :repr_c
+ffi_by_value_layout(::Type{<:RustPtr}) = :repr_c
+ffi_by_value_layout(::Type{<:RustRef}) = :repr_c
+
+"""
+    _ffi_layout_signature(T) -> Type
+
+The `ffi_by_value_layout` method signature `register_ffi_struct(T)` defines:
+`Tuple{typeof(ffi_by_value_layout), Type{T}}`, for the one concrete type `T`
+and nothing else. Reconstructed rather than remembered, so
+`unregister_ffi_struct` can find a method a *previous* session defined and a
+precompile cache restored.
+"""
+_ffi_layout_signature(@nospecialize(T::Type)) =
+    Tuple{typeof(ffi_by_value_layout), Type{T}}
+
+"""
+    _ffi_layout_method(T) -> Union{Method, Nothing}
+
+The `ffi_by_value_layout` method that `register_ffi_struct(T)` defined for
+**exactly** `T`, or `nothing` when there is none.
+
+Exactness is the point, twice over. A user registration is always for one
+concrete type, but RustCall's own mirrors are asserted with covering methods
+(`ffi_by_value_layout(::Type{<:RustPtr})`), and `which` alone would hand one of
+those back — so a `register_ffi_struct` call could be elided as "already
+asserted", or an `unregister_ffi_struct` could delete the package's own claim
+about every `RustPtr{T}`. Comparing the signature to `_ffi_layout_signature`
+means each operation sees only the assertion `register_ffi_struct(T)` itself
+would make.
+
+`invokelatest`, because the method may have been defined in this very world —
+which is also what lets `ffi_by_value_registered` answer for a registration
+made in the same top-level expression, with no bookkeeping on the side.
+"""
+function _ffi_layout_method(@nospecialize(T::Type))
+    m = try
+        Base.invokelatest(which, ffi_by_value_layout, (Type{T},))
+    catch
+        return nothing
+    end
+    return m.sig === _ffi_layout_signature(T) ? m : nothing
+end
+
+"""
+    _ffi_registration_module(T) -> Module
+
+Where the `ffi_by_value_layout` method for `T` is defined: the module that owns
+`T`, so the method lands in **that** module's precompile cache and comes back
+with it.
+
+A type Julia itself owns (a `Tuple`, whose `parentmodule` is `Core`) has no
+such home; the method goes to RustCall instead, and a registration of one from
+a package's top level is therefore session-local. Register the struct rather
+than the tuple when that matters.
+"""
+function _ffi_registration_module(@nospecialize(T::Type))
+    owner = parentmodule(T)
+    (owner === Core || owner === Base) && return @__MODULE__
+    return owner
+end
+
+"""
+    ffi_is_aggregate(T) -> Bool
+
+Whether `T` is an *aggregate* at the C boundary — a struct with fields, or a
+tuple — as opposed to a scalar whose ABI is fixed by its width.
+
+Primitive types (`Int32`, `Float64`, a user `primitive type`), pointers and
+zero-field singletons are not aggregates: there is nothing about them a layout
+decision can change. Everything else has a field order, and Rust does not
+promise one without `#[repr(C)]`.
+"""
+function ffi_is_aggregate(@nospecialize(T::Type))
+    T <: Tuple && return true
+    T <: Ptr && return false
+    isconcretetype(T) || return false
+    isprimitivetype(T) && return false
+    isstructtype(T) || return false
+    return fieldcount(T) > 0
+end
+
+"""
+    register_ffi_struct(T::Type; repr_c::Bool = true) -> Type
+
+Assert that values of `T` may be passed to and from Rust **by value**, because
+the Rust type they correspond to is declared `#[repr(C)]` and its fields match
+`T`'s in order and in type.
+
+This is the opt-in issue #245 asks for. Without it, `@rust f(x)` with an
+aggregate `x` raises rather than assuming the layouts agree: Rust's default
+`repr(Rust)` layout is unspecified, so an unannotated Julia struct that "works"
+today can be silently reordered by the next rustc.
+
+The assertion is recorded as a **method** of `ffi_by_value_layout`, defined in
+the module that owns `T`. Calling this at a package's top level therefore
+survives precompilation — the method is stored in that package's cache image
+and reinstated when it is loaded, in every later session:
+
+```julia
+module MyPkg
+using RustCall
+
+struct Point   # matches #[repr(C)] pub struct Point { x: f64, y: f64 }
+    x::Float64
+    y::Float64
+end
+RustCall.register_ffi_struct(Point)
+end
+```
+
+You do **not** need this for:
+
+- scalars, pointers, `Cstring`, `Char`, `Bool` — their ABI is their width;
+- the struct wrappers RustCall generates from a `#[julia] struct`
+  (`RustStructInfo`, `src/structs.jl`), which cross the boundary as an opaque
+  handle, never as a field-by-field copy;
+- RustCall's own `#[repr(C)]` mirrors: `CRustString`, `CRustSlice` and friends
+  have `ffi_by_value_layout` methods here, and the `CResult_<fn>` /
+  `COption_<fn>` aggregates the wrapper generators emit subtype `FFIByValue`.
+
+`repr_c = false` is rejected: there is no layout to assert. The keyword exists
+so the call site states what is being claimed.
+
+# Concrete types only
+
+`T` must be a concrete, immutable, `isbitstype` struct. A `UnionAll` or an
+abstract type is rejected: instantiations of `Point{T}` do not share a layout —
+a type parameter changes field sizes, alignment and even ABI register classes —
+and subtypes of an `abstract type Shape{T}` share even less. Registering a
+family would license values you never matched against a Rust struct, which is
+the fail-open behaviour this opt-in exists to remove. Register each concrete
+type you actually pass: `register_ffi_struct(Point{Float64})` says exactly that,
+and says nothing about `Point{Int32}`.
+
+See also `unregister_ffi_struct`, `ffi_by_value_registered`,
+`ffi_by_value_layout`.
+"""
+function register_ffi_struct(@nospecialize(T::Type); repr_c::Bool = true)
+    repr_c || throw(ArgumentError(
+        "register_ffi_struct($T; repr_c = false) asserts nothing: a type may " *
+        "only be passed by value when the Rust type it mirrors is declared " *
+        "`#[repr(C)]`. Fix the Rust definition, or pass the value behind a " *
+        "pointer instead."))
+    T isa UnionAll && throw(ArgumentError(
+        "register_ffi_struct($T): a `UnionAll` cannot be registered. Its " *
+        "instantiations do not share a layout — a type parameter changes field " *
+        "sizes, alignment and even ABI register classes — so asserting one for " *
+        "the whole family would license `$T{...}` instantiations you never " *
+        "matched against a Rust struct, which is the fail-open behaviour this " *
+        "opt-in exists to remove. Register each concrete type you actually " *
+        "pass, e.g. `register_ffi_struct($T{Float64})`."))
+    (isconcretetype(T) && isstructtype(T)) || throw(ArgumentError(
+        "register_ffi_struct($T): only a concrete struct type can be passed by " *
+        "value — $T is $(isabstracttype(T) ? "abstract, and its subtypes share " *
+                                             "no layout" : "not a concrete struct type"). " *
+        "Register the concrete types you actually pass."))
+    isbitstype(T) || throw(ArgumentError(
+        "register_ffi_struct($T): only an `isbitstype` type can be passed by " *
+        "value — $T is not one" *
+        (ismutabletype(T) ? " (it is mutable; a mutable struct is a Julia heap " *
+                            "object, and Rust must receive it behind a " *
+                            "pointer)." : ".")))
+    # The check and the method definition are **one** transaction under
+    # `REGISTRY_LOCK`, paired with the one in `unregister_ffi_struct`. Split,
+    # two tasks racing on the same type could both define the method, or an
+    # unregister could land between them — finding no method, returning `false`,
+    # and leaving the type enabled by the method the other task then installed
+    # (#245 review). There is no bookkeeping beside the method table to keep in
+    # step, because there is no bookkeeping.
+    return lock(REGISTRY_LOCK) do
+        # Skip only an *exact* duplicate. Defining the same method twice warns
+        # under `--warn-overwrite=yes`, which `Pkg.test` sets; anything broader
+        # that happens to cover `T` is a different assertion and must not
+        # suppress this one.
+        _ffi_layout_method(T) === nothing || return T
+        Core.eval(_ffi_registration_module(T),
+                  :($(GlobalRef(@__MODULE__, :ffi_by_value_layout))(::Type{$T}) =
+                        $(QuoteNode(:repr_c))))
+        return T
+    end
+end
+
+"""
+    unregister_ffi_struct(T::Type) -> Bool
+
+Take back the `register_ffi_struct` assertion for `T`. Returns whether there was
+one to take back.
+
+It deletes the `ffi_by_value_layout` method that was defined for **exactly**
+`T` — the narrow one for a concrete type, the `::Type{<:T}` one for a
+`UnionAll` — and nothing else. So withdrawing `Point` after registering it
+leaves any separate `Point{Float64}` assertion standing, and withdrawing
+`Point{Float64}` does not disturb a `Point` assertion that covers its siblings.
+An assertion made in a *previous* session (restored from a precompile cache) is
+withdrawn just as well: the method is found by reconstructing its signature,
+not by remembering it.
+
+Deleting a method invalidates code that dispatched through it, so this is not
+something to do in a loop; it is a correction, made by a test or by a user who
+changed their mind. It runs under `REGISTRY_LOCK`, as one transaction with the
+one in `register_ffi_struct`.
+"""
+function unregister_ffi_struct(@nospecialize(T::Type))
+    # One transaction, paired with `register_ffi_struct`: see the comment there.
+    return lock(REGISTRY_LOCK) do
+        m = _ffi_layout_method(T)
+        m === nothing && return false
+        Base.delete_method(m)
+        return true
+    end
+end
+
+"""
+    ffi_by_value_registered(T) -> Bool
+
+Whether `T` carries a by-value assertion — a `ffi_by_value_layout` method
+covering it, whether that method was defined in an earlier session or a moment
+ago in this one.
+"""
+function ffi_by_value_registered(@nospecialize(T::Type))
+    # `invokelatest`, and no fast path in front of it. A plain call would be
+    # answered in the caller's world, which is stale in **both** directions: it
+    # cannot see a method `register_ffi_struct` defined a moment ago, and — the
+    # half that matters — it still sees one `unregister_ffi_struct` has already
+    # deleted. Being stale-true is fail-open, which is the whole thing this
+    # check exists to prevent, so the latest world is the only acceptable
+    # answer. The cost lands only on aggregates that are not `FFIByValue`, next
+    # to a dynamic `ccall`.
+    return Base.invokelatest(ffi_by_value_layout, T) === :repr_c
+end
+
+"""
+    ffi_by_value_allowed(T) -> Bool
+
+Whether a value of `T` may cross the boundary by value: true for everything
+that is not an aggregate, for RustCall's own generated mirrors (`FFIByValue`),
+and for other aggregates only once asserted.
+"""
+function ffi_by_value_allowed(@nospecialize(T::Type))
+    return !ffi_is_aggregate(T) || T <: FFIByValue || ffi_by_value_registered(T)
+end
+
+"""
+    ffi_by_value_error(T, position) -> RustError
+
+The error raised when an unregistered aggregate reaches the boundary by value.
+`position` names where it appeared, e.g. `"argument 2"` or `"the return type"`.
+"""
+function ffi_by_value_error(@nospecialize(T::Type), position::AbstractString)
+    fields = join(["$(fieldname(T, i))::$(fieldtype(T, i))" for i in 1:fieldcount(T)], ", ")
+    return RustError(
+        "cannot pass `$T` to Rust by value as $position: RustCall has no " *
+        "layout assertion for it (#245). Rust's default `repr(Rust)` layout " *
+        "is unspecified — field order and niche placement may change between " *
+        "compiler versions — so matching `$T`'s fields ($fields) against a " *
+        "Rust struct is a claim only you can make.\n" *
+        "If the Rust side declares that struct `#[repr(C)]` and its fields " *
+        "line up in order and in type, opt in with " *
+        "`RustCall.register_ffi_struct($T)`. Otherwise pass the value behind " *
+        "a pointer, or define the struct on the Rust side with `#[julia]` and " *
+        "let RustCall generate the wrapper (`RustStructInfo`, `src/structs.jl`), " *
+        "which crosses as an opaque handle. The supported-type matrix is in " *
+        "the type-mapping documentation.")
+end
+
+"""
+    ffi_check_by_value(R, arg_types)
+
+Fail closed on any unregistered aggregate in a call's signature, before a
+`ccall` is generated for it. Called from `call_rust_function`, the one runtime
+entry point every `@rust` call goes through — not from the `@generated` body
+below it, because a generated method is not re-generated when
+`register_ffi_struct` is called later.
+"""
+function ffi_check_by_value(@nospecialize(R::Type), arg_types)
+    ffi_by_value_allowed(R) || throw(ffi_by_value_error(R, "the return type"))
+    for (i, T) in enumerate(arg_types)
+        ffi_by_value_allowed(T) || throw(ffi_by_value_error(T, "argument $i"))
+    end
+    return nothing
+end
+

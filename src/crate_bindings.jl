@@ -414,7 +414,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     module_body = quote
         import RustCall
         import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
-                         _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return
+                         _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,
+                         FFIByValue
         import Libdl
 
         const _LIB_PATH = $lib_path
@@ -692,7 +693,11 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
 
     quote
         # Define the C-compatible struct for this function's result
-        struct $c_result_struct_name
+        # RustCall's own mirror of the extractor's `#[repr(C)]` aggregate, so
+        # it carries the by-value layout assertion in its supertype (#245) —
+        # a static property that survives this module being precompiled into a
+        # downstream package, which a registry mutation would not.
+        struct $c_result_struct_name <: FFIByValue
             is_ok::UInt8
             ok_value::$ok_slot_type
             err_value::$err_slot_type
@@ -746,7 +751,8 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
 
     quote
         # Define the C-compatible struct for this function's option
-        struct $c_option_struct_name
+        # See the Result wrapper: RustCall's own mirror (#245).
+        struct $c_option_struct_name <: FFIByValue
             is_some::UInt8
             value::$inner_slot_type
         end
@@ -1272,12 +1278,16 @@ older RustCall produced.
   which the file imports, so invalid UTF-8 raises instead of being substituted.
   That name does not exist in an older RustCall, so a file emitted here does
   not load against one — the direction the marker is really for.
+- `4` (#245): the emitted `CResult_<fn>` / `COption_<fn>` mirrors subtype
+  `RustCall.FFIByValue`, which the file imports. That name does not exist in an
+  older RustCall, so a file emitted here does not load against one — the
+  direction the marker is really for.
 
 A file emitted by an older version still *works* — it only uses public API that
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 3
+const BINDINGS_FORMAT_VERSION = 4
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
@@ -1768,7 +1778,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # Imports
     push!(lines, "import RustCall")
     push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,")
-    push!(lines, "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return")
+    push!(lines, "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,")
+    push!(lines, "                 FFIByValue")
     push!(lines, "import Libdl")
     push!(lines, "")
 
@@ -1976,7 +1987,7 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     channel_var = _generated_local("panic_channel", func.arg_names)
 
     return """
-struct $c_result_struct_name
+struct $c_result_struct_name <: FFIByValue
     is_ok::UInt8
     ok_value::$ok_slot_str
     err_value::$err_slot_str
@@ -2010,7 +2021,7 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     channel_var = _generated_local("panic_channel", func.arg_names)
 
     return """
-struct $c_option_struct_name
+struct $c_option_struct_name <: FFIByValue
     is_some::UInt8
     value::$inner_slot_str
 end

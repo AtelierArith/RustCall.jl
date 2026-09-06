@@ -165,6 +165,100 @@ re-encode from whatever the bytes really are) produces one that is. To send
 bytes that are **not** text at all, take them on the Rust side as a
 `*const u8` plus a length — a `&[u8]` slice argument is not lowered by the
 `#[julia]` pipeline, so there is no `Vec{UInt8}` argument to pass.
+
+## Passing a Julia struct to Rust by value is opt-in
+
+A Julia struct is not a C type. `@rust f(p)` with an `isbits` struct `p` used to
+copy its fields straight into the argument registers on the assumption that the
+Rust struct on the other side has the same layout — but Rust's default
+`repr(Rust)` layout is **explicitly unspecified**: the compiler may reorder
+fields and exploit niches, and is free to change its mind between versions. An
+unannotated struct that "works" today is a silent miscompile waiting for a
+toolchain upgrade, which is why RustCall refuses it (issue
+[#245](https://github.com/AtelierArith/RustCall.jl/issues/245)):
+
+```julia
+struct Point
+    x::Float64
+    y::Float64
+end
+
+@rust process_point(Point(3.0, 4.0))::Float64
+# ERROR: RustError: cannot pass `Point` to Rust by value as argument 1:
+# RustCall has no layout assertion for it (#245). ...
+```
+
+Declare the Rust struct `#[repr(C)]` — which *does* fix the field order — and
+record the claim once:
+
+```julia
+RustCall.register_ffi_struct(Point)
+
+@rust process_point(Point(3.0, 4.0))::Float64   # 25.0
+```
+
+`register_ffi_struct` asserts that the corresponding Rust type is `#[repr(C)]`
+and that its fields line up with the Julia struct's in order and in type.
+RustCall cannot check that for you; the call is where you take responsibility
+for it. The assertion is recorded as a **method** of
+`RustCall.ffi_by_value_layout`, defined in the module that owns the type, so
+calling `register_ffi_struct` at a package's top level survives that package's
+precompilation and holds in every later session.
+
+Registration is for **concrete types only**. `register_ffi_struct(Point)` on a
+parametric struct, or on an abstract type, is an error: instantiations of
+`Point{T}` do not share a layout — a type parameter changes field sizes,
+alignment and even ABI register classes — and subtypes of an abstract family
+share even less, so a family-wide assertion would license values you never
+matched against a Rust struct. Register each concrete type you actually pass;
+`register_ffi_struct(Point{Float64})` says exactly that, and says nothing about
+`Point{Int32}`. `RustCall.unregister_ffi_struct(T)` withdraws an assertion, and
+`repr_c = false` is rejected — without `#[repr(C)]` there is nothing to assert.
+
+You do **not** need it for:
+
+- scalars, pointers, `Cstring`, `Char` and `Bool` — their ABI is their width;
+- the struct wrappers RustCall generates from a `#[julia] struct` (see
+  [Struct mapping](struct_mapping.md)), which cross the boundary as an opaque
+  handle rather than as a field-by-field copy;
+- RustCall's own `#[repr(C)]` mirrors: `CRustString`, `CRustSlice` and friends
+  have `ffi_by_value_layout` methods written in the package itself — including
+  covering ones such as `::Type{<:RustPtr}`, which is a claim RustCall may make
+  about its own types (a `RustPtr{T}` really is one pointer whatever `T` is)
+  and which `register_ffi_struct` will not make on your behalf. The
+  `CResult_<fn>` / `COption_<fn>` aggregates the wrapper generators emit are
+  subtypes of `RustCall.FFIByValue`, an assertion that needs no call at all.
+
+If the Rust struct is not `#[repr(C)]`, do not register it. Pass the value
+behind a pointer, or define it with `#[julia]` and let RustCall generate the
+handle-based wrapper.
+
+## A return annotation may not contradict the manifest
+
+`::T` at a call site exists to supply a return type RustCall does not know. When
+the manifest *does* record one, a differing annotation is an error rather than
+an override — reading a 32-bit return slot as a `Float64` is undefined
+behaviour, not a cast:
+
+```julia
+rust\"\"\"
+#[julia]
+pub fn double(a: i32) -> i32 { a * 2 }
+\"\"\"
+
+@rust double(Int32(21))            # Int32(42) — the manifest decides
+@rust double(Int32(21))::Int32     # Int32(42) — agreeing is fine
+@rust double(Int32(21))::Float64
+# ERROR: RustError: return type annotation `::Float64` on `@rust double(...)`
+# disagrees with the manifest, which records `Int32` ...
+```
+
+Convert on the Julia side if you wanted a `Float64`.
+
+Agreement is *the same `ccall` return slot*, not the same Julia type, because
+the manifest records the slot while an annotation names the surface type. Rust
+`char` is a `UInt32` code point in the slot and a `Char` on the surface, so
+`::Char` and `::UInt32` both agree with a `-> char` and `::Int32` does not.
 """
 
 function _matrix_rows()

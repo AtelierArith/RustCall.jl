@@ -82,6 +82,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Existing caches are not migrated: the first compile after upgrading rebuilds.
 
+- **Passing a Julia struct to Rust by value is opt-in**
+  ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)).
+  `is_supported_arg_type(::Type{T}) = isbitstype(T)` accepted *any* isbits Julia
+  struct or tuple as a by-value argument or return, and `ccall_arg_type` passed
+  it through unchanged — assuming its layout matched the Rust side's. Rust's
+  default `repr(Rust)` layout is explicitly unspecified (fields may be
+  reordered, niches exploited), so an unannotated struct that works today is a
+  silent miscompile waiting for a toolchain upgrade.
+
+  An aggregate now needs a layout assertion, and `RustCall.register_ffi_struct`
+  is where it is made:
+
+  ```julia
+  struct Point            # matches #[repr(C)] pub struct Point { x: f64, y: f64 }
+      x::Float64
+      y::Float64
+  end
+  RustCall.register_ffi_struct(Point)
+  ```
+
+  Without it the call raises a `RustError` naming the type, its fields and the
+  opt-in. Registration is for **concrete types only**: `Point{Float64}` says
+  nothing about `Point{Int32}` — a parameter changes sizes, alignment and
+  register classes — and registering the `UnionAll` `Point`, or an abstract
+  type, is an error rather than a family-wide claim. Scalars, pointers,
+  `Cstring`, `Char` and
+  `Bool` are unaffected — their ABI is their width. So are the wrappers
+  RustCall generates from a `#[julia] struct`, which cross as opaque handles,
+  and RustCall's own `#[repr(C)]` mirrors: `CRustString`, `CRustSlice` and
+  friends have `ffi_by_value_layout` methods in the package, and the
+  `CResult_<fn>` / `COption_<fn>` aggregates the wrapper generators emit
+  subtype `RustCall.FFIByValue`. The assertion is a **method**, defined in the
+  module that owns the type, so `register_ffi_struct` at a package's top level
+  is carried by that package's precompile cache and holds in every later
+  session — a mutated global would not be. `unregister_ffi_struct` withdraws an
+  assertion; `repr_c = false` is rejected, because then there is nothing to
+  assert. The supported-type matrix and the opt-in are documented on the FFI
+  type contract page. `BINDINGS_FORMAT_VERSION` goes to `4`: a written-out
+  bindings file now imports `RustCall.FFIByValue`, a name an older RustCall does
+  not have, so regenerate after upgrading.
+
+- **A `::T` return annotation may no longer contradict the manifest**
+  ([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)). `@rust
+  f(x)::Float64` on a function the manifest records as `-> i32` used to win, and
+  the `ccall` then read a 32-bit return slot as a `Float64` — silent garbage.
+  An annotation supplies a return type RustCall does not know; when one *is*
+  recorded, a differing annotation raises a `RustError` naming both types.
+  Agreement is *the same `ccall` return slot*, not the same Julia type — the
+  manifest records the slot while an annotation names the surface type, so
+  `::Char` and `::UInt32` both agree with a `-> char` and `::Int32` does not.
+  Annotations on symbols with no recorded type are unchanged. Convert on the
+  Julia side if you wanted the other type.
+
 - **One load/registration path** ([#277](https://github.com/AtelierArith/RustCall.jl/issues/277),
   Phase B). Twelve `dlopen` sites with four different flag sets and eight
   open-coded `RUST_LIBRARIES[...] = ...` writes became one:

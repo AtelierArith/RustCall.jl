@@ -502,6 +502,14 @@ function _rust_llvm_call(func_name::String, args...)
             end
             return call_rust_function(info.func_ptr, info.return_type, args...)
         catch e
+            # A fail-closed error is not a diagnostic to be reworded: the FFI
+            # type contract raises `RustError` for an unregistered by-value
+            # aggregate (#245) or an invalid-UTF-8 argument (#246), and a Rust
+            # panic raises `RustPanicError` (#244). Both name their own cause
+            # and must reach the caller; wrapping them in "Error calling
+            # function ... via @rust_llvm" hid the actionable message behind a
+            # generic one.
+            (e isa RustError || e isa RustPanicError) && rethrow()
             error("""
             Error calling function '$func_name' via @rust_llvm:
             Return type: $(info.return_type)

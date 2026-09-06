@@ -531,8 +531,11 @@ function infer_function_types(lib_name::String, func_name::String)
         end
     end
 
-    # If we can't infer, return generic types
-    error("Cannot infer types for function '$func_name'. Please provide explicit type annotations.")
+    # If we can't infer, say so with a type the caller can catch *narrowly*.
+    # This used to be a bare `error(...)`, and the one caller wrapped it in a
+    # `try`/`catch` that swallowed every exception — including the fail-closed
+    # errors the FFI contract raises (#245).
+    throw(SignatureInferenceError(func_name, lib_name))
 end
 
 """
@@ -689,6 +692,11 @@ result = call_rust_function(target.func_ptr, Int32, 10, 20)  # Returns Int32
 """
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
     argt = normalize_arg_types(ret_type, typeof(args))
+    # Fail closed on an aggregate nobody asserted a layout for (#245 item 3).
+    # Checked here rather than inside `_call_rust_function`, which is
+    # `@generated`: a generated method is not re-generated when
+    # `register_ffi_struct` is called later in the session.
+    ffi_check_by_value(ret_type, argt.parameters)
     return _call_rust_function(func_ptr, ret_type, argt, args...)
 end
 
@@ -717,6 +725,7 @@ function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, arg_types::Vec
         error("Argument count mismatch: expected $(length(arg_types)), got $(length(args))")
     end
     argt = Core.apply_type(Tuple, arg_types...)
+    ffi_check_by_value(ret_type, argt.parameters)
     return _call_rust_function(func_ptr, ret_type, argt, args...)
 end
 
@@ -738,6 +747,7 @@ function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, argt::Type{<:T
     if length(argt.parameters) != length(args)
         error("Argument count mismatch: expected $(length(argt.parameters)), got $(length(args))")
     end
+    ffi_check_by_value(ret_type, argt.parameters)
     return _call_rust_function(func_ptr, ret_type, argt, args...)
 end
 
