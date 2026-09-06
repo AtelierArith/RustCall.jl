@@ -389,6 +389,25 @@ _manifest(text::AbstractString) = TOML.parse(text)
             @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_lock
             @test RustCall._wrapper_probe_memo_key(member, String[], true, false) !=
                   RustCall._wrapper_probe_memo_key(member, String[], true, true)
+
+            # ... and on pyo3's own configuration, which `pyo3-build-config`
+            # turns into `Py_3_x` cfgs: a different `PYO3_PYTHON`, or the same
+            # `PYO3_CONFIG_FILE` path with different contents, is a new probe —
+            # the artifact key already moves, the memo must move with it (#307
+            # review).
+            memo_plain = RustCall._wrapper_probe_memo_key(member, String[], true, true)
+            withenv("PYO3_PYTHON" => joinpath(ws, "python3.12")) do
+                @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_plain
+            end
+            config = joinpath(ws, "pyo3-config.txt")
+            write(config, "implementation=CPython\nversion=3.12\n")
+            withenv("PYO3_CONFIG_FILE" => config) do
+                memo_config = RustCall._wrapper_probe_memo_key(member, String[], true, true)
+                @test memo_config != memo_plain
+                write(config, "implementation=CPython\nversion=3.13\n")
+                @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_config
+            end
+            @test RustCall._wrapper_probe_memo_key(member, String[], true, true) == memo_plain
         end
 
         # A PyO3 crate whose requested build exposes nothing falls back to the

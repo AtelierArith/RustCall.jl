@@ -463,15 +463,38 @@ const _WRAPPER_CFG_TEXT = Dict{String, String}()
 # manifest (`[patch]`, `[workspace.dependencies]`) and lockfile — since a
 # changed resolution can change what a `build.rs` emits, and the probe would
 # otherwise keep answering for the previous one in a long-lived process (#307
-# review). When the crate is its own root these are its own files.
+# review). When the crate is its own root these are its own files. pyo3's own
+# configuration (`_pyo3_env_key`) is an input too: `pyo3-build-config` turns
+# `PYO3_PYTHON` or a `PYO3_CONFIG_FILE` into `Py_3_x` cfgs, so a changed
+# Python is a new probe as it is a new artifact.
 function _wrapper_probe_memo_key(path::AbstractString, features::Vector{String},
                                  default_features::Bool, release::Bool)
     root = _cargo_root_dir(path)
     return join(["wrapper-root", String(path), string(release), join(features, ","),
-                 string(default_features), _cargo_cfg_env_key(),
+                 string(default_features), _cargo_cfg_env_key(), _pyo3_env_key(),
                  _crate_cfg_inputs_digest(path),
                  _file_content_digest(joinpath(root, "Cargo.toml")),
                  _file_content_digest(joinpath(root, "Cargo.lock"))], "\n")
+end
+
+# pyo3's build inputs as one memo-key text: every `PYO3_*` variable (the
+# namespace `pyo3-build-config` reads — `PYO3_PYTHON`, `PYO3_CONFIG_FILE`,
+# `PYO3_CROSS_*`, `PYO3_NO_PYTHON`, …) and the digest of the configuration
+# file's *contents*, since the same path can name a different configuration.
+# `_cargo_cfg_env_key` deliberately excludes this namespace (it is replayed
+# into `// cargo-deps:` rebuilds), so a probe of a crate that may depend on
+# pyo3 adds it on its own (#307 review).
+function _pyo3_env_key()
+    keys = sort!(filter(k -> startswith(k, "PYO3_"), collect(Base.keys(ENV))))
+    lines = String["$k=$(ENV[k])" for k in keys]
+    push!(lines, "pyo3-config-file-digest=" * _pyo3_config_file_digest())
+    return join(lines, "\n")
+end
+
+# The digest of the file `PYO3_CONFIG_FILE` names; "" when it is unset.
+function _pyo3_config_file_digest()
+    config = get(ENV, "PYO3_CONFIG_FILE", "")
+    return isempty(config) ? "" : _file_content_digest(config)
 end
 
 # The manifest of a probe project: the generated wrapper's shape, minus the
@@ -1217,9 +1240,8 @@ function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String})
     # allowlist), but `PYO3_CONFIG_FILE` names a file whose *contents* decide
     # the configuration — version, ABI, library directory — so the contents
     # are hashed the way a path dependency's are (#278), not the path.
-    config = get(ENV, "PYO3_CONFIG_FILE", "")
-    isempty(config) ||
-        push!(build_env, "pyo3-config-file-digest" => _file_content_digest(config))
+    digest = _pyo3_config_file_digest()
+    isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
     return build_env
 end
 

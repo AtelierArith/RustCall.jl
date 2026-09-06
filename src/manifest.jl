@@ -573,8 +573,12 @@ caller today has just built the crate anyway.
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
                                memo::Bool = true, features::Vector{String} = String[])
     path = abspath(String(crate_path))
+    # pyo3's configuration is an input too: a crate that depends on pyo3 gets
+    # `Py_3_x` cfgs from `pyo3-build-config`, which reads `PYO3_*` (#307
+    # review; `_cargo_cfg_env_key` excludes that namespace on purpose).
     key = path * "\n" * String(profile) * "\n" * join(features, " ") * "\n" *
-          _cargo_cfg_env_key() * "\n" * _crate_cfg_inputs_digest(path)
+          _cargo_cfg_env_key() * "\n" * _pyo3_env_key() * "\n" *
+          _crate_cfg_inputs_digest(path)
     probe = () -> begin
             try
                 flag = profile == "release" ? `--release` : ``
