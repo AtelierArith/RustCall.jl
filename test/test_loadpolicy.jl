@@ -416,7 +416,7 @@ end
         @test occursin("cargo_profile_panic_line(crate_wrapper_policy())",
                        _src("crate_bindings.jl"))
         @test occursin("_cargo_panic_env", _src("cargobuild.jl"))
-        @test occursin("build_env === nothing || (cmd = setenv(cmd, build_env))",
+        @test occursin("cmd = setenv(`\$cargo_cmd \$build_args`, build_env)",
                        _src("cargobuild.jl"))
         env = RustCall._cargo_panic_env(cargo_policy, Dict("A" => "b"), true)
         @test env["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"

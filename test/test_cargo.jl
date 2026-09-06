@@ -552,3 +552,51 @@ end
         end
     end
 end
+
+@testset "A generated project's output is pinned to its own target/ (#307 review)" begin
+    # `build_cargo_project` looks for the library under `<project>/target`. An
+    # inherited `CARGO_TARGET_DIR`, or a `[build] target-dir` in a
+    # `.cargo/config.toml` Cargo discovers above the project (a PyO3 wrapper is
+    # built under its target crate's `target/`, so that crate's config applies),
+    # would send a successful build elsewhere and turn it into "Library not
+    # found after build". The build pins the directory instead.
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc/cargo are required to build a Cargo project"
+    else
+        sandbox = mktempdir()
+        project_dir = joinpath(sandbox, "pinned")
+        mkpath(joinpath(project_dir, "src"))
+        mkpath(joinpath(project_dir, ".cargo"))
+        write(joinpath(project_dir, "Cargo.toml"), """
+            [package]
+            name = "pinned"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [workspace]
+            """)
+        write(joinpath(project_dir, "src", "lib.rs"), """
+            #[no_mangle]
+            pub extern "C" fn rustcall_pinned() -> i32 { 42 }
+            """)
+        # Both ways of moving the output, at once.
+        write(joinpath(project_dir, ".cargo", "config.toml"), """
+            [build]
+            target-dir = "config-elsewhere"
+            """)
+        foreign = joinpath(sandbox, "env-elsewhere")
+        project = RustCall.CargoProject("pinned", "0.1.0", RustCall.DependencySpec[],
+                                        "2021", project_dir)
+        lib = withenv("CARGO_TARGET_DIR" => foreign) do
+            RustCall.build_cargo_project(project; release = true)
+        end
+        @test isfile(lib)
+        @test startswith(lib, joinpath(project_dir, "target"))
+        @test !isdir(foreign)
+        @test !isdir(joinpath(project_dir, "config-elsewhere"))
+        rm(sandbox; recursive = true, force = true)
+    end
+end

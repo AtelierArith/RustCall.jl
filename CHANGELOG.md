@@ -90,7 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the plan records the interpreter's own `python3xy.dll`
   (`plan.runtime_libraries`) and the generated module opens it before the
   wrapper (`load_artifact!`'s `preload`), so a `PYO3_PYTHON` that is not on
-  `PATH` loads; and
+  `PATH` loads; every project RustCall generates is built with its output
+  pinned to its own `target/` (`CARGO_TARGET_DIR`), so an inherited
+  `CARGO_TARGET_DIR` or a discovered `[build] target-dir` no longer turns a
+  successful build into "Library not found after build"; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

@@ -97,17 +97,28 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     # of whatever the Julia process inherited.
     build_env = _cargo_panic_env(policy, env, release)
 
+    # The output goes where `get_built_library_path` looks, whatever the
+    # process inherited: an ambient `CARGO_TARGET_DIR`, or a `[build]
+    # target-dir` in a `.cargo/config.toml` Cargo discovers above the project
+    # (a wrapper built under a target crate's `target/` sees that crate's
+    # config), would otherwise send a successful build somewhere this function
+    # never checks and report "Library not found after build" (#307 review).
+    # The environment variable outranks the config key, and the target
+    # directory is not part of the artifact (`_is_cargo_env_key`).
+    build_env = Dict{String, String}(build_env === nothing ? ENV : build_env)
+    build_env["CARGO_TARGET_DIR"] = joinpath(project.path, "target")
+
     # Run cargo build
     cd(project.path) do
         try
             stderr_io = IOBuffer()
             stdout_io = IOBuffer()
 
-            cmd = `$cargo_cmd $build_args`
             # A recorded Cargo environment (precompiled block reload) replaces
             # the inherited one so profile overrides and RUSTFLAGS match; the
-            # pinned panic strategy is applied on top of either.
-            build_env === nothing || (cmd = setenv(cmd, build_env))
+            # pinned panic strategy and target directory are applied on top of
+            # either.
+            cmd = setenv(`$cargo_cmd $build_args`, build_env)
             proc = run(pipeline(cmd, stdout=stdout_io, stderr=stderr_io), wait=false)
             wait(proc)
 
