@@ -1866,11 +1866,26 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         existing = get(RUST_LIBRARIES, target, nothing)
         already = existing !== nothing && existing[1] == entry[1] &&
                   get(ARTIFACT_ALIVE, target, nothing) === alive
+        # The image `target` named before this call, and the flag it carried.
+        # Captured now, because both rows are about to be overwritten.
+        displaced = existing === nothing ? C_NULL : existing[1]
+        displaced_alive = get(ARTIFACT_ALIVE, target, nothing)
         already || _retire_alive!(target)
         ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
         _update_handle_mirrors!(target, entry[1], alive,
                                 get(ARTIFACT_GENERATIONS, target, 0))
+        # An alias that displaces a *different* image takes a name away from it
+        # — and an image with no name left is unreachable: nothing can unload
+        # it and `close_retired_handles!` cannot see it, so its owned `dlopen`
+        # reference is never given back and it stays mapped for the life of the
+        # process. `load_artifact!` records exactly this on a replace; the alias
+        # path did not (#291 review). Recorded *after* the swap, so
+        # `library_names_for_handle` sees the new mapping — and an image still
+        # live under another name is left alone by `_record_retired!` itself.
+        if displaced != C_NULL && displaced != entry[1]
+            _record_retired!(displaced, String[target], displaced_alive)
+        end
         return true
     end
 end
