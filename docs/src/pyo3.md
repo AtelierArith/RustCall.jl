@@ -456,6 +456,11 @@ Two platform differences that the plan and the link flags both encode:
   loaded. On Unix an rpath is recorded in the library itself and nothing else is
   needed.
 
+The wrapper build applies these options from a generated `build.rs`
+(`cargo:rustc-link-search`, `cargo:rustc-link-arg`) rather than through
+`RUSTFLAGS`, so your own `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` and
+`[build] rustflags` are left exactly as they are.
+
 On macOS a framework build of Python is linked as
 `@rpath/Python3.framework/Versions/3.x/Python3`, so
 `RustCall.python_library_dir()` returns the directory *containing* the

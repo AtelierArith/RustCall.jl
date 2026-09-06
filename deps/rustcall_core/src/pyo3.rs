@@ -991,13 +991,42 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
         returns_boxed_struct: is_constructor
             || matches!(
                 &func.sig.output,
-                syn::ReturnType::Type(_, ty) if crate::types::is_self_type(ty, struct_ident)
+                syn::ReturnType::Type(_, ty) if returns_class(ty, struct_ident)
             ),
         args: fn_args(&func.sig),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
         generic_wrapper: String::new(),
         cfg: predicate_string(&func.attrs),
+    }
+}
+
+/// Whether a method's return type names the class itself: `Self`, the bare
+/// class name, or a `crate::` / `self::` / `super::`-anchored path ending in
+/// it. A path anchored elsewhere — `std::string::String` on a `#[pyclass]
+/// struct String` — is some other type that happens to share the last
+/// segment, and boxing it as the class would not compile (#307 review).
+/// `codegen::returns_boxed_struct`'s last-segment rule stays with the
+/// `#[julia]` path, whose items live in the crate that defines the struct.
+fn returns_class(ty: &Type, class: &syn::Ident) -> bool {
+    let Type::Path(path) = unparen(ty) else {
+        return false;
+    };
+    if path.qself.is_some() {
+        return false;
+    }
+    let segments: Vec<String> = path
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    match segments.as_slice() {
+        [only] => only == "Self" || class == only.as_str(),
+        [first, .., last] => {
+            matches!(first.as_str(), "crate" | "self" | "super") && class == last.as_str()
+        }
+        [] => false,
     }
 }
 

@@ -628,6 +628,28 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "the link options travel in the wrapper's build script (#307 review)" begin
+        # An environment `RUSTFLAGS` is ignored whenever
+        # `CARGO_ENCODED_RUSTFLAGS` is set, and replaces a crate's `[build]
+        # rustflags` when it is not; a `build.rs` reaches exactly this cdylib's
+        # link step.
+        linked = RustCall.PyO3LinkPlan(:link_libpython, String[], @__DIR__, "test")
+        script = RustCall._pyo3_wrapper_build_script(linked)
+        @test occursin("fn main()", script)
+        @test occursin("cargo:rustc-link-search=native=$(escape_string(@__DIR__))", script)
+        if Sys.iswindows()
+            @test !occursin("rpath", script)
+        else
+            @test occursin("cargo:rustc-link-arg=-Wl,-rpath,$(escape_string(@__DIR__))", script)
+        end
+        # The same options, as `pyo3_link_rustflags` spells them for the key.
+        flags = RustCall.pyo3_link_rustflags(linked)
+        @test "native=$(@__DIR__)" in flags
+        # Nothing for a build that links no libpython.
+        @test RustCall._pyo3_wrapper_build_script(
+                  RustCall.PyO3LinkPlan(:python_free, String[], "", "test")) == ""
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`

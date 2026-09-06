@@ -78,7 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manifest and lockfile; a PyO3 crate that exposes nothing under the
   requested build falls back to the plain path **under that build's
   configuration**, so a `#[julia]` item the selected features disable is not
-  bound; and
+  bound; the wrapper's link options travel in a generated `build.rs` rather
+  than in `RUSTFLAGS` (which `CARGO_ENCODED_RUSTFLAGS` overrides and which
+  replaced a crate's `[build] rustflags`); a `std::`-anchored return type is
+  never mistaken for a class of the same name; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

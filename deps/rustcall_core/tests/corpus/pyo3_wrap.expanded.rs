@@ -172,5 +172,10 @@ pub mod geometry {
         pub fn new() -> i32 {
             0
         }
+        /// A `std`-anchored `String` is a string, not a class that happens to
+        /// share the name: an owned buffer, never a `*mut Counter`.
+        pub fn describe(&self) -> std::string::String {
+            std::string::String::from("counter")
+        }
     }
 }

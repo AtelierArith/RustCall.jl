@@ -815,3 +815,26 @@ args = []
 return_type = "i32"
 return_abi = ""
 generic_wrapper = ""
+
+[[structs.methods]]
+name = "describe"
+symbol = "rustcall_Counter_describe"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "std::string::String"
+return_abi = "string"
+generic_wrapper = ""

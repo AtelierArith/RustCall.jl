@@ -1115,3 +1115,36 @@ fn vec_fields_get_no_accessor() {
     assert!(field("n").ffi_compatible);
     assert_eq!(field("n").setter, "");
 }
+
+/// A method returns the class when its type is `Self`, the bare class name, or
+/// a `crate::` / `self::` / `super::` path ending in it — not when a path
+/// anchored elsewhere merely ends in the same identifier (#307 review): a
+/// `#[pyclass] struct String` method returning `std::string::String` returns a
+/// string.
+#[test]
+fn boxing_follows_the_class_not_the_last_path_segment() {
+    let manifest = scan(
+        "pub mod m {\n\
+            #[pyclass] pub struct String {}\n\
+            #[pymethods] impl String {\n\
+                pub fn text(&self) -> std::string::String { std::string::String::new() }\n\
+                pub fn me(&self) -> Self { String {} }\n\
+                pub fn bare(&self) -> String { String {} }\n\
+                pub fn anchored(&self) -> crate::m::String { String {} }\n\
+                pub fn relative(&self) -> self::String { String {} }\n\
+            }\n\
+         }",
+    );
+    let s = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "String" && s.module_path == vec!["m".to_string()])
+        .unwrap();
+    let by = |n: &str| s.methods.iter().find(|m| m.name == n).unwrap();
+    assert!(!by("text").returns_boxed_struct);
+    assert_eq!(by("text").return_type, "std::string::String");
+    assert!(by("me").returns_boxed_struct);
+    assert!(by("bare").returns_boxed_struct);
+    assert!(by("anchored").returns_boxed_struct);
+    assert!(by("relative").returns_boxed_struct);
+}
