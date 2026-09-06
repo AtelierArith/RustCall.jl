@@ -20,6 +20,42 @@ _src(name) = read(joinpath(_SRC_DIR, name), String)
 """Number of non-overlapping occurrences of `needle` in the source of `name`."""
 _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
+"""
+    _reclaim_libraries!(names...)
+
+Give every named library back: unload it through the loader with
+`close = true`, drain whatever is still retired, and only then remove any
+registry row that survived.
+
+The `finally` blocks in this file used to `delete!(RUST_LIBRARIES, name)`
+directly, which is not a cleanup. A row removed by hand is never *retired*, so
+`close_retired_handles!` cannot see the image and the owned `dlopen` reference
+is never given back: the test leaks a mapped library into the rest of the
+process — on Windows, an undeletable DLL. AGENTS.md says to unload before
+deleting; this is what that means for a testset that opened a real image.
+
+Only for testsets that loaded a real library. A testset that `adopt_artifact!`s
+a fabricated handle must never be closed through here — `dlclose` on a made-up
+pointer is not a cleanup either.
+"""
+function _reclaim_libraries!(names...)
+    policy = RustCall.inline_rustc_policy()
+    for n in names
+        try
+            RustCall.unload_artifact!(policy, n; close = true)
+        catch
+        end
+    end
+    RustCall.close_retired_handles!()
+    lock(RustCall.REGISTRY_LOCK) do
+        for n in names
+            delete!(RustCall.RUST_LIBRARIES, n)
+            delete!(RustCall.ARTIFACT_ALIVE, n)
+        end
+    end
+    return nothing
+end
+
 @testset verbose=true "LoadPolicy" begin
 
     @testset "record and defaults" begin
@@ -675,12 +711,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 @test !RustCall.artifact_handle_is_owned(a.handle)
                 @test RustCall.artifact_handle_open_count(a.handle) == 0
             finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    for n in (name, adopted)
-                        delete!(RustCall.RUST_LIBRARIES, n)
-                        delete!(RustCall.ARTIFACT_ALIVE, n)
-                    end
-                end
+                _reclaim_libraries!(name, adopted)
             end
         end
     end
@@ -731,12 +762,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 @test !a.alive[]
                 @test RustCall.close_retired_handles!([a.handle]) == 0
             finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    delete!(RustCall.RUST_LIBRARIES, name)
-                    delete!(RustCall.RUST_LIBRARIES, alias)
-                    delete!(RustCall.ARTIFACT_ALIVE, name)
-                    delete!(RustCall.ARTIFACT_ALIVE, alias)
-                end
+                _reclaim_libraries!(name, alias)
             end
 
             # `unload_all_libraries` walks names, so it must survive an alias
@@ -859,13 +885,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                     @test !haskey(RustCall.RUST_LIBRARIES, n)
                 end
             finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    for n in (name, alias, other)
-                        delete!(RustCall.RUST_LIBRARIES, n)
-                        delete!(RustCall.ARTIFACT_ALIVE, n)
-                    end
-                end
-                RustCall.close_retired_handles!()
+                _reclaim_libraries!(name, alias, other)
             end
         end
     end
@@ -915,14 +935,21 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 @test RustCall.unload_artifact!(policy, keep; close = true)
                 @test !victim.alive[]
                 @test RustCall.DLCLOSE_COUNT[] == before + 1
-            finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    for n in (keep, spare, src)
-                        delete!(RustCall.RUST_LIBRARIES, n)
-                        delete!(RustCall.ARTIFACT_ALIVE, n)
-                    end
+
+                # `mover` is still loaded, under both `src` and `spare`. It has
+                # to go back through the loader too — a registry row removed by
+                # hand is never retired, so nothing could ever close it.
+                @test RustCall.artifact_handle_is_owned(mover.handle)
+                @test RustCall.unload_artifact!(policy, src; close = true)
+                @test RustCall.DLCLOSE_COUNT[] == before + 2
+                @test !RustCall.artifact_handle_is_owned(mover.handle)
+                @test !RustCall.artifact_handle_is_owned(victim.handle)
+                @test !mover.alive[]
+                for n in (keep, spare, src)
+                    @test !haskey(RustCall.RUST_LIBRARIES, n)
                 end
-                RustCall.close_retired_handles!()
+            finally
+                _reclaim_libraries!(keep, spare, src)
             end
         end
     end
@@ -980,13 +1007,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 @test !RustCall.artifact_handle_is_owned(a.handle)
                 @test !(a.handle in RustCall.retired_handles())
             finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    for n in (first_name, second_name)
-                        delete!(RustCall.RUST_LIBRARIES, n)
-                        delete!(RustCall.ARTIFACT_ALIVE, n)
-                    end
-                end
-                RustCall.close_retired_handles!()
+                _reclaim_libraries!(first_name, second_name)
             end
         end
     end
@@ -1031,12 +1052,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 @test RustCall.artifact_handle_open_count(a.handle) == 0
                 @test !(a.handle in RustCall.retired_handles())
             finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    for name in (first_name, second_name)
-                        delete!(RustCall.RUST_LIBRARIES, name)
-                        delete!(RustCall.ARTIFACT_ALIVE, name)
-                    end
-                end
+                _reclaim_libraries!(first_name, second_name)
             end
         end
     end
@@ -1082,10 +1098,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                 RustCall.close_retired_handles!([b.handle])
                 @test !held[]
             finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    delete!(RustCall.RUST_LIBRARIES, name)
-                    delete!(RustCall.ARTIFACT_ALIVE, name)
-                end
+                _reclaim_libraries!(name)
             end
         end
     end
@@ -1130,12 +1143,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                     RustCall.resolve_call_target(other, "rustcall_steal_probe").func_ptr,
                     Int32) == Int32(5)
             finally
-                lock(RustCall.REGISTRY_LOCK) do
-                    for n in (name, other)
-                        delete!(RustCall.RUST_LIBRARIES, n)
-                        delete!(RustCall.ARTIFACT_ALIVE, n)
-                    end
-                end
+                _reclaim_libraries!(name, other)
             end
         end
     end
@@ -1267,10 +1275,7 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                         @test !haskey(RustCall.RUST_LIBRARIES, name)
                         @test isempty(RustCall.retired_handles(name))
                     finally
-                        lock(RustCall.REGISTRY_LOCK) do
-                            delete!(RustCall.RUST_LIBRARIES, name)
-                            delete!(RustCall.ARTIFACT_ALIVE, name)
-                        end
+                        _reclaim_libraries!(name)
                     end
                 end
             end
