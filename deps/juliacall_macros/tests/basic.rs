@@ -259,3 +259,87 @@ pub extern "C" fn Counter_free(ptr: *mut Counter) {
         }
     }
 }
+
+// ============================================================================
+// Result / Option on struct methods (#268)
+// ============================================================================
+
+#[julia]
+pub struct Divider {
+    pub scale: i32,
+}
+
+#[julia]
+impl Divider {
+    #[julia]
+    pub fn new(scale: i32) -> Self {
+        Divider { scale }
+    }
+
+    #[julia]
+    pub fn checked_div(&self, d: i32) -> Result<i32, String> {
+        if d == 0 {
+            Err("zero".to_string())
+        } else {
+            Ok(self.scale / d)
+        }
+    }
+
+    #[julia]
+    pub fn ratio(&self, d: i32) -> Option<f64> {
+        if d == 0 {
+            None
+        } else {
+            Some(self.scale as f64 / d as f64)
+        }
+    }
+
+    #[julia]
+    pub fn describe(&self, unit: String) -> Result<String, String> {
+        if unit.is_empty() {
+            Err("empty".to_string())
+        } else {
+            Ok(format!("{} {}", self.scale, unit))
+        }
+    }
+}
+
+/// The generated wrappers return the C aggregates and hand an owned buffer
+/// back for each string payload; the annotated methods keep their Rust
+/// signatures (#268, #279).
+#[test]
+fn method_result_and_option_lower_to_aggregates() {
+    let ptr = rustcall_Divider_new(10);
+
+    let ok = rustcall_Divider_checked_div(ptr, 2);
+    assert!(ok.is_ok());
+    assert_eq!(ok.ok().copied(), Some(5));
+
+    let err = rustcall_Divider_checked_div(ptr, 0);
+    assert!(!err.is_ok());
+    let buf = err.err().expect("Err payload");
+    let message = unsafe { std::slice::from_raw_parts(buf.ptr as *const u8, buf.len) }.to_vec();
+    assert_eq!(String::from_utf8(message).unwrap(), "zero");
+    Divider_checked_div_free_rust_string(buf.ptr, buf.len, buf.cap);
+
+    let some = rustcall_Divider_ratio(ptr, 4);
+    assert!(some.is_some());
+    assert_eq!(some.some().copied(), Some(2.5));
+    assert!(!rustcall_Divider_ratio(ptr, 0).is_some());
+
+    let unit = "m".to_string();
+    let both = rustcall_Divider_describe(ptr, unit.as_ptr(), unit.len());
+    assert!(both.is_ok());
+    let buf = both.ok().expect("Ok payload");
+    let text = unsafe { std::slice::from_raw_parts(buf.ptr as *const u8, buf.len) }.to_vec();
+    assert_eq!(String::from_utf8(text).unwrap(), "10 m");
+    Divider_describe_free_rust_string(buf.ptr, buf.len, buf.cap);
+
+    // The methods themselves are untouched.
+    let d = Divider::new(10);
+    assert_eq!(d.checked_div(2), Ok(5));
+    assert_eq!(d.ratio(0), None);
+    assert_eq!(d.describe("m".to_string()), Ok("10 m".to_string()));
+
+    Divider_free(ptr);
+}

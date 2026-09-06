@@ -1,4 +1,4 @@
-schema_version = 5
+schema_version = 6
 mode = "crate"
 
 [[functions]]
@@ -18,6 +18,9 @@ return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = """
@@ -102,6 +105,9 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
 returns_boxed_struct = true
 return_type = "Self"
 return_abi = ""
@@ -131,6 +137,9 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
 returns_boxed_struct = false
 args = []
 return_type = "T"

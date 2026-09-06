@@ -75,6 +75,63 @@ pub fn plain_return_kind(output: &ReturnType) -> ReturnKind {
     }
 }
 
+/// The manifest return shape of a `#[julia]` struct method (#268).
+///
+/// Before #268 a method wrapper never wrapped `Result` / `Option`, so this was
+/// always `Plain` / `Unit` and the payload columns were empty. Both wrapper
+/// flavours now lower them exactly like a free function, and this is the one
+/// place that says so, shared by inline expansion and crate extraction so the
+/// manifest cannot disagree with the code that was generated.
+#[derive(Debug, Default, Clone)]
+pub struct MethodReturnShape {
+    pub kind: ReturnKind,
+    pub ok_type: String,
+    pub err_type: String,
+    pub inner_type: String,
+    pub ok_abi: String,
+    pub err_abi: String,
+    pub inner_abi: String,
+}
+
+/// `wrapped` is false for the methods of a **generic** struct: those wrappers
+/// are registered for monomorphization (`inline_generic_wrappers`) and return
+/// the type as written, so their manifest entry must keep saying `Plain`.
+pub fn method_return_shape(
+    struct_name: &syn::Ident,
+    func: &syn::ImplItemFn,
+    wrapped: bool,
+) -> MethodReturnShape {
+    let output = &func.sig.output;
+    let mut shape = MethodReturnShape {
+        kind: plain_return_kind(output),
+        ..Default::default()
+    };
+    // A constructor (`new`, or anything returning `Self`) is boxed before the
+    // `Result` lowering is ever consulted, exactly as in `method_spec`.
+    if !wrapped || returns_boxed_struct(struct_name, func) {
+        return shape;
+    }
+    let ReturnType::Type(_, ty) = output else {
+        return shape;
+    };
+    if crate::codegen::method_wraps_result(ty) {
+        if let Some(r) = extract_result_type(ty) {
+            shape.kind = ReturnKind::Result;
+            shape.ok_type = type_to_string(&r.ok_type);
+            shape.err_type = type_to_string(&r.err_type);
+            shape.ok_abi = crate::codegen::payload_abi(&r.ok_type).to_string();
+            shape.err_abi = crate::codegen::payload_abi(&r.err_type).to_string();
+        }
+    } else if crate::codegen::method_wraps_option(ty) {
+        if let Some(o) = extract_option_type(ty) {
+            shape.kind = ReturnKind::Option;
+            shape.inner_type = type_to_string(&o.inner_type);
+            shape.inner_abi = crate::codegen::payload_abi(&o.inner_type).to_string();
+        }
+    }
+    shape
+}
+
 /// The manifest `abi` column of an argument type (see [`Arg::abi`]).
 pub fn arg_abi(ty: &syn::Type) -> &'static str {
     if is_string_type(ty) {
@@ -105,15 +162,24 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
     let mut ok_type = String::new();
     let mut err_type = String::new();
     let mut inner_type = String::new();
+    // Schema 6 (#268): a `String` / `&str` payload travels as the function's
+    // own owned-string buffer, so the manifest states it rather than leaving
+    // Julia to re-derive it from the payload spelling.
+    let mut ok_abi = String::new();
+    let mut err_abi = String::new();
+    let mut inner_abi = String::new();
     let return_kind = match &func.sig.output {
         ReturnType::Default => ReturnKind::Unit,
         ReturnType::Type(_, ty) => {
             if let (true, Some(r)) = (wrapped, extract_result_type(ty)) {
                 ok_type = type_to_string(&r.ok_type);
                 err_type = type_to_string(&r.err_type);
+                ok_abi = crate::codegen::payload_abi(&r.ok_type).to_string();
+                err_abi = crate::codegen::payload_abi(&r.err_type).to_string();
                 ReturnKind::Result
             } else if let (true, Some(o)) = (wrapped, extract_option_type(ty)) {
                 inner_type = type_to_string(&o.inner_type);
+                inner_abi = crate::codegen::payload_abi(&o.inner_type).to_string();
                 ReturnKind::Option
             } else if return_type == "()" {
                 ReturnKind::Unit
@@ -172,6 +238,9 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         ok_type,
         err_type,
         inner_type,
+        ok_abi,
+        err_abi,
+        inner_abi,
         // Derived from the normative `return_abi` column since schema 4 (#276).
         has_owned_string_helper: return_abi == "string",
         has_borrowed_string_helper: return_abi == "str",
@@ -319,10 +388,18 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             }
         })
         .collect();
+    // The crate flavour wraps every reported method, so the `Result` / `Option`
+    // lowering applies to all of them (#268).
+    let shapes: Vec<MethodReturnShape> = model
+        .methods
+        .iter()
+        .map(|m| method_return_shape(struct_name, &m.func, true))
+        .collect();
     let methods = model
         .methods
         .iter()
-        .map(|m| Method {
+        .enumerate()
+        .map(|(i, m)| Method {
             name: m.name(),
             symbol: crate::codegen::method_symbol(&struct_name.to_string(), &m.name()),
             is_static: m.is_static,
@@ -332,10 +409,13 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             skip_reason: String::new(),
             python_name: String::new(),
             accessor: String::new(),
-            return_kind: plain_return_kind(&m.func.sig.output),
-            ok_type: String::new(),
-            err_type: String::new(),
-            inner_type: String::new(),
+            return_kind: shapes[i].kind,
+            ok_type: shapes[i].ok_type.clone(),
+            err_type: shapes[i].err_type.clone(),
+            inner_type: shapes[i].inner_type.clone(),
+            ok_abi: shapes[i].ok_abi.clone(),
+            err_abi: shapes[i].err_abi.clone(),
+            inner_abi: shapes[i].inner_abi.clone(),
             returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
