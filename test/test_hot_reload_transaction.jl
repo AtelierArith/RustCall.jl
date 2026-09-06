@@ -567,6 +567,130 @@ end
     end
 
     # ------------------------------------------------------------------
+    # The watch covers nested modules, and a save during a build is not lost.
+    #
+    # `watch_folder` is not recursive — inotify watches one directory — so
+    # watching only `src/` missed every edit to `src/foo/mod.rs`. That was
+    # invisible while a timeout still triggered a scan; once a timeout stopped
+    # scanning, a nested edit never reloaded on Linux at all.
+    # ------------------------------------------------------------------
+    @testset "a nested source file is watched (#255)" begin
+        mktempdir() do dir
+            crate = joinpath(dir, "nested")
+            mkpath(joinpath(crate, "src", "inner"))
+            write(joinpath(crate, "Cargo.toml"), """
+                [package]
+                name = "hrt_nested"
+                version = "0.1.0"
+                edition = "2021"
+
+                [lib]
+                crate-type = ["cdylib"]
+
+                [dependencies]
+                """)
+            write(joinpath(crate, "src", "lib.rs"), """
+                mod inner;
+                """)
+            nested = joinpath(crate, "src", "inner", "mod.rs")
+            write(nested, """
+                #[no_mangle]
+                pub extern "C" fn hrt_nested() -> i32 { 1 }
+                """)
+
+            state = _hrt_state(crate, "hrt_nested_lib")
+            # The tracker sees the nested file...
+            @test any(f -> basename(dirname(f)) == "inner", state.source_files)
+            # ...and so does the watch: both directories are subscribed.
+            dirs = RustCall._watched_directories(state)
+            @test joinpath(crate, "src") in dirs
+            @test joinpath(crate, "src", "inner") in dirs
+
+            # An edit to the nested file wakes the wait. With only `src/`
+            # watched this blocks for the whole timeout and reports nothing.
+            RustCall._drain_source_changes(state, 0.05)
+            woke = false
+            waiter = Threads.@spawn begin
+                for _ in 1:10
+                    RustCall._await_source_change(state, 1.0) && return true
+                end
+                return false
+            end
+            sleep(0.2)
+            write(nested, """
+                #[no_mangle]
+                pub extern "C" fn hrt_nested() -> i32 { 2 }
+                """)
+            woke = fetch(waiter)
+            @test woke
+        end
+    end
+
+    # ------------------------------------------------------------------
+    # A save that lands during the build is not lost (#255).
+    #
+    # Nothing is subscribed while `reload_library` runs, so the event that
+    # would have woken the watcher never arrives. The fingerprint comparison
+    # that already straddles the build now causes another pass.
+    # ------------------------------------------------------------------
+    if !_HRT_CARGO
+        @test_skip "cargo is required for the mid-build save test"
+    else
+        @testset "a save during the rebuild is picked up (#255)" begin
+            mktempdir() do dir
+                crate = _hrt_make_crate(joinpath(dir, "chase"), "hrt_chase", 1)
+                # A build script that takes its time, so "write while the
+                # build is running" is a fact rather than a hope. Cargo reruns
+                # it whenever a file in the package changes, which is every
+                # pass here.
+                write(joinpath(crate, "build.rs"), """
+                    fn main() {
+                        std::thread::sleep(std::time::Duration::from_millis(1500));
+                    }
+                    """)
+                lib_name = "hrt_chase_lib"
+                state = _hrt_state(crate, lib_name)
+                try
+                    @test RustCall.reload_library(state)
+                    @test RustCall.call_rust_function(
+                        RustCall.resolve_call_target(lib_name, "hrt_probe").func_ptr,
+                        Int32) == Int32(1)
+
+                    # Write value 2, and have another task write value 3 while
+                    # the build for 2 is still running. The build that commits
+                    # last must be the one for 3: without the chase, the
+                    # library would serve 2 until some later event.
+                    _hrt_write_source(crate, 2)
+                    generations = RustCall.artifact_generation(lib_name)
+                    racer = Threads.@spawn begin
+                        sleep(0.6)       # inside the build script's sleep
+                        _hrt_write_source(crate, 3)
+                    end
+                    @test RustCall.reload_library(state)
+                    wait(racer)
+
+                    # The call installed **two** generations: the build that
+                    # was in flight when the save landed, and the one that
+                    # chased it. Without the chase the second save would sit
+                    # on disk unbuilt until some later event — and nothing was
+                    # subscribed to notice it.
+                    @test RustCall.artifact_generation(lib_name) - generations == 2
+                    @test RustCall.call_rust_function(
+                        RustCall.resolve_call_target(lib_name, "hrt_probe").func_ptr,
+                        Int32) == Int32(3)
+                    # The bound exists and is small.
+                    @test RustCall.MAX_RELOAD_CHASES == 3
+                finally
+                    try
+                        RustCall.unload_library(lib_name)
+                    catch
+                    end
+                end
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------
     # The cfg probe is memoized on what decides its answer (#255, #277).
     #
     # A reload rescans the crate under the `#[cfg]` set its build actually

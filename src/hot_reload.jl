@@ -292,6 +292,41 @@ same-size edit with a restored mtime, which is exactly what an editor or a
 `git checkout` produces.
 """
 function _reload_library_locked(state::HotReloadState)
+    # A save that lands *during* the build is not lost. Nothing is subscribed
+    # while `reload_library` runs — the watch task is inside this call, and a
+    # manual `trigger_reload` has no subscription at all — so the event that
+    # would have woken the watcher never arrives, and the library would keep
+    # serving the previous edit until something else happened to change. The
+    # fingerprint taken before the build and compared after it already detects
+    # exactly that; now it also causes another pass rather than only
+    # invalidating the scan.
+    #
+    # Bounded, because "someone is typing" would otherwise be an unbounded
+    # loop: after `MAX_RELOAD_CHASES` the last build stands and the watcher —
+    # subscribed again by then — picks up whatever is still newer.
+    for attempt in 1:MAX_RELOAD_CHASES
+        ok, chase = _reload_library_once(state)
+        ok || return false
+        chase || return true
+        @info "Hot reload: $(state.crate_path) changed during the rebuild; " *
+              "reloading again ($(attempt)/$(MAX_RELOAD_CHASES))"
+    end
+    return true
+end
+
+"""
+    MAX_RELOAD_CHASES
+
+How many times a reload may immediately follow itself because the sources
+changed while it was building.
+
+Three is enough for "save, notice a typo, save again" and small enough that a
+file being written continuously costs three builds, not a livelock.
+"""
+const MAX_RELOAD_CHASES = 3
+
+# One reload transaction. Returns `(succeeded, sources_changed_during_build)`.
+function _reload_library_once(state::HotReloadState)
     @info "Hot reload: Rebuilding $(state.lib_name)..."
 
     try
@@ -311,9 +346,11 @@ function _reload_library_locked(state::HotReloadState)
         state.generation = RELOAD_GENERATION[]
 
         # Did the sources change under the scan? Then the manifest is not
-        # evidence about what was just built.
+        # evidence about what was just built — and the build is not evidence
+        # about what is on disk, which is what `chase` says.
         after = _source_fingerprint(state.crate_path)
-        if signatures !== nothing && !isempty(before) && before != after
+        chase = !isempty(before) && before != after
+        if signatures !== nothing && chase
             @warn "Hot reload: $(state.crate_path) changed while it was being rebuilt; " *
                   "registering the new library without symbol mappings"
             signatures = nothing
@@ -353,7 +390,7 @@ function _reload_library_locked(state::HotReloadState)
             end
         end
 
-        return true
+        return (true, chase)
 
     catch e
         # Report each distinct failure once. The dev loop is "save, see the
@@ -379,7 +416,7 @@ function _reload_library_locked(state::HotReloadState)
             end
         end
 
-        return false
+        return (false, false)
     end
 end
 
@@ -533,26 +570,120 @@ notification does not work (NFS, some container mounts), `poll = true` on
 
 Returns whether something actually changed — a rename into place and a
 temporary file both produce events, and only the mtime check decides.
+
+# Every directory, not just `src/`
+
+`watch_folder` is **not recursive** — inotify watches one directory — while
+`find_rust_source_files` tracks the whole tree, `src/foo/mod.rs` included. When
+a timeout still triggered a scan the difference was invisible: the poll caught
+what the watch missed. Now that a timeout does nothing, watching only `src/`
+would mean an edit to a nested module never reloads on Linux at all. So every
+directory that contains a tracked source is watched, and the set is recomputed
+each time — a reload can add files, and new files can be in new directories.
 """
 function _await_source_change(state::HotReloadState, timeout::Real)
-    src_dir = joinpath(state.crate_path, "src")
-    isdir(src_dir) || return (sleep(timeout); check_for_changes(state))
-    event = try
-        FileWatching.watch_folder(src_dir, timeout)
-    catch e
-        e isa InterruptException && rethrow()
-        # A filesystem the kernel will not watch: fall back to a poll rather
-        # than spinning on the error.
-        @debug "Hot reload: cannot watch $(src_dir); polling instead" exception = e
-        sleep(timeout)
-        nothing
-    end
+    dirs = _watched_directories(state)
+    isempty(dirs) && return (sleep(timeout); check_for_changes(state))
+    fired = _wait_for_file_event(dirs, timeout)
     # A timeout is **not** an event, and must not be answered with a scan.
     # Returning here is the difference between an event-driven watch and a
     # `stat` of every source file every `interval` — which is the polling loop
     # #255 exists to remove, and which an idle project would run forever.
-    _watch_timed_out(event) && return false
+    fired === false && return false
     return check_for_changes(state)
+end
+
+"""
+    _watched_directories(state) -> Vector{String}
+
+Every directory holding a source this state tracks, `src/` included even when
+it is empty. Recomputed per wait: a reload can add files, and a new file can be
+in a directory nothing was watching.
+"""
+function _watched_directories(state::HotReloadState)
+    dirs = Set{String}()
+    src_dir = joinpath(state.crate_path, "src")
+    isdir(src_dir) && push!(dirs, src_dir)
+    for file in state.source_files
+        parent = dirname(file)
+        isdir(parent) && push!(dirs, parent)
+    end
+    return sort!(collect(dirs))
+end
+
+"""
+    _wait_for_file_event(dirs, timeout) -> Union{Bool, Nothing}
+
+Wait for a filesystem event in **any** of `dirs`. `true` when one fired,
+`false` when the wait expired everywhere, `nothing` when the directories cannot
+be watched at all (the caller then treats it as a poll and scans).
+
+One task per directory, first one wins. The losers are released with
+`unwatch_folder` rather than left holding a kernel watch until their own
+timeout: a watch task that reloads every few seconds would otherwise
+accumulate them.
+"""
+function _wait_for_file_event(dirs::Vector{String}, timeout::Real)
+    if length(dirs) == 1
+        event = try
+            FileWatching.watch_folder(dirs[1], timeout)
+        catch e
+            e isa InterruptException && rethrow()
+            # A filesystem the kernel will not watch: fall back to a poll
+            # rather than spinning on the error.
+            @debug "Hot reload: cannot watch $(dirs[1]); polling instead" exception = e
+            sleep(timeout)
+            return nothing
+        end
+        return !_watch_timed_out(event)
+    end
+
+    results = Channel{Union{Bool, Nothing}}(length(dirs))
+    tasks = map(dirs) do dir
+        Threads.@spawn begin
+            answer = try
+                event = FileWatching.watch_folder(dir, timeout)
+                !_watch_timed_out(event)
+            catch e
+                e isa InterruptException && rethrow()
+                @debug "Hot reload: cannot watch $(dir)" exception = e
+                nothing
+            end
+            put!(results, answer)
+        end
+    end
+
+    fired = false
+    unwatchable = 0
+    for _ in eachindex(dirs)
+        answer = take!(results)
+        answer === nothing && (unwatchable += 1; continue)
+        if answer
+            fired = true
+            break
+        end
+    end
+    # Release the rest; each `watch_folder` returns as its watch is dropped.
+    for dir in dirs
+        try
+            FileWatching.unwatch_folder(dir)
+        catch e
+            @debug "Hot reload: could not unwatch $(dir)" exception = e
+        end
+    end
+    for task in tasks
+        try
+            wait(task)
+        catch e
+            @debug "Hot reload: watch task failed" exception = e
+        end
+    end
+    close(results)
+    fired && return true
+    # Nothing could be watched at all: the caller should poll instead of
+    # believing that nothing changed.
+    unwatchable == length(dirs) && return nothing
+    return false
 end
 
 # `watch_folder` answers with `path => FileEvent`; the event says whether it
@@ -586,27 +717,22 @@ starts from a clean slate.
 """
 function _drain_source_changes(state::HotReloadState, window::Real)
     window <= 0 && return nothing
-    src_dir = joinpath(state.crate_path, "src")
     hard_deadline = time() + window * MAX_DEBOUNCE_WINDOWS
     deadline = time() + window
     while time() < deadline && time() < hard_deadline
         remaining = min(deadline, hard_deadline) - time()
         remaining <= 0 && break
+        dirs = _watched_directories(state)
+        # The wait expiring is the *end* of the burst, not another event:
+        # treating it as one restarted the window every time, so a single save
+        # waited out `MAX_DEBOUNCE_WINDOWS` instead of one window (#255).
         saw_event = false
-        if isdir(src_dir)
-            try
-                event = FileWatching.watch_folder(src_dir, remaining)
-                # The wait expiring is the *end* of the burst, not another
-                # event: treating it as one restarted the window every time,
-                # so a single save waited out `MAX_DEBOUNCE_WINDOWS` instead
-                # of one window (#255).
-                saw_event = !_watch_timed_out(event)
-            catch e
-                e isa InterruptException && rethrow()
-                sleep(min(remaining, 0.01))
-            end
-        else
+        if isempty(dirs)
             sleep(min(remaining, 0.01))
+        else
+            answer = _wait_for_file_event(dirs, remaining)
+            answer === nothing && sleep(min(remaining, 0.01))
+            saw_event = answer === true
         end
         check_for_changes(state)
         saw_event && (deadline = time() + window)
