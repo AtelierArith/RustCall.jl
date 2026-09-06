@@ -1165,12 +1165,15 @@ end
 """
     close_retired_handles!(handles = retired_handles()) -> Int
 
-Close retired images and return how many were closed.
+Release retired images and return how many records were released.
 
 **The caller guarantees that no call into them is in flight.** Each image's
 liveness flag is flipped to `false` first, so an object that outlives it
 becomes inert instead of calling into what is about to be unmapped, and then
 the image is closed — once, through `close_artifact_handle!`.
+
+An image RustCall did not open is released from the bookkeeping but not
+closed: closing it belongs to whoever opened it (`OWNED_HANDLES`).
 """
 function close_retired_handles!(handles = retired_handles())
     records = lock(REGISTRY_LOCK) do
@@ -1193,6 +1196,14 @@ function close_retired_handles!(handles = retired_handles())
 end
 
 """
+    artifact_handle_is_owned(handle) -> Bool
+
+Whether RustCall opened this image and may close it.
+"""
+artifact_handle_is_owned(handle::Ptr{Cvoid}) =
+    lock(() -> handle in OWNED_HANDLES, REGISTRY_LOCK)
+
+"""
     DLCLOSE_COUNT
 
 How many images this session has closed, process-wide.
@@ -1207,15 +1218,45 @@ counter to check that unloading a library with an alias closes it once.
 const DLCLOSE_COUNT = Threads.Atomic{Int}(0)
 
 """
-    close_artifact_handle!(handle)
+    OWNED_HANDLES
 
-`Libdl.dlclose(handle)`, counted. The single close point of the package.
+The handles RustCall itself opened, and is therefore allowed to close.
+
+`load_artifact!` opens an image and records it here. `adopt_artifact!` does
+not: it is handed a handle that somebody else opened — a caller that resolved
+one its own way, a test registering a value that was never a real image — and
+closing that would be closing something RustCall does not own. On glibc a
+`dlclose` of a stale or foreign handle segfaults inside `_dl_close` rather than
+returning an error, so "do not close what you did not open" is not a nicety.
+
+Membership is also what makes closing **idempotent**: `close_artifact_handle!`
+checks and removes in one locked step, so a handle is closed at most once no
+matter how many callers race to close it or how many names it had.
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const OWNED_HANDLES = Set{Ptr{Cvoid}}()
+
+"""
+    close_artifact_handle!(handle) -> Bool
+
+Close an image RustCall opened, once. The single close point of the package.
+
+Returns whether this call was the one that closed it: `false` for a handle
+RustCall does not own (`OWNED_HANDLES`) and for one that has already been
+closed.
 """
 function close_artifact_handle!(handle::Ptr{Cvoid})
-    handle == C_NULL && return nothing
+    handle == C_NULL && return false
+    # Ownership is checked and *given up* in one locked step, so a handle can
+    # be closed at most once however many callers race to close it.
+    owned = lock(REGISTRY_LOCK) do
+        handle in OWNED_HANDLES && (delete!(OWNED_HANDLES, handle); true)
+    end
+    owned || return false
     Threads.atomic_add!(DLCLOSE_COUNT, 1)
     Libdl.dlclose(handle)
-    return nothing
+    return true
 end
 
 """
@@ -1290,6 +1331,12 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     handle = Libdl.dlopen(lib_path, dlopen_flags(policy))
     if handle == C_NULL
         throw(RustError("Failed to load $(policy.name) library: $(lib_path)"))
+    end
+    # This call opened the image, so this package may close it later
+    # (`OWNED_HANDLES`). A handle that merely arrives through
+    # `adopt_artifact!` is never closed by RustCall.
+    lock(REGISTRY_LOCK) do
+        push!(OWNED_HANDLES, handle)
     end
     # `load_artifact!` opened this handle, so `load_artifact!` owns it: if the
     # registration turns out not to need it (`:insert_only` lost the race), it

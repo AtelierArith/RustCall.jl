@@ -587,6 +587,68 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     end
 
     # -----------------------------------------------------------------
+    # RustCall closes only what RustCall opened.
+    #
+    # `load_artifact!` opens an image and takes ownership of it; a handle that
+    # merely arrives through `adopt_artifact!` belongs to whoever opened it. On
+    # glibc a `dlclose` of a stale or foreign handle segfaults inside
+    # `_dl_close` rather than returning an error, so this is a crash boundary,
+    # not bookkeeping. Ownership is also what makes closing idempotent: it is
+    # checked and given up in one locked step, so a handle is closed at most
+    # once however many callers race to close it.
+    # -----------------------------------------------------------------
+    @testset "only handles RustCall opened are closed" begin
+        # A fabricated handle is never owned, and releasing it closes nothing.
+        fake = Ptr{Cvoid}(UInt(0xdeadbe00))
+        @test !RustCall.artifact_handle_is_owned(fake)
+        before = RustCall.DLCLOSE_COUNT[]
+        @test RustCall.close_artifact_handle!(fake) == false
+        @test RustCall.close_artifact_handle!(C_NULL) == false
+        @test RustCall.DLCLOSE_COUNT[] == before
+
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            lib = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_owned_probe() -> i32 { 1 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_owned_$(getpid())"
+            adopted = "loadpolicy_adopted_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, lib; lib_name = name)
+                @test RustCall.artifact_handle_is_owned(a.handle)
+
+                # Opening the same path again is the same image (`dlopen`
+                # refcounts), and ownership is a set: it is taken once, so the
+                # image is closed once.
+                b = RustCall.load_artifact!(policy, lib; lib_name = adopted)
+                @test b.handle == a.handle
+                @test RustCall.artifact_handle_is_owned(a.handle)
+
+                # Unloading retires; the image is still owned and still mapped.
+                RustCall.unload_artifact!(policy, name)
+                @test RustCall.artifact_handle_is_owned(a.handle)
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.close_artifact_handle!(a.handle) == true
+                @test RustCall.DLCLOSE_COUNT[] == before + 1
+                # Idempotent: the second close is refused, not performed.
+                @test RustCall.close_artifact_handle!(a.handle) == false
+                @test RustCall.DLCLOSE_COUNT[] == before + 1
+                @test !RustCall.artifact_handle_is_owned(a.handle)
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    for n in (name, adopted)
+                        delete!(RustCall.RUST_LIBRARIES, n)
+                        delete!(RustCall.ARTIFACT_ALIVE, n)
+                    end
+                end
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
     # An alias is a second name for ONE image, so it needs one close.
     #
     # `alias_artifact!` used to insert the same handle under two names with no
@@ -887,10 +949,23 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             @test a.alive[]
             @test handle in RustCall.retired_handles(alias)
 
-            # `close = true` is what makes objects from an image inert.
+            # `close = true` is what makes objects from an image inert. These
+            # handles were *adopted*, never opened by RustCall, so releasing
+            # them retires the bookkeeping and flips the flags but performs no
+            # `dlclose` — closing a value that was never a real image
+            # segfaults inside glibc's `_dl_close` rather than returning an
+            # error, so "do not close what you did not open" is load-bearing.
+            @test !RustCall.artifact_handle_is_owned(handle)
+            @test !RustCall.artifact_handle_is_owned(other)
+            closes_before = RustCall.DLCLOSE_COUNT[]
             @test RustCall.close_retired_handles!([handle, other]) == 2
+            @test RustCall.DLCLOSE_COUNT[] == closes_before   # nothing closed
             @test !a.alive[]
             @test !b.alive[]
+            # Idempotent: the records are gone, so a second release is a no-op
+            # rather than a second `dlclose` of the same value.
+            @test RustCall.close_retired_handles!([handle, other]) == 0
+            @test RustCall.DLCLOSE_COUNT[] == closes_before
             @test isempty(RustCall.retired_handles(name))
             @test isempty(RustCall.retired_handles(alias))
             @test_throws ArgumentError RustCall.adopt_artifact!(policy, C_NULL;
