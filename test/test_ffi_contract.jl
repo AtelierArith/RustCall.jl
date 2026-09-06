@@ -771,6 +771,36 @@ const ALL_SPELLINGS = vcat(
             @test RustCall.ffi_by_value_allowed(Rc245ByValueTwin)
             @test RustCall._ffi_layout_method(Rc245ByValueTwin).module === @__MODULE__
             @test RustCall._ffi_layout_method(Rc245ByValueTwin).module !== RustCall
+            # Idempotent, exactly as the function form is: expanding twice — or
+            # after the function already registered it — must not redefine the
+            # method. Redefinition warns under `--warn-overwrite=yes` (which
+            # `Pkg.test` sets, so this testset running clean *is* the assertion)
+            # and is rejected outright during package precompilation, where the
+            # macro is meant to be used (#245 review).
+            @test (@register_ffi_struct Rc245ByValueTwin) === Rc245ByValueTwin
+            @test RustCall.register_ffi_struct(Rc245ByValueTwin) === Rc245ByValueTwin
+            @test (@register_ffi_struct Rc245ByValueTwin) === Rc245ByValueTwin
+            @test length(methods(RustCall.ffi_by_value_layout,
+                                 (Type{Rc245ByValueTwin},))) == 1
+            @test RustCall.ffi_by_value_allowed(Rc245ByValueTwin)
+
+            # Idempotent means "the same claim, twice". A *different* claim is
+            # not a duplicate: one of the two callers has the wrong Rust type
+            # in mind, and quietly keeping either answer is how a layout
+            # assertion stops meaning anything. `:repr_c` is the only layout
+            # there is today, so the guard is asserted directly.
+            @test RustCall._ffi_by_value_agrees(Rc245ByValueTwin, :repr_c) === nothing
+            conflict = try
+                RustCall._ffi_by_value_agrees(Rc245ByValueTwin, :something_else)
+                nothing
+            catch e
+                e
+            end
+            @test conflict isa ArgumentError
+            @test occursin("repr_c", sprint(showerror, conflict))
+            @test occursin("something_else", sprint(showerror, conflict))
+            @test occursin("unregister_ffi_struct", sprint(showerror, conflict))
+            # ...and one withdrawal is still enough.
         finally
             @test RustCall.unregister_ffi_struct(Rc245ByValueTwin)
         end
@@ -778,7 +808,10 @@ const ALL_SPELLINGS = vcat(
 
         try
             @test (@register_ffi_struct Tuple{Int8, Int8}) === Tuple{Int8, Int8}
+            @test (@register_ffi_struct Tuple{Int8, Int8}) === Tuple{Int8, Int8}
             @test RustCall.ffi_by_value_allowed(Tuple{Int8, Int8})
+            @test length(methods(RustCall.ffi_by_value_layout,
+                                 (Type{Tuple{Int8, Int8}},))) == 1
             @test RustCall.ffi_by_value_allowed(Tuple{Int8, Int16}) == false
             # The function form would have put it in RustCall; the macro does
             # not, which is the whole point.
