@@ -52,7 +52,7 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 2. `src/compiler.jl` invokes `rustc` to produce shared libraries or LLVM IR
 3. `src/codegen.jl` generates `ccall` expressions; `src/llvmcodegen.jl` / `src/llvmintegration.jl` handle the LLVM IR path (deprecated, see #265)
 4. `src/rustmacro.jl` expands `@rust` and `@irust` into the appropriate call mechanism
-5. `src/cache.jl` provides caching of compiled artifacts, namespaced by `CACHE_FORMAT_VERSION` (`~/.julia/compiled/vX.Y/RustCall/v2`). That root is shared with **Julia's own precompile output** for RustCall (`<slug>.ji`, `<slug>.dylib`), so the cache sweep only ever removes RustCall's own version subdirectories, and legacy loose files only on explicit request and only by exact name match.
+5. `src/cache.jl` provides caching of compiled artifacts in a **Scratch.jl space** (#252): `get_cache_dir()` is `<depot>/scratchspaces/<RustCall UUID>/cache-v$(CACHE_FORMAT_VERSION)`, with `metadata/` and `cargo/` under it. RustCall writes **nothing** under `~/.julia/compiled/` — that is Julia's own precompile directory, read-only for RustCall and never created by it; `_legacy_cache_root()` is read only by the opt-in legacy sweep (`clear_cache(sweep_legacy = true)`), which removes RustCall's own `v<n>`/`cargo`/`metadata` directories and loose files matching the exact pre-#278 naming, and nothing else. The depot is the first *writable* entry of `DEPOT_PATH`, so a read-only `DEPOT_PATH[1]` still works; `RUSTCALL_CACHE_DIR` overrides the location outright.
 
 ### Artifact identity is computed in exactly one place (issue #278)
 

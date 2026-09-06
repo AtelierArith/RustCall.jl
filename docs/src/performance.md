@@ -26,11 +26,16 @@ RustCall.jl automatically caches compiled Rust libraries. This eliminates the ne
   environment, the toolchain fingerprint, and the identity of the `rustc` /
   `cargo` that actually runs. Fields are netstring-framed, so no two different
   requests can concatenate to the same bytes.
-- **Cache location**: `~/.julia/compiled/vX.Y/RustCall/v\$(CACHE_FORMAT_VERSION)/`.
-  `CACHE_FORMAT_VERSION` names the on-disk layout; bumping it namespaces a new
-  tree rather than serving or deleting the old one, and
+- **Cache location**: a [Scratch.jl](https://github.com/JuliaPackaging/Scratch.jl)
+  space, `<depot>/scratchspaces/<RustCall UUID>/cache-v\$(CACHE_FORMAT_VERSION)/`
+  — writable by construction and accounted for by `Pkg.gc()`. RustCall writes
+  nothing under `~/.julia/compiled/`, which is Julia's own precompile directory
+  (issue #252). `<depot>` is the first **writable** entry of `DEPOT_PATH`, so a
+  read-only first depot is not fatal, and `RUSTCALL_CACHE_DIR` overrides the
+  location outright. `CACHE_FORMAT_VERSION` names the on-disk layout; bumping it
+  namespaces a new space rather than serving or deleting the old one, and
   `RustCall.sweep_stale_cache_formats()` (called by `clear_cache` and
-  `cleanup_old_cache`) removes older siblings best effort.
+  `cleanup_old_cache`) removes older `cache-v<n>` siblings best effort.
 - **Cost**: every input byte is read and hashed on every key computation —
   file contents are never memoized, because a `(mtime, size)` stamp can alias
   distinct contents and the cost of being wrong is running machine code built
@@ -87,9 +92,10 @@ RustCall.cleanup_old_cache(30)
 # Clear cache completely
 RustCall.clear_cache()
 
-# Also remove loose files left by the pre-v2 cache layout. Off by default:
-# the cache root is Julia's own precompile directory for RustCall, so RustCall
-# only ever deletes files it can prove it wrote.
+# Also remove the tree the pre-#252 layout left in `~/.julia/compiled/`. Off by
+# default: that directory is Julia's own precompile directory for RustCall, so
+# RustCall only ever deletes entries it can prove it wrote, and never the
+# directory itself.
 RustCall.clear_cache(sweep_legacy = true)
 ```
 
