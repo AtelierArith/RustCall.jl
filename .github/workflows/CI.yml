@@ -58,7 +58,9 @@ jobs:
         run: cargo test --all-features
 
   test:
-    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ matrix.threads }} thread(s)
+    # The single-threaded jobs keep the historical names: they are the
+    # required status checks in the repository ruleset for `main`.
+    name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -69,16 +71,19 @@ jobs:
             version: '1'
             test_args: --jobs=4
             threads: '1'
+            suffix: ''
           - os: windows-latest
             arch: x64
             version: '1'
             test_args: --jobs=2
             threads: '1'
+            suffix: ''
           - os: macos-latest
             arch: aarch64
             version: '1'
             test_args: --jobs=2
             threads: '1'
+            suffix: ''
           # A multithreaded run. Several properties this package guarantees are
           # only *exercised* with more than one thread: the panic channel is a
           # thread-local, so its "the wrapper call and the channel read happen
@@ -93,6 +98,7 @@ jobs:
             version: '1'
             test_args: --jobs=2
             threads: '4'
+            suffix: ' - 4 threads'
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
