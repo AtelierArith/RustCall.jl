@@ -489,6 +489,174 @@ fn an_ambiguous_pymethods_target_attaches_to_nothing() {
     assert!(manifest.structs.iter().all(|s| s.methods.is_empty()));
 }
 
+/// An explicit `impl a::C` names the class exactly, so it must not be
+/// collapsed to `C` and then declared ambiguous.
+#[test]
+fn a_qualified_pymethods_target_is_not_ambiguous() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         #[pymethods] impl a::C { pub fn only_a(&self) -> i32 { 0 } }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
+/// A qualifier is relative to the module the impl is in, and `crate::` names
+/// the root.
+#[test]
+fn a_qualified_target_resolves_relative_and_absolute() {
+    let manifest = scan(
+        "pub mod outer {\n\
+            pub mod inner { #[pyclass] pub struct C {} }\n\
+            #[pymethods] impl inner::C { pub fn relative(&self) -> i32 { 0 } }\n\
+         }\n\
+         pub mod other { #[pyclass] pub struct D {} }\n\
+         #[pymethods] impl crate::other::D { pub fn absolute(&self) -> i32 { 0 } }",
+    );
+    let c = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    assert_eq!(c.module_path, vec!["outer", "inner"]);
+    assert_eq!(
+        c.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["relative"]
+    );
+    let d = manifest.structs.iter().find(|s| s.name == "D").unwrap();
+    assert_eq!(
+        d.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["absolute"]
+    );
+}
+
+/// The symbol scheme is `rustcall_<name>` (#279) and carries no module path, so
+/// two `pub fn run` in different modules both want `rustcall_run` — a single
+/// wrapper crate cannot export both. The scan reports the clash instead of
+/// describing a manifest that cannot be built.
+#[test]
+fn colliding_wrapper_symbols_are_reported() {
+    let manifest = scan(
+        "pub mod a { #[pyfunction] pub fn run() -> i32 { 1 } }\n\
+         pub mod b { #[pyfunction] pub fn run() -> i32 { 2 } }",
+    );
+    let entries: Vec<_> = manifest
+        .functions
+        .iter()
+        .filter(|f| f.name == "run")
+        .collect();
+    assert_eq!(entries.len(), 2);
+    // The first in manifest order keeps the symbol; the other is skipped with
+    // the module-qualified name of the owner.
+    let kept: Vec<_> = entries
+        .iter()
+        .filter(|f| f.skip_reason.is_empty())
+        .collect();
+    let clashed: Vec<_> = entries
+        .iter()
+        .filter(|f| !f.skip_reason.is_empty())
+        .collect();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(clashed.len(), 1);
+    assert_eq!(
+        clashed[0].skip_reason,
+        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "a::run")
+    );
+}
+
+/// A `#[julia]` item is already exported under its symbol, so it owns it: a
+/// PyO3 item that wants the same one loses, whatever the source order.
+#[test]
+fn a_julia_export_wins_a_symbol_collision() {
+    let manifest = scan(
+        "#[julia] pub fn run() -> i32 { 1 }\n\
+         pub mod b { #[pyfunction] pub fn run() -> i32 { 2 } }",
+    );
+    let pyo3 = manifest
+        .functions
+        .iter()
+        .find(|f| f.attribute == Attribute::PyFunction)
+        .unwrap();
+    assert_eq!(
+        pyo3.skip_reason,
+        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "run")
+    );
+    let julia = manifest
+        .functions
+        .iter()
+        .find(|f| f.attribute == Attribute::Julia)
+        .unwrap();
+    assert_eq!(julia.skip_reason, "");
+    assert!(julia.exported);
+}
+
+/// Two same-named `#[pyclass]`es collide over every method and accessor symbol,
+/// so the class is the unit that is reported.
+#[test]
+fn colliding_pyclass_names_are_reported() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }\n\
+            #[pymethods] impl C { pub fn f(&self) -> i32 { 0 } } }\n\
+         pub mod b { #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }\n\
+            #[pymethods] impl C { pub fn g(&self) -> i32 { 0 } } }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(in_a.skip_reason, "");
+    assert_eq!(
+        in_b.skip_reason,
+        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "a::C")
+    );
+    // Nothing of the losing class is advertised.
+    assert!(in_b.fields[0].getter.is_empty());
+    assert!(!in_b.fields[0].ffi_compatible);
+    assert!(in_b.methods.iter().all(|m| !m.skip_reason.is_empty()));
+}
+
+/// The features an item's `#[cfg]` predicate depends on are recorded so a
+/// consumer can reconcile the scan with a feature set without reading Rust
+/// `cfg` syntax itself.
+#[test]
+fn cfg_features_are_recorded() {
+    let manifest = scan(
+        "#[cfg(feature = \"python\")] #[pyfunction] pub fn gated() -> i32 { 0 }\n\
+         #[cfg(all(unix, feature = \"extra\"))] #[pyfunction] pub fn both() -> i32 { 0 }\n\
+         #[cfg(unix)] #[pyfunction] pub fn target_only() -> i32 { 0 }\n\
+         #[pyfunction] pub fn plain() -> i32 { 0 }",
+    );
+    assert_eq!(function(&manifest, "gated").cfg_features, vec!["python"]);
+    assert_eq!(function(&manifest, "both").cfg_features, vec!["extra"]);
+    assert!(function(&manifest, "target_only").cfg_features.is_empty());
+    assert!(function(&manifest, "plain").cfg_features.is_empty());
+}
+
 /// Inline mode is unaffected: the scan is a crate-mode feature, because only
 /// an external crate is scanned without being rewritten. An inline block still
 /// reports its plain functions so `@rust f(...)` knows their return types, but

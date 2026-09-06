@@ -146,10 +146,15 @@ function scan_crate(crate_path::String; cfg = :lenient,
     # `src/api.rs` is `api`, and a `mod api;` that is not `pub` puts everything
     # below it out of a wrapper crate's reach. The `#[julia]` extraction stays
     # per file.
-    lib_rs = joinpath(crate_path, "src", "lib.rs")
-    manifest = extract_manifest(source_files; mode = "crate", skip_unparsable = true,
+    lib_root = crate_lib_root(crate_path, cargo_toml)
+    # A `[lib] path` outside `src/` is not in `source_files`, so the file the
+    # module tree hangs off has to be scanned even when the per-file pass never
+    # sees it.
+    tree_files = lib_root === nothing || lib_root in source_files ?
+        source_files : vcat(source_files, [lib_root])
+    manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
                                 cfg = cfg, cfg_text = cfg_text,
-                                crate_root = isfile(lib_rs) ? lib_rs : nothing)
+                                crate_root = lib_root)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
     # Items the crate marks only for PyO3 (#275 Phase 1). They are reported so
@@ -181,6 +186,31 @@ Parse a Cargo.toml file and return its contents as a dictionary.
 """
 function parse_cargo_toml(path::String)
     TOML.parsefile(path)
+end
+
+"""
+    crate_lib_root(crate_path, cargo_toml) -> Union{String, Nothing}
+
+The crate's library root source file: `[lib] path` when the manifest sets one,
+otherwise Cargo's default `src/lib.rs`. `nothing` when neither exists (a
+binary-only crate).
+
+This is the file the PyO3 scan of #275 follows the module tree from, so a crate
+that puts its root somewhere else — `[lib] path = "src/core/lib.rs"`, or a path
+outside `src/` altogether — is resolved from the right place instead of having
+every source file treated as its own root.
+"""
+function crate_lib_root(crate_path::AbstractString, cargo_toml::AbstractDict)
+    lib = get(cargo_toml, "lib", nothing)
+    if lib isa AbstractDict
+        configured = get(lib, "path", nothing)
+        if configured isa AbstractString
+            path = normpath(joinpath(String(crate_path), String(configured)))
+            return isfile(path) ? path : nothing
+        end
+    end
+    default = joinpath(String(crate_path), "src", "lib.rs")
+    return isfile(default) ? default : nothing
 end
 
 """

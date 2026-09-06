@@ -207,6 +207,129 @@ using TOML
         end
     end
 
+    @testset "PyO3 scan honours [lib] path (#275)" begin
+        # Cargo lets a crate put its library root anywhere; hard-coding
+        # src/lib.rs would scan every file as its own root (wrong module paths
+        # and reachability), or miss the root entirely when it lives outside
+        # src/.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "core"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "custom_root"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            path = "src/core/entry.rs"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "core", "entry.rs"), """
+            mod private_part;
+            pub mod public_part;
+            """)
+            write(joinpath(dir, "src", "core", "private_part.rs"), """
+            #[pyfunction]
+            pub fn hidden() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "core", "public_part.rs"), """
+            #[pyfunction]
+            pub fn shown() -> i32 { 0 }
+            """)
+
+            @test RustCall.crate_lib_root(dir, RustCall.parse_cargo_toml(joinpath(dir, "Cargo.toml"))) ==
+                  joinpath(dir, "src", "core", "entry.rs")
+
+            byname = Dict(f.name => f for f in RustCall.scan_crate(dir).pyo3_functions)
+            @test byname["shown"].module_path == ["public_part"]
+            @test byname["shown"].skip_reason == ""
+            # Behind a non-`pub` `mod`, so unreachable — which a per-file scan
+            # would have missed.
+            @test byname["hidden"].module_path == ["private_part"]
+            @test byname["hidden"].skip_reason == "not_public"
+        end
+    end
+
+    @testset "PyO3 scan: link plan and scan describe one build (#275)" begin
+        # `pyo3 = { optional = true }` with the API behind
+        # `#[cfg(feature = "python")]`: the scan is cfg-lenient and reports the
+        # item, so a `:python_free` plan would promise a wrapper for something
+        # that is not in the build it describes.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "gated_api"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", optional = true }
+
+            [features]
+            default = []
+            python = ["dep:pyo3"]
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            #[cfg(feature = "python")]
+            #[pyfunction]
+            pub fn gated(a: i32) -> i32 { a }
+            """)
+
+            info = RustCall.scan_crate(dir)
+            gated = only(info.pyo3_functions)
+            @test gated.cfg_features == ["python"]
+
+            bare = RustCall.pyo3_link_plan(dir)
+            @test bare.mode === :python_free
+            @test "python" in bare.pyo3_features
+
+            reconciled = RustCall.reconcile_link_plan(bare, info)
+            @test reconciled.mode === :link_libpython
+            @test reconciled.feature_flags == ["python"]
+            @test occursin("gated on", reconciled.reason)
+            @test occursin("nothing to wrap", reconciled.reason)
+
+            report = sprint(io -> RustCall.scan_report(dir; io = io))
+            @test occursin("link_libpython", report)
+        end
+
+        # The same crate shape, but the item exists without the feature: the
+        # Python-free build really does contain it, so the plan stands.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "ungated_api"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", optional = true }
+
+            [features]
+            default = []
+            python = ["dep:pyo3"]
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            #[cfg_attr(feature = "python", pyfunction)]
+            pub fn always(a: i32) -> i32 { a }
+            """)
+
+            info = RustCall.scan_crate(dir)
+            always = only(info.pyo3_functions)
+            @test always.skip_reason == ""
+            # `cfg_attr` gates the *attribute*, not the item: the function is
+            # compiled either way.
+            @test isempty(always.cfg_features)
+
+            plan = RustCall.pyo3_link_plan(dir)
+            @test RustCall.reconcile_link_plan(plan, info).mode === :python_free
+        end
+    end
+
     @testset "schema 4: return_abi, Field.abi, returns_boxed_struct (#276)" begin
         # The manifest — not the Rust spelling — is what says how a value
         # crosses the boundary. Schema 4 makes that true for free functions

@@ -112,9 +112,41 @@ struct ScannedClass {
 #[derive(Debug)]
 struct ScannedImpl {
     module_path: Vec<String>,
+    /// The module qualifier written in front of the type, if any: `impl a::C`
+    /// gives `["a"]`, a bare `impl C` gives `[]`. It names the class exactly
+    /// when several modules define one of that name, so it is kept rather than
+    /// collapsed to the final identifier.
+    qualifier: Vec<String>,
     target: syn::Ident,
     line: usize,
     funcs: Vec<ImplItemFn>,
+}
+
+/// The leading segments of a path type, without the type's own name:
+/// `a::b::C` -> `["a", "b"]`, a bare `C` -> `[]`.
+///
+/// `crate` and `self` are dropped: they name the crate root, which the module
+/// path is already relative to. A `super` qualifier walks *up* an unknown
+/// number of levels for the purposes of this matcher, so the whole qualifier is
+/// discarded rather than misread — the caller then falls back to matching on
+/// the name alone, which is the pre-existing behaviour.
+fn type_path_qualifier(ty: &Type) -> Vec<String> {
+    let Type::Path(p) = unparen(ty) else {
+        return Vec::new();
+    };
+    let count = p.path.segments.len();
+    let mut out = Vec::new();
+    for segment in p.path.segments.iter().take(count.saturating_sub(1)) {
+        let name = segment.ident.to_string();
+        if name == "super" {
+            return Vec::new();
+        }
+        if name == "crate" || name == "self" {
+            continue;
+        }
+        out.push(name);
+    }
+    out
 }
 
 impl Pyo3Scan {
@@ -210,6 +242,9 @@ impl Pyo3Scan {
                     }
                     self.impls.push(ScannedImpl {
                         module_path: module_path.clone(),
+                        // The qualifier of an explicit `impl a::C`, which names
+                        // the class exactly when several modules define a `C`.
+                        qualifier: type_path_qualifier(&imp.self_ty),
                         target,
                         line: imp.span().start().line,
                         funcs: imp
@@ -257,11 +292,13 @@ impl Pyo3Scan {
 
     /// Attach every `#[pymethods]` block to its class and emit the structs.
     ///
-    /// A block is matched to the class in its own module first; failing that,
-    /// to the one class of that name anywhere in the crate. When two modules
-    /// define classes of the same name and neither is the impl's own, the block
-    /// is dropped rather than attached to a guess — a wrong `Struct::method`
-    /// would not compile in Phase 2.
+    /// A block is matched, in order, to: the class named by an explicit
+    /// qualifier (`impl a::C`, resolved against the impl's own module and
+    /// against the crate root); the class of that name in the impl's own
+    /// module; and finally the one class of that name anywhere in the crate.
+    /// When two modules define classes of the same name and nothing
+    /// disambiguates, the block is dropped rather than attached to a guess — a
+    /// wrong `Struct::method` would not compile in Phase 2.
     ///
     /// Order is by (module path, line) so the result does not depend on the
     /// order the caller happened to visit files in.
@@ -270,27 +307,9 @@ impl Pyo3Scan {
             .sort_by(|a, b| a.module_path.cmp(&b.module_path).then(a.line.cmp(&b.line)));
 
         for imp in &self.impls {
-            let name = imp.target.to_string();
-            let same_module = self
-                .classes
-                .iter()
-                .position(|c| c.entry.name == name && c.module_path == imp.module_path);
-            let index = match same_module {
-                Some(i) => Some(i),
-                None => {
-                    let mut matching = self
-                        .classes
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, c)| c.entry.name == name);
-                    match (matching.next(), matching.next()) {
-                        (Some((i, _)), None) => Some(i),
-                        // No class of that name, or an ambiguous one.
-                        _ => None,
-                    }
-                }
+            let Some(index) = self.locate_class(imp) else {
+                continue;
             };
-            let Some(index) = index else { continue };
             let owner_skip = self.classes[index].entry.skip_reason.clone();
             for func in &imp.funcs {
                 let entry = method_entry(&imp.target, func, &owner_skip);
@@ -301,6 +320,134 @@ impl Pyo3Scan {
         manifest
             .structs
             .extend(self.classes.into_iter().map(|c| c.entry));
+        mark_symbol_collisions(manifest);
+    }
+
+    fn locate_class(&self, imp: &ScannedImpl) -> Option<usize> {
+        let name = imp.target.to_string();
+        let named = |c: &ScannedClass| c.entry.name == name;
+
+        if !imp.qualifier.is_empty() {
+            // `impl a::C` inside module `m` means `m::a::C`, or `a::C` from the
+            // crate root — try both, nearest first.
+            let mut nested = imp.module_path.clone();
+            nested.extend(imp.qualifier.iter().cloned());
+            for candidate in [nested, imp.qualifier.clone()] {
+                if let Some(i) = self
+                    .classes
+                    .iter()
+                    .position(|c| named(c) && c.module_path == candidate)
+                {
+                    return Some(i);
+                }
+            }
+        }
+
+        if let Some(i) = self
+            .classes
+            .iter()
+            .position(|c| named(c) && c.module_path == imp.module_path)
+        {
+            return Some(i);
+        }
+
+        let mut matching = self.classes.iter().enumerate().filter(|(_, c)| named(c));
+        match (matching.next(), matching.next()) {
+            (Some((i, _)), None) => Some(i),
+            // No class of that name, or an ambiguous one.
+            _ => None,
+        }
+    }
+}
+
+/// Flag every wrappable PyO3 entry whose exported symbol another one already
+/// claims (#275).
+///
+/// The symbol scheme is `rustcall_<name>` (#279), which does not include the
+/// module path, so two `pub fn run` in different modules of one crate both want
+/// `rustcall_run` — and a single wrapper crate cannot export both. The scan
+/// reports the clash rather than emitting a manifest that cannot be built;
+/// changing the scheme is a decision that has to be made for `#[julia]` at the
+/// same time, since it has the identical collision (#300).
+///
+/// The first entry in manifest order keeps the symbol so the outcome does not
+/// depend on which file was visited first.
+fn mark_symbol_collisions(manifest: &mut Manifest) {
+    // A `#[julia]` item is *already* exported under its symbol, so it always
+    // owns it: a PyO3 item that wants the same one is the loser, whatever the
+    // source order.
+    let mut taken: Vec<(String, String)> = manifest
+        .functions
+        .iter()
+        .filter(|f| !f.attribute.is_pyo3_scan() && f.exported)
+        .map(|f| (f.symbol.clone(), qualified(&f.module_path, &f.name)))
+        .collect();
+
+    let mut order: Vec<usize> = (0..manifest.functions.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (x, y) = (&manifest.functions[a], &manifest.functions[b]);
+        x.module_path
+            .cmp(&y.module_path)
+            .then(x.line.cmp(&y.line))
+            .then(x.name.cmp(&y.name))
+    });
+
+    for i in order {
+        let f = &manifest.functions[i];
+        if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
+            continue;
+        }
+        let symbol = f.symbol.clone();
+        if let Some((_, owner)) = taken.iter().find(|(s, _)| *s == symbol) {
+            let owner = owner.clone();
+            manifest.functions[i].skip_reason =
+                skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner);
+        } else {
+            let owner = qualified(&f.module_path, &f.name);
+            taken.push((symbol, owner));
+        }
+    }
+
+    // Two `#[pyclass]`es of the same name in different modules produce the same
+    // `rustcall_<Struct>_<method>` symbols for every method and accessor, so
+    // the class as a whole is the unit that collides.
+    let mut classes: Vec<(String, String)> = Vec::new();
+    let mut struct_order: Vec<usize> = (0..manifest.structs.len()).collect();
+    struct_order.sort_by(|&a, &b| {
+        let (x, y) = (&manifest.structs[a], &manifest.structs[b]);
+        x.module_path.cmp(&y.module_path).then(x.line.cmp(&y.line))
+    });
+    for i in struct_order {
+        let s = &manifest.structs[i];
+        if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
+            continue;
+        }
+        let name = s.name.clone();
+        if let Some((_, owner)) = classes.iter().find(|(n, _)| *n == name) {
+            let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner.clone());
+            let s = &mut manifest.structs[i];
+            s.skip_reason = reason.clone();
+            for m in &mut s.methods {
+                if m.skip_reason.is_empty() {
+                    m.skip_reason = skip_reason::detailed(skip_reason::OWNER_SKIPPED, &reason);
+                }
+            }
+            for f in &mut s.fields {
+                f.ffi_compatible = false;
+                f.getter.clear();
+                f.setter.clear();
+            }
+        } else {
+            classes.push((name, qualified(&s.module_path, &s.name)));
+        }
+    }
+}
+
+fn qualified(module_path: &[String], name: &str) -> String {
+    if module_path.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}::{}", module_path.join("::"), name)
     }
 }
 
@@ -351,6 +498,7 @@ fn function_entry(
         python_name: pyo3_name(&func.attrs),
         exported: false,
         cfg: predicate_string(&func.attrs),
+        cfg_features: crate::cfg::predicate_features(&func.attrs),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
         args: fn_args(&func.sig),
@@ -428,6 +576,7 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
         skip_reason: reason,
         python_name: pyo3_name(&item.attrs),
         cfg: predicate_string(&item.attrs),
+        cfg_features: crate::cfg::predicate_features(&item.attrs),
         type_params: generics_to_type_params(&item.generics),
         fields,
         methods: Vec::new(),

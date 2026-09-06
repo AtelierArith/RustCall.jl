@@ -39,9 +39,12 @@ use serde::{Deserialize, Serialize};
 ///   reported alongside `#[julia]` ones with a PyO3 [`Attribute`] origin,
 ///   every function / struct / method carries [`Function::vis`] and
 ///   [`Function::skip_reason`], and a `PyResult<T>` return is reported as
-///   [`ReturnKind::PyResult`]. A version-4 consumer would treat a
-///   `#[pyfunction]` as an exported `#[julia]` function and `dlsym` a symbol
-///   that no wrapper crate has emitted yet.
+///   [`ReturnKind::PyResult`]. `Function::cfg_features` names the crate features
+///   an item's `#[cfg]` predicate depends on, so a consumer can reconcile a
+///   leniently evaluated scan with a feature set without reading Rust `cfg`
+///   syntax. A version-4 consumer would treat a `#[pyfunction]` as an exported
+///   `#[julia]` function and `dlsym` a symbol that no wrapper crate has emitted
+///   yet.
 pub const SCHEMA_VERSION: u32 = 5;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
@@ -65,6 +68,15 @@ pub mod skip_reason {
     /// A method whose `#[pyclass]` is itself skipped (the reason follows the
     /// colon), so there is no handle type to hang it off.
     pub const OWNER_SKIPPED: &str = "owner_skipped";
+    /// Another item already claims this entry's exported symbol (it follows the
+    /// colon, module-qualified). The symbol scheme is `rustcall_<name>` (#279)
+    /// and carries no module path, so two `pub fn run` in different modules of
+    /// one crate collide; a single wrapper crate cannot export both.
+    ///
+    /// `#[julia]` has the identical collision, so the scheme has to change for
+    /// both kinds at once rather than gaining a PyO3-only variant here: #300
+    /// owns that, and this reason goes away when it lands.
+    pub const SYMBOL_COLLISION: &str = "symbol_collision";
 
     /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
     pub fn detailed(kind: &str, detail: &str) -> String {
@@ -217,6 +229,15 @@ pub struct Function {
     /// configuration given to the extractor are not reported at all.
     #[serde(default)]
     pub cfg: String,
+    /// Crate features the item's `#[cfg(...)]` predicate depends on
+    /// (`#[cfg(feature = "python")]` -> `["python"]`), empty when it has none.
+    ///
+    /// The crate scan evaluates `#[cfg]` leniently, so a feature-gated item is
+    /// reported even though whether it exists depends on the feature set the
+    /// crate is built with. This column lets a consumer reconcile the two by
+    /// set membership, without handling Rust `cfg` syntax itself (#275, #264).
+    #[serde(default)]
+    pub cfg_features: Vec<String>,
     pub is_generic: bool,
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
@@ -396,6 +417,9 @@ pub struct Struct {
     /// `#[cfg(...)]` predicate of the struct item, see [`Function::cfg`].
     #[serde(default)]
     pub cfg: String,
+    /// Crate features the predicate depends on, see [`Function::cfg_features`].
+    #[serde(default)]
+    pub cfg_features: Vec<String>,
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
     #[serde(default)]

@@ -26,6 +26,8 @@ const PYO3_SKIP_REASONS = Dict{String, String}(
     "pymodule" => "a `#[pymodule]` initializer: it only means something to Python's import machinery",
     "generic" => "generic; monomorphizing PyO3 items is not supported",
     "owner_skipped" => "its `#[pyclass]` is itself skipped",
+    "symbol_collision" => "another item already claims the symbol a wrapper would give this one; " *
+                          "module-qualified symbols are tracked in #300",
 )
 
 """
@@ -77,7 +79,10 @@ RustCall.scan_report("/path/to/some_pyo3_crate")
 """
 function scan_report(crate_path::AbstractString; io::IO = stdout)
     info = scan_crate(String(crate_path))
-    plan = pyo3_link_plan(crate_path)
+    # The plan and the scan have to describe the same build: a `:python_free`
+    # plan is wrong when the items the scan found only exist with the pyo3
+    # feature on (#275).
+    plan = reconcile_link_plan(pyo3_link_plan(crate_path), info)
 
     julia_items = Any[info.julia_functions...; info.julia_structs...]
     wrappable = Any[]
@@ -145,6 +150,9 @@ whether it can be built at all (#275 Phase 1.5).
 - `rpath::String`: the interpreter's library directory for `:link_libpython`,
   empty when it could not be located (then `pyo3_link_rustflags` raises).
 - `reason::String`: why this mode was chosen, in words.
+- `pyo3_features::Vector{String}`: the crate features that activate an
+  *optional* pyo3, empty otherwise. `reconcile_link_plan` uses them to check
+  whether the items the scan found would still exist with pyo3 off.
 
 # Why `:link_libpython` exists at all
 
@@ -169,10 +177,13 @@ struct PyO3LinkPlan
     rpath::String
     reason::String
     dependency_default_features::Bool
+    pyo3_features::Vector{String}
 end
 
-PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String, reason::String) =
-    PyO3LinkPlan(mode, feature_flags, rpath, reason, true)
+PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String, reason::String,
+             dependency_default_features::Bool = true;
+             pyo3_features::Vector{String} = String[]) =
+    PyO3LinkPlan(mode, feature_flags, rpath, reason, dependency_default_features, pyo3_features)
 
 """
     pyo3_dependency_toml(plan, name, path) -> String
@@ -267,7 +278,8 @@ function _pyo3_link_plan_for(cargo::AbstractDict, dep::_PyO3Dependency, default_
             "; it is on by default, so the wrapper's dependency entry sets default-features = false" : ""
         return PyO3LinkPlan(:python_free, String[], "",
                             "pyo3 is an optional dependency, so the wrapper is built with it off$(note)",
-                            !enabled_by_default)
+                            !enabled_by_default;
+                            pyo3_features = _features_activating(cargo, dep.key))
     end
 
     if ext_in_dep
@@ -400,6 +412,75 @@ function _pyo3_enabled_by_default(cargo::AbstractDict, key::AbstractString,
         end
     end
     return false
+end
+
+"""
+    _features_activating(cargo, key) -> Vector{String}
+
+The crate features that turn the optional dependency `key` on: a feature whose
+list contains `dep:<key>`, `<key>` or `<key>/...`, plus the implicit feature
+Cargo creates under the dependency's own name.
+"""
+function _features_activating(cargo::AbstractDict, key::AbstractString)
+    k = String(key)
+    out = String[]
+    features = get(cargo, "features", Dict{String, Any}())
+    if features isa AbstractDict
+        for name in sort(collect(keys(features)))
+            entries = features[name]
+            entries isa AbstractVector || continue
+            any(entries) do entry
+                e = String(entry)
+                e == "dep:$(k)" || e == k || startswith(e, "$(k)/")
+            end && push!(out, String(name))
+        end
+    end
+    # Cargo gives every optional dependency an implicit feature of its own name.
+    k in out || push!(out, k)
+    return out
+end
+
+"""
+    reconcile_link_plan(plan::PyO3LinkPlan, info::CrateInfo) -> PyO3LinkPlan
+
+Make the link plan and the scan agree about the build they describe (#275).
+
+The crate scan evaluates `#[cfg]` leniently, so a `#[cfg(feature = "python")]
+#[pyfunction]` is reported even though it only exists when that feature is on.
+A `:python_free` plan says the opposite — build with pyo3 **off** — and the two
+together would promise Phase 2 a wrapper for an item that is not in the build.
+
+When the wrappable PyO3 items are gated on a feature that activates pyo3
+(`PyO3LinkPlan.pyo3_features`, matched against the manifest's `cfg_features`
+column, which the extractor derives from the predicate so Julia never reads
+Rust `cfg` syntax), the plan becomes `:link_libpython` with that feature
+enabled on the dependency entry. A crate whose items exist without the feature
+keeps its `:python_free` plan unchanged.
+
+`scan_report` applies this automatically; `pyo3_link_plan` on its own stays a
+pure `Cargo.toml` read.
+"""
+function reconcile_link_plan(plan::PyO3LinkPlan, info::CrateInfo)
+    plan.mode === :python_free || return plan
+    isempty(plan.pyo3_features) && return plan
+
+    gating = String[]
+    for item in Iterators.flatten((info.pyo3_functions, info.pyo3_structs))
+        isempty(item.skip_reason) || continue
+        for feature in item.cfg_features
+            feature in plan.pyo3_features && !(feature in gating) && push!(gating, feature)
+        end
+    end
+    isempty(gating) && return plan
+
+    rpath = _python_library_dir_or_empty()
+    return PyO3LinkPlan(:link_libpython, sort(gating), rpath,
+                        "pyo3 is optional, but every wrappable item is gated on " *
+                        "$(join(("`" * f * "`" for f in sort(gating)), ", ")), which also turns pyo3 on: " *
+                        "building with the feature off would leave nothing to wrap, so the wrapper " *
+                        "enables it and the cdylib links libpython",
+                        plan.dependency_default_features;
+                        pyo3_features = plan.pyo3_features)
 end
 
 """

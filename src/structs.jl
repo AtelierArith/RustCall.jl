@@ -143,6 +143,8 @@ struct RustStructInfo
     vis::String
     skip_reason::String
     python_name::String
+    # See `RustFunctionSignature.cfg_features`.
+    cfg_features::Vector{String}
 end
 
 function RustStructInfo(name::String, type_params::Vector{String}, methods::Vector{RustMethod},
@@ -158,12 +160,13 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
                         module_path::Vector{String} = String[],
                         attribute::Symbol = :julia, vis::String = "pub",
-                        skip_reason::String = "", python_name::String = "")
+                        skip_reason::String = "", python_name::String = "",
+                        cfg_features::Vector{String} = String[])
     RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
                    has_derive_julia_struct,
                    derive_options, field_getters, field_setters, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
-                   module_path, attribute, vis, skip_reason, python_name)
+                   module_path, attribute, vis, skip_reason, python_name, cfg_features)
 end
 
 """

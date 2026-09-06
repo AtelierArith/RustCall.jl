@@ -313,6 +313,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
 fn concrete_struct_entry(model: &StructModel, meta: &crate::codegen::InlineStructMeta) -> Struct {
     Struct {
         cfg: predicate_string(&model.item.attrs),
+        cfg_features: crate::cfg::predicate_features(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
         vis: crate::attrs::visibility_string(&model.item.vis),
@@ -373,6 +374,7 @@ fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) 
 
     Struct {
         cfg: predicate_string(&model.item.attrs),
+        cfg_features: crate::cfg::predicate_features(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
         vis: crate::attrs::visibility_string(&model.item.vis),

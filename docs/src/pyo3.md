@@ -77,6 +77,7 @@ nothing emits it yet. The manifest describes what Phase 2 will generate.
 | `pymodule` | a `#[pymodule]` initializer: it exists to be called by Python's import machinery |
 | `generic` | a generic item; monomorphizing PyO3 items is out of scope |
 | `owner_skipped:<reason>` | a method whose `#[pyclass]` is itself skipped for `<reason>` |
+| `symbol_collision:<owner>` | another item already claims the symbol this one would get. The scheme is `rustcall_<name>` (#279) and carries no module path, so two `pub fn run` in different modules both want `rustcall_run`; `#[julia]` has the identical collision, so the scheme changes for both kinds at once — tracked in [#300](https://github.com/AtelierArith/RustCall.jl/issues/300) |
 
 `not_public` is the reason you will see most often, and it is worth knowing why:
 pyo3 does not require `pub` anywhere. `#[pyfunction] fn add(...)` and a
@@ -121,8 +122,10 @@ way rustc resolves them. That is also how a private parent is caught — a
 `mod hidden;` without `pub` makes everything inside it `not_public`, however
 `pub` the items themselves are.
 
-A `mod` declaration whose file does not exist (behind a pruned `#[cfg]`, or
-generated at build time) is skipped rather than failing the scan.
+The root is the crate's library root: `[lib] path` when the manifest sets one,
+otherwise `src/lib.rs`. A `mod` declaration whose file does not exist (behind a
+pruned `#[cfg]`, or generated at build time) is skipped rather than failing the
+scan.
 
 ### `#[pymethods]` is matched crate-wide
 
@@ -131,8 +134,10 @@ multi-file crate the `#[pyclass]` and its `#[pymethods]` blocks routinely live
 in different files. Classes and blocks are therefore collected across the whole
 crate and married at the end: a block is attached to the class in its own
 module, or — failing that — to the one class of that name anywhere in the
-crate. If two modules define a class of that name and neither is the block's
-own, the block is dropped rather than attached to a guess.
+crate. An explicit qualifier settles it exactly: `impl a::C` names the class in
+`a`, resolved relative to the block's own module and then from the crate root.
+If two modules define a class of that name and nothing disambiguates, the block
+is dropped rather than attached to a guess.
 
 ### An item marked both ways belongs to `#[julia]`
 
@@ -154,6 +159,7 @@ plan.feature_flags               # features to enable on the target crate
 plan.dependency_default_features # what its [dependencies] entry must say
 plan.rpath                       # the interpreter's library directory
 plan.reason                      # why this mode was chosen
+plan.pyo3_features               # crate features that activate an optional pyo3
 ```
 
 `RustCall.pyo3_dependency_toml(plan, name, path)` renders the
@@ -162,6 +168,23 @@ build flag — is where a target crate's default features are switched off:
 `cargo build --no-default-features` applies to the **package being built**, so
 from the wrapper it disables the *wrapper's* defaults and leaves the target
 crate's (and therefore pyo3) enabled.
+
+### The plan and the scan describe one build
+
+The scan evaluates `#[cfg]` leniently, so a `#[cfg(feature = "python")]
+#[pyfunction]` is reported even though it only exists when that feature is on.
+A `:python_free` plan says the opposite — build with pyo3 **off** — and the two
+together would promise Phase 2 a wrapper for an item that is not in the build.
+
+`RustCall.reconcile_link_plan(plan, info)` (which `scan_report` applies for you)
+settles it: when the wrappable items are gated on a feature that also activates
+pyo3, the plan becomes `:link_libpython` with that feature enabled on the
+dependency entry. It uses the manifest's `cfg_features` column — the crate
+features an item's predicate depends on, derived from the predicate by the
+extractor — so Julia never reads Rust `cfg` syntax. A crate whose items exist
+without the feature keeps its `:python_free` plan; that is the
+`#[cfg_attr(feature = "python", pyfunction)]` shape, where the gate is on the
+*attribute*, not on the item.
 
 Three manifest shapes the plan handles that are easy to miss:
 

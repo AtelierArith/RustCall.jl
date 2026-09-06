@@ -60,6 +60,9 @@ struct RustFunctionSignature
     vis::String
     skip_reason::String
     python_name::String
+    # Crate features the item's `#[cfg]` predicate depends on, derived from the
+    # predicate by the extractor so Julia never reads Rust `cfg` syntax (#275).
+    cfg_features::Vector{String}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -77,14 +80,15 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                arg_abis::Vector{String} = _default_arg_abis(arg_types),
                                return_abi::String = _default_return_abi(return_type, arg_abis),
                                vis::String = "pub", skip_reason::String = "",
-                               python_name::String = "")
+                               python_name::String = "",
+                               cfg_features::Vector{String} = String[])
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
-                          return_abi, vis, skip_reason, python_name)
+                          return_abi, vis, skip_reason, python_name, cfg_features)
 end
 
 """

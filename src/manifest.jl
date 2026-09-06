@@ -917,6 +917,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             vis = _mstr(f, "vis"),
             skip_reason = _mstr(f, "skip_reason"),
             python_name = _mstr(f, "python_name"),
+            cfg_features = String[String(c) for c in _mvec(f, "cfg_features")],
         ))
     end
     return sigs
@@ -1008,6 +1009,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             vis = _mstr(s, "vis"),
             skip_reason = _mstr(s, "skip_reason"),
             python_name = _mstr(s, "python_name"),
+            cfg_features = String[String(c) for c in _mvec(s, "cfg_features")],
         ))
     end
     return infos

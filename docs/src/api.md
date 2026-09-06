@@ -280,6 +280,7 @@ RustCall.PyO3LinkPlan
 RustCall.pyo3_link_plan
 RustCall.pyo3_link_rustflags
 RustCall.pyo3_dependency_toml
+RustCall.reconcile_link_plan
 RustCall.python_library_dir
 RustCall.pyo3_skip_explanation
 RustCall.PYO3_SKIP_REASONS

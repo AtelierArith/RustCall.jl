@@ -162,6 +162,7 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         python_name: String::new(),
         exported,
         cfg: predicate_string(&func.attrs),
+        cfg_features: crate::cfg::predicate_features(&func.attrs),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
         args: fn_args(&func.sig),
@@ -347,6 +348,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         .collect();
     Struct {
         cfg: predicate_string(&model.item.attrs),
+        cfg_features: crate::cfg::predicate_features(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
         vis: crate::attrs::visibility_string(&model.item.vis),
