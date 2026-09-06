@@ -557,3 +557,112 @@ impl PanicCounter {
         self.value
     }
 }
+
+// ============================================================================
+// Divider Struct (Result / Option returns on methods, #268)
+// ============================================================================
+
+/// Methods that hand Julia a `Result` / `Option`, exactly like a free function
+/// does: `CResult_Divider_<method>` / `COption_Divider_<method>`, with a
+/// `String` payload travelling as an owned buffer.
+#[julia]
+pub struct Divider {
+    pub scale: i32,
+}
+
+#[julia]
+impl Divider {
+    #[julia]
+    pub fn new(scale: i32) -> Self {
+        Divider { scale }
+    }
+
+    /// `Result<i32, String>`: a plain `Ok` payload and an owned `Err` string
+    #[julia]
+    pub fn checked_div(&self, d: i32) -> Result<i32, String> {
+        if d == 0 {
+            Err(format!("cannot divide {} by zero", self.scale))
+        } else {
+            Ok(self.scale / d)
+        }
+    }
+
+    /// `Option<f64>`
+    #[julia]
+    pub fn ratio(&self, d: i32) -> Option<f64> {
+        if d == 0 {
+            None
+        } else {
+            Some(self.scale as f64 / d as f64)
+        }
+    }
+
+    /// `Result<String, String>`: both payloads are owned buffers
+    #[julia]
+    pub fn describe(&self, unit: String) -> Result<String, String> {
+        if unit.is_empty() {
+            Err("empty unit".to_string())
+        } else {
+            Ok(format!("{} {}", self.scale, unit))
+        }
+    }
+
+    /// `Option<String>`
+    #[julia]
+    pub fn tag(&self, prefix: &str) -> Option<String> {
+        if self.scale > 0 {
+            Some(format!("{}{}", prefix, self.scale))
+        } else {
+            None
+        }
+    }
+
+    /// A `&mut self` method returning a `Result`
+    #[julia]
+    pub fn bump(&mut self, by: i32) -> Result<i32, String> {
+        if by < 0 {
+            Err("cannot bump by a negative amount".to_string())
+        } else {
+            self.scale += by;
+            Ok(self.scale)
+        }
+    }
+
+    /// A static method returning a `Result`
+    #[julia]
+    pub fn parse_scale(text: &str) -> Result<i32, String> {
+        text.trim()
+            .parse::<i32>()
+            .map_err(|e| format!("bad scale {:?}: {}", text, e))
+    }
+
+    /// A `Result`-returning method that panics rather than returning `Err`:
+    /// the wrapper's sentinel carries no payload, so Julia must read the panic
+    /// channel before decoding anything (#244).
+    #[julia]
+    pub fn panicky_div(&self, d: i32) -> Result<i32, String> {
+        if d < 0 {
+            panic!("panicky_div refuses {}", d);
+        }
+        Ok(self.scale / d.max(1))
+    }
+
+    /// An `Option`-returning method that panics.
+    #[julia]
+    pub fn panicky_ratio(&self, d: i32) -> Option<f64> {
+        assert!(d >= 0, "panicky_ratio refuses {}", d);
+        Some(self.scale as f64 / (d + 1) as f64)
+    }
+}
+
+/// Free function counterpart of `Divider::describe`: a `String` payload on a
+/// `#[julia] fn` used to be a compile error, and now travels the same way
+/// (#268).
+#[julia]
+fn describe_scale(scale: i32, unit: String) -> Result<String, String> {
+    if unit.is_empty() {
+        Err("empty unit".to_string())
+    } else {
+        Ok(format!("{} {}", scale, unit))
+    }
+}
