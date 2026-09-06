@@ -264,7 +264,8 @@ function pyo3_link_plan(crate_path::AbstractString; features::Vector{String} = S
     isfile(manifest_path) ||
         throw(RustError("Cargo.toml not found in: $(crate_path)"))
     flags = _pyo3_feature_flags(features, default_features)
-    plan = _pyo3_resolved_plan(crate_path, flags; release = release)
+    plan = _pyo3_resolved_plan(crate_path, flags; release = release,
+                               features = features, default_features = default_features)
     plan === nothing || return plan
     return _pyo3_conservative_plan(TOML.parsefile(manifest_path))
 end
@@ -312,12 +313,8 @@ end
 The Cargo flags naming a feature set: `--no-default-features` and
 `--features a,b`, in the spelling `cargo build` takes.
 """
-function _pyo3_feature_flags(features::Vector{String}, default_features::Bool)
-    flags = String[]
-    default_features || push!(flags, "--no-default-features")
-    isempty(features) || append!(flags, ["--features", join(features, ",")])
-    return flags
-end
+_pyo3_feature_flags(features::Vector{String}, default_features::Bool) =
+    _cargo_feature_args(features, default_features)
 
 """
     _pyo3_resolved_plan(crate_path, flags; release = true) -> Union{PyO3LinkPlan, Nothing}
@@ -325,15 +322,17 @@ end
 Ask Cargo what a build of `crate_path` under `flags` resolves to, and turn the
 answer into a plan. `nothing` when Cargo is unavailable or the crate does not
 resolve — the caller then falls back to `_pyo3_conservative_plan`. The cfg
-probe runs under the profile the wrapper will be built with (`release`).
+probe runs the crate **as a wrapper's dependency**, under the profile the
+wrapper will be built with (`_wrapper_probe_cfg_text`).
 """
 function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
-                             release::Bool = true)
+                             release::Bool = true, features::Vector{String} = String[],
+                             default_features::Bool = true)
     resolved = _cargo_resolved_features(crate_path, flags)
     resolved === nothing && return nothing
     crate_features, pyo3_features, pyo3_active = resolved
-    cfg_text = _crate_build_cfg_text(crate_path; features = flags,
-                                     profile = release ? "release" : "debug")
+    cfg_text = _wrapper_probe_cfg_text(crate_path; features = features,
+                                       default_features = default_features, release = release)
     # `cargo tree` answered but `cargo rustc -- --print cfg` did not: the plan
     # knows the feature graph and nothing about the configuration the build
     # compiles under, so the scan cannot be run in strict mode. Saying
@@ -383,6 +382,95 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                         pyo3_features = pyo3_features, crate_features = crate_features,
                         cfg_text = cfg_text, resolved = true, interpreter = interpreter,
                         interpreter_config = interpreter_config)
+end
+
+"""
+    _wrapper_probe_cfg_text(crate_path; features, default_features, release) -> String
+
+`rustc --print cfg` for `crate_path` **as the dependency of a wrapper crate**,
+which is how a Phase-2 wrapper compiles it.
+
+Probing the crate as its own Cargo root (`_crate_build_cfg_text`) applied the
+crate's *own* `[profile.*]` — its `debug-assertions`, its `panic`, its overflow
+checks — which Cargo ignores for a dependency and which the wrapper's root
+profile replaces (RustCall pins `panic = "unwind"` there, #244). A
+`#[cfg(debug_assertions)]` item was therefore scanned in and compiled out, or
+the reverse, and a generated call to it failed to resolve (#307 review).
+
+The probe project has the wrapper's shape: a `cdylib` root depending on the
+crate by path, with the requested feature set in its `[dependencies]` entry —
+the only place a dependency's features can be named; `cargo rustc --features`
+is refused for a package outside the workspace — and the profile lines the
+generated wrapper carries. Then `cargo rustc -p <crate> --lib -- --print cfg`.
+Its build cache lives under `<crate>/target/rustcall-pyo3-probe`, so repeated
+plans do not rebuild the dependency graph. Memoized like
+`_crate_build_cfg_text`, on the same inputs; `""` when Cargo will not answer.
+"""
+function _wrapper_probe_cfg_text(crate_path::AbstractString;
+                                 features::Vector{String} = String[],
+                                 default_features::Bool = true, release::Bool = true)
+    path = abspath(String(crate_path))
+    package = _cargo_package_name(path)
+    isempty(package) && return ""
+    key = join(["wrapper-root", path, string(release), join(features, ","),
+                string(default_features), _cargo_cfg_env_key(),
+                _crate_cfg_inputs_digest(path)], "\n")
+    probe = () -> begin
+        try
+            dir = mktempdir(prefix = "rustcall_pyo3_probe_")
+            try
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "src", "lib.rs"), "")
+                write(joinpath(dir, "Cargo.toml"),
+                      _probe_cargo_toml(package, path, features, default_features))
+                flag = release ? `--release` : ``
+                env = copy(ENV)
+                env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe")
+                cmd = `$(cargo()) rustc -q $flag -p $package --lib -- --print cfg`
+                out = read(setenv(cmd, env; dir = dir), String)
+                join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l),
+                            split(out, '\n')), "\n") * "\n"
+            finally
+                rm(dir; recursive = true, force = true)
+            end
+        catch e
+            @debug "Could not probe the wrapper-root build cfg of $(path)" exception = e
+            ""
+        end
+    end
+    lock(_EXTRACTOR_LOCK) do
+        get!(probe, _WRAPPER_CFG_TEXT, key)
+    end
+end
+
+# Memo of `_wrapper_probe_cfg_text`, keyed like `_CRATE_CFG_TEXT`.
+const _WRAPPER_CFG_TEXT = Dict{String, String}()
+
+# The manifest of a probe project: the generated wrapper's shape, minus the
+# plan-specific comment it does not have yet.
+function _probe_cargo_toml(package::AbstractString, path::AbstractString,
+                           features::Vector{String}, default_features::Bool)
+    io = IOBuffer()
+    println(io, "[package]")
+    println(io, "name = \"rustcall_pyo3_probe\"")
+    println(io, "version = \"0.1.0\"")
+    println(io, "edition = \"2021\"")
+    println(io)
+    println(io, "[lib]")
+    println(io, "crate-type = [\"cdylib\"]")
+    println(io)
+    println(io, "[dependencies.", package, "]")
+    println(io, "path = ", repr(String(path)))
+    default_features || println(io, "default-features = false")
+    isempty(features) ||
+        println(io, "features = [", join((repr(f) for f in features), ", "), "]")
+    panic_line = cargo_profile_panic_line(crate_wrapper_policy())
+    for profile in ("release", "dev")
+        println(io)
+        println(io, "[profile.", profile, "]")
+        panic_line === nothing || println(io, panic_line)
+    end
+    return String(take!(io))
 end
 
 """

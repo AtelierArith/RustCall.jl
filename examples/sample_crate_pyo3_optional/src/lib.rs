@@ -29,6 +29,14 @@ pub fn greeting() -> &'static str {
     "hello from a pyo3-optional crate"
 }
 
+/// `&str` in and `&str` out: the result may point into the owned value the
+/// wrapper built from the argument, so it leaves as an owned copy, never as a
+/// view into something the call has already dropped.
+#[cfg_attr(feature = "python", pyo3::pyfunction)]
+pub fn echo(s: &str) -> &str {
+    s
+}
+
 /// The panic boundary works the same way here.
 #[cfg_attr(feature = "python", pyo3::pyfunction)]
 pub fn boom(n: i32) -> i32 {

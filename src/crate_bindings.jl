@@ -75,6 +75,11 @@ struct CrateBindingOptions
     use_wrapper_crate::Bool
     build_release::Bool
     cache_enabled::Bool
+    # The feature set the crate is built with, on every path: the generated
+    # `_julia_wrapper` crate names it in its `[dependencies]` entry, a direct
+    # build passes it to `cargo build` (#307 review).
+    features::Vector{String}
+    default_features::Bool
 end
 
 """
@@ -87,9 +92,12 @@ function CrateBindingOptions(;
     output_path::Union{String, Nothing} = nothing,
     use_wrapper_crate::Bool = true,
     build_release::Bool = true,
-    cache_enabled::Bool = true
+    cache_enabled::Bool = true,
+    features::Vector{String} = String[],
+    default_features::Bool = true
 )
-    CrateBindingOptions(output_module_name, output_path, use_wrapper_crate, build_release, cache_enabled)
+    CrateBindingOptions(output_module_name, output_path, use_wrapper_crate, build_release,
+                        cache_enabled, features, default_features)
 end
 
 # ============================================================================
@@ -334,7 +342,15 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
     # Dependencies section
     push!(lines, "[dependencies]")
     # Add the target crate as a path dependency (escape for TOML safety)
-    push!(lines, "$(info.name) = { path = \"$(escape_toml_string(info.path))\" }")
+    # The feature set belongs in the *dependency* entry: `cargo build
+    # --no-default-features` applies to the package being built, i.e. this
+    # wrapper, and never reaches a dependency's defaults (#307 review).
+    dep = "$(info.name) = { path = \"$(escape_toml_string(info.path))\""
+    opts.default_features || (dep *= ", default-features = false")
+    isempty(opts.features) ||
+        (dep *= ", features = [" *
+                join(("\"$(escape_toml_string(f))\"" for f in opts.features), ", ") * "]")
+    push!(lines, dep * " }")
     # Add juliacall_macros (use path for now, will be crates.io later)
     juliacall_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "juliacall_macros")
     if isdir(juliacall_macros_path)
@@ -1486,7 +1502,9 @@ function generate_bindings(crate_path::String;
     opts = CrateBindingOptions(
         output_module_name = output_module_name,
         build_release = build_release,
-        cache_enabled = cache_enabled
+        cache_enabled = cache_enabled,
+        features = features,
+        default_features = default_features
     )
 
     # Scan the crate
@@ -1515,8 +1533,12 @@ function generate_bindings(crate_path::String;
         end
     end
 
-    # Check cache
-    cache_key = compute_crate_hash(info; release = build_release)
+    # Check cache. The feature set is part of the identity on this path too:
+    # a build the caller asked for with `features` / `default_features` is
+    # not the default build, and must neither answer its lookup nor be built
+    # as it (#307 review).
+    cache_key = compute_crate_hash(info; release = build_release,
+                                   features = features, default_features = default_features)
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
 
     lib_path = if cached_lib !== nothing && isfile(cached_lib)
@@ -1527,7 +1549,9 @@ function generate_bindings(crate_path::String;
         if crate_has_cdylib(crate_path)
             # Build the crate directly
             @info "Building crate directly (already has cdylib crate-type)..."
-            lib_path = build_crate_directly(info, build_release)
+            lib_path = build_crate_directly(info, build_release;
+                                            features = features,
+                                            default_features = default_features)
         else
             # Create wrapper crate and build
             @info "Creating wrapper crate..."
@@ -1569,10 +1593,14 @@ function generate_bindings(crate_path::String;
     # output free (#255, #277).
     lib_path = loadable_library_copy(lib_path)
 
-    # Generate module
+    # Generate module. The registry name follows the key, feature set
+    # included, so two feature sets of one crate are two entries.
     @info "Generating Julia module..."
     return emit_crate_module(info, lib_path; module_name=output_module_name,
-                             build_release=build_release)
+                             build_release=build_release,
+                             lib_name=crate_library_name(info; release = build_release,
+                                                         features = features,
+                                                         default_features = default_features))
 end
 
 """
@@ -1598,7 +1626,9 @@ end
 
 Build the crate directly using cargo and return the path to the library.
 """
-function build_crate_directly(info::CrateInfo, release::Bool)
+function build_crate_directly(info::CrateInfo, release::Bool;
+                              features::Vector{String} = String[],
+                              default_features::Bool = true)
     # Create a CargoProject that points to the original crate
     project = CargoProject(
         info.name,
@@ -1609,8 +1639,10 @@ function build_crate_directly(info::CrateInfo, release::Bool)
     )
 
     # The Cargo root here is the *user's* manifest, so the policy pins nothing
-    # and their profile decides (`crate_direct_policy`, #244).
-    build_cargo_project(project, release=release, policy=crate_direct_policy())
+    # and their profile decides (`crate_direct_policy`, #244). The feature set
+    # is the caller's, exactly as a wrapper build's is (#307 review).
+    build_cargo_project(project, release=release, policy=crate_direct_policy(),
+                        features=features, default_features=default_features)
 end
 
 """
@@ -1718,12 +1750,13 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
     # build from a plain `@rust_crate` build of the same crate, and one feature
     # set from another: the wrapper's `lib.rs`, its dependency's resolved
     # features and the RUSTFLAGS it links with are all decided by them, and two
-    # such builds are different binaries under one crate directory.
-    codegen = Pair{String, String}["profile" => (release ? "release" : "debug")]
-    if kind != "crate"
-        push!(codegen, "features" => join(features, ","))
-        push!(codegen, "default-features" => string(default_features))
-    end
+    # such builds are different binaries under one crate directory. The
+    # feature set is in the key for *every* kind: a plain build made with
+    # `features = ...` / `default_features = false` is a different binary
+    # from the default build too (#307 review).
+    codegen = Pair{String, String}["profile" => (release ? "release" : "debug"),
+                                   "features" => join(features, ","),
+                                   "default-features" => string(default_features)]
     # `build_env` is the caller's, appended to the Cargo-config digest every
     # crate build already carries. A #275 wrapper build passes
     # `artifact_build_env()` plus its own link flags, because it inherits the
@@ -2074,17 +2107,24 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         end
     end
 
-    # Build the crate
-    lib_path = if lib_name !== nothing
+    # Build the crate. On the plain path the feature set travels with the
+    # build and with the registry name, as it does for a wrapper build.
+    lib_name === nothing &&
+        (lib_name = crate_library_name(info; release = build_release,
+                                       features = features, default_features = default_features))
+    lib_path = if !isempty(wrapper_lib_path)
         wrapper_lib_path
     elseif crate_has_cdylib(crate_path)
         @info "Building crate directly (already has cdylib crate-type)..."
-        build_crate_directly(info, build_release)
+        build_crate_directly(info, build_release;
+                             features = features, default_features = default_features)
     else
         # Create wrapper crate and build
         opts = CrateBindingOptions(
             output_module_name = output_module_name,
-            build_release = build_release
+            build_release = build_release,
+            features = features,
+            default_features = default_features
         )
         @info "Creating wrapper crate..."
         wrapper_path = create_wrapper_crate(info, opts)

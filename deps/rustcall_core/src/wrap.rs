@@ -56,7 +56,9 @@ use crate::codegen::{
     WrapperReceiver, WrapperReturn, WrapperSpec,
 };
 use crate::manifest::{skip_reason, Arg, Manifest, Method, ReturnKind, Struct};
-use crate::types::{is_ffi_compatible_type, is_str_ref_type, is_string_type};
+use crate::types::{
+    is_ffi_compatible_type, is_str_ref_type, is_string_type, needs_clone_for_getter,
+};
 
 /// The only error value a wrapped `PyResult` reports, see the module docs.
 pub const PYERR_CODE: i32 = 1;
@@ -249,6 +251,7 @@ fn function_wrapper(
         &f.inner_type,
         None,
         true,
+        has_string_args(&f.args),
     )?;
     let tokens = generate_wrapper(WrapperSpec {
         symbol,
@@ -370,10 +373,19 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
         } else {
             if !f.getter.is_empty() {
                 let getter = format_ident!("{}", f.getter);
+                // A `Vec<T>` is usable (`needs_clone_for_getter`) but not
+                // `Copy`: it leaves as a clone, as the `#[julia]` crate-field
+                // generator does, rather than as a move out of a raw pointer
+                // (E0507) (#307 review).
+                let read = if needs_clone_for_getter(&ty) {
+                    quote! { unsafe { (*ptr).#field.clone() } }
+                } else {
+                    quote! { unsafe { (*ptr).#field } }
+                };
                 out.extend(quote! {
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #class) -> #ty {
-                        unsafe { (*ptr).#field }
+                        #read
                     }
                 });
             }
@@ -427,6 +439,7 @@ fn method_wrapper(
         &m.inner_type,
         boxed,
         false,
+        has_string_args(&m.args),
     )?;
     let receiver = (!m.is_static).then(|| WrapperReceiver {
         ty: class.clone(),
@@ -470,6 +483,17 @@ struct ReturnPlan {
     return_abi: &'static str,
     /// Whether the manifest entry's `err_type` becomes [`PYERR_SLOT`].
     err_slot: bool,
+}
+
+/// Whether any argument is lowered from a `(ptr, len)` pair into an owned
+/// value the wrapper drops when it returns — the case in which a borrowed
+/// `&str` result must be copied instead (see [`return_plan`]).
+fn has_string_args(args: &[Arg]) -> bool {
+    args.iter().any(|a| {
+        syn::parse_str::<Type>(&a.rust_type)
+            .map(|ty| is_string_type(&ty) || is_str_ref_type(&ty))
+            .unwrap_or(false)
+    })
 }
 
 /// The wrapper arguments of a manifest signature.
@@ -517,6 +541,7 @@ fn return_plan(
     inner_type: &str,
     boxed: Option<syn::Path>,
     wraps_aggregates: bool,
+    has_string_args: bool,
 ) -> Result<ReturnPlan, String> {
     let plain = |ret| ReturnPlan {
         ret,
@@ -575,6 +600,25 @@ fn return_plan(
                 });
             }
             if is_str_ref_type(&ty) {
+                // The wrapper builds its string arguments as owned values
+                // (`String::from_utf8_lossy`) that die when the call returns,
+                // so a `&str` result of a function that *takes* a string may
+                // point into one of them. Copy it out, exactly as the in-crate
+                // generator does (`codegen::returns_copied_str`, #242); only a
+                // `&str` with nothing to borrow from is handed over as a view
+                // (#307 review).
+                if has_string_args {
+                    return Ok(ReturnPlan {
+                        ret: WrapperReturn::OwnedString {
+                            helper: format_ident!("{}_RustCallOwnedString", owner),
+                            free: format_ident!("{}_free_rust_string", owner),
+                            declare: true,
+                        },
+                        call_suffix: TokenStream2::new(),
+                        return_abi: "string",
+                        err_slot: false,
+                    });
+                }
                 return Ok(ReturnPlan {
                     ret: WrapperReturn::BorrowedStr {
                         helper: format_ident!("{}_RustCallBorrowedString", owner),

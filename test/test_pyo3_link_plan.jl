@@ -230,6 +230,39 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "the cfg probe runs the crate as a wrapper's dependency (#307 review)" begin
+        # A crate's own `[profile.release]` applies when it is the Cargo root
+        # and not when it is a wrapper's dependency; the wrapper is what gets
+        # built, so the probe has to see the second. This crate's root profile
+        # would put `debug_assertions` on and `panic = "abort"` — as a
+        # dependency of RustCall's wrapper it gets neither.
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "profiled"
+            version = "0.1.0"
+            edition = "2021"
+            [lib]
+            crate-type = ["rlib"]
+            [profile.release]
+            debug-assertions = true
+            panic = "abort"
+            """)
+            plan = RustCall.pyo3_link_plan(dir)
+            if !plan.resolved
+                @test_skip "Cargo could not resolve the probe crate"
+            else
+                @test plan.mode === :python_free
+                @test !occursin(r"^debug_assertions$"m, plan.cfg_text)
+                @test occursin(r"^panic=\"unwind\"$"m, plan.cfg_text)
+                debug = RustCall.pyo3_link_plan(dir; release = false)
+                @test debug.resolved
+                @test occursin(r"^debug_assertions$"m, debug.cfg_text)
+                @test occursin(r"^panic=\"unwind\"$"m, debug.cfg_text)
+            end
+        end
+    end
+
     @testset "a missing Cargo.toml is an error, not a mode" begin
         mktempdir() do dir
             @test_throws RustCall.RustError RustCall.pyo3_link_plan(dir)

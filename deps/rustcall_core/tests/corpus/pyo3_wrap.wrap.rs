@@ -261,6 +261,108 @@ pub extern "C" fn rustcall_tag() -> tag_RustCallBorrowedString {
     }
 }
 thread_local! {
+    static __RUSTCALL_PANIC_RUSTCALL_ECHO : ::std::cell::RefCell < ::std::option::Option
+    < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_echo_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_ECHO
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
+#[repr(C)]
+pub struct echo_RustCallOwnedString {
+    pub ptr: *mut u8,
+    pub len: usize,
+    pub cap: usize,
+}
+#[no_mangle]
+pub extern "C" fn echo_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(ptr, len, cap));
+        }
+    }
+}
+#[no_mangle]
+pub extern "C" fn rustcall_echo(
+    s_ptr: *const u8,
+    s_len: usize,
+) -> echo_RustCallOwnedString {
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
+            let s_cow = String::from_utf8_lossy(s_bytes);
+            let s: &str = &s_cow;
+            let rustcall_value = user_crate::echo(s);
+            let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
+            let rustcall_ret = echo_RustCallOwnedString {
+                ptr: rustcall_bytes.as_mut_ptr(),
+                len: rustcall_bytes.len(),
+                cap: rustcall_bytes.capacity(),
+            };
+            std::mem::forget(rustcall_bytes);
+            rustcall_ret
+        }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "echo", rustcall_message
+            );
+            __RUSTCALL_PANIC_RUSTCALL_ECHO
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            echo_RustCallOwnedString {
+                ptr: ::std::ptr::null_mut(),
+                len: 0,
+                cap: 0,
+            }
+        }
+    }
+}
+thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_PARSE : ::std::cell::RefCell < ::std::option::Option
     < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
@@ -981,6 +1083,12 @@ pub extern "C" fn rustcall_Rect_get_name(
     };
     ::std::mem::forget(rustcall_bytes);
     rustcall_ret
+}
+#[no_mangle]
+pub extern "C" fn rustcall_Rect_get_tags(
+    ptr: *const user_crate::geometry::Rect,
+) -> Vec<i32> {
+    unsafe { (*ptr).tags.clone() }
 }
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_RECT_NEW : ::std::cell::RefCell <

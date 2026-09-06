@@ -61,7 +61,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   super::C` disambiguates a bare `impl C`) instead of falling back to a
   same-named local class; and the panic reader `<symbol>_take_panic` is a
   reserved symbol, so an item that would *be* one is reported as a
-  `symbol_collision`. Anything the generator cannot
+  `symbol_collision`. A `&str` returned by an item that takes a string leaves
+  as an owned copy (it may point into the argument the wrapper built), a
+  `Vec<T>` field getter clones, the cfg probe runs the crate as the wrapper's
+  dependency rather than as its own Cargo root, and the feature set a caller
+  asks for is honoured — and is in the artifact identity — on the plain
+  `@rust_crate` path as well. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
   `py_result_payload`, `cfg_undecided`) instead of being emitted — including a
   plain `Result` / `Option` on a `#[pymethods]` **method**, which the `#[julia]`

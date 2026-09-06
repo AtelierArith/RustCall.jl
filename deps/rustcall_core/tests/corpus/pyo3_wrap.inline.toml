@@ -132,6 +132,39 @@ line = 34
 module_path = []
 
 [[functions]]
+name = "echo"
+symbol = "echo"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "&str"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 41
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "&str"
+abi = "str"
+
+[[functions]]
 name = "parse"
 symbol = "parse"
 attribute = "none"
@@ -156,7 +189,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 41
+line = 49
 module_path = []
 
 [[functions.args]]
@@ -189,7 +222,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 49
+line = 57
 module_path = []
 
 [[functions.args]]
@@ -223,7 +256,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 56
+line = 64
 module_path = []
 
 [[functions]]
@@ -252,7 +285,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 63
+line = 71
 module_path = []
 
 [[functions]]
@@ -280,7 +313,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 69
+line = 77
 module_path = []
 
 [[functions.args]]
@@ -313,7 +346,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 75
+line = 83
 module_path = []
 
 [[functions.args]]
@@ -351,7 +384,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 82
+line = 90
 module_path = []
 
 [[functions.args]]
@@ -384,7 +417,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 88
+line = 96
 module_path = []
 
 [[functions.args]]
@@ -417,7 +450,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 99
+line = 107
 module_path = ["geometry"]
 
 [[functions.args]]

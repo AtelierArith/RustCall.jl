@@ -482,9 +482,12 @@ The interpreter — its path *and* what it reports about itself
 — is part of the wrapper's artifact identity, so switching interpreters, or
 upgrading one in place behind the same path, rebuilds the wrapper rather than
 reusing one configured for the other; so are pyo3's other build inputs — every
-`PYO3_*` variable, and the *contents* of `PYO3_CONFIG_FILE`. The cfg probe the scan runs under follows the
-build profile (`release = false` probes the debug configuration, where
-`debug_assertions` is set).
+`PYO3_*` variable, and the *contents* of `PYO3_CONFIG_FILE`. The cfg probe the
+scan runs under follows the build profile (`release = false` probes the debug
+configuration, where `debug_assertions` is set), and it probes the crate **as
+the wrapper's dependency** — a temporary crate of the wrapper's shape, with the
+requested features in its dependency entry — so the crate's own `[profile.*]`,
+which Cargo ignores for a dependency, does not leak into the scan.
 
 ## Making pyo3 optional: the `cfg_attr` limitation
 

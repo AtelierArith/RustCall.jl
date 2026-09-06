@@ -194,10 +194,13 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
         # A lookup key is the full digest: truncation is for names only (#278).
         @test length(hash1) == 64
         deps_digest = RustCall.artifact_path_dependency_digest(info.path)
+        # The feature set is in the key of every kind, the plain build's
+        # included — a `--no-default-features` build is a different binary
+        # from the default one (#307 review).
         @test hash1 == RustCall.artifact_key(RustCall.ArtifactId(
             kind = "crate",
             source = RustCall.crate_content_digest(info.path),
-            codegen = ["profile" => "release"],
+            codegen = ["profile" => "release", "features" => "", "default-features" => "true"],
             dependencies = [deps_digest],
             build_env = ["cargo-config" => RustCall._cargo_config_digest(ENV; dir = info.path)],
             extra = ["name" => info.name, "version" => info.version]))

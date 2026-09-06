@@ -30,6 +30,13 @@ pub fn add_take_panic() -> i32 {
 pub fn tag() -> &'static str {
     "tag"
 }
+/// `&str` in and `&str` out: the result may point into the owned value the
+/// wrapper built from the argument, so it leaves as an owned copy
+/// (`echo_RustCallOwnedString`), never as a view.
+#[pyfunction]
+pub fn echo(s: &str) -> &str {
+    s
+}
 /// `PyResult<T>` with a scalar payload: a `CResult` whose error is the opaque
 /// code, produced by dropping the `PyErr`.
 #[pyfunction]
@@ -98,6 +105,9 @@ pub mod geometry {
         pub extra: f64,
         #[pyo3(get)]
         pub name: String,
+        /// Usable but not `Copy`: the getter clones it out.
+        #[pyo3(get)]
+        pub tags: Vec<i32>,
     }
     #[pymethods]
     impl Rect {
@@ -109,6 +119,7 @@ pub mod geometry {
                 #[cfg(feature = "extra")]
                 extra: 0.0,
                 name: String::new(),
+                tags: Vec::new(),
             }
         }
         #[staticmethod]

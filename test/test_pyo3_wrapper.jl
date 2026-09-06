@@ -88,8 +88,16 @@ end
 
             functions, structs, skipped, exports = RustCall._pyo3_wrapper_items(source.manifest)
             names = Set(f.name for f in functions)
-            @test exports == 4
-            @test names == Set(["add", "shout", "greeting", "boom"])
+            @test exports == 5
+            @test names == Set(["add", "shout", "greeting", "boom", "echo"])
+            # A `&str` returned by a function that takes a string may point
+            # into the owned value the wrapper built from the argument, so it
+            # leaves as an owned copy; a `&str` with nothing to borrow from is
+            # still a view (#307 review).
+            abi = Dict(RustCall._mstr(f, "name") => RustCall._mstr(f, "return_abi")
+                       for f in RustCall._mvec(source.manifest, "functions"))
+            @test abi["echo"] == "string"
+            @test abi["greeting"] == "str"
             @test all(f -> f.exported && isempty(f.skip_reason), functions)
             @test isempty(structs)
 
@@ -118,6 +126,10 @@ end
             @test M.add(Int32(2), Int32(3)) == 5
             @test M.shout("hello") == "HELLO!"
             @test M.greeting() == "hello from a pyo3-optional crate"
+            # `&str` in, `&str` out: an owned copy, so the result never points
+            # into the argument the wrapper built and dropped (#307 review).
+            @test M.echo("héllo") == "héllo"
+            @test M.echo("") == ""
             @test M.boom(Int32(4)) == 8
 
             # The panic boundary is the one `#[julia]` uses, because the wrapper
@@ -159,8 +171,10 @@ end
                 bound = Base.invokelatest(getfield, mod, :PyO3OptionalBindings)
                 add = Base.invokelatest(getfield, bound, :add)
                 shout = Base.invokelatest(getfield, bound, :shout)
+                echo = Base.invokelatest(getfield, bound, :echo)
                 @test Base.invokelatest(add, Int32(4), Int32(5)) == 9
                 @test Base.invokelatest(shout, "x") == "X!"
+                @test Base.invokelatest(echo, "copied") == "copied"
             end
         end
     end
@@ -532,6 +546,30 @@ end
                 @test plan.mode === :python_free
                 @test RustCall.build_pyo3_wrapper(info) === nothing
             end
+            # The feature set the caller asked for travels with the plain
+            # build too, and is in its identity: a `--no-default-features`
+            # build is not the default build and must not answer its lookup
+            # (#307 review).
+            plain = RustCall.compute_crate_hash(info)
+            selected = RustCall.compute_crate_hash(info; features = ["python"],
+                                                   default_features = false)
+            @test plain != selected
+            @test RustCall.crate_library_name(info) !=
+                  RustCall.crate_library_name(info; features = ["python"],
+                                              default_features = false)
+            @test RustCall._cargo_build_args(true, ["python"], false) ==
+                  ["build", "--release", "--no-default-features", "--features", "python"]
+            @test RustCall._cargo_build_args(false, String[], true) == ["build"]
+            # ... and the generated `_julia_wrapper` crate names it in its
+            # dependency entry, the only place a dependency's features can be
+            # switched.
+            opts = RustCall.CrateBindingOptions(features = ["python", "extra"],
+                                                default_features = false)
+            toml = RustCall.generate_wrapper_cargo_toml(info, opts)
+            @test occursin("default-features = false", toml)
+            @test occursin("features = [\"python\", \"extra\"]", toml)
+            @test !occursin("default-features",
+                            RustCall.generate_wrapper_cargo_toml(info, RustCall.CrateBindingOptions()))
         end
     end
 

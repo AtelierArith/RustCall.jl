@@ -131,6 +131,39 @@ line = 34
 module_path = []
 
 [[functions]]
+name = "echo"
+symbol = "rustcall_echo"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "&str"
+return_kind = "plain"
+return_abi = "string"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = true
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 41
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "&str"
+abi = "str"
+
+[[functions]]
 name = "parse"
 symbol = "rustcall_parse"
 attribute = "py_function"
@@ -155,7 +188,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 41
+line = 49
 module_path = []
 
 [[functions.args]]
@@ -188,7 +221,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 49
+line = 57
 module_path = []
 
 [[functions.args]]
@@ -222,7 +255,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 56
+line = 64
 module_path = []
 
 [[functions]]
@@ -251,7 +284,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 63
+line = 71
 module_path = []
 
 [[functions]]
@@ -279,7 +312,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 69
+line = 77
 module_path = []
 
 [[functions.args]]
@@ -312,7 +345,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 75
+line = 83
 module_path = []
 
 [[functions.args]]
@@ -350,7 +383,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 82
+line = 90
 module_path = []
 
 [[functions.args]]
@@ -383,7 +416,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 88
+line = 96
 module_path = []
 
 [[functions.args]]
@@ -416,7 +449,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 99
+line = 107
 module_path = ["geometry"]
 
 [[functions.args]]
@@ -444,7 +477,7 @@ has_owned_string_helper = true
 has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
-line = 105
+line = 113
 module_path = ["geometry"]
 
 [[structs.fields]]
@@ -484,6 +517,16 @@ rust_type = "String"
 abi = "string"
 ffi_compatible = true
 getter = "rustcall_Rect_get_name"
+setter = ""
+python_name = ""
+vis = "pub"
+
+[[structs.fields]]
+name = "tags"
+rust_type = "Vec<i32>"
+abi = ""
+ffi_compatible = true
+getter = "rustcall_Rect_get_tags"
 setter = ""
 python_name = ""
 vis = "pub"
@@ -747,7 +790,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
-line = 183
+line = 195
 module_path = ["geometry"]
 
 [[structs.methods]]

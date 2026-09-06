@@ -32,6 +32,36 @@ function _cargo_panic_env(policy::LoadPolicy, env::Union{Nothing, AbstractDict},
 end
 
 """
+    _cargo_feature_args(features, default_features) -> Vector{String}
+
+The Cargo flags naming a feature set, in the spelling `cargo build` takes:
+`--no-default-features` when `default_features` is off, then `--features a,b`
+when `features` is non-empty. Empty for the default build.
+"""
+function _cargo_feature_args(features::Vector{String}, default_features::Bool)
+    args = String[]
+    default_features || push!(args, "--no-default-features")
+    isempty(features) || append!(args, ["--features", join(features, ",")])
+    return args
+end
+
+"""
+    _cargo_build_args(release, features, default_features) -> Vector{String}
+
+The argument vector of the `cargo build` a project is built with: the profile,
+then the feature set (`_cargo_feature_args`). A plain `@rust_crate` build made
+with `features = ...` / `default_features = false` passes them here, so the
+crate is built with the configuration that was asked for and not its default
+one (#307 review).
+"""
+function _cargo_build_args(release::Bool, features::Vector{String}, default_features::Bool)
+    args = ["build"]
+    release && push!(args, "--release")
+    append!(args, _cargo_feature_args(features, default_features))
+    return args
+end
+
+"""
     build_cargo_project(project::CargoProject; release::Bool = true) -> String
 
 Build a Cargo project and return the path to the compiled library.
@@ -50,14 +80,12 @@ Build a Cargo project and return the path to the compiled library.
 """
 function build_cargo_project(project::CargoProject; release::Bool = true,
                              env::Union{Nothing, AbstractDict} = nothing,
-                             policy::LoadPolicy = inline_cargo_policy())
+                             policy::LoadPolicy = inline_cargo_policy(),
+                             features::Vector{String} = String[],
+                             default_features::Bool = true)
     # Build command
     cargo_cmd = cargo()
-    build_args = ["build"]
-
-    if release
-        push!(build_args, "--release")
-    end
+    build_args = _cargo_build_args(release, features, default_features)
 
     # The panic strategy is pinned twice: in the generated manifest and here,
     # in the environment Cargo runs under (#244). The manifest key already
