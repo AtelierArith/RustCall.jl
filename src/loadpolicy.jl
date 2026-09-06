@@ -1301,7 +1301,14 @@ function close_retired_handles!(handles = retired_handles())
         found
     end
     for (handle, _) in records
-        close_artifact_handle!(handle)
+        # Drain the handle's owned opens, not just one of them. `dlopen`
+        # refcounts, so one image loaded under two names owes two closes, and
+        # closing once left the last loader reference unreclaimable — the image
+        # stayed mapped for the life of the process even though its record was
+        # gone. `close_artifact_handle!` decrements and returns `false` once
+        # the debt is paid, so this terminates on its own.
+        while close_artifact_handle!(handle)
+        end
     end
     return length(records)
 end
@@ -1326,7 +1333,10 @@ artifact_handle_open_count(handle::Ptr{Cvoid}) =
 """
     DLCLOSE_COUNT
 
-How many images this session has closed, process-wide.
+How many `dlclose` calls this session has made, process-wide.
+
+One image can be closed more than once: `dlopen` refcounts, so an image loaded
+under two names owes two closes, and this counts each of them.
 
 Closing an image twice is not an error the loader can detect after the fact —
 the second `dlclose` decrements a refcount that belongs to someone else, or

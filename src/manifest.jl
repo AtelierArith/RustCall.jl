@@ -534,13 +534,22 @@ build, or a workspace member Cargo refuses to probe. The caller must treat an
 empty result as "unknown" and fall back to the lenient scan; guessing a
 configuration is worse than not deciding one.
 
-Cached per `(crate path, profile, Cargo/RUSTFLAGS environment)`. `--print cfg`
-still resolves and builds the crate's dependencies, but every caller today has
-just built the crate anyway.
+Cached per `(crate path, profile, Cargo/RUSTFLAGS environment)` **and the
+content of everything that decides the answer**: the crate's `Cargo.toml` (its
+`[features]` and their defaults), its `build.rs` (which can emit
+`cargo::rustc-cfg`), and the `.cargo/config.toml` chain from the crate up to
+`CARGO_HOME`. Keyed on the path alone, a hot reload after a feature or
+build-script change reused the previous probe and rescanned the crate against
+`#[cfg]`s the new build does not have — registering the wrong ABI for the
+functions it then called (#255, #277).
+
+`--print cfg` still resolves and builds the crate's dependencies, but every
+caller today has just built the crate anyway.
 """
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release")
     path = abspath(String(crate_path))
-    key = path * "\n" * String(profile) * "\n" * _cargo_cfg_env_key()
+    key = path * "\n" * String(profile) * "\n" * _cargo_cfg_env_key() * "\n" *
+          _crate_cfg_inputs_digest(path)
     lock(_EXTRACTOR_LOCK) do
         get!(_CRATE_CFG_TEXT, key) do
             try
@@ -553,6 +562,29 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
             end
         end
     end
+end
+
+"""
+    _crate_cfg_inputs_digest(path) -> String
+
+A digest of everything, other than the environment, that decides what
+`cargo rustc -- --print cfg` answers for the crate at `path`: its `Cargo.toml`,
+its `build.rs`, and the `.cargo/config.toml` chain Cargo would consult from the
+crate directory upwards (including `CARGO_HOME`).
+
+Not the whole crate: the `.rs` sources do not change the cfg set, and hashing
+them would invalidate the memo on every edit during a hot-reload session — the
+one workload that probes most often. `Cargo.lock` is deliberately absent for
+the reason it is absent from the reload fingerprint: the build writes it.
+"""
+function _crate_cfg_inputs_digest(path::AbstractString)
+    io = IOBuffer()
+    for name in ("Cargo.toml", "build.rs")
+        file = joinpath(path, name)
+        print(io, name, "=", isfile(file) ? _file_content_digest(file) : "absent", "\n")
+    end
+    print(io, "cargo-config=", _cargo_config_digest(ENV; dir = path), "\n")
+    return bytes2hex(sha256(take!(io)))
 end
 
 """

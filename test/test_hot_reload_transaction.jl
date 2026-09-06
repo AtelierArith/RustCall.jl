@@ -21,6 +21,8 @@ const _HRT_SRC = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
                                "hot_reload.jl"), String)
 _src_loadpolicy() = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
                                   "loadpolicy.jl"), String)
+_src_structs() = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
+                               "structs.jl"), String)
 
 const _HRT_CARGO = try
     success(run(pipeline(`cargo --version`, devnull, devnull); wait = true))
@@ -236,6 +238,31 @@ end
                 @test RustCall._await_source_change(state, 0.3) == false
             end
             @test time() - t0 < 5.0
+
+            # ...and it did not *scan*. This is the criterion, counted rather
+            # than inferred: `watch_folder` returning "the wait expired" used
+            # to be treated as an event, so an idle project `stat`ed every
+            # source file every interval, forever. A timeout now returns
+            # without touching the mtime table (#255).
+            RustCall._drain_source_changes(state, 0.05)
+            before_scans = RustCall.source_scan_count()
+            for _ in 1:4
+                @test RustCall._await_source_change(state, 0.2) == false
+            end
+            @test RustCall.source_scan_count() == before_scans
+
+            # A real change still wakes it — the watch is event-driven, not
+            # disabled.
+            _hrt_write_source(crate, 2)
+            woke = false
+            for _ in 1:10
+                if RustCall._await_source_change(state, 1.0)
+                    woke = true
+                    break
+                end
+            end
+            @test woke
+            @test RustCall.source_scan_count() > before_scans
 
             # The debounce cannot be extended forever by a platform that keeps
             # handing back a queued event.
@@ -525,6 +552,64 @@ end
     end
 
     # ------------------------------------------------------------------
+    # The cfg probe is memoized on what decides its answer (#255, #277).
+    #
+    # A reload rescans the crate under the `#[cfg]` set its build actually
+    # has. That set was memoized on the crate *path*, so turning a default
+    # feature on or off between two reloads reused the previous answer: the
+    # rescan then described `#[cfg(feature = ...)]` items the new build does
+    # not contain, or missed ones it does, and registered the wrong ABI for
+    # functions the program went on to call.
+    # ------------------------------------------------------------------
+    if !_HRT_CARGO
+        @test_skip "cargo is required for the cfg-probe memo test"
+    else
+        @testset "the cfg probe follows a feature change (#255)" begin
+            mktempdir() do dir
+                crate = joinpath(dir, "cfgmemo")
+                mkpath(joinpath(crate, "src"))
+                manifest = joinpath(crate, "Cargo.toml")
+                write_manifest = defaults -> write(manifest, """
+                    [package]
+                    name = "hrt_cfgmemo"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [features]
+                    default = [$(defaults)]
+                    extra = []
+
+                    [dependencies]
+                    """)
+                write(joinpath(crate, "src", "lib.rs"), """
+                    #[no_mangle]
+                    pub extern "C" fn hrt_cfgmemo() -> i32 { 1 }
+                    """)
+
+                write_manifest("")
+                without = RustCall._crate_build_cfg_text(crate)
+                @test !isempty(without)
+                @test !occursin("feature=\"extra\"", without)
+
+                # Only `Cargo.toml` changed — no source edit, and the path is
+                # the same, which is all the old memo key looked at.
+                write_manifest("\"extra\"")
+                with = RustCall._crate_build_cfg_text(crate)
+                @test occursin("feature=\"extra\"", with)
+                @test with != without
+
+                # ...and back again, so this is the memo following the input
+                # rather than simply never memoizing.
+                write_manifest("")
+                @test RustCall._crate_build_cfg_text(crate) == without
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------
     # A cached `FunctionInfo` is itself a snapshot (#277).
     #
     # This is the monomorphized-generic shape: the record is built once and
@@ -576,9 +661,30 @@ end
                     # The image is *retired*, not closed, so the pointer is
                     # still callable — and the panic must still be raised
                     # rather than returned as a zero.
+                    # A constructor's snapshot carries the destructor and the
+                    # liveness flag the object it allocates will capture, so
+                    # the two cannot come from different generations (#277).
+                    ctor = RustCall.resolve_call_target(lib_name, "Thing_new";
+                                                        free_symbol = "Thing_free")
+                    handle = lock(() -> RustCall.RUST_LIBRARIES[lib_name][1],
+                                  RustCall.REGISTRY_LOCK)
+                    @test ctor.handle == handle
+                    @test ctor.free_ptr == Libdl.dlsym(handle, "Thing_free")
+                    @test ctor.alive === RustCall.artifact_alive_ref(lib_name)
+                    @test ctor.alive[]
+                    @test ctor.generation == RustCall.artifact_generation(lib_name)
+                    # ...and that is what `_call_rust_constructor` hands the
+                    # generated inner constructor.
+                    @test occursin("_call_rust_constructor(lib, ", _src_structs())
+                    @test occursin("tgt.free_ptr, tgt.alive", _src_structs())
+
                     RustCall.unload_library(lib_name)
                     @test !haskey(RustCall.RUST_LIBRARIES, lib_name)
                     @test_throws RustCall.RustPanicError RustCall._call_monomorphized(info)
+                    # The image is retired, not closed, so the destructor the
+                    # object captured is still callable and its flag still
+                    # true — which is what makes "retire, not close" safe.
+                    @test ctor.alive[]
                 finally
                     try
                         RustCall.unload_library(lib_name)
@@ -652,6 +758,9 @@ end
                     # read the handle of one generation and the code of another
                     # would show up as one number with two values.
                     seen = Set{Tuple{Int, Int32}}()
+                    # (generation of the constructor snapshot, generation
+                    # marker stored in the object it allocated).
+                    ctor_seen = Set{Tuple{Int, Int32}}()
                     seen_lock = ReentrantLock()
                     crate_calls = Threads.Atomic{Int}(0)
                     dead_generation = Threads.Atomic{Int}(0)
@@ -727,14 +836,30 @@ end
                     end
 
                     # An allocator: objects are created and dropped while the
-                    # image under them is replaced.
+                    # image under them is replaced. The object records the
+                    # generation marker of the image that allocated it and the
+                    # destructor it captured, and the two must agree — a
+                    # constructor whose object took its destructor from a
+                    # *later* snapshot would free through the wrong image.
                     allocator = Threads.@spawn begin
                         while !stop[]
-                            target = RustCall.resolve_call_target(lib_name, "Thing_new")
-                            gen = RustCall.artifact_generation_snapshot(lib_name, "Thing")
+                            # ONE snapshot for the whole construction — the
+                            # allocating wrapper and the destructor the object
+                            # will carry — exactly as `_call_rust_constructor`
+                            # now does for a `#[julia]` constructor (#277).
+                            target = RustCall.resolve_call_target(
+                                lib_name, "Thing_new"; free_symbol = "Thing_free")
                             ptr = RustCall.call_rust_function(target.func_ptr, Ptr{Cvoid})
-                            thing = StressThing(ptr, gen.free_ptr, gen.alive)
+                            thing = StressThing(ptr, target.free_ptr, target.alive)
                             finalizer(RustCall.finalize_rust_object!, thing)
+                            # The object carries the marker of the image that
+                            # allocated it; the snapshot says which generation
+                            # that was. A construction that straddled a swap
+                            # would pair one generation with another's marker.
+                            marker = unsafe_load(Ptr{Int32}(ptr))
+                            lock(seen_lock) do
+                                push!(ctor_seen, (target.generation, marker))
+                            end
                             Threads.atomic_add!(objects, 1)
                             thing = nothing
                             GC.gc(false)
@@ -777,6 +902,11 @@ end
                     # that had been closed under it, and each generation number
                     # is paired with exactly one returned value — a call that
                     # straddled a swap would pair one number with two.
+                    # Every constructed object came from the generation its
+                    # snapshot named: one snapshot generation, one marker.
+                    @test length(ctor_seen) > 0
+                    @test length(unique(first, collect(ctor_seen))) == length(ctor_seen)
+
                     @test crate_calls[] > 0
                     @test dead_generation[] == 0
                     @test length(unique(first, collect(seen))) == length(seen)

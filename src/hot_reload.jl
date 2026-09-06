@@ -131,6 +131,7 @@ Check if any source files have been modified since last check.
 Updates the last_modified times if changes are detected.
 """
 function check_for_changes(state::HotReloadState)
+    Threads.atomic_add!(SOURCE_SCANS, 1)
     changed = false
 
     for src_file in state.source_files
@@ -480,6 +481,27 @@ function start_watch_task(state::HotReloadState; interval::Float64=1.0,
 end
 
 """
+    SOURCE_SCANS
+
+How many times a watcher has scanned a crate's sources (`check_for_changes`),
+process-wide.
+
+Diagnostic, and the way the "no polling loop when idle" criterion of #255 is
+actually *checked*: an idle watcher must leave this number alone, however long
+it waits. Before the timeout check in `_await_source_change`, `watch_folder`
+returning "nothing happened" was treated as an event and every interval cost a
+`stat` of every source file.
+"""
+const SOURCE_SCANS = Threads.Atomic{Int}(0)
+
+"""
+    source_scan_count() -> Int
+
+The value of `SOURCE_SCANS`.
+"""
+source_scan_count() = SOURCE_SCANS[]
+
+"""
     HOT_RELOAD_DEBOUNCE_SECONDS
 
 How long to keep coalescing file events after the first one before rebuilding.
@@ -512,7 +534,7 @@ temporary file both produce events, and only the mtime check decides.
 function _await_source_change(state::HotReloadState, timeout::Real)
     src_dir = joinpath(state.crate_path, "src")
     isdir(src_dir) || return (sleep(timeout); check_for_changes(state))
-    try
+    event = try
         FileWatching.watch_folder(src_dir, timeout)
     catch e
         e isa InterruptException && rethrow()
@@ -520,8 +542,27 @@ function _await_source_change(state::HotReloadState, timeout::Real)
         # than spinning on the error.
         @debug "Hot reload: cannot watch $(src_dir); polling instead" exception = e
         sleep(timeout)
+        nothing
     end
+    # A timeout is **not** an event, and must not be answered with a scan.
+    # Returning here is the difference between an event-driven watch and a
+    # `stat` of every source file every `interval` — which is the polling loop
+    # #255 exists to remove, and which an idle project would run forever.
+    _watch_timed_out(event) && return false
     return check_for_changes(state)
+end
+
+# `watch_folder` answers with `path => FileEvent`; the event says whether it
+# fired or the wait expired. `nothing` is the poll fallback above, which does
+# want a scan.
+function _watch_timed_out(event)
+    event === nothing && return false
+    return try
+        fired = last(event)
+        hasproperty(fired, :timedout) ? fired.timedout : false
+    catch
+        false
+    end
 end
 
 """

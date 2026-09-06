@@ -185,6 +185,10 @@ by library name.**
 - `channel` — that wrapper's panic channel (`C_NULL` when it has none).
 - `free_ptr` — the release function for an owned-`String` result, when the
   caller asked for one (`C_NULL` otherwise).
+- `alive` — the liveness flag of that image. A **constructor** needs it: the
+  object it returns was allocated by this generation, so it must capture this
+  generation's destructor and this generation's flag, not whatever the library
+  name resolves to after the call returns.
 - `handle` — the image they were resolved on. What finds the right liveness
   flag later, when the library's *name* may have moved on.
 - `lib_name` — the library the pointers came from, for diagnostics.
@@ -201,6 +205,7 @@ struct CallTarget
     func_ptr::Ptr{Cvoid}
     channel::Ptr{Cvoid}
     free_ptr::Ptr{Cvoid}
+    alive::Base.RefValue{Bool}
     handle::Ptr{Cvoid}
     lib_name::String
     return_type::Union{Type, Nothing}

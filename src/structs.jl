@@ -365,14 +365,25 @@ function emit_julia_definitions(info::RustStructInfo)
             free_ptr::Ptr{Cvoid}
             alive::Base.RefValue{Bool}
 
-            function $esc_struct(ptr::Ptr{Cvoid}, lib::String)
-                # One snapshot: the destructor and the liveness flag of the
-                # *same* generation. Two lookups could straddle a reload
-                # (#249, #277).
-                gen = RustCall.artifact_generation_snapshot(lib, $struct_name_str)
-                obj = new(ptr, lib, gen.free_ptr, gen.alive)
+            # The one that matters: the destructor and the liveness flag are
+            # handed in by the caller, taken from the *same* snapshot as the
+            # call that allocated `ptr`. Resolving them here instead would be
+            # a second lookup after the constructor returned, and a reload in
+            # between would bind a pointer from the retired image to the
+            # replacement's destructor (#249, #277).
+            function $esc_struct(ptr::Ptr{Cvoid}, lib::String,
+                                 free_ptr::Ptr{Cvoid}, alive::Base.RefValue{Bool})
+                obj = new(ptr, lib, free_ptr, alive)
                 finalizer(RustCall.finalize_rust_object!, obj)
                 return obj
+            end
+
+            # For a pointer that did not come from a call of this library —
+            # a hand-built object in a test, say. It takes its own snapshot,
+            # which is the best it can do.
+            function $esc_struct(ptr::Ptr{Cvoid}, lib::String)
+                gen = RustCall.artifact_generation_snapshot(lib, $struct_name_str)
+                return $esc_struct(ptr, lib, gen.free_ptr, gen.alive)
             end
         end
     end)
@@ -401,8 +412,11 @@ function emit_julia_definitions(info::RustStructInfo)
                     function (::Type{$esc_struct})($(esc_args...))
                         $(bindings...)
                         lib = get_current_library()
-                        ptr = GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $(expanded_call_args...))
-                        return $esc_struct(ptr, lib)
+                        # One snapshot for the whole construction: the wrapper
+                        # that allocates, its panic channel, and the destructor
+                        # and liveness flag the object will carry (#277).
+                        ptr, tgt = GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_name_str, $(expanded_call_args...))
+                        return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)
                     end
                 end)
             else
@@ -467,11 +481,14 @@ function emit_julia_definitions(info::RustStructInfo)
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
-                        res = GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...))
                         if $is_ctor_ret
-                            return $esc_struct(res, self.lib_name)
+                            # A `Self`-returning method allocates, so its result
+                            # is bound to the generation that ran it, exactly
+                            # like a constructor (#277).
+                            res, tgt = GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_name_str, self.ptr, $(expanded_call_args...))
+                            return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive)
                         else
-                            return res
+                            return GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...))
                         end
                     end
                 end)
@@ -582,9 +599,11 @@ function emit_julia_definitions(info::RustStructInfo)
             clone_name = struct_name_str * "_clone"
             push!(exprs, quote
                 function Base.copy(self::$esc_struct)
-                    lib = self.lib_name
-                    ptr = _call_rust_constructor(lib, $clone_name, self.ptr)
-                    return $esc_struct(ptr, lib)
+                    # `clone` allocates, so the copy belongs to the generation
+                    # that cloned it (#277).
+                    ptr, tgt = GC.@preserve self _call_rust_constructor(
+                        self.lib_name, $clone_name, $struct_name_str, self.ptr)
+                    return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)
                 end
             end)
         end
@@ -825,8 +844,24 @@ function _call_rust_free(lib_name::String, func_name::String, ptr::Ptr{Cvoid})
     end
 end
 
-function _call_rust_constructor(lib_name::String, func_name::String, args...)
-    return _rust_call_typed(lib_name, func_name, Ptr{Cvoid}, args...)
+"""
+    _call_rust_constructor(lib_name, func_name, struct_name, args...) -> (ptr, target)
+
+Run a constructor (or a `Self`-returning method) and hand back **both** the
+allocated pointer and the snapshot it came from.
+
+The object built from `ptr` must capture the destructor and the liveness flag
+of the generation that allocated it. Taking them afterwards — even immediately
+afterwards — is a second lookup by library name, and a reload in between binds a
+pointer from the retired image to the replacement's `free` (#277).
+"""
+function _call_rust_constructor(lib_name::String, func_name::String,
+                                struct_name::AbstractString, args...)
+    target = resolve_call_target(lib_name, func_name;
+                                 free_symbol = ffi_struct_free_symbol(struct_name))
+    ptr = guard_rust_panic_ptr(call_rust_function(target.func_ptr, Ptr{Cvoid}, args...),
+                               target.channel, func_name)
+    return (ptr, target)
 end
 
 function _crust_string_to_julia(raw::CRustString)

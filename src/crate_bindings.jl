@@ -450,6 +450,20 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
              _required_symbol(handle, free_symbol))
         end
 
+        # The constructor arm: the wrapper that *allocates*, its channel, and
+        # the destructor and liveness flag the resulting object will carry —
+        # all from one deref. Taking the object's half after the call returned
+        # would bind a pointer allocated by the retired image to the
+        # replacement's destructor (#277).
+        function _ctor_target(symbol::String, free_symbol::String)
+            gen = _LIB_GEN[]
+            handle = _live_handle(gen)
+            (_required_symbol(handle, symbol),
+             _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
+             _symbol(handle, free_symbol),
+             gen.alive)
+        end
+
         # The per-object half: a struct's destructor and the liveness flag of
         # the image that exports it — one deref, so they are always the same
         # generation. A missing destructor is `C_NULL`, which makes the
@@ -733,16 +747,22 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
             free_ptr::Ptr{Cvoid}
             alive::Base.RefValue{Bool}
 
-            function $struct_name(ptr::Ptr{Cvoid})
-                # The destructor is resolved *here*, not in the finalizer: a
-                # finalizer must do no `dlsym` and compile no method (#249).
-                # `_LIB_ALIVE` is the module's liveness flag, flipped when the
-                # library is unloaded, so an object that outlives its library
-                # becomes inert instead of calling into a closed image.
-                free_ptr, alive = _struct_generation($(ffi_struct_free_symbol(struct_name_str)))
+            # The destructor and the liveness flag are handed in by the call
+            # that allocated `ptr`, from that call's own snapshot: a finalizer
+            # must do no `dlsym` and compile no method (#249), and resolving
+            # them after the constructor returned could pair a pointer from the
+            # retired image with the replacement's destructor (#277).
+            function $struct_name(ptr::Ptr{Cvoid}, free_ptr::Ptr{Cvoid},
+                                  alive::Base.RefValue{Bool})
                 obj = new(ptr, free_ptr, alive)
                 finalizer(RustCall.finalize_rust_object!, obj)
                 return obj
+            end
+
+            # For a pointer that did not come from a call of this module.
+            function $struct_name(ptr::Ptr{Cvoid})
+                free_ptr, alive = _struct_generation($(ffi_struct_free_symbol(struct_name_str)))
+                return $struct_name(ptr, free_ptr, alive)
             end
         end
         export $struct_name
@@ -954,9 +974,14 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     channel_sym = _generated_local("panic_channel", method.arg_names)
     free_sym = _generated_local("free_ptr", method.arg_names)
     target = :(($ptr_sym, $channel_sym) = _call_target($wrapper_name))
+    alive_sym = _generated_local("alive", method.arg_names)
     call = if method.returns_boxed_struct
-        # Constructors and `Self`-returning methods get a boxed struct pointer
-        :($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...))))
+        # Constructors and `Self`-returning methods allocate, so the object is
+        # bound to the generation that ran the call (#277).
+        target = :(($ptr_sym, $channel_sym, $free_sym, $alive_sym) =
+                       _ctor_target($wrapper_name, $(ffi_struct_free_symbol(struct_name_str))))
+        :($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...)),
+                       $free_sym, $alive_sym))
     elseif ffi_owned_string_return(c)
         target = :(($ptr_sym, $channel_sym, $free_sym) = _call_target($wrapper_name, $(c.free_symbol)))
         :(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(all_args...)))
@@ -1753,6 +1778,17 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "     _required_symbol(handle, free_symbol))")
     push!(lines, "end")
     push!(lines, "")
+    push!(lines, "# The constructor arm: the allocating wrapper, its channel, and the")
+    push!(lines, "# destructor and flag the resulting object carries -- one deref (#277).")
+    push!(lines, "function _ctor_target(symbol::String, free_symbol::String)")
+    push!(lines, "    gen = _LIB_GEN[]")
+    push!(lines, "    handle = _live_handle(gen)")
+    push!(lines, "    (_required_symbol(handle, symbol),")
+    push!(lines, "     _symbol(handle, RustCall.ffi_panic_symbol(symbol)),")
+    push!(lines, "     _symbol(handle, free_symbol),")
+    push!(lines, "     gen.alive)")
+    push!(lines, "end")
+    push!(lines, "")
     push!(lines, "# A struct's destructor and the liveness flag of the image that exports it,")
     push!(lines, "# from the same deref (#249, #277).")
     push!(lines, "function _struct_generation(free_symbol::String)")
@@ -1949,11 +1985,15 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
     push!(lines, "    free_ptr::Ptr{Cvoid}")
     push!(lines, "    alive::Base.RefValue{Bool}")
     push!(lines, "")
-    push!(lines, "    function $struct_name(ptr::Ptr{Cvoid})")
-    push!(lines, "        free_ptr, alive = _struct_generation($(repr(ffi_struct_free_symbol(struct_name))))")
+    push!(lines, "    function $struct_name(ptr::Ptr{Cvoid}, free_ptr::Ptr{Cvoid}, alive::Base.RefValue{Bool})")
     push!(lines, "        obj = new(ptr, free_ptr, alive)")
     push!(lines, "        finalizer(RustCall.finalize_rust_object!, obj)")
     push!(lines, "        return obj")
+    push!(lines, "    end")
+    push!(lines, "")
+    push!(lines, "    function $struct_name(ptr::Ptr{Cvoid})")
+    push!(lines, "        free_ptr, alive = _struct_generation($(repr(ffi_struct_free_symbol(struct_name))))")
+    push!(lines, "        return $struct_name(ptr, free_ptr, alive)")
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "export $struct_name")
@@ -2088,8 +2128,11 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     free_var = _generated_local("free_ptr", method.arg_names)
     channel_var = _generated_local("panic_channel", method.arg_names)
     target = "$ptr_var, $channel_var = _call_target(\"$wrapper_name\")"
+    alive_var = _generated_local("alive", method.arg_names)
     call = if method.returns_boxed_struct
-        "$struct_name(call_rust_function($ptr_var, Ptr{Cvoid}, $args_str))"
+        target = "$ptr_var, $channel_var, $free_var, $alive_var = " *
+                 "_ctor_target(\"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_name))\")"
+        "$struct_name(call_rust_function($ptr_var, Ptr{Cvoid}, $args_str), $free_var, $alive_var)"
     elseif ffi_owned_string_return(c)
         target = "$ptr_var, $channel_var, $free_var = _call_target(\"$wrapper_name\", \"$(c.free_symbol)\")"
         "_call_rust_owned_string_ptr($ptr_var, $free_var, $args_str)"

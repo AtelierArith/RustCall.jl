@@ -390,6 +390,12 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         # The generic struct destructor and its liveness flag come from one
         # locked read, like the non-generic path.
         @test occursin("generic_struct_generation_snapshot(", _src("structs.jl"))
+        # A constructor allocates, so the object it returns is built from the
+        # constructor's own snapshot — never from a second lookup afterwards.
+        @test occursin("ptr, tgt = GC.@preserve", _src("structs.jl"))
+        @test occursin("\$esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)",
+                       _src("structs.jl"))
+        @test occursin("_ctor_target(", _src("crate_bindings.jl"))
         @test occursin("alive_ref_for_handle(", _src("structs.jl"))
         # ...and the old, resolve-after-the-call entry points are gone.
         for file in readdir(_SRC_DIR)
@@ -756,6 +762,53 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     # -----------------------------------------------------------------
     # A module-local copy of a handle must not go stale (#277).
     #
+    # -----------------------------------------------------------------
+    # One image, two names: `dlopen` refcounts, so two opens owe two closes.
+    # Retiring the record and closing once left the last loader reference
+    # unreclaimable and the image mapped for the life of the process (#277).
+    # -----------------------------------------------------------------
+    @testset "retiring an image drains its owned opens" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            path = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_drain_probe() -> i32 { 3 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            first_name = "loadpolicy_drain_a_$(getpid())"
+            second_name = "loadpolicy_drain_b_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, path; lib_name = first_name)
+                b = RustCall.load_artifact!(policy, path; lib_name = second_name)
+                # The same file, so `dlopen` hands back the same image twice.
+                @test a.handle == b.handle
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+
+                RustCall.unload_artifact!(policy, first_name)
+                RustCall.unload_artifact!(policy, second_name)
+                @test a.handle in RustCall.retired_handles()
+
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.close_retired_handles!([a.handle]) == 1
+                # Two opens, two closes: the loader holds no reference now.
+                # One close would have left the image mapped for the life of
+                # the process, with its record already discarded.
+                @test RustCall.DLCLOSE_COUNT[] == before + 2
+                @test !RustCall.artifact_handle_is_owned(a.handle)
+                @test RustCall.artifact_handle_open_count(a.handle) == 0
+                @test !(a.handle in RustCall.retired_handles())
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    for name in (first_name, second_name)
+                        delete!(RustCall.RUST_LIBRARIES, name)
+                        delete!(RustCall.ARTIFACT_ALIVE, name)
+                    end
+                end
+            end
+        end
+    end
+
     # A generated `@rust_crate` module reads its handle from its own `Ref` on
     # every call. A hot reload closes the previous image and `unload_library`
     # closes it outright, so a raw copy would be a `dlsym` into unmapped

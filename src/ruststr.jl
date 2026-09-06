@@ -94,7 +94,10 @@ have left there is reported against a call that never made it. Same for the
 release function of a `String` result, which used to be resolved by library
 name *after* the wrapper had already returned.
 
-`free_symbol`, when given, is resolved on the same handle. It is only ever the
+`free_symbol`, when given, is resolved on the same handle — the
+`<owner>_free_rust_string` of a function returning an owned `String`, or the
+`<Struct>_free` of a constructor, whose result must capture *this* generation's
+destructor. It is only ever the
 `<owner>_free_rust_string` of the function being called, which by construction
 lives in the same image as the buffer it releases — the allocator contract
 (`docs/src/panics.md`).
@@ -137,7 +140,9 @@ function resolve_call_target(lib_name::String, func_name::String;
             return_type = get(FUNCTION_RETURN_TYPES_BY_LIB, (owner, func_name), nothing)
             func_info = get(FUNCTION_REGISTRY_BY_LIB, (owner, func_name),
                             get(FUNCTION_REGISTRY, func_name, nothing))
-            CallTarget(func_ptr, channel, free_ptr, handle, owner, return_type, func_info,
+            CallTarget(func_ptr, channel, free_ptr,
+                       alive_ref_for_handle(handle, owner), handle, owner,
+                       return_type, func_info,
                        get(ARTIFACT_GENERATIONS, owner, 0))
         end
 

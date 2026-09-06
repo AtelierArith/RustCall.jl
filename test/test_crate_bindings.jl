@@ -730,8 +730,13 @@ end
         # Source-text emitter (write_bindings_to_file).
         for m in struct_info.methods
             code = RustCall._emit_method_code(struct_info, m)
-            @test occursin("_call_target(\"rustcall_Point_$(m.name)\"", code)
+            # A constructor takes its snapshot through `_ctor_target`, which
+            # also carries the destructor and the liveness flag the object it
+            # allocates will capture (#277).
+            resolver = m.returns_boxed_struct ? "_ctor_target" : "_call_target"
+            @test occursin("$(resolver)(\"rustcall_Point_$(m.name)\"", code)
             @test !occursin("_call_target(\"\"", code)
+            @test !occursin("_ctor_target(\"\"", code)
         end
         # The string buffers stay named after the method, not after the symbol
         # — and the function that releases the buffer is resolved *with* the
@@ -1037,8 +1042,11 @@ end
     label_method = only(filter(m -> m.name == "label", labeler_info.methods))
     @test occursin("GC.@preserve(self, __rustcall_str_name, _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
     # Constructors still return the boxed struct
-    @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)))", code)
-    @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)))", code)
+    # A boxed-struct result is bound to the generation that allocated it: the
+    # destructor and the flag come from the constructor's own snapshot (#277).
+    @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)), free_ptr, alive)", code)
+    @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)), free_ptr, alive)", code)
+    @test occursin("_ctor_target(\"rustcall_Point_new\", \"Point_free\")", code)
     @test Meta.parse(code) isa Expr
 
     if RustCall.check_rustc_available()
