@@ -26,6 +26,9 @@ source text.
 - `return_abi`: manifest `Function.return_abi` — `"string"` (owned buffer),
   `"str"` (borrowed view) or `""` (as written). The normative description of
   how the wrapper returns its value (#276)
+- `ok_abi`/`err_abi`/`inner_abi`: how each `Result`/`Option` payload travels —
+  `"string"` for an owned `<fn>_RustCallOwnedString` buffer, `""` as written
+  (manifest schema 6, #268)
 """
 struct RustFunctionSignature
     name::String
@@ -63,6 +66,12 @@ struct RustFunctionSignature
     # Crate features the item's `#[cfg]` predicate depends on, derived from the
     # predicate by the extractor so Julia never reads Rust `cfg` syntax (#275).
     cfg_features::Vector{String}
+    # Manifest schema 6 (#268): how each `Result`/`Option` payload travels —
+    # `""` as written, `"string"` for an owned `<fn>_RustCallOwnedString`
+    # buffer released with `<fn>_free_rust_string`.
+    ok_abi::String
+    err_abi::String
+    inner_abi::String
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -81,14 +90,18 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                return_abi::String = _default_return_abi(return_type, arg_abis),
                                vis::String = "pub", skip_reason::String = "",
                                python_name::String = "",
-                               cfg_features::Vector{String} = String[])
+                               cfg_features::Vector{String} = String[],
+                               ok_abi::String = _default_payload_abi(ok_type),
+                               err_abi::String = _default_payload_abi(err_type),
+                               inner_abi::String = _default_payload_abi(inner_type))
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
-                          return_abi, vis, skip_reason, python_name, cfg_features)
+                          return_abi, vis, skip_reason, python_name, cfg_features,
+                          ok_abi, err_abi, inner_abi)
 end
 
 """
@@ -425,36 +438,38 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
     # The payloads are FIELDS of a `#[repr(C)]` aggregate, so they are declared
     # with the type Rust stored — the C slot — and converted to the surface type
     # after the call. For `char` those differ: Rust writes a `UInt32` code point
-    # where Julia's `Char` would be a left-aligned UTF-8 bit pattern (#245).
-    ok_t = ffi_return_symbol_or_throw(sig.ok_type, "", ctx)
-    err_t = ffi_return_symbol_or_throw(sig.err_type, "", ctx)
-    ok_slot = ffi_return_slot_symbol_or_throw(sig.ok_type, "", ctx)
-    err_slot = ffi_return_slot_symbol_or_throw(sig.err_type, "", ctx)
-    lib_sym = _generated_local("lib_name", sig.arg_names)
-    ptr_sym = _generated_local("func_ptr", sig.arg_names)
+    # where Julia's `Char` would be a left-aligned UTF-8 bit pattern (#245); for
+    # a `String` payload the slot is the owned `CRustString` buffer (#268).
+    ok_t, ok_slot = ffi_payload_symbols(sig.ok_type, sig.ok_abi, ctx)
+    err_t, err_slot = ffi_payload_symbols(sig.err_type, sig.err_abi, ctx)
+    free_sym = _payload_free_symbol(sig.name, (sig.ok_abi, sig.err_abi))
     c_sym = _generated_local("c_result", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
+            # One snapshot: the wrapper, its panic channel and — when a payload
+            # is an owned string — the `<fn>_free_rust_string` that releases it,
+            # all from the generation that will run the call (#277).
             $channel_sym =
-                RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
+                RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
+                                             free_symbol = $free_sym)
             $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.CResultType{$ok_slot, $err_slot}, $(converted_args...))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel must be read before the
             # payload is decoded, and resolved before the call (#244).
             RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name)
-            RustCall.convert_c_result_to_rust_result($c_sym, $ok_t, $err_t)
+            RustCall.convert_c_result_to_rust_result($c_sym, $ok_t, $err_t,
+                                                     $channel_sym.free_ptr)
         end
     end
 end
 
 function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
-    inner_t = ffi_return_symbol_or_throw(sig.inner_type, "", _ffi_context(sig))
-    inner_slot = ffi_return_slot_symbol_or_throw(sig.inner_type, "", _ffi_context(sig))
-    lib_sym = _generated_local("lib_name", sig.arg_names)
-    ptr_sym = _generated_local("func_ptr", sig.arg_names)
+    ctx = _ffi_context(sig)
+    inner_t, inner_slot = ffi_payload_symbols(sig.inner_type, sig.inner_abi, ctx)
+    free_sym = _payload_free_symbol(sig.name, (sig.inner_abi,))
     c_sym = _generated_local("c_option", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name
@@ -462,13 +477,26 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
         function $func_name($(arg_syms...))
             $(bindings...)
             $channel_sym =
-                RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
+                RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
+                                             free_symbol = $free_sym)
             $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.COptionType{$inner_slot}, $(converted_args...))
             RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name)
-            RustCall.convert_c_option_to_rust_option($c_sym, $inner_t)
+            RustCall.convert_c_option_to_rust_option($c_sym, $inner_t,
+                                                     $channel_sym.free_ptr)
         end
     end
 end
+
+"""
+    _payload_free_symbol(owner, abis) -> String
+
+The `<owner>_free_rust_string` a `Result` / `Option` wrapper must resolve with
+its function pointer, or `""` when no payload is an owned string buffer (#268).
+Both payloads of one wrapper share the owner's single buffer type, so there is
+never more than one release symbol to snapshot.
+"""
+_payload_free_symbol(owner::AbstractString, abis) =
+    any(_is_string_abi, abis) ? ffi_free_symbol(owner) : ""
 
 # ============================================================================
 # Result<T, E> and Option<T> Support
@@ -547,15 +575,18 @@ end
 
 Convert a C-compatible result struct to RustResult{T, E}.
 """
-function convert_c_result_to_rust_result(c_result, ::Type{T}, ::Type{E}) where {T, E}
-    # The payload fields hold the C slot; `convert_return` reads them back as
+function convert_c_result_to_rust_result(c_result, ::Type{T}, ::Type{E},
+                                        free_ptr::Ptr{Cvoid} = C_NULL) where {T, E}
+    # The payload fields hold the C slot; `_result_payload` reads them back as
     # the surface type (identity for everything but `char`, whose slot is a
-    # `UInt32` code point). Only the ACTIVE payload is converted — the inactive
-    # one is uninitialized on the Rust side and may hold anything.
+    # `UInt32` code point, and an owned `CRustString`, which is copied out and
+    # released through `free_ptr`). Only the ACTIVE payload is converted — the
+    # inactive one is uninitialized on the Rust side and may hold anything, and
+    # releasing it would be a double free.
     if c_result.is_ok == 1
-        RustResult{T, E}(true, convert_return(T, c_result.ok_value))
+        RustResult{T, E}(true, _result_payload(T, c_result.ok_value, free_ptr))
     else
-        RustResult{T, E}(false, convert_return(E, c_result.err_value))
+        RustResult{T, E}(false, _result_payload(E, c_result.err_value, free_ptr))
     end
 end
 
@@ -564,11 +595,12 @@ end
 
 Convert a C-compatible option struct to RustOption{T}.
 """
-function convert_c_option_to_rust_option(c_option, ::Type{T}) where {T}
+function convert_c_option_to_rust_option(c_option, ::Type{T},
+                                        free_ptr::Ptr{Cvoid} = C_NULL) where {T}
     # See `convert_c_result_to_rust_result`: the field holds the C slot, and
     # only a `Some` payload is initialized.
     if c_option.is_some == 1
-        RustOption{T}(true, convert_return(T, c_option.value))
+        RustOption{T}(true, _result_payload(T, c_option.value, free_ptr))
     else
         RustOption{T}(false, nothing)
     end

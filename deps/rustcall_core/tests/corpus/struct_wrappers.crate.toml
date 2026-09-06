@@ -1,6 +1,5 @@
 schema_version = 6
 mode = "crate"
-structs = []
 
 [[functions]]
 name = "checked_double"
@@ -20,6 +19,9 @@ return_abi = ""
 ok_type = "i32"
 err_type = "i32"
 inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
@@ -50,6 +52,9 @@ return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = "i32"
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
 has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
@@ -61,3 +66,162 @@ module_path = []
 name = "value"
 rust_type = "i32"
 abi = ""
+
+[[structs]]
+name = "Divider"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 38
+module_path = []
+
+[[structs.fields]]
+name = "scale"
+rust_type = "i32"
+abi = ""
+ffi_compatible = true
+getter = "Divider_get_scale"
+setter = "Divider_set_scale"
+python_name = ""
+vis = ""
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_Divider_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "scale"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods]]
+name = "checked_div"
+symbol = "rustcall_Divider_checked_div"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "result"
+ok_type = "i32"
+err_type = "String"
+inner_type = ""
+ok_abi = ""
+err_abi = "string"
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "Result<i32, String>"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "d"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods]]
+name = "ratio"
+symbol = "rustcall_Divider_ratio"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "option"
+ok_type = ""
+err_type = ""
+inner_type = "f64"
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "Option<f64>"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "d"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods]]
+name = "describe"
+symbol = "rustcall_Divider_describe"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "result"
+ok_type = "String"
+err_type = "String"
+inner_type = ""
+ok_abi = "string"
+err_abi = "string"
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "Result<String, String>"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "unit"
+rust_type = "String"
+abi = "string"
+
+[[structs.methods]]
+name = "label"
+symbol = "rustcall_Divider_label"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "option"
+ok_type = ""
+err_type = ""
+inner_type = "&'static str"
+ok_abi = ""
+err_abi = ""
+inner_abi = "string"
+returns_boxed_struct = false
+args = []
+return_type = "Option<&'static str>"
+return_abi = ""
+generic_wrapper = ""

@@ -1968,6 +1968,9 @@ end
 end
 
 # Both crate-path generators declare the payload with the slot and convert.
+# Since #268 the conversion goes through `_result_payload`, which is
+# `convert_return` for a plain payload and the copy-and-release path for an
+# owned `String` one.
 @testset "#276: crate Result / Option payloads use the slot type" begin
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"
@@ -1985,13 +1988,13 @@ end
         for emitted in (RustCall._emit_function_code(res),
                         string(RustCall._generate_crate_function_wrapper(res)))
             @test occursin("ok_value::UInt32", replace(emitted, " " => ""))
-            @test occursin("convert_return(Char", replace(emitted, " " => ""))
+            @test occursin("_result_payload(Char", replace(emitted, " " => ""))
             @test occursin("RustResult{Char,Int32}", replace(emitted, " " => ""))
         end
         for emitted in (RustCall._emit_function_code(opt),
                         string(RustCall._generate_crate_function_wrapper(opt)))
             @test occursin("value::UInt32", replace(emitted, " " => ""))
-            @test occursin("convert_return(Char", replace(emitted, " " => ""))
+            @test occursin("_result_payload(Char", replace(emitted, " " => ""))
         end
     end
 end

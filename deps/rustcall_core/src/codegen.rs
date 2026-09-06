@@ -294,9 +294,91 @@ pub(crate) enum WrapperReturn {
     /// `<helper> { ptr, len }` borrowed from the callee.
     BorrowedStr { helper: Ident, declare: bool },
     /// `CResult_<owner> { is_ok, ok_value, err_value }`.
-    CResult { name: Ident, ok: Type, err: Type },
+    CResult {
+        name: Ident,
+        ok: WrapperPayload,
+        err: WrapperPayload,
+    },
     /// `COption_<owner> { is_some, value }`.
-    COption { name: Ident, inner: Type },
+    COption { name: Ident, inner: WrapperPayload },
+}
+
+/// How one `Result` / `Option` payload is stored in the `#[repr(C)]` aggregate
+/// the wrapper returns (#268).
+///
+/// A `String` / `&str` payload cannot be a field of that aggregate — it is not
+/// FFI-safe and Julia could neither read nor release it — so it is lowered to
+/// the very buffer a `String`-returning wrapper already hands back:
+/// `<owner>_RustCallOwnedString { ptr, len, cap }`, released through
+/// `<owner>_free_rust_string`. The `Result` / `Option` lowering and the string
+/// lowering therefore compose, rather than one excluding the other.
+///
+/// A `&str` payload is **copied** into that buffer rather than borrowed: unlike
+/// a bare `&str` return, a payload sits inside an aggregate that outlives the
+/// call's temporaries in Julia's hands, and the borrowed-view optimisation
+/// (`returns_borrowed_str`) would make its validity depend on where the `&str`
+/// came from. One owned shape for every string payload is what keeps the
+/// release rule "free exactly the active payload, through the owner's
+/// `free_rust_string`" true in all cases.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum WrapperPayload {
+    /// Stored as written.
+    Plain(Type),
+    /// `String` / `&str`, stored as `<helper> { ptr, len, cap }`.
+    OwnedString {
+        helper: Ident,
+        free: Ident,
+        /// Whether this wrapper declares the buffer type and its release
+        /// function (false when a struct-level helper is shared).
+        declare: bool,
+    },
+}
+
+impl WrapperPayload {
+    /// Whether the payload is stored exactly as the Rust signature wrote it.
+    fn is_plain(&self) -> bool {
+        matches!(self, WrapperPayload::Plain(_))
+    }
+
+    /// The type the payload occupies in the aggregate.
+    fn stored_type(&self) -> Type {
+        match self {
+            WrapperPayload::Plain(ty) => ty.clone(),
+            WrapperPayload::OwnedString { helper, .. } => syn::parse_quote!(#helper),
+        }
+    }
+
+    /// The expression that turns the value bound to `value` into the stored
+    /// form.
+    fn store_expr(&self, value: &Ident) -> TokenStream2 {
+        match self {
+            WrapperPayload::Plain(_) => quote! { #value },
+            WrapperPayload::OwnedString { helper, .. } => quote! {{
+                // `ToString` covers both `String` and a `&str` payload, which
+                // is always copied (see the type docs).
+                let mut rustcall_bytes = ToString::to_string(&#value).into_bytes();
+                let rustcall_buf = #helper {
+                    ptr: rustcall_bytes.as_mut_ptr(),
+                    len: rustcall_bytes.len(),
+                    cap: rustcall_bytes.capacity(),
+                };
+                ::std::mem::forget(rustcall_bytes);
+                rustcall_buf
+            }},
+        }
+    }
+
+    /// The `(helper, free)` pair this payload wants declared, if it declares one.
+    fn declaration(&self) -> Option<(&Ident, &Ident)> {
+        match self {
+            WrapperPayload::OwnedString {
+                helper,
+                free,
+                declare: true,
+            } => Some((helper, free)),
+            _ => None,
+        }
+    }
 }
 
 /// Everything [`generate_wrapper`] needs: a signature model plus the call
@@ -664,18 +746,35 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             }
         }
         WrapperReturn::CResult { name, ok, err } => {
-            out.extend(generate_c_result_type(&name, &ok, &err, &cfg_attrs));
+            out.extend(payload_helpers(&cfg_attrs, &[&ok, &err]));
+            out.extend(generate_c_result_type(
+                &name,
+                &ok.stored_type(),
+                &err.stored_type(),
+                &cfg_attrs,
+            ));
             // `is_ok = 0` with an uninitialized payload: the `Err` branch, and
             // Julia raises before it decodes either payload.
             let sentinel = quote! { #name::panicked() };
-            let guarded = guarded_body(
-                &julia_name,
-                &slot,
-                &prologue,
-                quote! { #name::new(#call) },
-                sentinel,
-                false,
-            );
+            // With no payload to lower the `Result` goes straight in; the
+            // re-wrapping match exists only to convert a string payload.
+            let body = if ok.is_plain() && err.is_plain() {
+                quote! { #name::new(#call) }
+            } else {
+                let ok_binding = fresh_ident("rustcall_ok", &taken);
+                let err_binding = fresh_ident("rustcall_err", &taken);
+                let ok_store = ok.store_expr(&ok_binding);
+                let err_store = err.store_expr(&err_binding);
+                quote! {
+                    #name::new(match #call {
+                        ::std::result::Result::Ok(#ok_binding) =>
+                            ::std::result::Result::Ok(#ok_store),
+                        ::std::result::Result::Err(#err_binding) =>
+                            ::std::result::Result::Err(#err_store),
+                    })
+                }
+            };
+            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -685,16 +784,27 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             }
         }
         WrapperReturn::COption { name, inner } => {
-            out.extend(generate_c_option_type(&name, &inner, &cfg_attrs));
+            out.extend(payload_helpers(&cfg_attrs, &[&inner]));
+            out.extend(generate_c_option_type(
+                &name,
+                &inner.stored_type(),
+                &cfg_attrs,
+            ));
             let sentinel = quote! { #name::panicked() };
-            let guarded = guarded_body(
-                &julia_name,
-                &slot,
-                &prologue,
-                quote! { #name::new(#call) },
-                sentinel,
-                false,
-            );
+            let body = if inner.is_plain() {
+                quote! { #name::new(#call) }
+            } else {
+                let binding = fresh_ident("rustcall_some", &taken);
+                let store = inner.store_expr(&binding);
+                quote! {
+                    #name::new(match #call {
+                        ::std::option::Option::Some(#binding) =>
+                            ::std::option::Option::Some(#store),
+                        ::std::option::Option::None => ::std::option::Option::None,
+                    })
+                }
+            };
+            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -713,6 +823,24 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
 /// wrapper crate of #275 shares one buffer type per `#[pyclass]`.
 pub(crate) fn owned_string_helper_items(helper: &Ident, free: &Ident) -> TokenStream2 {
     owned_string_helper(&[], helper, free)
+}
+
+/// The string buffer types the payloads of one `Result` / `Option` wrapper
+/// need declared. Both payloads of a `Result<String, String>` share the owner's
+/// single buffer type, so it is emitted once (#268).
+fn payload_helpers(cfg_attrs: &[Attribute], payloads: &[&WrapperPayload]) -> TokenStream2 {
+    let mut out = TokenStream2::new();
+    let mut declared: Vec<String> = Vec::new();
+    for p in payloads {
+        if let Some((helper, free)) = p.declaration() {
+            if declared.contains(&helper.to_string()) {
+                continue;
+            }
+            declared.push(helper.to_string());
+            out.extend(owned_string_helper(cfg_attrs, helper, free));
+        }
+    }
+    out
 }
 
 /// The owned string buffer `<name> { ptr, len, cap }` and the `extern "C"`
@@ -914,22 +1042,85 @@ fn free_function_wrapper(func: &ItemFn, options: &FreeFnOptions) -> TokenStream2
     })
 }
 
+/// The [`WrapperPayload`] of one `Result` / `Option` component: a `String` /
+/// `&str` becomes the owner's owned-string buffer, everything else is stored as
+/// written (#268). `lower_strings` is false only for `#[julia_pyo3]`, which
+/// exports the signature as written and does no `Result` wrapping either.
+fn payload_of(
+    ty: &Type,
+    helper: &Ident,
+    free: &Ident,
+    lower_strings: bool,
+    declare: bool,
+) -> WrapperPayload {
+    if lower_strings && (is_string_type(ty) || is_str_ref_type(ty)) {
+        WrapperPayload::OwnedString {
+            helper: helper.clone(),
+            free: free.clone(),
+            declare,
+        }
+    } else {
+        WrapperPayload::Plain(ty.clone())
+    }
+}
+
+/// Whether a `Result` / `Option` payload can be carried by the generated
+/// `#[repr(C)]` aggregate: anything the C ABI takes as written, plus `String` /
+/// `&str`, which are lowered to an owned buffer (#268).
+pub fn payload_is_representable(ty: &Type) -> bool {
+    is_string_type(ty) || is_str_ref_type(ty) || !is_non_ffi_type(ty)
+}
+
+/// Whether a method wrapper lowers this return type into `CResult_*` — i.e.
+/// it is a `Result` whose payloads the aggregate can carry. A `Result` with a
+/// payload it cannot carry keeps the pre-#268 behaviour (returned as written,
+/// reported as `Plain`), rather than turning existing code into a compile
+/// error.
+pub fn method_wraps_result(ty: &Type) -> bool {
+    extract_result_type(ty)
+        .map(|r| payload_is_representable(&r.ok_type) && payload_is_representable(&r.err_type))
+        .unwrap_or(false)
+}
+
+/// The `Option` counterpart of [`method_wraps_result`].
+pub fn method_wraps_option(ty: &Type) -> bool {
+    extract_option_type(ty)
+        .map(|o| payload_is_representable(&o.inner_type))
+        .unwrap_or(false)
+}
+
+/// Whether a `Result` / `Option` payload travels as an owned string buffer,
+/// i.e. what the manifest reports as `ok_abi` / `err_abi` / `inner_abi`
+/// (#268). `&str` is included: a payload is always copied, never borrowed.
+pub fn payload_abi(ty: &Type) -> &'static str {
+    if is_string_type(ty) || is_str_ref_type(ty) {
+        "string"
+    } else {
+        ""
+    }
+}
+
 fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> WrapperReturn {
     let ReturnType::Type(_, ty) = &func.sig.output else {
         return WrapperReturn::Unit;
     };
     if options.wrap_result {
+        // A `String` payload is lowered to the function's own owned-string
+        // buffer, which this wrapper declares (#268).
+        let helper = format_ident!("{}_RustCallOwnedString", name);
+        let free = format_ident!("{}_free_rust_string", name);
+        let payload = |ty: &Type| payload_of(ty, &helper, &free, options.lower_strings, true);
         if let Some(r) = extract_result_type(ty) {
             return WrapperReturn::CResult {
                 name: format_ident!("CResult_{}", name),
-                ok: r.ok_type,
-                err: r.err_type,
+                ok: payload(&r.ok_type),
+                err: payload(&r.err_type),
             };
         }
         if let Some(o) = extract_option_type(ty) {
             return WrapperReturn::COption {
                 name: format_ident!("COption_{}", name),
-                inner: o.inner_type,
+                inner: payload(&o.inner_type),
             };
         }
     }
@@ -981,7 +1172,7 @@ fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
     if let Some(r) = extract_result_type(ty) {
         let ok_type = &r.ok_type;
         let err_type = &r.err_type;
-        if is_non_ffi_type(ok_type) {
+        if !payload_is_representable(ok_type) {
             return Some(quote! {
                 compile_error!(concat!(
                     "#[julia] function `", stringify!(#func_name),
@@ -990,7 +1181,7 @@ fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
                 ));
             });
         }
-        if is_non_ffi_type(err_type) {
+        if !payload_is_representable(err_type) {
             return Some(quote! {
                 compile_error!(concat!(
                     "#[julia] function `", stringify!(#func_name),
@@ -1002,7 +1193,7 @@ fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
     }
     if let Some(o) = extract_option_type(ty) {
         let inner_type = &o.inner_type;
-        if is_non_ffi_type(inner_type) {
+        if !payload_is_representable(inner_type) {
             return Some(quote! {
                 compile_error!(concat!(
                     "#[julia] function `", stringify!(#func_name),
@@ -1339,6 +1530,39 @@ pub struct InlineStructMeta {
     pub accessors: Vec<(String, String, String)>,
 }
 
+/// The `Result<T, E>` a method wrapper lowers into `CResult_<Struct>_<method>`,
+/// if it is one (#268). A constructor is excluded by the caller.
+fn method_result_return(m: &MethodModel) -> Option<crate::types::ResultTypeInfo> {
+    match &m.func.sig.output {
+        ReturnType::Type(_, ty) if method_wraps_result(ty) => extract_result_type(ty),
+        _ => None,
+    }
+}
+
+/// The `Option<T>` counterpart of [`method_result_return`].
+fn method_option_return(m: &MethodModel) -> Option<crate::types::OptionTypeInfo> {
+    match &m.func.sig.output {
+        ReturnType::Type(_, ty) if method_wraps_option(ty) => extract_option_type(ty),
+        _ => None,
+    }
+}
+
+/// Whether an inline method's wrapper needs the struct's owned-string buffer:
+/// a `String` / copied `&str` return, or a `Result` / `Option` with a string
+/// payload (#268).
+fn method_needs_owned_string(m: &MethodModel) -> bool {
+    if method_returns_string(m) || method_copies_str(m) {
+        return true;
+    }
+    if let Some(r) = method_result_return(m) {
+        return !payload_abi(&r.ok_type).is_empty() || !payload_abi(&r.err_type).is_empty();
+    }
+    if let Some(o) = method_option_return(m) {
+        return !payload_abi(&o.inner_type).is_empty();
+    }
+    false
+}
+
 fn method_returns_string(m: &MethodModel) -> bool {
     matches!(&m.func.sig.output, ReturnType::Type(_, ty) if is_string_type(ty))
 }
@@ -1383,10 +1607,10 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
         .collect();
 
     let needs_owned = accessible.iter().any(|(_, ty)| is_string_type(ty))
-        || model.methods.iter().any(|m| {
-            (method_returns_string(m) || method_copies_str(m))
-                && !inline_method_is_ctor(struct_name, m)
-        });
+        || model
+            .methods
+            .iter()
+            .any(|m| method_needs_owned_string(m) && !inline_method_is_ctor(struct_name, m));
     let needs_borrowed = model
         .methods
         .iter()
@@ -1500,9 +1724,10 @@ fn method_spec(
     declare: bool,
 ) -> WrapperSpec {
     let method_name = m.func.sig.ident.clone();
+    let method_name_str = method_name.to_string();
     let symbol = format_ident!(
         "{}",
-        method_symbol(&struct_name.to_string(), &method_name.to_string())
+        method_symbol(&struct_name.to_string(), &method_name_str)
     );
     let receiver = (!m.is_static).then(|| WrapperReceiver {
         ty: struct_name.clone().into(),
@@ -1520,6 +1745,20 @@ fn method_spec(
         // `new`, or any method returning `Self` / the struct type, hands Julia
         // an owning pointer. The string helpers are not involved.
         WrapperReturn::Boxed(struct_name.clone().into())
+    } else if let Some(r) = method_result_return(m) {
+        // A `Result` method is lowered exactly like a free function (#268):
+        // `CResult_<Struct>_<method>`, with a `String` payload composed onto
+        // the owner's owned-string buffer.
+        WrapperReturn::CResult {
+            name: format_ident!("CResult_{}_{}", struct_name, method_name_str),
+            ok: payload_of(&r.ok_type, owned_helper, owned_free, true, declare),
+            err: payload_of(&r.err_type, owned_helper, owned_free, true, declare),
+        }
+    } else if let Some(o) = method_option_return(m) {
+        WrapperReturn::COption {
+            name: format_ident!("COption_{}_{}", struct_name, method_name_str),
+            inner: payload_of(&o.inner_type, owned_helper, owned_free, true, declare),
+        }
     } else if method_returns_string(m) || method_copies_str(m) {
         WrapperReturn::OwnedString {
             helper: owned_helper.clone(),

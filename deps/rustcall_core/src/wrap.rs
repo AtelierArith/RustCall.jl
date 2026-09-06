@@ -52,8 +52,8 @@ use quote::{format_ident, quote};
 use syn::{Ident, Type};
 
 use crate::codegen::{
-    field_abi, generate_wrapper, owned_string_helper_items, CallTarget, WrapperReceiver,
-    WrapperReturn, WrapperSpec,
+    field_abi, generate_wrapper, owned_string_helper_items, CallTarget, WrapperPayload,
+    WrapperReceiver, WrapperReturn, WrapperSpec,
 };
 use crate::manifest::{skip_reason, Arg, Manifest, Method, ReturnKind, Struct};
 use crate::types::{is_ffi_compatible_type, is_str_ref_type, is_string_type};
@@ -470,13 +470,14 @@ fn wrapper_args(args: &[Arg]) -> Result<Vec<(Ident, Type)>, String> {
 /// `wraps_aggregates` says whether a plain `Result` / `Option` return may be
 /// lowered to a `CResult` / `COption`.
 ///
-/// Only a **free function** may: the `#[julia]` method wrappers have never
-/// wrapped either (`codegen::method_spec` sends them to
-/// [`WrapperReturn::Plain`]), so Julia's method emitters have no branch that
-/// decodes such an aggregate. Emitting one from the PyO3 side would produce a
-/// symbol Julia calls with the wrong return type — the one shape that is worse
-/// than not wrapping the method at all. It is refused instead, and #303 owns
-/// widening it on both paths at once.
+/// Only a **free function** may here: a `#[julia]` method now does (#268,
+/// `codegen::method_spec`), decoded by `RustCall._method_payload_plan`, but
+/// that Julia-side emitter is keyed to a `#[julia]`-attributed method and does
+/// not run for a `#[pymethods]` one scanned by this module. Emitting a
+/// `CResult` / `COption` from a `#[pymethods]` wrapper here would therefore
+/// still produce a symbol nothing on the Julia side knows how to decode — the
+/// one shape that is worse than not wrapping the method at all. It is refused
+/// instead, and #303 owns widening the PyO3 wrapper path to match.
 #[allow(clippy::too_many_arguments)]
 fn return_plan(
     owner: &Ident,
@@ -591,7 +592,11 @@ fn py_result_plan(owner: &Ident, ok_type: &str) -> Result<ReturnPlan, String> {
         // slot is a `u8` placeholder rather than a zero-sized field.
         let ok: Type = syn::parse_str("u8").expect("u8 parses");
         return Ok(ReturnPlan {
-            ret: WrapperReturn::CResult { name, ok, err },
+            ret: WrapperReturn::CResult {
+                name,
+                ok: WrapperPayload::Plain(ok),
+                err: WrapperPayload::Plain(err),
+            },
             call_suffix: quote! { .map(|_| 0u8) #drop_err },
             return_abi: "",
             err_slot: true,
@@ -607,7 +612,11 @@ fn py_result_plan(owner: &Ident, ok_type: &str) -> Result<ReturnPlan, String> {
         ));
     }
     Ok(ReturnPlan {
-        ret: WrapperReturn::CResult { name, ok, err },
+        ret: WrapperReturn::CResult {
+            name,
+            ok: WrapperPayload::Plain(ok),
+            err: WrapperPayload::Plain(err),
+        },
         call_suffix: drop_err,
         return_abi: "",
         err_slot: true,
@@ -615,8 +624,10 @@ fn py_result_plan(owner: &Ident, ok_type: &str) -> Result<ReturnPlan, String> {
 }
 
 /// A `Result` / `Option` payload, which sits **inside** a `#[repr(C)]`
-/// aggregate and so must be a single FFI-compatible value.
-fn payload_type(spelling: &str) -> Result<Type, String> {
+/// aggregate and so must be a single FFI-compatible value. The PyO3 wrapper
+/// never lowers a `String` / `&str` payload to the owned-buffer helper #268
+/// added for `#[julia]` methods, so this is always [`WrapperPayload::Plain`].
+fn payload_type(spelling: &str) -> Result<WrapperPayload, String> {
     let ty = syn::parse_str::<Type>(spelling)
         .map_err(|_| skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, spelling))?;
     if !is_ffi_compatible_type(&ty) {
@@ -625,7 +636,7 @@ fn payload_type(spelling: &str) -> Result<Type, String> {
             spelling,
         ));
     }
-    Ok(ty)
+    Ok(WrapperPayload::Plain(ty))
 }
 
 // ============================================================================

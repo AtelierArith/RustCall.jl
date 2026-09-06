@@ -252,12 +252,17 @@ fn symbol_collisions(original: &[Item], expanded: &[Item]) -> Vec<String> {
     clashes
 }
 
+/// `symbols` doubles as "this struct's methods are wrapped here": a concrete
+/// struct gets `extern "C"` wrappers with exported symbols, a generic one gets
+/// generic wrappers registered for monomorphization instead. Only the former
+/// lower `Result` / `Option` (#268).
 fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
     let struct_name = &model.item.ident;
     model
         .methods
         .iter()
         .map(|m| {
+            let shape = crate::extract::method_return_shape(struct_name, &m.func, symbols);
             let returns_self = matches!(
                 &m.func.sig.output,
                 syn::ReturnType::Type(_, ty) if crate::types::is_self_type(ty, struct_name)
@@ -276,10 +281,13 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
                 skip_reason: String::new(),
                 python_name: String::new(),
                 accessor: String::new(),
-                return_kind: crate::extract::plain_return_kind(&m.func.sig.output),
-                ok_type: String::new(),
-                err_type: String::new(),
-                inner_type: String::new(),
+                return_kind: shape.kind,
+                ok_type: shape.ok_type,
+                err_type: shape.err_type,
+                inner_type: shape.inner_type,
+                ok_abi: shape.ok_abi,
+                err_abi: shape.err_abi,
+                inner_abi: shape.inner_abi,
                 returns_boxed_struct: crate::codegen::returns_boxed_struct(struct_name, &m.func),
                 args: fn_args(&m.func.sig),
                 return_type: return_type_to_string(&m.func.sig.output),
