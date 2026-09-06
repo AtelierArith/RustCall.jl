@@ -1,0 +1,568 @@
+schema_version = 5
+mode = "inline"
+structs = []
+
+[[functions]]
+name = "add"
+symbol = "add"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 9
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions.args]]
+name = "b"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "shout"
+symbol = "shout"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "String"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 14
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "String"
+abi = "string"
+
+[[functions]]
+name = "double"
+symbol = "double"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "f64"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 20
+module_path = []
+
+[[functions.args]]
+name = "x"
+rust_type = "f64"
+abi = ""
+
+[[functions]]
+name = "private_add"
+symbol = "private_add"
+attribute = "none"
+vis = ""
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 29
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions.args]]
+name = "b"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "crate_add"
+symbol = "crate_add"
+attribute = "none"
+vis = "pub(crate)"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 34
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions.args]]
+name = "b"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "with_python"
+symbol = "with_python"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 41
+module_path = []
+
+[[functions.args]]
+name = "py"
+rust_type = "Python<'_>"
+abi = ""
+
+[[functions]]
+name = "takes_any"
+symbol = "takes_any"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "usize"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 47
+module_path = []
+
+[[functions.args]]
+name = "obj"
+rust_type = "&PyAny"
+abi = ""
+
+[[functions]]
+name = "takes_bound"
+symbol = "takes_bound"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "usize"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 53
+module_path = []
+
+[[functions.args]]
+name = "obj"
+rust_type = "Bound<'_, PyList>"
+abi = ""
+
+[[functions]]
+name = "returns_object"
+symbol = "returns_object"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "PyObject"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 59
+module_path = []
+
+[[functions]]
+name = "returns_py_of"
+symbol = "returns_py_of"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "Py<PyList>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 64
+module_path = []
+
+[[functions]]
+name = "parse"
+symbol = "parse"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "PyResult<i32>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 71
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "&str"
+abi = "str"
+
+[[functions]]
+name = "parse_object"
+symbol = "parse_object"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "PyResult<PyObject>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 78
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "&str"
+abi = "str"
+
+[[functions]]
+name = "identity"
+symbol = "identity"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = true
+return_type = "T"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = """
+#[pyfunction]
+pub fn identity<T>(x: T) -> T {
+    x
+}
+"""
+body_has_cfg = false
+line = 87
+module_path = []
+
+[[functions.type_params]]
+name = "T"
+bounds = []
+
+[[functions.args]]
+name = "x"
+rust_type = "T"
+abi = ""
+
+[[functions]]
+name = "dual"
+symbol = "rustcall_dual"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 180
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions.args]]
+name = "b"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "demo"
+symbol = "demo"
+attribute = "none"
+vis = ""
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "PyResult<()>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 191
+module_path = []
+
+[[functions.args]]
+name = "m"
+rust_type = "&Bound<'_, PyModule>"
+abi = ""
+
+[[functions]]
+name = "deep"
+symbol = "deep"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 202
+module_path = ["nested"]
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "unreachable_add"
+symbol = "unreachable_add"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 211
+module_path = ["private_mod"]
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "gated_add"
+symbol = "gated_add"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 257
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions.args]]
+name = "b"
+rust_type = "i32"
+abi = ""

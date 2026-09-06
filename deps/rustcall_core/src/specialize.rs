@@ -375,11 +375,15 @@ fn function_entry(func: &ItemFn) -> Function {
     let return_type = return_type_to_string(&func.sig.output);
     Function {
         cfg: crate::cfg::predicate_string(&func.attrs),
+        cfg_features: crate::cfg::predicate_features(&func.attrs),
         name: func.sig.ident.to_string(),
         // The exported entry point is the additive wrapper, not the
         // instantiation itself (#279).
         symbol: function_symbol(&func.sig.ident.to_string()),
         attribute: Attribute::None,
+        vis: crate::attrs::visibility_string(&func.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         exported: true,
         is_generic: false,
         type_params: Vec::new(),

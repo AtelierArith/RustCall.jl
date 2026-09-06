@@ -24,6 +24,344 @@ using TOML
     _lf(x::AbstractVector) = Any[_lf(v) for v in x]
     _lf(x) = x
 
+    @testset "schema 5: PyO3 scan of a crate with no RustCall attribute (#275)" begin
+        crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
+        @test isdir(crate)
+        info = RustCall.scan_crate(crate)
+
+        # Nothing in the crate carries a RustCall attribute, so nothing is
+        # wrapped today...
+        @test isempty(info.julia_functions)
+        @test isempty(info.julia_structs)
+
+        # ...but the PyO3 items are reported, with the symbol a Phase-2 wrapper
+        # crate will export and `exported = false` because nothing emits it yet.
+        byname = Dict(f.name => f for f in info.pyo3_functions)
+        @test haskey(byname, "add")
+        add = byname["add"]
+        @test add.attribute === :py_function
+        @test add.symbol == "rustcall_add"
+        @test add.exported == false
+        @test add.vis == "pub"
+        @test add.skip_reason == ""
+
+        # Skip reasons: visibility, pyo3-typed signatures, `#[pymodule]`.
+        @test byname["private_add"].vis == ""
+        @test byname["private_add"].skip_reason == "not_public"
+        @test startswith(byname["describe"].skip_reason, "pyo3_type:")
+        @test byname["sample_crate_pyo3_only"].attribute === :py_module
+        @test byname["sample_crate_pyo3_only"].skip_reason == "pymodule"
+
+        # `PyResult<T>` is recorded, not skipped: the error is opaque.
+        @test byname["parse"].return_kind === :py_result
+        @test byname["parse"].ok_type == "i32"
+        @test byname["parse"].skip_reason == ""
+
+        # A `#[pyclass]` is an opaque handle whose methods come from every
+        # `#[pymethods]` block, and whose fields are the `#[pyo3(get, set)]`
+        # ones.
+        point = only(info.pyo3_structs)
+        @test point.name == "Point"
+        @test point.attribute === :py_class
+        @test point.skip_reason == ""
+        @test [f[1] for f in point.fields] == ["x", "y"]
+        @test point.field_getters["x"] == "rustcall_Point_get_x"
+        @test point.field_setters["x"] == "rustcall_Point_set_x"
+        @test !haskey(point.field_setters, "y")
+        methods = Dict(m.name => m for m in point.methods)
+        @test sort(collect(keys(methods))) == ["new", "norm", "origin", "sum"]
+        @test methods["new"].is_constructor
+        @test methods["new"].symbol == "rustcall_Point_new"
+        @test methods["origin"].is_static
+        @test methods["origin"].returns_boxed_struct
+        @test methods["sum"].accessor == "getter"
+
+        # A `#[pymethods]` method returning `PyResult` carries its return
+        # shape, so Phase 2 never re-reads the Rust type spelling (#264).
+        @test methods["new"].return_kind === :plain
+        @test methods["norm"].return_kind === :plain
+
+        # scan_report groups the same items and never throws on a crate it
+        # cannot wrap.
+        report = sprint(io -> RustCall.scan_report(crate; io = io))
+        @test occursin("PyO3 items wrappable by Phase 2", report)
+        @test occursin("rustc E0603", report)
+        @test occursin("Link plan:", report)
+    end
+
+    @testset "PyO3 scan follows the crate's module tree (#275)" begin
+        # A conventional `pub mod api;` lives in another file. Scanning each
+        # file as its own root would report `api::deep` as a crate-root item
+        # and would miss a private parent module entirely, so the extractor
+        # follows the module graph from `src/lib.rs` (`--crate-root`).
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "deep"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "tree_crate"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            pub mod api;
+            mod hidden;
+            pub mod deep;
+            #[pyfunction]
+            pub fn root_fn() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "api.rs"), """
+            #[pyfunction]
+            pub fn in_api() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "hidden.rs"), """
+            #[pyfunction]
+            pub fn in_hidden() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "deep", "mod.rs"), """
+            pub mod inner;
+            """)
+            write(joinpath(dir, "src", "deep", "inner.rs"), """
+            #[pyfunction]
+            pub fn buried() -> i32 { 0 }
+            """)
+
+            info = RustCall.scan_crate(dir)
+            byname = Dict(f.name => f for f in info.pyo3_functions)
+            @test sort(collect(keys(byname))) == ["buried", "in_api", "in_hidden", "root_fn"]
+
+            # Each item is reported once, with the module path a wrapper crate
+            # would have to write.
+            @test length(info.pyo3_functions) == 4
+            @test byname["root_fn"].module_path == String[]
+            @test byname["in_api"].module_path == ["api"]
+            @test byname["buried"].module_path == ["deep", "inner"]
+
+            # `mod hidden;` is not `pub`, so nothing below it is reachable.
+            @test byname["in_hidden"].module_path == ["hidden"]
+            @test byname["in_hidden"].skip_reason == "not_public"
+            @test byname["in_api"].skip_reason == ""
+            @test byname["buried"].skip_reason == ""
+        end
+    end
+
+    @testset "PyO3 scan: inline parents and cross-file #[pymethods] (#275)" begin
+        # Two shapes a per-file scan gets wrong: `mod outer { pub mod child; }`
+        # resolves at `src/outer/child.rs`, not `src/child.rs`; and a
+        # `#[pymethods] impl C` may live in a different file from the
+        # `#[pyclass] struct C` it belongs to.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "outer"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "tree_crate2"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            pub mod outer {
+                pub mod child;
+            }
+            pub mod shapes;
+            pub mod impls;
+            """)
+            write(joinpath(dir, "src", "outer", "child.rs"), """
+            #[pyfunction]
+            pub fn nested_fn() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "shapes.rs"), """
+            #[pyclass]
+            pub struct Circle {
+                #[pyo3(get)]
+                pub r: f64,
+            }
+            """)
+            write(joinpath(dir, "src", "impls.rs"), """
+            use crate::shapes::Circle;
+            #[pymethods]
+            impl Circle {
+                #[new]
+                pub fn new(r: f64) -> Self { Circle { r } }
+                pub fn area(&self) -> f64 { self.r * self.r }
+            }
+            """)
+
+            info = RustCall.scan_crate(dir)
+
+            # The out-of-line module inside an inline one was followed.
+            nested = only(f for f in info.pyo3_functions if f.name == "nested_fn")
+            @test nested.module_path == ["outer", "child"]
+            @test nested.skip_reason == ""
+
+            # The class is reported with the methods declared in another file.
+            circle = only(info.pyo3_structs)
+            @test circle.name == "Circle"
+            @test circle.module_path == ["shapes"]
+            @test sort([m.name for m in circle.methods]) == ["area", "new"]
+            @test only(m for m in circle.methods if m.name == "new").is_constructor
+        end
+    end
+
+    @testset "PyO3 scan: one file used as two modules (#275)" begin
+        # `#[path = "shared.rs"] pub mod a;` and the same for `b` compile the
+        # file twice, as two distinct modules. Both belong in the manifest under
+        # their own module paths — and they collide with each other on the
+        # wrapper symbols, which is exactly what the scan should say.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "shared_module"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            #[path = "shared.rs"]
+            pub mod a;
+            #[path = "shared.rs"]
+            pub mod b;
+            """)
+            write(joinpath(dir, "src", "shared.rs"), """
+            #[pyfunction]
+            pub fn shared_fn() -> i32 { 0 }
+            """)
+
+            entries = [f for f in RustCall.scan_crate(dir).pyo3_functions if f.name == "shared_fn"]
+            @test length(entries) == 2
+            @test sort([e.module_path for e in entries]) == [["a"], ["b"]]
+            # Both want `rustcall_shared_fn`; exactly one keeps it.
+            @test count(e -> isempty(e.skip_reason), entries) == 1
+            loser = only(e for e in entries if !isempty(e.skip_reason))
+            @test startswith(loser.skip_reason, "symbol_collision:")
+        end
+    end
+
+    @testset "PyO3 scan honours [lib] path (#275)" begin
+        # Cargo lets a crate put its library root anywhere; hard-coding
+        # src/lib.rs would scan every file as its own root (wrong module paths
+        # and reachability), or miss the root entirely when it lives outside
+        # src/.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "core"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "custom_root"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            path = "src/core/entry.rs"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "core", "entry.rs"), """
+            mod private_part;
+            pub mod public_part;
+            """)
+            write(joinpath(dir, "src", "core", "private_part.rs"), """
+            #[pyfunction]
+            pub fn hidden() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "core", "public_part.rs"), """
+            #[pyfunction]
+            pub fn shown() -> i32 { 0 }
+            """)
+
+            @test RustCall.crate_lib_root(dir, RustCall.parse_cargo_toml(joinpath(dir, "Cargo.toml"))) ==
+                  joinpath(dir, "src", "core", "entry.rs")
+
+            byname = Dict(f.name => f for f in RustCall.scan_crate(dir).pyo3_functions)
+            @test byname["shown"].module_path == ["public_part"]
+            @test byname["shown"].skip_reason == ""
+            # Behind a non-`pub` `mod`, so unreachable — which a per-file scan
+            # would have missed.
+            @test byname["hidden"].module_path == ["private_part"]
+            @test byname["hidden"].skip_reason == "not_public"
+        end
+    end
+
+    @testset "PyO3 scan: cfg-gated items follow the build (#275)" begin
+        # `pyo3 = { optional = true }` with the API behind
+        # `#[cfg(feature = "python")]`. The scan is lenient by default, so the
+        # item is reported; scanned under a *resolved* build it appears only in
+        # the build that has the feature. Nothing here re-implements Cargo: the
+        # plan asks Cargo for the feature set and the extractor's own evaluator
+        # prunes the items.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "gated_api"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", optional = true }
+
+            [features]
+            default = []
+            python = ["dep:pyo3"]
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            #[cfg(feature = "python")]
+            #[pyfunction]
+            pub fn gated(a: i32) -> i32 { a }
+
+            #[pyfunction]
+            pub fn always(a: i32) -> i32 { a }
+            """)
+
+            # Lenient (the default): a feature predicate is undecided, so both
+            # items are reported, and `cfg_features` says which feature decides.
+            lenient = Dict(f.name => f for f in RustCall.scan_crate(dir).pyo3_functions)
+            @test sort(collect(keys(lenient))) == ["always", "gated"]
+            @test lenient["gated"].cfg_features == ["python"]
+            @test isempty(lenient["always"].cfg_features)
+
+            off = RustCall.pyo3_link_plan(dir)
+            if !off.resolved
+                @warn "Cargo could not resolve the temp crate; skipping the resolved half"
+            else
+                # Defaults: no pyo3 in the graph at all, and the gated item is
+                # gone — pruned by the extractor's evaluator, not by a guess.
+                @test off.mode === :python_free
+                @test isempty(off.pyo3_features)
+                names = [f.name for f in RustCall.scan_crate(dir; cfg = :cargo,
+                                                             cfg_text = off.cfg_text).pyo3_functions]
+                @test names == ["always"]
+
+                # With the feature on, pyo3 resolves and the item is there.
+                on = RustCall.pyo3_link_plan(dir; features = ["python"])
+                @test on.mode === :link_libpython
+                @test !isempty(on.pyo3_features)
+                with_feature = sort([f.name for f in
+                                     RustCall.scan_crate(dir; cfg = :cargo,
+                                                         cfg_text = on.cfg_text).pyo3_functions])
+                @test with_feature == ["always", "gated"]
+
+                # The feature that activates pyo3 is discoverable rather than
+                # guessed at, so a caller can ask for that build deliberately.
+                candidates = RustCall.pyo3_feature_candidates(dir)
+                @test only(candidates).feature == "python"
+                @test only(candidates).activates_pyo3
+                @test !only(candidates).extension_module
+
+                report = sprint(io -> RustCall.scan_report(dir; features = ["python"], io = io))
+                @test occursin("Build scanned: --features python", report)
+                @test occursin("Features that activate pyo3", report)
+            end
+        end
+    end
+
     @testset "schema 4: return_abi, Field.abi, returns_boxed_struct (#276)" begin
         # The manifest — not the Rust spelling — is what says how a value
         # crosses the boundary. Schema 4 makes that true for free functions

@@ -82,6 +82,8 @@ This will compile the Rust helpers library that provides FFI functions for owner
 - `examples/MyExample.jl`: Julia package using inline `rust"""..."""` blocks
 - `examples/sample_crate`: external Rust crate using `#[julia]` and `@rust_crate`
 - `examples/sample_crate_pyo3`: dual Julia/Python bindings example
+- `examples/sample_crate_pyo3_only`: a crate with PyO3 attributes only, scanned by
+  `RustCall.scan_report` (see [PyO3 Crates](pyo3.md))
 - `examples/pluto/hello.jl`: Pluto notebook-style walkthrough
 
 ## Quick Start

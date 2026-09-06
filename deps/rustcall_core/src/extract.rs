@@ -57,6 +57,24 @@ pub fn fn_args(sig: &syn::Signature) -> Vec<Arg> {
         .collect()
 }
 
+/// The return kind of a wrapper that does no `Result`/`Option` lowering:
+/// `Unit` for `()` or no return type, `Plain` otherwise. Struct method
+/// wrappers are in that category (`generate_method_wrapper*` never wraps a
+/// `Result`), so their manifest entry says so explicitly rather than leaving a
+/// consumer to infer it from the type spelling (#275, #276).
+pub fn plain_return_kind(output: &ReturnType) -> ReturnKind {
+    match output {
+        ReturnType::Default => ReturnKind::Unit,
+        ReturnType::Type(..) => {
+            if return_type_to_string(output) == "()" {
+                ReturnKind::Unit
+            } else {
+                ReturnKind::Plain
+            }
+        }
+    }
+}
+
 /// The manifest `abi` column of an argument type (see [`Arg::abi`]).
 pub fn arg_abi(ty: &syn::Type) -> &'static str {
     if is_string_type(ty) {
@@ -139,8 +157,12 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         name,
         symbol,
         attribute,
+        vis: crate::attrs::visibility_string(&func.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         exported,
         cfg: predicate_string(&func.attrs),
+        cfg_features: crate::cfg::predicate_features(&func.attrs),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
         args: fn_args(&func.sig),
@@ -172,13 +194,65 @@ pub fn extract_crate(source: &str) -> Result<Manifest, syn::Error> {
 }
 
 pub fn extract_crate_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Manifest, syn::Error> {
+    extract_crate_with_cfg_scan(source, cfg, true)
+}
+
+/// Like [`extract_crate_with_cfg`], with the PyO3 scan (#275) switchable.
+///
+/// The scan is on by default: one file, treated as its own root. A caller that
+/// can read files instead walks the crate's module tree with
+/// [`extract_pyo3_file`] — which records the real `module_path` and the
+/// reachability of every enclosing `mod` — and then passes `false` here so the
+/// per-file pass does not report the same items a second time under the wrong
+/// path.
+pub fn extract_crate_with_cfg_scan(
+    source: &str,
+    cfg: Option<&CfgSet>,
+    pyo3_scan: bool,
+) -> Result<Manifest, syn::Error> {
     let mut file = syn::parse_file(source)?;
     if let Some(set) = cfg {
         crate::cfg::prune_file_or_error(set, &mut file)?;
     }
     let mut manifest = Manifest::new(Mode::Crate);
     extract_crate_items(&file.items, &mut manifest);
+    // Items that carry only PyO3 attributes (#275). Reported with a PyO3
+    // origin, `exported = false` and the symbol a Phase-2 wrapper crate will
+    // emit; an item that also carries `#[julia]` is owned by `#[julia]` and is
+    // skipped by the scan (see `crate::pyo3`). The scan walks inline modules
+    // itself, because unlike the `#[julia]` path it records `module_path`: a
+    // wrapper crate has to name the item as `user_crate::module::item`.
+    if pyo3_scan {
+        crate::pyo3::extract_pyo3_items(&file.items, &mut manifest);
+    }
     Ok(manifest)
+}
+
+/// The PyO3 items of one file of a crate's module tree, plus the out-of-line
+/// `mod` declarations it makes (#275).
+///
+/// `module_path` is where this file sits in the tree (empty for the crate
+/// root) and `reachable` says whether every `mod` on the way to it is `pub`.
+/// The caller resolves each returned [`crate::pyo3::PendingModule`] to a file
+/// and calls this again; only it can touch the filesystem.
+///
+/// `scan` carries the crate-wide state: `#[pyclass]` structs and their
+/// `#[pymethods]` blocks may live in different files, so the structs are only
+/// written to a manifest by [`crate::pyo3::Pyo3Scan::finish`], once every file
+/// has been seen.
+pub fn extract_pyo3_file(
+    source: &str,
+    cfg: Option<&CfgSet>,
+    module_path: &[String],
+    reachable: bool,
+    scan: &mut crate::pyo3::Pyo3Scan,
+    manifest: &mut Manifest,
+) -> Result<Vec<crate::pyo3::PendingModule>, syn::Error> {
+    let mut file = syn::parse_file(source)?;
+    if let Some(set) = cfg {
+        crate::cfg::prune_file_or_error(set, &mut file)?;
+    }
+    Ok(scan.file(&file.items, module_path, reachable, manifest))
 }
 
 /// One level of items; inline modules are visited recursively.
@@ -240,6 +314,8 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
                 } else {
                     String::new()
                 },
+                python_name: String::new(),
+                vis: String::new(),
             }
         })
         .collect();
@@ -252,6 +328,14 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             is_static: m.is_static,
             is_mutable: m.is_mutable,
             is_constructor: returns_boxed_struct(struct_name, &m.func),
+            vis: crate::attrs::visibility_string(&m.func.vis),
+            skip_reason: String::new(),
+            python_name: String::new(),
+            accessor: String::new(),
+            return_kind: plain_return_kind(&m.func.sig.output),
+            ok_type: String::new(),
+            err_type: String::new(),
+            inner_type: String::new(),
             returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
@@ -264,8 +348,12 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         .collect();
     Struct {
         cfg: predicate_string(&model.item.attrs),
+        cfg_features: crate::cfg::predicate_features(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
+        vis: crate::attrs::visibility_string(&model.item.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         type_params: generics_to_type_params(&model.item.generics),
         fields,
         methods,

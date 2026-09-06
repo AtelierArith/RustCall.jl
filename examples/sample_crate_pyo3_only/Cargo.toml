@@ -1,0 +1,22 @@
+# A crate written for PyO3 only: it knows nothing about RustCall and carries no
+# RustCall attribute anywhere. RustCall scans it (#275 Phase 1) and reports what
+# a Phase-2 wrapper crate would be able to wrap.
+#
+# pyo3 is a plain mandatory dependency with `default-features = false,
+# features = ["macros"]`, which is what the #275 MWE used and what most real
+# crates look like: making pyo3 optional would need
+# `#[cfg_attr(feature = "python", ...)]`, and that does not work for pyo3's
+# inner attributes (`new`, `staticmethod`, `getter`, `setter`, `pyo3(get, set)`)
+# because the outer macro runs before `cfg_attr` expands. `extension-module` is
+# deliberately NOT enabled: a crate that enables it unconditionally cannot be
+# wrapped at all (`PyO3LinkPlan` mode `:unlinkable`).
+[package]
+name = "sample_crate_pyo3_only"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+pyo3 = { version = "0.29", default-features = false, features = ["macros"] }

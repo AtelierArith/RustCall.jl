@@ -33,6 +33,11 @@ Information about a Rust crate for binding generation.
 - `julia_functions::Vector{RustFunctionSignature}`: Functions marked with #[julia]
 - `julia_structs::Vector{RustStructInfo}`: Structs marked with #[julia]
 - `source_files::Vector{String}`: Paths to .rs source files
+- `pyo3_functions::Vector{RustFunctionSignature}`: `#[pyfunction]` /
+  `#[pymodule]` items found by the PyO3 scan of #275 — items the crate does
+  *not* mark with a RustCall attribute. Nothing wraps them yet; each carries a
+  `skip_reason` (empty when a Phase-2 wrapper crate could wrap it).
+- `pyo3_structs::Vector{RustStructInfo}`: `#[pyclass]` items, likewise.
 """
 struct CrateInfo
     name::String
@@ -42,7 +47,15 @@ struct CrateInfo
     julia_functions::Vector{RustFunctionSignature}
     julia_structs::Vector{RustStructInfo}
     source_files::Vector{String}
+    pyo3_functions::Vector{RustFunctionSignature}
+    pyo3_structs::Vector{RustStructInfo}
 end
+
+# The PyO3 columns are schema-5 additions (#275); a caller that built a
+# `CrateInfo` before them keeps working and simply reports no PyO3 items.
+CrateInfo(name, path, version, dependencies, julia_functions, julia_structs, source_files) =
+    CrateInfo(name, path, version, dependencies, julia_functions, julia_structs, source_files,
+              RustFunctionSignature[], RustStructInfo[])
 
 """
     CrateBindingOptions
@@ -129,10 +142,26 @@ function scan_crate(crate_path::String; cfg = :lenient,
     # `cfg = :cargo`, and then every `#[cfg]` is decided, which is what lets
     # mutually exclusive feature variants of one `#[julia] fn` collapse to the
     # one that exists (#277 Phase B).
-    manifest = extract_manifest(source_files; mode = "crate", skip_unparsable = true,
-                                cfg = cfg, cfg_text = cfg_text)
+    # The PyO3 scan (#275) needs the crate's module tree, not a bag of files:
+    # `src/api.rs` is `api`, and a `mod api;` that is not `pub` puts everything
+    # below it out of a wrapper crate's reach. The `#[julia]` extraction stays
+    # per file.
+    lib_root = crate_lib_root(crate_path, cargo_toml)
+    # A `[lib] path` outside `src/` is not in `source_files`, so the file the
+    # module tree hangs off has to be scanned even when the per-file pass never
+    # sees it.
+    tree_files = lib_root === nothing || lib_root in source_files ?
+        source_files : vcat(source_files, [lib_root])
+    manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
+                                cfg = cfg, cfg_text = cfg_text,
+                                crate_root = lib_root)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
+    # Items the crate marks only for PyO3 (#275 Phase 1). They are reported so
+    # `@rust_crate` can say what it found and why an item is not wrappable;
+    # generating the wrapper crate that exports them is Phase 2.
+    pyo3_functions = manifest_function_signatures(manifest; origins = PYO3_ATTRIBUTE_ORIGINS)
+    pyo3_structs = manifest_struct_infos(manifest; origins = PYO3_ATTRIBUTE_ORIGINS)
 
     # Extract dependencies from Cargo.toml
     dependencies = extract_crate_dependencies(cargo_toml)
@@ -144,7 +173,9 @@ function scan_crate(crate_path::String; cfg = :lenient,
         dependencies,
         all_functions,
         all_structs,
-        source_files
+        source_files,
+        pyo3_functions,
+        pyo3_structs,
     )
 end
 
@@ -155,6 +186,31 @@ Parse a Cargo.toml file and return its contents as a dictionary.
 """
 function parse_cargo_toml(path::String)
     TOML.parsefile(path)
+end
+
+"""
+    crate_lib_root(crate_path, cargo_toml) -> Union{String, Nothing}
+
+The crate's library root source file: `[lib] path` when the manifest sets one,
+otherwise Cargo's default `src/lib.rs`. `nothing` when neither exists (a
+binary-only crate).
+
+This is the file the PyO3 scan of #275 follows the module tree from, so a crate
+that puts its root somewhere else — `[lib] path = "src/core/lib.rs"`, or a path
+outside `src/` altogether — is resolved from the right place instead of having
+every source file treated as its own root.
+"""
+function crate_lib_root(crate_path::AbstractString, cargo_toml::AbstractDict)
+    lib = get(cargo_toml, "lib", nothing)
+    if lib isa AbstractDict
+        configured = get(lib, "path", nothing)
+        if configured isa AbstractString
+            path = normpath(joinpath(String(crate_path), String(configured)))
+            return isfile(path) ? path : nothing
+        end
+    end
+    default = joinpath(String(crate_path), "src", "lib.rs")
+    return isfile(default) ? default : nothing
 end
 
 """

@@ -654,6 +654,53 @@ pub fn predicate_string(attrs: &[Attribute]) -> String {
 
 /// Canonical text of a cfg predicate: `unix`, `feature = "x"`, `all(a, b)`.
 /// (`quote` would insert spaces between every token.)
+/// The crate features an item's `#[cfg(...)]` predicates depend on, in the
+/// order they appear and without duplicates.
+///
+/// `#[cfg(all(unix, feature = "python"))]` yields `["python"]`. A consumer can
+/// then ask "does this item exist when feature X is off?" by set membership,
+/// without handling Rust `cfg` syntax itself — which only this crate does
+/// (#264). Used by #275 to reconcile the PyO3 scan with the feature set a
+/// wrapper crate would actually build under.
+pub fn predicate_features(attrs: &[Attribute]) -> Vec<String> {
+    let mut out = Vec::new();
+    for attr in attrs {
+        if let Some(meta) = cfg_predicate(attr) {
+            collect_features(&meta, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_features(meta: &Meta, out: &mut Vec<String>) {
+    match meta {
+        Meta::NameValue(nv) => {
+            if nv.path.is_ident("feature") {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
+                    let value = s.value();
+                    if !out.contains(&value) {
+                        out.push(value);
+                    }
+                }
+            }
+        }
+        Meta::List(list) => {
+            if let Ok(nested) = list.parse_args_with(
+                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+            ) {
+                for inner in nested.iter() {
+                    collect_features(inner, out);
+                }
+            }
+        }
+        Meta::Path(_) => {}
+    }
+}
+
 pub fn meta_to_string(meta: &Meta) -> String {
     match meta {
         Meta::Path(path) => path

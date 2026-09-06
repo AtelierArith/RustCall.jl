@@ -16,9 +16,10 @@ Manifest schema version this version of RustCall.jl understands. Must match
 `return_abi` and the string helper flags, #242; 3: `#[julia]` is additive, so
 `symbol` differs from `name` for every wrapped function and method, #279;
 4: one vocabulary for the type contract — `Function.return_abi`, `Field.abi`
-and `Method.returns_boxed_struct`, #276).
+and `Method.returns_boxed_struct`, #276; 5: the PyO3 crate scan — a `py_*`
+attribute origin, `vis`, `skip_reason` and the `py_result` return kind, #275).
 """
-const MANIFEST_SCHEMA_VERSION = 4
+const MANIFEST_SCHEMA_VERSION = 5
 
 """
     ExtractorError <: Exception
@@ -552,18 +553,24 @@ probe — it has just run a full `cargo build`. The memo therefore serves first
 loads, where the crate has not been built under this process before; a reload
 re-probes unconditionally.
 
+`features` passes extra Cargo feature flags (`--no-default-features`,
+`--all-features`, `--features x`) so a caller can ask what the configuration
+looks like under a *different* feature set than the crate's default — which is
+how #275 scans a PyO3 crate under the feature set its wrapper would be built
+with. They are part of the memo key.
+
 `--print cfg` still resolves and builds the crate's dependencies, but every
 caller today has just built the crate anyway.
 """
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
-                               memo::Bool = true)
+                               memo::Bool = true, features::Vector{String} = String[])
     path = abspath(String(crate_path))
-    key = path * "\n" * String(profile) * "\n" * _cargo_cfg_env_key() * "\n" *
-          _crate_cfg_inputs_digest(path)
+    key = path * "\n" * String(profile) * "\n" * join(features, " ") * "\n" *
+          _cargo_cfg_env_key() * "\n" * _crate_cfg_inputs_digest(path)
     probe = () -> begin
             try
                 flag = profile == "release" ? `--release` : ``
-                out = read(setenv(`$(cargo()) rustc -q $flag --lib -- --print cfg`; dir = path), String)
+                out = read(setenv(`$(cargo()) rustc -q $flag $features --lib -- --print cfg`; dir = path), String)
                 join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
             catch e
                 @debug "Could not probe the build cfg of $(path)" exception = e
@@ -708,15 +715,29 @@ end
 Run the extractor over source files (`mode` is `"inline"` or `"crate"`).
 With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
+
+`crate_root` (crate mode only) names the crate's root source file, usually
+`src/lib.rs`. The PyO3 scan of #275 then follows the crate's module tree from
+there — recording each item's real `module_path` and whether every enclosing
+`mod` is `pub` — instead of reporting every file's items as crate-root items.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
-                          cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing)
+                          cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
+                          crate_root::Union{Nothing, AbstractString} = nothing)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
     args = ["manifest", "--mode", mode]
     skip_unparsable && push!(args, "--skip-unparsable")
+    # With a crate root the extractor scans PyO3 items (#275) by following the
+    # crate's `mod` tree instead of treating each file as a root, so an item in
+    # `src/api.rs` is reported as `api::item` and a `mod api;` that is not `pub`
+    # makes everything below it unreachable.
+    if crate_root !== nothing
+        push!(args, "--crate-root")
+        push!(args, String(crate_root))
+    end
     if cfg_text === nothing
         append!(args, _cfg_file_args(cfg))
     else
@@ -843,16 +864,37 @@ function constraints_from_strings(bounds::Dict{Symbol, String})
 end
 
 """
-    manifest_function_signatures(manifest; only_attributed=true) -> Vector{RustFunctionSignature}
+    RUSTCALL_ATTRIBUTE_ORIGINS
+
+Manifest `attribute` values that come from a RustCall attribute, i.e. the
+functions that get a Julia wrapper today. Since schema 5 the column doubles as
+the *origin* of the entry and can also name a PyO3 one (`py_function`,
+`py_class`, `py_methods`, `py_module`), which `@rust_crate` reports but does
+not wrap (#275).
+"""
+const RUSTCALL_ATTRIBUTE_ORIGINS = ("julia", "julia_pyo3")
+
+"""
+    PYO3_ATTRIBUTE_ORIGINS
+
+Manifest `attribute` values produced by the PyO3 scan of #275.
+"""
+const PYO3_ATTRIBUTE_ORIGINS = ("py_function", "py_class", "py_methods", "py_module")
+
+"""
+    manifest_function_signatures(manifest; only_attributed=true, origins=RUSTCALL_ATTRIBUTE_ORIGINS) -> Vector{RustFunctionSignature}
 
 Signatures of the free functions in a manifest. With `only_attributed`, only
-`#[julia]`/`#[julia_pyo3]` functions are returned (the ones that get Julia wrappers).
+functions whose `attribute` origin is in `origins` are returned — by default the
+`#[julia]`/`#[julia_pyo3]` ones that get Julia wrappers. Pass
+`origins = PYO3_ATTRIBUTE_ORIGINS` for the PyO3-scanned items instead (#275).
 """
-function manifest_function_signatures(manifest::Dict; only_attributed::Bool = true)
+function manifest_function_signatures(manifest::Dict; only_attributed::Bool = true,
+                                      origins = RUSTCALL_ATTRIBUTE_ORIGINS)
     sigs = RustFunctionSignature[]
     for f in _mvec(manifest, "functions")
         attr = _mstr(f, "attribute")
-        if only_attributed && !(attr in ("julia", "julia_pyo3"))
+        if only_attributed && !(attr in origins)
             continue
         end
         args = _mvec(f, "args")
@@ -878,6 +920,10 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             has_borrowed_string_helper = _mbool(f, "has_borrowed_string_helper"),
             arg_abis = String[_mstr(a, "abi") for a in args],
             return_abi = _mstr(f, "return_abi"),
+            vis = _mstr(f, "vis"),
+            skip_reason = _mstr(f, "skip_reason"),
+            python_name = _mstr(f, "python_name"),
+            cfg_features = String[String(c) for c in _mvec(f, "cfg_features")],
         ))
     end
     return sigs
@@ -898,17 +944,36 @@ function _manifest_method(m)
         arg_abis = String[_mstr(a, "abi") for a in args],
         return_abi = _mstr(m, "return_abi"),
         returns_boxed_struct = _mbool(m, "returns_boxed_struct"),
+        vis = _mstr(m, "vis"),
+        skip_reason = _mstr(m, "skip_reason"),
+        python_name = _mstr(m, "python_name"),
+        accessor = _mstr(m, "accessor"),
+        return_kind = Symbol(isempty(_mstr(m, "return_kind")) ?
+                             (_mstr(m, "return_type") == "()" ? "unit" : "plain") :
+                             _mstr(m, "return_kind")),
+        ok_type = _mstr(m, "ok_type"),
+        err_type = _mstr(m, "err_type"),
+        inner_type = _mstr(m, "inner_type"),
     )
 end
 
 """
-    manifest_struct_infos(manifest) -> Vector{RustStructInfo}
+    manifest_struct_infos(manifest; origins=nothing) -> Vector{RustStructInfo}
 
 Struct descriptions of a manifest, in the shape the Julia emitters consume.
+
+`origins` filters on the `attribute` column: the default keeps everything a
+RustCall attribute produced (`julia`, `julia_pyo3`, `derive_julia_struct`) and
+drops the `#[pyclass]` entries the PyO3 scan adds, because nothing generates
+Julia types for them yet (#275). Pass `PYO3_ATTRIBUTE_ORIGINS` to get exactly
+those, or an empty tuple for no filtering at all.
 """
-function manifest_struct_infos(manifest::Dict)
+function manifest_struct_infos(manifest::Dict; origins = nothing)
+    keep = origins === nothing ?
+        ("julia", "julia_pyo3", "derive_julia_struct", "none", "") : origins
     infos = RustStructInfo[]
     for s in _mvec(manifest, "structs")
+        isempty(keep) || _mstr(s, "attribute") in keep || continue
         fields = Tuple{String, String}[]
         field_abis = Dict{String, String}()
         getters = Dict{String, String}()
@@ -946,6 +1011,11 @@ function manifest_struct_infos(manifest::Dict)
                 for w in _mvec(s, "generic_wrappers")],
             constraints = manifest_constraints(s),
             module_path = String[String(m) for m in _mvec(s, "module_path")],
+            attribute = Symbol(_mstr(s, "attribute")),
+            vis = _mstr(s, "vis"),
+            skip_reason = _mstr(s, "skip_reason"),
+            python_name = _mstr(s, "python_name"),
+            cfg_features = String[String(c) for c in _mvec(s, "cfg_features")],
         ))
     end
     return infos
