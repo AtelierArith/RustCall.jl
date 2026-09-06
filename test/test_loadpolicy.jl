@@ -40,13 +40,24 @@ pointer is not a cleanup either.
 """
 function _reclaim_libraries!(names...)
     policy = RustCall.inline_rustc_policy()
+    # The handles these names retired, collected *before* the unloads so the
+    # drain below is exactly this testset's. Never the no-argument
+    # `close_retired_handles!()`: it sweeps every retired image in the process,
+    # and under the parallel runner that can unmap another testset's retired
+    # library while it still has live objects or a call inside it (#301 review).
+    mine = Ptr{Cvoid}[]
+    for n in names
+        append!(mine, RustCall.retired_handles(n))
+    end
     for n in names
         try
             RustCall.unload_artifact!(policy, n; close = true)
         catch
         end
+        append!(mine, RustCall.retired_handles(n))
     end
-    RustCall.close_retired_handles!()
+    unique!(mine)
+    isempty(mine) || RustCall.close_retired_handles!(mine)
     lock(RustCall.REGISTRY_LOCK) do
         for n in names
             delete!(RustCall.RUST_LIBRARIES, n)

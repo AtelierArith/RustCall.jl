@@ -719,11 +719,17 @@ end
                     # Windows, so `mktempdir`'s cleanup fails with ENOTEMPTY
                     # under `chase/target/release` and logs it at Error level.
                     # Closing first is what makes the cleanup succeed.
+                    # This test's handles, by name — never the no-argument
+                    # form. `close_retired_handles!()` sweeps *every* retired
+                    # image in the process, and under the parallel runner that
+                    # can unmap another testset's retired library while it
+                    # still has live objects or a call inside it (#301 review).
+                    mine = RustCall.retired_handles(lib_name)
                     try
                         RustCall.unload_library(lib_name; close = true)
                     catch
                     end
-                    RustCall.close_retired_handles!()
+                    isempty(mine) || RustCall.close_retired_handles!(mine)
                 end
             end
         end
