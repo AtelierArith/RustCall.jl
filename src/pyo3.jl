@@ -401,10 +401,16 @@ The probe project has the wrapper's shape: a `cdylib` root depending on the
 crate by path, with the requested feature set in its `[dependencies]` entry —
 the only place a dependency's features can be named; `cargo rustc --features`
 is refused for a package outside the workspace — and the profile lines the
-generated wrapper carries. Then `cargo rustc -p <crate> --lib -- --print cfg`.
-Its build cache lives under `<crate>/target/rustcall-pyo3-probe`, so repeated
-plans do not rebuild the dependency graph. Memoized like
-`_crate_build_cfg_text`, on the same inputs; `""` when Cargo will not answer.
+generated wrapper carries. It lives under `<crate>/target/rustcall-pyo3-probe/`
+with the crate's lockfile and `[patch]` table (`_wrapper_shaped_project`), so
+the crate's `.cargo/config.toml`, pins and overrides apply to the probe as to
+the wrapper; and it runs under the wrapper policy's environment
+(`_cargo_panic_env`), so an inherited `CARGO_PROFILE_*_PANIC` cannot make it
+describe a build the wrapper never makes. Then
+`cargo rustc -p <crate> --lib -- --print cfg`. The build cache is
+`<crate>/target/rustcall-pyo3-probe/target`, so repeated plans do not rebuild
+the dependency graph. Memoized like `_crate_build_cfg_text`, on the same
+inputs; `""` when Cargo will not answer.
 """
 function _wrapper_probe_cfg_text(crate_path::AbstractString;
                                  features::Vector{String} = String[],
@@ -417,15 +423,22 @@ function _wrapper_probe_cfg_text(crate_path::AbstractString;
                 _crate_cfg_inputs_digest(path)], "\n")
     probe = () -> begin
         try
-            dir = mktempdir(prefix = "rustcall_pyo3_probe_")
+            # Under the crate's `target/`, with its lockfile and `[patch]`, so
+            # the probe resolves as the wrapper will (`_wrapper_shaped_project`).
+            dir = _wrapper_shaped_project(path, "rustcall-pyo3-probe")
             try
-                mkpath(joinpath(dir, "src"))
                 write(joinpath(dir, "src", "lib.rs"), "")
                 write(joinpath(dir, "Cargo.toml"),
-                      _probe_cargo_toml(package, path, features, default_features))
+                      _probe_cargo_toml(package, path, features, default_features) *
+                      _root_patch_toml(path, TOML.parsefile(joinpath(path, "Cargo.toml"))))
                 flag = release ? `--release` : ``
-                env = copy(ENV)
-                env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe")
+                # The environment the real build runs under: the wrapper policy
+                # pins unwinding there (`_cargo_panic_env`), so an inherited
+                # `CARGO_PROFILE_RELEASE_PANIC=abort` must not reach the probe
+                # either — a `#[cfg(panic = "...")]` item would be scanned for
+                # the opposite build (#307 review).
+                env = _cargo_panic_env(crate_wrapper_policy(), Dict{String, String}(ENV), release)
+                env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe", "target")
                 cmd = `$(cargo()) rustc -q $flag -p $package --lib -- --print cfg`
                 out = read(setenv(cmd, env; dir = dir), String)
                 join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l),
@@ -748,22 +761,37 @@ alongside the path. Any of the three is `""` when it cannot be identified.
 
 In order:
 
-1. `PYO3_PYTHON`, when set, is the interpreter — an explicit choice, a virtual
+1. `RUSTCALL_PYTHON_LIBDIR`, when set, is the directory whatever else says —
+   the RustCall-level override.
+2. pyo3's own configuration, when it names the directory: a cross-compilation
+   `PYO3_CROSS_LIB_DIR`, or the `lib_dir` of a `PYO3_CONFIG_FILE`. pyo3
+   consults no interpreter in either case, so the plan does not invent one: the
+   interpreter is `PYO3_PYTHON` if set and `""` otherwise, and the fingerprint
+   is empty (the configuration itself is in the artifact key). A directory
+   derived from `PYO3_PYTHON` or `PATH` here would be one pyo3 never links, and
+   the wrapper would carry an rpath to a library it is not linked against
+   (#307 review).
+3. `PYO3_PYTHON`, when set, is the interpreter — an explicit choice, a virtual
    environment or a Conda interpreter, is never replaced by the first `python3`
-   on `PATH`. The directory is `RUSTCALL_PYTHON_LIBDIR` if that is set, else
-   what **that** interpreter reports (its framework prefix on macOS, its
-   `sysconfig` `LIBDIR` otherwise).
-2. `RUSTCALL_PYTHON_LIBDIR` alone is the directory; the interpreter is the
-   `python3` / `python` on `PATH`, the one `python3-config` describes.
-3. A loaded CondaPkg names both: `<envdir>/lib` and the environment's own
+   on `PATH` — and the directory is what **that** interpreter reports (its
+   framework prefix on macOS, its `sysconfig` `LIBDIR` otherwise).
+4. `RUSTCALL_PYTHON_LIBDIR` alone leaves the interpreter to `PATH`, the
+   `python3` / `python` that `python3-config` describes.
+5. A loaded CondaPkg names both: `<envdir>/lib` and the environment's own
    `python`.
-4. Otherwise the `python3` / `python` on `PATH`: its `sys.executable`, and its
+6. Otherwise the `python3` / `python` on `PATH`: its `sys.executable`, and its
    directory from the framework prefix (macOS), `python3-config --ldflags`, or
    `sysconfig` `LIBDIR`, in that order.
 """
 function python_link_source()
     override = get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")
     override_dir = isempty(override) ? "" : (isdir(override) ? String(override) : "")
+
+    configured = _pyo3_configured_lib_dir()
+    if !isempty(configured)
+        dir = isempty(override) ? (isdir(configured) ? configured : "") : override_dir
+        return (dir, String(get(ENV, "PYO3_PYTHON", "")), "")
+    end
 
     pinned = get(ENV, "PYO3_PYTHON", "")
     if !isempty(pinned)
@@ -793,6 +821,25 @@ _python_link_source_or_empty() = try
     python_link_source()
 catch
     ("", "", "")
+end
+
+# The library directory pyo3's own configuration names, when it does:
+# `PYO3_CROSS_LIB_DIR` (a cross-compilation), else the `lib_dir` key of a
+# `PYO3_CONFIG_FILE`. "" when neither is set or the file names none.
+function _pyo3_configured_lib_dir()
+    cross = get(ENV, "PYO3_CROSS_LIB_DIR", "")
+    isempty(cross) || return String(cross)
+    config = get(ENV, "PYO3_CONFIG_FILE", "")
+    isempty(config) && return ""
+    try
+        for line in eachline(config)
+            parts = split(line, '='; limit = 2)
+            length(parts) == 2 || continue
+            strip(parts[1]) == "lib_dir" && return String(strip(parts[2]))
+        end
+    catch
+    end
+    return ""
 end
 
 # What pyo3's build script decides from an interpreter, as one line the
@@ -1221,8 +1268,18 @@ end
 """
     _build_pyo3_wrapper_project(info, plan, source, rustflags, release, key, cache_enabled) -> String
 
-Write the generated wrapper crate to a temporary directory, build it, and
-return a path to the result that **outlives that directory**.
+Write the generated wrapper crate to a directory of its own under the target
+crate's `target/`, build it, and return a path to the result that **outlives
+that directory**.
+
+The wrapper is a Cargo root of its own, and Cargo gives a root three things it
+does not give a dependency: `.cargo/config.toml` discovery (from the working
+directory upwards), the lockfile, and the `[patch]` table. A wrapper written to
+an unrelated temporary directory therefore resolved and compiled the crate
+differently from the crate's own build — no config, a fresh resolution, no
+overrides. `_wrapper_shaped_project` puts it under `<crate>/target/` and seeds
+it with the crate's `Cargo.lock` and `[patch]`, so the three apply as they do
+to the crate itself (#307 review).
 
 `RUSTFLAGS` carries the plan's link flags; `PYO3_PYTHON` pins the interpreter
 pyo3's build script probes to the one whose library directory the plan put on
@@ -1239,10 +1296,12 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
                                      source::WrapperCrateSource,
                                      rustflags::Vector{String}, release::Bool,
                                      key::String, cache_enabled::Bool)
-    wrapper_path = mktempdir(prefix = "rustcall_pyo3_wrapper_")
-    mkpath(joinpath(wrapper_path, "src"))
+    # Under the crate's own `target/`, with its lockfile and `[patch]` table,
+    # so the wrapper resolves as the crate does (`_wrapper_shaped_project`).
+    wrapper_path = _wrapper_shaped_project(info.path, "rustcall-pyo3-wrapper")
+    cargo_toml = parse_cargo_toml(joinpath(info.path, "Cargo.toml"))
     write(joinpath(wrapper_path, "Cargo.toml"),
-          generate_pyo3_wrapper_cargo_toml(info, plan))
+          generate_pyo3_wrapper_cargo_toml(info, plan) * _root_patch_toml(info.path, cargo_toml))
     write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
 
     project = CargoProject("$(info.name)_rustcall_wrapper", "0.1.0", DependencySpec[],
@@ -1276,6 +1335,63 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     finally
         cleanup_cargo_project(project)
     end
+end
+
+"""
+    _wrapper_shaped_project(crate_path, subdir) -> String
+
+A fresh directory for a Cargo project that stands in for the wrapper crate —
+the generated wrapper itself, or the cfg probe — placed **under the target
+crate's `target/<subdir>/`** and seeded with the root-only inputs of the
+crate's own build, so Cargo resolves the project the way it resolves the crate
+(#307 review):
+
+* `.cargo/config.toml` is discovered from the working directory upwards, so a
+  project under `<crate>/target/` finds the crate's config exactly as a build
+  in the crate does — a temporary directory elsewhere found nothing, and an
+  item that exists only under the config's `rustflags` was a compile error in
+  generated code;
+* `Cargo.lock` is the root's, so the crate's lockfile is copied in — Cargo adds
+  the project's own entry to the copy and pins everything else as the crate
+  pinned it;
+* `[patch]` is honoured only in the root manifest, so the crate's table is
+  carried over by `_root_patch_toml`, relative paths made absolute.
+
+The directory is the caller's to remove.
+"""
+function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractString)
+    parent = joinpath(String(crate_path), "target", String(subdir))
+    mkpath(parent)
+    dir = mktempdir(parent; prefix = "project_")
+    mkpath(joinpath(dir, "src"))
+    lock = joinpath(String(crate_path), "Cargo.lock")
+    isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
+    return dir
+end
+
+# The crate's `[patch]` table as TOML text for a root manifest that lives
+# elsewhere, every `path = ` entry rewritten to an absolute path; "" when the
+# crate has none.
+function _root_patch_toml(crate_path::AbstractString, cargo_toml::AbstractDict)
+    patch = get(cargo_toml, "patch", nothing)
+    (patch isa AbstractDict && !isempty(patch)) || return ""
+    rewritten = Dict{String, Any}()
+    for (source, entries) in patch
+        entries isa AbstractDict || continue
+        table = Dict{String, Any}()
+        for (name, spec) in entries
+            if spec isa AbstractDict && haskey(spec, "path")
+                spec = Dict{String, Any}(spec)
+                spec["path"] = abspath(joinpath(String(crate_path), String(spec["path"])))
+            end
+            table[String(name)] = spec
+        end
+        rewritten[String(source)] = table
+    end
+    io = IOBuffer()
+    println(io)
+    TOML.print(io, Dict{String, Any}("patch" => rewritten))
+    return String(take!(io))
 end
 
 # RUSTFLAGS is a whitespace-separated list; an inherited one is kept so a user's

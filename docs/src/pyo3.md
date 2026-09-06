@@ -468,14 +468,24 @@ library directory the linker searches (`plan.rpath`) and the interpreter pyo3's
 build script configures itself for (`PYO3_PYTHON`, `plan.interpreter`).
 `RustCall.python_link_source()` decides them **together**, in this order:
 
-1. `PYO3_PYTHON`, when you set it, is the interpreter — a virtual environment
+1. `RUSTCALL_PYTHON_LIBDIR`, when you set it, is the directory whatever else
+   says;
+2. pyo3's own configuration, when it names one — a cross-compilation
+   `PYO3_CROSS_LIB_DIR`, or the `lib_dir` of a `PYO3_CONFIG_FILE` — is the
+   directory, and no interpreter is consulted (pyo3 consults none either);
+3. `PYO3_PYTHON`, when you set it, is the interpreter — a virtual environment
    or a Conda interpreter is never replaced by the first `python3` on `PATH` —
-   and the directory is `RUSTCALL_PYTHON_LIBDIR` if set, else what that
-   interpreter itself reports;
-2. `RUSTCALL_PYTHON_LIBDIR` alone names the directory, and the interpreter is
-   the `python3` on `PATH`;
-3. a loaded CondaPkg (PythonCall) names both from its environment;
-4. otherwise the `python3` / `python` on `PATH` and the directory it reports.
+   and the directory is what that interpreter itself reports;
+4. `RUSTCALL_PYTHON_LIBDIR` alone leaves the interpreter to the `python3` on
+   `PATH`;
+5. a loaded CondaPkg (PythonCall) names both from its environment;
+6. otherwise the `python3` / `python` on `PATH` and the directory it reports.
+
+The wrapper crate — and the cfg probe that decides what it can call — is
+built under the target crate's own `target/`, seeded with the crate's
+`Cargo.lock` and `[patch]` table, so the crate's `.cargo/config.toml`, its
+pins and its overrides apply to the wrapper exactly as they apply to the crate
+itself; Cargo gives none of the three to a dependency of a root elsewhere.
 
 The interpreter — its path *and* what it reports about itself
 (implementation, version, ABI tag, the library it links; `plan.interpreter_config`)

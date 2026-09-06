@@ -573,6 +573,118 @@ end
         end
     end
 
+    @testset "a wrapper is built in the target's Cargo context (#307 review)" begin
+        # Cargo gives a root three things it does not give a dependency:
+        # `.cargo/config.toml` discovery, the lockfile, and `[patch]`. A
+        # wrapper written to an unrelated temporary directory had none of
+        # them, so a crate that builds on its own could resolve differently or
+        # fail as the wrapper's dependency.
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is not available"
+        else
+            mktempdir() do dir
+                mkpath(joinpath(dir, "src"))
+                mkpath(joinpath(dir, ".cargo"))
+                write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "configured_crate"
+                version = "0.1.0"
+                edition = "2021"
+                [lib]
+                crate-type = ["rlib"]
+                [features]
+                default = []
+                python = ["dep:pyo3"]
+                [dependencies]
+                pyo3 = { version = "0.29", optional = true, default-features = false, features = ["macros"] }
+                """)
+                # The project directory sits under the crate's `target/`, so
+                # the config is discovered, and the crate's lockfile is the
+                # project's starting point.
+                write(joinpath(dir, "Cargo.lock"), "# a marker, not a real lockfile\n")
+                project = RustCall._wrapper_shaped_project(dir, "rustcall-pyo3-test")
+                @test startswith(project, joinpath(dir, "target", "rustcall-pyo3-test"))
+                @test isdir(joinpath(project, "src"))
+                @test read(joinpath(project, "Cargo.lock"), String) ==
+                      read(joinpath(dir, "Cargo.lock"), String)
+                rm(project; recursive = true, force = true)
+                rm(joinpath(dir, "Cargo.lock"))
+                # `[patch]` is honoured only in the root manifest: it is carried
+                # over, paths made absolute; a crate without one adds nothing.
+                patched = RustCall._root_patch_toml(dir, Dict{String, Any}("patch" =>
+                    Dict{String, Any}("crates-io" =>
+                        Dict{String, Any}("foo" => Dict{String, Any}("path" => "vendor/foo")))))
+                @test occursin("[patch.crates-io", patched)
+                @test occursin("vendor", patched)
+                @test !occursin("path = \"vendor/foo\"", patched)
+                @test RustCall._root_patch_toml(dir, Dict{String, Any}()) == ""
+
+                # End to end: an item that exists only because the crate's
+                # `.cargo/config.toml` was discovered — its `[env]` reaches the
+                # build script, which emits the cfg — is decided by the probe
+                # and compiled by the wrapper, because both run in the crate's
+                # context. (`[build] rustflags` would not do as the marker: a
+                # `:link_libpython` build's own `RUSTFLAGS` shadows it, which
+                # is Cargo's precedence and a separate matter.)
+                write(joinpath(dir, ".cargo", "config.toml"), """
+                [env]
+                RUSTCALL_CONFIG_MARKER = "1"
+                """)
+                write(joinpath(dir, "build.rs"), """
+                fn main() {
+                    println!("cargo::rustc-check-cfg=cfg(rustcall_from_config)");
+                    if std::env::var_os("RUSTCALL_CONFIG_MARKER").is_some() {
+                        println!("cargo::rustc-cfg=rustcall_from_config");
+                    }
+                }
+                """)
+                write(joinpath(dir, "src", "lib.rs"), """
+                #[cfg_attr(feature = "python", pyo3::pyfunction)]
+                pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+                #[cfg(rustcall_from_config)]
+                #[cfg_attr(feature = "python", pyo3::pyfunction)]
+                pub fn from_config() -> i32 { 42 }
+                """)
+                info = RustCall.scan_crate(dir)
+                # With the feature off the markers are gone under a resolved
+                # scan, so nothing is wrapped (the documented fallback) — but
+                # the probe, run in the crate's context, already sees the cfg.
+                plan = RustCall.pyo3_link_plan(dir)
+                if !plan.resolved
+                    @test_skip "Cargo could not resolve the crate"
+                else
+                    @test plan.mode === :python_free
+                    @test occursin(r"^rustcall_from_config$"m, plan.cfg_text)
+                    @test RustCall.build_pyo3_wrapper(info; cache_enabled = false) === nothing
+                end
+                # With the feature on the wrapper is built — where a Python can
+                # be linked — and exports the config-gated item.
+                plan_on = RustCall.pyo3_link_plan(dir; features = ["python"],
+                                                  default_features = false)
+                if !plan_on.resolved
+                    @test_skip "Cargo could not resolve the crate"
+                else
+                    @test occursin(r"^rustcall_from_config$"m, plan_on.cfg_text)
+                    wrapper = try
+                        RustCall.build_pyo3_wrapper(info; features = ["python"],
+                                                    default_features = false,
+                                                    cache_enabled = false)
+                    catch e
+                        @info "skipping the configured-crate build" exception = e
+                        nothing
+                    end
+                    if wrapper === nothing
+                        @test_skip "no linkable Python here: the configured crate's wrapper cannot be built"
+                    else
+                        @test "from_config" in Set(f.name for f in wrapper.info.julia_functions)
+                        @test isfile(wrapper.lib_path)
+                    end
+                end
+            end
+        end
+    end
+
     @testset "scan_report names the wrapper's exports" begin
         if !RustCall.check_rustc_available()
             @test_skip "rustc is not available"

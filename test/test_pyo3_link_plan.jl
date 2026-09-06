@@ -227,6 +227,34 @@ _manifest(text::AbstractString) = TOML.parse(text)
             """))
             @test free.mode === :python_free
             @test free.interpreter == ""
+
+            # pyo3's own configuration names the directory — a cross-compile
+            # `PYO3_CROSS_LIB_DIR`, or the `lib_dir` of a `PYO3_CONFIG_FILE` —
+            # and consults no interpreter, so none is invented for the plan
+            # (#307 review). The RustCall-level override still wins.
+            withenv("PYO3_CROSS_LIB_DIR" => libdir, "PYO3_PYTHON" => nothing,
+                    "PYO3_CONFIG_FILE" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
+                @test RustCall.python_link_source() == (libdir, "", "")
+            end
+            cfgfile = joinpath(libdir, "pyo3-build-config.txt")
+            write(cfgfile, "implementation=CPython\nversion=3.12\nshared=true\nlib_dir=$(libdir)\n")
+            withenv("PYO3_CONFIG_FILE" => cfgfile, "PYO3_CROSS_LIB_DIR" => nothing,
+                    "PYO3_PYTHON" => fake, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
+                @test RustCall.python_link_source() == (libdir, fake, "")
+                plan = RustCall._pyo3_conservative_plan(manifest)
+                @test plan.rpath == libdir
+                @test plan.interpreter == fake
+            end
+            withenv("PYO3_CROSS_LIB_DIR" => joinpath(libdir, "elsewhere"),
+                    "RUSTCALL_PYTHON_LIBDIR" => libdir, "PYO3_PYTHON" => nothing,
+                    "PYO3_CONFIG_FILE" => nothing) do
+                @test RustCall.python_link_source()[1] == libdir
+            end
+            # A config file that names no `lib_dir` decides nothing.
+            write(cfgfile, "implementation=CPython\nversion=3.12\n")
+            withenv("PYO3_CONFIG_FILE" => cfgfile, "PYO3_CROSS_LIB_DIR" => nothing) do
+                @test RustCall._pyo3_configured_lib_dir() == ""
+            end
         end
     end
 
@@ -259,6 +287,18 @@ _manifest(text::AbstractString) = TOML.parse(text)
                 @test debug.resolved
                 @test occursin(r"^debug_assertions$"m, debug.cfg_text)
                 @test occursin(r"^panic=\"unwind\"$"m, debug.cfg_text)
+
+                # An inherited profile override does not reach the probe
+                # either: the wrapper build pins unwinding through its
+                # policy, so the probe runs under the same environment
+                # (#307 review). The memo is cleared so the probe really runs.
+                empty!(RustCall._WRAPPER_CFG_TEXT)
+                inherited = withenv("CARGO_PROFILE_RELEASE_PANIC" => "abort") do
+                    RustCall.pyo3_link_plan(dir)
+                end
+                @test inherited.resolved
+                @test occursin(r"^panic=\"unwind\"$"m, inherited.cfg_text)
+                @test !occursin(r"^panic=\"abort\"$"m, inherited.cfg_text)
             end
         end
     end

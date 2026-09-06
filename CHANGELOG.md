@@ -66,7 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Vec<T>` field getter clones, the cfg probe runs the crate as the wrapper's
   dependency rather than as its own Cargo root, and the feature set a caller
   asks for is honoured — and is in the artifact identity — on the plain
-  `@rust_crate` path as well. Anything the generator cannot
+  `@rust_crate` path as well. The wrapper and the probe are built under the
+  crate's own `target/` with its `Cargo.lock` and `[patch]` table carried
+  over, so the crate's `.cargo/config.toml`, pins and overrides apply as they
+  do to the crate; the probe runs under the wrapper's panic policy; and
+  `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
+  directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
   `py_result_payload`, `cfg_undecided`) instead of being emitted — including a
   plain `Result` / `Option` on a `#[pymethods]` **method**, which the `#[julia]`
