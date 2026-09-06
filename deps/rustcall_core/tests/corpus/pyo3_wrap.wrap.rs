@@ -1084,12 +1084,6 @@ pub extern "C" fn rustcall_Rect_get_name(
     ::std::mem::forget(rustcall_bytes);
     rustcall_ret
 }
-#[no_mangle]
-pub extern "C" fn rustcall_Rect_get_tags(
-    ptr: *const user_crate::geometry::Rect,
-) -> Vec<i32> {
-    unsafe { (*ptr).tags.clone() }
-}
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_RECT_NEW : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =

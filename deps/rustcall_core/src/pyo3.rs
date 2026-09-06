@@ -44,8 +44,8 @@ use crate::manifest::{
 };
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
-    has_type_params, is_ffi_compatible_type, last_ident, needs_clone_for_getter,
-    return_type_to_string, type_to_string, unparen,
+    has_type_params, is_ffi_compatible_type, is_string_type, last_ident, return_type_to_string,
+    type_to_string, unparen,
 };
 
 /// Append every PyO3-only item of `items` to `manifest`.
@@ -873,10 +873,14 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
             // only a `pub` field gets accessors. A skipped class has no handle
             // type, so its fields have none either, whatever their visibility.
             let field_is_public = matches!(f.vis, syn::Visibility::Public(_));
+            // A `String` field crosses as the owned-string ABI; a `Vec<T>`
+            // has no ABI on the Julia side yet, so advertising an accessor for
+            // it would make the whole binding fail after the wrapper built
+            // (#307 review; #303 owns an owned-vector ABI).
             let usable = reason.is_empty()
                 && field_is_public
                 && pyo3_type_in(&f.ty).is_none()
-                && (is_ffi_compatible_type(&f.ty) || needs_clone_for_getter(&f.ty));
+                && (is_ffi_compatible_type(&f.ty) || is_string_type(&f.ty));
             fields.push(Field {
                 name: ident.to_string(),
                 rust_type: type_to_string(&f.ty),

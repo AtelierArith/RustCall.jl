@@ -315,6 +315,7 @@ _manifest(text::AbstractString) = TOML.parse(text)
             write(joinpath(ws, "Cargo.toml"), """
             [workspace]
             members = ["member"]
+            exclude = ["standalone"]
             [patch.crates-io]
             foo = { path = "vendor/foo" }
             """)
@@ -337,6 +338,44 @@ _manifest(text::AbstractString) = TOML.parse(text)
             rm(project; recursive = true, force = true)
             @test occursin(r"^\[workspace\]$"m,
                            RustCall._probe_cargo_toml("member", member, String[], true))
+
+            # A package the workspace lists in `exclude` is its own root: not
+            # a member, so Cargo gives it none of the root's inputs — and
+            # neither does RustCall (#307 review).
+            standalone = _write_crate(joinpath(ws, "standalone"), """
+            [package]
+            name = "standalone"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+            @test RustCall._workspace_root_dir(standalone) === nothing
+            @test RustCall._cargo_root_dir(standalone) == abspath(standalone)
+            @test RustCall._root_patch_toml(standalone) == ""
+            project = RustCall._wrapper_shaped_project(standalone, "rustcall-pyo3-test")
+            @test !isfile(joinpath(project, "Cargo.lock"))
+            rm(project; recursive = true, force = true)
+
+            # The root's manifest and lockfile are inputs of a member's
+            # artifact identity: a change there that touches no file of the
+            # member still rebuilds (#307 review, #278).
+            info = RustCall.scan_crate(member)
+            key_before = RustCall.compute_crate_hash(info)
+            write(joinpath(ws, "Cargo.lock"), "# the workspace's lockfile, revised\n")
+            RustCall._artifact_reset_digest_caches!()
+            key_lock = RustCall.compute_crate_hash(info)
+            @test key_lock != key_before
+            write(joinpath(ws, "Cargo.toml"),
+                  read(joinpath(ws, "Cargo.toml"), String) *
+                  "\n[workspace.dependencies]\nserde = \"1\"\n")
+            RustCall._artifact_reset_digest_caches!()
+            @test RustCall.compute_crate_hash(info) != key_lock
+            # ... while the excluded package's identity does not move with the
+            # workspace it is not part of.
+            standalone_info = RustCall.scan_crate(standalone)
+            key_standalone = RustCall.compute_crate_hash(standalone_info)
+            write(joinpath(ws, "Cargo.lock"), "# revised again\n")
+            RustCall._artifact_reset_digest_caches!()
+            @test RustCall.compute_crate_hash(standalone_info) == key_standalone
         end
         # And the probe really resolves from inside a workspace: without the
         # `[workspace]` line Cargo refuses it, the plan comes back unresolved,

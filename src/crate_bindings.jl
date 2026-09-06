@@ -1764,13 +1764,24 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
     # different ambient flags are different binaries and must not share a key.
     env = Pair{String, String}["cargo-config" => _cargo_config_digest(ENV; dir = info.path)]
     append!(env, build_env)
+    extra = Pair{String, String}["name" => info.name, "version" => info.version]
+    # A workspace member's build is decided by files outside its directory:
+    # the workspace root's manifest (`[workspace.dependencies]`, `[patch]`)
+    # and lockfile, which a wrapper build now carries over
+    # (`_wrapper_shaped_project`). Hashed by content, so a change there that
+    # touches no file of the member still rebuilds (#307 review, #278).
+    root = _cargo_root_dir(info.path)
+    if root != abspath(info.path)
+        push!(extra, "workspace-root-manifest" => _file_content_digest(joinpath(root, "Cargo.toml")))
+        push!(extra, "workspace-root-lock" => _file_content_digest(joinpath(root, "Cargo.lock")))
+    end
     return artifact_key(ArtifactId(
         kind = String(kind),
         source = crate_content_digest(info.path),
         codegen = codegen,
         dependencies = String[deps_digest],
         build_env = env,
-        extra = Pair{String, String}["name" => info.name, "version" => info.version],
+        extra = extra,
     ))
 end
 

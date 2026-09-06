@@ -63,15 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reserved symbol, so an item that would *be* one is reported as a
   `symbol_collision`. A `&str` returned by an item that takes a string leaves
   as an owned copy (it may point into the argument the wrapper built), a
-  `Vec<T>` field getter clones, the cfg probe runs the crate as the wrapper's
+  `Vec<T>` field gets no accessor (there is no owned-vector ABI on the Julia
+  side yet), the cfg probe runs the crate as the wrapper's
   dependency rather than as its own Cargo root, and the feature set a caller
   asks for is honoured — and is in the artifact identity — on the plain
   `@rust_crate` path as well. The wrapper and the probe are built under the
   crate's own `target/` with its `Cargo.lock` and `[patch]` table carried
   over, so the crate's `.cargo/config.toml`, pins and overrides apply as they
-  do to the crate (for a workspace member, from its workspace root; both
-  generated manifests declare an empty `[workspace]` so they are roots of
-  their own); the probe runs under the wrapper's panic policy; and
+  do to the crate (for a workspace member, from its workspace root, whose
+  manifest and lockfile are then part of the member's artifact identity; a
+  package the workspace `exclude`s is its own root; both generated manifests
+  declare an empty `[workspace]` so they are roots of their own); the probe
+  runs under the wrapper's panic policy; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

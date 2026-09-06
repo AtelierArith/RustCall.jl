@@ -56,9 +56,7 @@ use crate::codegen::{
     WrapperReceiver, WrapperReturn, WrapperSpec,
 };
 use crate::manifest::{skip_reason, Arg, Manifest, Method, ReturnKind, Struct};
-use crate::types::{
-    is_ffi_compatible_type, is_str_ref_type, is_string_type, needs_clone_for_getter,
-};
+use crate::types::{is_ffi_compatible_type, is_str_ref_type, is_string_type};
 
 /// The only error value a wrapped `PyResult` reports, see the module docs.
 pub const PYERR_CODE: i32 = 1;
@@ -373,19 +371,13 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
         } else {
             if !f.getter.is_empty() {
                 let getter = format_ident!("{}", f.getter);
-                // A `Vec<T>` is usable (`needs_clone_for_getter`) but not
-                // `Copy`: it leaves as a clone, as the `#[julia]` crate-field
-                // generator does, rather than as a move out of a raw pointer
-                // (E0507) (#307 review).
-                let read = if needs_clone_for_getter(&ty) {
-                    quote! { unsafe { (*ptr).#field.clone() } }
-                } else {
-                    quote! { unsafe { (*ptr).#field } }
-                };
+                // Only `Copy` FFI types reach here: `String` has its own
+                // branch above and the scan gives a `Vec<T>` no accessor
+                // (no ABI for it on the Julia side yet, #303).
                 out.extend(quote! {
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #class) -> #ty {
-                        #read
+                        unsafe { (*ptr).#field }
                     }
                 });
             }

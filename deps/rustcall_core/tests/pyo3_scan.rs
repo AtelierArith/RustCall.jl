@@ -1092,3 +1092,26 @@ fn the_panic_reader_symbol_is_reserved_too() {
     assert_eq!(by("m").skip_reason, "");
     assert_eq!(by("m_take_panic").skip_reason, "symbol_collision:C");
 }
+
+/// A `Vec<T>` field gets no accessor: the Julia side has no ABI for it yet,
+/// and an advertised getter it cannot bind would fail the whole binding after
+/// the wrapper had built (#307 review; #303). A `String` field still does.
+#[test]
+fn vec_fields_get_no_accessor() {
+    let manifest = scan(
+        "#[pyclass] pub struct P {\n\
+            #[pyo3(get, set)] pub tags: Vec<i32>,\n\
+            #[pyo3(get)] pub name: String,\n\
+            #[pyo3(get)] pub n: i32,\n\
+         }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let field = |n: &str| p.fields.iter().find(|f| f.name == n).unwrap();
+    assert!(!field("tags").ffi_compatible);
+    assert_eq!(field("tags").getter, "");
+    assert_eq!(field("tags").setter, "");
+    assert!(field("name").ffi_compatible);
+    assert_eq!(field("name").getter, "rustcall_P_get_name");
+    assert!(field("n").ffi_compatible);
+    assert_eq!(field("n").setter, "");
+}

@@ -126,7 +126,8 @@ pub mod geometry {
         pub extra: f64,
         #[pyo3(get)]
         pub name: String,
-        /// Usable but not `Copy`: the getter clones it out.
+        /// Not bound: there is no `Vec` ABI on the Julia side yet, so the scan
+        /// gives it no accessor rather than one the binding cannot use (#303).
         #[pyo3(get)]
         pub tags: Vec<i32>,
     }

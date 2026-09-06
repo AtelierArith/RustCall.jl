@@ -532,6 +532,11 @@ function _workspace_root_dir(dir::AbstractString)
         if isfile(manifest)
             parsed = _parse_manifest_or_nothing(manifest)
             if parsed isa AbstractDict && get(parsed, "workspace", nothing) isa AbstractDict
+                # The nearest `[workspace]` is Cargo's one candidate. A package
+                # it lists in `exclude` is not a member and is its own root —
+                # Cargo does not keep searching upwards, and gives it none of
+                # the root's inputs (#307 review).
+                _workspace_excludes(parsed["workspace"], current, start) && return nothing
                 return current
             end
         end
@@ -539,6 +544,24 @@ function _workspace_root_dir(dir::AbstractString)
         (isempty(parent) || parent == current) && return nothing
         current = parent
     end
+end
+
+# Whether the `[workspace]` table at `root` excludes `dir`: an `exclude` entry
+# naming `dir` itself or a directory it lies under, resolved against `root`.
+function _workspace_excludes(workspace::AbstractDict, root::AbstractString, dir::AbstractString)
+    excluded = get(workspace, "exclude", nothing)
+    excluded isa AbstractVector || return false
+    target = abspath(String(dir))
+    for entry in excluded
+        entry isa AbstractString || continue
+        path = try
+            abspath(joinpath(String(root), String(entry)))
+        catch
+            continue
+        end
+        (target == path || startswith(target, joinpath(path, ""))) && return true
+    end
+    return false
 end
 
 # `[package] workspace = "../ws"` in this crate's own manifest, resolved against
