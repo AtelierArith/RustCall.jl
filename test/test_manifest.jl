@@ -252,11 +252,13 @@ using TOML
         end
     end
 
-    @testset "PyO3 scan: link plan and scan describe one build (#275)" begin
+    @testset "PyO3 scan: cfg-gated items follow the build (#275)" begin
         # `pyo3 = { optional = true }` with the API behind
-        # `#[cfg(feature = "python")]`: the scan is cfg-lenient and reports the
-        # item, so a `:python_free` plan would promise a wrapper for something
-        # that is not in the build it describes.
+        # `#[cfg(feature = "python")]`. The scan is lenient by default, so the
+        # item is reported; scanned under a *resolved* build it appears only in
+        # the build that has the feature. Nothing here re-implements Cargo:
+        # `pyo3_link_plans` asks Cargo for each candidate's features, and the
+        # extractor's own evaluator prunes the items.
         mktempdir() do dir
             mkpath(joinpath(dir, "src"))
             write(joinpath(dir, "Cargo.toml"), """
@@ -276,57 +278,49 @@ using TOML
             #[cfg(feature = "python")]
             #[pyfunction]
             pub fn gated(a: i32) -> i32 { a }
-            """)
 
-            info = RustCall.scan_crate(dir)
-            gated = only(info.pyo3_functions)
-            @test gated.cfg_features == ["python"]
-
-            bare = RustCall.pyo3_link_plan(dir)
-            @test bare.mode === :python_free
-            @test "python" in bare.pyo3_features
-
-            reconciled = RustCall.reconcile_link_plan(bare, info)
-            @test reconciled.mode === :link_libpython
-            @test reconciled.feature_flags == ["python"]
-            @test occursin("gated on", reconciled.reason)
-            @test occursin("nothing to wrap", reconciled.reason)
-
-            report = sprint(io -> RustCall.scan_report(dir; io = io))
-            @test occursin("link_libpython", report)
-        end
-
-        # The same crate shape, but the item exists without the feature: the
-        # Python-free build really does contain it, so the plan stands.
-        mktempdir() do dir
-            mkpath(joinpath(dir, "src"))
-            write(joinpath(dir, "Cargo.toml"), """
-            [package]
-            name = "ungated_api"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            pyo3 = { version = "0.29", optional = true }
-
-            [features]
-            default = []
-            python = ["dep:pyo3"]
-            """)
-            write(joinpath(dir, "src", "lib.rs"), """
-            #[cfg_attr(feature = "python", pyfunction)]
+            #[pyfunction]
             pub fn always(a: i32) -> i32 { a }
             """)
 
-            info = RustCall.scan_crate(dir)
-            always = only(info.pyo3_functions)
-            @test always.skip_reason == ""
-            # `cfg_attr` gates the *attribute*, not the item: the function is
-            # compiled either way.
-            @test isempty(always.cfg_features)
+            # Lenient (the default): a feature predicate is undecided, so both
+            # items are reported, and `cfg_features` says which feature decides.
+            lenient = Dict(f.name => f for f in RustCall.scan_crate(dir).pyo3_functions)
+            @test sort(collect(keys(lenient))) == ["always", "gated"]
+            @test lenient["gated"].cfg_features == ["python"]
+            @test isempty(lenient["always"].cfg_features)
 
-            plan = RustCall.pyo3_link_plan(dir)
-            @test RustCall.reconcile_link_plan(plan, info).mode === :python_free
+            plans = RustCall.pyo3_link_plans(dir)
+            if !all(p -> p.resolved, plans)
+                @warn "Cargo could not resolve the temp crate; skipping the resolved half"
+            else
+                modes = Dict(p.mode => p for p in plans)
+                # Defaults off -> no pyo3 in the graph at all.
+                @test haskey(modes, :python_free)
+                free = modes[:python_free]
+                @test isempty(free.pyo3_features)
+
+                # Scanned under that build, the gated item is gone — pruned by
+                # the extractor's evaluator, not by a Julia-side guess.
+                names = [f.name for f in RustCall.scan_crate(dir; cfg = :cargo,
+                                                             cfg_text = free.cfg_text).pyo3_functions]
+                @test names == ["always"]
+
+                # With the feature on, pyo3 resolves and the item is there.
+                if haskey(modes, :link_libpython)
+                    on = modes[:link_libpython]
+                    @test !isempty(on.pyo3_features)
+                    with_feature = sort([f.name for f in
+                                         RustCall.scan_crate(dir; cfg = :cargo,
+                                                             cfg_text = on.cfg_text).pyo3_functions])
+                    @test with_feature == ["always", "gated"]
+                end
+
+                # scan_report scans every candidate and picks one with items.
+                report = sprint(io -> RustCall.scan_report(dir; io = io))
+                @test occursin("Link plan:", report)
+                @test occursin("Other builds considered", report)
+            end
         end
     end
 

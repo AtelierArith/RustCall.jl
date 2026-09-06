@@ -373,15 +373,34 @@ impl Pyo3Scan {
 /// The first entry in manifest order keeps the symbol so the outcome does not
 /// depend on which file was visited first.
 fn mark_symbol_collisions(manifest: &mut Manifest) {
-    // A `#[julia]` item is *already* exported under its symbol, so it always
-    // owns it: a PyO3 item that wants the same one is the loser, whatever the
-    // source order.
-    let mut taken: Vec<(String, String)> = manifest
+    // One table for every exported symbol of the whole manifest, whatever
+    // produces it: a `#[julia]` function's wrapper, a `#[julia]` struct's
+    // method and accessor wrappers, and the PyO3 entries the scan just added.
+    // They all live in one `cdylib`, so `rustcall_C_f` from a `#[julia]`
+    // `impl C { fn f }` and from a `#[pyclass] C` with `#[pymethods] fn f`
+    // are the same symbol even though nothing else about them matches.
+    let mut taken: Vec<(String, String)> = Vec::new();
+
+    // Items already exported by a RustCall attribute own their symbols
+    // outright: a PyO3 entry that wants one is the loser whatever the order.
+    for f in manifest
         .functions
         .iter()
-        .filter(|f| !f.attribute.is_pyo3_scan() && f.exported)
-        .map(|f| (f.symbol.clone(), qualified(&f.module_path, &f.name)))
-        .collect();
+        .filter(|f| !f.attribute.is_pyo3_scan())
+    {
+        if f.exported && !f.symbol.is_empty() {
+            taken.push((f.symbol.clone(), qualified(&f.module_path, &f.name)));
+        }
+    }
+    for s in manifest
+        .structs
+        .iter()
+        .filter(|s| !s.attribute.is_pyo3_scan())
+    {
+        for symbol in struct_symbols(s) {
+            taken.push((symbol, qualified(&s.module_path, &s.name)));
+        }
+    }
 
     let mut order: Vec<usize> = (0..manifest.functions.len()).collect();
     order.sort_by(|&a, &b| {
@@ -394,7 +413,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
 
     for i in order {
         let f = &manifest.functions[i];
-        if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
+        if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() || f.symbol.is_empty() {
             continue;
         }
         let symbol = f.symbol.clone();
@@ -408,39 +427,71 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
     }
 
-    // Two `#[pyclass]`es of the same name in different modules produce the same
-    // `rustcall_<Struct>_<method>` symbols for every method and accessor, so
-    // the class as a whole is the unit that collides.
-    let mut classes: Vec<(String, String)> = Vec::new();
+    // A class claims every one of its method and accessor symbols at once, so
+    // the class is the unit that collides: two `#[pyclass] C` in different
+    // modules clash over all of them, and so does a `C` that a `#[julia]`
+    // struct or a free function has already claimed a symbol of.
     let mut struct_order: Vec<usize> = (0..manifest.structs.len()).collect();
     struct_order.sort_by(|&a, &b| {
         let (x, y) = (&manifest.structs[a], &manifest.structs[b]);
-        x.module_path.cmp(&y.module_path).then(x.line.cmp(&y.line))
+        x.module_path
+            .cmp(&y.module_path)
+            .then(x.line.cmp(&y.line))
+            .then(x.name.cmp(&y.name))
     });
     for i in struct_order {
         let s = &manifest.structs[i];
         if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
             continue;
         }
-        let name = s.name.clone();
-        if let Some((_, owner)) = classes.iter().find(|(n, _)| *n == name) {
-            let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner.clone());
-            let s = &mut manifest.structs[i];
-            s.skip_reason = reason.clone();
-            for m in &mut s.methods {
-                if m.skip_reason.is_empty() {
-                    m.skip_reason = skip_reason::detailed(skip_reason::OWNER_SKIPPED, &reason);
+        let symbols = struct_symbols(s);
+        let clash = symbols
+            .iter()
+            .find_map(|symbol| taken.iter().find(|(t, _)| t == symbol).cloned());
+        match clash {
+            Some((_, owner)) => {
+                let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner);
+                let s = &mut manifest.structs[i];
+                s.skip_reason = reason.clone();
+                for m in &mut s.methods {
+                    if m.skip_reason.is_empty() {
+                        m.skip_reason = skip_reason::detailed(skip_reason::OWNER_SKIPPED, &reason);
+                    }
+                }
+                for f in &mut s.fields {
+                    f.ffi_compatible = false;
+                    f.getter.clear();
+                    f.setter.clear();
                 }
             }
-            for f in &mut s.fields {
-                f.ffi_compatible = false;
-                f.getter.clear();
-                f.setter.clear();
+            None => {
+                let owner = qualified(&s.module_path, &s.name);
+                for symbol in symbols {
+                    taken.push((symbol, owner.clone()));
+                }
             }
-        } else {
-            classes.push((name, qualified(&s.module_path, &s.name)));
         }
     }
+}
+
+/// Every symbol a struct entry claims: its wrappable methods and its field
+/// accessors.
+fn struct_symbols(s: &Struct) -> Vec<String> {
+    let mut out = Vec::new();
+    for m in &s.methods {
+        if m.skip_reason.is_empty() && !m.symbol.is_empty() {
+            out.push(m.symbol.clone());
+        }
+    }
+    for f in &s.fields {
+        if !f.getter.is_empty() {
+            out.push(f.getter.clone());
+        }
+        if !f.setter.is_empty() {
+            out.push(f.setter.clone());
+        }
+    }
+    out
 }
 
 fn qualified(module_path: &[String], name: &str) -> String {
@@ -528,13 +579,22 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
     let reason = item_skip_reason(&item.vis, reachable, is_generic).unwrap_or_default();
     let name = item.ident.to_string();
 
+    // `#[pyclass(get_all, set_all)]` exposes every field without a per-field
+    // attribute, and `frozen` takes every setter away. `transform_struct_julia_pyo3`
+    // in this repository generates exactly that shape, so a scan that read only
+    // field attributes would drop those fields.
+    let options = crate::attrs::pyo3_class_options(&item.attrs);
+
     let mut fields = Vec::new();
     if let syn::Fields::Named(named) = &item.fields {
         for f in &named.named {
             let Some(ident) = f.ident.clone() else {
                 continue;
             };
-            let access = pyo3_field_access(&f.attrs);
+            let mut access = pyo3_field_access(&f.attrs);
+            access.get |= options.get_all;
+            access.set |= options.set_all;
+            access.set &= !options.frozen;
             if !access.get && !access.set {
                 continue;
             }

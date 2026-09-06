@@ -640,6 +640,87 @@ fn colliding_pyclass_names_are_reported() {
     assert!(in_b.methods.iter().all(|m| !m.skip_reason.is_empty()));
 }
 
+/// `#[pyclass(get_all, set_all)]` exposes every field without a per-field
+/// attribute — the shape this repository's own `transform_struct_julia_pyo3`
+/// generates — and `frozen` takes every setter away.
+#[test]
+fn class_level_field_options_are_honoured() {
+    let manifest = scan(
+        "#[pyclass(get_all, set_all)] pub struct A { pub x: f64, pub y: f64 }\n\
+         #[pyclass(get_all)] pub struct B { pub x: f64 }\n\
+         #[pyclass(get_all, set_all, frozen)] pub struct C { pub x: f64 }\n\
+         #[pyclass(get_all)] pub struct D { pub open: f64, private: f64 }",
+    );
+    let by = |n: &str| manifest.structs.iter().find(|s| s.name == n).unwrap();
+
+    let a = by("A");
+    assert_eq!(
+        a.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        vec!["x", "y"]
+    );
+    assert_eq!(a.fields[0].getter, "rustcall_A_get_x");
+    assert_eq!(a.fields[0].setter, "rustcall_A_set_x");
+
+    // `get_all` alone gives getters only.
+    assert_eq!(by("B").fields[0].getter, "rustcall_B_get_x");
+    assert_eq!(by("B").fields[0].setter, "");
+
+    // `frozen` overrides `set_all`.
+    assert_eq!(by("C").fields[0].getter, "rustcall_C_get_x");
+    assert_eq!(by("C").fields[0].setter, "");
+
+    // Visibility still decides: a private field is exposed to Python but not
+    // to a wrapper crate.
+    let d = by("D");
+    let private = d.fields.iter().find(|f| f.name == "private").unwrap();
+    assert_eq!(private.getter, "");
+    assert!(!private.ffi_compatible);
+}
+
+/// Every exported symbol lives in one `cdylib`, so the collision check is one
+/// table over functions, `#[julia]` struct wrappers and PyO3 classes alike.
+#[test]
+fn collisions_are_checked_across_symbol_kinds() {
+    // A `#[julia]` struct's method wrapper already exports `rustcall_C_f`.
+    let manifest = scan(
+        "#[julia] pub struct C { pub v: i32 }\n\
+         #[julia] impl C { #[julia] pub fn f(&self) -> i32 { self.v } }\n\
+         pub mod other {\n\
+            #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }\n\
+            #[pymethods] impl C { pub fn f(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let pyclass = manifest
+        .structs
+        .iter()
+        .find(|s| s.attribute == Attribute::PyClass)
+        .unwrap();
+    assert_eq!(
+        pyclass.skip_reason,
+        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "C")
+    );
+    assert!(pyclass.fields[0].getter.is_empty());
+
+    // A free function whose wrapper symbol is a class accessor symbol.
+    let manifest = scan(
+        "#[pyclass] pub struct P { #[pyo3(get)] pub v: i32 }\n\
+         pub mod m { #[pyfunction] pub fn P_get_v() -> i32 { 0 } }",
+    );
+    let clash = manifest
+        .functions
+        .iter()
+        .find(|f| f.name == "P_get_v")
+        .unwrap();
+    // The class is scanned first (structs claim their symbols after the
+    // functions), so whichever wins, exactly one of the two keeps the symbol.
+    let class = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    assert_ne!(
+        clash.skip_reason.is_empty(),
+        class.skip_reason.is_empty(),
+        "exactly one of the two must lose rustcall_P_get_v"
+    );
+}
+
 /// The features an item's `#[cfg]` predicate depends on are recorded so a
 /// consumer can reconcile the scan with a feature set without reading Rust
 /// `cfg` syntax itself.

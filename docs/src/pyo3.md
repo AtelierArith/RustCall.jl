@@ -149,18 +149,31 @@ second wrapper under the same symbol.
 
 ## The link plan
 
-Before a wrapper crate can be built, one question has to be answered from the
-target crate's `Cargo.toml`: will the resulting cdylib link, and will it load?
+Before a wrapper crate can be built, one question has to be answered: will the
+resulting cdylib link, and will it load? That depends on whether pyo3 ends up in
+the build's dependency graph and with which features — which is Cargo's job, not
+RustCall's.
 
 ```julia
-plan = RustCall.pyo3_link_plan("path/to/crate")
+plans = RustCall.pyo3_link_plans("path/to/crate")   # every candidate build
+plan  = RustCall.pyo3_link_plan("path/to/crate")    # the one to use
+
 plan.mode                        # :python_free | :link_libpython | :unlinkable
-plan.feature_flags               # features to enable on the target crate
+plan.feature_flags               # the Cargo flags that select this build
+plan.crate_features              # the crate's features, as Cargo resolved them
+plan.pyo3_features               # pyo3's resolved features ("" when absent)
 plan.dependency_default_features # what its [dependencies] entry must say
+plan.cfg_text                    # the configuration to scan the crate under
 plan.rpath                       # the interpreter's library directory
+plan.resolved                    # whether Cargo answered
 plan.reason                      # why this mode was chosen
-plan.pyo3_features               # crate features that activate an optional pyo3
 ```
+
+| mode | when | what the wrapper build does |
+| --- | --- | --- |
+| `:python_free` | pyo3 is not in this build's resolved graph | nothing links libpython |
+| `:link_libpython` | pyo3 is resolved | the cdylib hard-links libpython; the interpreter's library directory is added as `-L` and as an rpath, or the build refuses |
+| `:unlinkable` | pyo3's resolved features include `extension-module` | nothing usable can be built: refuse, with a message saying how to make the feature optional |
 
 `RustCall.pyo3_dependency_toml(plan, name, path)` renders the
 `[dependencies.<name>]` entry the wrapper crate must write. That entry — not a
@@ -169,63 +182,48 @@ build flag — is where a target crate's default features are switched off:
 from the wrapper it disables the *wrapper's* defaults and leaves the target
 crate's (and therefore pyo3) enabled.
 
-### The plan and the scan describe one build
+### Cargo resolves the features, RustCall does not
 
-The scan evaluates `#[cfg]` leniently, so a `#[cfg(feature = "python")]
-#[pyfunction]` is reported even though it only exists when that feature is on.
-A `:python_free` plan says the opposite — build with pyo3 **off** — and the two
-together would promise Phase 2 a wrapper for an item that is not in the build.
+Feature activation is transitive (`api = ["python"]`, `python = ["dep:pyo3"]`),
+target-dependent (`[target.'cfg(windows)'.dependencies]`) and renameable
+(`python = { package = "pyo3" }`), and a `#[cfg]` predicate has Boolean
+structure (`all`, `any`, `not`). Re-implementing any of that in Julia gets it
+wrong in a new way for every crate shape, so the plan asks Cargo:
 
-`RustCall.reconcile_link_plan(plan, info)` (which `scan_report` applies for you)
-settles it: when the wrappable items are gated on a feature that also activates
-pyo3, the plan becomes `:link_libpython` with that feature enabled on the
-dependency entry. It uses the manifest's `cfg_features` column — the crate
-features an item's predicate depends on, derived from the predicate by the
-extractor — so Julia never reads Rust `cfg` syntax. A crate whose items exist
-without the feature keeps its `:python_free` plan; that is the
-`#[cfg_attr(feature = "python", pyfunction)]` shape, where the gate is on the
-*attribute*, not on the item.
+* `cargo tree -e features` gives the **resolved** feature set of the root
+  package and of pyo3 itself — transitive closure, target tables and renames
+  already applied;
+* `cargo rustc -- --print cfg` gives the configuration that build compiles
+  under, which `scan_report` hands to the extractor so the crate is scanned in
+  **strict** mode. `#[cfg]` and `#[cfg_attr]` on functions, structs, impls,
+  methods and fields are then evaluated by the extractor's own evaluator, and
+  the manifest contains exactly the items that build has.
 
-Three manifest shapes the plan handles that are easy to miss:
+`pyo3_link_plans` offers the candidates worth considering — the crate's default
+features, its defaults off, and all features on — each with Cargo's answer.
+`scan_report` scans every one and picks a build that can be loaded and still has
+something to wrap, preferring a Python-free one; the others are listed with
+their item counts so you can choose differently.
 
-* **`default = ["pyo3/extension-module"]`** activates the feature straight from
-  `default`, without going through a feature of the crate's own.
-* **A renamed dependency** — `python = { package = "pyo3", version = "0.29" }` —
-  still builds and links pyo3, under the alias; its features are spelled
-  `python/extension-module`. Dependency tables are matched on `package`, not
-  only on the key.
-* **Per-target declarations** (`[target.'cfg(windows)'.dependencies]`) may
-  disagree with each other, and which one Cargo uses depends on the triple.
-  Rather than guess a `cfg(...)` selector, the plan takes the strictest reading
-  across all of them — `:unlinkable` over `:link_libpython` over
-  `:python_free` — and says so in `reason`.
+### Without Cargo
 
-| mode | when | what the wrapper build does |
-| --- | --- | --- |
-| `:python_free` | the crate has no pyo3 dependency, or an **optional** one | build with the feature off (`default-features = false` on the dependency entry when it is on by default); nothing links libpython |
-| `:link_libpython` | pyo3 is a **mandatory** dependency | the cdylib hard-links libpython; the interpreter's library directory is added as `-L` and as an rpath, or the build refuses |
-| `:unlinkable` | the crate enables pyo3's `extension-module` feature unconditionally | nothing usable can be built: refuse with a message saying how to make the feature optional |
-
-`RustCall.pyo3_link_rustflags(plan)` turns a plan into the `RUSTFLAGS` pieces a
-wrapper build needs, and raises `RustError` for the two failure modes — an
-unlinkable crate, or a `:link_libpython` crate whose interpreter library
-directory could not be found. `pyo3_link_plan` itself never raises, so a crate
-can be inspected and reported without committing to building it.
-
-The library directory comes from `RustCall.python_library_dir`, which consults,
-in order: `ENV["RUSTCALL_PYTHON_LIBDIR"]`, CondaPkg's environment when
-`CondaPkg` is already loaded (PythonCall users), `python3-config --ldflags`, and
-`sysconfig.get_config_var("LIBDIR")`.
+When Cargo is unavailable or the crate does not resolve, the plan falls back to
+a deliberately conservative read of `Cargo.toml` that performs **no** feature
+resolution: any pyo3 declaration listing `extension-module` is `:unlinkable`,
+any other pyo3 declaration is `:link_libpython`, and only a crate with no pyo3
+declaration at all is `:python_free`. `plan.resolved` is `false` and the reason
+says so. Renamed dependencies and `[target.…]` tables are still found — that is
+a manifest lookup, not resolution.
 
 ### Why `:link_libpython` exists
 
 Turning off `extension-module` is *not* enough to get a Python-free build.
-Verified in the #275 MWE on macOS: any build of a crate with a non-optional
-pyo3 dependency links libpython — `otool -L` shows
+Verified in the #275 MWE on macOS: any build whose graph contains pyo3 links
+libpython — `otool -L` shows
 `@rpath/Python3.framework/Versions/3.9/Python3` — and the cdylib then fails to
-`dlopen` unless the loader can find it. The only genuinely Python-free case is a
-crate whose pyo3 dependency is *itself* optional — confirmed on Linux too: with
-the feature off, `ldd` on the wrapper `.so` shows only libc and libgcc.
+`dlopen` unless the loader can find it. The only genuinely Python-free build is
+one in which pyo3 is not resolved at all — confirmed on Linux too: with the
+feature off, `ldd` on the wrapper `.so` shows only libc and libgcc.
 
 ### Why `:unlinkable` refuses outright
 

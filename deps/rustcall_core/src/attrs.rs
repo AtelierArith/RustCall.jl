@@ -187,6 +187,45 @@ fn nested_name_value(meta: &Meta) -> Option<String> {
     found
 }
 
+/// Class-level options of `#[pyclass(...)]` that decide field exposure.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pyo3ClassOptions {
+    /// `get_all`: every field gets a getter, without a per-field attribute.
+    pub get_all: bool,
+    /// `set_all`: every field gets a setter.
+    pub set_all: bool,
+    /// `frozen`: the class is immutable from Python, so no setters at all —
+    /// it overrides `set_all` and a field's own `set`.
+    pub frozen: bool,
+}
+
+/// Read `#[pyclass(get_all, set_all, frozen)]`.
+///
+/// `get_all` / `set_all` expose fields *without* a per-field `#[pyo3(get, set)]`,
+/// so a scan that only looked at field attributes would drop them — including
+/// for structs this repository generates itself in
+/// `codegen::transform_struct_julia_pyo3`.
+pub fn pyo3_class_options(attrs: &[Attribute]) -> Pyo3ClassOptions {
+    let mut options = Pyo3ClassOptions::default();
+    for meta in effective_metas(attrs) {
+        if pyo3_path_name(&meta).as_deref() != Some("pyclass") {
+            continue;
+        }
+        let Meta::List(list) = &meta else { continue };
+        let _ = list.parse_nested_meta(|nested| {
+            if nested.path.is_ident("get_all") {
+                options.get_all = true;
+            } else if nested.path.is_ident("set_all") {
+                options.set_all = true;
+            } else if nested.path.is_ident("frozen") {
+                options.frozen = true;
+            }
+            Ok(())
+        });
+    }
+    options
+}
+
 /// How a `#[pyclass]` field is exposed: `#[pyo3(get)]`, `#[pyo3(get, set)]`,
 /// optionally with `name = "..."`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

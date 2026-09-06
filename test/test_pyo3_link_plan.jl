@@ -1,10 +1,17 @@
 # Phase 1.5 of #275: before a wrapper crate is built against a PyO3 crate,
-# decide whether it can be linked and loaded at all, and under which flags.
+# decide whether it can be linked and loaded at all, and under which features.
 #
-# The decision is read from the target crate's Cargo.toml — no build, no
-# Python — so these tests only need temporary crates with a manifest.
+# The plan asks **Cargo** to resolve the features (`cargo tree -e features`) and
+# rustc for the resulting configuration, rather than re-implementing feature
+# resolution in Julia. Two layers are tested separately:
+#
+#   * the conservative fallback, a pure `Cargo.toml` read used when Cargo cannot
+#     answer — fast, offline, no toolchain needed;
+#   * the resolved path, against the committed example crates, skipped when
+#     Cargo cannot resolve them (no cargo, no network for a cold registry).
 using RustCall
 using Test
+using TOML
 
 function _write_crate(dir::AbstractString, cargo_toml::AbstractString)
     mkpath(joinpath(dir, "src"))
@@ -13,311 +20,143 @@ function _write_crate(dir::AbstractString, cargo_toml::AbstractString)
     return dir
 end
 
+_manifest(text::AbstractString) = TOML.parse(text)
+
 @testset "PyO3 link plan (#275 Phase 1.5)" begin
-    @testset "no pyo3 dependency at all" begin
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "plain"
-            version = "0.1.0"
-            edition = "2021"
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :python_free
-            @test isempty(plan.feature_flags)
-            @test RustCall.pyo3_link_rustflags(plan) == String[]
-        end
+    @testset "conservative fallback: no pyo3 declared" begin
+        plan = RustCall._pyo3_conservative_plan(_manifest("""
+        [package]
+        name = "plain"
+        version = "0.1.0"
+        """))
+        @test plan.mode === :python_free
+        @test plan.resolved == false
+        @test occursin("no pyo3 dependency", plan.reason)
+        @test RustCall.pyo3_link_rustflags(plan) == String[]
     end
 
-    @testset "(a) optional pyo3: build with the feature off" begin
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "optional_pyo3"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            pyo3 = { version = "0.29", optional = true }
-
-            [features]
-            default = []
-            python = ["dep:pyo3"]
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :python_free
-            # The feature is not in `default`, so nothing has to be turned off.
-            @test isempty(plan.feature_flags)
-            @test plan.dependency_default_features
-            @test occursin("optional", plan.reason)
-            @test RustCall.pyo3_link_rustflags(plan) == String[]
-            entry = RustCall.pyo3_dependency_toml(plan, "optional_pyo3", dir)
-            @test !occursin("default-features", entry)
-        end
-    end
-
-    @testset "(a) optional pyo3 on by default: the dependency entry turns it off" begin
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "optional_default_pyo3"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            pyo3 = { version = "0.29", optional = true }
-
-            [features]
-            default = ["python"]
-            python = ["dep:pyo3"]
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :python_free
-            # `cargo build --no-default-features` applies to the package being
-            # built — the wrapper — and does NOT disable a dependency's
-            # defaults. Only the dependency entry can do that.
-            @test isempty(plan.feature_flags)
-            @test plan.dependency_default_features == false
-            entry = RustCall.pyo3_dependency_toml(plan, "optional_default_pyo3", dir)
-            @test occursin("default-features = false", entry)
-            @test occursin("[dependencies.optional_default_pyo3]", entry)
-        end
-    end
-
-    @testset "(b) mandatory pyo3: the wrapper links libpython" begin
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "mandatory_pyo3"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :link_libpython
-            @test occursin("libpython", plan.reason)
-
-            # With an explicit library directory the flags name it as both a
-            # search path and an rpath; without one the build must refuse.
-            mktempdir() do libdir
-                withenv("RUSTCALL_PYTHON_LIBDIR" => libdir) do
-                    located = RustCall.pyo3_link_plan(dir)
-                    @test located.rpath == libdir
-                    flags = RustCall.pyo3_link_rustflags(located)
-                    @test "native=$(libdir)" in flags
-                    @test any(f -> occursin("rpath,$(libdir)", f), flags)
-                end
-                withenv("RUSTCALL_PYTHON_LIBDIR" => joinpath(libdir, "does_not_exist")) do
-                    missing_plan = RustCall.pyo3_link_plan(dir)
-                    @test missing_plan.rpath == ""
-                    @test_throws RustCall.RustError RustCall.pyo3_link_rustflags(missing_plan)
-                end
-            end
-        end
-    end
-
-    @testset "(c) extension-module: cannot be linked or loaded" begin
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "ext_module"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            pyo3 = { version = "0.29", features = ["extension-module"] }
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
+    @testset "conservative fallback: extension-module cannot be loaded" begin
+        for text in ("""
+                     [package]
+                     name = "ext"
+                     version = "0.1.0"
+                     [dependencies]
+                     pyo3 = { version = "0.29", features = ["extension-module"] }
+                     """,
+                     # Renamed dependency: matched on `package`, and the advice
+                     # names the key the crate actually uses.
+                     """
+                     [package]
+                     name = "ext_renamed"
+                     version = "0.1.0"
+                     [dependencies]
+                     python = { package = "pyo3", version = "0.29", features = ["extension-module"] }
+                     """,
+                     # Behind a target table, which the fallback does not try to
+                     # evaluate: any declaration counts.
+                     """
+                     [package]
+                     name = "ext_target"
+                     version = "0.1.0"
+                     [target.'cfg(windows)'.dependencies]
+                     pyo3 = { version = "0.29", features = ["extension-module"] }
+                     """)
+            plan = RustCall._pyo3_conservative_plan(_manifest(text))
             @test plan.mode === :unlinkable
-            # The message must say what to change, not just that it failed.
             @test occursin("extension-module", plan.reason)
-            @test occursin("optional", plan.reason)
-            err = try
-                RustCall.pyo3_link_rustflags(plan)
-                nothing
-            catch e
-                e
+            @test occursin("conservative", plan.reason)
+            @test_throws RustCall.RustError RustCall.pyo3_link_rustflags(plan)
+        end
+        @test occursin("[dependencies.python]",
+                       RustCall._pyo3_conservative_plan(_manifest("""
+                       [package]
+                       name = "ext_renamed"
+                       version = "0.1.0"
+                       [dependencies]
+                       python = { package = "pyo3", version = "0.29", features = ["extension-module"] }
+                       """)).reason)
+    end
+
+    @testset "conservative fallback: any other pyo3 links libpython" begin
+        # Without Cargo nothing here can show that an *optional* pyo3 is off in
+        # the build the wrapper would make, so the fallback does not claim it.
+        for text in ("""
+                     [package]
+                     name = "mandatory"
+                     version = "0.1.0"
+                     [dependencies]
+                     pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+                     """,
+                     """
+                     [package]
+                     name = "optional"
+                     version = "0.1.0"
+                     [dependencies]
+                     pyo3 = { version = "0.29", optional = true }
+                     [features]
+                     default = []
+                     python = ["dep:pyo3"]
+                     """)
+            plan = RustCall._pyo3_conservative_plan(_manifest(text))
+            @test plan.mode === :link_libpython
+            @test occursin("conservative", plan.reason)
+        end
+    end
+
+    @testset "link flags and the dependency entry" begin
+        plan = RustCall._pyo3_conservative_plan(_manifest("""
+        [package]
+        name = "mandatory"
+        version = "0.1.0"
+        [dependencies]
+        pyo3 = "0.29"
+        """))
+        @test plan.mode === :link_libpython
+
+        mktempdir() do libdir
+            withenv("RUSTCALL_PYTHON_LIBDIR" => libdir) do
+                located = RustCall._pyo3_conservative_plan(_manifest("""
+                [package]
+                name = "mandatory"
+                version = "0.1.0"
+                [dependencies]
+                pyo3 = "0.29"
+                """))
+                @test located.rpath == libdir
+                flags = RustCall.pyo3_link_rustflags(located)
+                @test "native=$(libdir)" in flags
+                @test any(f -> occursin("rpath,$(libdir)", f), flags)
             end
-            @test err isa RustCall.RustError
+            withenv("RUSTCALL_PYTHON_LIBDIR" => joinpath(libdir, "nope")) do
+                missing_plan = RustCall._pyo3_conservative_plan(_manifest("""
+                [package]
+                name = "mandatory"
+                version = "0.1.0"
+                [dependencies]
+                pyo3 = "0.29"
+                """))
+                @test missing_plan.rpath == ""
+                @test_throws RustCall.RustError RustCall.pyo3_link_rustflags(missing_plan)
+            end
         end
-    end
 
-    @testset "extension-module behind an optional pyo3 is still python-free" begin
-        # The MWE's `examples/sample_crate_pyo3` shape: pyo3 optional, with
-        # `extension-module` in its feature list. Turning the feature off
-        # removes both.
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "maturin_style"
-            version = "0.1.0"
-            edition = "2021"
+        # `default-features = false` belongs in the wrapper's dependency entry:
+        # the `cargo build --no-default-features` flag applies to the package
+        # being built, not to a dependency's defaults.
+        off = RustCall.PyO3LinkPlan(:python_free, ["--no-default-features"], "", "test", false;
+                                    crate_features = ["a", "b"])
+        entry = RustCall.pyo3_dependency_toml(off, "target_crate", "/tmp/x")
+        @test occursin("[dependencies.target_crate]", entry)
+        @test occursin("default-features = false", entry)
+        @test occursin("features = [\"a\", \"b\"]", entry)
 
-            [dependencies]
-            pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
-
-            [features]
-            default = []
-            python = ["pyo3"]
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :python_free
-        end
-    end
-
-    @testset "extension-module reachable from default features is disabled" begin
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "default_ext"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            pyo3 = "0.29"
-
-            [features]
-            default = ["python"]
-            python = ["pyo3/extension-module"]
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            # pyo3 itself is mandatory, so libpython is linked either way, but
-            # `extension-module` can be switched off and must be — through the
-            # wrapper's dependency entry, not a build flag.
-            @test plan.mode === :link_libpython
-            @test plan.dependency_default_features == false
-            @test occursin("default-features = false",
-                           RustCall.pyo3_dependency_toml(plan, "default_ext", dir))
-        end
-    end
-
-    @testset "default = [\"pyo3/extension-module\"] activates it directly" begin
-        # `default` is not one of the crate's own features, so a feature set
-        # built by walking `default`'s entries never contains it: the
-        # activation has to be recognised on `default` itself.
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "direct_default_ext"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            pyo3 = "0.29"
-
-            [features]
-            default = ["pyo3/extension-module"]
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :link_libpython
-            @test plan.dependency_default_features == false
-            @test occursin("default-features = false",
-                           RustCall.pyo3_dependency_toml(plan, "direct_default_ext", dir))
-        end
-    end
-
-    @testset "a renamed pyo3 dependency is still pyo3" begin
-        # `python = { package = "pyo3" }`: the crate builds and links pyo3
-        # under the alias, and its features are spelled `python/...`.
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "renamed"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            python = { package = "pyo3", version = "0.29" }
-            """)
-            @test RustCall.pyo3_link_plan(dir).mode === :link_libpython
-        end
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "renamed_ext"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            python = { package = "pyo3", version = "0.29", features = ["extension-module"] }
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :unlinkable
-            # The advice names the key the crate actually uses.
-            @test occursin("[dependencies.python]", plan.reason)
-            @test occursin("python/extension-module", plan.reason)
-        end
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "renamed_optional"
-            version = "0.1.0"
-            edition = "2021"
-
-            [dependencies]
-            python = { package = "pyo3", version = "0.29", optional = true }
-
-            [features]
-            default = ["py"]
-            py = ["dep:python"]
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :python_free
-            @test plan.dependency_default_features == false
-        end
-    end
-
-    @testset "target-specific declarations take the strictest reading" begin
-        # Which `[target.'cfg(...)']` table Cargo uses depends on the triple,
-        # and guessing one would hand Phase 2 a plan for a crate it is not
-        # building. The plan fails closed instead and says so.
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "per_target"
-            version = "0.1.0"
-            edition = "2021"
-
-            [target.'cfg(unix)'.dependencies]
-            pyo3 = { version = "0.29", optional = true }
-
-            [target.'cfg(windows)'.dependencies]
-            pyo3 = { version = "0.29", features = ["extension-module"] }
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :unlinkable
-            @test occursin("declared per target", plan.reason)
-            @test occursin("cfg(windows)", plan.reason)
-        end
-        mktempdir() do dir
-            _write_crate(dir, """
-            [package]
-            name = "per_target_mandatory"
-            version = "0.1.0"
-            edition = "2021"
-
-            [target.'cfg(unix)'.dependencies]
-            pyo3 = { version = "0.29", optional = true }
-
-            [target.'cfg(windows)'.dependencies]
-            pyo3 = "0.29"
-            """)
-            plan = RustCall.pyo3_link_plan(dir)
-            @test plan.mode === :link_libpython
-            @test occursin("declared per target", plan.reason)
-        end
-    end
-
-    @testset "the example crate is the mandatory-pyo3 case" begin
-        crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
-        @test isdir(crate)
-        @test RustCall.pyo3_link_plan(crate).mode === :link_libpython
+        on = RustCall.PyO3LinkPlan(:python_free, String[], "", "test", true)
+        @test !occursin("default-features", RustCall.pyo3_dependency_toml(on, "t", "/tmp/x"))
     end
 
     @testset "a missing Cargo.toml is an error, not a mode" begin
         mktempdir() do dir
+            @test_throws RustCall.RustError RustCall.pyo3_link_plans(dir)
             @test_throws RustCall.RustError RustCall.pyo3_link_plan(dir)
         end
     end
@@ -328,8 +167,59 @@ end
         text = RustCall.pyo3_skip_explanation("pyo3_type:Python<'_>")
         @test occursin("interpreter", text)
         @test occursin("Python<'_>", text)
+        @test occursin("#300", RustCall.pyo3_skip_explanation("symbol_collision:a::run"))
         # An unknown reason from a newer extractor is passed through, never
         # rendered as an empty explanation.
         @test RustCall.pyo3_skip_explanation("brand_new_reason") == "brand_new_reason"
+    end
+
+    # ------------------------------------------------------------------
+    # The resolved path. Needs cargo and a resolvable crate.
+    # ------------------------------------------------------------------
+    mandatory_crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
+    optional_crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3")
+    resolved_plans = try
+        RustCall.pyo3_link_plans(mandatory_crate)
+    catch
+        RustCall.PyO3LinkPlan[]
+    end
+
+    if isempty(resolved_plans) || !first(resolved_plans).resolved
+        @warn "Cargo could not resolve the example crates; skipping the resolved link-plan tests"
+    else
+        @testset "resolved: mandatory pyo3 links libpython" begin
+            plan = RustCall.pyo3_link_plan(mandatory_crate)
+            @test plan.resolved
+            @test plan.mode === :link_libpython
+            # Cargo's own answer, not a re-implementation of feature resolution.
+            @test "macros" in plan.pyo3_features
+            @test !("extension-module" in plan.pyo3_features)
+            # The configuration the crate scan then runs under.
+            @test !isempty(plan.cfg_text)
+            @test occursin("target_pointer_width", plan.cfg_text)
+        end
+
+        @testset "resolved: optional pyo3 gives a python-free build" begin
+            # `examples/sample_crate_pyo3` has
+            # `pyo3 = { optional = true, features = ["extension-module"] }` with
+            # `default = []`, so the default build resolves no pyo3 at all and
+            # the all-features build is unlinkable. Both are offered.
+            plans = RustCall.pyo3_link_plans(optional_crate)
+            @test all(p -> p.resolved, plans)
+            modes = [p.mode for p in plans]
+            @test :python_free in modes
+            free = plans[findfirst(==(:python_free), modes)]
+            @test isempty(free.pyo3_features)
+            @test occursin("does not resolve pyo3", free.reason)
+
+            if :unlinkable in modes
+                ext = plans[findfirst(==(:unlinkable), modes)]
+                @test "extension-module" in ext.pyo3_features
+                @test occursin("extension-module", ext.reason)
+            end
+
+            # `pyo3_link_plan` prefers a loadable build over an unlinkable one.
+            @test RustCall.pyo3_link_plan(optional_crate).mode === :python_free
+        end
     end
 end

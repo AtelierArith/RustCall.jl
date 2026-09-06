@@ -553,18 +553,24 @@ probe — it has just run a full `cargo build`. The memo therefore serves first
 loads, where the crate has not been built under this process before; a reload
 re-probes unconditionally.
 
+`features` passes extra Cargo feature flags (`--no-default-features`,
+`--all-features`, `--features x`) so a caller can ask what the configuration
+looks like under a *different* feature set than the crate's default — which is
+how #275 scans a PyO3 crate under the feature set its wrapper would be built
+with. They are part of the memo key.
+
 `--print cfg` still resolves and builds the crate's dependencies, but every
 caller today has just built the crate anyway.
 """
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
-                               memo::Bool = true)
+                               memo::Bool = true, features::Vector{String} = String[])
     path = abspath(String(crate_path))
-    key = path * "\n" * String(profile) * "\n" * _cargo_cfg_env_key() * "\n" *
-          _crate_cfg_inputs_digest(path)
+    key = path * "\n" * String(profile) * "\n" * join(features, " ") * "\n" *
+          _cargo_cfg_env_key() * "\n" * _crate_cfg_inputs_digest(path)
     probe = () -> begin
             try
                 flag = profile == "release" ? `--release` : ``
-                out = read(setenv(`$(cargo()) rustc -q $flag --lib -- --print cfg`; dir = path), String)
+                out = read(setenv(`$(cargo()) rustc -q $flag $features --lib -- --print cfg`; dir = path), String)
                 join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
             catch e
                 @debug "Could not probe the build cfg of $(path)" exception = e
