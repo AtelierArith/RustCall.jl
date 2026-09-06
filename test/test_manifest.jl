@@ -207,6 +207,43 @@ using TOML
         end
     end
 
+    @testset "PyO3 scan: one file used as two modules (#275)" begin
+        # `#[path = "shared.rs"] pub mod a;` and the same for `b` compile the
+        # file twice, as two distinct modules. Both belong in the manifest under
+        # their own module paths — and they collide with each other on the
+        # wrapper symbols, which is exactly what the scan should say.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "shared_module"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            #[path = "shared.rs"]
+            pub mod a;
+            #[path = "shared.rs"]
+            pub mod b;
+            """)
+            write(joinpath(dir, "src", "shared.rs"), """
+            #[pyfunction]
+            pub fn shared_fn() -> i32 { 0 }
+            """)
+
+            entries = [f for f in RustCall.scan_crate(dir).pyo3_functions if f.name == "shared_fn"]
+            @test length(entries) == 2
+            @test sort([e.module_path for e in entries]) == [["a"], ["b"]]
+            # Both want `rustcall_shared_fn`; exactly one keeps it.
+            @test count(e -> isempty(e.skip_reason), entries) == 1
+            loser = only(e for e in entries if !isempty(e.skip_reason))
+            @test startswith(loser.skip_reason, "symbol_collision:")
+        end
+    end
+
     @testset "PyO3 scan honours [lib] path (#275)" begin
         # Cargo lets a crate put its library root anywhere; hard-coding
         # src/lib.rs would scan every file as its own root (wrong module paths
@@ -256,9 +293,9 @@ using TOML
         # `pyo3 = { optional = true }` with the API behind
         # `#[cfg(feature = "python")]`. The scan is lenient by default, so the
         # item is reported; scanned under a *resolved* build it appears only in
-        # the build that has the feature. Nothing here re-implements Cargo:
-        # `pyo3_link_plans` asks Cargo for each candidate's features, and the
-        # extractor's own evaluator prunes the items.
+        # the build that has the feature. Nothing here re-implements Cargo: the
+        # plan asks Cargo for the feature set and the extractor's own evaluator
+        # prunes the items.
         mktempdir() do dir
             mkpath(joinpath(dir, "src"))
             write(joinpath(dir, "Cargo.toml"), """
@@ -290,36 +327,37 @@ using TOML
             @test lenient["gated"].cfg_features == ["python"]
             @test isempty(lenient["always"].cfg_features)
 
-            plans = RustCall.pyo3_link_plans(dir)
-            if !all(p -> p.resolved, plans)
+            off = RustCall.pyo3_link_plan(dir)
+            if !off.resolved
                 @warn "Cargo could not resolve the temp crate; skipping the resolved half"
             else
-                modes = Dict(p.mode => p for p in plans)
-                # Defaults off -> no pyo3 in the graph at all.
-                @test haskey(modes, :python_free)
-                free = modes[:python_free]
-                @test isempty(free.pyo3_features)
-
-                # Scanned under that build, the gated item is gone — pruned by
-                # the extractor's evaluator, not by a Julia-side guess.
+                # Defaults: no pyo3 in the graph at all, and the gated item is
+                # gone — pruned by the extractor's evaluator, not by a guess.
+                @test off.mode === :python_free
+                @test isempty(off.pyo3_features)
                 names = [f.name for f in RustCall.scan_crate(dir; cfg = :cargo,
-                                                             cfg_text = free.cfg_text).pyo3_functions]
+                                                             cfg_text = off.cfg_text).pyo3_functions]
                 @test names == ["always"]
 
                 # With the feature on, pyo3 resolves and the item is there.
-                if haskey(modes, :link_libpython)
-                    on = modes[:link_libpython]
-                    @test !isempty(on.pyo3_features)
-                    with_feature = sort([f.name for f in
-                                         RustCall.scan_crate(dir; cfg = :cargo,
-                                                             cfg_text = on.cfg_text).pyo3_functions])
-                    @test with_feature == ["always", "gated"]
-                end
+                on = RustCall.pyo3_link_plan(dir; features = ["python"])
+                @test on.mode === :link_libpython
+                @test !isempty(on.pyo3_features)
+                with_feature = sort([f.name for f in
+                                     RustCall.scan_crate(dir; cfg = :cargo,
+                                                         cfg_text = on.cfg_text).pyo3_functions])
+                @test with_feature == ["always", "gated"]
 
-                # scan_report scans every candidate and picks one with items.
-                report = sprint(io -> RustCall.scan_report(dir; io = io))
-                @test occursin("Link plan:", report)
-                @test occursin("Other builds considered", report)
+                # The feature that activates pyo3 is discoverable rather than
+                # guessed at, so a caller can ask for that build deliberately.
+                candidates = RustCall.pyo3_feature_candidates(dir)
+                @test only(candidates).feature == "python"
+                @test only(candidates).activates_pyo3
+                @test !only(candidates).extension_module
+
+                report = sprint(io -> RustCall.scan_report(dir; features = ["python"], io = io))
+                @test occursin("Build scanned: --features python", report)
+                @test occursin("Features that activate pyo3", report)
             end
         end
     end

@@ -232,7 +232,12 @@ fn pyclass_methods_come_from_every_pymethods_block() {
     assert_eq!(fields, vec!["x", "y"]);
     let x = &point.fields[0];
     assert_eq!(x.getter, "rustcall_Point_get_x");
-    assert_eq!(x.setter, "rustcall_Point_set_x");
+    // The `#[setter(x)] fn set_x` method above wants `rustcall_Point_set_x`
+    // too. Methods claim their symbols first, so the field's setter is the one
+    // dropped — and the rest of the class stays wrappable.
+    assert_eq!(x.setter, "");
+    assert_eq!(point.skip_reason, "");
+    assert_eq!(by("set_x").skip_reason, "");
     assert_eq!(point.fields[1].setter, "");
 }
 
@@ -549,6 +554,63 @@ fn a_qualified_target_resolves_relative_and_absolute() {
     );
 }
 
+/// A bare `impl C` is disambiguated by whatever brought `C` into scope: an
+/// import names the class exactly even though the impl writes no qualifier.
+#[test]
+fn an_import_disambiguates_a_bare_pymethods_target() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a::C;\n\
+            #[pymethods] impl C { pub fn only_a(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
+/// The alias of a renamed import is the name the impl writes.
+#[test]
+fn a_renamed_import_disambiguates_too() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a::C as Alias;\n\
+            #[pymethods] impl Alias { pub fn via_alias(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["via_alias"]
+    );
+}
+
 /// The symbol scheme is `rustcall_<name>` (#279) and carries no module path, so
 /// two `pub fn run` in different modules both want `rustcall_run` — a single
 /// wrapper crate cannot export both. The scan reports the clash instead of
@@ -701,24 +763,43 @@ fn collisions_are_checked_across_symbol_kinds() {
     );
     assert!(pyclass.fields[0].getter.is_empty());
 
-    // A free function whose wrapper symbol is a class accessor symbol.
+    // A free function whose wrapper symbol is a class accessor symbol. Only the
+    // accessor is dropped: the rest of the class is still wrappable.
     let manifest = scan(
-        "#[pyclass] pub struct P { #[pyo3(get)] pub v: i32 }\n\
+        "#[pyclass] pub struct P { #[pyo3(get)] pub v: i32, #[pyo3(get)] pub w: i32 }\n\
          pub mod m { #[pyfunction] pub fn P_get_v() -> i32 { 0 } }",
     );
-    let clash = manifest
+    let func = manifest
         .functions
         .iter()
         .find(|f| f.name == "P_get_v")
         .unwrap();
-    // The class is scanned first (structs claim their symbols after the
-    // functions), so whichever wins, exactly one of the two keeps the symbol.
     let class = manifest.structs.iter().find(|s| s.name == "P").unwrap();
-    assert_ne!(
-        clash.skip_reason.is_empty(),
-        class.skip_reason.is_empty(),
-        "exactly one of the two must lose rustcall_P_get_v"
+    // Functions claim their symbols before classes do.
+    assert_eq!(func.skip_reason, "");
+    assert_eq!(class.skip_reason, "");
+    let v = class.fields.iter().find(|f| f.name == "v").unwrap();
+    let w = class.fields.iter().find(|f| f.name == "w").unwrap();
+    assert_eq!(v.getter, "");
+    assert!(!v.ffi_compatible);
+    assert_eq!(w.getter, "rustcall_P_get_w");
+}
+
+/// A class can collide with itself: a `#[pyo3(get)] x` field and a method
+/// called `get_x` both want `rustcall_C_get_x`.
+#[test]
+fn a_class_that_collides_with_itself_loses_only_the_accessor() {
+    let manifest = scan(
+        "#[pyclass] pub struct C { #[pyo3(get)] pub x: i32 }\n\
+         #[pymethods] impl C { pub fn get_x(&self) -> i32 { self.x } }",
     );
+    let c = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    assert_eq!(c.skip_reason, "");
+    // The method keeps the symbol; the field accessor is dropped.
+    assert_eq!(c.methods[0].name, "get_x");
+    assert_eq!(c.methods[0].skip_reason, "");
+    assert_eq!(c.fields[0].getter, "");
+    assert!(!c.fields[0].ffi_compatible);
 }
 
 /// The features an item's `#[cfg]` predicate depends on are recorded so a

@@ -227,15 +227,20 @@ fn scan_pyo3_tree(
     // (file, directory its child modules live in, module path, reachable)
     let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut queue = vec![(root.to_path_buf(), root_dir, Vec::<String>::new(), true)];
-    let mut visited: Vec<PathBuf> = Vec::new();
+    // Keyed by (file, module path): `#[path = "shared.rs"] pub mod a;` and the
+    // same for `b` compile one file as two distinct modules, and both belong in
+    // the manifest — under their own module paths, and colliding with each
+    // other on the wrapper symbols.
+    let mut visited: Vec<(PathBuf, Vec<String>)> = Vec::new();
     let mut scan = rustcall_core::pyo3::Pyo3Scan::new();
 
     while let Some((file, dir, module_path, reachable)) = queue.pop() {
         let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
-        if visited.contains(&canonical) {
+        let key = (canonical, module_path.clone());
+        if visited.contains(&key) {
             continue;
         }
-        visited.push(canonical);
+        visited.push(key);
 
         let src = read_source(&file)?;
         let pending = match rustcall_core::extract::extract_pyo3_file(

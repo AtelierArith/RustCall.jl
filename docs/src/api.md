@@ -278,7 +278,7 @@ RustCall.write_bindings_to_file
 RustCall.scan_report
 RustCall.PyO3LinkPlan
 RustCall.pyo3_link_plan
-RustCall.pyo3_link_plans
+RustCall.pyo3_feature_candidates
 RustCall.pyo3_link_rustflags
 RustCall.pyo3_dependency_toml
 RustCall.python_library_dir
@@ -434,7 +434,7 @@ Filter = t -> begin
         :TraitBound, :TypeConstraints, :GenericFunctionInfo,
         :CrateBindings, :CrateInfo, :CrateBindingOptions,
         :load_crate_bindings, :scan_crate, :generate_bindings, :write_bindings_to_file,
-        :scan_report, :PyO3LinkPlan, :pyo3_link_plan, :pyo3_link_plans,
+        :scan_report, :PyO3LinkPlan, :pyo3_link_plan, :pyo3_feature_candidates,
         :pyo3_link_rustflags, :pyo3_dependency_toml,
         :python_library_dir, :pyo3_skip_explanation,
         :HotReloadState,

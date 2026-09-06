@@ -127,6 +127,12 @@ otherwise `src/lib.rs`. A `mod` declaration whose file does not exist (behind a
 pruned `#[cfg]`, or generated at build time) is skipped rather than failing the
 scan.
 
+### One file, two modules
+
+`#[path = "shared.rs"] pub mod a;` and the same for `b` compile one file as two
+distinct modules, and both are reported — under their own module paths, and
+colliding with each other on the wrapper symbols, which the scan says.
+
 ### `#[pymethods]` is matched crate-wide
 
 An inherent `impl C` is legal in any module that has `C` in scope, and in a
@@ -134,10 +140,11 @@ multi-file crate the `#[pyclass]` and its `#[pymethods]` blocks routinely live
 in different files. Classes and blocks are therefore collected across the whole
 crate and married at the end: a block is attached to the class in its own
 module, or — failing that — to the one class of that name anywhere in the
-crate. An explicit qualifier settles it exactly: `impl a::C` names the class in
-`a`, resolved relative to the block's own module and then from the crate root.
-If two modules define a class of that name and nothing disambiguates, the block
-is dropped rather than attached to a guess.
+crate. Two things settle it exactly when several classes share a name: an
+explicit qualifier (`impl a::C`, resolved relative to the block's own module and
+then from the crate root) and the import that brought the name into scope
+(`use crate::a::C;`, including `as` aliases). Only when nothing disambiguates is
+the block dropped rather than attached to a guess.
 
 ### An item marked both ways belongs to `#[julia]`
 
@@ -154,16 +161,20 @@ resulting cdylib link, and will it load? That depends on whether pyo3 ends up in
 the build's dependency graph and with which features — which is Cargo's job, not
 RustCall's.
 
+A build is named the way Cargo names one: a feature list and whether default
+features are on.
+
 ```julia
-plans = RustCall.pyo3_link_plans("path/to/crate")   # every candidate build
-plan  = RustCall.pyo3_link_plan("path/to/crate")    # the one to use
+plan = RustCall.pyo3_link_plan("path/to/crate")                        # default features
+plan = RustCall.pyo3_link_plan(crate; features = ["python"],
+                                      default_features = false)        # a specific build
 
 plan.mode                        # :python_free | :link_libpython | :unlinkable
 plan.feature_flags               # the Cargo flags that select this build
 plan.crate_features              # the crate's features, as Cargo resolved them
-plan.pyo3_features               # pyo3's resolved features ("" when absent)
+plan.pyo3_features               # pyo3's resolved features (empty when absent)
 plan.dependency_default_features # what its [dependencies] entry must say
-plan.cfg_text                    # the configuration to scan the crate under
+plan.cfg_text                    # the configuration the crate is scanned under
 plan.rpath                       # the interpreter's library directory
 plan.resolved                    # whether Cargo answered
 plan.reason                      # why this mode was chosen
@@ -173,7 +184,7 @@ plan.reason                      # why this mode was chosen
 | --- | --- | --- |
 | `:python_free` | pyo3 is not in this build's resolved graph | nothing links libpython |
 | `:link_libpython` | pyo3 is resolved | the cdylib hard-links libpython; the interpreter's library directory is added as `-L` and as an rpath, or the build refuses |
-| `:unlinkable` | pyo3's resolved features include `extension-module` | nothing usable can be built: refuse, with a message saying how to make the feature optional |
+| `:unlinkable` | pyo3's resolved features include `extension-module` | nothing usable can be built: refuse, with a message saying how to pick a different feature set |
 
 `RustCall.pyo3_dependency_toml(plan, name, path)` renders the
 `[dependencies.<name>]` entry the wrapper crate must write. That entry — not a
@@ -190,20 +201,52 @@ target-dependent (`[target.'cfg(windows)'.dependencies]`) and renameable
 structure (`all`, `any`, `not`). Re-implementing any of that in Julia gets it
 wrong in a new way for every crate shape, so the plan asks Cargo:
 
-* `cargo tree -e features` gives the **resolved** feature set of the root
+* `cargo tree -e features,normal` gives the **resolved** feature set of the root
   package and of pyo3 itself — transitive closure, target tables and renames
-  already applied;
+  already applied. The edge filter matters: a wrapper depends on the target
+  crate's *library*, so the target's dev- and build-dependencies are not in the
+  graph it builds, and a dev-dependency on pyo3 with `extension-module` must not
+  make the plan unlinkable.
 * `cargo rustc -- --print cfg` gives the configuration that build compiles
   under, which `scan_report` hands to the extractor so the crate is scanned in
   **strict** mode. `#[cfg]` and `#[cfg_attr]` on functions, structs, impls,
   methods and fields are then evaluated by the extractor's own evaluator, and
   the manifest contains exactly the items that build has.
 
-`pyo3_link_plans` offers the candidates worth considering — the crate's default
-features, its defaults off, and all features on — each with Cargo's answer.
-`scan_report` scans every one and picks a build that can be loaded and still has
-something to wrap, preferring a Python-free one; the others are listed with
-their item counts so you can choose differently.
+### Choosing a feature set
+
+The plan answers for the build you name; it does not go hunting for a better
+one. `RustCall.pyo3_feature_candidates(crate)` says which features to consider,
+again from Cargo — one resolution per feature:
+
+```julia
+RustCall.pyo3_feature_candidates(crate)
+# [(feature = "python",    activates_pyo3 = true, extension_module = false),
+#  (feature = "extension", activates_pyo3 = true, extension_module = true)]
+```
+
+That matters for a crate like this one:
+
+```toml
+[features]
+default = ["extension"]
+python = ["dep:pyo3"]
+extension = ["python", "pyo3/extension-module"]
+```
+
+Its default build is `:unlinkable` (`extension` pulls in `extension-module`),
+and so is `--all-features`. Turning defaults off gives `:python_free` — but that
+build compiles none of the crate's `#[cfg(feature = "python")]` API, so there is
+nothing to wrap. The build that works is neither of the obvious ones:
+
+```julia
+plan = RustCall.pyo3_link_plan(crate; features = ["python"], default_features = false)
+plan.mode   # :link_libpython
+RustCall.scan_report(crate; features = ["python"], default_features = false)
+```
+
+Enumerating "none / default / all" would never find it, which is why the feature
+set is the caller's to state and the candidates are there to inform the choice.
 
 ### Without Cargo
 

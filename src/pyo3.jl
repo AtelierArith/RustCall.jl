@@ -166,55 +166,99 @@ function pyo3_dependency_toml(plan::PyO3LinkPlan, name::AbstractString, path::Ab
 end
 
 """
-    pyo3_link_plans(crate_path) -> Vector{PyO3LinkPlan}
+    pyo3_link_plan(crate_path; features = String[], default_features = true) -> PyO3LinkPlan
 
-Every build of a wrapper crate against `crate_path` that is worth considering,
-with Cargo's own answer for each: the crate's default features, its default
-features off, and all features on. Duplicates are dropped, so a crate with no
-`[features]` table yields one plan.
+The plan for building a wrapper crate against `crate_path` **under a given
+feature set**, which is named the way Cargo and `@rust_crate` name one:
+`features` are extra crate features to enable, `default_features = false` is
+`--no-default-features`. The default is the crate's own default features.
 
-Phase 2 picks one; `scan_report` picks by scanning each candidate and preferring
-a Python-free build that still has something to wrap.
+The plan is for that set only — it does not go looking for a better one. Use
+`pyo3_feature_candidates` to see which features activate pyo3 and which pull
+`extension-module`, then ask for the set you want.
+
+# Worked example
+
+```toml
+[features]
+default = ["extension"]
+python = ["dep:pyo3"]
+extension = ["python", "pyo3/extension-module"]
+```
+
+The default build is `:unlinkable` (`extension` pulls `extension-module`), and
+so is `--all-features`. `default_features = false` alone is `:python_free` but
+compiles none of the crate's `#[cfg(feature = "python")]` API. The build that
+works is the one a person picks from the candidates:
+
+```julia
+RustCall.pyo3_feature_candidates(crate)
+# ("python",    activates_pyo3 = true,  extension_module = false)
+# ("extension", activates_pyo3 = true,  extension_module = true)
+
+plan = RustCall.pyo3_link_plan(crate; features = ["python"], default_features = false)
+plan.mode   # :link_libpython
+```
 """
-function pyo3_link_plans(crate_path::AbstractString)
+function pyo3_link_plan(crate_path::AbstractString; features::Vector{String} = String[],
+                        default_features::Bool = true)
     manifest_path = joinpath(String(crate_path), "Cargo.toml")
     isfile(manifest_path) ||
         throw(RustError("Cargo.toml not found in: $(crate_path)"))
-    cargo_toml = TOML.parsefile(manifest_path)
-
-    candidates = Vector{String}[String[]]
-    features = get(cargo_toml, "features", Dict{String, Any}())
-    if features isa AbstractDict
-        isempty(get(features, "default", String[])) || push!(candidates, ["--no-default-features"])
-        length(keys(features)) > (haskey(features, "default") ? 1 : 0) &&
-            push!(candidates, ["--all-features"])
-    end
-
-    plans = PyO3LinkPlan[]
-    for flags in candidates
-        plan = _pyo3_resolved_plan(crate_path, flags)
-        plan === nothing && continue
-        any(p -> p.mode === plan.mode && p.crate_features == plan.crate_features, plans) && continue
-        push!(plans, plan)
-    end
-    isempty(plans) && push!(plans, _pyo3_conservative_plan(cargo_toml))
-    return plans
+    flags = _pyo3_feature_flags(features, default_features)
+    plan = _pyo3_resolved_plan(crate_path, flags)
+    plan === nothing || return plan
+    return _pyo3_conservative_plan(TOML.parsefile(manifest_path))
 end
 
 """
-    pyo3_link_plan(crate_path) -> PyO3LinkPlan
+    pyo3_feature_candidates(crate_path) -> Vector{NamedTuple}
 
-The wrapper build to use for `crate_path`: the first of `pyo3_link_plans` that
-can be loaded at all, preferring a Python-free one.
+Which of the crate's own features activate pyo3, and which of those also pull
+`extension-module` — answered by Cargo, one resolution per feature:
 
-This looks only at linkability, not at what the build contains — a
-`--no-default-features` build can be Python-free and empty. `scan_report`
-scans each candidate and prefers one that still has items to wrap.
+```julia
+[(feature = "python",    activates_pyo3 = true,  extension_module = false),
+ (feature = "extension", activates_pyo3 = true,  extension_module = true)]
+```
+
+A feature that does not reach pyo3 at all is not listed. Empty when the crate
+has no `[features]` table, or when Cargo cannot resolve it — which is not the
+same as "no feature activates pyo3", so check `pyo3_link_plan(...).resolved`
+before reading anything into an empty list.
 """
-function pyo3_link_plan(crate_path::AbstractString)
-    plans = pyo3_link_plans(crate_path)
-    order = Dict(:python_free => 1, :link_libpython => 2, :unlinkable => 3)
-    return plans[argmin([order[p.mode] for p in plans])]
+function pyo3_feature_candidates(crate_path::AbstractString)
+    manifest_path = joinpath(String(crate_path), "Cargo.toml")
+    isfile(manifest_path) ||
+        throw(RustError("Cargo.toml not found in: $(crate_path)"))
+    features = get(TOML.parsefile(manifest_path), "features", Dict{String, Any}())
+    features isa AbstractDict || return NamedTuple[]
+
+    out = NamedTuple[]
+    for name in sort(collect(keys(features)))
+        name == "default" && continue
+        resolved = _cargo_resolved_features(crate_path,
+                                            ["--no-default-features", "--features", String(name)])
+        resolved === nothing && continue
+        _, pyo3_features, pyo3_active = resolved
+        pyo3_active || continue
+        push!(out, (feature = String(name), activates_pyo3 = true,
+                    extension_module = "extension-module" in pyo3_features))
+    end
+    return out
+end
+
+"""
+    _pyo3_feature_flags(features, default_features) -> Vector{String}
+
+The Cargo flags naming a feature set: `--no-default-features` and
+`--features a,b`, in the spelling `cargo build` takes.
+"""
+function _pyo3_feature_flags(features::Vector{String}, default_features::Bool)
+    flags = String[]
+    default_features || push!(flags, "--no-default-features")
+    isempty(features) || append!(flags, ["--features", join(features, ",")])
+    return flags
 end
 
 """
@@ -247,7 +291,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String})
                             "imports the module. A wrapper cdylib is not loaded that way: on " *
                             "macOS it does not even link, and on Linux it links but fails to " *
                             "dlopen under both RTLD_NOW and RTLD_LAZY (undefined symbol: " *
-                            "_Py_Dealloc)", !no_defaults;
+                            "_Py_Dealloc). `pyo3_feature_candidates` lists the features that " *
+                            "activate pyo3 without it", !no_defaults;
                             pyo3_features = pyo3_features, crate_features = crate_features,
                             cfg_text = cfg_text, resolved = true)
     end
@@ -270,18 +315,26 @@ end
 `(crate_features, pyo3_features, pyo3_active)` as Cargo resolves them for a
 build of `crate_path` under `flags`, from
 
-    cargo tree -e features --prefix none --format "{p}|{f}" --no-dedupe
+    cargo tree -e features,normal --prefix none --format "{p}|{f}" --no-dedupe
 
 which prints one line per package with its **resolved** feature list — the
 transitive closure, with target-specific tables and renamed dependencies
-already applied. `nothing` when the command fails (no cargo, an unresolvable
-crate, no network for a fresh registry).
+already applied.
+
+The edge filter is `features,normal`: a wrapper crate depends on the target
+crate's library, so its dev- and build-dependencies are not in the graph it
+builds. Without the filter a crate whose *dev*-dependency on pyo3 enables
+`extension-module` would be reported `:unlinkable` for a build that never
+activates it.
+
+`nothing` when the command fails (no cargo, an unresolvable crate, no network
+for a fresh registry).
 """
 function _cargo_resolved_features(crate_path::AbstractString, flags::Vector{String})
     path = abspath(String(crate_path))
     out = try
-        args = String["tree", "-e", "features", "--prefix", "none", "--format", "{p}|{f}",
-                      "--no-dedupe"]
+        args = String["tree", "-e", "features,normal", "--prefix", "none",
+                      "--format", "{p}|{f}", "--no-dedupe"]
         append!(args, flags)
         read(pipeline(setenv(`$(cargo()) $args`; dir = path); stderr = devnull), String)
     catch e
@@ -532,51 +585,44 @@ end
 # ----------------------------------------------------------------------------
 
 """
-    scan_report(crate_path; io = stdout) -> NamedTuple
+    scan_report(crate_path; features = String[], default_features = true, io = stdout) -> NamedTuple
 
 Report what a crate offers to RustCall, including the items it marks only for
 PyO3 (#275 Phase 1).
 
-Every candidate wrapper build (`pyo3_link_plans`) is scanned under the
-configuration Cargo resolves for it, so the items listed are exactly the items
-that build has — `#[cfg]` and `#[cfg_attr]` on functions, structs, impls,
-methods and fields are evaluated by the extractor's own evaluator, not guessed
-at here.
+The crate is scanned **under the build the plan describes**: `pyo3_link_plan`
+asks Cargo to resolve `features` / `default_features`, and the scan then runs in
+strict mode under that build's configuration, so `#[cfg]` and `#[cfg_attr]` on
+functions, structs, impls, methods and fields are evaluated by the extractor's
+own evaluator and the items listed are exactly the items that build has.
 
-Returns `(; julia, wrappable, skipped, plan, info, candidates)` for the chosen
-build:
+Returns `(; julia, wrappable, skipped, plan, info, candidates)`:
 
 * `julia` — items carrying a RustCall attribute (`#[julia]`, `#[julia_pyo3]`),
   which `@rust_crate` wraps today;
 * `wrappable` — PyO3 items with an empty `skip_reason`: a Phase-2 wrapper crate
   will be able to export `rustcall_<name>` for each of them;
 * `skipped` — PyO3 items that cannot be wrapped, each with its reason;
-* `plan` — the chosen `PyO3LinkPlan`;
+* `plan` — the `PyO3LinkPlan` for the requested feature set;
 * `info` — the `CrateInfo` scanned under it;
-* `candidates` — every `(plan, info)` pair considered.
-
-The chosen build is the one with something to wrap, preferring a Python-free
-one; a build that cannot be loaded at all (`:unlinkable`) is never chosen while
-another exists.
+* `candidates` — `pyo3_feature_candidates(crate_path)`, the features that
+  activate pyo3, so a different set can be chosen deliberately.
 
 ```julia
 RustCall.scan_report("/path/to/some_pyo3_crate")
+RustCall.scan_report(crate; features = ["python"], default_features = false)
 ```
 """
-function scan_report(crate_path::AbstractString; io::IO = stdout)
-    candidates = Tuple{PyO3LinkPlan, CrateInfo}[]
-    for plan in pyo3_link_plans(crate_path)
-        # A resolved plan carries the cfg text of its build, so the scan runs in
-        # strict mode and the manifest holds exactly that build's items. Without
-        # one (no Cargo) the scan stays lenient and reports everything, which
-        # `resolved = false` on the plan makes explicit.
-        info = isempty(plan.cfg_text) ?
-            scan_crate(String(crate_path)) :
-            scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text)
-        push!(candidates, (plan, info))
-    end
-
-    plan, info = _pyo3_choose_candidate(candidates)
+function scan_report(crate_path::AbstractString; features::Vector{String} = String[],
+                     default_features::Bool = true, io::IO = stdout)
+    plan = pyo3_link_plan(crate_path; features = features, default_features = default_features)
+    # A resolved plan carries the cfg text of its build, so the scan runs in
+    # strict mode and the manifest holds exactly that build's items. Without one
+    # (no Cargo) the scan stays lenient and reports everything, which
+    # `resolved = false` on the plan makes explicit.
+    info = isempty(plan.cfg_text) ?
+        scan_crate(String(crate_path)) :
+        scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text)
 
     julia_items = Any[info.julia_functions...; info.julia_structs...]
     wrappable = Any[]
@@ -591,7 +637,16 @@ function scan_report(crate_path::AbstractString; io::IO = stdout)
         end
     end
 
+    candidates = try
+        pyo3_feature_candidates(crate_path)
+    catch
+        NamedTuple[]
+    end
+
+    build = isempty(plan.feature_flags) ? "default features" : join(plan.feature_flags, " ")
     println(io, "Crate $(info.name) v$(info.version) ($(info.path))")
+    println(io, "  Build scanned: $(build)",
+            plan.resolved ? "" : " (Cargo could not resolve it; every #[cfg] item is reported)")
     println(io, "  RustCall items (wrapped today): $(length(julia_items))")
     for item in julia_items
         println(io, "    $(_pyo3_item_label(item))")
@@ -605,49 +660,16 @@ function scan_report(crate_path::AbstractString; io::IO = stdout)
         println(io, "    $(_pyo3_item_label(item)) — $(pyo3_skip_explanation(item.skip_reason))")
     end
     println(io, "  Link plan: $(plan.mode) — $(plan.reason)")
-    if length(candidates) > 1
-        println(io, "  Other builds considered:")
-        for (other, other_info) in candidates
-            other === plan && continue
-            flags = isempty(other.feature_flags) ? "default features" :
-                    join(other.feature_flags, " ")
-            println(io, "    $(flags): $(other.mode), ",
-                    "$(_pyo3_wrappable_count(other_info)) wrappable item(s)")
+    if !isempty(candidates)
+        println(io, "  Features that activate pyo3:")
+        for c in candidates
+            println(io, "    $(c.feature)",
+                    c.extension_module ? " (also enables extension-module, unlinkable)" : "")
         end
     end
 
     return (julia = julia_items, wrappable = wrappable, skipped = skipped,
             plan = plan, info = info, candidates = candidates)
-end
-
-"""
-    _pyo3_choose_candidate(candidates) -> (plan, info)
-
-The wrapper build to recommend: one that can be loaded and still has something
-to wrap, preferring a Python-free build over one that links libpython. A build
-with no wrappable items is only chosen when no candidate has any, and an
-`:unlinkable` one only when every candidate is unlinkable.
-"""
-function _pyo3_choose_candidate(candidates::Vector{Tuple{PyO3LinkPlan, CrateInfo}})
-    isempty(candidates) && throw(RustError("no wrapper build candidates for this crate"))
-    mode_rank = Dict(:python_free => 0, :link_libpython => 1, :unlinkable => 2)
-    function score(entry)
-        plan, info = entry
-        has_items = _pyo3_wrappable_count(info) > 0
-        # Loadable-with-items first, then loadable-but-empty, then unlinkable;
-        # within each, Python-free wins.
-        (plan.mode === :unlinkable ? 1 : 0, has_items ? 0 : 1, mode_rank[plan.mode])
-    end
-    return candidates[argmin([score(c) for c in candidates])]
-end
-
-function _pyo3_wrappable_count(info::CrateInfo)
-    n = count(f -> isempty(f.skip_reason), info.pyo3_functions)
-    for s in info.pyo3_structs
-        isempty(s.skip_reason) || continue
-        n += 1 + count(m -> isempty(m.skip_reason), s.methods)
-    end
-    return n
 end
 
 _pyo3_item_label(f::RustFunctionSignature) =

@@ -585,7 +585,7 @@ rust_type = "f64"
 abi = ""
 ffi_compatible = true
 getter = "rustcall_Point_get_x"
-setter = "rustcall_Point_set_x"
+setter = ""
 python_name = ""
 vis = "pub"
 

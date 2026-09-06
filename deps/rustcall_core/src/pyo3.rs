@@ -101,6 +101,7 @@ pub struct PendingModule {
 pub struct Pyo3Scan {
     classes: Vec<ScannedClass>,
     impls: Vec<ScannedImpl>,
+    imports: Vec<ScannedImport>,
 }
 
 #[derive(Debug)]
@@ -257,6 +258,19 @@ impl Pyo3Scan {
                             .collect(),
                     });
                 }
+                Item::Use(u) => {
+                    // What a bare `impl C` in this module could be referring to.
+                    let mut bindings = Vec::new();
+                    let mut prefix = Vec::new();
+                    flatten_use_tree(&u.tree, &mut prefix, &mut bindings);
+                    for (alias, path) in bindings {
+                        self.imports.push(ScannedImport {
+                            module_path: module_path.clone(),
+                            alias,
+                            path,
+                        });
+                    }
+                }
                 Item::Mod(m) => {
                     let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
                     module_path.push(m.ident.to_string());
@@ -351,12 +365,91 @@ impl Pyo3Scan {
             return Some(i);
         }
 
+        // A bare `impl C` is disambiguated by whatever brought `C` into scope:
+        // `use crate::a::C;` in the impl's module names `a::C` exactly, even
+        // though the impl itself writes no qualifier.
+        for import in &self.imports {
+            if import.module_path != imp.module_path || import.alias != name {
+                continue;
+            }
+            let qualifier = &import.path[..import.path.len().saturating_sub(1)];
+            let target = import.path.last().map(String::as_str).unwrap_or(&name);
+            let mut nested = imp.module_path.clone();
+            nested.extend(qualifier.iter().cloned());
+            for candidate in [nested, qualifier.to_vec()] {
+                if let Some(i) = self
+                    .classes
+                    .iter()
+                    .position(|c| c.entry.name == target && c.module_path == candidate)
+                {
+                    return Some(i);
+                }
+            }
+        }
+
         let mut matching = self.classes.iter().enumerate().filter(|(_, c)| named(c));
         match (matching.next(), matching.next()) {
             (Some((i, _)), None) => Some(i),
             // No class of that name, or an ambiguous one.
             _ => None,
         }
+    }
+}
+
+/// One `use` path in scope: where it was written, the name it binds, and the
+/// module path it names.
+#[derive(Debug)]
+struct ScannedImport {
+    module_path: Vec<String>,
+    /// The name the import binds — the last segment, or the `as` alias.
+    alias: String,
+    /// The full path it names, `crate` / `self` stripped: `a::C` -> `["a", "C"]`.
+    path: Vec<String>,
+}
+
+/// Flatten a `use` tree into the names it binds and the paths they name.
+///
+/// `use crate::a::{C, D as E};` yields `("C", ["a", "C"])` and
+/// `("E", ["a", "D"])`. A glob (`use a::*;`) binds no name it can be matched
+/// on and is skipped; `super::` is dropped for the same reason
+/// [`type_path_qualifier`] drops it.
+fn flatten_use_tree(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<(String, Vec<String>)>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let segment = path.ident.to_string();
+            let skip = segment == "crate" || segment == "self";
+            if segment == "super" {
+                return;
+            }
+            if !skip {
+                prefix.push(segment);
+            }
+            flatten_use_tree(&path.tree, prefix, out);
+            if !skip {
+                prefix.pop();
+            }
+        }
+        syn::UseTree::Name(name) => {
+            let mut full = prefix.clone();
+            full.push(name.ident.to_string());
+            out.push((name.ident.to_string(), full));
+        }
+        syn::UseTree::Rename(rename) => {
+            let mut full = prefix.clone();
+            full.push(rename.ident.to_string());
+            out.push((rename.rename.to_string(), full));
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                flatten_use_tree(item, prefix, out);
+            }
+        }
+        // A glob binds no name this matcher can key on.
+        syn::UseTree::Glob(_) => {}
     }
 }
 
@@ -427,10 +520,18 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
     }
 
-    // A class claims every one of its method and accessor symbols at once, so
-    // the class is the unit that collides: two `#[pyclass] C` in different
-    // modules clash over all of them, and so does a `C` that a `#[julia]`
-    // struct or a free function has already claimed a symbol of.
+    // A class whose *name* another struct entry already claimed collides on
+    // every one of its symbols at once, so there the class is the unit. Any
+    // other clash — with a free function, or between a class's own method and
+    // one of its field accessors — is reported on the individual entry, which
+    // leaves the rest of the class wrappable.
+    let mut class_names: Vec<(String, String)> = manifest
+        .structs
+        .iter()
+        .filter(|s| !s.attribute.is_pyo3_scan())
+        .map(|s| (s.name.clone(), qualified(&s.module_path, &s.name)))
+        .collect();
+
     let mut struct_order: Vec<usize> = (0..manifest.structs.len()).collect();
     struct_order.sort_by(|&a, &b| {
         let (x, y) = (&manifest.structs[a], &manifest.structs[b]);
@@ -444,33 +545,57 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
             continue;
         }
-        let symbols = struct_symbols(s);
-        let clash = symbols
-            .iter()
-            .find_map(|symbol| taken.iter().find(|(t, _)| t == symbol).cloned());
-        match clash {
-            Some((_, owner)) => {
-                let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner);
-                let s = &mut manifest.structs[i];
-                s.skip_reason = reason.clone();
-                for m in &mut s.methods {
-                    if m.skip_reason.is_empty() {
-                        m.skip_reason = skip_reason::detailed(skip_reason::OWNER_SKIPPED, &reason);
-                    }
-                }
-                for f in &mut s.fields {
-                    f.ffi_compatible = false;
-                    f.getter.clear();
-                    f.setter.clear();
+        let name = s.name.clone();
+
+        if let Some((_, owner)) = class_names.iter().find(|(n, _)| *n == name) {
+            let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner.clone());
+            let s = &mut manifest.structs[i];
+            s.skip_reason = reason.clone();
+            for m in &mut s.methods {
+                if m.skip_reason.is_empty() {
+                    m.skip_reason = skip_reason::detailed(skip_reason::OWNER_SKIPPED, &reason);
                 }
             }
-            None => {
-                let owner = qualified(&s.module_path, &s.name);
-                for symbol in symbols {
-                    taken.push((symbol, owner.clone()));
+            for f in &mut s.fields {
+                f.ffi_compatible = false;
+                f.getter.clear();
+                f.setter.clear();
+            }
+            continue;
+        }
+
+        // Methods claim their symbols before field accessors do, so a
+        // `#[setter(x)] fn set_x` and a `#[pyo3(set)] x` — which both want
+        // `rustcall_C_set_x` — leave the method wrappable and drop the
+        // accessor, rather than taking the whole class down.
+        let owner = qualified(&s.module_path, &s.name);
+        let s = &mut manifest.structs[i];
+        for m in &mut s.methods {
+            if !m.skip_reason.is_empty() || m.symbol.is_empty() {
+                continue;
+            }
+            match taken.iter().find(|(t, _)| *t == m.symbol) {
+                Some((_, other)) => {
+                    m.skip_reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, other);
                 }
+                None => taken.push((m.symbol.clone(), owner.clone())),
             }
         }
+        for f in &mut s.fields {
+            for accessor in [&mut f.getter, &mut f.setter] {
+                if accessor.is_empty() {
+                    continue;
+                }
+                match taken.iter().find(|(t, _)| t == accessor) {
+                    Some(_) => accessor.clear(),
+                    None => taken.push((accessor.clone(), owner.clone())),
+                }
+            }
+            if f.getter.is_empty() && f.setter.is_empty() {
+                f.ffi_compatible = false;
+            }
+        }
+        class_names.push((name, owner));
     }
 }
 

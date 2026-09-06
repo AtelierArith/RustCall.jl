@@ -156,9 +156,17 @@ _manifest(text::AbstractString) = TOML.parse(text)
 
     @testset "a missing Cargo.toml is an error, not a mode" begin
         mktempdir() do dir
-            @test_throws RustCall.RustError RustCall.pyo3_link_plans(dir)
             @test_throws RustCall.RustError RustCall.pyo3_link_plan(dir)
+            @test_throws RustCall.RustError RustCall.pyo3_feature_candidates(dir)
         end
+    end
+
+    @testset "feature flags are spelled the way Cargo takes them" begin
+        @test RustCall._pyo3_feature_flags(String[], true) == String[]
+        @test RustCall._pyo3_feature_flags(String[], false) == ["--no-default-features"]
+        @test RustCall._pyo3_feature_flags(["a"], true) == ["--features", "a"]
+        @test RustCall._pyo3_feature_flags(["a", "b"], false) ==
+              ["--no-default-features", "--features", "a,b"]
     end
 
     @testset "skip reasons have explanations" begin
@@ -178,13 +186,13 @@ _manifest(text::AbstractString) = TOML.parse(text)
     # ------------------------------------------------------------------
     mandatory_crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
     optional_crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3")
-    resolved_plans = try
-        RustCall.pyo3_link_plans(mandatory_crate)
+    probe = try
+        RustCall.pyo3_link_plan(mandatory_crate)
     catch
-        RustCall.PyO3LinkPlan[]
+        nothing
     end
 
-    if isempty(resolved_plans) || !first(resolved_plans).resolved
+    if probe === nothing || !probe.resolved
         @warn "Cargo could not resolve the example crates; skipping the resolved link-plan tests"
     else
         @testset "resolved: mandatory pyo3 links libpython" begin
@@ -199,27 +207,66 @@ _manifest(text::AbstractString) = TOML.parse(text)
             @test occursin("target_pointer_width", plan.cfg_text)
         end
 
-        @testset "resolved: optional pyo3 gives a python-free build" begin
+        @testset "resolved: the feature set is the caller's choice" begin
             # `examples/sample_crate_pyo3` has
-            # `pyo3 = { optional = true, features = ["extension-module"] }` with
-            # `default = []`, so the default build resolves no pyo3 at all and
-            # the all-features build is unlinkable. Both are offered.
-            plans = RustCall.pyo3_link_plans(optional_crate)
-            @test all(p -> p.resolved, plans)
-            modes = [p.mode for p in plans]
-            @test :python_free in modes
-            free = plans[findfirst(==(:python_free), modes)]
-            @test isempty(free.pyo3_features)
-            @test occursin("does not resolve pyo3", free.reason)
+            # `pyo3 = { optional = true, features = ["extension-module"] }` behind
+            # `python = [...]` with `default = []`. Different feature sets are
+            # genuinely different builds, and the plan answers for the one asked
+            # about rather than hunting for a nicer one.
+            default_plan = RustCall.pyo3_link_plan(optional_crate)
+            @test default_plan.resolved
+            @test default_plan.mode === :python_free
+            @test isempty(default_plan.pyo3_features)
+            @test occursin("does not resolve pyo3", default_plan.reason)
 
-            if :unlinkable in modes
-                ext = plans[findfirst(==(:unlinkable), modes)]
-                @test "extension-module" in ext.pyo3_features
-                @test occursin("extension-module", ext.reason)
+            with_python = RustCall.pyo3_link_plan(optional_crate; features = ["python"])
+            @test with_python.resolved
+            @test with_python.mode === :unlinkable
+            @test "extension-module" in with_python.pyo3_features
+            @test occursin("extension-module", with_python.reason)
+            @test occursin("pyo3_feature_candidates", with_python.reason)
+            @test with_python.feature_flags == ["--features", "python"]
+        end
+
+        @testset "resolved: which features activate pyo3" begin
+            candidates = RustCall.pyo3_feature_candidates(optional_crate)
+            @test !isempty(candidates)
+            python = only(c for c in candidates if c.feature == "python")
+            @test python.activates_pyo3
+            # This crate's feature also pulls `extension-module`, which is what
+            # makes that build unloadable.
+            @test python.extension_module
+
+            # A crate with no `[features]` table has nothing to choose from.
+            @test isempty(RustCall.pyo3_feature_candidates(mandatory_crate))
+        end
+
+        @testset "resolved: dev-dependencies do not poison the plan" begin
+            # A wrapper depends on the target crate's *library*, so the target's
+            # dev-dependencies are not in the graph it builds. Reading feature
+            # edges without restricting them to normal dependencies would report
+            # this crate as unlinkable.
+            mktempdir() do dir
+                _write_crate(dir, """
+                [package]
+                name = "dev_ext"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+
+                [dev-dependencies]
+                pyo3 = { version = "0.29", features = ["extension-module"] }
+                """)
+                plan = RustCall.pyo3_link_plan(dir)
+                if !plan.resolved
+                    @warn "Cargo could not resolve the dev-dependency crate; skipping"
+                else
+                    @test plan.mode === :link_libpython
+                    @test !("extension-module" in plan.pyo3_features)
+                end
             end
-
-            # `pyo3_link_plan` prefers a loadable build over an unlinkable one.
-            @test RustCall.pyo3_link_plan(optional_crate).mode === :python_free
         end
     end
 end
