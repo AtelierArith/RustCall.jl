@@ -81,6 +81,7 @@ signature mentioning a type that needs a live interpreter, a generic, a
 | `unsupported_arg:<T>` | an argument that is neither FFI-compatible nor a `String` / `&str` |
 | `unsupported_return:<T>` | a return value that does not cross the C ABI as a single value (a `Vec`, a struct by value, a `Result` payload that is one of those) |
 | `py_result_payload:<T>` | a `PyResult` whose `Ok` type does not fit in the `CResult` aggregate — `PyResult<String>`, `PyResult<Self>`. Widening this is tracked in [#303](https://github.com/AtelierArith/RustCall.jl/issues/303) |
+| `unsupported_return:Result<…>` on a **method** | a plain `Result` / `Option` is wrapped into a `CResult` / `COption` for a free function only. `#[julia]`'s method wrappers have never lowered one either, so Julia's method emitters have no branch that decodes such an aggregate; emitting the symbol anyway would be worse than not wrapping the method. #303 owns widening it on both paths at once |
 | `cfg_undecided:<predicate>` | the item is behind a `#[cfg]` the scan could not decide, so whether the build the wrapper links against has it is unknown |
 
 `scan_report` prints both lists, and the second one with the symbol each wrapped
@@ -102,6 +103,13 @@ value is always the same sentence:
 RustCall.PYO3_OPAQUE_ERROR
 # "PyErr (Python-side error; message unavailable without an interpreter)"
 ```
+
+The `CResult_<owner>` mirror the Julia side declares for that aggregate
+subtypes `RustCall.FFIByValue` — RustCall's own layout assertion about a
+`#[repr(C)]` type it generated itself
+([#245](https://github.com/AtelierArith/RustCall.jl/issues/245)), the same one
+the `#[julia]` path makes about its `CResult_*` mirrors. Returning an aggregate
+by value without such an assertion is refused since #295.
 
 That is not laziness. Creating and dropping a `PyErr` without a Python
 interpreter is safe, but **rendering** one is not: `Display`/`Debug` on a

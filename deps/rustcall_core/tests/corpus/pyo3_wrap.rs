@@ -138,5 +138,17 @@ pub mod geometry {
         pub fn parts(&self) -> Vec<f64> {
             vec![self.w]
         }
+
+        /// Refused: a plain `Result` on a *method*. The `#[julia]` method
+        /// wrappers have never lowered one, so Julia's method emitters cannot
+        /// decode a `CResult` (#303).
+        pub fn checked(&self) -> Result<f64, i32> {
+            Ok(self.w)
+        }
+
+        /// Refused for the same reason.
+        pub fn maybe_w(&self) -> Option<f64> {
+            Some(self.w)
+        }
     }
 }

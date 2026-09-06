@@ -24,18 +24,29 @@ using Test
 const PYO3_OPTIONAL_CRATE = joinpath(@__DIR__, "..", "examples", "sample_crate_pyo3_optional")
 const PYO3_ONLY_CRATE = joinpath(@__DIR__, "..", "examples", "sample_crate_pyo3_only")
 
-# A `:link_libpython` wrapper can only be built where the interpreter's library
-# directory is known; `pyo3_link_rustflags` raises otherwise, and that is the
-# whole point of the plan.
-function _link_libpython_available(crate)
-    RustCall.check_rustc_available() || return false
+# Whether a `:link_libpython` wrapper can actually be built here.
+#
+# Knowing the plan is not enough, and deliberately so: a machine can have a
+# Python interpreter whose library directory `python_library_dir` finds while
+# still lacking what the *link* needs — the `libpython3.x.so` symlink and the
+# headers live in a `-dev` package that a bare CI image does not install, and
+# pyo3's build script refuses without them. So the guard performs the build and
+# skips on a build failure, rather than asserting on a machine that cannot
+# produce the artifact at all.
+#
+# Only the build is forgiven. Everything after it — loading, calling,
+# destructing — is a hard assertion, so a real regression cannot hide behind
+# this skip. The build result is returned so the testset does not pay for it
+# twice; `@rust_crate` then hits the cache it just filled.
+function _link_libpython_wrapper(crate)
+    RustCall.check_rustc_available() || return nothing
     try
         plan = RustCall.pyo3_link_plan(crate)
-        plan.mode === :link_libpython || return false
-        RustCall.pyo3_link_rustflags(plan)
-        return true
-    catch
-        return false
+        plan.mode === :link_libpython || return nothing
+        return RustCall.build_pyo3_wrapper(RustCall.scan_crate(crate))
+    catch e
+        @info "skipping the :link_libpython wrapper testset" exception = e
+        return nothing
     end
 end
 
@@ -141,9 +152,15 @@ end
     end
 
     @testset ":link_libpython — a class, its accessors and PyResult" begin
-        if !_link_libpython_available(PYO3_ONLY_CRATE)
-            @test_skip "no Python library directory: a :link_libpython wrapper cannot be built"
+        wrapper = _link_libpython_wrapper(PYO3_ONLY_CRATE)
+        if wrapper === nothing
+            @test_skip "no linkable Python here: a :link_libpython wrapper cannot be built"
         else
+            @test wrapper.plan.mode === :link_libpython
+            @test isfile(wrapper.lib_path)
+            # The wrapper exports the whole class, not only the free functions.
+            @test any(st -> st.name == "Point", wrapper.info.julia_structs)
+
             M = @rust_crate PYO3_ONLY_CRATE
 
             # Free functions, including the string ABI.
@@ -221,6 +238,46 @@ end
         end
         @test err isa RustCall.RustError
         @test occursin("RUSTCALL_PYTHON_LIBDIR", sprint(showerror, err))
+    end
+
+    @testset "generated `PyResult` mirrors carry the by-value assertion (#245)" begin
+        # Since #295 an aggregate return has to carry a layout assertion or
+        # `call_rust_function` refuses it. The `CResult_<owner>` mirror this path
+        # generates is RustCall's own `#[repr(C)]` type — the wrapper crate
+        # builds it with the same `generate_c_result_type` the `#[julia]` path
+        # uses — so it subtypes `FFIByValue` exactly as that path's mirrors do.
+        # Without it every wrapped `PyResult` call raised at its first
+        # invocation, which is what CI caught on #307.
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is not available"
+        else
+            info = RustCall.scan_crate(PYO3_ONLY_CRATE)
+            cargo_toml = RustCall.parse_cargo_toml(joinpath(PYO3_ONLY_CRATE, "Cargo.toml"))
+            sources = sort(RustCall.find_rust_sources(PYO3_ONLY_CRATE))
+            lib_root, tree_files = RustCall._crate_scan_inputs(PYO3_ONLY_CRATE, cargo_toml, sources)
+            source = RustCall.wrap_crate(tree_files; crate_name = info.name, cfg = :lenient,
+                                         crate_root = lib_root, skip_unparsable = true)
+            # The Rust side really does declare it `#[repr(C)]`, which is what
+            # the Julia-side assertion claims.
+            @test occursin("#[repr(C)]", source.lib_rs)
+            @test occursin("pub struct CResult_parse", source.lib_rs)
+
+            functions, structs, _ = RustCall._pyo3_wrapper_items(source.manifest)
+            wrapped = RustCall.CrateInfo(info.name, info.path, info.version, info.dependencies,
+                                         functions, structs, info.source_files,
+                                         info.pyo3_functions, info.pyo3_structs)
+            # Both emitters, since they are separate code paths.
+            code = RustCall.emit_crate_module_code(wrapped, "/nonexistent/lib.so";
+                                                   lib_name = "rust_crate_byvalue_probe")
+            @test occursin("struct CResult_parse <: FFIByValue", code)
+            @test occursin("struct CResult_Point_scaled <: FFIByValue", code)
+
+            expr = RustCall.emit_crate_module(wrapped, "/nonexistent/lib.so";
+                                              lib_name = "rust_crate_byvalue_probe")
+            text = string(expr)
+            @test occursin("CResult_parse <: FFIByValue", text)
+            @test occursin("CResult_Point_scaled <: FFIByValue", text)
+        end
     end
 
     @testset "artifact identity separates wrapper builds from plain ones" begin

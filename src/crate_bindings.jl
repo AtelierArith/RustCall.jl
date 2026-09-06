@@ -792,7 +792,11 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
     ok_value = is_unit ? :nothing : :(convert_return($ok_julia_type, $c_sym.ok_value))
 
     quote
-        struct $c_result_struct_name
+        # `<: FFIByValue` is RustCall's own by-value layout assertion about a
+        # mirror it generated (#245): the wrapper crate declares this aggregate
+        # `#[repr(C)]` through the same `generate_c_result_type` the `#[julia]`
+        # path uses, so the claim is identical.
+        struct $c_result_struct_name <: FFIByValue
             is_ok::UInt8
             ok_value::$ok_slot_type
             # Always `RustCall.PYO3_ERROR_CODE`; the message is fixed.
@@ -1233,7 +1237,8 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     end
 
     declaration = quote
-        struct $c_result_struct_name
+        # RustCall's own mirror of a `#[repr(C)]` aggregate it generated (#245).
+        struct $c_result_struct_name <: FFIByValue
             is_ok::UInt8
             ok_value::$ok_slot_type
             err_value::Int32
@@ -2268,7 +2273,8 @@ function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::St
     ok_value = is_unit ? "nothing" : "convert_return($ok_type_str, $c_var.ok_value)"
 
     return """
-struct $c_result_struct_name
+# RustCall's own mirror of a `#[repr(C)]` aggregate it generated (#245).
+struct $c_result_struct_name <: FFIByValue
     is_ok::UInt8
     ok_value::$ok_slot_str
     err_value::Int32
@@ -2568,7 +2574,8 @@ $(prologue)    $ptr_var, $channel_var = _call_target("$wrapper_name")
     end"""
 
     declaration = """
-struct $c_result_struct_name
+# RustCall's own mirror of a `#[repr(C)]` aggregate it generated (#245).
+struct $c_result_struct_name <: FFIByValue
     is_ok::UInt8
     ok_value::$ok_slot_str
     err_value::Int32

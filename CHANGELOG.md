@@ -32,8 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature set the wrapper is built against and are part of the artifact
   identity (`ArtifactId` kind `pyo3-wrapper`). Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
-  `py_result_payload`, `cfg_undecided`) instead of being emitted; `scan_report`
-  gains a "wrapper crate exports" column naming each symbol. New extractor
+  `py_result_payload`, `cfg_undecided`) instead of being emitted — including a
+  plain `Result` / `Option` on a `#[pymethods]` **method**, which the `#[julia]`
+  method wrappers have never lowered either. `scan_report`
+  gains a "wrapper crate exports" column naming each symbol. The generated
+  `CResult_*` mirrors subtype `RustCall.FFIByValue`, the layout assertion #245
+  requires and #295 enforces, exactly as the `#[julia]` path's do. New extractor
   subcommand `rustcall-extract wrap`; new example
   `examples/sample_crate_pyo3_optional`, a crate whose wrapper links no
   libpython at all.

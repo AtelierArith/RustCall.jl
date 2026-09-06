@@ -553,3 +553,43 @@ args = []
 return_type = "Vec<f64>"
 return_abi = ""
 generic_wrapper = ""
+
+[[structs.methods]]
+name = "checked"
+symbol = "rustcall_Rect_checked"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "result"
+ok_type = "f64"
+err_type = "i32"
+inner_type = ""
+returns_boxed_struct = false
+args = []
+return_type = "Result<f64, i32>"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods]]
+name = "maybe_w"
+symbol = "rustcall_Rect_maybe_w"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "option"
+ok_type = ""
+err_type = ""
+inner_type = "f64"
+returns_boxed_struct = false
+args = []
+return_type = "Option<f64>"
+return_abi = ""
+generic_wrapper = ""

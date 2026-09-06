@@ -248,6 +248,7 @@ fn function_wrapper(
         &f.err_type,
         &f.inner_type,
         None,
+        true,
     )?;
     let tokens = generate_wrapper(WrapperSpec {
         symbol,
@@ -396,6 +397,7 @@ fn method_wrapper(
         &m.err_type,
         &m.inner_type,
         boxed,
+        false,
     )?;
     let receiver = (!m.is_static).then(|| WrapperReceiver {
         ty: class.clone(),
@@ -465,6 +467,16 @@ fn wrapper_args(args: &[Arg]) -> Result<Vec<(Ident, Type)>, String> {
     Ok(out)
 }
 
+/// `wraps_aggregates` says whether a plain `Result` / `Option` return may be
+/// lowered to a `CResult` / `COption`.
+///
+/// Only a **free function** may: the `#[julia]` method wrappers have never
+/// wrapped either (`codegen::method_spec` sends them to
+/// [`WrapperReturn::Plain`]), so Julia's method emitters have no branch that
+/// decodes such an aggregate. Emitting one from the PyO3 side would produce a
+/// symbol Julia calls with the wrong return type — the one shape that is worse
+/// than not wrapping the method at all. It is refused instead, and #303 owns
+/// widening it on both paths at once.
 #[allow(clippy::too_many_arguments)]
 fn return_plan(
     owner: &Ident,
@@ -474,6 +486,7 @@ fn return_plan(
     err_type: &str,
     inner_type: &str,
     boxed: Option<syn::Path>,
+    wraps_aggregates: bool,
 ) -> Result<ReturnPlan, String> {
     let plain = |ret| ReturnPlan {
         ret,
@@ -486,6 +499,12 @@ fn return_plan(
         ReturnKind::Unit => Ok(plain(WrapperReturn::Unit)),
         ReturnKind::PyResult => py_result_plan(owner, ok_type),
         ReturnKind::Result => {
+            if !wraps_aggregates {
+                return Err(skip_reason::detailed(
+                    skip_reason::UNSUPPORTED_RETURN,
+                    return_type,
+                ));
+            }
             let ok = payload_type(ok_type)?;
             let err = payload_type(err_type)?;
             Ok(plain(WrapperReturn::CResult {
@@ -495,6 +514,12 @@ fn return_plan(
             }))
         }
         ReturnKind::Option => {
+            if !wraps_aggregates {
+                return Err(skip_reason::detailed(
+                    skip_reason::UNSUPPORTED_RETURN,
+                    return_type,
+                ));
+            }
             let inner = payload_type(inner_type)?;
             Ok(plain(WrapperReturn::COption {
                 name: format_ident!("COption_{}", owner),
