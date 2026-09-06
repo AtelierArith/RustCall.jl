@@ -142,9 +142,9 @@ Practical rules that CI enforces or that have bitten before:
 - Docstrings in `src/*.jl` must not use `(@ref)` links to internal bindings — the Documentation job fails. Plain backticks.
 - `test/runtests.jl` auto-discovers `test_*.jl`; never add an `include`.
 - Rebuild the extractor (`cd deps/rustcall_extract && cargo build --release`) and export `RUSTCALL_EXTRACT` before running Julia tests; a stale binary is rejected by the manifest schema check.
-- Regenerate golden files with `UPDATE_GOLDEN=1 cargo test` in `deps/rustcall_core` and inspect the diff before committing.
+- Golden corpus: run the plain `cargo test` in `deps/rustcall_core` first — a golden failure is the signal that the extractor's output changed. Only when that change is intended, regenerate with `UPDATE_GOLDEN=1 cargo test` (it overwrites without comparing) and review `git diff tests/corpus` before committing.
 - Run every `scripts/lint_*.sh src` locally; they are all CI jobs.
 - On Windows a loaded DLL cannot be deleted or overwritten: tests unload libraries before removing temp trees and clean up best-effort; hot reload opens a fresh generation path per rebuild.
-- Finalizers never take `REGISTRY_LOCK`, `dlsym`, or log; they use pointers captured at construction.
+- Finalizers must never take `REGISTRY_LOCK`, `dlsym`, or log; they use pointers captured at construction. Enforced by `test/test_finalizers.jl` from #277 Phase B (PR #289) onward; older finalizers in `src/types.jl` / `src/crate_bindings.jl` are migrated there.
 - `docs/src/api.md` is close to Documenter's size threshold (#288); a new docstring can break the docs job — check `julia --project=docs docs/make.jl` locally.
 - Verify tests pass before every commit; never commit red.

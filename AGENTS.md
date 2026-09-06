@@ -17,7 +17,7 @@ The project conventions live in `CLAUDE.md` (the `@CLAUDE.md` line above include
 ## Before running tests
 
 - `cd deps/rustcall_extract && cargo build --release` and export `RUSTCALL_EXTRACT=<path to rustcall-extract>`.
-- Golden corpus: `UPDATE_GOLDEN=1 cargo test` in `deps/rustcall_core`, then review the diff.
+- Golden corpus: run the plain `cargo test` in `deps/rustcall_core` first; a golden failure means the extractor output changed. Only if that change is intended, regenerate with `UPDATE_GOLDEN=1 cargo test` (it overwrites without comparing) and review `git diff tests/corpus`.
 - All `scripts/lint_*.sh src` must pass; `julia --project=docs docs/make.jl` must exit 0.
 
 ## Rules CI enforces
@@ -25,6 +25,6 @@ The project conventions live in `CLAUDE.md` (the `@CLAUDE.md` line above include
 - No `(@ref)` links to internal bindings in `src/*.jl` docstrings.
 - No `include` lines in `test/runtests.jl`; `test_*.jl` files are discovered automatically.
 - No regexes over Rust source in `src/`; Rust syntax is parsed only in `deps/rustcall_core`.
-- One artifact-identity function (`src/artifact_id.jl`), one load path (`src/loadpolicy.jl`), one FFI type table (`src/ffi_contract.jl`); the lints reject new ad-hoc keys, `dlopen` sites, or type maps.
+- One artifact-identity function (`src/artifact_id.jl`, enforced by `scripts/lint_artifact_identity.sh`) and one FFI type table (`src/ffi_contract.jl`, legacy tables deleted in #286). One load path through `src/loadpolicy.jl` is enforced by `scripts/lint_load_path.sh` from #277 Phase B (PR #289) onward; before that, `src/loadpolicy.jl` is the policy model only and `test/test_loadpolicy.jl` pins the open-coded `dlopen` sites.
 - Windows: unload libraries before deleting temp trees; a mapped DLL cannot be removed.
-- Finalizers never lock, `dlsym`, or log.
+- Finalizers must never lock, `dlsym`, or log — enforced by `test/test_finalizers.jl` from PR #289 onward; the older finalizers in `src/types.jl` and `src/crate_bindings.jl` are migrated there.
