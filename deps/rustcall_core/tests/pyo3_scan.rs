@@ -1148,3 +1148,40 @@ fn boxing_follows_the_class_not_the_last_path_segment() {
     assert!(by("anchored").returns_boxed_struct);
     assert!(by("relative").returns_boxed_struct);
 }
+
+/// The string helpers a wrapper declares (`<owner>_RustCallOwnedString`,
+/// `<owner>_free_rust_string`, `<owner>_RustCallBorrowedString`) are reserved
+/// per owner like any symbol (#307 review): a `#[pyfunction] fn User() ->
+/// String` and a `#[pyclass] User` with a `String` getter would otherwise both
+/// declare `User_RustCallOwnedString`, and a `#[pyfunction] fn User_label()
+/// -> String` would clash with `User::label(&self) -> String`.
+#[test]
+fn string_helper_names_are_reserved_too() {
+    let manifest = scan(
+        "#[pyfunction] pub fn User() -> String { String::new() }\n\
+         #[pyfunction] pub fn User_label() -> String { String::new() }\n\
+         #[pyclass] pub struct User {\n\
+            #[pyo3(get)] pub name: String,\n\
+            #[pyo3(get)] pub n: i32,\n\
+         }\n\
+         #[pymethods] impl User {\n\
+            pub fn label(&self) -> String { String::new() }\n\
+            pub fn count(&self) -> i32 { 0 }\n\
+         }",
+    );
+    // The functions come first in manifest order and keep their names.
+    assert_eq!(function(&manifest, "User").skip_reason, "");
+    assert_eq!(function(&manifest, "User_label").skip_reason, "");
+    let user = manifest.structs.iter().find(|s| s.name == "User").unwrap();
+    let field = |n: &str| user.fields.iter().find(|f| f.name == n).unwrap();
+    let by = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
+    // The class's `String` getter would declare `User_RustCallOwnedString`,
+    // which `fn User` already did: that getter gives way, the `i32` one stays.
+    assert!(!field("name").ffi_compatible);
+    assert_eq!(field("name").getter, "");
+    assert!(field("n").ffi_compatible);
+    assert_eq!(field("n").getter, "rustcall_User_get_n");
+    // `User::label` shares its owner `User_label` with the function.
+    assert_eq!(by("label").skip_reason, "symbol_collision:User_label");
+    assert_eq!(by("count").skip_reason, "");
+}

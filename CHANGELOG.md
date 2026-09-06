@@ -81,7 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bound; the wrapper's link options travel in a generated `build.rs` rather
   than in `RUSTFLAGS` (which `CARGO_ENCODED_RUSTFLAGS` overrides and which
   replaced a crate's `[build] rustflags`); a `std::`-anchored return type is
-  never mistaken for a class of the same name; and
+  never mistaken for a class of the same name; the string helpers a wrapper
+  declares (`<owner>_RustCallOwnedString` and friends) are reserved per owner
+  like every other symbol; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

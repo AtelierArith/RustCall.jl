@@ -44,8 +44,8 @@ use crate::manifest::{
 };
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
-    has_type_params, is_ffi_compatible_type, is_string_type, last_ident, return_type_to_string,
-    type_to_string, unparen,
+    has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type, last_ident,
+    return_type_to_string, type_to_string, unparen,
 };
 
 /// Append every PyO3-only item of `items` to `manifest`.
@@ -602,6 +602,11 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             for symbol in wrapper_symbols(&f.symbol) {
                 taken.push((symbol, qualified(&f.module_path, &f.name)));
             }
+            if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
+                for symbol in string_helper_symbols(&f.name) {
+                    taken.push((symbol, qualified(&f.module_path, &f.name)));
+                }
+            }
         }
     }
     for s in manifest
@@ -628,7 +633,10 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() || f.symbol.is_empty() {
             continue;
         }
-        let symbols = wrapper_symbols(&f.symbol);
+        let mut symbols = wrapper_symbols(&f.symbol).to_vec();
+        if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
+            symbols.extend(string_helper_symbols(&f.name));
+        }
         if let Some((_, owner)) = taken.iter().find(|(s, _)| symbols.contains(s)) {
             let owner = owner.clone();
             manifest.functions[i].skip_reason =
@@ -691,11 +699,15 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         // accessor, rather than taking the whole class down.
         let owner = qualified(&s.module_path, &s.name);
         let s = &mut manifest.structs[i];
+        let class_name = s.name.clone();
         for m in &mut s.methods {
             if !m.skip_reason.is_empty() || m.symbol.is_empty() {
                 continue;
             }
-            let symbols = wrapper_symbols(&m.symbol);
+            let mut symbols = wrapper_symbols(&m.symbol).to_vec();
+            if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
+                symbols.extend(string_helper_symbols(&format!("{}_{}", class_name, m.name)));
+            }
             match taken.iter().find(|(t, _)| symbols.contains(t)) {
                 Some((_, other)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, other);
@@ -704,6 +716,31 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                     for symbol in symbols {
                         taken.push((symbol, owner.clone()));
                     }
+                }
+            }
+        }
+        // The struct-level owned-string helper every `String` field getter of
+        // the class shares (`<Class>_RustCallOwnedString`, `class_wrappers`)
+        // is a declaration like any other: when another item already made it
+        // — a `#[pyfunction] fn User() -> String` next to a `#[pyclass] User`
+        // — the `String` getters are what give way, and the rest of the class
+        // stays wrappable (#307 review).
+        if s.fields
+            .iter()
+            .any(|f| !f.getter.is_empty() && is_string_spelling(&f.rust_type))
+        {
+            let helpers = string_helper_symbols(&class_name);
+            if taken.iter().any(|(t, _)| helpers.contains(t)) {
+                for f in &mut s.fields {
+                    if is_string_spelling(&f.rust_type) {
+                        f.ffi_compatible = false;
+                        f.getter.clear();
+                        f.setter.clear();
+                    }
+                }
+            } else {
+                for symbol in helpers {
+                    taken.push((symbol, owner.clone()));
                 }
             }
         }
@@ -725,6 +762,41 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
     }
 }
 
+/// The string helpers a wrapper declares next to an item whose result — or
+/// `Result` / `Option` payload — is a string: `<owner>_RustCallOwnedString` and
+/// `<owner>_free_rust_string` for an owned buffer, `<owner>_RustCallBorrowedString`
+/// for a view. The owner is the function's name, the class's name (for its
+/// field getters) or `<Class>_<method>`, so two items with one owner declare
+/// the same helpers twice and the generated crate does not compile; all three
+/// names are reserved whenever the item may declare any of them (#307 review).
+fn string_helper_symbols(owner: &str) -> [String; 3] {
+    [
+        format!("{owner}_RustCallOwnedString"),
+        format!("{owner}_free_rust_string"),
+        format!("{owner}_RustCallBorrowedString"),
+    ]
+}
+
+/// Whether a wrapper for an item with these manifest types declares a string
+/// helper: a `String` / `&str` result, or such a payload.
+fn declares_string_helpers(
+    return_type: &str,
+    ok_type: &str,
+    err_type: &str,
+    inner_type: &str,
+) -> bool {
+    [return_type, ok_type, err_type, inner_type]
+        .iter()
+        .any(|spelling| is_string_spelling(spelling))
+}
+
+fn is_string_spelling(spelling: &str) -> bool {
+    !spelling.is_empty()
+        && syn::parse_str::<Type>(spelling)
+            .map(|ty| is_string_type(&ty) || is_str_ref_type(&ty))
+            .unwrap_or(false)
+}
+
 /// Every exported symbol a wrapper derives from one manifest symbol: the entry
 /// point itself and its panic-channel reader (`<symbol>_take_panic`,
 /// `codegen::PANIC_SYMBOL_SUFFIX`). A clash on either is a duplicate
@@ -740,13 +812,20 @@ fn wrapper_symbols(symbol: &str) -> [String; 2] {
 }
 
 /// Every symbol a struct entry claims: its wrappable methods (with their
-/// panic readers) and its field accessors.
+/// panic readers and string helpers), its field accessors, and the
+/// struct-level owned-string helper its `String` getters share.
 fn struct_symbols(s: &Struct) -> Vec<String> {
     let mut out = Vec::new();
     for m in &s.methods {
         if m.skip_reason.is_empty() && !m.symbol.is_empty() {
             out.extend(wrapper_symbols(&m.symbol));
+            if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
+                out.extend(string_helper_symbols(&format!("{}_{}", s.name, m.name)));
+            }
         }
+    }
+    if s.has_owned_string_helper {
+        out.extend(string_helper_symbols(&s.name));
     }
     for f in &s.fields {
         if !f.getter.is_empty() {
