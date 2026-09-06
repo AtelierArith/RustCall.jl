@@ -130,7 +130,15 @@ function resolve_call_target(lib_name::String, func_name::String;
             end
             free_ptr = isempty(free_symbol) ? C_NULL :
                        resolve_in(handle, cache, String(free_symbol))
-            CallTarget(func_ptr, channel, free_ptr, owner)
+            # The return metadata belongs to the snapshot as much as the
+            # pointers do: it decides how the `ccall` reads the return slot,
+            # and reading a retired generation's result with the replacement's
+            # ABI is memory corruption, not a wrong answer (#277).
+            return_type = get(FUNCTION_RETURN_TYPES_BY_LIB, (owner, func_name), nothing)
+            func_info = get(FUNCTION_REGISTRY_BY_LIB, (owner, func_name),
+                            get(FUNCTION_REGISTRY, func_name, nothing))
+            CallTarget(func_ptr, channel, free_ptr, handle, owner, return_type, func_info,
+                       get(ARTIFACT_GENERATIONS, owner, 0))
         end
 
         # First, try the specified library
@@ -1486,11 +1494,15 @@ Provides improved error messages for function call failures.
 """
 function _call_irust_function(lib_name::String, func_name::String, ret_type::Type, args...)
     try
-        # Get function pointer
-        func_ptr = get_function_pointer(lib_name, func_name)
+        # One snapshot: pointer and panic channel from the same generation, so
+        # an `@irust` snippet reloaded under this call cannot have its result
+        # read against another generation's channel (#244, #277).
+        target = resolve_call_target(lib_name, func_name)
 
         # Call using the codegen infrastructure with explicit return type
-        result = call_rust_function(func_ptr, ret_type, args...)
+        result = guard_rust_panic_ptr(
+            call_rust_function(target.func_ptr, ret_type, args...),
+            target.channel, func_name)
 
         # Safety check: Convert integer to Bool if needed (should already be handled by codegen.jl)
         # Rust bool is represented as UInt8 in C ABI (0 = false, non-zero = true)

@@ -322,7 +322,7 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     func_ptr = target.func_ptr
     channel = target.channel
     owning_lib = target.lib_name
-    @debug "Calling function '$func_name' from library '$owning_lib'"
+    @debug "Calling function '$func_name' from library '$owning_lib'" generation = target.generation
 
     # Try to get type info from registered function info
     # Every call through a generated wrapper is followed by a read of that
@@ -334,14 +334,19 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     # The channel is resolved *here*, before any of the calls below: it is a
     # thread-local in the image, so nothing may yield between the wrapper call
     # and the read of the channel, and the resolution itself takes a lock.
-    func_info = get_function_info(owning_lib, func_name)
+    # ...and the *return ABI* comes from the same snapshot as the pointer. It
+    # used to be looked up again here, so a reload landing in between could
+    # call the retired generation's wrapper and read its result with the
+    # replacement's return type — a scalar read as a struct (#277).
+    func_info = target.func_info
     if func_info !== nothing && func_info.return_type !== Any
         return guard_rust_panic_ptr(call_rust_function(func_ptr, func_info.return_type, args...),
                                     channel, func_name)
     end
 
-    # Try to get the return type the owning library registered
-    ret_type = get_function_return_type(owning_lib, func_name)
+    # Try to get the return type the owning library registered — again, the one
+    # captured in the snapshot.
+    ret_type = target.return_type
     if ret_type !== nothing
         @debug "Using registered return type for $func_name: $ret_type"
         return guard_rust_panic_ptr(call_rust_function(func_ptr, ret_type, args...),

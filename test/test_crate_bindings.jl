@@ -545,23 +545,23 @@ end
         policy = RustCall.crate_direct_policy()
         h1 = Ptr{Cvoid}(UInt(0xc0de0001))
         h2 = Ptr{Cvoid}(UInt(0xc0de0002))
-        m1_handle, m1_alive = Ref(Ptr{Cvoid}(C_NULL)), Ref(Ref(true))
-        m2_handle, m2_alive = Ref(Ptr{Cvoid}(C_NULL)), Ref(Ref(true))
+        m1 = Ref(RustCall.CrateGeneration())
+        m2 = Ref(RustCall.CrateGeneration())
         try
-            RustCall.register_handle_mirror!(release, m1_handle, m1_alive)
-            RustCall.register_handle_mirror!(debug, m2_handle, m2_alive)
+            RustCall.register_handle_mirror!(release, m1)
+            RustCall.register_handle_mirror!(debug, m2)
             RustCall.adopt_artifact!(policy, h1; lib_name = release)
             RustCall.adopt_artifact!(policy, h2; lib_name = debug)
-            @test m1_handle[] == h1
-            @test m2_handle[] == h2
-            @test m1_alive[] !== m2_alive[]
+            @test m1[].handle == h1
+            @test m2[].handle == h2
+            @test m1[].alive !== m2[].alive
 
             RustCall.unload_artifact!(policy, release)
-            @test m1_handle[] == C_NULL
-            @test !m1_alive[][]
+            @test m1[].handle == C_NULL
+            @test !m1[].alive[]
             # The other profile is untouched.
-            @test m2_handle[] == h2
-            @test m2_alive[][]
+            @test m2[].handle == h2
+            @test m2[].alive[]
             @test haskey(RustCall.RUST_LIBRARIES, debug)
         finally
             lock(RustCall.REGISTRY_LOCK) do
@@ -590,11 +590,21 @@ end
         @test occursin("RustCall.load_artifact!", code)
         @test !occursin("Libdl.dlopen", code)
         @test occursin("const _LIB_NAME = ", code)
-        @test occursin("const _LIB_ALIVE = ", code)
+        # The module's state is ONE immutable record — handle, liveness flag
+        # and generation published together — read once per call. Two `Ref`s
+        # written under two different locks were not a snapshot (#277).
+        @test occursin("const _LIB_GEN = Ref(RustCall.CrateGeneration())", code)
+        @test !occursin("const _LIB_HANDLE", code)
+        @test !occursin("const _LIB_ALIVE", code)
+        # ...and `__init__` does not assign it after loading: the
+        # `load_artifact!` transaction is what publishes the generation, and an
+        # assignment after it would overwrite a concurrent reload's newer one.
+        @test occursin("RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)", code)
+        @test !occursin("_LIB_GEN[] = ", code)
         @test occursin("# Bindings format: $(RustCall.BINDINGS_FORMAT_VERSION)", code)
         # ...and its struct finalizers capture the destructor and the liveness
         # flag rather than resolving anything when they run (#249).
-        @test occursin("_struct_free_ptr(", code)
+        @test occursin("_struct_generation(", code)
         @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", code)
         @test !occursin("maxlog=10", code)
 

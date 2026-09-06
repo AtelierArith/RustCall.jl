@@ -349,9 +349,19 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
             String
         end
 
-        # Create FunctionInfo
+        # Create FunctionInfo. It is a *snapshot*: it is cached and used long
+        # after this lookup, so everything the call needs — the panic channel
+        # included — is resolved here, against the handle the pointer came
+        # from. Looking the channel up later by library name could find no
+        # library (an unload between the cache hit and the call) and answer
+        # `C_NULL`, while `func_ptr` still enters the mapped retired image; a
+        # panic would then be read as a successful zero (#244, #277).
+        channel = Libdl.dlsym(artifact.handle, ffi_panic_symbol(specialized_symbol);
+                              throw_error = false)
+        channel = (channel === nothing) ? C_NULL : channel
         info = FunctionInfo(specialized_symbol, lib_name, ret_type, arg_types, func_ptr,
-                            specialized.arg_abis, string_return, free_ptr)
+                            specialized.arg_abis, string_return, free_ptr,
+                            channel, artifact.handle, artifact.generation)
 
         # Cache the monomorphized function
         MONOMORPHIZED_FUNCTIONS[cache_key] = info
@@ -513,9 +523,10 @@ of the owned or borrowed buffer, exactly as the generated wrappers of
 non-generic `#[julia]` functions do.
 """
 function _call_monomorphized(info::FunctionInfo, args...)
-    # Resolved before the call: the channel is a thread-local in the image, so
-    # nothing may yield between the wrapper call and the read (#244).
-    channel = panic_channel_pointer(info.lib_name, info.name)
+    # The channel was resolved when `info` was built, against the same handle
+    # `func_ptr` came from — so it is the channel of the wrapper that is about
+    # to run, whatever has happened to the library's *name* since (#244, #277).
+    channel = info.channel
     if info.string_return === :none && !any(_is_string_abi, info.arg_abis)
         return guard_rust_panic_ptr(
             call_rust_function(info.func_ptr, info.return_type,

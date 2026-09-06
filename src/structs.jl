@@ -200,9 +200,10 @@ function emit_julia_definitions(info::RustStructInfo)
         # The destructor of a *generic* struct is itself generic, so the
         # instantiation has to be compiled before the finalizer needs it —
         # monomorphizing from inside a finalizer would run the extractor and
-        # rustc and take REGISTRY_LOCK. `generic_struct_free_pointer` does the
-        # instantiation here and hands back the raw pointer, which the object
-        # carries (#249).
+        # rustc and take REGISTRY_LOCK.
+        # `generic_struct_generation_snapshot` does the instantiation here and
+        # hands back the pointer *and* the liveness flag of the image that
+        # exports it, which the object carries (#249, #277).
         generic_free_name = ffi_struct_free_symbol(struct_name_str)
         push!(exprs, quote
             mutable struct $where_clause
@@ -215,10 +216,15 @@ function emit_julia_definitions(info::RustStructInfo)
                 alive::Base.RefValue{Bool}
 
                 function $where_clause(ptr::Ptr{Cvoid}, lib::String) where {$(esc_T_params...)}
-                    free_ptr, free_lib = RustCall.generic_struct_free_pointer(
-                        $generic_free_name, ($(esc_T_params...),))
-                    alive = RustCall.artifact_alive_ref(isempty(free_lib) ? lib : free_lib)
-                    obj = new{$(esc_T_params...)}(ptr, lib, free_ptr, alive)
+                    # One snapshot, exactly as the non-generic path takes one:
+                    # the instantiated destructor and the liveness flag of the
+                    # image that exports it. Taken separately, an unload
+                    # between them handed the object a destructor from the
+                    # retired image and a *freshly invented* live flag, so it
+                    # never learned that image had closed (#249, #277).
+                    gen = RustCall.generic_struct_generation_snapshot(
+                        $generic_free_name, ($(esc_T_params...),), lib)
+                    obj = new{$(esc_T_params...)}(ptr, lib, gen.free_ptr, gen.alive)
                     finalizer(RustCall.finalize_rust_object!, obj)
                     return obj
                 end
@@ -249,7 +255,7 @@ function emit_julia_definitions(info::RustStructInfo)
 
                          function (::Type{$where_clause})($(esc_args...)) where {$(esc_T_params...)}
                              # The destructor is compiled and *captured* by the
-                             # inner constructor below (`generic_struct_free_pointer`),
+                             # inner constructor below (`generic_struct_generation_snapshot`),
                              # which is strictly stronger than warming it up:
                              # the finalizer holds the pointer and consults no
                              # registry at all (#249).
@@ -531,8 +537,13 @@ function emit_julia_definitions(info::RustStructInfo)
                     elseif read_kind === :borrowed_string
                         return GC.@preserve self _call_rust_borrowed_string(lib, getter_name, self.ptr)
                     else
-                        func_ptr = get_function_pointer(lib, getter_name)
-                        return call_rust_function(func_ptr, field_type, self.ptr)
+                        # One snapshot, and the accessor is inside the panic
+                        # boundary like every other call (#244, #277).
+                        target = RustCall.resolve_call_target(lib, getter_name)
+                        return RustCall.guard_rust_panic_ptr(
+                            GC.@preserve(self,
+                                call_rust_function(target.func_ptr, field_type, self.ptr)),
+                            target.channel, getter_name)
                     end
                 # Check if it's a method
                 elseif field in method_names_set
@@ -552,8 +563,11 @@ function emit_julia_definitions(info::RustStructInfo)
                     RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
                     lib = self.lib_name
-                    func_ptr = get_function_pointer(lib, setter_name)
-                    call_rust_function(func_ptr, Cvoid, self.ptr, value)
+                    target = RustCall.resolve_call_target(lib, setter_name)
+                    RustCall.guard_rust_panic_ptr(
+                        GC.@preserve(self,
+                            call_rust_function(target.func_ptr, Cvoid, self.ptr, value)),
+                        target.channel, setter_name)
                     return value
                 else
                     return setfield!(self, field, value)
@@ -664,8 +678,9 @@ function artifact_generation_snapshot(lib_name::AbstractString,
     symbol = ffi_struct_free_symbol(struct_name)
     return lock(REGISTRY_LOCK) do
         alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
+        generation = get(ARTIFACT_GENERATIONS, name, 0)
         entry = get(RUST_LIBRARIES, name, nothing)
-        entry === nothing && return ArtifactGeneration(C_NULL, C_NULL, alive)
+        entry === nothing && return ArtifactGeneration(C_NULL, C_NULL, alive, generation)
         handle, cache = entry
         free_ptr = get(cache, symbol, C_NULL)
         if free_ptr == C_NULL
@@ -680,7 +695,7 @@ function artifact_generation_snapshot(lib_name::AbstractString,
                 cache[symbol] = found
             end
         end
-        return ArtifactGeneration(handle, free_ptr, alive)
+        return ArtifactGeneration(handle, free_ptr, alive, generation)
     end
 end
 
@@ -718,10 +733,11 @@ function finalize_rust_object!(x)
 end
 
 """
-    generic_struct_free_pointer(free_name, types) -> Ptr{Cvoid}
+    _generic_struct_free_target(free_name, types) -> (free_ptr, lib_name, handle, generation)
 
 The destructor of one instantiation of a generic `#[julia]` struct, resolved by
-monomorphizing it **at construction time**.
+monomorphizing it **at construction time**, together with the image it came
+from.
 
 This is what `_precompile_generic_free` was reaching for: the specialization
 has to be compiled before the finalizer needs it, because monomorphizing from
@@ -729,25 +745,56 @@ inside a finalizer would shell out to the extractor, invoke `rustc`, and take
 `REGISTRY_LOCK`. Here the pointer is not merely warmed up but captured, so the
 finalizer never consults a registry at all.
 
-`(C_NULL, "")` when the generic destructor is not registered — a struct whose
-`_free` wrapper the extractor did not emit.
+Not called directly by generated code: `generic_struct_generation_snapshot`
+pairs the pointer with the liveness flag of `handle` under one lock, which is
+the value a constructor may capture.
+
+`(C_NULL, "", C_NULL, 0)` when the generic destructor is not registered — a
+struct whose `_free` wrapper the extractor did not emit.
 """
-function generic_struct_free_pointer(free_name::AbstractString, types::Tuple)
+function _generic_struct_free_target(free_name::AbstractString, types::Tuple)
     return try
         generic_info = lock(REGISTRY_LOCK) do
             get(GENERIC_FUNCTION_REGISTRY, String(free_name), nothing)
         end
-        generic_info === nothing && return (C_NULL, "")
+        generic_info === nothing && return (C_NULL, "", C_NULL, 0)
         type_params = Dict{Symbol, Type}()
         for (i, p) in enumerate(generic_info.type_params)
             type_params[p] = types[i]
         end
         info = get_monomorphized_function(String(free_name), type_params)
         info === nothing && (info = monomorphize_function(String(free_name), type_params))
-        (info.func_ptr, info.lib_name)
+        (info.func_ptr, info.lib_name, info.handle, info.generation)
     catch e
         @debug "Could not resolve the destructor of $(free_name)" exception = e
-        (C_NULL, "")
+        (C_NULL, "", C_NULL, 0)
+    end
+end
+
+"""
+    generic_struct_generation_snapshot(free_name, types, fallback_lib) -> ArtifactGeneration
+
+The generic counterpart of `artifact_generation_snapshot`: the instantiated
+destructor of a generic `#[julia]` struct **and** the liveness flag of the image
+that exports it, as one value.
+
+Monomorphizing can run the extractor and `rustc`, so it happens first and
+outside the lock. What matters is that the flag is then found **by the handle
+the pointer came from** (`alive_ref_for_handle`), not by the library's name: if
+that image has since been retired the object gets the retired image's own flag —
+which is flipped when the image is closed, which is exactly when the destructor
+stops being callable — and if it is gone entirely the object goes inert and
+leaks rather than calling into unmapped memory.
+"""
+function generic_struct_generation_snapshot(free_name::AbstractString, types::Tuple,
+                                            fallback_lib::AbstractString)
+    free_ptr, free_lib, handle, generation = _generic_struct_free_target(free_name, types)
+    name = isempty(free_lib) ? String(fallback_lib) : free_lib
+    return lock(REGISTRY_LOCK) do
+        free_ptr == C_NULL &&
+            return ArtifactGeneration(C_NULL, C_NULL, DEAD_ARTIFACT, generation)
+        return ArtifactGeneration(handle, free_ptr, alive_ref_for_handle(handle, name),
+                                  generation)
     end
 end
 

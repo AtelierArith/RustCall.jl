@@ -363,137 +363,101 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
 
         const _LIB_PATH = $lib_path
         const _LIB_NAME = $lib_key
-        const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)
-        # A `Ref` holding the *artifact's* liveness `Ref`: the artifact does not
-        # exist until `__init__` runs, and a `const` cannot be rebound, so the
-        # indirection is what lets objects capture the real flag. Flipped by
-        # `unload_library`, which is how an object that outlives its library
-        # becomes inert instead of calling into a `dlclose`d image (#249).
-        const _LIB_ALIVE = Ref{Base.RefValue{Bool}}(Ref(true))
+
+        # Everything this module knows about the image it calls — handle,
+        # liveness flag and generation number — as **one immutable value**, in
+        # one `Ref`.
+        #
+        # It used to be two `Ref`s, written by the loader under `REGISTRY_LOCK`
+        # and read here under this module's own lock. Two unrelated locks over
+        # two cells is not a snapshot: a constructor could read the old handle,
+        # the reload could commit, and the constructor would then pair that
+        # handle with the *replacement's* liveness flag — so an object
+        # allocated by the retired image believed itself live after that image
+        # was closed, and its finalizer jumped through an unmapped destructor.
+        # One record, published by `_update_handle_mirrors!` in the same
+        # transaction that swaps the registry entry, makes every read of
+        # `_LIB_GEN[]` a consistent generation with no lock at all (#277).
+        const _LIB_GEN = Ref(RustCall.CrateGeneration())
 
         function __init__()
-            # The loader keeps `_LIB_HANDLE` and `_LIB_ALIVE` in step with the
-            # registry from here on: a hot reload closes the previous image and
-            # `unload_library` closes it outright, so a raw copy of the handle
-            # would go stale and the next `dlsym` would read unmapped memory.
-            # Registering the two `Ref`s means the swap happens in the same
-            # transaction that swaps the registry entry, and the per-call fast
-            # path stays a `Ref` read (#277 Phase B).
-            RustCall.register_handle_mirror!(_LIB_NAME, _LIB_HANDLE, _LIB_ALIVE)
-            artifact = RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;
-                                               lib_name = _LIB_NAME)
-            _LIB_HANDLE[] = artifact.handle
-            _LIB_ALIVE[] = artifact.alive
+            # Register *before* loading, and do not assign afterwards: the
+            # `load_artifact!` transaction is what publishes the generation. An
+            # assignment after it would overwrite a newer generation that a
+            # concurrent reload had already published, and calls through this
+            # module would go back to entering the retired image (#277).
+            RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
+            RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;
+                                    lib_name = _LIB_NAME)
         end
 
-        function _get_func_ptr(name::String)
-            if _LIB_HANDLE[] == C_NULL
-                error("The Rust library backing this module is not loaded. " *
-                      "It was either never initialised, or unloaded with " *
-                      "RustCall.unload_library(\"" * _LIB_NAME * "\"); a " *
-                      "reload through RustCall's hot reload would have " *
-                      "replaced it transparently.")
-            end
-            Libdl.dlsym(_LIB_HANDLE[], name)
-        end
+        # Resolved symbols, memoized per **handle**: a reload swaps the image
+        # under the same module, and a pointer resolved against the old one
+        # would be a call into code that is no longer there. Negative answers
+        # are cached too — a crate built by an older RustCall exports no panic
+        # channels and must not be probed on every call.
+        const _SYMBOLS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()
+        # `get!` on a `Dict` is not safe against a concurrent `get!`. This lock
+        # guards the *cache*, never the generation read: resolution happens
+        # before the Rust call, so a lock here costs nothing that matters — it
+        # is the channel read *after* the call that must not take one (#244).
+        const _SYMBOL_LOCK = ReentrantLock()
 
-        # The destructor of a struct, resolved at construction time so the
-        # finalizer never has to (#249). A missing destructor is `C_NULL`,
-        # which makes the finalizer a no-op: a leak, not a crash.
-        function _struct_free_ptr(name::String)
-            try
-                ptr = Libdl.dlsym(_LIB_HANDLE[], name; throw_error = false)
-                ptr === nothing ? C_NULL : ptr
-            catch
-                C_NULL
-            end
-        end
-
-        # Panic channels (#244). Each generated wrapper exports
-        # `<symbol>_take_panic`; a panicking call returns a sentinel and leaves
-        # its message there, and `_guard_panic` turns that into a
-        # `RustPanicError` rather than letting the caller use the sentinel.
-        # Resolved once per symbol, negative answers cached too: a crate built
-        # by an older RustCall has no channels and must not be probed on every
-        # call.
-        const _PANIC_CHANNELS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()
-        # `get!` on a `Dict` is not safe against a concurrent `get!`: two tasks
-        # calling a wrapper of this module for the first time can rehash it at
-        # once. Resolution happens *before* the Rust call, so a lock here costs
-        # nothing that matters — it is the read *after* the call that must not
-        # take one (#244).
-        const _PANIC_LOCK = ReentrantLock()
-
-        # Keyed by the handle as well as the symbol: a reload swaps the image
-        # under the same module, and a channel pointer resolved against the old
-        # one would be a call into unmapped code (#244, #277).
-        function _panic_channel(symbol::String)
-            lock(_PANIC_LOCK) do
-                get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do
-                    _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))
+        function _symbol(handle::Ptr{Cvoid}, name::String)
+            lock(_SYMBOL_LOCK) do
+                get!(_SYMBOLS, (handle, name)) do
+                    ptr = Libdl.dlsym(handle, name; throw_error = false)
+                    ptr === nothing ? C_NULL : ptr
                 end
             end
         end
 
-        # One snapshot per call: the wrapper and its panic channel resolved
-        # against **one** read of the module's handle. Reading the handle twice
+        function _required_symbol(handle::Ptr{Cvoid}, name::String)
+            ptr = _symbol(handle, name)
+            ptr == C_NULL && error("The Rust library '" * _LIB_NAME *
+                                   "' does not export '" * name * "'.")
+            ptr
+        end
+
+        function _live_handle(gen::RustCall.CrateGeneration)
+            gen.handle == C_NULL &&
+                error("The Rust library backing this module is not loaded. " *
+                      "It was either never initialised, or unloaded with " *
+                      "RustCall.unload_library(\"" * _LIB_NAME * "\").")
+            gen.handle
+        end
+
+        _get_func_ptr(name::String) = _required_symbol(_live_handle(_LIB_GEN[]), name)
+
+        # One snapshot per call: the wrapper and its panic channel, resolved
+        # against **one** deref of `_LIB_GEN`. Reading the generation twice
         # could straddle a reload, and the call would then enter the retired
         # image while the channel came from the replacement (#277).
         function _call_target(symbol::String)
-            lock(_PANIC_LOCK) do
-                handle = _LIB_HANDLE[]
-                if handle == C_NULL
-                    error("The Rust library backing this module is not loaded. " *
-                          "It was either never initialised, or unloaded with " *
-                          "RustCall.unload_library(\"" * _LIB_NAME * "\").")
-                end
-                func_ptr = Libdl.dlsym(handle, symbol)
-                channel = get!(_PANIC_CHANNELS, (handle, symbol)) do
-                    ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol);
-                                      throw_error = false)
-                    ptr === nothing ? C_NULL : ptr
-                end
-                (func_ptr, channel)
-            end
+            handle = _live_handle(_LIB_GEN[])
+            (_required_symbol(handle, symbol),
+             _symbol(handle, RustCall.ffi_panic_symbol(symbol)))
         end
 
-        # The owned-`String` arm: the wrapper, its channel **and** the function
-        # that releases the buffer the wrapper returns, from one read of the
-        # handle. Resolving the release function after the call let a reload
-        # land in between, and the buffer was then freed through the
+        # The owned-`String` arm, with the function that releases the buffer the
+        # wrapper returns. Resolving that release function after the call let a
+        # reload land in between, and the buffer was then freed through the
         # replacement's allocator (#277).
         function _call_target(symbol::String, free_symbol::String)
-            lock(_PANIC_LOCK) do
-                handle = _LIB_HANDLE[]
-                if handle == C_NULL
-                    error("The Rust library backing this module is not loaded. " *
-                          "It was either never initialised, or unloaded with " *
-                          "RustCall.unload_library(\"" * _LIB_NAME * "\").")
-                end
-                func_ptr = Libdl.dlsym(handle, symbol)
-                channel = get!(_PANIC_CHANNELS, (handle, symbol)) do
-                    ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol);
-                                      throw_error = false)
-                    ptr === nothing ? C_NULL : ptr
-                end
-                (func_ptr, channel, Libdl.dlsym(handle, free_symbol))
-            end
+            handle = _live_handle(_LIB_GEN[])
+            (_required_symbol(handle, symbol),
+             _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
+             _required_symbol(handle, free_symbol))
         end
 
         # The per-object half: a struct's destructor and the liveness flag of
-        # the image that exports it, from one read of the module's state.
+        # the image that exports it — one deref, so they are always the same
+        # generation. A missing destructor is `C_NULL`, which makes the
+        # finalizer a no-op: a leak, not a crash (#249).
         function _struct_generation(free_symbol::String)
-            lock(_PANIC_LOCK) do
-                handle = _LIB_HANDLE[]
-                alive = _LIB_ALIVE[]
-                handle == C_NULL && return (C_NULL, alive)
-                ptr = try
-                    Libdl.dlsym(handle, free_symbol; throw_error = false)
-                catch
-                    nothing
-                end
-                (ptr === nothing ? C_NULL : ptr, alive)
-            end
+            gen = _LIB_GEN[]
+            gen.handle == C_NULL && return (C_NULL, gen.alive)
+            (_symbol(gen.handle, free_symbol), gen.alive)
         end
 
         # The channel is resolved by the *caller*, before the wrapper call:
@@ -1728,118 +1692,73 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
         push!(lines, "const _LIB_PATH = $(repr(lib_path))")
     end
     push!(lines, "const _LIB_NAME = $(repr(crate_library_name(info; release = build_release)))")
-    push!(lines, "const _LIB_HANDLE = Ref{Ptr{Cvoid}}(C_NULL)")
-    # A `Ref` holding the artifact's liveness `Ref`: the artifact does not
-    # exist until `__init__` runs and a `const` cannot be rebound, so this
-    # indirection is what lets objects capture the real flag (#249).
-    push!(lines, "const _LIB_ALIVE = Ref{Base.RefValue{Bool}}(Ref(true))")
     push!(lines, "")
-
-    # __init__ loads through the one loader (#277), so the handle is in
-    # RUST_LIBRARIES and `unload_library` can see this crate too (#250).
+    push!(lines, "# Everything this module knows about the image it calls -- handle, liveness")
+    push!(lines, "# flag and generation -- as one immutable value, published by the loader in")
+    push!(lines, "# the transaction that swaps the registry entry (#277).")
+    push!(lines, "const _LIB_GEN = Ref(RustCall.CrateGeneration())")
+    push!(lines, "")
     push!(lines, "function __init__()")
-    # The loader keeps the two Refs in step with the registry, so a hot reload
-    # or an unload cannot leave this module holding a closed handle (#277).
-    push!(lines, "    RustCall.register_handle_mirror!(_LIB_NAME, _LIB_HANDLE, _LIB_ALIVE)")
-    push!(lines, "    artifact = RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;")
-    push!(lines, "                                      lib_name = _LIB_NAME)")
-    push!(lines, "    _LIB_HANDLE[] = artifact.handle")
-    push!(lines, "    _LIB_ALIVE[] = artifact.alive")
+    push!(lines, "    # Register before loading, and do not assign afterwards: an assignment")
+    push!(lines, "    # after `load_artifact!` would overwrite a newer generation that a")
+    push!(lines, "    # concurrent reload had already published.")
+    push!(lines, "    RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)")
+    push!(lines, "    RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;")
+    push!(lines, "                            lib_name = _LIB_NAME)")
     push!(lines, "end")
     push!(lines, "")
-
-    # Helper function
-    push!(lines, "function _get_func_ptr(name::String)")
-    push!(lines, "    if _LIB_HANDLE[] == C_NULL")
+    push!(lines, "# Resolved symbols, memoized per handle: a reload swaps the image under the")
+    push!(lines, "# same module. Negative answers are cached too.")
+    push!(lines, "const _SYMBOLS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()")
+    push!(lines, "const _SYMBOL_LOCK = ReentrantLock()")
+    push!(lines, "")
+    push!(lines, "function _symbol(handle::Ptr{Cvoid}, name::String)")
+    push!(lines, "    lock(_SYMBOL_LOCK) do")
+    push!(lines, "        get!(_SYMBOLS, (handle, name)) do")
+    push!(lines, "            ptr = Libdl.dlsym(handle, name; throw_error = false)")
+    push!(lines, "            ptr === nothing ? C_NULL : ptr")
+    push!(lines, "        end")
+    push!(lines, "    end")
+    push!(lines, "end")
+    push!(lines, "")
+    push!(lines, "function _required_symbol(handle::Ptr{Cvoid}, name::String)")
+    push!(lines, "    ptr = _symbol(handle, name)")
+    push!(lines, "    ptr == C_NULL && error(\"The Rust library '\" * _LIB_NAME *")
+    push!(lines, "                           \"' does not export '\" * name * \"'.\")")
+    push!(lines, "    ptr")
+    push!(lines, "end")
+    push!(lines, "")
+    push!(lines, "function _live_handle(gen::RustCall.CrateGeneration)")
+    push!(lines, "    gen.handle == C_NULL &&")
     push!(lines, "        error(\"The Rust library backing this module is not loaded. \" *")
     push!(lines, "              \"It was either never initialised, or unloaded with \" *")
     push!(lines, "              \"RustCall.unload_library(\\\"\" * _LIB_NAME * \"\\\").\")")
-    push!(lines, "    end")
-    push!(lines, "    Libdl.dlsym(_LIB_HANDLE[], name)")
+    push!(lines, "    gen.handle")
     push!(lines, "end")
     push!(lines, "")
-
-    # The destructor of a struct, resolved at construction time so the
-    # finalizer never has to (#249).
-    push!(lines, "function _struct_free_ptr(name::String)")
-    push!(lines, "    try")
-    push!(lines, "        ptr = Libdl.dlsym(_LIB_HANDLE[], name; throw_error = false)")
-    push!(lines, "        ptr === nothing ? C_NULL : ptr")
-    push!(lines, "    catch")
-    push!(lines, "        C_NULL")
-    push!(lines, "    end")
-    push!(lines, "end")
+    push!(lines, "_get_func_ptr(name::String) = _required_symbol(_live_handle(_LIB_GEN[]), name)")
     push!(lines, "")
-
-    # Panic channels (#244): each generated wrapper exports
-    # `<symbol>_take_panic`, and a panicking call returns a sentinel with its
-    # message waiting there. Resolved once per symbol, negative answers cached
-    # too — a crate built before #244 has no channels.
-    push!(lines, "const _PANIC_CHANNELS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()")
-    # `get!` is not safe against a concurrent `get!`. Resolution happens before
-    # the Rust call, so a lock here is free of the constraint that applies to
-    # the read after it (#244).
-    push!(lines, "const _PANIC_LOCK = ReentrantLock()")
-    push!(lines, "")
-    # Keyed by handle as well as symbol: a reload swaps the image, and a
-    # channel pointer resolved against the old one would be unmapped code.
-    push!(lines, "function _panic_channel(symbol::String)")
-    push!(lines, "    lock(_PANIC_LOCK) do")
-    push!(lines, "        get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do")
-    push!(lines, "            _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))")
-    push!(lines, "        end")
-    push!(lines, "    end")
-    push!(lines, "end")
-    push!(lines, "")
-    # One snapshot per call, from one read of the module's handle: reading it
-    # twice could straddle a reload (#277).
+    push!(lines, "# One snapshot per call, from ONE deref of `_LIB_GEN` (#277).")
     push!(lines, "function _call_target(symbol::String)")
-    push!(lines, "    lock(_PANIC_LOCK) do")
-    push!(lines, "        handle = _LIB_HANDLE[]")
-    push!(lines, "        if handle == C_NULL")
-    push!(lines, "            error(\"The Rust library backing this module is not loaded. \" *")
-    push!(lines, "                  \"It was either never initialised, or unloaded with \" *")
-    push!(lines, "                  \"RustCall.unload_library(\\\"\" * _LIB_NAME * \"\\\").\")")
-    push!(lines, "        end")
-    push!(lines, "        func_ptr = Libdl.dlsym(handle, symbol)")
-    push!(lines, "        channel = get!(_PANIC_CHANNELS, (handle, symbol)) do")
-    push!(lines, "            ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol); throw_error = false)")
-    push!(lines, "            ptr === nothing ? C_NULL : ptr")
-    push!(lines, "        end")
-    push!(lines, "        (func_ptr, channel)")
-    push!(lines, "    end")
+    push!(lines, "    handle = _live_handle(_LIB_GEN[])")
+    push!(lines, "    (_required_symbol(handle, symbol),")
+    push!(lines, "     _symbol(handle, RustCall.ffi_panic_symbol(symbol)))")
     push!(lines, "end")
     push!(lines, "")
-    # The owned-`String` arm: release function snapshotted with the call (#277).
+    push!(lines, "# ...and the owned-`String` arm, release function included.")
     push!(lines, "function _call_target(symbol::String, free_symbol::String)")
-    push!(lines, "    lock(_PANIC_LOCK) do")
-    push!(lines, "        handle = _LIB_HANDLE[]")
-    push!(lines, "        if handle == C_NULL")
-    push!(lines, "            error(\"The Rust library backing this module is not loaded. \" *")
-    push!(lines, "                  \"It was either never initialised, or unloaded with \" *")
-    push!(lines, "                  \"RustCall.unload_library(\\\"\" * _LIB_NAME * \"\\\").\")")
-    push!(lines, "        end")
-    push!(lines, "        func_ptr = Libdl.dlsym(handle, symbol)")
-    push!(lines, "        channel = get!(_PANIC_CHANNELS, (handle, symbol)) do")
-    push!(lines, "            ptr = Libdl.dlsym(handle, RustCall.ffi_panic_symbol(symbol); throw_error = false)")
-    push!(lines, "            ptr === nothing ? C_NULL : ptr")
-    push!(lines, "        end")
-    push!(lines, "        (func_ptr, channel, Libdl.dlsym(handle, free_symbol))")
-    push!(lines, "    end")
+    push!(lines, "    handle = _live_handle(_LIB_GEN[])")
+    push!(lines, "    (_required_symbol(handle, symbol),")
+    push!(lines, "     _symbol(handle, RustCall.ffi_panic_symbol(symbol)),")
+    push!(lines, "     _required_symbol(handle, free_symbol))")
     push!(lines, "end")
     push!(lines, "")
+    push!(lines, "# A struct's destructor and the liveness flag of the image that exports it,")
+    push!(lines, "# from the same deref (#249, #277).")
     push!(lines, "function _struct_generation(free_symbol::String)")
-    push!(lines, "    lock(_PANIC_LOCK) do")
-    push!(lines, "        handle = _LIB_HANDLE[]")
-    push!(lines, "        alive = _LIB_ALIVE[]")
-    push!(lines, "        handle == C_NULL && return (C_NULL, alive)")
-    push!(lines, "        ptr = try")
-    push!(lines, "            Libdl.dlsym(handle, free_symbol; throw_error = false)")
-    push!(lines, "        catch")
-    push!(lines, "            nothing")
-    push!(lines, "        end")
-    push!(lines, "        (ptr === nothing ? C_NULL : ptr, alive)")
-    push!(lines, "    end")
+    push!(lines, "    gen = _LIB_GEN[]")
+    push!(lines, "    gen.handle == C_NULL && return (C_NULL, gen.alive)")
+    push!(lines, "    (_symbol(gen.handle, free_symbol), gen.alive)")
     push!(lines, "end")
     push!(lines, "")
     # The channel is resolved by the caller, before the wrapper call: it is a

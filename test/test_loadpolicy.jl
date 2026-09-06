@@ -370,13 +370,27 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
                              ("structs.jl", "resolve_call_target("),
                              ("julia_functions.jl", "resolve_call_target("),
                              ("crate_bindings.jl", "_call_target("),
-                             ("generics.jl", "panic_channel_pointer("))
+                             ("generics.jl", "channel, artifact.handle, artifact.generation"))
             @test occursin(kind, _src(file))
         end
         # The owned-`String` release function comes from the same snapshot as
         # the call that produced the buffer, never a later lookup by name.
         @test occursin("free_symbol = free_func_name", _src("structs.jl"))
         @test occursin("target.free_ptr", _src("structs.jl"))
+        # The return ABI is part of the snapshot too: it decides how the return
+        # slot is read, and reading a retired generation's result with the
+        # replacement's ABI is memory corruption, not a wrong answer (#277).
+        @test occursin("return_type = get(FUNCTION_RETURN_TYPES_BY_LIB", _src("ruststr.jl"))
+        @test occursin("ret_type = target.return_type", _src("rustmacro.jl"))
+        @test occursin("func_info = target.func_info", _src("rustmacro.jl"))
+        # ...and a cached `FunctionInfo` is itself a snapshot: it carries the
+        # channel of the image its pointer came from, never a name to look one
+        # up by later.
+        @test occursin("channel = info.channel", _src("generics.jl"))
+        # The generic struct destructor and its liveness flag come from one
+        # locked read, like the non-generic path.
+        @test occursin("generic_struct_generation_snapshot(", _src("structs.jl"))
+        @test occursin("alive_ref_for_handle(", _src("structs.jl"))
         # ...and the old, resolve-after-the-call entry points are gone.
         for file in readdir(_SRC_DIR)
             endswith(file, ".jl") || continue
@@ -750,26 +764,33 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
     @testset "handle mirrors follow replace and unload" begin
         policy = RustCall.LoadPolicy("test-mirror"; sets_current_lib = false)
         name = "loadpolicy_mirror_$(getpid())"
-        handle_ref = Ref(Ptr{Cvoid}(C_NULL))
-        alive_ref = Ref(Ref(true))
+        # ONE record, not two `Ref`s. Handle, liveness flag and generation are
+        # published together, so a reader's single deref can never pair one
+        # generation's handle with another's flag (#277).
+        gen_ref = Ref(RustCall.CrateGeneration())
         first_handle = Ptr{Cvoid}(UInt(0xaaaa0000))
         second_handle = Ptr{Cvoid}(UInt(0xbbbb0000))
         try
-            RustCall.register_handle_mirror!(name, handle_ref, alive_ref)
+            RustCall.register_handle_mirror!(name, gen_ref)
             # Nothing registered yet, so the mirror is untouched.
-            @test handle_ref[] == C_NULL
+            @test gen_ref[].handle == C_NULL
 
             a = RustCall.adopt_artifact!(policy, first_handle; lib_name = name)
-            @test handle_ref[] == first_handle
-            @test alive_ref[] === a.alive
-            @test alive_ref[][]
+            @test gen_ref[].handle == first_handle
+            @test gen_ref[].alive === a.alive
+            @test gen_ref[].alive[]
+            @test gen_ref[].generation == a.generation
+            first_generation = gen_ref[].generation
+            @test first_generation > 0
 
             # A replace — what a hot reload does — moves the mirror to the new
-            # handle and the new liveness flag in the same transaction.
+            # handle, the new liveness flag and the next generation, in one
+            # transaction and as one value.
             b = RustCall.adopt_artifact!(policy, second_handle; lib_name = name)
-            @test handle_ref[] == second_handle
-            @test alive_ref[] === b.alive
-            @test alive_ref[][]
+            @test gen_ref[].handle == second_handle
+            @test gen_ref[].alive === b.alive
+            @test gen_ref[].alive[]
+            @test gen_ref[].generation == first_generation + 1
             # The previous image is retired but still mapped, so its flag stays
             # true and objects it allocated still free through it.
             @test a.alive[]
@@ -778,17 +799,18 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
             # An unload empties the mirror, so the module's own check reports
             # "not loaded" instead of dlsym'ing a closed handle.
             RustCall.unload_artifact!(policy, name)
-            @test handle_ref[] == C_NULL
+            @test gen_ref[].handle == C_NULL
             # The *mirror's* slot is emptied — the module's library is gone —
             # while the artifact's own flag stays true until its image closes.
-            @test !alive_ref[][]
+            @test !gen_ref[].alive[]
             @test b.alive[]
 
             # The mirror stays registered: a reload under the same name — which
             # is what hot reload is — fills it in again.
             c = RustCall.adopt_artifact!(policy, first_handle; lib_name = name)
-            @test handle_ref[] == first_handle
-            @test alive_ref[] === c.alive
+            @test gen_ref[].handle == first_handle
+            @test gen_ref[].alive === c.alive
+            @test gen_ref[].generation == c.generation
         finally
             lock(RustCall.REGISTRY_LOCK) do
                 delete!(RustCall.RUST_LIBRARIES, name)

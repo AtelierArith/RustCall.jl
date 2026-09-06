@@ -456,24 +456,23 @@ end
                     # `@rust_crate` module keeps — follows the swap. Without
                     # that it would still point at the image the reload closed,
                     # and the next `dlsym` would read unmapped memory (#277).
-                    handle_ref = Ref(Ptr{Cvoid}(C_NULL))
-                    alive_ref = Ref(Ref(true))
-                    RustCall.register_handle_mirror!(lib_name, handle_ref, alive_ref)
+                    gen_ref = Ref(RustCall.CrateGeneration())
+                    RustCall.register_handle_mirror!(lib_name, gen_ref)
                     current = lock(() -> RustCall.RUST_LIBRARIES[lib_name][1],
                                    RustCall.REGISTRY_LOCK)
-                    @test handle_ref[] == current
-                    @test alive_ref[][]
+                    @test gen_ref[].handle == current
+                    @test gen_ref[].alive[]
 
                     _hrt_write_source(crate, 123)
                     @test RustCall.reload_library(state)
                     swapped = lock(() -> RustCall.RUST_LIBRARIES[lib_name][1],
                                    RustCall.REGISTRY_LOCK)
-                    @test handle_ref[] == swapped
-                    @test handle_ref[] != current      # a genuinely new image
-                    @test alive_ref[][]
+                    @test gen_ref[].handle == swapped
+                    @test gen_ref[].handle != current      # a genuinely new image
+                    @test gen_ref[].alive[]
                     # ...and the mirror resolves the new library's symbol.
                     @test RustCall.call_rust_function(
-                        Libdl.dlsym(handle_ref[], "hrt_probe"), Int32) == Int32(123)
+                        Libdl.dlsym(gen_ref[].handle, "hrt_probe"), Int32) == Int32(123)
 
                     # The replaced image is RETIRED, not closed: a call that
                     # started before the reload may still be running inside it,
@@ -493,8 +492,8 @@ end
                     # image — and does NOT close the retired ones by default.
                     closes_before = RustCall.DLCLOSE_COUNT[]
                     RustCall.unload_library(lib_name)
-                    @test handle_ref[] == C_NULL
-                    @test !alive_ref[][]
+                    @test gen_ref[].handle == C_NULL
+                    @test !gen_ref[].alive[]
                     # Nothing was closed: unloading retires, exactly as a
                     # reload does — one code path (#277).
                     @test RustCall.DLCLOSE_COUNT[] == closes_before
@@ -516,6 +515,71 @@ end
                 finally
                     # Windows locks a loaded DLL, so the temp tree can only be
                     # removed after the library is gone. Best effort either way.
+                    try
+                        RustCall.unload_library(lib_name)
+                    catch
+                    end
+                end
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------
+    # A cached `FunctionInfo` is itself a snapshot (#277).
+    #
+    # This is the monomorphized-generic shape: the record is built once and
+    # called long afterwards. It used to look its panic channel up by library
+    # name at call time, so a task that unloaded the library in between got
+    # `C_NULL` — while `func_ptr` still entered the mapped retired image. A
+    # panic then came back as the wrapper's zero sentinel and was silently
+    # accepted as a result. Deterministic, no threads required.
+    # ------------------------------------------------------------------
+    if !_HRT_CARGO
+        @test_skip "cargo is required for the cached-snapshot test"
+    else
+        @testset "a cached FunctionInfo keeps its panic channel (#277)" begin
+            mktempdir() do dir
+                crate = joinpath(dir, "cached")
+                mkpath(joinpath(crate, "src"))
+                write(joinpath(crate, "Cargo.toml"), """
+                    [package]
+                    name = "hrt_cached"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [dependencies]
+
+                    [profile.release]
+                    panic = "unwind"
+                    """)
+                _hrt_write_stress(crate, 7)
+                lib_name = "hrt_cached_lib"
+                state = _hrt_state(crate, lib_name)
+                try
+                    @test RustCall.reload_library(state)
+                    target = RustCall.resolve_call_target(lib_name, "stress_boom")
+                    @test target.channel != C_NULL
+                    # Built exactly as `monomorphize_function` builds one: the
+                    # channel and the handle resolved *now*, with the pointer.
+                    info = RustCall.FunctionInfo(
+                        "stress_boom", lib_name, Int32, Type[], target.func_ptr,
+                        String[], :none, C_NULL,
+                        target.channel, target.handle, target.generation)
+
+                    # It works while the library is registered...
+                    @test_throws RustCall.RustPanicError RustCall._call_monomorphized(info)
+
+                    # ...and it still works once the library has been unloaded.
+                    # The image is *retired*, not closed, so the pointer is
+                    # still callable — and the panic must still be raised
+                    # rather than returned as a zero.
+                    RustCall.unload_library(lib_name)
+                    @test !haskey(RustCall.RUST_LIBRARIES, lib_name)
+                    @test_throws RustCall.RustPanicError RustCall._call_monomorphized(info)
+                finally
                     try
                         RustCall.unload_library(lib_name)
                     catch
@@ -578,6 +642,19 @@ end
 
                     published = Set{Int32}([Int32(1)])
                     published_lock = ReentrantLock()
+                    # What a generated `@rust_crate` module keeps: ONE
+                    # immutable record, published by the loader in the same
+                    # transaction that swaps the registry entry.
+                    mirror = Ref(RustCall.CrateGeneration())
+                    RustCall.register_handle_mirror!(lib_name, mirror)
+                    # (generation number, value that generation returned).
+                    # Every entry for one generation must agree: a call that
+                    # read the handle of one generation and the code of another
+                    # would show up as one number with two values.
+                    seen = Set{Tuple{Int, Int32}}()
+                    seen_lock = ReentrantLock()
+                    crate_calls = Threads.Atomic{Int}(0)
+                    dead_generation = Threads.Atomic{Int}(0)
                     stop = Threads.Atomic{Bool}(false)
                     wrong_generation = Threads.Atomic{Int}(0)
                     lost_panic = Threads.Atomic{Int}(0)
@@ -623,6 +700,32 @@ end
                         end
                     end
 
+                    # A crate module: one deref of the record per call, then
+                    # `dlsym` and the call on *that* handle — exactly what
+                    # `_call_target` and `_struct_generation` do in a generated
+                    # module. Nothing here consults the registry by name.
+                    crate_module = Threads.@spawn begin
+                        while !stop[]
+                            gen = mirror[]
+                            if gen.handle != C_NULL
+                                ptr = Libdl.dlsym(gen.handle, "stress_generation";
+                                                  throw_error = false)
+                                if ptr !== nothing
+                                    value = RustCall.call_rust_function(ptr, Int32)
+                                    # The image it just called must not have
+                                    # been closed under it: the record it read
+                                    # carried that image's own flag.
+                                    gen.alive[] || Threads.atomic_add!(dead_generation, 1)
+                                    lock(seen_lock) do
+                                        push!(seen, (gen.generation, value))
+                                    end
+                                    Threads.atomic_add!(crate_calls, 1)
+                                end
+                            end
+                            yield()
+                        end
+                    end
+
                     # An allocator: objects are created and dropped while the
                     # image under them is replaced.
                     allocator = Threads.@spawn begin
@@ -655,7 +758,7 @@ end
                     end
 
                     stop[] = true
-                    wait(caller); wait(panicker); wait(allocator)
+                    wait(caller); wait(panicker); wait(allocator); wait(crate_module)
                     GC.gc(true)
 
                     # The loop really did run against live traffic...
@@ -669,7 +772,20 @@ end
                     @test lost_panic[] == 0
                     @test wrong_panic[] == 0
                     @test RustCall.finalizer_failure_count() == failures_before
+
+                    # The crate-module path: it ran, it never called an image
+                    # that had been closed under it, and each generation number
+                    # is paired with exactly one returned value — a call that
+                    # straddled a swap would pair one number with two.
+                    @test crate_calls[] > 0
+                    @test dead_generation[] == 0
+                    @test length(unique(first, collect(seen))) == length(seen)
+                    # ...and it really did see more than one generation.
+                    @test length(unique(first, collect(seen))) > 1
                 finally
+                    lock(RustCall.REGISTRY_LOCK) do
+                        delete!(RustCall.HANDLE_MIRRORS, lib_name)
+                    end
                     try
                         RustCall.unload_library(lib_name)
                     catch

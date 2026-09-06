@@ -22,6 +22,8 @@ jobs:
         run: bash scripts/lint_artifact_identity.sh src
       - name: Check that loading and registration go through src/loadpolicy.jl
         run: bash scripts/lint_load_path.sh src
+      - name: Check that every FFI entry point takes one generation snapshot
+        run: bash scripts/lint_generation_snapshot.sh src
 
   rust-tests:
     name: Rust ${{ matrix.rust }} - ${{ matrix.os }} - ${{ matrix.crate }}

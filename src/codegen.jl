@@ -18,10 +18,30 @@ struct FunctionInfo
     arg_abis::Vector{String}
     string_return::Symbol
     free_ptr::Ptr{Cvoid}
+    # The panic channel of the wrapper `func_ptr` points at, resolved when this
+    # record was built (#244, #277). A cached `FunctionInfo` is a snapshot: it
+    # outlives the lookup that produced it, so looking the channel up later by
+    # library name could find no library — the pointer still enters the mapped
+    # retired image — and a panic would then be read as a successful zero.
+    channel::Ptr{Cvoid}
+    # The image the pointers were resolved on, and which generation of
+    # `lib_name` it was. The handle is what finds the *right* liveness flag
+    # later (`alive_ref_for_handle`): the name's flag may by then belong to a
+    # different image, or be freshly invented for a name nothing is registered
+    # under.
+    handle::Ptr{Cvoid}
+    generation::Int
 end
 
 FunctionInfo(name::String, lib_name::String, return_type::Type, arg_types::Vector{Type}, func_ptr::Ptr{Cvoid}) =
-    FunctionInfo(name, lib_name, return_type, arg_types, func_ptr, String[], :none, C_NULL)
+    FunctionInfo(name, lib_name, return_type, arg_types, func_ptr, String[], :none, C_NULL,
+                 C_NULL, C_NULL, 0)
+
+FunctionInfo(name::String, lib_name::String, return_type::Type, arg_types::Vector{Type},
+             func_ptr::Ptr{Cvoid}, arg_abis::Vector{String}, string_return::Symbol,
+             free_ptr::Ptr{Cvoid}) =
+    FunctionInfo(name, lib_name, return_type, arg_types, func_ptr, arg_abis, string_return,
+                 free_ptr, C_NULL, C_NULL, 0)
 
 """
 Registry for function information.
@@ -165,14 +185,27 @@ by library name.**
 - `channel` — that wrapper's panic channel (`C_NULL` when it has none).
 - `free_ptr` — the release function for an owned-`String` result, when the
   caller asked for one (`C_NULL` otherwise).
-- `lib_name` — the library the pointers came from, for diagnostics and for the
-  return-type hint, which must come from the same generation.
+- `handle` — the image they were resolved on. What finds the right liveness
+  flag later, when the library's *name* may have moved on.
+- `lib_name` — the library the pointers came from, for diagnostics.
+- `return_type` — the return-type hint that library registered for this
+  function (`nothing` when it registered none), and `func_info` — the richer
+  `FunctionInfo` when one is registered. **Both are part of the snapshot**: the
+  return ABI decides how the `ccall` reads the return slot, so taking it from a
+  later lookup could call a pointer from the retired generation while reading
+  its result with the replacement's ABI — a scalar read as a struct, which is
+  memory corruption rather than a wrong answer.
+- `generation` — which generation of `lib_name` all of the above came from.
 """
 struct CallTarget
     func_ptr::Ptr{Cvoid}
     channel::Ptr{Cvoid}
     free_ptr::Ptr{Cvoid}
+    handle::Ptr{Cvoid}
     lib_name::String
+    return_type::Union{Type, Nothing}
+    func_info::Union{FunctionInfo, Nothing}
+    generation::Int
 end
 
 """
@@ -190,6 +223,7 @@ struct ArtifactGeneration
     handle::Ptr{Cvoid}
     free_ptr::Ptr{Cvoid}
     alive::Base.RefValue{Bool}
+    generation::Int
 end
 
 """
@@ -418,8 +452,13 @@ end
 Register a function with its type signature for later calling.
 """
 function register_function(name::String, lib_name::String, ret_type::Type, arg_types::Vector{Type})
-    func_ptr = get_function_pointer(lib_name, name)
-    info = FunctionInfo(name, lib_name, ret_type, arg_types, func_ptr)
+    # One snapshot: the record is cached and used long after this call, so it
+    # carries the panic channel and the handle its pointer came from rather
+    # than a name to look them up by later (#277).
+    target = resolve_call_target(lib_name, name)
+    info = FunctionInfo(name, target.lib_name, ret_type, arg_types, target.func_ptr,
+                        String[], :none, C_NULL,
+                        target.channel, target.handle, target.generation)
     FUNCTION_REGISTRY_BY_LIB[(lib_name, name)] = info
     FUNCTION_REGISTRY[name] = info
     return info
@@ -639,8 +678,8 @@ Uses a generated ccall based on normalized argument types.
 
 # Example
 ```julia
-func_ptr = get_function_pointer("mylib", "add")
-result = call_rust_function(func_ptr, Int32, 10, 20)  # Returns Int32
+target = resolve_call_target("mylib", "add")
+result = call_rust_function(target.func_ptr, Int32, 10, 20)  # Returns Int32
 ```
 """
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
@@ -664,8 +703,8 @@ Call a Rust function with explicit argument types.
 
 # Example
 ```julia
-func_ptr = get_function_pointer("mylib", "multiply")
-result = call_rust_function(func_ptr, Float64, [Float64, Float64], 3.14, 2.0)
+target = resolve_call_target("mylib", "multiply")
+result = call_rust_function(target.func_ptr, Float64, [Float64, Float64], 3.14, 2.0)
 ```
 """
 function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, arg_types::Vector{Type}, args...)
@@ -748,8 +787,11 @@ Low-level macro for calling a Rust function with explicit types.
 macro rust_ccall(func_name, ret_type, arg_types, args...)
     func_name_str = string(func_name)
     return quote
-        lib_name = get_current_library()
-        func_ptr = get_function_pointer(lib_name, $func_name_str)
-        ccall(func_ptr, $(esc(ret_type)), $(esc(arg_types)), $(map(esc, args)...))
+        # One snapshot, like every other door: pointer and panic channel from
+        # the same generation (#277).
+        target = resolve_call_target(get_current_library(), $func_name_str)
+        guard_rust_panic_ptr(
+            ccall(target.func_ptr, $(esc(ret_type)), $(esc(arg_types)), $(map(esc, args)...)),
+            target.channel, $func_name_str)
     end
 end

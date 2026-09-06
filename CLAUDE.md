@@ -33,6 +33,7 @@ bash scripts/lint_interpolation.sh src
 bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax with regexes
 bash scripts/lint_artifact_identity.sh src  # artifact identity only via src/artifact_id.jl
 bash scripts/lint_load_path.sh src          # dlopen/dlclose/RUST_LIBRARIES only via src/loadpolicy.jl
+bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a snapshot, never piecemeal
 ```
 
 ## Architecture
@@ -100,7 +101,23 @@ Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl
 
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 
-**One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point resolves everything it needs — function pointer, panic channel, owned-string release function, struct destructor, liveness `Ref` — in **one** locked step, and then uses only that snapshot. Nothing after the snapshot may look anything up by library name: a second lookup can land on the other side of a swap, and the call then enters the retired image while the channel, or the `free`, belongs to its replacement. The entry points are `resolve_call_target` (`src/ruststr.jl`), `artifact_generation_snapshot` (`src/structs.jl`) and, inside a `@rust_crate` module, `_call_target` / `_struct_generation` (which read the module's `_LIB_HANDLE[]` exactly once). A replaced image is **retired, not closed**, so a call that is already inside one stays valid. `test/test_hot_reload_transaction.jl` asserts this adversarially: a reload loop against tasks that call, panic and allocate, checking that no call returns an unpublished generation, no panic is lost and no finalizer fails.
+**One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point resolves everything it needs — function pointer, panic channel, owned-`String` release function, struct destructor, liveness `Ref`, **and the return ABI** — in **one** locked step, and then uses only that snapshot. Nothing after the snapshot may look anything up by library name: a second lookup can land on the other side of a swap, and the call then enters the retired image while the channel, the `free`, or the return type belongs to its replacement — a lost panic, a buffer released through the wrong allocator, or a scalar read as a struct.
+
+There are exactly four snapshot constructors, and `scripts/lint_generation_snapshot.sh` fails CI if anything else resolves a piece on its own:
+
+| constructor | where | what it returns |
+| --- | --- | --- |
+| `resolve_call_target` | `src/ruststr.jl` | `CallTarget`: pointer, panic channel, owned-`String` release fn, handle, return type / `FunctionInfo`, generation |
+| `artifact_generation_snapshot` | `src/structs.jl` | `ArtifactGeneration`: a struct's destructor + the flag of the image that exports it |
+| `generic_struct_generation_snapshot` | `src/structs.jl` | the same, for a monomorphized generic destructor |
+| `_call_target` / `_struct_generation` | the two `@rust_crate` templates | the same two, from **one deref** of the module's `_LIB_GEN` |
+
+Two consequences worth knowing:
+
+- **A cached record is a snapshot too.** `FunctionInfo` (a monomorphized generic, `register_function`) carries the channel, the handle and the generation it was built with, because it is called long after the lookup that produced it.
+- **A generated `@rust_crate` module keeps one immutable record, not several `Ref`s.** `_LIB_GEN::Ref{CrateGeneration}` holds handle + liveness flag + generation, replaced wholesale by `_update_handle_mirrors!` inside the `REGISTRY_LOCK` transaction; wrappers read it once per call and take no lock. Two cells written under one lock and read under another are not a snapshot. `__init__` registers the mirror **before** loading and never assigns it afterwards — an assignment after `load_artifact!` would overwrite a newer generation a concurrent reload had already published.
+
+A replaced image is **retired, not closed**, so a call already inside one stays valid; a cached pointer finds its own image's flag through `alive_ref_for_handle`, never through the name. `test/test_hot_reload_transaction.jl` asserts all of this adversarially: a reload loop against tasks that call, panic, allocate and drop — plus one that reads the crate-module record — checking that no call returns an unpublished generation, that no generation number is ever paired with two different results, that no panic is lost and that no finalizer fails.
 
 `load_artifact!` (`src/loadpolicy.jl`) is the one place a library is opened and registered. `dlopen` runs **outside** the lock — it executes arbitrary init code and is slow — and everything else (handle, function-pointer cache, symbol mappings, return-type hints, `CURRENT_LIB`, liveness flag) is installed in one locked block, so no task can observe a half-registered library. Two tasks racing on the same path both open it; the registration mode decides the winner and the loser's duplicate handle is closed.
 

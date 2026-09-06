@@ -314,8 +314,8 @@ unresolved.  Phase B must read the effective profile (`cargo metadata` /
 `cargo config get`) or force the strategy explicitly (#244).
 
 Loading and ownership are shared with `crate_wrapper_policy`.  The generated
-module still keeps the handle in its own `_LIB_HANDLE` `Ref` — that is how its
-wrappers reach it without a registry lookup per call — but the handle is
+module still keeps its own generation record — that is how its wrappers reach
+the handle without a registry lookup per call — but the handle is
 *published through `load_artifact!`* since #277 Phase B5, so it appears in
 `RUST_LIBRARIES` under `crate_library_name(info)` and `unload_library` can see
 it.  The module also captures the artifact's liveness flag, which is what makes
@@ -935,7 +935,13 @@ struct LoadedArtifact
     policy::LoadPolicy
     alive::Ref{Bool}
     assumed_unwind::Bool
+    # Which generation of `name` this is. Anything resolved against `handle`
+    # belongs to this generation and may be cached with it (#277).
+    generation::Int
 end
+
+LoadedArtifact(name, handle, path, policy, alive, assumed_unwind) =
+    LoadedArtifact(name, handle, path, policy, alive, assumed_unwind, 0)
 
 function Base.show(io::IO, a::LoadedArtifact)
     print(io, "LoadedArtifact(", a.name, " @ ", repr(a.handle),
@@ -993,21 +999,83 @@ function _new_alive!(name::String)
 end
 
 """
+    ARTIFACT_GENERATIONS
+
+`lib_name` → how many times an image has been installed under that name.
+
+The number a snapshot carries. It is what makes "these values came from one
+generation" checkable rather than merely intended: a `CallTarget`, an
+`ArtifactGeneration` and a crate module's `CrateGeneration` all record it, so a
+test — or a future assertion — can compare two snapshots instead of comparing
+raw pointers, and the reload stress test can watch for a call that straddled a
+swap.
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const ARTIFACT_GENERATIONS = Dict{String, Int}()
+
+# The generation being installed for `name`. Caller holds REGISTRY_LOCK.
+function _next_artifact_generation!(name::String)
+    generation = get(ARTIFACT_GENERATIONS, name, 0) + 1
+    ARTIFACT_GENERATIONS[name] = generation
+    return generation
+end
+
+"""
+    artifact_generation(lib_name) -> Int
+
+Which generation of `lib_name` is installed now; `0` if none ever was.
+"""
+artifact_generation(lib_name::AbstractString) =
+    lock(() -> get(ARTIFACT_GENERATIONS, String(lib_name), 0), REGISTRY_LOCK)
+
+"""
+    CrateGeneration
+
+What a generated `@rust_crate` module knows about the image it calls: the
+handle, the liveness flag of that image, and the generation number — as **one
+immutable value**.
+
+# Why one value and not three `Ref`s
+
+The module used to keep the handle and the flag in two separate `Ref`s,
+written by `_update_handle_mirrors!` under `REGISTRY_LOCK` and read by the
+module's wrappers under the module's own lock. Two unrelated locks over two
+cells is not a snapshot: a constructor could read the old handle, the writer
+could then run, and the constructor would pair that handle with the
+*replacement's* liveness flag. The object then believed itself live after the
+image it was allocated by had been closed, and its finalizer jumped through an
+unmapped destructor.
+
+One immutable record in one `Ref` removes the question. The record is not
+`isbits` (it holds the flag), so the `Ref` holds a pointer to it and publishing
+a new generation is a single pointer store; a reader's single deref therefore
+yields a handle and a flag that were always written together. Readers take no
+lock at all.
+"""
+struct CrateGeneration
+    handle::Ptr{Cvoid}
+    alive::Base.RefValue{Bool}
+    generation::Int
+end
+
+CrateGeneration() = CrateGeneration(C_NULL, Ref(false), 0)
+
+"""
     HANDLE_MIRRORS
 
 `lib_name` → the module-local copies of that library's handle and liveness flag
 that the loader keeps in sync.
 
 A generated `@rust_crate` module resolves its symbols through its own
-`_LIB_HANDLE[]` rather than through a registry lookup per call — that is the
+generation record rather than through a registry lookup per call — that is the
 whole point of the module-local `Ref`. But a raw copy of a handle goes **stale**
 the moment the library is replaced or unloaded: a hot reload closes the previous
 image, and `unload_library` drops it, after which a raw copy of the handle
 would be read against an image nothing points at any more. Registering the
-module's
-`Ref`s here lets the transaction that swaps the handle swap the mirror in the
-same critical section, so the fast path stays a `Ref` read and can never point
-at a closed image (#277 Phase B).
+module's `Ref` here lets the transaction that swaps the handle swap the mirror
+in the same critical section, so the fast path stays a `Ref` read and can never
+point at a closed image (#277 Phase B).
 
 The mirrors survive an unload rather than being dropped with it: a hot reload is
 "unload then load under the same name", and the module that registered them is
@@ -1015,43 +1083,46 @@ still there waiting for the new handle.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const HANDLE_MIRRORS = Dict{String, Vector{Tuple{Base.RefValue{Ptr{Cvoid}}, Base.RefValue{Base.RefValue{Bool}}}}}()
+const HANDLE_MIRRORS = Dict{String, Vector{Base.RefValue{CrateGeneration}}}()
 
 """
-    register_handle_mirror!(lib_name, handle_ref, alive_ref)
+    register_handle_mirror!(lib_name, gen_ref)
 
-Keep `handle_ref` and `alive_ref` in step with the library registered as
-`lib_name`, and set them to what is registered *now*.
+Keep `gen_ref` — a generated `@rust_crate` module's `_LIB_GEN` — in step with
+the library registered as `lib_name`, and set it to what is registered *now*.
 
-Called by a generated `@rust_crate` module's `__init__`. Idempotent: a module
-re-initialised in a new session registers the same `Ref`s again and they are
-not duplicated.
+Called by the module's `__init__`, **before** it loads the library, so that the
+`load_artifact!` transaction is what publishes the first generation: an
+assignment after the load would overwrite whatever a concurrent reload had
+already published.
+
+Idempotent: a module re-initialised in a new session registers the same `Ref`
+again and it is not duplicated.
 """
 function register_handle_mirror!(lib_name::AbstractString,
-                                 handle_ref::Base.RefValue{Ptr{Cvoid}},
-                                 alive_ref::Base.RefValue{Base.RefValue{Bool}})
+                                 gen_ref::Base.RefValue{CrateGeneration})
     name = String(lib_name)
     lock(REGISTRY_LOCK) do
-        mirrors = get!(() -> Tuple{Base.RefValue{Ptr{Cvoid}},
-                                   Base.RefValue{Base.RefValue{Bool}}}[],
-                       HANDLE_MIRRORS, name)
-        any(m -> m[1] === handle_ref, mirrors) || push!(mirrors, (handle_ref, alive_ref))
+        mirrors = get!(() -> Base.RefValue{CrateGeneration}[], HANDLE_MIRRORS, name)
+        any(m -> m === gen_ref, mirrors) || push!(mirrors, gen_ref)
         entry = get(RUST_LIBRARIES, name, nothing)
         if entry !== nothing
-            handle_ref[] = entry[1]
-            alive_ref[] = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
+            gen_ref[] = CrateGeneration(entry[1],
+                                        get!(() -> Ref(true), ARTIFACT_ALIVE, name),
+                                        get(ARTIFACT_GENERATIONS, name, 0))
         end
     end
     return nothing
 end
 
-# Point every mirror of `name` at a freshly registered handle. Caller holds
-# REGISTRY_LOCK.
+# Publish one generation to every mirror of `name`: one pointer store each, so
+# a reader's single deref can never pair one generation's handle with
+# another's flag. Caller holds REGISTRY_LOCK.
 function _update_handle_mirrors!(name::String, handle::Ptr{Cvoid},
-                                 alive::Base.RefValue{Bool})
-    for (handle_ref, alive_ref) in get(HANDLE_MIRRORS, name, ())
-        handle_ref[] = handle
-        alive_ref[] = alive
+                                 alive::Base.RefValue{Bool}, generation::Int)
+    published = CrateGeneration(handle, alive, generation)
+    for gen_ref in get(HANDLE_MIRRORS, name, ())
+        gen_ref[] = published
     end
     return nothing
 end
@@ -1060,10 +1131,9 @@ end
 # about to be closed. The *mirror* stays registered — a reload under the same
 # name fills it in again. Caller holds REGISTRY_LOCK.
 function _retire_handle_mirrors!(name::String)
-    dead = Ref(false)
-    for (handle_ref, alive_ref) in get(HANDLE_MIRRORS, name, ())
-        handle_ref[] = C_NULL
-        alive_ref[] = dead
+    retired = CrateGeneration(C_NULL, Ref(false), get(ARTIFACT_GENERATIONS, name, 0))
+    for gen_ref in get(HANDLE_MIRRORS, name, ())
+        gen_ref[] = retired
     end
     return nothing
 end
@@ -1082,6 +1152,47 @@ struct RetiredImage
     alive::Base.RefValue{Bool}
     names::Vector{String}
 end
+
+"""
+    alive_ref_for_handle(handle, lib_name) -> Base.RefValue{Bool}
+
+The liveness flag that belongs to **the image `handle` names**, not to whatever
+is registered under `lib_name` now. Caller holds `REGISTRY_LOCK`.
+
+This is what a cached pointer needs. `artifact_alive_ref(name)` answers "is the
+library called `name` loaded?", and for a pointer resolved a while ago that is
+the wrong question: if the library was replaced or unloaded in between, the
+name's flag belongs to a *different* image — or, worse, `artifact_alive_ref`
+invents a fresh `Ref(true)` for a name nothing is registered under, and an
+object holding it believes itself live forever while its destructor points into
+an image that has since been closed.
+
+So the flag is found by handle: the registered one when `handle` is still what
+`lib_name` resolves to, the retired image's own flag when it has been retired
+(that flag is flipped when the image is finally closed, which is exactly when
+the pointer stops being callable), and a permanently-false flag when the image
+is neither — in which case the object goes inert and leaks rather than calling
+into nothing.
+"""
+function alive_ref_for_handle(handle::Ptr{Cvoid}, lib_name::AbstractString)
+    name = String(lib_name)
+    entry = get(RUST_LIBRARIES, name, nothing)
+    if entry !== nothing && entry[1] == handle
+        return get!(() -> Ref(true), ARTIFACT_ALIVE, name)
+    end
+    retired = get(RETIRED_HANDLES, handle, nothing)
+    retired === nothing || return retired.alive
+    return DEAD_ARTIFACT
+end
+
+"""
+    DEAD_ARTIFACT
+
+A liveness flag that is `false` and stays `false`: the answer for a pointer
+whose image is neither registered nor retired. Shared, because it is immutable
+in practice — nothing ever flips it.
+"""
+const DEAD_ARTIFACT = Ref(false)
 
 """
     RETIRED_HANDLES
@@ -1476,14 +1587,16 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
     replaced = C_NULL
     artifact = lock(REGISTRY_LOCK) do
         if !registers_in_rust_libraries(policy)
-            return LoadedArtifact(name, handle, lib_path, policy, _new_alive!(name), assumed)
+            return LoadedArtifact(name, handle, lib_path, policy, _new_alive!(name),
+                                  assumed, 0)
         end
         if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
             @debug "load_artifact!: keeping the existing entry" lib_name = name policy = policy.name
             duplicate = handle
             existing, _ = RUST_LIBRARIES[name]
             alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
-            return LoadedArtifact(name, existing, lib_path, policy, alive, assumed)
+            return LoadedArtifact(name, existing, lib_path, policy, alive, assumed,
+                                  get(ARTIFACT_GENERATIONS, name, 0))
         end
         if haskey(RUST_LIBRARIES, name)
             replaced = RUST_LIBRARIES[name][1]
@@ -1515,16 +1628,24 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         # Module-local copies of the handle move in the same critical section,
         # so a generated `@rust_crate` module's fast path can never read a
         # handle that has been replaced out from under it.
-        _update_handle_mirrors!(name, handle, alive)
+        generation = _next_artifact_generation!(name)
+        _update_handle_mirrors!(name, handle, alive, generation)
         # After the swap, so `library_names_for_handle` sees the *new* mapping:
         # an old handle still live under an alias has not left the registry.
-        # `replaced == handle` when the same file is opened again (dlopen
-        # refcounts and hands back the same image), which is not a retirement.
         if replaced != C_NULL && replaced != handle
             _record_retired!(replaced, String[name], previous_alive, lib_path)
+        elseif replaced == handle
+            # The same file opened again: `dlopen` refcounts and hands back the
+            # image that is already registered. That is not a retirement — but
+            # it *is* a second owned open of one image behind a single registry
+            # entry, and only one close is ever owed for that entry. Balance it
+            # here exactly as the `:insert_only` loser is balanced, or the last
+            # loader reference would be unreclaimable and the image would stay
+            # mapped for the life of the process.
+            duplicate = handle
         end
         set_current && (CURRENT_LIB[] = name)
-        return LoadedArtifact(name, handle, lib_path, policy, alive, assumed)
+        return LoadedArtifact(name, handle, lib_path, policy, alive, assumed, generation)
     end
 
     # dlclose outside the lock: it runs destructors in the image. Only a
@@ -1670,7 +1791,8 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         alive = get!(() -> Ref(true), ARTIFACT_ALIVE, source)
         ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
-        _update_handle_mirrors!(target, entry[1], alive)
+        _update_handle_mirrors!(target, entry[1], alive,
+                                get(ARTIFACT_GENERATIONS, target, 0))
         return true
     end
 end
