@@ -98,6 +98,8 @@ Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 
+**The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
+
 `load_artifact!` (`src/loadpolicy.jl`) is the one place a library is opened and registered. `dlopen` runs **outside** the lock — it executes arbitrary init code and is slow — and everything else (handle, function-pointer cache, symbol mappings, return-type hints, `CURRENT_LIB`, liveness flag) is installed in one locked block, so no task can observe a half-registered library. Two tasks racing on the same path both open it; the registration mode decides the winner and the loser's duplicate handle is closed.
 
 ## Testing
@@ -110,9 +112,14 @@ Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl
 
 ## CI
 
-Two jobs in `.github/workflows/CI.yml`:
-- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/juliacall_macros` (stable + beta, Linux/macOS/Windows)
-- **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64)
+`.github/workflows/CI.yml`:
+- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/rustcall_core`, `deps/rustcall_extract`, `deps/juliacall_macros` (stable + beta, Linux/macOS/Windows)
+- **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64) with `JULIA_NUM_THREADS=1`, plus **one Ubuntu job with `JULIA_NUM_THREADS=4`**
+- **Code Lint**: every `scripts/lint_*.sh`
+
+**Why the 4-thread job exists.** Three guarantees are only *exercised* with more than one thread, and their testsets skip themselves when `Threads.nthreads() < 2`, so without this job they would never run anywhere: (1) the panic channel is a thread-local — the rule that the wrapper `ccall` and the channel-read `ccall` happen on one thread with no yield point between them (#244) is invisible single-threaded; (2) `load_artifact!` racing two tasks on the same path (#277); (3) finalizers running on a thread other than the allocating one (#249). Keep the skip guards and this job together: a new thread-sensitive test must skip below 2 threads *and* be covered by the 4-thread job.
+
+**Job names are load-bearing.** The repository ruleset for `main` lists `Julia 1 - ubuntu-latest - x64`, `Julia 1 - windows-latest - x64` and `Julia 1 - macos-latest - aarch64` as required status checks. The single-threaded jobs must keep exactly those names (the matrix `suffix` is empty for them); renaming them leaves the required checks unreported and blocks every merge. Add new variants with a suffix (` - 4 threads`) instead of renaming.
 
 ## Known Pitfalls
 
