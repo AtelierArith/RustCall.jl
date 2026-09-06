@@ -1499,6 +1499,31 @@ function library_names_for_handle(handle::Ptr{Cvoid})
 end
 
 """
+    registered_alive_for_handle(handle) -> Union{Base.RefValue{Bool}, Nothing}
+
+The liveness flag already registered for the image `handle` names, under **any**
+of its names, or `nothing` when it has none. Caller holds `REGISTRY_LOCK`.
+
+The invariant this serves is *one image, one flag* (#291 item 4). A path can be
+loaded under a second name while the first is still live — `dlopen` refcounts
+and answers with the same handle — and minting a fresh flag for that second
+registration would leave two flags describing one lifetime. `unload_artifact!`
+retires the image with **one** of them; the other is dropped from
+`ARTIFACT_ALIVE` and never flipped, so every object that captured it believes
+itself live after `close = true` has unmapped the code its destructor calls
+into. That is a use-after-free reachable without any hot reload: two
+`load_artifact!` calls on one path under two names.
+"""
+function registered_alive_for_handle(handle::Ptr{Cvoid})
+    handle == C_NULL && return nothing
+    for name in library_names_for_handle(handle)
+        ref = get(ARTIFACT_ALIVE, name, nothing)
+        ref === nothing || return ref
+    end
+    return nothing
+end
+
+"""
     load_artifact!(policy::LoadPolicy, path;
                    lib_name, symbols = (), return_types = (), eager = (),
                    snapshot_env = nothing,
@@ -1644,12 +1669,19 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         # closed under a different one. The retired record's flag *is* this
         # image's flag, so it is adopted and the record retired no more.
         retired = get(RETIRED_HANDLES, handle, nothing)
+        # ...and it includes the same path opened under a *second name* while
+        # the first is still live. `dlopen` refcounts and returns the same
+        # image, so this is one lifetime with two registry rows; a fresh flag
+        # here would be a second flag for one image, and `unload_artifact!`
+        # retires with only one of them — the other is dropped and never
+        # flipped, leaving objects that captured it live forever over unmapped
+        # code (#291 item 4).
         alive = if previous_alive !== nothing && replaced == handle
             previous_alive
         elseif retired !== nothing
             retired.alive
         else
-            Ref(true)
+            something(registered_alive_for_handle(handle), Ref(true))
         end
         ARTIFACT_ALIVE[name] = alive
         RUST_LIBRARIES[name] = (handle, cache)
@@ -1821,8 +1853,20 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         entry = get(RUST_LIBRARIES, source, nothing)
         entry === nothing && return false
         copy_library_metadata!(source, target)
-        _retire_alive!(target)
         alive = get!(() -> Ref(true), ARTIFACT_ALIVE, source)
+        # Aliasing a name that *already* aliases this same image must not
+        # retire it (#291 item 4). `_retire_alive!(target)` exists to kill the
+        # flag of whatever different image `target` used to name — but when
+        # `target` already shares this image's flag, that flag is this image's,
+        # and flipping it declares a live library dead: every object holding it
+        # goes inert, its destructor never runs, and a later `alive[] = false`
+        # check turns working calls into errors. `_alias_reloaded_library` runs
+        # on every `_resolve_lib`, so the second call through one module hit
+        # exactly this.
+        existing = get(RUST_LIBRARIES, target, nothing)
+        already = existing !== nothing && existing[1] == entry[1] &&
+                  get(ARTIFACT_ALIVE, target, nothing) === alive
+        already || _retire_alive!(target)
         ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
         _update_handle_mirrors!(target, entry[1], alive,
