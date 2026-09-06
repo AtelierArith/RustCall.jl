@@ -51,12 +51,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and never call anything. Rebuild with `Pkg.build("RustCall")`.
 
 ### Fixed
+- **`test_cargo.jl`'s Cargo-cache assertions no longer race the parallel runner**
+  ([#306](https://github.com/AtelierArith/RustCall.jl/issues/306)). The Cargo
+  cache is a depot-level directory shared by every worker, and two testsets
+  asserted on its whole contents — its size after a clear, and the number of
+  libraries in it after one evaluation — so any other worker compiling a Cargo
+  block in the meantime failed them. Both now run under a cache root of their
+  own (`RUSTCALL_CACHE_DIR`), and the "exactly one key" assertion is also made
+  key-specifically, which is what it actually means.
+
 - **`extension-module` is no longer called unlinkable on Windows**
   ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)). A DLL
   resolves every import at link time, so pyo3 links the interpreter's import
   library there regardless of the feature and the wrapper loads like any other
   `:link_libpython` build; only Unix leaves the symbols undefined.
-  `RustCall.extension_module_is_linkable()` is the predicate, and
+  `RustCall.extension_module_is_linkable()` is the predicate — applied on the
+  resolved path and on the conservative `Cargo.toml` fallback alike, so the two
+  cannot disagree about one crate — and
   `pyo3_link_rustflags` no longer emits `-Wl,-rpath` — which `link.exe` rejects
   — on Windows, where the interpreter's DLL directory belongs on `PATH`
   instead.

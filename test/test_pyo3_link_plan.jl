@@ -62,19 +62,32 @@ _manifest(text::AbstractString) = TOML.parse(text)
                      pyo3 = { version = "0.29", features = ["extension-module"] }
                      """)
             plan = RustCall._pyo3_conservative_plan(_manifest(text))
-            @test plan.mode === :unlinkable
-            @test occursin("extension-module", plan.reason)
             @test occursin("conservative", plan.reason)
-            @test_throws RustCall.RustError RustCall.pyo3_link_rustflags(plan)
+            if Sys.iswindows()
+                # A DLL resolves every import at link time, so pyo3 links the
+                # interpreter's import library there whether or not the feature
+                # is on, and the wrapper is an ordinary `:link_libpython` build
+                # (#294 review). Only Unix leaves the symbols undefined.
+                @test plan.mode === :link_libpython
+                @test occursin("On Windows pyo3 still links", plan.reason)
+            else
+                @test plan.mode === :unlinkable
+                @test occursin("extension-module", plan.reason)
+                @test_throws RustCall.RustError RustCall.pyo3_link_rustflags(plan)
+            end
         end
-        @test occursin("[dependencies.python]",
-                       RustCall._pyo3_conservative_plan(_manifest("""
-                       [package]
-                       name = "ext_renamed"
-                       version = "0.1.0"
-                       [dependencies]
-                       python = { package = "pyo3", version = "0.29", features = ["extension-module"] }
-                       """)).reason)
+        # The advice names the key the crate actually uses -- only on the Unix
+        # path, which is the one that has to explain why it refused.
+        if !Sys.iswindows()
+            @test occursin("[dependencies.python]",
+                           RustCall._pyo3_conservative_plan(_manifest("""
+                           [package]
+                           name = "ext_renamed"
+                           version = "0.1.0"
+                           [dependencies]
+                           python = { package = "pyo3", version = "0.29", features = ["extension-module"] }
+                           """)).reason)
+        end
     end
 
     @testset "conservative fallback: any other pyo3 links libpython" begin
@@ -125,7 +138,14 @@ _manifest(text::AbstractString) = TOML.parse(text)
                 @test located.rpath == libdir
                 flags = RustCall.pyo3_link_rustflags(located)
                 @test "native=$(libdir)" in flags
-                @test any(f -> occursin("rpath,$(libdir)", f), flags)
+                if Sys.iswindows()
+                    # Windows has no rpath: the loader finds a DLL through the
+                    # executable's directory and PATH, and `link.exe` rejects
+                    # `-Wl,-rpath` outright (#294 review).
+                    @test flags == ["-L", "native=$(libdir)"]
+                else
+                    @test any(f -> occursin("rpath,$(libdir)", f), flags)
+                end
             end
             withenv("RUSTCALL_PYTHON_LIBDIR" => joinpath(libdir, "nope")) do
                 missing_plan = RustCall._pyo3_conservative_plan(_manifest("""
@@ -221,11 +241,18 @@ _manifest(text::AbstractString) = TOML.parse(text)
 
             with_python = RustCall.pyo3_link_plan(optional_crate; features = ["python"])
             @test with_python.resolved
-            @test with_python.mode === :unlinkable
             @test "extension-module" in with_python.pyo3_features
-            @test occursin("extension-module", with_python.reason)
-            @test occursin("pyo3_feature_candidates", with_python.reason)
             @test with_python.feature_flags == ["--features", "python"]
+            if Sys.iswindows()
+                # See the conservative-fallback testset: `extension-module` is
+                # not a blocker on Windows.
+                @test with_python.mode === :link_libpython
+                @test occursin("On Windows pyo3 still links", with_python.reason)
+            else
+                @test with_python.mode === :unlinkable
+                @test occursin("extension-module", with_python.reason)
+                @test occursin("pyo3_feature_candidates", with_python.reason)
+            end
         end
 
         @testset "resolved: which features activate pyo3" begin

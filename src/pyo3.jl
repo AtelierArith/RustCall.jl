@@ -519,16 +519,26 @@ function _pyo3_conservative_plan(cargo_toml::AbstractDict)
     end
     for dep in found
         feats = String[String(f) for f in get(dep.spec, "features", String[])]
-        if "extension-module" in feats
+        if "extension-module" in feats && !extension_module_is_linkable()
             return PyO3LinkPlan(:unlinkable, String[], "",
                                 "[dependencies.$(dep.key)] lists the `extension-module` feature, " *
                                 "and a wrapper cdylib that resolves pyo3 with it cannot be loaded" *
                                 note)
         end
     end
+    # Same rule as the resolved path: on Windows a DLL resolves every import at
+    # link time, so pyo3 links the interpreter's import library whether or not
+    # `extension-module` is on, and the build is linkable. The two paths must
+    # not disagree about one crate.
+    extension = any(dep -> "extension-module" in
+                        String[String(f) for f in get(dep.spec, "features", String[])], found)
     return PyO3LinkPlan(:link_libpython, String[], _python_library_dir_or_empty(),
                         "the crate declares a pyo3 dependency, so the wrapper cdylib may link " *
-                        "libpython" * note)
+                        "libpython" *
+                        (extension ?
+                         ". On Windows pyo3 still links the interpreter's import library with " *
+                         "`extension-module`, so this build is linkable where a Unix one would " *
+                         "not be" : "") * note)
 end
 
 # One pyo3 dependency declaration: the (possibly renamed) key it is declared
