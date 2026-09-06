@@ -198,10 +198,14 @@ Decide, from the crate's `Cargo.toml` alone, whether a wrapper crate built
 against it can be linked and loaded, and under which flags. Nothing is built
 and no Python is started; see `PyO3LinkPlan` for the three modes.
 
-The `[dependencies.pyo3]` entry (`optional`, `features`, `default-features`)
-and the `[features]` table decide the answer: a feature that is reachable from
-`default` is on unless the build passes `--no-default-features`, which is what
-the returned `feature_flags` say.
+The pyo3 dependency entry (`optional`, `features`) and the `[features]` table
+decide the answer, together with the dependency's *key*: Cargo lets a
+dependency be renamed (`python = { package = "pyo3" }`), and then its features
+are spelled `python/extension-module`.
+
+A crate may declare pyo3 more than once, once per `[target.'cfg(...)']` table.
+Which of those Cargo builds depends on the target triple, so the plan takes the
+strictest reading across them all rather than guessing a selector.
 """
 function pyo3_link_plan(crate_path::AbstractString)
     manifest_path = joinpath(String(crate_path), "Cargo.toml")
@@ -211,18 +215,45 @@ function pyo3_link_plan(crate_path::AbstractString)
     return _pyo3_link_plan(cargo)
 end
 
+# One pyo3 dependency declaration: the (possibly renamed) key it is declared
+# under, its table, and the `[target.'...']` selector it sits behind ("" for a
+# plain `[dependencies]` entry).
+struct _PyO3Dependency
+    key::String
+    spec::Dict{String, Any}
+    target::String
+end
+
 function _pyo3_link_plan(cargo::AbstractDict)
-    spec = _pyo3_dependency_spec(cargo)
-    if spec === nothing
+    found = _pyo3_dependencies(cargo)
+    if isempty(found)
         return PyO3LinkPlan(:python_free, String[], "",
                             "the crate does not depend on pyo3; the wrapper needs no Python")
     end
 
+    default_on = _pyo3_default_features(cargo)
+    # Unlinkable beats mandatory beats optional: which `[target.'cfg(...)']`
+    # table applies depends on the target triple, and deciding a `cfg(...)`
+    # selector here would be guessing. Erring the other way would hand Phase 2
+    # a build that cannot be loaded.
+    severity = Dict(:unlinkable => 3, :link_libpython => 2, :python_free => 1)
+    plans = PyO3LinkPlan[_pyo3_link_plan_for(cargo, dep, default_on) for dep in found]
+    plan = plans[argmax([severity[p.mode] for p in plans])]
+
+    targets = sort(unique(String[d.target for d in found if !isempty(d.target)]))
+    isempty(targets) && return plan
+    note = "; pyo3 is declared per target ($(join(targets, ", "))), so the strictest reading " *
+           "is used — which table applies depends on the wrapper's target triple"
+    return PyO3LinkPlan(plan.mode, plan.feature_flags, plan.rpath, plan.reason * note,
+                        plan.dependency_default_features)
+end
+
+function _pyo3_link_plan_for(cargo::AbstractDict, dep::_PyO3Dependency, default_on::Set{String})
+    spec = dep.spec
     dep_features = String[String(f) for f in get(spec, "features", String[])]
     optional = get(spec, "optional", false) === true
-    default_on = _pyo3_default_features(cargo)
     ext_in_dep = "extension-module" in dep_features
-    ext_feature = _feature_enabling(cargo, "pyo3/extension-module")
+    ext_feature = _feature_enabling(cargo, "$(dep.key)/extension-module")
 
     if optional
         # Turning the feature off removes pyo3 entirely: the wrapper links
@@ -231,7 +262,7 @@ function _pyo3_link_plan(cargo::AbstractDict)
         # entry* that must carry `default-features = false`; the
         # `--no-default-features` build flag applies to the wrapper package and
         # would leave the target crate's defaults — and so pyo3 — enabled.
-        enabled_by_default = _pyo3_enabled_by_default(cargo, default_on)
+        enabled_by_default = _pyo3_enabled_by_default(cargo, dep.key, default_on)
         note = enabled_by_default ?
             "; it is on by default, so the wrapper's dependency entry sets default-features = false" : ""
         return PyO3LinkPlan(:python_free, String[], "",
@@ -249,16 +280,19 @@ function _pyo3_link_plan(cargo::AbstractDict)
         # tolerates undefined symbols) but dlopen fails the same way under both
         # flags (`undefined symbol: _Py_Dealloc`). Unusable either way.
         return PyO3LinkPlan(:unlinkable, String[], "",
-                            "[dependencies.pyo3] enables the `extension-module` feature unconditionally, " *
+                            "[dependencies.$(dep.key)] enables the `extension-module` feature unconditionally, " *
                             "which leaves libpython's symbols to be resolved by the Python interpreter " *
                             "that loads the module. A wrapper cdylib is not loaded that way: on macOS it " *
                             "does not even link, and on Linux it links but fails to dlopen under both " *
                             "RTLD_NOW and RTLD_LAZY (undefined symbol: _Py_Dealloc). Make the feature " *
-                            "optional (`[features] extension-module = [\"pyo3/extension-module\"]`) so the " *
+                            "optional (`[features] extension-module = [\"$(dep.key)/extension-module\"]`) so the " *
                             "wrapper build can leave it off.")
     end
 
-    if ext_feature !== nothing && ext_feature in default_on
+    # `default = ["pyo3/extension-module"]` activates it straight from
+    # `default`, which is not one of the crate's own features and so never
+    # appears in `default_on`.
+    if ext_feature !== nothing && (ext_feature == "default" || ext_feature in default_on)
         return PyO3LinkPlan(:link_libpython, String[], _python_library_dir_or_empty(),
                             "pyo3 is a mandatory dependency and the default feature `$(ext_feature)` " *
                             "enables `extension-module`; the wrapper's dependency entry must set " *
@@ -277,30 +311,48 @@ function _pyo3_link_plan(cargo::AbstractDict)
 end
 
 """
-    _pyo3_dependency_spec(cargo) -> Union{AbstractDict, Nothing}
+    _pyo3_dependencies(cargo) -> Vector{_PyO3Dependency}
 
-The `pyo3` entry of the crate's `[dependencies]` (or of any
-`[target.'cfg(...)'.dependencies]`), normalized to a table: the shorthand
-`pyo3 = "0.29"` becomes `Dict("version" => "0.29")`. `nothing` when the crate
-does not depend on pyo3 at all.
+Every declaration of pyo3 in the crate's manifest: the plain `[dependencies]`
+entry and each `[target.'cfg(...)'.dependencies]` one.
+
+A dependency may be **renamed** — `python = { package = "pyo3", version = "0.29" }`
+— and the crate then builds and links pyo3 under that alias, with its features
+spelled `python/extension-module`. Looking only for the literal key `pyo3` would
+report such a crate as `:python_free`, so the key each declaration uses is
+carried along.
+
+The shorthand `pyo3 = "0.29"` is normalized to `Dict("version" => "0.29")`.
 """
-function _pyo3_dependency_spec(cargo::AbstractDict)
-    tables = Any[get(cargo, "dependencies", Dict{String, Any}())]
+function _pyo3_dependencies(cargo::AbstractDict)
+    out = _PyO3Dependency[]
+    _collect_pyo3_dependencies!(out, get(cargo, "dependencies", nothing), "")
     targets = get(cargo, "target", Dict{String, Any}())
     if targets isa AbstractDict
-        for (_, cfg) in targets
+        for selector in sort(collect(keys(targets)))
+            cfg = targets[selector]
             cfg isa AbstractDict || continue
-            push!(tables, get(cfg, "dependencies", Dict{String, Any}()))
+            _collect_pyo3_dependencies!(out, get(cfg, "dependencies", nothing), String(selector))
         end
     end
-    for table in tables
-        table isa AbstractDict || continue
-        spec = get(table, "pyo3", nothing)
-        spec === nothing && continue
-        spec isa AbstractDict && return spec
-        return Dict{String, Any}("version" => String(spec))
+    return out
+end
+
+function _collect_pyo3_dependencies!(out::Vector{_PyO3Dependency}, table, target::String)
+    table isa AbstractDict || return out
+    for key in sort(collect(keys(table)))
+        name = String(key)
+        spec = table[key]
+        if spec isa AbstractDict
+            # `package = "pyo3"` renames the dependency; without it the key is
+            # the crate name.
+            String(get(spec, "package", name)) == "pyo3" || continue
+            push!(out, _PyO3Dependency(name, Dict{String, Any}(spec), target))
+        elseif name == "pyo3"
+            push!(out, _PyO3Dependency(name, Dict{String, Any}("version" => String(spec)), target))
+        end
     end
-    return nothing
+    return out
 end
 
 """
@@ -328,21 +380,23 @@ function _pyo3_default_features(cargo::AbstractDict)
 end
 
 """
-    _pyo3_enabled_by_default(cargo, default_on) -> Bool
+    _pyo3_enabled_by_default(cargo, key, default_on) -> Bool
 
-Whether an *optional* pyo3 dependency is activated by the crate's default
-features: either a default feature lists `dep:pyo3` / `pyo3/...`, or `pyo3`
-itself is a default feature (the implicit feature Cargo creates for an optional
-dependency).
+Whether an *optional* pyo3 dependency declared under `key` is activated by the
+crate's default features: either a default feature lists `dep:<key>` /
+`<key>/...`, or `<key>` itself is a default feature (the implicit feature Cargo
+creates for an optional dependency).
 """
-function _pyo3_enabled_by_default(cargo::AbstractDict, default_on::Set{String})
-    "pyo3" in default_on && return true
+function _pyo3_enabled_by_default(cargo::AbstractDict, key::AbstractString,
+                                  default_on::Set{String})
+    k = String(key)
+    k in default_on && return true
     features = get(cargo, "features", Dict{String, Any}())
     features isa AbstractDict || return false
     for name in union(default_on, Set(["default"]))
         for entry in get(features, name, String[])
             e = String(entry)
-            (e == "dep:pyo3" || e == "pyo3" || startswith(e, "pyo3/")) && return true
+            (e == "dep:$(k)" || e == k || startswith(e, "$(k)/")) && return true
         end
     end
     return false
@@ -352,7 +406,9 @@ end
     _feature_enabling(cargo, activation) -> Union{String, Nothing}
 
 The name of a crate feature whose list contains `activation` (for example
-`"pyo3/extension-module"`), or `nothing`.
+`"pyo3/extension-module"`), or `nothing`. `"default"` is searched like any
+other feature: `default = ["pyo3/extension-module"]` activates it directly,
+without going through a feature of the crate's own.
 """
 function _feature_enabling(cargo::AbstractDict, activation::AbstractString)
     features = get(cargo, "features", Dict{String, Any}())

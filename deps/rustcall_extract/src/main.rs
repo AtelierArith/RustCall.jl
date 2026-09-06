@@ -228,6 +228,7 @@ fn scan_pyo3_tree(
     let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut queue = vec![(root.to_path_buf(), root_dir, Vec::<String>::new(), true)];
     let mut visited: Vec<PathBuf> = Vec::new();
+    let mut scan = rustcall_core::pyo3::Pyo3Scan::new();
 
     while let Some((file, dir, module_path, reachable)) = queue.pop() {
         let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
@@ -237,19 +238,24 @@ fn scan_pyo3_tree(
         visited.push(canonical);
 
         let src = read_source(&file)?;
-        let (fragment, pending) =
-            match rustcall_core::extract::extract_pyo3_file(&src, cfg, &module_path, reachable) {
-                Ok(v) => v,
-                Err(e) if skip_unparsable => {
-                    eprintln!(
-                        "rustcall-extract: skipping {}: not a complete Rust module ({e})",
-                        file.display()
-                    );
-                    continue;
-                }
-                Err(e) => return Err(format!("{}: {e}", file.display())),
-            };
-        manifest.merge(fragment);
+        let pending = match rustcall_core::extract::extract_pyo3_file(
+            &src,
+            cfg,
+            &module_path,
+            reachable,
+            &mut scan,
+            manifest,
+        ) {
+            Ok(v) => v,
+            Err(e) if skip_unparsable => {
+                eprintln!(
+                    "rustcall-extract: skipping {}: not a complete Rust module ({e})",
+                    file.display()
+                );
+                continue;
+            }
+            Err(e) => return Err(format!("{}: {e}", file.display())),
+        };
 
         for m in pending {
             let Some((child_file, child_dir)) = resolve_module_file(&dir, &m) else {
@@ -258,30 +264,43 @@ fn scan_pyo3_tree(
             queue.push((child_file, child_dir, m.module_path.clone(), m.reachable));
         }
     }
+    // `#[pyclass]` structs and their `#[pymethods]` blocks may live in
+    // different files, so the classes are only emitted once every file of the
+    // tree has been seen.
+    scan.finish(manifest);
     Ok(())
 }
 
 /// Where a `mod name;` declaration's file lives, and the directory its own
 /// child modules would live in. `None` when no candidate exists.
+///
+/// `dir` is the declaring *file's* module directory; an inline module the
+/// declaration sits in contributes a further directory component, because
+/// rustc resolves `mod outer { pub mod child; }` in `src/lib.rs` to
+/// `src/outer/child.rs`.
 fn resolve_module_file(
     dir: &Path,
     m: &rustcall_core::pyo3::PendingModule,
 ) -> Option<(PathBuf, PathBuf)> {
+    let mut base = dir.to_path_buf();
+    for component in &m.dir_components {
+        base.push(component);
+    }
     if let Some(explicit) = &m.path_attr {
-        let file = dir.join(explicit);
+        let file = base.join(explicit);
         if file.is_file() {
-            let child_dir = file.parent().unwrap_or(dir).to_path_buf();
+            let child_dir = file.parent().unwrap_or(&base).to_path_buf();
             return Some((file, child_dir));
         }
         return None;
     }
-    let flat = dir.join(format!("{}.rs", m.name));
+    let flat = base.join(format!("{}.rs", m.name));
     if flat.is_file() {
-        return Some((flat, dir.join(&m.name)));
+        return Some((flat, base.join(&m.name)));
     }
-    let nested = dir.join(&m.name).join("mod.rs");
+    let nested = base.join(&m.name).join("mod.rs");
     if nested.is_file() {
-        return Some((nested, dir.join(&m.name)));
+        return Some((nested, base.join(&m.name)));
     }
     None
 }

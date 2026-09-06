@@ -234,20 +234,24 @@ pub fn extract_crate_with_cfg_scan(
 /// root) and `reachable` says whether every `mod` on the way to it is `pub`.
 /// The caller resolves each returned [`crate::pyo3::PendingModule`] to a file
 /// and calls this again; only it can touch the filesystem.
+///
+/// `scan` carries the crate-wide state: `#[pyclass]` structs and their
+/// `#[pymethods]` blocks may live in different files, so the structs are only
+/// written to a manifest by [`crate::pyo3::Pyo3Scan::finish`], once every file
+/// has been seen.
 pub fn extract_pyo3_file(
     source: &str,
     cfg: Option<&CfgSet>,
     module_path: &[String],
     reachable: bool,
-) -> Result<(Manifest, Vec<crate::pyo3::PendingModule>), syn::Error> {
+    scan: &mut crate::pyo3::Pyo3Scan,
+    manifest: &mut Manifest,
+) -> Result<Vec<crate::pyo3::PendingModule>, syn::Error> {
     let mut file = syn::parse_file(source)?;
     if let Some(set) = cfg {
         crate::cfg::prune_file_or_error(set, &mut file)?;
     }
-    let mut manifest = Manifest::new(Mode::Crate);
-    let pending =
-        crate::pyo3::extract_pyo3_items_at(&file.items, module_path, reachable, &mut manifest);
-    Ok((manifest, pending))
+    Ok(scan.file(&file.items, module_path, reachable, manifest))
 }
 
 /// One level of items; inline modules are visited recursively.

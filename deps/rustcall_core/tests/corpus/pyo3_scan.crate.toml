@@ -530,7 +530,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 224
+line = 257
 module_path = []
 
 [[functions.args]]
@@ -828,6 +828,77 @@ rust_type = "i32"
 abi = ""
 
 [[structs]]
+name = "Circle"
+attribute = "py_class"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 234
+module_path = ["shapes"]
+
+[[structs.fields]]
+name = "r"
+rust_type = "f64"
+abi = ""
+ffi_compatible = true
+getter = "rustcall_Circle_get_r"
+setter = ""
+python_name = ""
+vis = "pub"
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_Circle_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+returns_boxed_struct = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "r"
+rust_type = "f64"
+abi = ""
+
+[[structs.methods]]
+name = "area"
+symbol = "rustcall_Circle_area"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+returns_boxed_struct = false
+args = []
+return_type = "f64"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs]]
 name = "GatedPoint"
 attribute = "py_class"
 vis = "pub"
@@ -841,7 +912,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
-line = 232
+line = 265
 module_path = []
 
 [[structs.fields]]

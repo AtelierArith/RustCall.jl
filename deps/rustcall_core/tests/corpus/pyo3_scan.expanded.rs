@@ -223,6 +223,29 @@ mod private_mod {
     }
 }
 pub mod out_of_line;
+pub mod outer {
+    pub mod child;
+}
+pub mod shapes {
+    use pyo3::prelude::*;
+    #[pyclass]
+    pub struct Circle {
+        #[pyo3(get)]
+        pub r: f64,
+    }
+}
+/// Legal Rust: an inherent impl may live in any module that has the type in
+/// scope. The scan matches it to the class crate-wide, not per module.
+#[pymethods]
+impl shapes::Circle {
+    #[new]
+    pub fn new(r: f64) -> Self {
+        shapes::Circle { r }
+    }
+    pub fn area(&self) -> f64 {
+        std::f64::consts::PI * self.r * self.r
+    }
+}
 /// The `:python_free` shape: the marker is behind a feature gate. The crate
 /// scan evaluates `#[cfg]` leniently, so the `cfg_attr` is still there when the
 /// scan looks and the marker has to be read through it.

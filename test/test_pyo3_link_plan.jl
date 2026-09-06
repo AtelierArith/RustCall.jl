@@ -193,6 +193,123 @@ end
         end
     end
 
+    @testset "default = [\"pyo3/extension-module\"] activates it directly" begin
+        # `default` is not one of the crate's own features, so a feature set
+        # built by walking `default`'s entries never contains it: the
+        # activation has to be recognised on `default` itself.
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "direct_default_ext"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = "0.29"
+
+            [features]
+            default = ["pyo3/extension-module"]
+            """)
+            plan = RustCall.pyo3_link_plan(dir)
+            @test plan.mode === :link_libpython
+            @test plan.dependency_default_features == false
+            @test occursin("default-features = false",
+                           RustCall.pyo3_dependency_toml(plan, "direct_default_ext", dir))
+        end
+    end
+
+    @testset "a renamed pyo3 dependency is still pyo3" begin
+        # `python = { package = "pyo3" }`: the crate builds and links pyo3
+        # under the alias, and its features are spelled `python/...`.
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "renamed"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            python = { package = "pyo3", version = "0.29" }
+            """)
+            @test RustCall.pyo3_link_plan(dir).mode === :link_libpython
+        end
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "renamed_ext"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            python = { package = "pyo3", version = "0.29", features = ["extension-module"] }
+            """)
+            plan = RustCall.pyo3_link_plan(dir)
+            @test plan.mode === :unlinkable
+            # The advice names the key the crate actually uses.
+            @test occursin("[dependencies.python]", plan.reason)
+            @test occursin("python/extension-module", plan.reason)
+        end
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "renamed_optional"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            python = { package = "pyo3", version = "0.29", optional = true }
+
+            [features]
+            default = ["py"]
+            py = ["dep:python"]
+            """)
+            plan = RustCall.pyo3_link_plan(dir)
+            @test plan.mode === :python_free
+            @test plan.dependency_default_features == false
+        end
+    end
+
+    @testset "target-specific declarations take the strictest reading" begin
+        # Which `[target.'cfg(...)']` table Cargo uses depends on the triple,
+        # and guessing one would hand Phase 2 a plan for a crate it is not
+        # building. The plan fails closed instead and says so.
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "per_target"
+            version = "0.1.0"
+            edition = "2021"
+
+            [target.'cfg(unix)'.dependencies]
+            pyo3 = { version = "0.29", optional = true }
+
+            [target.'cfg(windows)'.dependencies]
+            pyo3 = { version = "0.29", features = ["extension-module"] }
+            """)
+            plan = RustCall.pyo3_link_plan(dir)
+            @test plan.mode === :unlinkable
+            @test occursin("declared per target", plan.reason)
+            @test occursin("cfg(windows)", plan.reason)
+        end
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "per_target_mandatory"
+            version = "0.1.0"
+            edition = "2021"
+
+            [target.'cfg(unix)'.dependencies]
+            pyo3 = { version = "0.29", optional = true }
+
+            [target.'cfg(windows)'.dependencies]
+            pyo3 = "0.29"
+            """)
+            plan = RustCall.pyo3_link_plan(dir)
+            @test plan.mode === :link_libpython
+            @test occursin("declared per target", plan.reason)
+        end
+    end
+
     @testset "the example crate is the mandatory-pyo3 case" begin
         crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
         @test isdir(crate)

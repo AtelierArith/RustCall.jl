@@ -219,6 +219,39 @@ mod private_mod {
 // only records the declaration. `rustcall-extract --crate-root` follows it.
 pub mod out_of_line;
 
+// An out-of-line module declared *inside* an inline one. rustc resolves it at
+// `src/outer/child.rs`, not `src/child.rs`, so the declaration carries the
+// inline module as a directory component.
+pub mod outer {
+    pub mod child;
+}
+
+// --- a #[pyclass] and its #[pymethods] in different modules ----------------
+
+pub mod shapes {
+    use pyo3::prelude::*;
+
+    #[pyclass]
+    pub struct Circle {
+        #[pyo3(get)]
+        pub r: f64,
+    }
+}
+
+/// Legal Rust: an inherent impl may live in any module that has the type in
+/// scope. The scan matches it to the class crate-wide, not per module.
+#[pymethods]
+impl shapes::Circle {
+    #[new]
+    pub fn new(r: f64) -> Self {
+        shapes::Circle { r }
+    }
+
+    pub fn area(&self) -> f64 {
+        std::f64::consts::PI * self.r * self.r
+    }
+}
+
 // --- optional pyo3, written with cfg_attr ----------------------------------
 
 /// The `:python_free` shape: the marker is behind a feature gate. The crate

@@ -147,6 +147,66 @@ using TOML
         end
     end
 
+    @testset "PyO3 scan: inline parents and cross-file #[pymethods] (#275)" begin
+        # Two shapes a per-file scan gets wrong: `mod outer { pub mod child; }`
+        # resolves at `src/outer/child.rs`, not `src/child.rs`; and a
+        # `#[pymethods] impl C` may live in a different file from the
+        # `#[pyclass] struct C` it belongs to.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "outer"))
+            write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "tree_crate2"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            pub mod outer {
+                pub mod child;
+            }
+            pub mod shapes;
+            pub mod impls;
+            """)
+            write(joinpath(dir, "src", "outer", "child.rs"), """
+            #[pyfunction]
+            pub fn nested_fn() -> i32 { 0 }
+            """)
+            write(joinpath(dir, "src", "shapes.rs"), """
+            #[pyclass]
+            pub struct Circle {
+                #[pyo3(get)]
+                pub r: f64,
+            }
+            """)
+            write(joinpath(dir, "src", "impls.rs"), """
+            use crate::shapes::Circle;
+            #[pymethods]
+            impl Circle {
+                #[new]
+                pub fn new(r: f64) -> Self { Circle { r } }
+                pub fn area(&self) -> f64 { self.r * self.r }
+            }
+            """)
+
+            info = RustCall.scan_crate(dir)
+
+            # The out-of-line module inside an inline one was followed.
+            nested = only(f for f in info.pyo3_functions if f.name == "nested_fn")
+            @test nested.module_path == ["outer", "child"]
+            @test nested.skip_reason == ""
+
+            # The class is reported with the methods declared in another file.
+            circle = only(info.pyo3_structs)
+            @test circle.name == "Circle"
+            @test circle.module_path == ["shapes"]
+            @test sort([m.name for m in circle.methods]) == ["area", "new"]
+            @test only(m for m in circle.methods if m.name == "new").is_constructor
+        end
+    end
+
     @testset "schema 4: return_abi, Field.abi, returns_boxed_struct (#276)" begin
         # The manifest — not the Rust spelling — is what says how a value
         # crosses the boundary. Schema 4 makes that true for free functions

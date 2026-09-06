@@ -406,11 +406,87 @@ fn out_of_line_modules_are_reported_as_pending() {
     assert_eq!(pending.len(), 4);
     assert!(by("open").reachable);
     assert_eq!(by("open").module_path, vec!["open"]);
+    assert!(by("open").dir_components.is_empty());
     assert!(!by("closed").reachable);
     assert_eq!(by("aliased").path_attr.as_deref(), Some("other.rs"));
     assert_eq!(by("deeper").module_path, vec!["inline", "deeper"]);
+    // rustc resolves `mod inline { pub mod deeper; }` in `src/lib.rs` at
+    // `src/inline/deeper.rs`: the inline module is a directory component.
+    assert_eq!(by("deeper").dir_components, vec!["inline"]);
     // The declarations themselves contribute no items.
     assert!(manifest.functions.is_empty());
+}
+
+/// `impl C` is legal in any module that has `C` in scope, and in a multi-file
+/// crate the class and its `#[pymethods]` routinely live apart. Matching them
+/// per module level would silently drop every such class's methods.
+#[test]
+fn pymethods_attach_across_module_boundaries() {
+    let manifest = scan(
+        "pub mod shapes { #[pyclass] pub struct Circle { #[pyo3(get)] pub r: f64 } }\n\
+         #[pymethods] impl shapes::Circle {\n\
+            #[new] pub fn new(r: f64) -> Self { unimplemented!() }\n\
+            pub fn area(&self) -> f64 { 0.0 }\n\
+         }",
+    );
+    let circle = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "Circle")
+        .expect("Circle missing");
+    assert_eq!(circle.module_path, vec!["shapes"]);
+    let names: Vec<&str> = circle.methods.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(names, vec!["new", "area"]);
+    assert_eq!(circle.methods[0].symbol, "rustcall_Circle_new");
+}
+
+/// A block in the class's own module wins over a same-named class elsewhere.
+#[test]
+fn pymethods_prefer_the_class_in_their_own_module() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {}\n\
+            #[pymethods] impl C { pub fn from_a(&self) -> i32 { 1 } } }\n\
+         pub mod b { #[pyclass] pub struct C {}\n\
+            #[pymethods] impl C { pub fn from_b(&self) -> i32 { 2 } } }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["from_a"]
+    );
+    assert_eq!(
+        in_b.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["from_b"]
+    );
+}
+
+/// When two modules define a class of the same name and an impl elsewhere
+/// could mean either, the block is dropped rather than attached to a guess: a
+/// wrong `Struct::method` would simply not compile in Phase 2.
+#[test]
+fn an_ambiguous_pymethods_target_attaches_to_nothing() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         #[pymethods] impl C { pub fn guess(&self) -> i32 { 0 } }",
+    );
+    assert_eq!(manifest.structs.len(), 2);
+    assert!(manifest.structs.iter().all(|s| s.methods.is_empty()));
 }
 
 /// Inline mode is unaffected: the scan is a crate-mode feature, because only

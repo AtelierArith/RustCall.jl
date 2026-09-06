@@ -31,7 +31,7 @@
 //! it to an opaque error flag.
 
 use syn::spanned::Spanned;
-use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemImpl, ItemStruct, ReturnType, Type};
+use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemStruct, ReturnType, Type};
 
 use crate::attrs::{
     julia_owns_entry_point, pyo3_field_access, pyo3_marker, pyo3_method_markers, pyo3_name,
@@ -60,12 +60,16 @@ use crate::types::{
 /// Scanning each `.rs` file as its own root instead would report `api::deep` as
 /// a crate-root item and miss a private parent module entirely (#275).
 pub fn extract_pyo3_items(items: &[Item], manifest: &mut Manifest) -> Vec<PendingModule> {
-    extract_pyo3_items_at(items, &[], true, manifest)
+    let mut scan = Pyo3Scan::new();
+    let pending = scan.file(items, &[], true, manifest);
+    scan.finish(manifest);
+    pending
 }
 
 /// One out-of-line `mod name;` declaration: where it sits in the module tree,
-/// whether that position is reachable from outside the crate, and the
-/// `#[path = "..."]` override if it has one.
+/// whether that position is reachable from outside the crate, where its file
+/// lives relative to the declaring file's directory, and the `#[path = "..."]`
+/// override if it has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingModule {
     /// Module path of the declaration itself, including its own name.
@@ -76,125 +80,228 @@ pub struct PendingModule {
     pub name: String,
     /// `#[path = "..."]` on the declaration, if present.
     pub path_attr: Option<String>,
+    /// The **inline** modules enclosing the declaration within its own file.
+    ///
+    /// rustc resolves `mod outer { pub mod child; }` in `src/lib.rs` to
+    /// `src/outer/child.rs`, not `src/child.rs`: an inline module contributes a
+    /// directory to the search path of its out-of-line children. Empty when the
+    /// declaration is at the top level of its file.
+    pub dir_components: Vec<String>,
 }
 
-/// Like [`extract_pyo3_items`], but starting at a given position in the module
-/// tree — used when a file was reached by following a `mod` declaration.
-pub fn extract_pyo3_items_at(
-    items: &[Item],
-    module_path: &[String],
-    reachable: bool,
-    manifest: &mut Manifest,
-) -> Vec<PendingModule> {
-    let mut path = module_path.to_vec();
-    let mut pending = Vec::new();
-    extract_pyo3_items_in(items, &mut path, reachable, manifest, &mut pending);
-    pending
+/// Crate-wide state of a PyO3 scan.
+///
+/// `#[pyclass]` structs and their `#[pymethods]` blocks are collected
+/// separately and married in [`Pyo3Scan::finish`], because Rust does not
+/// require them to live together: `impl C` is legal in any module that has `C`
+/// in scope, and in a multi-file crate the two are routinely in different
+/// files. Matching them per file (or per module level) would silently drop the
+/// methods of every such class.
+#[derive(Debug, Default)]
+pub struct Pyo3Scan {
+    classes: Vec<ScannedClass>,
+    impls: Vec<ScannedImpl>,
 }
 
-fn extract_pyo3_items_in(
-    items: &[Item],
-    module_path: &mut Vec<String>,
-    reachable: bool,
-    manifest: &mut Manifest,
-    pending: &mut Vec<PendingModule>,
-) {
-    // `#[pyclass]` structs at this level, so a `#[pymethods] impl` below can be
-    // matched to one (impl blocks are matched within the same level, as
-    // `crate::model::collect_struct_models_in` does).
-    let mut classes: Vec<Struct> = Vec::new();
+#[derive(Debug)]
+struct ScannedClass {
+    module_path: Vec<String>,
+    entry: Struct,
+}
 
-    for item in items {
-        match item {
-            Item::Fn(f) => {
-                if julia_owns_entry_point(&f.attrs) {
-                    // Owned by `#[julia]`, which exports `rustcall_<name>`
-                    // itself (#279): reporting it here would describe a second
-                    // wrapper under the same symbol.
-                    continue;
-                }
-                match pyo3_marker(&f.attrs) {
-                    Some(Pyo3Marker::Function) => {
-                        manifest.functions.push(function_entry(
-                            f,
-                            Attribute::PyFunction,
-                            reachable,
-                            module_path,
-                        ));
+#[derive(Debug)]
+struct ScannedImpl {
+    module_path: Vec<String>,
+    target: syn::Ident,
+    line: usize,
+    funcs: Vec<ImplItemFn>,
+}
+
+impl Pyo3Scan {
+    pub fn new() -> Self {
+        Pyo3Scan::default()
+    }
+
+    /// Scan one file of the crate. `module_path` is where the file sits in the
+    /// module tree (empty for the crate root) and `reachable` says whether
+    /// every `mod` leading to it is `pub`.
+    ///
+    /// Free functions go straight into `manifest`; classes and `#[pymethods]`
+    /// blocks are held until [`Pyo3Scan::finish`].
+    pub fn file(
+        &mut self,
+        items: &[Item],
+        module_path: &[String],
+        reachable: bool,
+        manifest: &mut Manifest,
+    ) -> Vec<PendingModule> {
+        let mut path = module_path.to_vec();
+        let mut dirs = Vec::new();
+        let mut pending = Vec::new();
+        self.level(
+            items,
+            &mut path,
+            &mut dirs,
+            reachable,
+            manifest,
+            &mut pending,
+        );
+        pending
+    }
+
+    fn level(
+        &mut self,
+        items: &[Item],
+        module_path: &mut Vec<String>,
+        dir_components: &mut Vec<String>,
+        reachable: bool,
+        manifest: &mut Manifest,
+        pending: &mut Vec<PendingModule>,
+    ) {
+        for item in items {
+            match item {
+                Item::Fn(f) => {
+                    if julia_owns_entry_point(&f.attrs) {
+                        // Owned by `#[julia]`, which exports `rustcall_<name>`
+                        // itself (#279): reporting it here would describe a
+                        // second wrapper under the same symbol.
+                        continue;
                     }
-                    Some(Pyo3Marker::Module) => {
-                        manifest.functions.push(function_entry(
-                            f,
-                            Attribute::PyModule,
-                            reachable,
-                            module_path,
-                        ));
+                    match pyo3_marker(&f.attrs) {
+                        Some(Pyo3Marker::Function) => {
+                            manifest.functions.push(function_entry(
+                                f,
+                                Attribute::PyFunction,
+                                reachable,
+                                module_path,
+                            ));
+                        }
+                        Some(Pyo3Marker::Module) => {
+                            manifest.functions.push(function_entry(
+                                f,
+                                Attribute::PyModule,
+                                reachable,
+                                module_path,
+                            ));
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-            Item::Struct(s) => {
-                if julia_owns_entry_point(&s.attrs) {
-                    continue;
+                Item::Struct(s) => {
+                    if julia_owns_entry_point(&s.attrs) {
+                        continue;
+                    }
+                    if pyo3_marker(&s.attrs) == Some(Pyo3Marker::Class) {
+                        self.classes.push(ScannedClass {
+                            module_path: module_path.clone(),
+                            entry: class_entry(s, reachable, module_path),
+                        });
+                    }
                 }
-                if pyo3_marker(&s.attrs) == Some(Pyo3Marker::Class) {
-                    classes.push(class_entry(s, reachable, module_path));
-                }
-            }
-            Item::Mod(m) => {
-                let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
-                module_path.push(m.ident.to_string());
-                match &m.content {
-                    Some((_, inner)) => extract_pyo3_items_in(
-                        inner,
-                        module_path,
-                        inner_reachable,
-                        manifest,
-                        pending,
-                    ),
-                    // `mod name;` — the body is in another file; record where
-                    // it belongs so the caller can follow it.
-                    None => pending.push(PendingModule {
+                Item::Impl(imp) => {
+                    if pyo3_marker(&imp.attrs) != Some(Pyo3Marker::Methods) {
+                        continue;
+                    }
+                    let Some(target) = last_ident(&imp.self_ty).cloned() else {
+                        continue;
+                    };
+                    if imp.trait_.is_some() {
+                        continue;
+                    }
+                    self.impls.push(ScannedImpl {
                         module_path: module_path.clone(),
-                        reachable: inner_reachable,
-                        name: m.ident.to_string(),
-                        path_attr: path_attribute(&m.attrs),
-                    }),
+                        target,
+                        line: imp.span().start().line,
+                        funcs: imp
+                            .items
+                            .iter()
+                            .filter_map(|ii| match ii {
+                                ImplItem::Fn(f) => Some(f.clone()),
+                                _ => None,
+                            })
+                            .collect(),
+                    });
                 }
-                module_path.pop();
+                Item::Mod(m) => {
+                    let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
+                    module_path.push(m.ident.to_string());
+                    match &m.content {
+                        Some((_, inner)) => {
+                            dir_components.push(m.ident.to_string());
+                            self.level(
+                                inner,
+                                module_path,
+                                dir_components,
+                                inner_reachable,
+                                manifest,
+                                pending,
+                            );
+                            dir_components.pop();
+                        }
+                        // `mod name;` — the body is in another file; record
+                        // where it belongs so the caller can follow it.
+                        None => pending.push(PendingModule {
+                            module_path: module_path.clone(),
+                            reachable: inner_reachable,
+                            name: m.ident.to_string(),
+                            path_attr: path_attribute(&m.attrs),
+                            dir_components: dir_components.clone(),
+                        }),
+                    }
+                    module_path.pop();
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
-    // A `#[pyclass]` may have several `#[pymethods]` blocks (pyo3 supports it
-    // through `multiple-pymethods`, and one `impl` per concern is common), so
-    // methods accumulate across every matching block in source order.
-    for item in items {
-        let Item::Impl(imp) = item else { continue };
-        if pyo3_marker(&imp.attrs) != Some(Pyo3Marker::Methods) {
-            continue;
-        }
-        let Some(target) = impl_target_name(imp) else {
-            continue;
-        };
-        let Some(class) = classes.iter_mut().find(|c| c.name == target) else {
-            continue;
-        };
-        let owner_skip = class.skip_reason.clone();
-        let target_ident = match last_ident(&imp.self_ty) {
-            Some(id) => id.clone(),
-            None => continue,
-        };
-        for ii in &imp.items {
-            let ImplItem::Fn(func) = ii else { continue };
-            class
-                .methods
-                .push(method_entry(&target_ident, func, &owner_skip));
-        }
-    }
+    /// Attach every `#[pymethods]` block to its class and emit the structs.
+    ///
+    /// A block is matched to the class in its own module first; failing that,
+    /// to the one class of that name anywhere in the crate. When two modules
+    /// define classes of the same name and neither is the impl's own, the block
+    /// is dropped rather than attached to a guess — a wrong `Struct::method`
+    /// would not compile in Phase 2.
+    ///
+    /// Order is by (module path, line) so the result does not depend on the
+    /// order the caller happened to visit files in.
+    pub fn finish(mut self, manifest: &mut Manifest) {
+        self.impls
+            .sort_by(|a, b| a.module_path.cmp(&b.module_path).then(a.line.cmp(&b.line)));
 
-    manifest.structs.extend(classes);
+        for imp in &self.impls {
+            let name = imp.target.to_string();
+            let same_module = self
+                .classes
+                .iter()
+                .position(|c| c.entry.name == name && c.module_path == imp.module_path);
+            let index = match same_module {
+                Some(i) => Some(i),
+                None => {
+                    let mut matching = self
+                        .classes
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| c.entry.name == name);
+                    match (matching.next(), matching.next()) {
+                        (Some((i, _)), None) => Some(i),
+                        // No class of that name, or an ambiguous one.
+                        _ => None,
+                    }
+                }
+            };
+            let Some(index) = index else { continue };
+            let owner_skip = self.classes[index].entry.skip_reason.clone();
+            for func in &imp.funcs {
+                let entry = method_entry(&imp.target, func, &owner_skip);
+                self.classes[index].entry.methods.push(entry);
+            }
+        }
+
+        manifest
+            .structs
+            .extend(self.classes.into_iter().map(|c| c.entry));
+    }
 }
 
 /// The `#[path = "..."]` override of a `mod` declaration, if it has one.
@@ -212,13 +319,6 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
         }
     }
     None
-}
-
-fn impl_target_name(item: &ItemImpl) -> Option<String> {
-    if item.trait_.is_some() {
-        return None;
-    }
-    last_ident(&item.self_ty).map(|id| id.to_string())
 }
 
 /// Manifest entry of a `#[pyfunction]` (or a `#[pymodule]` initialiser).

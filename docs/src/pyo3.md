@@ -114,13 +114,25 @@ An item's `module_path` is what a wrapper crate has to write
 (`user_crate::api::item`), so it has to be right. The extractor therefore
 follows the crate's module tree from `src/lib.rs` (`rustcall-extract manifest
 --crate-root`) rather than treating each `.rs` file as its own root:
-`pub mod api;` backed by `src/api.rs`, `src/deep/mod.rs`, and
-`#[path = "..."]` overrides are all resolved the way rustc resolves them. That
-is also how a private parent is caught — a `mod hidden;` without `pub` makes
-everything inside it `not_public`, however `pub` the items themselves are.
+`pub mod api;` backed by `src/api.rs`, `src/deep/mod.rs`, `#[path = "..."]`
+overrides, and an out-of-line module declared inside an inline one
+(`mod outer { pub mod child; }` → `src/outer/child.rs`) are all resolved the
+way rustc resolves them. That is also how a private parent is caught — a
+`mod hidden;` without `pub` makes everything inside it `not_public`, however
+`pub` the items themselves are.
 
 A `mod` declaration whose file does not exist (behind a pruned `#[cfg]`, or
 generated at build time) is skipped rather than failing the scan.
+
+### `#[pymethods]` is matched crate-wide
+
+An inherent `impl C` is legal in any module that has `C` in scope, and in a
+multi-file crate the `#[pyclass]` and its `#[pymethods]` blocks routinely live
+in different files. Classes and blocks are therefore collected across the whole
+crate and married at the end: a block is attached to the class in its own
+module, or — failing that — to the one class of that name anywhere in the
+crate. If two modules define a class of that name and neither is the block's
+own, the block is dropped rather than attached to a guess.
 
 ### An item marked both ways belongs to `#[julia]`
 
@@ -150,6 +162,20 @@ build flag — is where a target crate's default features are switched off:
 `cargo build --no-default-features` applies to the **package being built**, so
 from the wrapper it disables the *wrapper's* defaults and leaves the target
 crate's (and therefore pyo3) enabled.
+
+Three manifest shapes the plan handles that are easy to miss:
+
+* **`default = ["pyo3/extension-module"]`** activates the feature straight from
+  `default`, without going through a feature of the crate's own.
+* **A renamed dependency** — `python = { package = "pyo3", version = "0.29" }` —
+  still builds and links pyo3, under the alias; its features are spelled
+  `python/extension-module`. Dependency tables are matched on `package`, not
+  only on the key.
+* **Per-target declarations** (`[target.'cfg(windows)'.dependencies]`) may
+  disagree with each other, and which one Cargo uses depends on the triple.
+  Rather than guess a `cfg(...)` selector, the plan takes the strictest reading
+  across all of them — `:unlinkable` over `:link_libpython` over
+  `:python_free` — and says so in `reason`.
 
 | mode | when | what the wrapper build does |
 | --- | --- | --- |
