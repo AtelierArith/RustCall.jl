@@ -177,5 +177,9 @@ because a `&str` built from invalid bytes is undefined behaviour and nothing
 may reach it; the Julia-side check is what turns the condition into a catchable
 exception at the call site.
 
-To send bytes that are not text, pass a `Vec<UInt8>` through a slice argument
-rather than a `String`.
+Fixing the encoding is the Julia-side answer when the value *is* text:
+`isvalid(s)` says whether a string is UTF-8, and `transcode` (or an explicit
+re-encode from whatever the bytes really are) produces one that is. To send
+bytes that are **not** text at all, take them on the Rust side as a
+`*const u8` plus a length — a `&[u8]` slice argument is not lowered by the
+`#[julia]` pipeline, so there is no `Vec{UInt8}` argument to pass.
