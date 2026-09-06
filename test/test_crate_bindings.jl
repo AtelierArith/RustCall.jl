@@ -827,11 +827,19 @@ end
     # emitted with an empty object list, because the call is now nested inside
     # `_guard_panic(...)` and the parenthesized form needs at least one object
     # (#244, #277 Phase B5).
-    @test occursin("_guard_panic(call_rust_function(func_ptr, Int32, Int32(a), Int32(b)), \"rustcall_add\", \"add\")", code)
-    # Every generated call reads its wrapper's panic channel.
+    @test occursin("_guard_panic(call_rust_function(func_ptr, Int32, Int32(a), Int32(b)), panic_channel, \"add\")", code)
+    # Every generated call reads its wrapper's panic channel, and resolves it
+    # BEFORE the call: the channel is a thread-local in the image, so nothing
+    # may yield between the two (#244).
     @test occursin("_guard_panic(", code)
-    @test occursin("_panic_channel(", code)
+    @test occursin("panic_channel = _panic_channel(\"rustcall_add\")", code)
     @test occursin("RustCall.guard_rust_panic_ptr", code)
+    # The resolution precedes the call in the emitted text.
+    add_at = findfirst("function add(a, b)", code)
+    @test add_at !== nothing
+    add_body = code[first(add_at):end]
+    add_body = add_body[1:first(findfirst("\nend", add_body))]
+    @test findfirst("_panic_channel(", add_body) < findfirst("call_rust_function(", add_body)
     # and the emitted module parses
     @test Meta.parse(code) isa Expr
 end

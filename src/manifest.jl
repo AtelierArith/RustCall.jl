@@ -261,15 +261,23 @@ const _RUSTC_CFG_FILE = Dict{String, String}()
     _cfg_rustc_flags(compiler = get_default_compiler()) -> Vector{String}
 
 The rustc flags that decide `#[cfg]` predicates for direct `rustc` builds:
-the same target and codegen options `compile_rust_to_shared_lib` passes
-(`--target`, `-C opt-level`, `-C panic=abort`), so `debug_assertions`,
-`panic = "..."` and `target_*` agree with the library that is actually built.
+the same target and codegen options `compile_rust_to_shared_lib` passes, so
+`debug_assertions`, `panic = "..."` and `target_*` agree with the library that
+is actually built.
+
+The panic flag comes from `inline_rustc_policy()` — the same policy the compile
+path reads — rather than being written out again here. When the two disagreed,
+the probe said `panic = "abort"` while the build unwound, so a
+`#[cfg(panic = "unwind")]` item was pruned from the manifest and never reported
+even though rustc compiled it, and a `#[cfg(panic = "abort")]` item was
+reported and then did not exist (#244, #277 Phase B).
 """
 function _cfg_rustc_flags(compiler = get_default_compiler())
+    panic_flags = rustc_panic_flags(inline_rustc_policy())
     return String[
         "--target=$(compiler.target_triple)",
         "-C", "opt-level=$(compiler.optimization_level)",
-        "-C", "panic=abort",
+        (panic_flags === missing ? String[] : panic_flags)...,
     ]
 end
 

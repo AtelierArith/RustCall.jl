@@ -14,6 +14,7 @@
 # `syn` from scratch into its own target directory on every CI run.
 
 using Test
+using Libdl
 using RustCall
 
 const _HRT_SRC = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
@@ -214,6 +215,35 @@ end
                     @test RustCall.call_rust_function(
                         RustCall.get_function_pointer(lib_name, "hrt_probe"),
                         Int32) == Int32(99)
+
+                    # A module-local copy of the handle — what a generated
+                    # `@rust_crate` module keeps — follows the swap. Without
+                    # that it would still point at the image the reload closed,
+                    # and the next `dlsym` would read unmapped memory (#277).
+                    handle_ref = Ref(Ptr{Cvoid}(C_NULL))
+                    alive_ref = Ref(Ref(true))
+                    RustCall.register_handle_mirror!(lib_name, handle_ref, alive_ref)
+                    current = lock(() -> RustCall.RUST_LIBRARIES[lib_name][1],
+                                   RustCall.REGISTRY_LOCK)
+                    @test handle_ref[] == current
+                    @test alive_ref[][]
+
+                    _hrt_write_source(crate, 123)
+                    @test RustCall.reload_library(state)
+                    swapped = lock(() -> RustCall.RUST_LIBRARIES[lib_name][1],
+                                   RustCall.REGISTRY_LOCK)
+                    @test handle_ref[] == swapped
+                    @test handle_ref[] != current      # a genuinely new image
+                    @test alive_ref[][]
+                    # ...and the mirror resolves the new library's symbol.
+                    @test RustCall.call_rust_function(
+                        Libdl.dlsym(handle_ref[], "hrt_probe"), Int32) == Int32(123)
+
+                    # An unload empties it, so a module reading it reports
+                    # "not loaded" rather than calling into a closed image.
+                    RustCall.unload_library(lib_name)
+                    @test handle_ref[] == C_NULL
+                    @test !alive_ref[][]
                 finally
                     # Windows locks a loaded DLL, so the temp tree can only be
                     # removed after the library is gone. Best effort either way.

@@ -204,6 +204,93 @@ const _PANIC_RUSTC_AVAILABLE = RustCall.check_rustc_available()
         end
 
         # ------------------------------------------------------------------
+        # The channel is a THREAD-LOCAL in the loaded image, so the wrapper
+        # call and the channel read have to happen on the same OS thread. A
+        # Julia task moves threads only at a yield point, so the rule is that
+        # nothing between them may yield — which is why the channel pointer is
+        # resolved *before* the call and the read is one lock-free,
+        # allocation-free `ccall`.
+        #
+        # If that rule were broken, this testset would show it as two
+        # symptoms at once: a panicking call that reports success (its message
+        # was left on another thread) and a *non*-panicking call that raises
+        # (it picked up a message left behind by someone else).
+        # ------------------------------------------------------------------
+        @testset "the panic channel survives concurrency" begin
+            if Threads.nthreads() < 2
+                @test_skip "needs ≥2 threads; run with JULIA_NUM_THREADS>1 " *
+                           "(the CI matrix has a multithreaded Julia entry)"
+            else
+                n = 400
+                panics = Threads.Atomic{Int}(0)
+                wrong_success = Threads.Atomic{Int}(0)
+                spurious = Threads.Atomic{Int}(0)
+                bad_message = Threads.Atomic{Int}(0)
+                clean = Threads.Atomic{Int}(0)
+
+                @sync for i in 1:n
+                    Threads.@spawn begin
+                        # Half the tasks panic, half do not, all interleaved
+                        # across the thread pool.
+                        if iseven(i)
+                            try
+                                panic_rustc(Int32(-i))
+                                # No exception: the message was lost.
+                                Threads.atomic_add!(wrong_success, 1)
+                            catch e
+                                if e isa RustCall.RustPanicError
+                                    Threads.atomic_add!(panics, 1)
+                                    # ...and it must be *this* task's message,
+                                    # not one left behind by another.
+                                    occursin("refuses -$(i)", e.message) ||
+                                        Threads.atomic_add!(bad_message, 1)
+                                else
+                                    Threads.atomic_add!(bad_message, 1)
+                                end
+                            end
+                        else
+                            try
+                                v = panic_rustc(Int32(i))
+                                v == Int32(2i) ? Threads.atomic_add!(clean, 1) :
+                                                 Threads.atomic_add!(bad_message, 1)
+                            catch e
+                                # A successful call that raised: it read a
+                                # message that belongs to somebody else.
+                                Threads.atomic_add!(spurious, 1)
+                            end
+                        end
+                    end
+                end
+
+                @test panics[] == n ÷ 2        # every panic was seen...
+                @test wrong_success[] == 0     # ...and none was lost
+                @test spurious[] == 0          # no message crossed tasks
+                @test bad_message[] == 0       # each got its own text
+                @test clean[] == n - n ÷ 2
+
+                # Two functions in flight at once, so a message from one can
+                # never satisfy the other's channel.
+                results = Vector{Any}(undef, 200)
+                @sync for i in 1:200
+                    Threads.@spawn results[i] = try
+                        iseven(i) ? panic_rustc_assert(Int32(-i)) :
+                                    panic_rustc(Int32(i))
+                    catch e
+                        e
+                    end
+                end
+                for i in 1:200
+                    if iseven(i)
+                        @test results[i] isa RustCall.RustPanicError
+                        @test occursin("n must be positive, got -$(i)", results[i].message)
+                    else
+                        @test results[i] == Int32(2i)
+                    end
+                end
+            end
+        end
+
+        # ------------------------------------------------------------------
         # The process survived all of it — the point of the whole issue.
         # ------------------------------------------------------------------
         @testset "the session is intact" begin

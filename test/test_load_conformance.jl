@@ -331,6 +331,32 @@ end
                     finalize(counter)
                     @test getfield(counter, :ptr) == C_NULL
                     @test RustCall.finalizer_failure_count() == 0
+
+                    # The module does not hold a *raw* handle: unloading the
+                    # library empties its mirror, so the next call reports
+                    # "not loaded" instead of `dlsym`ing a closed image (#277).
+                    crate_lib = first(crate_libs)
+                    survivor = Base.invokelatest(bindings.PanicCounter, Int32(3))
+                    RustCall.unload_library(crate_lib)
+                    err = try
+                        Base.invokelatest(bindings.add, Int32(1), Int32(1))
+                        nothing
+                    catch e
+                        e
+                    end
+                    @test err !== nothing
+                    message = sprint(showerror, err)
+                    @test occursin("not loaded", message)
+                    @test occursin(crate_lib, message)
+
+                    # An object that outlived its library is inert rather than
+                    # a call into unmapped code, and does not double-free.
+                    @test !getfield(survivor, :alive)[]
+                    failures = RustCall.finalizer_failure_count()
+                    finalize(survivor)
+                    finalize(survivor)
+                    @test getfield(survivor, :ptr) == C_NULL
+                    @test RustCall.finalizer_failure_count() == failures
                 end
             end
         end

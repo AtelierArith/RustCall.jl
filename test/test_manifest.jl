@@ -195,11 +195,21 @@ using TOML
         @test isempty(RustCall._cfg_file_args(:none))
         @test_throws ArgumentError RustCall._cfg_file_args(:bogus)
         flags = RustCall._cfg_rustc_flags()
-        @test any(startswith("--target="), flags) && "panic=abort" in flags
-        # Direct rustc builds use opt-level 2 and panic=abort, so the strict set
-        # must reflect that rather than the bare toolchain defaults.
+        @test any(startswith("--target="), flags)
+        # The probe's panic flag is the compile path's, read off the same
+        # policy rather than written out a second time here. They disagreed
+        # once — the probe said `abort` while the build unwound — and a
+        # `#[cfg(panic = "unwind")]` item was then pruned from the manifest
+        # although rustc compiled it (#244, #277 Phase B).
+        @test RustCall.rustc_panic_flags(RustCall.inline_rustc_policy()) ==
+              ["-C", "panic=unwind"]
+        @test "panic=unwind" in flags
+        @test !("panic=abort" in flags)
+        # Direct rustc builds use opt-level 2 and panic=unwind, so the strict
+        # set must reflect that rather than the bare toolchain defaults.
         strict = RustCall._rustc_cfg_text()
-        @test occursin("panic=\"abort\"", strict)
+        @test occursin("panic=\"unwind\"", strict)
+        @test !occursin("panic=\"abort\"", strict)
         @test !occursin("debug_assertions", strict)
         @test occursin("debug_assertions", RustCall._rustc_cfg_text(String["-C", "opt-level=0"]))
 
@@ -211,29 +221,39 @@ using TOML
         #[cfg(panic = "abort")]
         #[julia]
         pub fn abort_only() -> i32 { 2 }
+        #[cfg(panic = "unwind")]
+        #[julia]
+        pub fn unwind_only() -> i32 { 4 }
         #[cfg(feature = "extra")]
         #[julia]
         pub fn feature_only() -> i32 { 3 }
         """
+        # Both panic predicates, so the test says which way the probe decided
+        # rather than only that it decided something. RustCall pins
+        # `panic = "unwind"` for direct rustc builds (#244), so the unwinding
+        # item is the one that exists.
         strict_names = names(RustCall.extract_manifest(profile_code; mode = "inline"))
-        @test Set(strict_names) == Set(["abort_only"])
+        @test Set(strict_names) == Set(["unwind_only"])
         # Lenient (Cargo builds): only target predicates are decided; feature and
         # profile predicates keep their items.
         lenient_names = names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))
-        @test Set(lenient_names) == Set(["dbg_only", "abort_only", "feature_only"])
+        @test Set(lenient_names) ==
+              Set(["dbg_only", "abort_only", "unwind_only", "feature_only"])
         # Cargo projects RustCall generates are fully described by the probe: no
         # build script, no declared features, the release profile RustCall writes.
         # So every predicate is decided there, against Cargo's effective
         # configuration (profile overrides in the environment and RUSTFLAGS
         # included), exactly as for a direct rustc build.
         cargo_names = names(RustCall.extract_manifest(profile_code; mode = "inline", cfg = :cargo))
-        # unwind, no debug_assertions, and the generated crate has no features
-        @test isempty(cargo_names)
+        # unwind, no debug_assertions, and the generated crate has no features —
+        # and the Cargo manifests RustCall writes pin `unwind` too, so the two
+        # compile paths decide the panic predicate the same way (#244).
+        @test Set(cargo_names) == Set(["unwind_only"])
         cargo_args = RustCall._cfg_file_args(:cargo)
         @test length(cargo_args) == 2 && cargo_args[1] == "--cfg-file"
         @test read(cargo_args[2], String) == RustCall._cfg_snapshot(:cargo)
         @test Set(names(RustCall.extract_manifest(profile_code; mode = "crate", cfg = :lenient))) ==
-              Set(["dbg_only", "abort_only", "feature_only"])
+              Set(["dbg_only", "abort_only", "unwind_only", "feature_only"])
         cargo_cfg = RustCall._cfg_snapshot(:cargo)
         @test occursin("panic=\"unwind\"", cargo_cfg)
         @test !occursin("debug_assertions", cargo_cfg)

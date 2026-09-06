@@ -370,6 +370,14 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
         const _LIB_ALIVE = Ref{Base.RefValue{Bool}}(Ref(true))
 
         function __init__()
+            # The loader keeps `_LIB_HANDLE` and `_LIB_ALIVE` in step with the
+            # registry from here on: a hot reload closes the previous image and
+            # `unload_library` closes it outright, so a raw copy of the handle
+            # would go stale and the next `dlsym` would read unmapped memory.
+            # Registering the two `Ref`s means the swap happens in the same
+            # transaction that swaps the registry entry, and the per-call fast
+            # path stays a `Ref` read (#277 Phase B).
+            RustCall.register_handle_mirror!(_LIB_NAME, _LIB_HANDLE, _LIB_ALIVE)
             artifact = RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;
                                                lib_name = _LIB_NAME)
             _LIB_HANDLE[] = artifact.handle
@@ -378,7 +386,11 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
 
         function _get_func_ptr(name::String)
             if _LIB_HANDLE[] == C_NULL
-                error("Library not loaded. Call __init__() first.")
+                error("The Rust library backing this module is not loaded. " *
+                      "It was either never initialised, or unloaded with " *
+                      "RustCall.unload_library(\"" * _LIB_NAME * "\"); a " *
+                      "reload through RustCall's hot reload would have " *
+                      "replaced it transparently.")
             end
             Libdl.dlsym(_LIB_HANDLE[], name)
         end
@@ -402,16 +414,22 @@ function emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union
         # Resolved once per symbol, negative answers cached too: a crate built
         # by an older RustCall has no channels and must not be probed on every
         # call.
-        const _PANIC_CHANNELS = Dict{String, Ptr{Cvoid}}()
+        const _PANIC_CHANNELS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()
 
+        # Keyed by the handle as well as the symbol: a reload swaps the image
+        # under the same module, and a channel pointer resolved against the old
+        # one would be a call into unmapped code (#244, #277).
         function _panic_channel(symbol::String)
-            get!(_PANIC_CHANNELS, symbol) do
+            get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do
                 _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))
             end
         end
 
-        _guard_panic(value, symbol::String, name::String) =
-            RustCall.guard_rust_panic_ptr(value, _panic_channel(symbol), name)
+        # The channel is resolved by the *caller*, before the wrapper call:
+        # it is a thread-local in the image, so nothing may yield between the
+        # call and the read, and `_panic_channel` can allocate (#244).
+        _guard_panic(value, channel::Ptr{Cvoid}, name::String) =
+            RustCall.guard_rust_panic_ptr(value, channel, name)
 
         $func_defs
         $struct_defs
@@ -473,12 +491,14 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
                                                     _ffi_context(func))
 
         ptr_sym = _generated_local("func_ptr", func.arg_names)
+        channel_sym = _generated_local("panic_channel", func.arg_names)
         quote
             function $func_name($(arg_syms...))
                 $ptr_sym = _get_func_ptr($symbol_str)
+                $channel_sym = _panic_channel($symbol_str)
                 _guard_panic(
                     call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...)),
-                    $symbol_str, $func_name_str)
+                    $channel_sym, $func_name_str)
             end
             export $func_name
         end
@@ -515,10 +535,12 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     end
     # The string paths return a buffer the wrapper filled; on a panic it is the
     # empty sentinel, which would decode to `""`, so the channel is read before
-    # the value is used (#244).
-    call = :(_guard_panic($call, $symbol_str, $func_name_str))
+    # the value is used — and resolved before the call (#244).
+    channel_sym = _generated_local("panic_channel", func.arg_names)
+    call = :(_guard_panic($call, $channel_sym, $func_name_str))
     quote
         function $func_name($(arg_syms...))
+            $channel_sym = _panic_channel($symbol_str)
             $(bindings...)
             GC.@preserve $(preserved...) begin
                 $call
@@ -555,6 +577,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
     c_result_struct_name = Symbol("CResult_", func_name_str)
     ptr_sym = _generated_local("func_ptr", func.arg_names)
     c_sym = _generated_local("c_result", func.arg_names)
+    channel_sym = _generated_local("panic_channel", func.arg_names)
 
     quote
         # Define the C-compatible struct for this function's result
@@ -569,11 +592,12 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
             $ptr_sym = _get_func_ptr($symbol_str)
+            $channel_sym = _panic_channel($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel is read before the
-            # payload is decoded (#244).
-            _guard_panic(nothing, $symbol_str, $func_name_str)
+            # payload is decoded, and resolved before the call (#244).
+            _guard_panic(nothing, $channel_sym, $func_name_str)
             # Convert to RustResult
             if $c_sym.is_ok == 1
                 RustResult{$ok_julia_type, $err_julia_type}(true, convert_return($ok_julia_type, $c_sym.ok_value))
@@ -608,6 +632,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
     c_option_struct_name = Symbol("COption_", func_name_str)
     ptr_sym = _generated_local("func_ptr", func.arg_names)
     c_sym = _generated_local("c_option", func.arg_names)
+    channel_sym = _generated_local("panic_channel", func.arg_names)
 
     quote
         # Define the C-compatible struct for this function's option
@@ -621,8 +646,9 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
             $ptr_sym = _get_func_ptr($symbol_str)
+            $channel_sym = _panic_channel($symbol_str)
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...))
-            _guard_panic(nothing, $symbol_str, $func_name_str)
+            _guard_panic(nothing, $channel_sym, $func_name_str)
             # Convert to RustOption
             if $c_sym.is_some == 1
                 RustOption{$inner_julia_type}(true, convert_return($inner_julia_type, $c_sym.value))
@@ -893,10 +919,12 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # of a temporary `self` could otherwise free mid-call.
     method.is_static || pushfirst!(preserved, :self)
     method_label = "$(struct_name_str)::$(method.name)"
+    channel_sym = _generated_local("panic_channel", method.arg_names)
     body = quote
         $(bindings...)
         $ptr_sym = _get_func_ptr($wrapper_name)
-        _guard_panic($(_quote_preserved(preserved, call)), $wrapper_name, $method_label)
+        $channel_sym = _panic_channel($wrapper_name)
+        _guard_panic($(_quote_preserved(preserved, call)), $channel_sym, $method_label)
     end
 
     if method.is_static && method.is_constructor
@@ -1606,6 +1634,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # __init__ loads through the one loader (#277), so the handle is in
     # RUST_LIBRARIES and `unload_library` can see this crate too (#250).
     push!(lines, "function __init__()")
+    # The loader keeps the two Refs in step with the registry, so a hot reload
+    # or an unload cannot leave this module holding a closed handle (#277).
+    push!(lines, "    RustCall.register_handle_mirror!(_LIB_NAME, _LIB_HANDLE, _LIB_ALIVE)")
     push!(lines, "    artifact = RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;")
     push!(lines, "                                      lib_name = _LIB_NAME)")
     push!(lines, "    _LIB_HANDLE[] = artifact.handle")
@@ -1616,7 +1647,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # Helper function
     push!(lines, "function _get_func_ptr(name::String)")
     push!(lines, "    if _LIB_HANDLE[] == C_NULL")
-    push!(lines, "        error(\"Library not loaded. Call __init__() first.\")")
+    push!(lines, "        error(\"The Rust library backing this module is not loaded. \" *")
+    push!(lines, "              \"It was either never initialised, or unloaded with \" *")
+    push!(lines, "              \"RustCall.unload_library(\\\"\" * _LIB_NAME * \"\\\").\")")
     push!(lines, "    end")
     push!(lines, "    Libdl.dlsym(_LIB_HANDLE[], name)")
     push!(lines, "end")
@@ -1638,16 +1671,20 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # `<symbol>_take_panic`, and a panicking call returns a sentinel with its
     # message waiting there. Resolved once per symbol, negative answers cached
     # too — a crate built before #244 has no channels.
-    push!(lines, "const _PANIC_CHANNELS = Dict{String, Ptr{Cvoid}}()")
+    push!(lines, "const _PANIC_CHANNELS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()")
     push!(lines, "")
+    # Keyed by handle as well as symbol: a reload swaps the image, and a
+    # channel pointer resolved against the old one would be unmapped code.
     push!(lines, "function _panic_channel(symbol::String)")
-    push!(lines, "    get!(_PANIC_CHANNELS, symbol) do")
+    push!(lines, "    get!(_PANIC_CHANNELS, (_LIB_HANDLE[], symbol)) do")
     push!(lines, "        _struct_free_ptr(RustCall.ffi_panic_symbol(symbol))")
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "")
-    push!(lines, "_guard_panic(value, symbol::String, name::String) =")
-    push!(lines, "    RustCall.guard_rust_panic_ptr(value, _panic_channel(symbol), name)")
+    # The channel is resolved by the caller, before the wrapper call: it is a
+    # thread-local in the image, so nothing may yield between the two (#244).
+    push!(lines, "_guard_panic(value, channel::Ptr{Cvoid}, name::String) =")
+    push!(lines, "    RustCall.guard_rust_panic_ptr(value, channel, name)")
     push!(lines, "")
 
     # Generate function wrappers
@@ -1698,6 +1735,10 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     # is the additive wrapper `rustcall_<name>` (#279).
     sym = func.symbol
     arg_names = func.arg_names
+    # Resolved before the call in every branch below: the panic channel is a
+    # thread-local in the image, so nothing may yield between the wrapper call
+    # and the read of the channel (#244).
+    channel_var = _generated_local("panic_channel", arg_names)
 
     # Build argument conversions (string arguments become (ptr, len) pairs)
     arg_syms = join(arg_names, ", ")
@@ -1712,13 +1753,15 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     elseif ffi_owned_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
-$(prologue)    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_owned_string_ptr(_get_func_ptr(\"$sym\"), _get_func_ptr(\"$(_ffi_function_return(func).free_symbol)\"), $converted_args_str)")), "$sym", "$func_name")
+$(prologue)    $channel_var = _panic_channel("$sym")
+    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_owned_string_ptr(_get_func_ptr(\"$sym\"), _get_func_ptr(\"$(_ffi_function_return(func).free_symbol)\"), $converted_args_str)")), $channel_var, "$func_name")
 end
 export $func_name"""
     elseif ffi_borrowed_string_return(_ffi_function_return(func))
         return """
 function $func_name($arg_syms)
-$(prologue)    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr(_get_func_ptr(\"$sym\"), $converted_args_str)")), "$sym", "$func_name")
+$(prologue)    $channel_var = _panic_channel("$sym")
+    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr(_get_func_ptr(\"$sym\"), $converted_args_str)")), $channel_var, "$func_name")
 end
 export $func_name"""
     else
@@ -1730,7 +1773,8 @@ export $func_name"""
         return """
 function $func_name($arg_syms)
 $(prologue)    $ptr_var = _get_func_ptr("$sym")
-    _guard_panic($(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $ret_type_str, $converted_args_str)")), "$sym", "$func_name")
+    $channel_var = _panic_channel("$sym")
+    _guard_panic($(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $ret_type_str, $converted_args_str)")), $channel_var, "$func_name")
 end
 export $func_name"""
     end
@@ -1750,6 +1794,7 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     c_result_struct_name = "CResult_$func_name"
     ptr_var = _generated_local("func_ptr", func.arg_names)
     c_var = _generated_local("c_result", func.arg_names)
+    channel_var = _generated_local("panic_channel", func.arg_names)
 
     return """
 struct $c_result_struct_name
@@ -1760,8 +1805,9 @@ end
 
 function $func_name($arg_syms)
 $(prologue)    $ptr_var = _get_func_ptr("$sym")
+    $channel_var = _panic_channel("$sym")
     $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)"))
-    _guard_panic(nothing, "$sym", "$func_name")
+    _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, $err_type_str}(true, convert_return($ok_type_str, $c_var.ok_value))
     else
@@ -1783,6 +1829,7 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     c_option_struct_name = "COption_$func_name"
     ptr_var = _generated_local("func_ptr", func.arg_names)
     c_var = _generated_local("c_option", func.arg_names)
+    channel_var = _generated_local("panic_channel", func.arg_names)
 
     return """
 struct $c_option_struct_name
@@ -1792,8 +1839,9 @@ end
 
 function $func_name($arg_syms)
 $(prologue)    $ptr_var = _get_func_ptr("$sym")
+    $channel_var = _panic_channel("$sym")
     $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)"))
-    _guard_panic(nothing, "$sym", "$func_name")
+    _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_some == 1
         RustOption{$inner_type_str}(true, convert_return($inner_type_str, $c_var.value))
     else
@@ -1971,9 +2019,11 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
         "call_rust_function($ptr_var, $ret_type_str, $args_str)"
     end
     method_label = "$(struct_name)::$(method_name)"
+    channel_var = _generated_local("panic_channel", method.arg_names)
     body = """
 $(prologue)    $ptr_var = _get_func_ptr("$wrapper_name")
-    _guard_panic($(_emit_preserved(preserve_str, call)), "$wrapper_name", "$method_label")"""
+    $channel_var = _panic_channel("$wrapper_name")
+    _guard_panic($(_emit_preserved(preserve_str, call)), $channel_var, "$method_label")"""
 
     if method.is_static && method.is_constructor
         # Static constructor

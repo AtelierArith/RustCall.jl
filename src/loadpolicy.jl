@@ -992,6 +992,129 @@ function _fresh_alive!(name::String)
 end
 
 """
+    HANDLE_MIRRORS
+
+`lib_name` → the module-local copies of that library's handle and liveness flag
+that the loader keeps in sync.
+
+A generated `@rust_crate` module resolves its symbols through its own
+`_LIB_HANDLE[]` rather than through a registry lookup per call — that is the
+whole point of the module-local `Ref`. But a raw copy of a handle goes **stale**
+the moment the library is replaced or unloaded: a hot reload closes the previous
+image (`on_replace = :dlclose`), and `unload_library` closes it outright, after
+which the module's `dlsym` reads unmapped memory. Registering the module's
+`Ref`s here lets the transaction that swaps the handle swap the mirror in the
+same critical section, so the fast path stays a `Ref` read and can never point
+at a closed image (#277 Phase B).
+
+The mirrors survive an unload rather than being dropped with it: a hot reload is
+"unload then load under the same name", and the module that registered them is
+still there waiting for the new handle.
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const HANDLE_MIRRORS = Dict{String, Vector{Tuple{Base.RefValue{Ptr{Cvoid}}, Base.RefValue{Base.RefValue{Bool}}}}}()
+
+"""
+    register_handle_mirror!(lib_name, handle_ref, alive_ref)
+
+Keep `handle_ref` and `alive_ref` in step with the library registered as
+`lib_name`, and set them to what is registered *now*.
+
+Called by a generated `@rust_crate` module's `__init__`. Idempotent: a module
+re-initialised in a new session registers the same `Ref`s again and they are
+not duplicated.
+"""
+function register_handle_mirror!(lib_name::AbstractString,
+                                 handle_ref::Base.RefValue{Ptr{Cvoid}},
+                                 alive_ref::Base.RefValue{Base.RefValue{Bool}})
+    name = String(lib_name)
+    lock(REGISTRY_LOCK) do
+        mirrors = get!(() -> Tuple{Base.RefValue{Ptr{Cvoid}},
+                                   Base.RefValue{Base.RefValue{Bool}}}[],
+                       HANDLE_MIRRORS, name)
+        any(m -> m[1] === handle_ref, mirrors) || push!(mirrors, (handle_ref, alive_ref))
+        entry = get(RUST_LIBRARIES, name, nothing)
+        if entry !== nothing
+            handle_ref[] = entry[1]
+            alive_ref[] = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
+        end
+    end
+    return nothing
+end
+
+# Point every mirror of `name` at a freshly registered handle. Caller holds
+# REGISTRY_LOCK.
+function _update_handle_mirrors!(name::String, handle::Ptr{Cvoid},
+                                 alive::Base.RefValue{Bool})
+    for (handle_ref, alive_ref) in get(HANDLE_MIRRORS, name, ())
+        handle_ref[] = handle
+        alive_ref[] = alive
+    end
+    return nothing
+end
+
+# The library is gone: a mirror must say so rather than keep a handle that is
+# about to be closed. The *mirror* stays registered — a reload under the same
+# name fills it in again. Caller holds REGISTRY_LOCK.
+function _retire_handle_mirrors!(name::String)
+    dead = Ref(false)
+    for (handle_ref, alive_ref) in get(HANDLE_MIRRORS, name, ())
+        handle_ref[] = C_NULL
+        alive_ref[] = dead
+    end
+    return nothing
+end
+
+"""
+    DLCLOSE_COUNT
+
+How many images this session has closed, process-wide.
+
+Closing an image twice is not an error the loader can detect after the fact —
+the second `dlclose` decrements a refcount that belongs to someone else, or
+unmaps code another name is still pointing at — so the invariant "one open, one
+close" is asserted by counting rather than by hoping. `close_artifact_handle!`
+is the only place that closes, and `test/test_loadpolicy.jl` reads this
+counter to check that unloading a library with an alias closes it once.
+"""
+const DLCLOSE_COUNT = Threads.Atomic{Int}(0)
+
+"""
+    close_artifact_handle!(handle)
+
+`Libdl.dlclose(handle)`, counted. The single close point of the package.
+"""
+function close_artifact_handle!(handle::Ptr{Cvoid})
+    handle == C_NULL && return nothing
+    Threads.atomic_add!(DLCLOSE_COUNT, 1)
+    Libdl.dlclose(handle)
+    return nothing
+end
+
+"""
+    library_names_for_handle(handle) -> Vector{String}
+
+Every `RUST_LIBRARIES` name that resolves to `handle`.
+
+One handle legitimately sits under two names (`alias_artifact!`), and both are
+the *same* loaded image: unloading either one must therefore remove both and
+close once. Removing one and leaving the other behind leaves a name pointing at
+code that is about to be unmapped, and closing per name closes an image the
+process opened once.
+
+The caller must hold `REGISTRY_LOCK`.
+"""
+function library_names_for_handle(handle::Ptr{Cvoid})
+    names = String[]
+    handle == C_NULL && return names
+    for (name, (other, _)) in RUST_LIBRARIES
+        other == handle && push!(names, name)
+    end
+    return names
+end
+
+"""
     load_artifact!(policy::LoadPolicy, path;
                    lib_name, symbols = (), return_types = (), eager = (),
                    snapshot_env = nothing, on_replace = :keep_handle,
@@ -1116,14 +1239,18 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         install_library_metadata!(name, symbols, return_types)
         alive = _fresh_alive!(name)
         RUST_LIBRARIES[name] = (handle, cache)
+        # Module-local copies of the handle move in the same critical section,
+        # so a generated `@rust_crate` module's fast path can never read a
+        # handle that has been replaced out from under it.
+        _update_handle_mirrors!(name, handle, alive)
         set_current && (CURRENT_LIB[] = name)
         return LoadedArtifact(name, handle, lib_path, policy, alive, assumed)
     end
 
     # dlclose outside the lock: it runs destructors in the image. Only a
     # handle this call is responsible for — see `close_duplicate`.
-    (close_duplicate && duplicate != C_NULL) && Libdl.dlclose(duplicate)
-    (replaced != C_NULL && on_replace === :dlclose) && Libdl.dlclose(replaced)
+    (close_duplicate && duplicate != C_NULL) && close_artifact_handle!(duplicate)
+    (replaced != C_NULL && on_replace === :dlclose) && close_artifact_handle!(replaced)
     return artifact
 end
 
@@ -1179,20 +1306,28 @@ function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; dlclose:
     name = String(lib_name)
     handle = C_NULL
     removed = lock(REGISTRY_LOCK) do
-        _retire_alive!(name)
-        delete!(ARTIFACT_ALIVE, name)
-        found = haskey(RUST_LIBRARIES, name)
-        if found
-            handle, _ = RUST_LIBRARIES[name]
-            delete!(RUST_LIBRARIES, name)
+        entry = get(RUST_LIBRARIES, name, nothing)
+        handle = entry === nothing ? C_NULL : entry[1]
+        # Every name of this handle goes, not just the one asked for: an alias
+        # is a second name for the *same image*, so leaving it behind would
+        # leave a live registry entry pointing at code this call is about to
+        # unmap.
+        names = handle == C_NULL ? [name] : library_names_for_handle(handle)
+        name in names || push!(names, name)
+        for each in names
+            _retire_alive!(each)
+            delete!(ARTIFACT_ALIVE, each)
+            delete!(RUST_LIBRARIES, each)
+            purge_library_state!(each)
+            _retire_handle_mirrors!(each)
+            if CURRENT_LIB[] == each
+                CURRENT_LIB[] = ""
+            end
         end
-        purge_library_state!(name)
-        if CURRENT_LIB[] == name
-            CURRENT_LIB[] = ""
-        end
-        return found
+        return entry !== nothing
     end
-    (dlclose && handle != C_NULL) && Libdl.dlclose(handle)
+    # ...and the image is closed exactly once, however many names it had.
+    (dlclose && handle != C_NULL) && close_artifact_handle!(handle)
     return removed
 end
 
@@ -1213,8 +1348,13 @@ through the stored name resolves `f` to `f`, misses the `rustcall_f` the
 library exports and falls into the cross-library search.
 
 The alias shares the aliased artifact's liveness flag, so unloading either name
-retires objects produced through both.  Returns `false` when `from` is not
-loaded.
+retires objects produced through both — and unloading *either* name removes
+**both**, because they name one image: `unload_artifact!` collects every name
+of the handle and closes it once (`library_names_for_handle`). Removing one and
+leaving the other would leave a registry entry pointing at unmapped code, and
+closing once per name would close an image the process opened once.
+
+Returns `false` when `from` is not loaded.
 """
 function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractString)
     source = String(from)
@@ -1226,8 +1366,10 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         entry === nothing && return false
         copy_library_metadata!(source, target)
         _retire_alive!(target)
-        ARTIFACT_ALIVE[target] = get!(() -> Ref(true), ARTIFACT_ALIVE, source)
+        alive = get!(() -> Ref(true), ARTIFACT_ALIVE, source)
+        ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
+        _update_handle_mirrors!(target, entry[1], alive)
         return true
     end
 end

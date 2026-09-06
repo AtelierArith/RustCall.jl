@@ -513,11 +513,14 @@ of the owned or borrowed buffer, exactly as the generated wrappers of
 non-generic `#[julia]` functions do.
 """
 function _call_monomorphized(info::FunctionInfo, args...)
+    # Resolved before the call: the channel is a thread-local in the image, so
+    # nothing may yield between the wrapper call and the read (#244).
+    channel = panic_channel_pointer(info.lib_name, info.name)
     if info.string_return === :none && !any(_is_string_abi, info.arg_abis)
-        return guard_rust_panic(
+        return guard_rust_panic_ptr(
             call_rust_function(info.func_ptr, info.return_type,
                                _monomorphized_call_args(info, args)...),
-            info.lib_name, info.name)
+            channel, info.name)
     end
     if length(info.arg_abis) != length(args)
         error("Function '$(info.name)' takes $(length(info.arg_abis)) argument(s) but $(length(args)) were given")
@@ -547,7 +550,7 @@ function _call_monomorphized(info::FunctionInfo, args...)
         else
             call_rust_function(info.func_ptr, info.return_type, call_args...)
         end
-        guard_rust_panic(result, info.lib_name, info.name)
+        guard_rust_panic_ptr(result, channel, info.name)
     end
 end
 

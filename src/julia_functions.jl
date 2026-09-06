@@ -327,13 +327,17 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     # fallback), and the panic channel has to be read on the library that
     # actually holds the wrapper — otherwise a panic is looked for in the
     # wrong image and silently missed (#244).
+    channel_sym = _generated_local("panic_channel", sig.arg_names)
     return quote
         function $func_name($(arg_syms...))
             $ptr_sym, $lib_sym =
                 RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
-            RustCall.guard_rust_panic(
+            # Resolved before the call: the channel is a thread-local in the
+            # image, so nothing may yield between the two (#244).
+            $channel_sym = RustCall.panic_channel_pointer($lib_sym, $symbol_str)
+            RustCall.guard_rust_panic_ptr(
                 RustCall.call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...)),
-                $lib_sym, $symbol_str, $rust_name)
+                $channel_sym, $rust_name)
         end
     end
 end
@@ -349,6 +353,7 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     # owner is the function name; the contract turns that into `free_symbol`.
     c = ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.name)
     rust_name = sig.name
+    channel_sym = _generated_local("panic_channel", sig.arg_names)
     call = if ffi_owned_string_return(c)
         # The release stays indirect — the symbol is resolved inside the
         # allocating library, which is the #249 half (#277 swaps the mechanism).
@@ -361,15 +366,17 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
         :(RustCall._call_rust_borrowed_string($lib_sym, $symbol_str, $(call_args...)))
     else
         ret = ffi_return_symbol_or_throw(sig.return_type, sig.return_abi, _ffi_context(sig))
-        :(RustCall.guard_rust_panic(
+        :(RustCall.guard_rust_panic_ptr(
               RustCall.call_rust_function(RustCall.get_function_pointer($lib_sym, $symbol_str),
                                           $ret, $(call_args...)),
-              $lib_sym, $symbol_str, $rust_name))
+              $channel_sym, $rust_name))
     end
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
             $lib_sym = last(RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str))
+            # Before the call, for the reason in `guard_rust_panic_ptr`.
+            $channel_sym = RustCall.panic_channel_pointer($lib_sym, $symbol_str)
             GC.@preserve $(preserved...) begin
                 $call
             end
@@ -393,17 +400,19 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
     lib_sym = _generated_local("lib_name", sig.arg_names)
     ptr_sym = _generated_local("func_ptr", sig.arg_names)
     c_sym = _generated_local("c_result", sig.arg_names)
+    channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
             $ptr_sym, $lib_sym =
                 RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
+            $channel_sym = RustCall.panic_channel_pointer($lib_sym, $symbol_str)
             $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.CResultType{$ok_slot, $err_slot}, $(converted_args...))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel must be read before the
-            # payload is decoded (#244).
-            RustCall.check_rust_panic($lib_sym, $symbol_str, $rust_name)
+            # payload is decoded, and resolved before the call (#244).
+            RustCall.check_rust_panic_ptr($channel_sym, $rust_name)
             RustCall.convert_c_result_to_rust_result($c_sym, $ok_t, $err_t)
         end
     end
@@ -415,14 +424,16 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
     lib_sym = _generated_local("lib_name", sig.arg_names)
     ptr_sym = _generated_local("func_ptr", sig.arg_names)
     c_sym = _generated_local("c_option", sig.arg_names)
+    channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
             $ptr_sym, $lib_sym =
                 RustCall._resolve_call(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
+            $channel_sym = RustCall.panic_channel_pointer($lib_sym, $symbol_str)
             $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($ptr_sym, RustCall.COptionType{$inner_slot}, $(converted_args...))
-            RustCall.check_rust_panic($lib_sym, $symbol_str, $rust_name)
+            RustCall.check_rust_panic_ptr($channel_sym, $rust_name)
             RustCall.convert_c_option_to_rust_option($c_sym, $inner_t)
         end
     end

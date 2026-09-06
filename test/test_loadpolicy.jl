@@ -354,7 +354,30 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         # The Julia half of the channel.
         @test RustCall.ffi_panic_symbol("rustcall_f") == "rustcall_f_take_panic"
         @test RustCall.take_rust_panic(C_NULL) === nothing
-        @test RustCall.check_rust_panic("no_such_lib", "no_such_symbol") === nothing
+        # A library with no channel is a no-op, and the guard passes the value
+        # through untouched.
+        @test RustCall.check_rust_panic_ptr(C_NULL, "no_such_symbol") === nothing
+        @test RustCall.guard_rust_panic_ptr(42, C_NULL, "no_such_symbol") == 42
+        @test RustCall.panic_channel_pointer("no_such_lib", "no_such_symbol") == C_NULL
+        # The channel is resolved BEFORE the wrapper call at every call site:
+        # it is a thread-local in the image, so a lock (which can yield) between
+        # the call and the read would let the task move to another OS thread and
+        # miss the panic entirely. `test_panics.jl` asserts the behaviour under
+        # concurrency; this pins the shape.
+        for (file, kind) in (("rustmacro.jl", "channel = panic_channel_pointer("),
+                             ("generics.jl", "channel = panic_channel_pointer("),
+                             ("structs.jl", "channel = panic_channel_pointer("),
+                             ("julia_functions.jl", "panic_channel_pointer("),
+                             ("crate_bindings.jl", "_panic_channel("))
+            @test occursin(kind, _src(file))
+        end
+        # ...and the old, resolve-after-the-call entry points are gone.
+        for file in readdir(_SRC_DIR)
+            endswith(file, ".jl") || continue
+            src = _src(file)
+            @test !occursin("guard_rust_panic(", src)
+            @test !occursin("check_rust_panic(", src)
+        end
         e = RustCall.RustPanicError("f", "boom")
         @test e isa Exception
         @test occursin("boom", sprint(showerror, e))
@@ -561,6 +584,125 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         @test occursin("alias_artifact!(", _src("rustmacro.jl"))
         # unload_library / unload_all_libraries are wrappers now.
         @test occursin("unload_artifact!(", _src("ruststr.jl"))
+    end
+
+    # -----------------------------------------------------------------
+    # An alias is a second name for ONE image, so it needs one close.
+    #
+    # `alias_artifact!` used to insert the same handle under two names with no
+    # bookkeeping, so `unload_all_libraries()` closed it twice — the second
+    # close decrements a refcount that belongs to someone else — and unloading
+    # one name left the other pointing at code that was about to be unmapped.
+    # -----------------------------------------------------------------
+    @testset "an alias is one image, closed once" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to build a library to alias"
+        else
+            lib = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_alias_probe() -> i32 { 5 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_alias_$(getpid())"
+            alias = name * "_second"
+            try
+                a = RustCall.load_artifact!(policy, lib; lib_name = name)
+                @test RustCall.alias_artifact!(policy, name, alias)
+                @test lock(() -> RustCall.RUST_LIBRARIES[alias][1],
+                           RustCall.REGISTRY_LOCK) == a.handle
+                @test RustCall.library_names_for_handle(a.handle) |> Set ==
+                      Set([name, alias])
+
+                # Unloading *either* name removes both, and closes once.
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.unload_artifact!(policy, alias)
+                @test RustCall.DLCLOSE_COUNT[] == before + 1
+                @test !haskey(RustCall.RUST_LIBRARIES, alias)
+                @test !haskey(RustCall.RUST_LIBRARIES, name)   # not left dangling
+                @test !a.alive[]
+
+                # ...and unloading again is a no-op rather than a second close.
+                @test !RustCall.unload_artifact!(policy, name)
+                @test RustCall.DLCLOSE_COUNT[] == before + 1
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    delete!(RustCall.RUST_LIBRARIES, name)
+                    delete!(RustCall.RUST_LIBRARIES, alias)
+                    delete!(RustCall.ARTIFACT_ALIVE, name)
+                    delete!(RustCall.ARTIFACT_ALIVE, alias)
+                end
+            end
+
+            # `unload_all_libraries` walks names, so it must survive an alias
+            # disappearing under it.
+            lib2 = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_alias_probe2() -> i32 { 6 }
+                """)
+            name2 = "loadpolicy_alias_all_$(getpid())"
+            alias2 = name2 * "_second"
+            RustCall.load_artifact!(policy, lib2; lib_name = name2)
+            RustCall.alias_artifact!(policy, name2, alias2)
+            before = RustCall.DLCLOSE_COUNT[]
+            @test_nowarn RustCall.unload_all_libraries()
+            @test isempty(RustCall.RUST_LIBRARIES)
+            # One close for the aliased image, whatever else was loaded.
+            @test RustCall.DLCLOSE_COUNT[] >= before + 1
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # A module-local copy of a handle must not go stale (#277).
+    #
+    # A generated `@rust_crate` module reads its handle from its own `Ref` on
+    # every call. A hot reload closes the previous image and `unload_library`
+    # closes it outright, so a raw copy would be a `dlsym` into unmapped
+    # memory. The loader keeps registered mirrors in step.
+    # -----------------------------------------------------------------
+    @testset "handle mirrors follow replace and unload" begin
+        policy = RustCall.LoadPolicy("test-mirror"; sets_current_lib = false)
+        name = "loadpolicy_mirror_$(getpid())"
+        handle_ref = Ref(Ptr{Cvoid}(C_NULL))
+        alive_ref = Ref(Ref(true))
+        first_handle = Ptr{Cvoid}(UInt(0xaaaa0000))
+        second_handle = Ptr{Cvoid}(UInt(0xbbbb0000))
+        try
+            RustCall.register_handle_mirror!(name, handle_ref, alive_ref)
+            # Nothing registered yet, so the mirror is untouched.
+            @test handle_ref[] == C_NULL
+
+            a = RustCall.adopt_artifact!(policy, first_handle; lib_name = name)
+            @test handle_ref[] == first_handle
+            @test alive_ref[] === a.alive
+            @test alive_ref[][]
+
+            # A replace — what a hot reload does — moves the mirror to the new
+            # handle and the new liveness flag in the same transaction.
+            b = RustCall.adopt_artifact!(policy, second_handle; lib_name = name)
+            @test handle_ref[] == second_handle
+            @test alive_ref[] === b.alive
+            @test alive_ref[][]
+            @test !a.alive[]              # the previous artifact is retired
+
+            # An unload empties the mirror, so the module's own check reports
+            # "not loaded" instead of dlsym'ing a closed handle.
+            RustCall.unload_artifact!(policy, name; dlclose = false)
+            @test handle_ref[] == C_NULL
+            @test !alive_ref[][]
+            @test !b.alive[]
+
+            # The mirror stays registered: a reload under the same name — which
+            # is what hot reload is — fills it in again.
+            c = RustCall.adopt_artifact!(policy, first_handle; lib_name = name)
+            @test handle_ref[] == first_handle
+            @test alive_ref[] === c.alive
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.RUST_LIBRARIES, name)
+                delete!(RustCall.ARTIFACT_ALIVE, name)
+                delete!(RustCall.HANDLE_MIRRORS, name)
+            end
+        end
     end
 
     # -----------------------------------------------------------------

@@ -1019,12 +1019,18 @@ end
 Unload all loaded Rust libraries.
 """
 function unload_all_libraries()
-    libs = lock(REGISTRY_LOCK) do
-        collect(keys(RUST_LIBRARIES))
+    # One image may sit under several names (`alias_artifact!`), and unloading
+    # any of them removes them all and closes the image once. So the loop
+    # re-checks rather than warning about a name a previous iteration already
+    # took away (#277 Phase B).
+    while true
+        name = lock(REGISTRY_LOCK) do
+            isempty(RUST_LIBRARIES) ? nothing : first(keys(RUST_LIBRARIES))
+        end
+        name === nothing && break
+        unload_artifact!(inline_rustc_policy(), name)
     end
-    for lib_name in libs
-        unload_library(lib_name)
-    end
+    return nothing
 end
 
 # irust"" string literal implementation

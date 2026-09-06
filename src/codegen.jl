@@ -191,78 +191,83 @@ end
     take_rust_panic(channel::Ptr{Cvoid}) -> Union{String, Nothing}
 
 Read and clear the pending panic message of one wrapper, or `nothing` when it
-did not panic. `channel` is a pointer obtained from `panic_channel_pointer`.
+did not panic.
 
-Two calls at most: the first with a fixed buffer, and — only if the message was
-longer — a second with a buffer of exactly the length the channel reported. The
-channel deliberately keeps a message it could not deliver whole, so nothing is
-truncated and nothing is lost.
+Two `ccall`s at most, and **the first one allocates nothing**: passing a null
+buffer asks the channel for the length only, which it reports without clearing
+the slot. That matters because the answer is almost always "no panic", and
+because the probe has to happen with nothing at all between it and the wrapper
+call that preceded it — see `guard_rust_panic_ptr`.
+
+The second call, made only when there *is* a message, passes a buffer of
+exactly the length the channel reported and clears the slot.
 """
 function take_rust_panic(channel::Ptr{Cvoid})
     channel == C_NULL && return nothing
-    buffer = Vector{UInt8}(undef, _PANIC_BUFFER_BYTES)
-    len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), buffer, length(buffer))
+    len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
     len == 0 && return nothing
-    if len > length(buffer)
-        buffer = Vector{UInt8}(undef, len)
-        len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), buffer, length(buffer))
-        len == 0 && return nothing
-    end
-    return String(@view buffer[1:Int(len)])
+    return _fetch_rust_panic(channel, Int(len))
 end
 
-"""
-    check_rust_panic(lib_name, symbol, func_name = symbol)
-
-Raise `RustPanicError` when the wrapper `symbol` of `lib_name` recorded a panic
-during the call that just returned.
-
-Called immediately after every ccall that goes through a generated wrapper. The
-cost on the common path is one dictionary lookup plus one ccall into a
-thread-local read that returns 0; a library with no channel costs the lookup
-alone (#244).
-"""
-function check_rust_panic(lib_name::AbstractString, symbol::AbstractString,
-                          func_name::AbstractString = symbol)
-    channel = panic_channel_pointer(lib_name, symbol)
-    channel == C_NULL && return nothing
-    message = take_rust_panic(channel)
-    message === nothing && return nothing
-    throw(RustPanicError(String(func_name), message))
+# Separate function so the allocation is out of line: `take_rust_panic` stays
+# small enough to inline as one `ccall` plus a branch on the common path.
+@noinline function _fetch_rust_panic(channel::Ptr{Cvoid}, len::Int)
+    buffer = Vector{UInt8}(undef, len)
+    got = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), buffer, length(buffer))
+    # The slot was emptied between the probe and the fetch. That should not
+    # happen — nothing between them yields, so the task cannot have moved off
+    # this thread — but reporting the panic without its text beats reporting no
+    # panic at all.
+    got == 0 && return "the Rust function panicked (message unavailable)"
+    return String(@view buffer[1:min(Int(got), len)])
 end
 
 """
     guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name)
 
-`value`, unless the wrapper whose channel is `channel` panicked.
+`value`, unless the wrapper whose channel is `channel` panicked — in which case
+the sentinel `value` is discarded and `RustPanicError` is raised.
 
-The pointer form, for callers that resolve symbols themselves and keep their
-own channel cache rather than going through `RUST_LIBRARIES` — the modules
-`@rust_crate` generates, and the bindings files `write_bindings_to_file`
-emits. `C_NULL` means "this artifact has no channel" (built before #244, or a
-raw `#[no_mangle]` function), and the guard is then a no-op.
+# Why the channel is a pointer and not a `(library, symbol)` pair
+
+The channel is a **thread-local** in the loaded image, so the wrapper call and
+the channel read have to happen on the same OS thread. A Julia task moves
+between threads only at a yield point, so the rule is that nothing between the
+two may yield — and resolving the channel from a `Dict` under `REGISTRY_LOCK`
+does yield when the lock is contended. That is exactly long enough for the task
+to be rescheduled elsewhere, where it would read an empty slot and miss the
+panic entirely, while a later task landing on the original thread would pick up
+a message that does not belong to it.
+
+So the resolution happens **before** the wrapper call, where yielding is
+harmless, and this function is what runs immediately after it: one `ccall` into
+a thread-local read, no lock, no allocation, no logging. The shape every call
+site uses is
+
+    channel = panic_channel_pointer(lib, symbol)   # may yield: before the call
+    value   = call_rust_function(ptr, T, args...)  # cannot yield
+    guard_rust_panic_ptr(value, channel, name)     # cannot yield
+
+`C_NULL` means the artifact has no channel (built before #244, or a raw
+`#[no_mangle]` function the user wrote), and the guard is then a no-op.
 """
 function guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name::AbstractString)
-    message = take_rust_panic(channel)
-    message === nothing && return value
-    throw(RustPanicError(String(func_name), message))
+    channel == C_NULL && return value
+    len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
+    len == 0 && return value
+    throw(RustPanicError(String(func_name), _fetch_rust_panic(channel, Int(len))))
 end
 
 """
-    guard_rust_panic(value, lib_name, symbol, func_name = symbol)
+    check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name)
 
-`value`, unless the wrapper `symbol` panicked — in which case the sentinel
-`value` the wrapper returned is discarded and `RustPanicError` is raised.
-
-The call-site shape: `guard_rust_panic(call_rust_function(ptr, T, args...),
-lib, symbol)`. Evaluating `value` first is the point — the channel is only
-meaningful after the call has returned.
+`guard_rust_panic_ptr` for a call whose result is decoded separately — a
+`CResult_*` / `COption_*` payload, or a string buffer. Same rule: the channel
+must already be resolved, and nothing may run between the wrapper call and
+this.
 """
-function guard_rust_panic(value, lib_name::AbstractString, symbol::AbstractString,
-                          func_name::AbstractString = symbol)
-    check_rust_panic(lib_name, symbol, func_name)
-    return value
-end
+check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name::AbstractString) =
+    (guard_rust_panic_ptr(nothing, channel, func_name); nothing)
 
 """
     install_library_metadata!(lib_name, symbols, return_types)
