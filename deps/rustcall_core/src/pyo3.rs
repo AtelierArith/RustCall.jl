@@ -797,17 +797,20 @@ fn is_string_spelling(spelling: &str) -> bool {
             .unwrap_or(false)
 }
 
-/// Every exported symbol a wrapper derives from one manifest symbol: the entry
-/// point itself and its panic-channel reader (`<symbol>_take_panic`,
-/// `codegen::PANIC_SYMBOL_SUFFIX`). A clash on either is a duplicate
+/// Every name a wrapper derives from one manifest symbol: the entry point
+/// itself, its panic-channel reader (`<symbol>_take_panic`,
+/// `codegen::PANIC_SYMBOL_SUFFIX`), and the private thread-local slot that
+/// reader drains — `__RUSTCALL_PANIC_<SYMBOL>`, the symbol upper-cased, which
+/// `foo` and `FOO` would therefore share. A clash on any of them is a duplicate
 /// definition in the generated crate — `foo` and `foo_take_panic` as two
-/// `#[pyfunction]`s both want `rustcall_foo_take_panic` — so both are
-/// reserved and both are checked (#307 review). Field accessors have no
-/// reader and derive nothing.
-fn wrapper_symbols(symbol: &str) -> [String; 2] {
+/// `#[pyfunction]`s both want `rustcall_foo_take_panic` — so all are reserved
+/// and all are checked (#307 review). Field accessors have no reader and
+/// derive nothing.
+fn wrapper_symbols(symbol: &str) -> [String; 3] {
     [
         symbol.to_string(),
         format!("{symbol}{}", crate::codegen::PANIC_SYMBOL_SUFFIX),
+        format!("__RUSTCALL_PANIC_{}", symbol.to_uppercase()),
     ]
 }
 

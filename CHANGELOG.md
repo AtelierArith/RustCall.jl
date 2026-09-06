@@ -83,7 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaced a crate's `[build] rustflags`); a `std::`-anchored return type is
   never mistaken for a class of the same name; the string helpers a wrapper
   declares (`<owner>_RustCallOwnedString` and friends) are reserved per owner
-  like every other symbol; and
+  like every other symbol, as is the case-folded panic slot two items whose
+  names differ only by case would share; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

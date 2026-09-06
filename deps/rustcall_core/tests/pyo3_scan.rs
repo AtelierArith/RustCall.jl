@@ -1185,3 +1185,22 @@ fn string_helper_names_are_reserved_too() {
     assert_eq!(by("label").skip_reason, "symbol_collision:User_label");
     assert_eq!(by("count").skip_reason, "");
 }
+
+/// The private thread-local slot a wrapper's panic reader drains is named from
+/// the upper-cased symbol (`__RUSTCALL_PANIC_RUSTCALL_FOO`), so two items whose
+/// names differ only by case would declare it twice. It is reserved like the
+/// symbols it belongs to (#307 review): the second item is a collision.
+#[test]
+fn case_folded_panic_slots_are_reserved() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }\n\
+         #[pyfunction] pub fn FOO() -> i32 { 2 }\n\
+         #[pyfunction] pub fn bar() -> i32 { 3 }",
+    );
+    assert_eq!(function(&manifest, "foo").skip_reason, "");
+    assert_eq!(
+        function(&manifest, "FOO").skip_reason,
+        "symbol_collision:foo"
+    );
+    assert_eq!(function(&manifest, "bar").skip_reason, "");
+}
