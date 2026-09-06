@@ -422,7 +422,8 @@ Generate a Julia module expression containing bindings for the crate.
 function emit_crate_module(info::CrateInfo, lib_path::String;
                            module_name::Union{String, Nothing}=nothing,
                            build_release::Bool = true,
-                           lib_name::Union{String, Nothing} = nothing)
+                           lib_name::Union{String, Nothing} = nothing,
+                           preload::Vector{String} = String[])
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -453,6 +454,10 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
 
         const _LIB_PATH = $lib_path
         const _LIB_NAME = $lib_key
+        # Libraries the image imports by name that the loader would not find on
+        # its own — a PyO3 wrapper's `python3xy.dll` on Windows, where there is
+        # no rpath — opened before it (`PyO3LinkPlan.runtime_libraries`).
+        const _PRELOAD_LIBRARIES = $preload
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -478,7 +483,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # module would go back to entering the retired image (#277).
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
             RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;
-                                    lib_name = _LIB_NAME)
+                                    lib_name = _LIB_NAME, preload = _PRELOAD_LIBRARIES)
         end
 
         # Resolved symbols, memoized per **handle**: a reload swaps the image
@@ -1536,7 +1541,8 @@ function generate_bindings(crate_path::String;
             return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
                                      module_name = output_module_name,
                                      build_release = build_release,
-                                     lib_name = wrapper.lib_name)
+                                     lib_name = wrapper.lib_name,
+                                     preload = wrapper.plan.runtime_libraries)
         end
     end
 
@@ -2112,6 +2118,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     # goes into the file come from the wrapper's own manifest.
     lib_name = nothing
     wrapper_lib_path = ""
+    preload = String[]
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release)
@@ -2127,6 +2134,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
             info = wrapper.info
             lib_name = wrapper.lib_name
             wrapper_lib_path = wrapper.lib_path
+            preload = wrapper.plan.runtime_libraries
         end
     end
 
@@ -2197,6 +2205,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         build_release = build_release,
         strict = strict,
         lib_name = lib_name,
+        preload = preload,
     )
 
     # Write to file
@@ -2222,6 +2231,10 @@ Generate Julia module code as a string, suitable for writing to a file.
 - `strict::Symbol`: how an unsupported return type is handled, see
   [`FFI_STRICT`](@ref). Threaded through every emitter rather than set globally,
   so concurrent calls do not interfere.
+- `preload::Vector{String}`: libraries the image imports by name that the
+  loader would not find on its own (a PyO3 wrapper's Python DLL on Windows),
+  opened before it by `load_artifact!`. Emitted only when non-empty, so a file
+  that needs none reads under a RustCall without the option.
 
 # Returns
 - `String`: Julia source code for the module
@@ -2231,7 +2244,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     use_relative_path::Bool = false,
     build_release::Bool = true,
     strict::Symbol = FFI_STRICT[],
-    lib_name::Union{String, Nothing} = nothing
+    lib_name::Union{String, Nothing} = nothing,
+    preload::Vector{String} = String[]
 )
     # Determine module name
     mod_name = if module_name !== nothing
@@ -2273,6 +2287,12 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     end
     push!(lines, "const _LIB_NAME = $(repr(lib_name === nothing ?
         crate_library_name(info; release = build_release) : lib_name))")
+    if !isempty(preload)
+        push!(lines, "# Libraries the image imports by name that the loader would not find on")
+        push!(lines, "# its own (a PyO3 wrapper's Python DLL on Windows, which has no rpath),")
+        push!(lines, "# opened before it.")
+        push!(lines, "const _PRELOAD_LIBRARIES = $(repr(preload))")
+    end
     push!(lines, "")
     push!(lines, "# Everything this module knows about the image it calls -- handle, liveness")
     push!(lines, "# flag and generation -- as one immutable value, published by the loader in")
@@ -2285,7 +2305,11 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    # concurrent reload had already published.")
     push!(lines, "    RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)")
     push!(lines, "    RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;")
-    push!(lines, "                            lib_name = _LIB_NAME)")
+    if isempty(preload)
+        push!(lines, "                            lib_name = _LIB_NAME)")
+    else
+        push!(lines, "                            lib_name = _LIB_NAME, preload = _PRELOAD_LIBRARIES)")
+    end
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# Resolved symbols, memoized per handle: a reload swaps the image under the")

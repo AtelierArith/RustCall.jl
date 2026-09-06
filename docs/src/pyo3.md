@@ -452,9 +452,16 @@ Two platform differences that the plan and the link flags both encode:
   `:link_libpython` build. `RustCall.extension_module_is_linkable()` is the
   predicate.
 * **Windows has no rpath.** `pyo3_link_rustflags` emits only `-L native=<dir>`
-  there; the interpreter's DLL directory has to be on `PATH` when the wrapper is
-  loaded. On Unix an rpath is recorded in the library itself and nothing else is
-  needed.
+  there, and the wrapper imports `python3xy.dll` by name — a file that lives
+  beside the interpreter, not in the `libs` directory it linked against, and
+  that need not be on the Julia process's `PATH` (a virtual environment or a
+  Conda `PYO3_PYTHON`). So the plan records the DLL the interpreter itself is
+  running (`plan.runtime_libraries`), and the generated module opens it, by
+  full path, before the wrapper: the Windows loader satisfies an import by name
+  from a module the process has already loaded. When no interpreter is
+  consulted (`PYO3_CONFIG_FILE`, `PYO3_CROSS_LIB_DIR`) nothing is recorded and
+  the DLL directory has to be on `PATH`. On Unix an rpath is recorded in the
+  library itself and nothing else is needed.
 
 The wrapper build applies these options from a generated `build.rs`
 (`cargo:rustc-link-search`, `cargo:rustc-link-arg`) rather than through

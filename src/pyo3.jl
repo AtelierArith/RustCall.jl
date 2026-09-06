@@ -138,6 +138,10 @@ configuration to scan the crate under (#275 Phase 1.5).
   part of the identity, so a Python upgraded in place behind the same path, or
   a retargeted symlink, is a different wrapper rather than a stale cache hit
   (#307 review; the analogue of `artifact_compiler_identity` for `rustc`).
+- `runtime_libraries::Vector{String}`: the libraries the wrapper imports by
+  name that the loader would not find on its own, opened before it when the
+  generated module loads — on Windows, which has no rpath, the interpreter's
+  own `python3xy.dll` (`_python_runtime_libraries`); empty elsewhere.
 - `resolved::Bool`: whether Cargo answered. `false` means the plan is the
   conservative reading of `Cargo.toml` described below.
 - `reason::String`: why this mode was chosen, in words.
@@ -187,6 +191,7 @@ struct PyO3LinkPlan
     resolved::Bool
     interpreter::String
     interpreter_config::String
+    runtime_libraries::Vector{String}
 end
 
 function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String,
@@ -194,10 +199,11 @@ function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String
                       pyo3_features::Vector{String} = String[],
                       crate_features::Vector{String} = String[],
                       cfg_text::String = "", resolved::Bool = false,
-                      interpreter::String = "", interpreter_config::String = "")
+                      interpreter::String = "", interpreter_config::String = "",
+                      runtime_libraries::Vector{String} = String[])
     PyO3LinkPlan(mode, feature_flags, rpath, reason, dependency_default_features,
                  pyo3_features, crate_features, cfg_text, resolved, interpreter,
-                 interpreter_config)
+                 interpreter_config, runtime_libraries)
 end
 
 """
@@ -371,7 +377,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
         " — and the interpreter's library directory could not be located (tried " *
         "RUSTCALL_PYTHON_LIBDIR, python3-config --ldflags and sysconfig LIBDIR)" :
         "; $(rpath) is put on the linker's search path at wrapper-build time" *
-        (Sys.iswindows() ? " (Windows resolves the DLL through PATH at load time, not an rpath)" :
+        (Sys.iswindows() ? " (Windows has no rpath: the interpreter's DLL is opened before " *
+                           "the wrapper when the module loads)" :
                            " and recorded as an rpath")
     extension_note = "extension-module" in pyo3_features ?
         ". On Windows pyo3 still links the interpreter's import library with " *
@@ -381,7 +388,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                         "libpython$(detail)$(extension_note)", !no_defaults;
                         pyo3_features = pyo3_features, crate_features = crate_features,
                         cfg_text = cfg_text, resolved = true, interpreter = interpreter,
-                        interpreter_config = interpreter_config)
+                        interpreter_config = interpreter_config,
+                        runtime_libraries = _python_runtime_libraries(interpreter))
 end
 
 """
@@ -579,7 +587,8 @@ function _pyo3_unresolved_cfg_plan(crate_path::AbstractString, flags::Vector{Str
     return PyO3LinkPlan(mode, copy(flags), rpath, note, !no_defaults;
                         pyo3_features = pyo3_features, crate_features = crate_features,
                         cfg_text = "", resolved = false, interpreter = interpreter,
-                        interpreter_config = interpreter_config)
+                        interpreter_config = interpreter_config,
+                        runtime_libraries = _python_runtime_libraries(interpreter))
 end
 
 """
@@ -707,7 +716,8 @@ function _pyo3_conservative_plan(cargo_toml::AbstractDict)
                          ". On Windows pyo3 still links the interpreter's import library with " *
                          "`extension-module`, so this build is linkable where a Unix one would " *
                          "not be" : "") * note;
-                        interpreter = interpreter, interpreter_config = interpreter_config)
+                        interpreter = interpreter, interpreter_config = interpreter_config,
+                        runtime_libraries = _python_runtime_libraries(interpreter))
 end
 
 # One pyo3 dependency declaration: the (possibly renamed) key it is declared
@@ -900,6 +910,46 @@ function _python_interpreter_fingerprint(exe::AbstractString)
         return String(strip(read(`$exe -c $code`, String)))
     catch
         return ""
+    end
+end
+
+"""
+    _python_runtime_libraries(interpreter) -> Vector{String}
+
+The shared libraries a `:link_libpython` wrapper needs at **load** time that the
+platform's loader would not find on its own — on Windows, the interpreter's own
+`python3xy.dll`.
+
+The wrapper links the import library in `LIBDIR` (`…\\libs`), but the DLL it
+then imports by name lives beside the interpreter (`sys.base_prefix`), and
+Windows has no rpath: the loader searches the application directory, the system
+directories and `PATH`, so a wrapper built against a virtual-environment or
+Conda `PYO3_PYTHON` that is not on the Julia process's `PATH` linked fine and
+failed to `dlopen` (#307 review). The Windows loader does, however, satisfy an
+import by name from a module the process has **already loaded**, whatever
+directory it came from — so the generated module opens this library, by full
+path, before the wrapper (`load_artifact!`'s `preload`), through the one load
+path of the package (#277).
+
+The path is the interpreter's own answer — `GetModuleFileNameW(sys.dllhandle)`,
+the DLL the running interpreter is executing — not a guess from its version and
+prefix, so a venv (whose `Scripts\\python.exe` is a launcher beside no DLL) and
+a Conda environment report the right file. Empty on every other platform, where
+the rpath does this, when `interpreter` is `""` (a `PYO3_CONFIG_FILE` or
+`PYO3_CROSS_LIB_DIR` configuration names no interpreter — put the DLL directory
+on `PATH` yourself), or when the interpreter cannot answer.
+"""
+function _python_runtime_libraries(interpreter::AbstractString)
+    (Sys.iswindows() && !isempty(interpreter)) || return String[]
+    code = "import ctypes, sys; " *
+           "buf = ctypes.create_unicode_buffer(32768); " *
+           "n = ctypes.windll.kernel32.GetModuleFileNameW(ctypes.c_void_p(sys.dllhandle), buf, 32768); " *
+           "print(buf.value if n else '')"
+    try
+        path = String(strip(read(`$interpreter -c $code`, String)))
+        return (!isempty(path) && isfile(path)) ? [path] : String[]
+    catch
+        return String[]
     end
 end
 
@@ -1502,9 +1552,10 @@ function _pyo3_wrapper_build_script(plan::PyO3LinkPlan)
     println(io, "// Generated by RustCall.jl for a PyO3 wrapper crate (#275 Phase 2).")
     println(io, "fn main() {")
     println(io, "    println!(\"cargo:rustc-link-search=native=", dir, "\");")
-    # Windows resolves a DLL through PATH at load time and `link.exe` rejects
-    # `-Wl,-rpath`; everywhere else the rpath is what lets the cdylib find
-    # libpython when Julia loads it (#294 review).
+    # `link.exe` rejects `-Wl,-rpath` and Windows has no equivalent: there the
+    # interpreter's DLL is opened before the wrapper when the module loads
+    # (`plan.runtime_libraries`). Everywhere else the rpath is what lets the
+    # cdylib find libpython when Julia loads it (#294 review).
     Sys.iswindows() || println(io, "    println!(\"cargo:rustc-link-arg=-Wl,-rpath,", dir, "\");")
     println(io, "}")
     return String(take!(io))

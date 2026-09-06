@@ -669,6 +669,41 @@ _manifest(text::AbstractString) = TOML.parse(text)
                   RustCall.PyO3LinkPlan(:python_free, String[], "", "test")) == ""
     end
 
+    @testset "the runtime DLL travels with the plan on Windows (#307 review)" begin
+        # Windows has no rpath and the wrapper imports `python3xy.dll` by name,
+        # a file beside the interpreter rather than in the `libs` directory it
+        # linked against; the plan records the DLL the interpreter itself runs
+        # and the module opens it before the wrapper. Elsewhere the rpath does
+        # this and nothing is recorded.
+        @test RustCall.PyO3LinkPlan(:link_libpython, String[], @__DIR__, "test").runtime_libraries ==
+              String[]
+        carried = RustCall.PyO3LinkPlan(:link_libpython, String[], @__DIR__, "test";
+                                        runtime_libraries = ["C:\\py\\python312.dll"])
+        @test carried.runtime_libraries == ["C:\\py\\python312.dll"]
+        # No interpreter (a `PYO3_CONFIG_FILE` / `PYO3_CROSS_LIB_DIR`
+        # configuration consults none): nothing to record.
+        @test RustCall._python_runtime_libraries("") == String[]
+        # One that cannot be run: nothing, not an error.
+        @test RustCall._python_runtime_libraries(joinpath(@__DIR__, "no_such_python")) == String[]
+        interpreter = RustCall._python_executable_on_path()
+        if !Sys.iswindows()
+            @test RustCall._python_runtime_libraries(interpreter) == String[]
+        elseif isempty(interpreter)
+            @test_skip "a Python interpreter is required"
+        else
+            libs = RustCall._python_runtime_libraries(interpreter)
+            @test length(libs) == 1
+            @test isfile(libs[1])
+            @test endswith(lowercase(libs[1]), ".dll")
+            @test occursin("python", lowercase(basename(libs[1])))
+            # ... and the plan that names this interpreter carries it.
+            plan = RustCall._pyo3_unresolved_cfg_plan(".", String[], ["a"], ["macros"], true)
+            if plan.interpreter == interpreter
+                @test plan.runtime_libraries == libs
+            end
+        end
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`

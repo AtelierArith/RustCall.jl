@@ -618,6 +618,19 @@ end
         # Test with custom module name
         code_named = RustCall.emit_crate_module_code(info, "/tmp/lib.so", module_name="CustomModule")
         @test occursin("module CustomModule", code_named)
+
+        # A library the image imports by name that the loader would not find
+        # (a PyO3 wrapper's Python DLL on Windows) is opened before it, through
+        # `load_artifact!`; a file that needs none says nothing about it, so it
+        # still reads under a RustCall without the option (#307 review).
+        @test !occursin("_PRELOAD_LIBRARIES", code)
+        @test !occursin("preload", code)
+        code_preload = RustCall.emit_crate_module_code(info, "/tmp/lib.so";
+            preload = ["C:\\\\Python312\\\\python312.dll"])
+        @test occursin("const _PRELOAD_LIBRARIES = $(repr(["C:\\\\Python312\\\\python312.dll"]))",
+                       code_preload)
+        @test occursin("lib_name = _LIB_NAME, preload = _PRELOAD_LIBRARIES)", code_preload)
+        @test !occursin("Libdl.dlopen", code_preload)
     end
 
     @testset "_emit_function_code" begin

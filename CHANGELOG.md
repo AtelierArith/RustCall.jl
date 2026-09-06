@@ -86,7 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never mistaken for a class of the same name; the string helpers a wrapper
   declares (`<owner>_RustCallOwnedString` and friends) are reserved per owner
   like every other symbol, as is the case-folded panic slot two items whose
-  names differ only by case would share; and
+  names differ only by case would share; on Windows, where there is no rpath,
+  the plan records the interpreter's own `python3xy.dll`
+  (`plan.runtime_libraries`) and the generated module opens it before the
+  wrapper (`load_artifact!`'s `preload`), so a `PYO3_PYTHON` that is not on
+  `PATH` loads; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
