@@ -744,6 +744,32 @@ end
         @test !occursin("\"\"", defs)
     end
 
+    @testset "an owned-String field getter snapshots its release function" begin
+        # No struct in `sample_crate` has a `String` field, so the branch is
+        # covered here: the getter and the function that releases the buffer it
+        # returns must come from ONE snapshot. Two lookups by name could
+        # straddle a hot reload, and the buffer would then be freed through the
+        # replacement image's allocator (#277).
+        info = RustCall.RustStructInfo(
+            "Tagged", String[], RustCall.RustMethod[], "",
+            [("label", "String")], true, Dict{String, Bool}();
+            field_abis = Dict("label" => "string"),
+            field_getters = Dict("label" => "rustcall_Tagged_label"),
+            has_owned_string_helper = true,
+        )
+
+        code = RustCall._emit_struct_code(info)
+        @test occursin("_call_target(\"rustcall_Tagged_label\", \"Tagged_free_rust_string\")", code)
+        @test occursin("_call_rust_owned_string_ptr(fp, freep, getfield(self, :ptr))", code)
+        # ...and never the two-lookup form it replaced.
+        @test !occursin("_get_func_ptr(\"Tagged_free_rust_string\")", code)
+        @test Meta.parse("module M\n" * code * "\nend") isa Expr
+
+        # The in-memory emitter agrees.
+        expr = string(RustCall._generate_crate_struct_wrapper(info))
+        @test occursin("_call_target(\"rustcall_Tagged_label\", \"Tagged_free_rust_string\")", expr)
+    end
+
     @testset "_emit_struct_code finalizer is exception-safe" begin
         struct_info = RustCall.RustStructInfo(
             "SafeStruct",
