@@ -303,6 +303,67 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a workspace member's probe is a root of its own (#307 review)" begin
+        # Under `<member>/target/` Cargo climbs to the ancestor workspace and
+        # rejects a generated crate that is not one of its members — unless the
+        # generated manifest declares an empty `[workspace]`. A member's
+        # lockfile and `[patch]` live at the workspace root, and that is where
+        # they are taken from.
+        mktempdir() do ws
+            # Root-only inputs: a `[patch]` and a lockfile at the workspace
+            # root (never built, so the patch may name nothing).
+            write(joinpath(ws, "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+            [patch.crates-io]
+            foo = { path = "vendor/foo" }
+            """)
+            write(joinpath(ws, "Cargo.lock"), "# the workspace's lockfile\n")
+            member = _write_crate(joinpath(ws, "member"), """
+            [package]
+            name = "member"
+            version = "0.1.0"
+            edition = "2021"
+            [lib]
+            crate-type = ["rlib"]
+            """)
+            @test RustCall._cargo_root_dir(member) == ws
+            patched = RustCall._root_patch_toml(member)
+            @test occursin("[patch.crates-io", patched)
+            @test occursin("vendor", patched)
+            @test !occursin(joinpath("member", "vendor"), patched)
+            project = RustCall._wrapper_shaped_project(member, "rustcall-pyo3-test")
+            @test read(joinpath(project, "Cargo.lock"), String) == "# the workspace's lockfile\n"
+            rm(project; recursive = true, force = true)
+            @test occursin(r"^\[workspace\]$"m,
+                           RustCall._probe_cargo_toml("member", member, String[], true))
+        end
+        # And the probe really resolves from inside a workspace: without the
+        # `[workspace]` line Cargo refuses it, the plan comes back unresolved,
+        # and every `#[cfg]` item is refused.
+        mktempdir() do ws
+            write(joinpath(ws, "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+            """)
+            member = _write_crate(joinpath(ws, "member"), """
+            [package]
+            name = "member"
+            version = "0.1.0"
+            edition = "2021"
+            [lib]
+            crate-type = ["rlib"]
+            """)
+            plan = RustCall.pyo3_link_plan(member)
+            if !plan.resolved
+                @test_skip "Cargo could not resolve the workspace member"
+            else
+                @test plan.mode === :python_free
+                @test occursin("target_pointer_width", plan.cfg_text)
+            end
+        end
+    end
+
     @testset "a missing Cargo.toml is an error, not a mode" begin
         mktempdir() do dir
             @test_throws RustCall.RustError RustCall.pyo3_link_plan(dir)

@@ -430,7 +430,7 @@ function _wrapper_probe_cfg_text(crate_path::AbstractString;
                 write(joinpath(dir, "src", "lib.rs"), "")
                 write(joinpath(dir, "Cargo.toml"),
                       _probe_cargo_toml(package, path, features, default_features) *
-                      _root_patch_toml(path, TOML.parsefile(joinpath(path, "Cargo.toml"))))
+                      _root_patch_toml(path))
                 flag = release ? `--release` : ``
                 # The environment the real build runs under: the wrapper policy
                 # pins unwinding there (`_cargo_panic_env`), so an inherited
@@ -471,6 +471,9 @@ function _probe_cargo_toml(package::AbstractString, path::AbstractString,
     println(io)
     println(io, "[lib]")
     println(io, "crate-type = [\"cdylib\"]")
+    println(io)
+    # A root of its own, for the same reason the wrapper's manifest is.
+    println(io, "[workspace]")
     println(io)
     println(io, "[dependencies.", package, "]")
     println(io, "path = ", repr(String(path)))
@@ -1299,9 +1302,8 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     # Under the crate's own `target/`, with its lockfile and `[patch]` table,
     # so the wrapper resolves as the crate does (`_wrapper_shaped_project`).
     wrapper_path = _wrapper_shaped_project(info.path, "rustcall-pyo3-wrapper")
-    cargo_toml = parse_cargo_toml(joinpath(info.path, "Cargo.toml"))
     write(joinpath(wrapper_path, "Cargo.toml"),
-          generate_pyo3_wrapper_cargo_toml(info, plan) * _root_patch_toml(info.path, cargo_toml))
+          generate_pyo3_wrapper_cargo_toml(info, plan) * _root_patch_toml(info.path))
     write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
 
     project = CargoProject("$(info.name)_rustcall_wrapper", "0.1.0", DependencySpec[],
@@ -1351,11 +1353,16 @@ crate's own build, so Cargo resolves the project the way it resolves the crate
   in the crate does — a temporary directory elsewhere found nothing, and an
   item that exists only under the config's `rustflags` was a compile error in
   generated code;
-* `Cargo.lock` is the root's, so the crate's lockfile is copied in — Cargo adds
-  the project's own entry to the copy and pins everything else as the crate
-  pinned it;
-* `[patch]` is honoured only in the root manifest, so the crate's table is
+* `Cargo.lock` is the root's, so the lockfile of the crate's Cargo root — the
+  crate itself, or the workspace it is a member of (`_workspace_root_dir`) — is
+  copied in; Cargo adds the project's own entry to the copy and pins everything
+  else as the crate pinned it;
+* `[patch]` is honoured only in the root manifest, so that root's table is
   carried over by `_root_patch_toml`, relative paths made absolute.
+
+Both generated manifests declare an empty `[workspace]`: under a workspace
+member's `target/` Cargo would otherwise climb to the workspace and reject a
+crate it does not list ("believes it's in a workspace when it's not").
 
 The directory is the caller's to remove.
 """
@@ -1364,16 +1371,25 @@ function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractStr
     mkpath(parent)
     dir = mktempdir(parent; prefix = "project_")
     mkpath(joinpath(dir, "src"))
-    lock = joinpath(String(crate_path), "Cargo.lock")
+    lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
     isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
     return dir
 end
 
-# The crate's `[patch]` table as TOML text for a root manifest that lives
+# The directory whose manifest is the Cargo root of a build of `crate_path`:
+# the workspace root when the crate is a member, else the crate itself.
+_cargo_root_dir(crate_path::AbstractString) =
+    something(_workspace_root_dir(abspath(String(crate_path))), abspath(String(crate_path)))
+
+# The `[patch]` table of the crate's Cargo root — the only manifest whose
+# `[patch]` Cargo honours — as TOML text for a root manifest that lives
 # elsewhere, every `path = ` entry rewritten to an absolute path; "" when the
-# crate has none.
-function _root_patch_toml(crate_path::AbstractString, cargo_toml::AbstractDict)
-    patch = get(cargo_toml, "patch", nothing)
+# root has none.
+function _root_patch_toml(crate_path::AbstractString)
+    root = _cargo_root_dir(crate_path)
+    manifest = joinpath(root, "Cargo.toml")
+    isfile(manifest) || return ""
+    patch = get(TOML.parsefile(manifest), "patch", nothing)
     (patch isa AbstractDict && !isempty(patch)) || return ""
     rewritten = Dict{String, Any}()
     for (source, entries) in patch
@@ -1382,7 +1398,7 @@ function _root_patch_toml(crate_path::AbstractString, cargo_toml::AbstractDict)
         for (name, spec) in entries
             if spec isa AbstractDict && haskey(spec, "path")
                 spec = Dict{String, Any}(spec)
-                spec["path"] = abspath(joinpath(String(crate_path), String(spec["path"])))
+                spec["path"] = abspath(joinpath(root, String(spec["path"])))
             end
             table[String(name)] = spec
         end
@@ -1421,6 +1437,11 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan)
         "",
         "[lib]",
         "crate-type = [\"cdylib\"]",
+        "",
+        "# A root of its own. The wrapper lives under the target crate's `target/`,",
+        "# and when that crate is a workspace member Cargo would otherwise climb to",
+        "# the workspace and reject a crate it does not list (#307 review).",
+        "[workspace]",
         "",
         rstrip(pyo3_dependency_toml(plan, info.name, info.path)),
         "",

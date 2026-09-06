@@ -611,13 +611,30 @@ end
                 rm(joinpath(dir, "Cargo.lock"))
                 # `[patch]` is honoured only in the root manifest: it is carried
                 # over, paths made absolute; a crate without one adds nothing.
-                patched = RustCall._root_patch_toml(dir, Dict{String, Any}("patch" =>
-                    Dict{String, Any}("crates-io" =>
-                        Dict{String, Any}("foo" => Dict{String, Any}("path" => "vendor/foo")))))
-                @test occursin("[patch.crates-io", patched)
-                @test occursin("vendor", patched)
-                @test !occursin("path = \"vendor/foo\"", patched)
-                @test RustCall._root_patch_toml(dir, Dict{String, Any}()) == ""
+                # (A crate that is never built, since its patch names nothing.)
+                mktempdir() do pdir
+                    write(joinpath(pdir, "Cargo.toml"), """
+                    [package]
+                    name = "patched"
+                    version = "0.1.0"
+                    [patch.crates-io]
+                    foo = { path = "vendor/foo" }
+                    """)
+                    patched = RustCall._root_patch_toml(pdir)
+                    @test occursin("[patch.crates-io", patched)
+                    @test occursin("vendor", patched)
+                    @test !occursin("path = \"vendor/foo\"", patched)
+                end
+                @test RustCall._root_patch_toml(dir) == ""
+                # Both generated manifests are Cargo roots of their own, so a
+                # wrapper under a workspace member's `target/` is not taken for
+                # a member of that workspace.
+                @test occursin(r"^\[workspace\]$"m,
+                               RustCall.generate_pyo3_wrapper_cargo_toml(
+                                   RustCall.scan_crate(PYO3_OPTIONAL_CRATE),
+                                   RustCall.PyO3LinkPlan(:python_free, String[], "", "test")))
+                @test occursin(r"^\[workspace\]$"m,
+                               RustCall._probe_cargo_toml("configured_crate", dir, String[], true))
 
                 # End to end: an item that exists only because the crate's
                 # `.cargo/config.toml` was discovered — its `[env]` reaches the
