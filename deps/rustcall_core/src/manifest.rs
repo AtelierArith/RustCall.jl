@@ -45,7 +45,15 @@ use serde::{Deserialize, Serialize};
 ///   syntax. A version-4 consumer would treat a `#[pyfunction]` as an exported
 ///   `#[julia]` function and `dlsym` a symbol that no wrapper crate has emitted
 ///   yet.
-pub const SCHEMA_VERSION: u32 = 5;
+/// * 6: PyO3 wrapper crate (#275 Phase 2): the manifest a wrapper build emits
+///   describes generated entry points rather than a scan, so a `py_*` entry can
+///   now have `exported = true` and a filled-in `return_abi`, a `PyResult`
+///   entry's `err_type` is the `i32` code the wrapper reports
+///   (`crate::wrap::PYERR_CODE`) rather than being empty, and the
+///   [`skip_reason`] vocabulary gains the four reasons the *generator* can
+///   refuse an item for. A version-5 consumer would read a wrapper manifest as
+///   a scan and never call anything.
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -77,6 +85,23 @@ pub mod skip_reason {
     /// both kinds at once rather than gaining a PyO3-only variant here: #300
     /// owns that, and this reason goes away when it lands.
     pub const SYMBOL_COLLISION: &str = "symbol_collision";
+    /// The wrapper generator cannot lower an argument: its type is neither
+    /// FFI-compatible nor a `String` / `&str`, or its name is not an
+    /// identifier. The spelling follows the colon (#275 Phase 2).
+    pub const UNSUPPORTED_ARG: &str = "unsupported_arg";
+    /// The wrapper generator cannot lower the return value: the type, or a
+    /// `Result` / `Option` payload inside it, does not cross the C ABI as a
+    /// single value. The spelling follows the colon (#275 Phase 2).
+    pub const UNSUPPORTED_RETURN: &str = "unsupported_return";
+    /// A `PyResult<T>` whose `Ok` type does not fit in the `CResult`
+    /// aggregate (`String`, `Self`, a `Vec`, ...). The spelling follows the
+    /// colon. Widening this is tracked by #303 (#275 Phase 2).
+    pub const PY_RESULT_PAYLOAD: &str = "py_result_payload";
+    /// The item carries a `#[cfg(...)]` predicate the scan could not decide,
+    /// so whether the build the wrapper links against has it at all is
+    /// unknown; calling an item that is not there is a compile error in
+    /// generated code. The predicate follows the colon (#275 Phase 2).
+    pub const CFG_UNDECIDED: &str = "cfg_undecided";
 
     /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
     pub fn detailed(kind: &str, detail: &str) -> String {

@@ -17,9 +17,12 @@ Manifest schema version this version of RustCall.jl understands. Must match
 `symbol` differs from `name` for every wrapped function and method, #279;
 4: one vocabulary for the type contract — `Function.return_abi`, `Field.abi`
 and `Method.returns_boxed_struct`, #276; 5: the PyO3 crate scan — a `py_*`
-attribute origin, `vis`, `skip_reason` and the `py_result` return kind, #275).
+attribute origin, `vis`, `skip_reason` and the `py_result` return kind, #275;
+6: the PyO3 wrapper crate — a `py_*` entry can now be `exported` with a
+`return_abi`, a lowered `PyResult` reports the `i32` code in `err_type`, and the
+skip-reason vocabulary gains the four the *generator* uses, #275 Phase 2).
 """
-const MANIFEST_SCHEMA_VERSION = 5
+const MANIFEST_SCHEMA_VERSION = 6
 
 """
     ExtractorError <: Exception
@@ -745,6 +748,80 @@ function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::
     end
     text = _run_extractor(vcat(args, files))
     return _parse_manifest(text)
+end
+
+"""
+    WrapperCrateSource
+
+The `src/lib.rs` of a generated PyO3 wrapper crate and the manifest describing
+what it exports (#275 Phase 2).
+
+`manifest` is **not** the scan that went in: every emitted item is `exported`
+with its `return_abi` filled in, and every item the generator refused carries a
+`skip_reason` from the `unsupported_arg` / `unsupported_return` /
+`py_result_payload` / `cfg_undecided` vocabulary. Binding the wrapper from this
+manifest is what keeps the Julia definitions and the exported symbols from
+drifting apart.
+"""
+struct WrapperCrateSource
+    crate_name::String
+    lib_rs::String
+    manifest::Dict{String, Any}
+end
+
+"""
+    wrap_crate(files; crate_name, cfg=:strict, cfg_text=nothing,
+               crate_root=nothing, skip_unparsable=false) -> WrapperCrateSource
+
+Generate the wrapper crate for the PyO3 items of the crate scanned from `files`
+(#275 Phase 2). The arguments mirror `extract_manifest` in crate mode, because
+the extractor runs the *same* scan and then generates from it: what `scan_crate`
+reports and what the wrapper exports cannot disagree.
+
+`cfg` / `cfg_text` decide more than which items are reported. When the
+configuration is fully resolved, an item carrying a `#[cfg]` predicate is known
+to exist in the build the wrapper links against; when it is not, such an item is
+refused with `cfg_undecided` rather than compiled into a call to something that
+may not be there. An item marked only through
+`#[cfg_attr(feature = "python", pyfunction)]` has no predicate of its own and is
+unaffected — the marker is conditional, the item is not, which is what makes a
+Python-free wrapper build possible at all.
+"""
+function wrap_crate(files::Vector{String}; crate_name::AbstractString,
+                    cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
+                    crate_root::Union{Nothing, AbstractString} = nothing,
+                    skip_unparsable::Bool = false)
+    isempty(files) && throw(ArgumentError("wrap_crate needs at least one source file"))
+    args = ["wrap", "--crate-name", String(crate_name)]
+    skip_unparsable && push!(args, "--skip-unparsable")
+    if crate_root !== nothing
+        push!(args, "--crate-root")
+        push!(args, String(crate_root))
+    end
+    if cfg_text === nothing
+        append!(args, _cfg_file_args(cfg))
+    else
+        append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
+    end
+    text = _run_extractor(vcat(args, files))
+    doc = try
+        TOML.parse(text)
+    catch e
+        throw(ExtractorError("failed to parse wrapper crate TOML: $e"))
+    end
+    version = get(doc, "schema_version", nothing)
+    if version != MANIFEST_SCHEMA_VERSION
+        throw(ExtractorError(
+            "wrapper crate schema version mismatch: the rustcall-extract binary produced " *
+            "schema $(version) but this RustCall.jl expects $(MANIFEST_SCHEMA_VERSION). " *
+            "Rebuild with `Pkg.build(\"RustCall\")`."))
+    end
+    manifest = get(doc, "manifest", nothing)
+    manifest isa AbstractDict ||
+        throw(ExtractorError("wrapper crate output has no [manifest] table"))
+    return WrapperCrateSource(String(get(doc, "crate_name", String(crate_name))),
+                              String(get(doc, "lib_rs", "")),
+                              Dict{String, Any}(manifest))
 end
 
 """

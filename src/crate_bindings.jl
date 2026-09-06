@@ -146,12 +146,7 @@ function scan_crate(crate_path::String; cfg = :lenient,
     # `src/api.rs` is `api`, and a `mod api;` that is not `pub` puts everything
     # below it out of a wrapper crate's reach. The `#[julia]` extraction stays
     # per file.
-    lib_root = crate_lib_root(crate_path, cargo_toml)
-    # A `[lib] path` outside `src/` is not in `source_files`, so the file the
-    # module tree hangs off has to be scanned even when the per-file pass never
-    # sees it.
-    tree_files = lib_root === nothing || lib_root in source_files ?
-        source_files : vcat(source_files, [lib_root])
+    lib_root, tree_files = _crate_scan_inputs(crate_path, cargo_toml, source_files)
     manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
                                 cfg = cfg, cfg_text = cfg_text,
                                 crate_root = lib_root)
@@ -177,6 +172,27 @@ function scan_crate(crate_path::String; cfg = :lenient,
         pyo3_functions,
         pyo3_structs,
     )
+end
+
+"""
+    _crate_scan_inputs(crate_path, cargo_toml, source_files) -> (lib_root, tree_files)
+
+The files the extractor is given for a crate, and the root its module tree
+hangs off.
+
+A `[lib] path` outside `src/` is not in `source_files`, so the root has to be
+added even when the per-file `#[julia]` pass never sees it. Factored out because
+`scan_crate` and the #275 Phase-2 wrapper generator must be handed **the same**
+list: the wrapper is generated from a re-run of the very scan `scan_crate`
+reported, and a different file list would let the two disagree about which items
+exist.
+"""
+function _crate_scan_inputs(crate_path::AbstractString, cargo_toml::AbstractDict,
+                            source_files::Vector{String})
+    lib_root = crate_lib_root(crate_path, cargo_toml)
+    tree_files = lib_root === nothing || lib_root in source_files ?
+        source_files : vcat(source_files, [lib_root])
+    return lib_root, tree_files
 end
 
 """
@@ -389,7 +405,8 @@ Generate a Julia module expression containing bindings for the crate.
 """
 function emit_crate_module(info::CrateInfo, lib_path::String;
                            module_name::Union{String, Nothing}=nothing,
-                           build_release::Bool = true)
+                           build_release::Bool = true,
+                           lib_name::Union{String, Nothing} = nothing)
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -408,7 +425,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # `unload_all_libraries` and every registry the rest of RustCall keeps
     # (#250). It goes through `load_artifact!` now, so the module's `Ref` and
     # the registry hold the same handle and the same liveness flag.
-    lib_key = crate_library_name(info; release = build_release)
+    lib_key = lib_name === nothing ? crate_library_name(info; release = build_release) : lib_name
 
     # Build the module body as a block
     module_body = quote
@@ -587,6 +604,9 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
     # Result<T, E> / Option<T> returns are reported by the manifest
     if func.return_kind == :result
         return _generate_result_function_wrapper(func, arg_syms, bindings, preserved, converted_args)
+    elseif func.return_kind == :py_result
+        return _generate_py_result_function_wrapper(func, arg_syms, bindings, preserved,
+                                                    converted_args)
     elseif func.return_kind == :option
         return _generate_option_function_wrapper(func, arg_syms, bindings, preserved, converted_args)
     elseif _uses_string_ffi(func)
@@ -718,6 +738,78 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
                 RustResult{$ok_julia_type, $err_julia_type}(true, convert_return($ok_julia_type, $c_sym.ok_value))
             else
                 RustResult{$ok_julia_type, $err_julia_type}(false, convert_return($err_julia_type, $c_sym.err_value))
+            end
+        end
+        export $func_name
+    end
+end
+
+"""
+    _py_result_types(ok_type, context; strict) -> (surface, slot, is_unit)
+
+How a lowered `PyResult<T>` is read on the Julia side (#275 Phase 2).
+
+The wrapper returns `CResult_<owner> { is_ok: u8, ok_value: <slot>,
+err_value: i32 }`. `slot` is the C field type, `surface` is what the caller
+sees, and `is_unit` says the `Ok` payload is a placeholder: a `PyResult<()>`
+still has to report success or failure, so the wrapper writes a `u8` there and
+Julia hands back `nothing`.
+
+The error side is not a type at all — it is always `PYO3_OPAQUE_ERROR`, because
+the generated wrapper drops the `PyErr` without ever rendering it.
+"""
+function _py_result_types(ok_type::AbstractString, context::AbstractString;
+                          strict::Symbol = FFI_STRICT[])
+    if isempty(strip(String(ok_type))) || strip(String(ok_type)) == "()"
+        return (:Nothing, :UInt8, true)
+    end
+    surface = ffi_return_symbol_or_throw(String(ok_type), "", context; strict = strict)
+    slot = ffi_return_slot_symbol_or_throw(String(ok_type), "", context; strict = strict)
+    return (surface, slot, false)
+end
+
+"""
+    _generate_py_result_function_wrapper(func, arg_syms, bindings, preserved, converted_args) -> Expr
+
+Julia wrapper for a scanned `#[pyfunction]` returning `PyResult<T>` (#275
+Phase 2). The result is a `RustResult{T, String}` whose error value is the fixed
+`PYO3_OPAQUE_ERROR`: the wrapper reports only that *some* Python-side error
+occurred, because rendering a `PyErr` without an interpreter panics inside pyo3
+and the panic crossing `extern "C"` would abort the process.
+"""
+function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
+                                              bindings::Vector, preserved::Vector,
+                                              converted_args::Vector)
+    func_name = Symbol(func.name)
+    func_name_str = func.name
+    symbol_str = func.symbol
+    ok_julia_type, ok_slot_type, is_unit = _py_result_types(func.ok_type, _ffi_context(func))
+
+    c_result_struct_name = Symbol("CResult_", func_name_str)
+    ptr_sym = _generated_local("func_ptr", func.arg_names)
+    c_sym = _generated_local("c_result", func.arg_names)
+    channel_sym = _generated_local("panic_channel", func.arg_names)
+    ok_value = is_unit ? :nothing : :(convert_return($ok_julia_type, $c_sym.ok_value))
+
+    quote
+        struct $c_result_struct_name
+            is_ok::UInt8
+            ok_value::$ok_slot_type
+            # Always `RustCall.PYO3_ERROR_CODE`; the message is fixed.
+            err_value::Int32
+        end
+
+        function $func_name($(arg_syms...))
+            $(bindings...)
+            $ptr_sym, $channel_sym = _call_target($symbol_str)
+            $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
+            # A panic returns the Err discriminant with an uninitialized
+            # payload, so the channel is read before anything is decoded (#244).
+            _guard_panic(nothing, $channel_sym, $func_name_str)
+            if $c_sym.is_ok == 1
+                RustResult{$ok_julia_type, String}(true, $ok_value)
+            else
+                RustResult{$ok_julia_type, String}(false, RustCall.PYO3_OPAQUE_ERROR)
             end
         end
         export $func_name
@@ -1037,6 +1129,12 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     free_sym = _generated_local("free_ptr", method.arg_names)
     target = :(($ptr_sym, $channel_sym) = _call_target($wrapper_name))
     alive_sym = _generated_local("alive", method.arg_names)
+    # A `PyResult` method needs a C struct declared next to the wrapper, so it
+    # is built whole rather than as one `call` expression (#275 Phase 2).
+    if method.return_kind === :py_result
+        return _generate_py_result_method_wrapper(info, method, arg_syms, bindings, preserved,
+                                                  converted_args, wrapper_name)
+    end
     call = if method.returns_boxed_struct
         # Constructors and `Self`-returning methods allocate, so the object is
         # bound to the generation that ran the call (#277).
@@ -1081,6 +1179,78 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         end
     else
         quote
+            function $method_name(self::$struct_name, $(arg_syms...))
+                _check_not_freed(self, $struct_name_str)
+                $body
+            end
+            export $method_name
+        end
+    end
+end
+
+"""
+    _generate_py_result_method_wrapper(info, method, ...) -> Expr
+
+Julia wrapper for a scanned `#[pymethods]` method returning `PyResult<T>`
+(#275 Phase 2), the method twin of `_generate_py_result_function_wrapper`. The
+C struct is `CResult_<Struct>_<method>`, matching the name the wrapper
+generator gives it.
+"""
+function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMethod,
+                                            arg_syms::Vector{Symbol}, bindings::Vector,
+                                            preserved::Vector, converted_args::Vector,
+                                            wrapper_name::String)
+    struct_name = Symbol(info.name)
+    struct_name_str = info.name
+    method_name = Symbol(method.name)
+    ok_julia_type, ok_slot_type, is_unit =
+        _py_result_types(method.ok_type, _ffi_context(method, struct_name_str))
+
+    c_result_struct_name = Symbol("CResult_", struct_name_str, "_", method.name)
+    ptr_sym = _generated_local("func_ptr", method.arg_names)
+    c_sym = _generated_local("c_result", method.arg_names)
+    channel_sym = _generated_local("panic_channel", method.arg_names)
+
+    all_args = Any[]
+    method.is_static || push!(all_args, :(getfield(self, :ptr)))
+    append!(all_args, converted_args)
+    method.is_static || pushfirst!(preserved, :self)
+    method_label = "$(struct_name_str)::$(method.name)"
+    ok_value = is_unit ? :nothing : :(convert_return($ok_julia_type, $c_sym.ok_value))
+
+    body = quote
+        $(bindings...)
+        $ptr_sym, $channel_sym = _call_target($wrapper_name)
+        $c_sym = $(_quote_preserved(preserved,
+                                    :(call_rust_function($ptr_sym, $c_result_struct_name,
+                                                         $(all_args...)))))
+        _guard_panic(nothing, $channel_sym, $method_label)
+        if $c_sym.is_ok == 1
+            RustResult{$ok_julia_type, String}(true, $ok_value)
+        else
+            RustResult{$ok_julia_type, String}(false, RustCall.PYO3_OPAQUE_ERROR)
+        end
+    end
+
+    declaration = quote
+        struct $c_result_struct_name
+            is_ok::UInt8
+            ok_value::$ok_slot_type
+            err_value::Int32
+        end
+    end
+
+    if method.is_static
+        quote
+            $declaration
+            function $method_name($(arg_syms...))
+                $body
+            end
+            export $method_name
+        end
+    else
+        quote
+            $declaration
             function $method_name(self::$struct_name, $(arg_syms...))
                 _check_not_freed(self, $struct_name_str)
                 $body
@@ -1150,7 +1320,9 @@ MyCrate.add(Int32(1), Int32(2))
 function generate_bindings(crate_path::String;
     output_module_name::Union{String, Nothing} = nothing,
     build_release::Bool = true,
-    cache_enabled::Bool = true
+    cache_enabled::Bool = true,
+    features::Vector{String} = String[],
+    default_features::Bool = true
 )
     opts = CrateBindingOptions(
         output_module_name = output_module_name,
@@ -1162,6 +1334,20 @@ function generate_bindings(crate_path::String;
     @info "Scanning crate at $crate_path"
     info = scan_crate(crate_path)
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
+
+    # A crate that carries only PyO3 attributes gets a generated wrapper crate
+    # (#275 Phase 2); everything else takes the pre-#275 path unchanged.
+    if crate_needs_pyo3_wrapper(info)
+        wrapper = build_pyo3_wrapper(info; features = features,
+                                     default_features = default_features,
+                                     release = build_release, cache_enabled = cache_enabled)
+        @info "Wrapped $(length(wrapper.info.julia_functions)) PyO3 functions and " *
+              "$(length(wrapper.info.julia_structs)) classes ($(wrapper.plan.mode))"
+        return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
+                                 module_name = output_module_name,
+                                 build_release = build_release,
+                                 lib_name = wrapper.lib_name)
+    end
 
     # Check cache
     cache_key = compute_crate_hash(info; release = build_release)
@@ -1311,8 +1497,12 @@ objects capture, and unloading it retires them (#277 Phase B5).
 Keyed by the crate identity so two crates — or one crate rebuilt under a
 different toolchain — do not collide on one entry.
 """
-crate_library_name(info::CrateInfo; release::Bool = true) =
-    "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info; release)))"
+crate_library_name(info::CrateInfo; release::Bool = true, kind::AbstractString = "crate",
+                   features::Vector{String} = String[], default_features::Bool = true,
+                   rustflags::Vector{String} = String[]) =
+    "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info; release = release,
+        kind = kind, features = features, default_features = default_features,
+        rustflags = rustflags)))"
 
 """
     compute_crate_hash(info::CrateInfo) -> String
@@ -1340,17 +1530,32 @@ The name, the signature and the return type (a hex `String`) are unchanged, and
 so is the format of the file `write_bindings_to_file` emits; only the *value*
 changes, which means the first build after upgrading rebuilds.
 """
-function compute_crate_hash(info::CrateInfo; release::Bool = true)
+function compute_crate_hash(info::CrateInfo; release::Bool = true,
+                            kind::AbstractString = "crate",
+                            features::Vector{String} = String[],
+                            default_features::Bool = true,
+                            rustflags::Vector{String} = String[])
     # The dependency digest first, and deliberately so: resolving the graph
     # lets Cargo write `Cargo.lock` into the crate directory (exactly as the
     # build that follows would), and `Cargo.lock` is one of the files
     # `crate_content_digest` hashes. Computing the content digest first would
     # make the very first call disagree with every later one.
     deps_digest = artifact_path_dependency_digest(info.path)
+    # `kind` and the feature set are what separates a #275 Phase-2 wrapper
+    # build from a plain `@rust_crate` build of the same crate, and one feature
+    # set from another: the wrapper's `lib.rs`, its dependency's resolved
+    # features and the RUSTFLAGS it links with are all decided by them, and two
+    # such builds are different binaries under one crate directory.
+    codegen = Pair{String, String}["profile" => (release ? "release" : "debug")]
+    if kind != "crate"
+        push!(codegen, "features" => join(features, ","))
+        push!(codegen, "default-features" => string(default_features))
+        push!(codegen, "rustflags" => join(rustflags, " "))
+    end
     return artifact_key(ArtifactId(
-        kind = "crate",
+        kind = String(kind),
         source = crate_content_digest(info.path),
-        codegen = Pair{String, String}["profile" => (release ? "release" : "debug")],
+        codegen = codegen,
         dependencies = String[deps_digest],
         build_env = Pair{String, String}[
             "cargo-config" => _cargo_config_digest(ENV; dir = info.path)],
@@ -1509,13 +1714,17 @@ returned bindings object; it does not inject a caller-visible module.
 function load_crate_bindings(crate_path::String;
     output_module_name::Union{String, Nothing} = nothing,
     build_release::Bool = true,
-    cache_enabled::Bool = true
+    cache_enabled::Bool = true,
+    features::Vector{String} = String[],
+    default_features::Bool = true,
 )
     bindings_expr = generate_bindings(
         crate_path;
         output_module_name = output_module_name,
         build_release = build_release,
         cache_enabled = cache_enabled,
+        features = features,
+        default_features = default_features,
     )
 
     crate_module = _instantiate_runtime_bindings(bindings_expr)
@@ -1558,6 +1767,8 @@ macro rust_crate(path, options...)
     module_name = nothing
     release = true
     cache = true
+    features = :(String[])
+    default_features = true
 
     for opt in options
         if isa(opt, Expr) && opt.head == :(=)
@@ -1570,6 +1781,10 @@ macro rust_crate(path, options...)
                 release = value
             elseif key == :cache
                 cache = value
+            elseif key == :features
+                features = value
+            elseif key == :default_features
+                default_features = value
             end
         end
     end
@@ -1580,6 +1795,8 @@ macro rust_crate(path, options...)
             output_module_name = $module_name,
             build_release = $release,
             cache_enabled = $cache,
+            features = String[$(esc(features))...],
+            default_features = $(esc(default_features)),
         )
     end
 end
@@ -1652,15 +1869,33 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     output_module_name::Union{String, Nothing} = nothing,
     build_release::Bool = true,
     relative_lib_path::Union{String, Nothing} = nothing,
-    strict::Symbol = FFI_STRICT[]
+    strict::Symbol = FFI_STRICT[],
+    features::Vector{String} = String[],
+    default_features::Bool = true
 )
     # Scan and build the crate
     @info "Scanning crate at $crate_path"
     info = scan_crate(crate_path)
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
 
+    # A PyO3-only crate is bound through a generated wrapper crate, exactly as
+    # `@rust_crate` binds it (#275 Phase 2); `info` and the library name that
+    # goes into the file come from the wrapper's own manifest.
+    lib_name = nothing
+    wrapper_lib_path = ""
+    if crate_needs_pyo3_wrapper(info)
+        wrapper = build_pyo3_wrapper(info; features = features,
+                                     default_features = default_features,
+                                     release = build_release)
+        info = wrapper.info
+        lib_name = wrapper.lib_name
+        wrapper_lib_path = wrapper.lib_path
+    end
+
     # Build the crate
-    lib_path = if crate_has_cdylib(crate_path)
+    lib_path = if lib_name !== nothing
+        wrapper_lib_path
+    elseif crate_has_cdylib(crate_path)
         @info "Building crate directly (already has cdylib crate-type)..."
         build_crate_directly(info, build_release)
     else
@@ -1716,6 +1951,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         use_relative_path = relative_lib_path !== nothing,
         build_release = build_release,
         strict = strict,
+        lib_name = lib_name,
     )
 
     # Write to file
@@ -1749,7 +1985,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     module_name::Union{String, Nothing} = nothing,
     use_relative_path::Bool = false,
     build_release::Bool = true,
-    strict::Symbol = FFI_STRICT[]
+    strict::Symbol = FFI_STRICT[],
+    lib_name::Union{String, Nothing} = nothing
 )
     # Determine module name
     mod_name = if module_name !== nothing
@@ -1789,7 +2026,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     else
         push!(lines, "const _LIB_PATH = $(repr(lib_path))")
     end
-    push!(lines, "const _LIB_NAME = $(repr(crate_library_name(info; release = build_release)))")
+    push!(lines, "const _LIB_NAME = $(repr(lib_name === nothing ?
+        crate_library_name(info; release = build_release) : lib_name))")
     push!(lines, "")
     push!(lines, "# Everything this module knows about the image it calls -- handle, liveness")
     push!(lines, "# flag and generation -- as one immutable value, published by the loader in")
@@ -1941,6 +2179,9 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     # Result/Option return types are reported by the manifest
     if func.return_kind == :result
         return _emit_result_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict)
+    elseif func.return_kind == :py_result
+        return _emit_py_result_function_code(func, arg_syms, converted_args_str; prologue,
+                                             preserve_str, strict)
     elseif func.return_kind == :option
         return _emit_option_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict)
     elseif ffi_owned_string_return(_ffi_function_return(func))
@@ -2001,6 +2242,46 @@ $(prologue)    $ptr_var, $channel_var = _call_target("$sym")
         RustResult{$ok_type_str, $err_type_str}(true, convert_return($ok_type_str, $c_var.ok_value))
     else
         RustResult{$ok_type_str, $err_type_str}(false, convert_return($err_type_str, $c_var.err_value))
+    end
+end
+export $func_name"""
+end
+
+"""
+    _emit_py_result_function_code(func, arg_syms, converted_args_str; ...) -> String
+
+Source-text counterpart of `_generate_py_result_function_wrapper` (#275
+Phase 2).
+"""
+function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::String,
+                                       converted_args_str::String;
+                                       prologue::String = "", preserve_str::String = "",
+                                       strict::Symbol = FFI_STRICT[])
+    func_name = func.name
+    ok_type_str, ok_slot_str, is_unit =
+        _py_result_types(func.ok_type, _ffi_context(func); strict = strict)
+    sym = func.symbol
+    c_result_struct_name = "CResult_$func_name"
+    ptr_var = _generated_local("func_ptr", func.arg_names)
+    c_var = _generated_local("c_result", func.arg_names)
+    channel_var = _generated_local("panic_channel", func.arg_names)
+    ok_value = is_unit ? "nothing" : "convert_return($ok_type_str, $c_var.ok_value)"
+
+    return """
+struct $c_result_struct_name
+    is_ok::UInt8
+    ok_value::$ok_slot_str
+    err_value::Int32
+end
+
+function $func_name($arg_syms)
+$(prologue)    $ptr_var, $channel_var = _call_target("$sym")
+    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)"))
+    _guard_panic(nothing, $channel_var, "$func_name")
+    if $c_var.is_ok == 1
+        RustResult{$ok_type_str, String}(true, $ok_value)
+    else
+        RustResult{$ok_type_str, String}(false, RustCall.PYO3_OPAQUE_ERROR)
     end
 end
 export $func_name"""
@@ -2202,6 +2483,10 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     channel_var = _generated_local("panic_channel", method.arg_names)
     target = "$ptr_var, $channel_var = _call_target(\"$wrapper_name\")"
     alive_var = _generated_local("alive", method.arg_names)
+    if method.return_kind === :py_result
+        return _emit_py_result_method_code(struct_info, method, arg_syms, converted_args_str,
+                                           wrapper_name; prologue, preserve_str, strict)
+    end
     call = if method.returns_boxed_struct
         target = "$ptr_var, $channel_var, $free_var, $alive_var = " *
                  "_ctor_target(\"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_name))\")"
@@ -2243,6 +2528,67 @@ $body
 end
 export $method_name"""
     end
+end
+
+"""
+    _emit_py_result_method_code(info, method, ...) -> String
+
+Source-text counterpart of `_generate_py_result_method_wrapper` (#275 Phase 2).
+"""
+function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
+                                     arg_syms::String, converted_args_str::String,
+                                     wrapper_name::String;
+                                     prologue::AbstractString = "",
+                                     preserve_str::AbstractString = "",
+                                     strict::Symbol = FFI_STRICT[])
+    struct_name = info.name
+    method_name = method.name
+    ok_type_str, ok_slot_str, is_unit =
+        _py_result_types(method.ok_type, _ffi_context(method, struct_name); strict = strict)
+    c_result_struct_name = "CResult_$(struct_name)_$(method_name)"
+    ptr_var = _generated_local("func_ptr", method.arg_names)
+    c_var = _generated_local("c_result", method.arg_names)
+    channel_var = _generated_local("panic_channel", method.arg_names)
+
+    all_args = String[]
+    method.is_static || push!(all_args, "getfield(self, :ptr)")
+    isempty(converted_args_str) || push!(all_args, converted_args_str)
+    args_str = join(all_args, ", ")
+    method_label = "$(struct_name)::$(method_name)"
+    ok_value = is_unit ? "nothing" : "convert_return($ok_type_str, $c_var.ok_value)"
+
+    body = """
+$(prologue)    $ptr_var, $channel_var = _call_target("$wrapper_name")
+    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $args_str)"))
+    _guard_panic(nothing, $channel_var, "$method_label")
+    if $c_var.is_ok == 1
+        RustResult{$ok_type_str, String}(true, $ok_value)
+    else
+        RustResult{$ok_type_str, String}(false, RustCall.PYO3_OPAQUE_ERROR)
+    end"""
+
+    declaration = """
+struct $c_result_struct_name
+    is_ok::UInt8
+    ok_value::$ok_slot_str
+    err_value::Int32
+end
+"""
+
+    if method.is_static
+        return """$declaration
+function $method_name($arg_syms)
+$body
+end
+export $method_name"""
+    end
+    self_args = isempty(arg_syms) ? "" : ", $arg_syms"
+    return """$declaration
+function $method_name(self::$struct_name$self_args)
+    _check_not_freed(self, "$struct_name")
+$body
+end
+export $method_name"""
 end
 
 """

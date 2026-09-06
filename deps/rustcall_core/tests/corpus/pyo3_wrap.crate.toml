@@ -1,11 +1,10 @@
 schema_version = 6
-mode = "inline"
-structs = []
+mode = "crate"
 
 [[functions]]
 name = "add"
-symbol = "add"
-attribute = "none"
+symbol = "rustcall_add"
+attribute = "py_function"
 vis = "pub"
 skip_reason = ""
 python_name = ""
@@ -24,7 +23,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 9
+line = 14
 module_path = []
 
 [[functions.args]]
@@ -39,8 +38,8 @@ abi = ""
 
 [[functions]]
 name = "shout"
-symbol = "shout"
-attribute = "none"
+symbol = "rustcall_shout"
+attribute = "py_function"
 vis = "pub"
 skip_reason = ""
 python_name = ""
@@ -59,7 +58,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 14
+line = 20
 module_path = []
 
 [[functions.args]]
@@ -68,9 +67,272 @@ rust_type = "String"
 abi = "string"
 
 [[functions]]
-name = "double"
-symbol = "double"
-attribute = "none"
+name = "tag"
+symbol = "rustcall_tag"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "&'static str"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 26
+module_path = []
+
+[[functions]]
+name = "parse"
+symbol = "rustcall_parse"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "PyResult<i32>"
+return_kind = "py_result"
+return_abi = ""
+ok_type = "i32"
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 33
+module_path = []
+
+[[functions.args]]
+name = "s"
+rust_type = "&str"
+abi = "str"
+
+[[functions]]
+name = "check"
+symbol = "rustcall_check"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "PyResult<()>"
+return_kind = "py_result"
+return_abi = ""
+ok_type = "()"
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 41
+module_path = []
+
+[[functions.args]]
+name = "flag"
+rust_type = "bool"
+abi = ""
+
+[[functions]]
+name = "render"
+symbol = "rustcall_render"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "PyResult<String>"
+return_kind = "py_result"
+return_abi = ""
+ok_type = "String"
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 48
+module_path = []
+
+[[functions]]
+name = "numbers"
+symbol = "rustcall_numbers"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "Vec<i32>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 55
+module_path = []
+
+[[functions]]
+name = "total"
+symbol = "rustcall_total"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 61
+module_path = []
+
+[[functions.args]]
+name = "values"
+rust_type = "Vec<i32>"
+abi = ""
+
+[[functions]]
+name = "divide"
+symbol = "rustcall_divide"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Result<i32, i32>"
+return_kind = "result"
+return_abi = ""
+ok_type = "i32"
+err_type = "i32"
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 67
+module_path = []
+
+[[functions.args]]
+name = "a"
+rust_type = "i32"
+abi = ""
+
+[[functions.args]]
+name = "b"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "maybe"
+symbol = "rustcall_maybe"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Option<f64>"
+return_kind = "option"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = "f64"
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 74
+module_path = []
+
+[[functions.args]]
+name = "x"
+rust_type = "f64"
+abi = ""
+
+[[functions]]
+name = "note"
+symbol = "rustcall_note"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "()"
+return_kind = "unit"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 80
+module_path = []
+
+[[functions.args]]
+name = "x"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "area"
+symbol = "rustcall_area"
+attribute = "py_function"
 vis = "pub"
 skip_reason = ""
 python_name = ""
@@ -89,480 +351,205 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 20
-module_path = []
+line = 91
+module_path = ["geometry"]
 
 [[functions.args]]
-name = "x"
+name = "w"
 rust_type = "f64"
 abi = ""
 
-[[functions]]
-name = "private_add"
-symbol = "private_add"
-attribute = "none"
-vis = ""
-skip_reason = ""
-python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "i32"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 29
-module_path = []
-
 [[functions.args]]
-name = "a"
-rust_type = "i32"
+name = "h"
+rust_type = "f64"
 abi = ""
 
-[[functions.args]]
-name = "b"
-rust_type = "i32"
-abi = ""
-
-[[functions]]
-name = "crate_add"
-symbol = "crate_add"
-attribute = "none"
-vis = "pub(crate)"
-skip_reason = ""
-python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "i32"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 34
-module_path = []
-
-[[functions.args]]
-name = "a"
-rust_type = "i32"
-abi = ""
-
-[[functions.args]]
-name = "b"
-rust_type = "i32"
-abi = ""
-
-[[functions]]
-name = "with_python"
-symbol = "with_python"
-attribute = "none"
+[[structs]]
+name = "Rect"
+attribute = "py_class"
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = false
 cfg = ""
 cfg_features = []
-is_generic = false
 type_params = []
-return_type = "i32"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
+derives = []
+has_clone = false
 has_owned_string_helper = false
 has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 41
-module_path = []
+context_source = ""
+generic_wrappers = []
+line = 97
+module_path = ["geometry"]
 
-[[functions.args]]
-name = "py"
-rust_type = "Python<'_>"
+[[structs.fields]]
+name = "w"
+rust_type = "f64"
 abi = ""
+ffi_compatible = true
+getter = "rustcall_Rect_get_w"
+setter = "rustcall_Rect_set_w"
+python_name = ""
+vis = "pub"
 
-[[functions]]
-name = "takes_any"
-symbol = "takes_any"
-attribute = "none"
+[[structs.fields]]
+name = "name"
+rust_type = "String"
+abi = "string"
+ffi_compatible = true
+getter = "rustcall_Rect_get_name"
+setter = ""
+python_name = ""
+vis = "pub"
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_Rect_new"
+is_static = true
+is_mutable = false
+is_constructor = true
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "usize"
+accessor = ""
 return_kind = "plain"
-return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 47
-module_path = []
+returns_boxed_struct = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
 
-[[functions.args]]
-name = "obj"
-rust_type = "&PyAny"
+[[structs.methods.args]]
+name = "w"
+rust_type = "f64"
 abi = ""
 
-[[functions]]
-name = "takes_bound"
-symbol = "takes_bound"
-attribute = "none"
+[[structs.methods]]
+name = "unit"
+symbol = "rustcall_Rect_unit"
+is_static = true
+is_mutable = false
+is_constructor = false
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "usize"
+accessor = ""
 return_kind = "plain"
-return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 53
-module_path = []
-
-[[functions.args]]
-name = "obj"
-rust_type = "Bound<'_, PyList>"
-abi = ""
-
-[[functions]]
-name = "returns_object"
-symbol = "returns_object"
-attribute = "none"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
+returns_boxed_struct = true
 args = []
-return_type = "PyObject"
-return_kind = "plain"
+return_type = "Self"
 return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 59
-module_path = []
+generic_wrapper = ""
 
-[[functions]]
-name = "returns_py_of"
-symbol = "returns_py_of"
-attribute = "none"
+[[structs.methods]]
+name = "area"
+symbol = "rustcall_Rect_area"
+is_static = false
+is_mutable = false
+is_constructor = false
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
+accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+returns_boxed_struct = false
 args = []
-return_type = "Py<PyList>"
-return_kind = "plain"
+return_type = "f64"
 return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 64
-module_path = []
+generic_wrapper = ""
 
-[[functions]]
-name = "parse"
-symbol = "parse"
-attribute = "none"
+[[structs.methods]]
+name = "scale"
+symbol = "rustcall_Rect_scale"
+is_static = false
+is_mutable = true
+is_constructor = false
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "PyResult<i32>"
-return_kind = "plain"
-return_abi = ""
+accessor = ""
+return_kind = "unit"
 ok_type = ""
 err_type = ""
 inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 71
-module_path = []
+returns_boxed_struct = false
+return_type = "()"
+return_abi = ""
+generic_wrapper = ""
 
-[[functions.args]]
-name = "s"
-rust_type = "&str"
-abi = "str"
+[[structs.methods.args]]
+name = "factor"
+rust_type = "f64"
+abi = ""
 
-[[functions]]
-name = "parse_object"
-symbol = "parse_object"
-attribute = "none"
+[[structs.methods]]
+name = "label"
+symbol = "rustcall_Rect_label"
+is_static = false
+is_mutable = false
+is_constructor = false
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "PyResult<PyObject>"
+accessor = ""
 return_kind = "plain"
-return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 78
-module_path = []
+returns_boxed_struct = false
+args = []
+return_type = "String"
+return_abi = ""
+generic_wrapper = ""
 
-[[functions.args]]
-name = "s"
-rust_type = "&str"
-abi = "str"
-
-[[functions]]
-name = "identity"
-symbol = "identity"
-attribute = "none"
+[[structs.methods]]
+name = "scaled"
+symbol = "rustcall_Rect_scaled"
+is_static = false
+is_mutable = false
+is_constructor = false
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = true
-return_type = "T"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
+accessor = ""
+return_kind = "py_result"
+ok_type = "f64"
 err_type = ""
 inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = """
-#[pyfunction]
-pub fn identity<T>(x: T) -> T {
-    x
-}
-"""
-body_has_cfg = false
-line = 87
-module_path = []
+returns_boxed_struct = false
+return_type = "PyResult<f64>"
+return_abi = ""
+generic_wrapper = ""
 
-[[functions.type_params]]
-name = "T"
-bounds = []
-
-[[functions.args]]
-name = "x"
-rust_type = "T"
+[[structs.methods.args]]
+name = "factor"
+rust_type = "f64"
 abi = ""
 
-[[functions]]
-name = "dual"
-symbol = "rustcall_dual"
-attribute = "julia"
+[[structs.methods]]
+name = "parts"
+symbol = "rustcall_Rect_parts"
+is_static = false
+is_mutable = false
+is_constructor = false
 vis = "pub"
 skip_reason = ""
 python_name = ""
-exported = true
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "i32"
+accessor = ""
 return_kind = "plain"
-return_abi = ""
 ok_type = ""
 err_type = ""
 inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 180
-module_path = []
-
-[[functions.args]]
-name = "a"
-rust_type = "i32"
-abi = ""
-
-[[functions.args]]
-name = "b"
-rust_type = "i32"
-abi = ""
-
-[[functions]]
-name = "demo"
-symbol = "demo"
-attribute = "none"
-vis = ""
-skip_reason = ""
-python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "PyResult<()>"
-return_kind = "plain"
+returns_boxed_struct = false
+args = []
+return_type = "Vec<f64>"
 return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 191
-module_path = []
-
-[[functions.args]]
-name = "m"
-rust_type = "&Bound<'_, PyModule>"
-abi = ""
-
-[[functions]]
-name = "deep"
-symbol = "deep"
-attribute = "none"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "i32"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 202
-module_path = ["nested"]
-
-[[functions.args]]
-name = "a"
-rust_type = "i32"
-abi = ""
-
-[[functions]]
-name = "unreachable_add"
-symbol = "unreachable_add"
-attribute = "none"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "i32"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 211
-module_path = ["private_mod"]
-
-[[functions.args]]
-name = "a"
-rust_type = "i32"
-abi = ""
-
-[[functions]]
-name = "gated_add"
-symbol = "gated_add"
-attribute = "none"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = false
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "i32"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 257
-module_path = []
-
-[[functions.args]]
-name = "a"
-rust_type = "i32"
-abi = ""
-
-[[functions.args]]
-name = "b"
-rust_type = "i32"
-abi = ""
+generic_wrapper = ""

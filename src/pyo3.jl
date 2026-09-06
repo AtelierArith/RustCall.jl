@@ -28,7 +28,45 @@ const PYO3_SKIP_REASONS = Dict{String, String}(
     "owner_skipped" => "its `#[pyclass]` is itself skipped",
     "symbol_collision" => "another item already claims the symbol a wrapper would give this one; " *
                           "module-qualified symbols are tracked in #300",
+    # Reasons the Phase-2 *generator* refuses an item (#275 Phase 2).
+    "unsupported_arg" => "an argument type the wrapper cannot lower: neither FFI-compatible " *
+                         "nor a `String`/`&str`",
+    "unsupported_return" => "a return type the wrapper cannot lower: it does not cross the " *
+                            "C ABI as a single value",
+    "py_result_payload" => "a `PyResult` whose `Ok` type does not fit in the `CResult` " *
+                           "aggregate; widening this is tracked in #303",
+    "cfg_undecided" => "the item is behind a `#[cfg]` the scan could not decide, so whether " *
+                       "the build the wrapper links against has it is unknown",
 )
+
+"""
+    PYO3_OPAQUE_ERROR
+
+The error a lowered `PyResult` reports. It is fixed, and deliberately so.
+
+Creating and dropping a `PyErr` without a Python interpreter is safe;
+**rendering** one is not — `Display`/`Debug` on a `PyErr` asserts inside pyo3
+that the interpreter is initialized, and the resulting panic crossing
+`extern "C"` aborts the process. Reading only the exception *type* would still
+need a `Python` token, which a wrapper crate by definition does not have. So the
+generated wrapper drops the `PyErr` and reports the fixed code
+`rustcall_core::wrap::PYERR_CODE`, and this is the sentence Julia raises for it.
+
+Must equal `rustcall_core::wrap::PYERR_MESSAGE`; `test/test_pyo3_wrapper.jl`
+checks that it does.
+"""
+const PYO3_OPAQUE_ERROR =
+    "PyErr (Python-side error; message unavailable without an interpreter)"
+
+"""
+    PYO3_ERROR_CODE
+
+The `i32` a lowered `PyResult` carries in the `Err` slot
+(`rustcall_core::wrap::PYERR_CODE`). It is the only value the wrapper produces,
+so the Julia side never decodes it — it reports `PYO3_OPAQUE_ERROR` instead —
+but the number is part of the ABI and is written down here.
+"""
+const PYO3_ERROR_CODE = Int32(1)
 
 """
     pyo3_skip_explanation(reason::AbstractString) -> String
@@ -273,6 +311,15 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String})
     resolved === nothing && return nothing
     crate_features, pyo3_features, pyo3_active = resolved
     cfg_text = _crate_build_cfg_text(crate_path; features = flags)
+    # `cargo tree` answered but `cargo rustc -- --print cfg` did not: the plan
+    # knows the feature graph and nothing about the configuration the build
+    # compiles under, so the scan cannot be run in strict mode. Saying
+    # `resolved = true` here made `scan_report` fall back to a lenient scan
+    # without ever saying so (#294 review).
+    if isempty(cfg_text)
+        return _pyo3_unresolved_cfg_plan(crate_path, flags, crate_features,
+                                         pyo3_features, pyo3_active)
+    end
 
     label = isempty(flags) ? "the crate's default features" : join(flags, " ")
     no_defaults = "--no-default-features" in flags
@@ -284,7 +331,7 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String})
                             crate_features = crate_features, cfg_text = cfg_text, resolved = true)
     end
 
-    if "extension-module" in pyo3_features
+    if "extension-module" in pyo3_features && !extension_module_is_linkable()
         return PyO3LinkPlan(:unlinkable, copy(flags), "",
                             "with $(label), pyo3 resolves with the `extension-module` feature, " *
                             "which leaves libpython's symbols to the Python interpreter that " *
@@ -301,12 +348,71 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String})
     detail = isempty(rpath) ?
         " — and the interpreter's library directory could not be located (tried " *
         "RUSTCALL_PYTHON_LIBDIR, python3-config --ldflags and sysconfig LIBDIR)" :
-        "; $(rpath) is added as an rpath at wrapper-build time"
+        "; $(rpath) is put on the linker's search path at wrapper-build time" *
+        (Sys.iswindows() ? " (Windows resolves the DLL through PATH at load time, not an rpath)" :
+                           " and recorded as an rpath")
+    extension_note = "extension-module" in pyo3_features ?
+        ". On Windows pyo3 still links the interpreter's import library with " *
+        "`extension-module`, so this build is linkable where a Unix one would not be" : ""
     return PyO3LinkPlan(:link_libpython, copy(flags), rpath,
                         "with $(label), Cargo resolves pyo3, so the wrapper cdylib links " *
-                        "libpython$(detail)", !no_defaults;
+                        "libpython$(detail)$(extension_note)", !no_defaults;
                         pyo3_features = pyo3_features, crate_features = crate_features,
                         cfg_text = cfg_text, resolved = true)
+end
+
+"""
+    extension_module_is_linkable() -> Bool
+
+Whether a wrapper cdylib that resolves pyo3 with `extension-module` can still be
+linked and loaded on this target.
+
+On Unix it cannot: `extension-module` tells pyo3 to leave libpython's symbols
+undefined for the importing interpreter to supply, which the #275 MWE confirmed
+is fatal for a cdylib Julia loads — macOS does not even link it, and Linux links
+it but fails `dlopen` under both `RTLD_NOW` and `RTLD_LAZY`
+(`undefined symbol: _Py_Dealloc`).
+
+**Windows has no such mode.** A DLL there must resolve every import at link
+time, so pyo3 links `python3X.lib` regardless of `extension-module`, and the
+resulting wrapper loads exactly like any other `:link_libpython` build as long
+as the interpreter's DLL directory is on `PATH`. Classifying such a build
+`:unlinkable` on Windows refused a crate that works.
+"""
+extension_module_is_linkable() = Sys.iswindows()
+
+"""
+    _pyo3_unresolved_cfg_plan(crate_path, flags, crate_features, pyo3_features, pyo3_active)
+
+The plan for a build whose **feature graph** Cargo resolved but whose
+configuration it would not print (`cargo rustc -- --print cfg` failed: an
+offline registry, a `build.rs` that does not run here, a target without a
+toolchain).
+
+The mode is decided from the feature graph exactly as a fully resolved plan
+decides it — that part *is* known — but `cfg_text` is empty and `resolved` is
+`false`, so `scan_report` scans leniently and says so, and the Phase-2 wrapper
+refuses any `#[cfg]`-carrying item (`cfg_undecided`) instead of generating a
+call it cannot justify.
+"""
+function _pyo3_unresolved_cfg_plan(crate_path::AbstractString, flags::Vector{String},
+                                   crate_features::Vector{String},
+                                   pyo3_features::Vector{String}, pyo3_active::Bool)
+    label = isempty(flags) ? "the crate's default features" : join(flags, " ")
+    no_defaults = "--no-default-features" in flags
+    note = "with $(label), Cargo resolved the feature graph but would not print the " *
+           "configuration this build compiles under (`cargo rustc -- --print cfg` failed), " *
+           "so every #[cfg] item is reported and none of them can be wrapped"
+    mode, rpath = if !pyo3_active
+        (:python_free, "")
+    elseif "extension-module" in pyo3_features && !extension_module_is_linkable()
+        (:unlinkable, "")
+    else
+        (:link_libpython, _python_library_dir_or_empty())
+    end
+    return PyO3LinkPlan(mode, copy(flags), rpath, note, !no_defaults;
+                        pyo3_features = pyo3_features, crate_features = crate_features,
+                        cfg_text = "", resolved = false)
 end
 
 """
@@ -480,10 +586,22 @@ cannot be found. Consulted in order:
 
 1. `ENV["RUSTCALL_PYTHON_LIBDIR"]` — an explicit override always wins;
 2. CondaPkg's environment, when `CondaPkg` is already loaded (PythonCall users);
-3. `python3-config --ldflags`, taking its `-L` directory;
-4. `sysconfig.get_config_var("LIBDIR")` of `python3`.
+3. macOS only: `sysconfig.get_config_var("PYTHONFRAMEWORKPREFIX")`, the
+   directory *containing* `Python3.framework`;
+4. `python3-config --ldflags`, taking its `-L` directory;
+5. `sysconfig.get_config_var("LIBDIR")` of `python3`.
 
 Only an existing directory is returned.
+
+# Why the framework prefix comes first on macOS
+
+A framework build of Python is linked as
+`@rpath/Python3.framework/Versions/3.x/Python3`, so the rpath the wrapper needs
+is the directory holding the `.framework`, not `LIBDIR` (which is
+`…/Versions/3.x/lib`, one level *inside* it). Handing the linker `LIBDIR`
+produces a cdylib whose `@rpath` reference cannot be resolved and which then
+fails to load — with a message about a missing `Python3.framework`, not about
+the directory that was wrong.
 """
 function python_library_dir()
     override = get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")
@@ -492,8 +610,28 @@ function python_library_dir()
     conda = _condapkg_library_dir()
     isempty(conda) || return conda
 
+    if Sys.isapple()
+        prefix = _python_framework_prefix()
+        isempty(prefix) || return prefix
+    end
     for dir in (_python_config_libdir(), _python_sysconfig_libdir())
         isempty(dir) || return dir
+    end
+    return ""
+end
+
+# The directory holding `<name>.framework` for a macOS framework build of
+# Python; "" for a non-framework build or when the interpreter cannot be asked.
+function _python_framework_prefix()
+    for exe in ("python3", "python")
+        try
+            code = "import sysconfig; " *
+                   "print(sysconfig.get_config_var('PYTHONFRAMEWORKPREFIX') or '')"
+            dir = strip(read(`$exe -c $code`, String))
+            isempty(dir) && continue
+            isdir(dir) && return String(dir)
+        catch
+        end
     end
     return ""
 end
@@ -576,8 +714,299 @@ function pyo3_link_rustflags(plan::PyO3LinkPlan)
         without it.
         """))
     end
+    # `-L native=` is the search path the *linker* uses, and is portable.
+    # The runtime search path is not: `-Wl,-rpath` is a GNU/Apple ld option
+    # that link.exe rejects outright, and Windows has no rpath concept at all —
+    # the loader finds a DLL through the executable's directory and `PATH`. So
+    # on Windows only the search path is emitted, and the caller is responsible
+    # for making the interpreter's DLL directory reachable at load time (#294
+    # review).
+    Sys.iswindows() && return String["-L", "native=$(plan.rpath)"]
     return String["-L", "native=$(plan.rpath)",
                   "-C", "link-arg=-Wl,-rpath,$(plan.rpath)"]
+end
+
+# ----------------------------------------------------------------------------
+# Phase 2: generating, building and binding the wrapper crate
+#
+# Lives here rather than in crate_bindings.jl because it is written in terms of
+# `PyO3LinkPlan`, and pyo3.jl is included after crate_bindings.jl (the scan it
+# reports comes from `scan_crate`). `generate_bindings` calls into it at run
+# time, which needs no include-order relationship.
+# ----------------------------------------------------------------------------
+
+"""
+    PyO3Wrapper
+
+A built wrapper crate for a PyO3 crate that carries no RustCall attribute
+(#275 Phase 2).
+
+- `info`: a `CrateInfo` whose `julia_functions` / `julia_structs` are the items
+  the **wrapper** exports, so every existing emitter binds them exactly as it
+  binds `#[julia]` ones;
+- `plan`: the `PyO3LinkPlan` the wrapper was built under;
+- `source`: the generated `lib.rs` and the manifest that describes it;
+- `lib_path`: the compiled cdylib;
+- `lib_name`: the `RUST_LIBRARIES` key, which includes the feature set, so two
+  builds of one crate under different features do not clobber each other;
+- `skipped`: the PyO3 items that were *not* wrapped, each with its reason.
+"""
+struct PyO3Wrapper
+    info::CrateInfo
+    plan::PyO3LinkPlan
+    source::WrapperCrateSource
+    lib_path::String
+    lib_name::String
+    skipped::Vector{Any}
+end
+
+"""
+    crate_needs_pyo3_wrapper(info::CrateInfo) -> Bool
+
+Whether `@rust_crate` should generate a wrapper crate for the PyO3 items of
+this crate rather than bind only its `#[julia]` ones (#275 Phase 2).
+
+It should exactly when the scan found a PyO3 item a wrapper *could* export. A
+crate whose PyO3 items are all skipped, or which has none, takes the pre-#275
+path unchanged — so nothing that worked before now runs a Cargo feature
+resolution it does not need.
+"""
+function crate_needs_pyo3_wrapper(info::CrateInfo)
+    any(isempty(f.skip_reason) for f in info.pyo3_functions) && return true
+    for st in info.pyo3_structs
+        isempty(st.skip_reason) || continue
+        (any(isempty(m.skip_reason) for m in st.methods) ||
+         !isempty(st.field_getters)) && return true
+    end
+    return false
+end
+
+"""
+    build_pyo3_wrapper(info; features, default_features, release, cache_enabled) -> PyO3Wrapper
+
+Generate, build and load-prepare the wrapper crate for `info` (#275 Phase 2).
+
+The steps, in the order their failures matter:
+
+1. **Decide whether a wrapper can be linked at all.** `pyo3_link_plan` asks
+   Cargo to resolve the feature set, and `pyo3_link_rustflags` raises for an
+   `:unlinkable` build or a `:link_libpython` one with no interpreter library
+   directory. Nothing is generated or compiled before that is settled.
+2. **Generate.** `wrap_crate` re-runs the scan `scan_crate` reported and turns
+   it into a `lib.rs` plus the manifest of what that file exports.
+3. **Build.** A temporary Cargo project with `crate-type = ["cdylib"]`, the
+   target crate as its only dependency (with the plan's features, and
+   `default-features` switched off there when the plan says so — nothing on the
+   `cargo build` command line can do that for a *dependency*), `panic =
+   "unwind"` pinned as every RustCall build is, and the plan's link flags.
+4. **Cache.** Under an `ArtifactId` of kind `pyo3-wrapper` whose codegen fields
+   carry the feature set and the link flags, so a build under other features is
+   a different artifact rather than a silent cache hit.
+
+# The scan is lenient, and that is deliberate
+
+A PyO3 marker can be conditional (`#[cfg_attr(feature = "python", pyfunction)]`)
+while the item it marks is not. The wrapper calls the *item*, so it can be built
+even for a feature set in which nothing is exposed to Python — which is how a
+crate with an optional pyo3 dependency gets a wrapper that links no libpython at
+all. Scanning strictly under such a build would report no PyO3 item and wrap
+nothing.
+
+The price is that an item whose own `#[cfg]` predicate is undecided cannot be
+called safely, so the generator refuses it with `cfg_undecided` rather than
+guessing. When Cargo resolved the build's configuration, the plan carries it,
+the scan is strict, and no item is refused for that reason.
+"""
+function build_pyo3_wrapper(info::CrateInfo;
+                            features::Vector{String} = String[],
+                            default_features::Bool = true,
+                            release::Bool = true,
+                            cache_enabled::Bool = true)
+    plan = pyo3_link_plan(info.path; features = features, default_features = default_features)
+    # Raises for :unlinkable and for :link_libpython with no interpreter
+    # directory, before anything is generated or compiled.
+    rustflags = pyo3_link_rustflags(plan)
+
+    cargo_toml = parse_cargo_toml(joinpath(info.path, "Cargo.toml"))
+    source_files = sort(find_rust_sources(info.path))
+    lib_root, tree_files = _crate_scan_inputs(info.path, cargo_toml, source_files)
+    source = wrap_crate(tree_files; crate_name = info.name, cfg = :lenient,
+                        crate_root = lib_root, skip_unparsable = true)
+
+    functions, structs, skipped = _pyo3_wrapper_items(source.manifest)
+    wrapper_info = CrateInfo(info.name, info.path, info.version, info.dependencies,
+                             functions, structs, info.source_files,
+                             info.pyo3_functions, info.pyo3_structs)
+
+    key = compute_crate_hash(info; release = release, kind = "pyo3-wrapper",
+                             features = features, default_features = default_features,
+                             rustflags = rustflags)
+    lib_name = "rust_crate_$(info.name)_$(artifact_short_id(key))"
+
+    cached = cache_enabled ? get_cargo_cached_library(key) : nothing
+    lib_path = if cached !== nothing && isfile(cached)
+        @debug "Using cached PyO3 wrapper library" key=artifact_short_id(key, 8)
+        cached
+    else
+        _build_pyo3_wrapper_project(info, plan, source, rustflags, release, key, cache_enabled)
+    end
+
+    return PyO3Wrapper(wrapper_info, plan, source, lib_path, lib_name, skipped)
+end
+
+"""
+    _pyo3_wrapper_items(manifest) -> (functions, structs, skipped)
+
+Split the wrapper crate's manifest into what Julia binds and what it reports.
+
+Only entries the generator actually emitted are bound: a `skip_reason` means no
+symbol exists, and generating a Julia definition for one would produce a
+`dlsym` failure at the first call instead of a message at scan time. Methods are
+filtered inside their class for the same reason, and the class keeps its fields
+untouched because the generator already cleared the accessors it did not emit.
+"""
+function _pyo3_wrapper_items(manifest::Dict)
+    skipped = Any[]
+    functions = RustFunctionSignature[]
+    for f in manifest_function_signatures(manifest; origins = PYO3_ATTRIBUTE_ORIGINS)
+        if isempty(f.skip_reason) && f.exported && !f.is_generic
+            push!(functions, f)
+        else
+            push!(skipped, f)
+        end
+    end
+
+    structs = RustStructInfo[]
+    for st in manifest_struct_infos(manifest; origins = PYO3_ATTRIBUTE_ORIGINS)
+        if !isempty(st.skip_reason)
+            push!(skipped, st)
+            continue
+        end
+        kept = RustMethod[]
+        for m in st.methods
+            isempty(m.skip_reason) ? push!(kept, m) : push!(skipped, m)
+        end
+        push!(structs, RustStructInfo(
+            st.name, st.type_params, kept, st.context_code, st.fields,
+            st.has_derive_julia_struct, st.derive_options;
+            field_abis = st.field_abis, field_getters = st.field_getters,
+            field_setters = st.field_setters, has_clone = st.has_clone,
+            has_owned_string_helper = st.has_owned_string_helper,
+            has_borrowed_string_helper = st.has_borrowed_string_helper,
+            generic_wrappers = st.generic_wrappers, constraints = st.constraints,
+            module_path = st.module_path, attribute = st.attribute, vis = st.vis,
+            skip_reason = st.skip_reason, python_name = st.python_name,
+            cfg_features = st.cfg_features))
+    end
+    return functions, structs, skipped
+end
+
+"""
+    _build_pyo3_wrapper_project(info, plan, source, rustflags, release, key, cache_enabled) -> String
+
+Write the generated wrapper crate to a temporary directory, build it, and
+return a path to the result that **outlives that directory**.
+
+`RUSTFLAGS` carries the plan's link flags; `PYO3_PYTHON` pins the interpreter
+pyo3's build script probes to the one whose library directory the plan put on
+the search path, so the cdylib cannot end up linked against one Python and
+pointed at another.
+
+The build directory is temporary and removed as soon as the build finishes, so
+the library is copied out **before** the cleanup — into the artifact cache under
+`key` when caching is on, and otherwise into a directory of its own. Returning
+Cargo's own output path here left `load_artifact!` opening a file that had
+already been deleted.
+"""
+function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
+                                     source::WrapperCrateSource,
+                                     rustflags::Vector{String}, release::Bool,
+                                     key::String, cache_enabled::Bool)
+    wrapper_path = mktempdir(prefix = "rustcall_pyo3_wrapper_")
+    mkpath(joinpath(wrapper_path, "src"))
+    write(joinpath(wrapper_path, "Cargo.toml"),
+          generate_pyo3_wrapper_cargo_toml(info, plan))
+    write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
+
+    project = CargoProject("$(info.name)_rustcall_wrapper", "0.1.0", DependencySpec[],
+                           "2021", wrapper_path)
+    env = Dict{String, String}(ENV)
+    isempty(rustflags) || (env["RUSTFLAGS"] = _merge_rustflags(get(env, "RUSTFLAGS", ""), rustflags))
+    interpreter = _pyo3_interpreter_path()
+    isempty(interpreter) || (env["PYO3_PYTHON"] = interpreter)
+    try
+        built = build_cargo_project(project; release = release, env = env,
+                                    policy = crate_wrapper_policy())
+        if cache_enabled
+            try
+                save_cargo_cached_library(key, built)
+                cached = get_cargo_cached_library(key)
+                cached === nothing || return cached
+            catch e
+                @debug "Failed to cache PyO3 wrapper library: $e"
+            end
+        end
+        # No cache: keep the library somewhere the cleanup below does not reach.
+        keep = joinpath(mktempdir(prefix = "rustcall_pyo3_lib_"), basename(built))
+        cp(built, keep; force = true)
+        return keep
+    finally
+        cleanup_cargo_project(project)
+    end
+end
+
+# RUSTFLAGS is a whitespace-separated list; an inherited one is kept so a user's
+# own flags are not silently dropped by a wrapper build.
+_merge_rustflags(inherited::AbstractString, added::Vector{String}) =
+    strip(string(inherited, " ", join(added, " ")))
+
+# The interpreter whose library directory `python_library_dir` found, so pyo3's
+# build script probes the same one. "" when it cannot be identified, in which
+# case pyo3 picks for itself exactly as it did before.
+function _pyo3_interpreter_path()
+    for exe in ("python3", "python")
+        try
+            path = strip(read(`$exe -c "import sys; print(sys.executable)"`, String))
+            isempty(path) || return String(path)
+        catch
+        end
+    end
+    return ""
+end
+
+"""
+    generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan) -> String
+
+The `Cargo.toml` of a #275 Phase-2 wrapper crate.
+
+The dependency entry comes from `pyo3_dependency_toml`, which is the only place
+a **dependency's** default features can be switched off — `cargo build
+--no-default-features` applies to the package being built, i.e. the wrapper. The
+wrapper depends on nothing else: everything the generated code needs is `std`,
+which is what makes the shape identical to a `#[julia]` crate's output.
+"""
+function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan)
+    lines = String[
+        "# Generated by RustCall.jl for the PyO3 crate `$(info.name)` (#275 Phase 2).",
+        "# Link plan: $(plan.mode) — $(plan.reason)",
+        "[package]",
+        "name = \"$(info.name)_rustcall_wrapper\"",
+        "version = \"0.1.0\"",
+        "edition = \"2021\"",
+        "",
+        "[lib]",
+        "crate-type = [\"cdylib\"]",
+        "",
+        rstrip(pyo3_dependency_toml(plan, info.name, info.path)),
+        "",
+        "[profile.release]",
+        "opt-level = 3",
+    ]
+    # Pinned for the same reason every RustCall build pins it: the generated
+    # `catch_unwind` boundary can only catch a panic that unwinds (#244).
+    panic_line = cargo_profile_panic_line(crate_wrapper_policy())
+    panic_line === nothing || push!(lines, panic_line)
+    return join(lines, "\n") * "\n"
 end
 
 # ----------------------------------------------------------------------------
@@ -596,12 +1025,19 @@ strict mode under that build's configuration, so `#[cfg]` and `#[cfg_attr]` on
 functions, structs, impls, methods and fields are evaluated by the extractor's
 own evaluator and the items listed are exactly the items that build has.
 
-Returns `(; julia, wrappable, skipped, plan, info, candidates)`:
+Returns `(; julia, wrappable, wrapped, skipped, plan, info, candidates)`:
 
 * `julia` — items carrying a RustCall attribute (`#[julia]`, `#[julia_pyo3]`),
   which `@rust_crate` wraps today;
-* `wrappable` — PyO3 items with an empty `skip_reason`: a Phase-2 wrapper crate
-  will be able to export `rustcall_<name>` for each of them;
+* `wrappable` — PyO3 items the *scan* found no reason to reject: a wrapper crate
+  can name each of them;
+* `wrapped` — the items the Phase-2 **generator** actually emitted an entry point
+  for, with `symbol` naming it (#275 Phase 2). It is a subset of `wrappable`:
+  the generator refuses a signature it cannot lower — a `Vec` argument, a
+  `PyResult<String>`, an item behind an undecided `#[cfg]` — and those appear in
+  `skipped` with the reason it gave. `nothing` when the wrapper could not be
+  generated at all (`generate = false`, or an `:unlinkable` plan), in which case
+  `skipped` holds only the scan's own reasons;
 * `skipped` — PyO3 items that cannot be wrapped, each with its reason;
 * `plan` — the `PyO3LinkPlan` for the requested feature set;
 * `info` — the `CrateInfo` scanned under it;
@@ -614,7 +1050,8 @@ RustCall.scan_report(crate; features = ["python"], default_features = false)
 ```
 """
 function scan_report(crate_path::AbstractString; features::Vector{String} = String[],
-                     default_features::Bool = true, io::IO = stdout)
+                     default_features::Bool = true, io::IO = stdout,
+                     generate::Bool = true)
     plan = pyo3_link_plan(crate_path; features = features, default_features = default_features)
     # A resolved plan carries the cfg text of its build, so the scan runs in
     # strict mode and the manifest holds exactly that build's items. Without one
@@ -643,6 +1080,35 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
         NamedTuple[]
     end
 
+    # What the Phase-2 generator would actually emit. This is the column that
+    # answers "and does it *build*?": the scan says an item is namable, the
+    # generator says whether its signature can be lowered. Generating is cheap
+    # (it runs the extractor again and compiles nothing), so the report shows
+    # it by default; `generate = false` is the pure Phase-1 report.
+    wrapped = nothing
+    generate_error = ""
+    if generate
+        try
+            cargo_toml = parse_cargo_toml(joinpath(String(crate_path), "Cargo.toml"))
+            source_files = sort(find_rust_sources(String(crate_path)))
+            lib_root, tree_files = _crate_scan_inputs(String(crate_path), cargo_toml, source_files)
+            source = wrap_crate(tree_files; crate_name = info.name, cfg = :lenient,
+                                crate_root = lib_root, skip_unparsable = true)
+            functions, structs, refused = _pyo3_wrapper_items(source.manifest)
+            wrapped = Any[]
+            append!(wrapped, functions)
+            for st in structs
+                push!(wrapped, st)
+                append!(wrapped, st.methods)
+            end
+            # The generator's refusals replace the scan's list: it starts from
+            # the same scan and only ever adds reasons.
+            skipped = refused
+        catch e
+            generate_error = sprint(showerror, e)
+        end
+    end
+
     build = isempty(plan.feature_flags) ? "default features" : join(plan.feature_flags, " ")
     println(io, "Crate $(info.name) v$(info.version) ($(info.path))")
     println(io, "  Build scanned: $(build)",
@@ -651,9 +1117,18 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     for item in julia_items
         println(io, "    $(_pyo3_item_label(item))")
     end
-    println(io, "  PyO3 items wrappable by Phase 2: $(length(wrappable))")
+    println(io, "  PyO3 items the scan can name: $(length(wrappable))")
     for item in wrappable
         println(io, "    $(_pyo3_item_label(item))")
+    end
+    if wrapped === nothing
+        println(io, "  Wrapper crate: not generated",
+                isempty(generate_error) ? "" : " ($(generate_error))")
+    else
+        println(io, "  Wrapper crate exports: $(length(wrapped))")
+        for item in wrapped
+            println(io, "    $(_pyo3_item_label(item))$(_pyo3_symbol_suffix(item))")
+        end
     end
     println(io, "  PyO3 items skipped: $(length(skipped))")
     for item in skipped
@@ -668,9 +1143,15 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
         end
     end
 
-    return (julia = julia_items, wrappable = wrappable, skipped = skipped,
-            plan = plan, info = info, candidates = candidates)
+    return (julia = julia_items, wrappable = wrappable, wrapped = wrapped,
+            skipped = skipped, plan = plan, info = info, candidates = candidates)
 end
+
+# The exported symbol of a wrapped item, for the report. A class has no symbol
+# of its own -- it is a handle its methods and accessors hang off.
+_pyo3_symbol_suffix(f::RustFunctionSignature) = isempty(f.symbol) ? "" : " -> $(f.symbol)"
+_pyo3_symbol_suffix(m::RustMethod) = isempty(m.symbol) ? "" : " -> $(m.symbol)"
+_pyo3_symbol_suffix(s::RustStructInfo) = " -> $(ffi_struct_free_symbol(s.name))"
 
 _pyo3_item_label(f::RustFunctionSignature) =
     "fn $(qualified_name(f.module_path, f.name)) -> $(f.return_type) [$(f.attribute)]"
