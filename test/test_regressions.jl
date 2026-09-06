@@ -1483,14 +1483,20 @@ end
             mod = Module(:RC278ResolveProbe)
             Core.eval(mod, :(const __RUSTCALL_LIBS = Dict{String, Any}()))
             Core.eval(mod, :(const __RUSTCALL_ACTIVE_LIB = Ref("")))
-            libs = getfield(mod, :__RUSTCALL_LIBS)
+            # The bindings were defined a moment ago, in a newer world than the
+            # one this code was compiled in. Julia 1.12 warns on a direct
+            # `getfield` here ("in a world prior to its definition world") and
+            # says it will error in a future version, so read them the same way
+            # `_resolve_lib` does — `@invokelatest`.
+            libs = @invokelatest getfield(mod, :__RUSTCALL_LIBS)
+            active = @invokelatest getfield(mod, :__RUSTCALL_ACTIVE_LIB)
             libs[stale] = old
-            getfield(mod, :__RUSTCALL_ACTIVE_LIB)[] = stale
+            active[] = stale
 
             RustCall._resolve_lib(mod, "")
             @test haskey(libs, actual)
             @test !haskey(libs, stale)
-            @test getfield(mod, :__RUSTCALL_ACTIVE_LIB)[] == actual
+            @test active[] == actual
             @test lock(() -> haskey(RustCall.RUST_LIBRARIES, stale), RustCall.REGISTRY_LOCK)
         finally
             lock(RustCall.REGISTRY_LOCK) do

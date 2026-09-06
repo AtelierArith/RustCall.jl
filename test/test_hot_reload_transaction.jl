@@ -681,10 +681,17 @@ end
                     # The bound exists and is small.
                     @test RustCall.MAX_RELOAD_CHASES == 3
                 finally
+                    # `close = true`, not a bare unload: every reload retires
+                    # the previous image and leaves it mapped, and Cargo built
+                    # each one inside `dir`. A mapped file cannot be deleted on
+                    # Windows, so `mktempdir`'s cleanup fails with ENOTEMPTY
+                    # under `chase/target/release` and logs it at Error level.
+                    # Closing first is what makes the cleanup succeed.
                     try
-                        RustCall.unload_library(lib_name)
+                        RustCall.unload_library(lib_name; close = true)
                     catch
                     end
+                    RustCall.close_retired_handles!()
                 end
             end
         end

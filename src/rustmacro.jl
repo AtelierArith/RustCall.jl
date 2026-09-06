@@ -171,11 +171,31 @@ function _alias_reloaded_library(mod::Module, stored_name::String, actual_name::
     # last registered for that name. The alias also shares the library's
     # liveness flag, so unloading either name retires both (#277 Phase B).
     alias_artifact!(inline_rustc_policy(), actual_name, stored_name)
-    if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
-        active = getfield(mod, :__RUSTCALL_ACTIVE_LIB)
+    active = _module_binding(mod, :__RUSTCALL_ACTIVE_LIB)
+    if active !== nothing
         active[] == stored_name && (active[] = actual_name)
     end
     return nothing
+end
+
+"""
+    _module_binding(mod, name) -> Any
+
+The value bound to `name` in `mod`, or `nothing` when there is none.
+
+`getfield` is invoked in the **latest** world. A `rust\"\"\"` block defines
+`__RUSTCALL_LIBS` and `__RUSTCALL_ACTIVE_LIB` in `mod`, and a `@rust` call in
+the same top-level expression — or a test that builds a module and calls
+straight into it — reads them from a world older than the one that defined
+them. Julia 1.12 warns about that access ("in a world prior to its definition
+world") and says it will become an error; `invokelatest` is the documented way
+to say "resolve this now", which is what these two bindings need: they are
+plain mutable containers whose *identity* is what matters, not something the
+compiler should specialize on.
+"""
+function _module_binding(mod::Module, name::Symbol)
+    isdefined(mod, name) || return nothing
+    return Base.invokelatest(getfield, mod, name)
 end
 
 """
@@ -189,8 +209,8 @@ the fallback function lookup across libraries in `get_function_pointer`.
 function _resolve_lib(mod::Module, lib_name::String)
     # Ensure ALL libraries from this module are loaded first
     # This is needed because get_function_pointer does fallback search across all libraries
-    if isdefined(mod, :__RUSTCALL_LIBS)
-        libs = getfield(mod, :__RUSTCALL_LIBS)
+    libs = _module_binding(mod, :__RUSTCALL_LIBS)
+    if libs !== nothing
         # `collect` first: a reload rebinds entries, and a Dict must not be
         # mutated while it is iterated.
         for (lname, code) in collect(libs)
@@ -213,11 +233,9 @@ function _resolve_lib(mod::Module, lib_name::String)
     # If no library name specified (e.g. @rust func() without a prior rust"""..."""),
     # try to use the module's active library.
     if isempty(lib_name)
-        if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
-            lib_name = getfield(mod, :__RUSTCALL_ACTIVE_LIB)[]
-        else
-            return get_current_library()
-        end
+        active = _module_binding(mod, :__RUSTCALL_ACTIVE_LIB)
+        active === nothing && return get_current_library()
+        lib_name = active[]
     end
 
     return lib_name
