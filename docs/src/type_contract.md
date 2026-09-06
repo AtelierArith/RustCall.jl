@@ -144,3 +144,42 @@ type alias with a completely different layout — stays unknown.
 above have no C representation RustCall can derive. Pass them behind a pointer
 (`*mut MyType`), or expose a `#[julia]` struct whose accessors return supported
 types.
+
+### String arguments must be valid UTF-8
+
+A Julia `String` is a byte vector, and `String([0xff, 0xfe])` is a perfectly
+ordinary value that is not UTF-8. Rust's `&str` and `String` are UTF-8 by
+definition, so the two are not the same domain, and passing one to the other is
+checked rather than assumed (issue
+[#246](https://github.com/AtelierArith/RustCall.jl/issues/246)):
+
+```julia
+rust"""
+#[julia]
+pub fn shout(name: &str) -> String { name.to_uppercase() }
+"""
+
+shout("héllo")                  # "HÉLLO"
+shout(String([0xff, 0xfe]))
+# ERROR: RustError: argument `name` of `shout` is not valid UTF-8 (first
+# invalid byte at index 1, 0xff). ...
+```
+
+The error names the argument by the name the Rust signature gives it, the
+function it belongs to, and the first byte that is wrong. Struct methods take
+the same path.
+
+Without the check the bytes reached `String::from_utf8_lossy` in the generated
+wrapper, which **replaces** each invalid byte with U+FFFD — the Rust function
+then ran on data the caller never passed, and returned a wrong answer with no
+error anywhere. That `from_utf8_lossy` is still there as defence in depth,
+because a `&str` built from invalid bytes is undefined behaviour and nothing
+may reach it; the Julia-side check is what turns the condition into a catchable
+exception at the call site.
+
+Fixing the encoding is the Julia-side answer when the value *is* text:
+`isvalid(s)` says whether a string is UTF-8, and `transcode` (or an explicit
+re-encode from whatever the bytes really are) produces one that is. To send
+bytes that are **not** text at all, take them on the Rust side as a
+`*const u8` plus a length — a `&[u8]` slice argument is not lowered by the
+`#[julia]` pipeline, so there is no `Vec{UInt8}` argument to pass.

@@ -31,6 +31,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its destructor calls into. `load_artifact!` now adopts the flag the image
   already has (`registered_alive_for_handle`).
 
+- **Invalid UTF-8 in a string argument now raises instead of being silently
+  substituted** ([#246](https://github.com/AtelierArith/RustCall.jl/issues/246)).
+  A Julia `String` is a byte vector and need not be UTF-8; Rust's `&str` is
+  UTF-8 by definition. The generated wrapper built the `&str` with
+  `String::from_utf8_lossy`, which *replaces* an invalid byte with U+FFFD — so
+  `f(String([0xff, 0xfe]))` ran the Rust function on data the caller never
+  passed and returned a wrong answer with no error anywhere.
+
+  The check now happens on the Julia side, before the pointer exists, and
+  raises a `RustError` naming the argument (by its Rust name), the function it
+  belongs to and the first offending byte. The Rust-side `from_utf8_lossy`
+  stays as defence in depth: a `&str` built from invalid bytes is undefined
+  behaviour, and nothing may reach it. Free functions, struct methods and
+  monomorphized generics share the path; a generic names the argument by
+  position (`argument #1`), since a `FunctionInfo` records ABIs and not
+  parameter names. `BINDINGS_FORMAT_VERSION` goes to `3`: a written-out
+  bindings file now imports `RustCall.ffi_string_argument`, a name an older
+  RustCall does not have, so regenerate after upgrading.
+
 ### Breaking
 - **The compilation cache moved out of `~/.julia/compiled/`**
   ([#252](https://github.com/AtelierArith/RustCall.jl/issues/252)). RustCall

@@ -1242,6 +1242,180 @@ end
     end
 end
 
+# #246: a Julia `String` is a byte vector and need not be UTF-8, but Rust's
+# `&str` is UTF-8 by definition. The generated wrapper builds the `&str` with
+# `String::from_utf8_lossy`, which *replaces* an invalid byte with U+FFFD — so
+# `f(String([0xff, 0xfe]))` ran the Rust function on data the caller never
+# passed and returned a wrong answer with no error anywhere. The check is now
+# on the Julia side, before the pointer exists; the Rust `from_utf8_lossy`
+# stays as defence in depth, because a `&str` built from invalid bytes is
+# undefined behaviour and nothing may reach it.
+@testset "#246: invalid UTF-8 in a string argument raises, and names the argument" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        rust"""
+        #[julia]
+        pub fn rc246_shout(name: &str) -> String { name.to_uppercase() }
+        #[julia]
+        pub fn rc246_join(head: &str, tail: &str) -> String { format!("{}{}", head, tail) }
+        #[julia]
+        pub struct Rc246Greeter { prefix: usize }
+        impl Rc246Greeter {
+            pub fn new(prefix: usize) -> Self { Self { prefix } }
+            pub fn greet(&self, who: &str) -> String { format!("{}{}", self.prefix, who) }
+        }
+        """
+
+        # Valid UTF-8 still crosses, including multi-byte characters — the
+        # check must not be a length or an ASCII test.
+        @test rc246_shout("world") == "WORLD"
+        @test rc246_shout("héllo ✓") == "HÉLLO ✓"
+        @test rc246_shout("") == ""
+        @test rc246_join("a", "é") == "aé"
+
+        # The acceptance case from the issue.
+        err = try
+            rc246_shout(String([0xff, 0xfe]))
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        msg = sprint(showerror, err)
+        @test occursin("not valid UTF-8", msg)
+        @test occursin("`name`", msg)          # the argument, by its Rust name
+        @test occursin("rc246_shout", msg)     # and the function it belongs to
+        @test occursin("0xff", msg)            # and the byte that is wrong
+        @test occursin("#246", msg)
+
+        # It is the *offending* argument that is named, not the first string
+        # one — a lone continuation byte after valid text, in position 2.
+        err2 = try
+            rc246_join("fine", "ok" * String([0x80]))
+            nothing
+        catch e
+            e
+        end
+        @test err2 isa RustCall.RustError
+        msg2 = sprint(showerror, err2)
+        @test occursin("`tail`", msg2)
+        @test !occursin("`head`", msg2)
+        @test occursin("0x80", msg2)
+
+        # A truncated multi-byte sequence is invalid too, and so is one that is
+        # merely incomplete at the end.
+        @test_throws RustCall.RustError rc246_shout(String(UInt8[0xc3]))
+        @test_throws RustCall.RustError rc246_shout("ok" * String(UInt8[0xe2, 0x9c]))
+
+        # Struct methods take the same path (`_string_arg_plan` is shared), and
+        # report the method rather than a free function.
+        g = Rc246Greeter(UInt(7))
+        @test greet(g, "x") == "7x"
+        err3 = try
+            greet(g, String([0xfe]))
+            nothing
+        catch e
+            e
+        end
+        @test err3 isa RustCall.RustError
+        @test occursin("`who`", sprint(showerror, err3))
+        @test occursin("greet", sprint(showerror, err3))
+
+        # A *generic* `#[julia]` function with a fixed string parameter takes a
+        # third path: `_call_monomorphized` builds its own argument list from
+        # `FunctionInfo.arg_abis` and never goes through `_string_arg_plan`, so
+        # it was the one string argument left reaching `from_utf8_lossy`
+        # (#246 review).
+        rust"""
+        #[julia]
+        pub fn rc246_tag<T: std::fmt::Display>(label: &str, value: T) -> String {
+            format!("{}={}", label, value)
+        }
+        """
+        @test RustCall.is_generic_function("rc246_tag")
+        @test RustCall.call_generic_function("rc246_tag", "n", Int32(7)) == "n=7"
+        @test RustCall.call_generic_function("rc246_tag", "é", 1.5) == "é=1.5"
+        err4 = try
+            RustCall.call_generic_function("rc246_tag", String([0xff, 0x41]), Int32(1))
+            nothing
+        catch e
+            e
+        end
+        @test err4 isa RustCall.RustError
+        msg4 = sprint(showerror, err4)
+        @test occursin("not valid UTF-8", msg4)
+        # A `FunctionInfo` records ABIs, not parameter names, so the position
+        # is what the message can name — and it names the right one.
+        @test occursin("argument #1", msg4)
+        @test occursin("0xff", msg4)
+        @test occursin("#246", msg4)
+        # The specialization still works afterwards: nothing was left half-done.
+        @test RustCall.call_generic_function("rc246_tag", "n", Int32(8)) == "n=8"
+
+        # An argument may legitimately be called `ffi_string_argument`. The
+        # generated wrapper binds a parameter of that name, so an *unqualified*
+        # call to the helper resolved to the caller's string and raised a
+        # `MethodError` before reaching Rust (#246 review). The plan emits a
+        # `GlobalRef`, which no parameter can shadow — and which stringifies as
+        # `RustCall.ffi_string_argument`, so the source-text emitter is covered
+        # by the same line.
+        rust"""
+        #[julia]
+        pub fn rc246_shadow(ffi_string_argument: &str) -> usize {
+            ffi_string_argument.len()
+        }
+        """
+        @test rc246_shadow("abcd") == Csize_t(4)
+        @test rc246_shadow("héllo") == Csize_t(6)   # bytes, not characters
+        err5 = try
+            rc246_shadow(String([0xff]))
+            nothing
+        catch e
+            e
+        end
+        @test err5 isa RustCall.RustError          # not a MethodError
+        @test occursin("not valid UTF-8", sprint(showerror, err5))
+        @test occursin("`ffi_string_argument`", sprint(showerror, err5))
+
+        # And the same for the source-text emitter, checked on the text.
+        let info = RustCall.scan_crate(joinpath(pkgdir(RustCall), "examples", "sample_crate")),
+            code = RustCall.emit_crate_module_code(info, "/tmp/libsample_rc246.so")
+            @test occursin("RustCall.ffi_string_argument(", code)
+            # No unqualified call is left for a parameter to shadow.
+            @test !occursin(r"(?<![.\w])ffi_string_argument\(", code)
+        end
+
+        # The message must not advertise a workaround the pipeline does not
+        # have: `&[u8]` slice arguments are not lowered by `#[julia]`.
+        @test !occursin("slice argument", msg) || occursin("is not lowered", msg)
+        @test occursin("isvalid", msg)
+        @test occursin("*const u8", msg)
+
+        # The helper itself, so the contract is pinned independently of any
+        # particular generated wrapper — in both of its spellings.
+        @test RustCall.ffi_string_argument("ok", "a", "f") == "ok"
+        @test RustCall.ffi_string_argument(SubString("xyz", 1, 2), "a", "f") == "xy"
+        @test RustCall.ffi_string_argument("ok", 2, "f") == "ok"
+        @test_throws RustCall.RustError RustCall.ffi_string_argument(
+            String([0xff]), "a", "f")
+        @test_throws RustCall.RustError RustCall.ffi_string_argument(
+            String([0xff]), 2, "f")
+        named_msg = sprint(showerror, try
+            RustCall.ffi_string_argument(String([0xff]), "a", "f")
+        catch e; e end)
+        positional_msg = sprint(showerror, try
+            RustCall.ffi_string_argument(String([0xff]), 2, "f")
+        catch e; e end)
+        @test occursin("argument `a` of `f`", named_msg)
+        @test occursin("argument #2 of `f`", positional_msg)
+
+        # A rejected call must not have touched Rust at all: the same wrapper
+        # keeps working afterwards, and the argument that was fine is unharmed.
+        @test rc246_shout("still here") == "STILL HERE"
+    end
+end
+
 # #247: the monomorphization key sorted the type *values*, so which parameter
 # got which type never reached the key. `pair<T=i32, U=i64>` and
 # `pair<T=i64, U=i32>` shared one MONOMORPHIZED_FUNCTIONS entry (and one symbol
