@@ -272,6 +272,10 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
                 is_static: m.is_static,
                 is_mutable: m.is_mutable,
                 is_constructor: m.name() == "new" || returns_self,
+                vis: crate::attrs::visibility_string(&m.func.vis),
+                skip_reason: String::new(),
+                python_name: String::new(),
+                accessor: String::new(),
                 returns_boxed_struct: crate::codegen::returns_boxed_struct(struct_name, &m.func),
                 args: fn_args(&m.func.sig),
                 return_type: return_type_to_string(&m.func.sig.output),
@@ -295,6 +299,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
                 ffi_compatible: acc.is_some(),
                 getter: acc.map(|a| a.1.clone()).unwrap_or_default(),
                 setter: acc.map(|a| a.2.clone()).unwrap_or_default(),
+                python_name: String::new(),
             }
         })
         .collect()
@@ -305,6 +310,9 @@ fn concrete_struct_entry(model: &StructModel, meta: &crate::codegen::InlineStruc
         cfg: predicate_string(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
+        vis: crate::attrs::visibility_string(&model.item.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         type_params: Vec::new(),
         fields: fields_of(model, &meta.accessors),
         methods: methods_of(model, true),
@@ -362,6 +370,9 @@ fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) 
         cfg: predicate_string(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
+        vis: crate::attrs::visibility_string(&model.item.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         type_params: generics_to_type_params(&model.item.generics),
         fields: fields_of(model, &accessors),
         methods,

@@ -32,6 +32,14 @@ struct RustMethod
     arg_abis::Vector{String}   # manifest `abi` per argument ("string", "str" or "")
     return_abi::String         # "string" (owned buffer), "str" (borrowed) or ""
     returns_boxed_struct::Bool
+    # Manifest schema 5 (#275). `vis` is the visibility as written ("pub",
+    # "pub(crate)", "" for private), `skip_reason` says why the method cannot
+    # be wrapped (empty when it can), `python_name` is the name PyO3 exposes it
+    # under and `accessor` is "getter"/"setter" for a `#[getter]`/`#[setter]`.
+    vis::String
+    skip_reason::String
+    python_name::String
+    accessor::String
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -40,10 +48,12 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     generic_wrapper::String = "",
                     arg_abis::Vector{String} = _default_arg_abis(arg_types),
                     return_abi::String = _default_return_abi(return_type, arg_abis),
-                    returns_boxed_struct::Bool = is_constructor)
+                    returns_boxed_struct::Bool = is_constructor,
+                    vis::String = "pub", skip_reason::String = "",
+                    python_name::String = "", accessor::String = "")
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
-               returns_boxed_struct)
+               returns_boxed_struct, vis, skip_reason, python_name, accessor)
 end
 
 """
@@ -112,6 +122,14 @@ struct RustStructInfo
     generic_wrappers::Vector{Tuple{String, String, Vector{String}}}
     constraints::Dict{Symbol, TypeConstraints}
     module_path::Vector{String}
+    # Manifest schema 5 (#275): which attribute the struct was reported for
+    # (`:julia`, `:julia_pyo3`, `:derive_julia_struct`, or `:py_class` for a
+    # `#[pyclass]` found by the PyO3 scan), its visibility, and why it cannot
+    # be wrapped (empty when it can).
+    attribute::Symbol
+    vis::String
+    skip_reason::String
+    python_name::String
 end
 
 function RustStructInfo(name::String, type_params::Vector{String}, methods::Vector{RustMethod},
@@ -125,12 +143,14 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         has_borrowed_string_helper::Bool = false,
                         generic_wrappers::Vector{Tuple{String, String, Vector{String}}} = Tuple{String, String, Vector{String}}[],
                         constraints::Dict{Symbol, TypeConstraints} = Dict{Symbol, TypeConstraints}(),
-                        module_path::Vector{String} = String[])
+                        module_path::Vector{String} = String[],
+                        attribute::Symbol = :julia, vis::String = "pub",
+                        skip_reason::String = "", python_name::String = "")
     RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
                    has_derive_julia_struct,
                    derive_options, field_getters, field_setters, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
-                   module_path)
+                   module_path, attribute, vis, skip_reason, python_name)
 end
 
 """

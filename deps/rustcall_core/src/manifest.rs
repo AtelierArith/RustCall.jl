@@ -35,7 +35,42 @@ use serde::{Deserialize, Serialize};
 ///   `Method.returns_boxed_struct` states explicitly what Julia used to infer
 ///   by comparing `return_type` against `"Self"`. A version-3 consumer would
 ///   read a `String` field getter as an opaque value.
-pub const SCHEMA_VERSION: u32 = 4;
+/// * 5: PyO3 crate scan (#275 Phase 1): items carrying only PyO3 attributes are
+///   reported alongside `#[julia]` ones with a PyO3 [`Attribute`] origin,
+///   every function / struct / method carries [`Function::vis`] and
+///   [`Function::skip_reason`], and a `PyResult<T>` return is reported as
+///   [`ReturnKind::PyResult`]. A version-4 consumer would treat a
+///   `#[pyfunction]` as an exported `#[julia]` function and `dlsym` a symbol
+///   that no wrapper crate has emitted yet.
+pub const SCHEMA_VERSION: u32 = 5;
+
+/// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
+/// [`Method::skip_reason`]. An empty reason means the item is wrappable.
+///
+/// The values are a closed set so Julia can group and translate them; anything
+/// carrying a detail appends it after a `:`.
+pub mod skip_reason {
+    /// The item is not `pub`, so a wrapper crate compiled outside the scanned
+    /// crate cannot name it (`E0603`).
+    pub const NOT_PUBLIC: &str = "not_public";
+    /// The signature mentions a type that only exists with a live Python
+    /// interpreter (`PyObject`, `Py<T>`, `Bound<'_, T>`, `Python<'_>`,
+    /// `PyRef`, anything under `pyo3::`). The offending type follows the colon.
+    pub const PYO3_TYPE: &str = "pyo3_type";
+    /// A `#[pymodule]` initialiser: it exists to be called by the Python
+    /// import machinery and has no meaning without an interpreter.
+    pub const PYMODULE: &str = "pymodule";
+    /// A generic item: monomorphization of PyO3 items is not part of #275.
+    pub const GENERIC: &str = "generic";
+    /// A method whose `#[pyclass]` is itself skipped (the reason follows the
+    /// colon), so there is no handle type to hang it off.
+    pub const OWNER_SKIPPED: &str = "owner_skipped";
+
+    /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
+    pub fn detailed(kind: &str, detail: &str) -> String {
+        format!("{kind}:{detail}")
+    }
+}
 
 /// Which pipeline produced the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,9 +103,33 @@ pub enum Attribute {
     JuliaPyo3,
     /// `#[derive(JuliaStruct)]` on a struct (inline mode only).
     DeriveJuliaStruct,
+    /// `#[pyfunction]` with no RustCall attribute (#275). The item is reported
+    /// so a Phase-2 wrapper crate can generate an `extern "C"` entry point for
+    /// it; nothing exports it yet.
+    PyFunction,
+    /// `#[pyclass]` with no RustCall attribute (#275): an opaque handle, never
+    /// `repr(C)`.
+    PyClass,
+    /// A method collected from a `#[pymethods]` block of a [`Attribute::PyClass`]
+    /// struct (#275).
+    PyMethods,
+    /// A `#[pymodule]` initialiser (#275). Always skipped, see
+    /// [`skip_reason::PYMODULE`].
+    PyModule,
     /// No RustCall attribute: a plain function that is still reported so Julia
     /// can register return types for `@rust f(...)` calls without `::T`.
     None,
+}
+
+impl Attribute {
+    /// Whether this origin comes from the PyO3 scan (#275) rather than from a
+    /// RustCall attribute.
+    pub fn is_pyo3_scan(self) -> bool {
+        matches!(
+            self,
+            Attribute::PyFunction | Attribute::PyClass | Attribute::PyMethods | Attribute::PyModule
+        )
+    }
 }
 
 /// Shape of a function's return value on the C ABI.
@@ -85,6 +144,15 @@ pub enum ReturnKind {
     Result,
     /// `Option<T>` wrapped into `COption_<fn>` `{ is_some: u8, value: T }`.
     Option,
+    /// `PyResult<T>` (= `Result<T, PyErr>`) of a scanned PyO3 item (#275), with
+    /// `T` in [`Function::ok_type`].
+    ///
+    /// Creating and dropping a `PyErr` without a Python interpreter is safe,
+    /// but rendering one is not: `Display`/`Debug` on a `PyErr` panics inside
+    /// pyo3 and the panic crossing `extern "C"` aborts the process. A Phase-2
+    /// wrapper must therefore report the error as an opaque flag and never
+    /// format it.
+    PyResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,8 +188,28 @@ pub struct Function {
     /// exported as `rustcall_<name>` and never under `name` itself (#279); a
     /// plain `#[no_mangle] extern "C"` function keeps its own name.
     pub symbol: String,
+    /// Which attribute the item was reported for. Since schema 5 this is also
+    /// the *origin*: a `py_*` value means the entry came from the PyO3 scan of
+    /// #275, not from a RustCall attribute.
     pub attribute: Attribute,
+    /// Visibility as written: `"pub"`, `"pub(crate)"`, `"pub(super)"`,
+    /// `"pub(in path)"`, or `""` for a private item. Only a `pub` item can be
+    /// called from a wrapper crate compiled outside the scanned crate (#275).
+    #[serde(default)]
+    pub vis: String,
+    /// Why this item cannot be wrapped, from the [`skip_reason`] vocabulary;
+    /// empty when it can (#275). Always empty for `#[julia]` items, which are
+    /// only reported when they are wrapped.
+    #[serde(default)]
+    pub skip_reason: String,
+    /// The name the item is exposed under in Python (`#[pyo3(name = "...")]`),
+    /// empty when it is the Rust name or the item is not a PyO3 one (#275).
+    #[serde(default)]
+    pub python_name: String,
     /// True when the generated code carries `#[no_mangle] extern "C"`.
+    ///
+    /// Always `false` for a PyO3-scanned item: [`Function::symbol`] names the
+    /// wrapper a Phase-2 wrapper crate *will* emit, and nothing exports it yet.
     pub exported: bool,
     /// `#[cfg(...)]` predicate of the item (`unix`, `all(unix, feature = "x")`),
     /// empty when unconditional. Items whose predicate is false under the
@@ -206,6 +294,11 @@ pub struct Field {
     /// Exported symbol that writes the field (`<Struct>_set_<field>`). Empty if none.
     #[serde(default)]
     pub setter: String,
+    /// The name the field is exposed under in Python
+    /// (`#[pyo3(get, name = "...")]`), empty when it is the Rust name or the
+    /// struct is not a `#[pyclass]` (#275).
+    #[serde(default)]
+    pub python_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +311,24 @@ pub struct Method {
     pub is_static: bool,
     pub is_mutable: bool,
     pub is_constructor: bool,
+    /// Visibility as written: `"pub"`, `"pub(crate)"`, `"pub(super)"`,
+    /// `"pub(in path)"`, or `""` for a private item. Only a `pub` item can be
+    /// called from a wrapper crate compiled outside the scanned crate (#275).
+    #[serde(default)]
+    pub vis: String,
+    /// Why this item cannot be wrapped, from the [`skip_reason`] vocabulary;
+    /// empty when it can (#275). Always empty for `#[julia]` items, which are
+    /// only reported when they are wrapped.
+    #[serde(default)]
+    pub skip_reason: String,
+    /// The name the item is exposed under in Python (`#[pyo3(name = "...")]`),
+    /// empty when it is the Rust name or the item is not a PyO3 one (#275).
+    #[serde(default)]
+    pub python_name: String,
+    /// `"getter"` / `"setter"` for a `#[getter]` / `#[setter]` method of a
+    /// `#[pymethods]` block, empty otherwise (#275).
+    #[serde(default)]
+    pub accessor: String,
     /// Whether the wrapper boxes the result and returns `*mut Struct`
     /// (`crate::codegen::returns_boxed_struct`). Julia used to infer this by
     /// comparing `return_type` against `"Self"` and the struct name, which
@@ -243,6 +354,21 @@ pub struct Method {
 pub struct Struct {
     pub name: String,
     pub attribute: Attribute,
+    /// Visibility as written: `"pub"`, `"pub(crate)"`, `"pub(super)"`,
+    /// `"pub(in path)"`, or `""` for a private item. Only a `pub` item can be
+    /// called from a wrapper crate compiled outside the scanned crate (#275).
+    #[serde(default)]
+    pub vis: String,
+    /// Why this item cannot be wrapped, from the [`skip_reason`] vocabulary;
+    /// empty when it can (#275). Always empty for `#[julia]` items, which are
+    /// only reported when they are wrapped.
+    #[serde(default)]
+    pub skip_reason: String,
+    /// The name the item is exposed under in Python (`#[pyo3(name = "...")]`),
+    /// empty when it is the Rust name or the item is not a PyO3 one (#275).
+    #[serde(default)]
+    pub python_name: String,
+
     /// `#[cfg(...)]` predicate of the struct item, see [`Function::cfg`].
     #[serde(default)]
     pub cfg: String,

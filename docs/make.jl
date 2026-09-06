@@ -41,6 +41,7 @@ makedocs(
             "Struct Mapping" => "struct_mapping.md",
             "Generics" => "generics.md",
             "External Crate Bindings" => "crate_bindings.md",
+            "PyO3 Crates" => "pyo3.md",
             "Panics, Visibility and Lifetime" => "panics.md",
             "Precompilation" => "precompilation.md",
             "Troubleshooting" => "troubleshooting.md",

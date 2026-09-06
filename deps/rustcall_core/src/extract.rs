@@ -139,6 +139,9 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         name,
         symbol,
         attribute,
+        vis: crate::attrs::visibility_string(&func.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         exported,
         cfg: predicate_string(&func.attrs),
         is_generic,
@@ -178,6 +181,13 @@ pub fn extract_crate_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Mani
     }
     let mut manifest = Manifest::new(Mode::Crate);
     extract_crate_items(&file.items, &mut manifest);
+    // Items that carry only PyO3 attributes (#275). Reported with a PyO3
+    // origin, `exported = false` and the symbol a Phase-2 wrapper crate will
+    // emit; an item that also carries `#[julia]` is owned by `#[julia]` and is
+    // skipped by the scan (see `crate::pyo3`). The scan walks inline modules
+    // itself, because unlike the `#[julia]` path it records `module_path`: a
+    // wrapper crate has to name the item as `user_crate::module::item`.
+    crate::pyo3::extract_pyo3_items(&file.items, &mut manifest);
     Ok(manifest)
 }
 
@@ -240,6 +250,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
                 } else {
                     String::new()
                 },
+                python_name: String::new(),
             }
         })
         .collect();
@@ -252,6 +263,10 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             is_static: m.is_static,
             is_mutable: m.is_mutable,
             is_constructor: returns_boxed_struct(struct_name, &m.func),
+            vis: crate::attrs::visibility_string(&m.func.vis),
+            skip_reason: String::new(),
+            python_name: String::new(),
+            accessor: String::new(),
             returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
@@ -266,6 +281,9 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         cfg: predicate_string(&model.item.attrs),
         name: model.name(),
         attribute: model.attribute,
+        vis: crate::attrs::visibility_string(&model.item.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         type_params: generics_to_type_params(&model.item.generics),
         fields,
         methods,

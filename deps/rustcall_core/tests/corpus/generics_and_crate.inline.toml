@@ -1,10 +1,13 @@
-schema_version = 4
+schema_version = 5
 mode = "inline"
 
 [[functions]]
 name = "generic_identity"
 symbol = "generic_identity"
 attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 exported = false
 cfg = ""
 is_generic = true
@@ -44,6 +47,9 @@ abi = ""
 name = "raw_increment"
 symbol = "raw_increment"
 attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 exported = true
 cfg = ""
 is_generic = false
@@ -69,6 +75,9 @@ abi = ""
 [[structs]]
 name = "Pair"
 attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 cfg = ""
 derives = []
 has_clone = false
@@ -114,6 +123,7 @@ abi = ""
 ffi_compatible = true
 getter = "Pair_get_left"
 setter = "Pair_set_left"
+python_name = ""
 
 [[structs.fields]]
 name = "right"
@@ -122,6 +132,7 @@ abi = ""
 ffi_compatible = true
 getter = "Pair_get_right"
 setter = "Pair_set_right"
+python_name = ""
 
 [[structs.methods]]
 name = "new"
@@ -129,6 +140,10 @@ symbol = ""
 is_static = true
 is_mutable = false
 is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
 returns_boxed_struct = true
 return_type = "Self"
 return_abi = ""
@@ -158,6 +173,10 @@ symbol = ""
 is_static = false
 is_mutable = false
 is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
 returns_boxed_struct = false
 args = []
 return_type = "T"
@@ -178,6 +197,10 @@ symbol = ""
 is_static = false
 is_mutable = false
 is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
 returns_boxed_struct = false
 args = []
 return_type = "T"

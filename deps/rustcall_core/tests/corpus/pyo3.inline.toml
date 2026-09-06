@@ -1,10 +1,13 @@
-schema_version = 4
+schema_version = 5
 mode = "inline"
 
 [[functions]]
 name = "dual_add"
 symbol = "rustcall_dual_add"
 attribute = "julia_pyo3"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 exported = true
 cfg = ""
 is_generic = false
@@ -36,6 +39,9 @@ abi = ""
 name = "dual_len"
 symbol = "rustcall_dual_len"
 attribute = "julia_pyo3"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 exported = true
 cfg = ""
 is_generic = false
@@ -61,6 +67,9 @@ abi = "string"
 [[structs]]
 name = "DualCounter"
 attribute = "julia_pyo3"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 cfg = ""
 type_params = []
 derives = []
@@ -79,6 +88,7 @@ abi = ""
 ffi_compatible = true
 getter = "DualCounter_get_value"
 setter = "DualCounter_set_value"
+python_name = ""
 
 [[structs.methods]]
 name = "new"
@@ -86,6 +96,10 @@ symbol = "rustcall_DualCounter_new"
 is_static = true
 is_mutable = false
 is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
 returns_boxed_struct = true
 return_type = "Self"
 return_abi = ""
@@ -102,6 +116,10 @@ symbol = "rustcall_DualCounter_increment"
 is_static = false
 is_mutable = true
 is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
 returns_boxed_struct = false
 return_type = "()"
 return_abi = ""

@@ -1,10 +1,13 @@
-schema_version = 4
+schema_version = 5
 mode = "crate"
 
 [[functions]]
 name = "generic_identity"
 symbol = "generic_identity"
 attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 exported = false
 cfg = ""
 is_generic = true
@@ -43,6 +46,9 @@ abi = ""
 [[structs]]
 name = "Pair"
 attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 cfg = ""
 derives = []
 has_clone = false
@@ -67,6 +73,7 @@ abi = ""
 ffi_compatible = false
 getter = ""
 setter = ""
+python_name = ""
 
 [[structs.fields]]
 name = "right"
@@ -75,6 +82,7 @@ abi = ""
 ffi_compatible = false
 getter = ""
 setter = ""
+python_name = ""
 
 [[structs.methods]]
 name = "new"
@@ -82,6 +90,10 @@ symbol = "rustcall_Pair_new"
 is_static = true
 is_mutable = false
 is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
 returns_boxed_struct = true
 return_type = "Self"
 return_abi = ""
@@ -103,6 +115,10 @@ symbol = "rustcall_Pair_first"
 is_static = false
 is_mutable = false
 is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
 returns_boxed_struct = false
 args = []
 return_type = "T"

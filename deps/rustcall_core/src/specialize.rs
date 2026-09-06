@@ -380,6 +380,9 @@ fn function_entry(func: &ItemFn) -> Function {
         // instantiation itself (#279).
         symbol: function_symbol(&func.sig.ident.to_string()),
         attribute: Attribute::None,
+        vis: crate::attrs::visibility_string(&func.vis),
+        skip_reason: String::new(),
+        python_name: String::new(),
         exported: true,
         is_generic: false,
         type_params: Vec::new(),

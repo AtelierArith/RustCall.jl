@@ -83,6 +83,10 @@ include("manifest.jl")
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 
+# PyO3 crates without a RustCall attribute: scan reporting and the link plan
+# a wrapper crate needs (#275). Depends on scan_crate from crate_bindings.jl.
+include("pyo3.jl")
+
 # Hot reload support
 include("hot_reload.jl")
 

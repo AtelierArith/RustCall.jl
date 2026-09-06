@@ -24,6 +24,66 @@ using TOML
     _lf(x::AbstractVector) = Any[_lf(v) for v in x]
     _lf(x) = x
 
+    @testset "schema 5: PyO3 scan of a crate with no RustCall attribute (#275)" begin
+        crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
+        @test isdir(crate)
+        info = RustCall.scan_crate(crate)
+
+        # Nothing in the crate carries a RustCall attribute, so nothing is
+        # wrapped today...
+        @test isempty(info.julia_functions)
+        @test isempty(info.julia_structs)
+
+        # ...but the PyO3 items are reported, with the symbol a Phase-2 wrapper
+        # crate will export and `exported = false` because nothing emits it yet.
+        byname = Dict(f.name => f for f in info.pyo3_functions)
+        @test haskey(byname, "add")
+        add = byname["add"]
+        @test add.attribute === :py_function
+        @test add.symbol == "rustcall_add"
+        @test add.exported == false
+        @test add.vis == "pub"
+        @test add.skip_reason == ""
+
+        # Skip reasons: visibility, pyo3-typed signatures, `#[pymodule]`.
+        @test byname["private_add"].vis == ""
+        @test byname["private_add"].skip_reason == "not_public"
+        @test startswith(byname["describe"].skip_reason, "pyo3_type:")
+        @test byname["sample_crate_pyo3_only"].attribute === :py_module
+        @test byname["sample_crate_pyo3_only"].skip_reason == "pymodule"
+
+        # `PyResult<T>` is recorded, not skipped: the error is opaque.
+        @test byname["parse"].return_kind === :py_result
+        @test byname["parse"].ok_type == "i32"
+        @test byname["parse"].skip_reason == ""
+
+        # A `#[pyclass]` is an opaque handle whose methods come from every
+        # `#[pymethods]` block, and whose fields are the `#[pyo3(get, set)]`
+        # ones.
+        point = only(info.pyo3_structs)
+        @test point.name == "Point"
+        @test point.attribute === :py_class
+        @test point.skip_reason == ""
+        @test [f[1] for f in point.fields] == ["x", "y"]
+        @test point.field_getters["x"] == "rustcall_Point_get_x"
+        @test point.field_setters["x"] == "rustcall_Point_set_x"
+        @test !haskey(point.field_setters, "y")
+        methods = Dict(m.name => m for m in point.methods)
+        @test sort(collect(keys(methods))) == ["new", "norm", "origin", "sum"]
+        @test methods["new"].is_constructor
+        @test methods["new"].symbol == "rustcall_Point_new"
+        @test methods["origin"].is_static
+        @test methods["origin"].returns_boxed_struct
+        @test methods["sum"].accessor == "getter"
+
+        # scan_report groups the same items and never throws on a crate it
+        # cannot wrap.
+        report = sprint(io -> RustCall.scan_report(crate; io = io))
+        @test occursin("PyO3 items wrappable by Phase 2", report)
+        @test occursin("rustc E0603", report)
+        @test occursin("Link plan:", report)
+    end
+
     @testset "schema 4: return_abi, Field.abi, returns_boxed_struct (#276)" begin
         # The manifest — not the Rust spelling — is what says how a value
         # crosses the boundary. Schema 4 makes that true for free functions

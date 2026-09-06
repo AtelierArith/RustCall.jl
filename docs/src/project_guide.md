@@ -16,6 +16,8 @@ This page collects repository-oriented information that no longer lives in the t
 - `examples/MyExample.jl`: package-style example using inline `rust"""..."""` blocks.
 - `examples/sample_crate`: external Rust crate using `#[julia]` and `@rust_crate`.
 - `examples/sample_crate_pyo3`: dual Julia/Python bindings example.
+- `examples/sample_crate_pyo3_only`: a crate carrying PyO3 attributes only, used by the
+  #275 scan and link-plan tests.
 - `examples/pluto/hello.jl`: Pluto-oriented walkthrough.
 
 Run the bundled examples from the repository root:

@@ -1,4 +1,4 @@
-schema_version = 4
+schema_version = 5
 mode = "crate"
 structs = []
 
@@ -6,6 +6,9 @@ structs = []
 name = "checked_double"
 symbol = "rustcall_checked_double"
 attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 exported = true
 cfg = ""
 is_generic = false
@@ -32,6 +35,9 @@ abi = ""
 name = "positive"
 symbol = "rustcall_positive"
 attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
 exported = true
 cfg = ""
 is_generic = false

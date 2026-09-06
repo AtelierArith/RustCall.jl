@@ -196,10 +196,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the `Pkg.build("RustCall")` that fixes it.
 
 ### Added
+- **PyO3 crates without a RustCall attribute: the scan and the link plan**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275), Phases 1 and
+  1.5). A crate that only carries `#[pyfunction]` / `#[pyclass]` /
+  `#[pymethods]` is now reported by the extractor:
+  `RustCall.scan_report(crate_path)` prints which items a wrapper crate will be
+  able to wrap and why the others cannot be, and `RustCall.scan_crate` returns
+  them in the new `pyo3_functions` / `pyo3_structs` fields of `CrateInfo`.
+  Manifest schema 5 adds a PyO3 `attribute` origin (`py_function`, `py_class`,
+  `py_methods`, `py_module`), `vis`, `skip_reason`, `python_name` and
+  `accessor` columns, and the `py_result` return kind. An item carrying both
+  `#[julia]` and `#[pyfunction]` is owned by `#[julia]`, which already exports
+  `rustcall_<name>` (#279), and is skipped by the scan.
+  `RustCall.pyo3_link_plan(crate_path)` decides from `Cargo.toml` alone whether
+  a wrapper cdylib can be linked and loaded — `:python_free`,
+  `:link_libpython` or `:unlinkable` — and `RustCall.pyo3_link_rustflags`
+  turns that into build flags or a precise `RustError`. Generating the wrapper
+  crate is Phase 2 and is not implemented yet. `#[julia_pyo3]` is unchanged.
+  See `docs/src/pyo3.md` and `examples/sample_crate_pyo3_only`.
 - `docs/src/panics.md`: the panic semantics matrix, the symbol-visibility rule
   and the object-lifetime/allocator contract.
 - `test/test_panics.jl`, `test/test_finalizers.jl`,
-  `test/test_load_conformance.jl`, `test/test_hot_reload_transaction.jl`.
+  `test/test_load_conformance.jl`, `test/test_hot_reload_transaction.jl`,
+  `test/test_pyo3_link_plan.jl`.
 
 
 ### Breaking

@@ -17,6 +17,7 @@ pub mod expand;
 pub mod extract;
 pub mod manifest;
 pub mod model;
+pub mod pyo3;
 pub mod specialize;
 pub mod types;
 
