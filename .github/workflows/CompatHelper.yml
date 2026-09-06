@@ -5,22 +5,34 @@ on:
     - cron: '0 0 * * *'  # Daily at midnight UTC
   workflow_dispatch:
 
+# The repository's default workflow token is read-only, so the job has to ask
+# for what it needs: push the compat branch and open the pull request.
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   CompatHelper:
     runs-on: ubuntu-latest
     steps:
-      - name: Pkg.add("CompatHelper")
-        uses: julia-actions/setup-julia@v1
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
         with:
-          version: '1.10'
-      
+          version: '1'
+
       - name: Install CompatHelper
         run: julia -e 'using Pkg; Pkg.add("CompatHelper")'
-      
-      - uses: actions/checkout@v4
-      
+
       - name: Run CompatHelper
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMPATHELPER_PRIV: ${{ secrets.GITHUB_TOKEN }}
+          # An *SSH private key* in PEM format, never a token: CompatHelper
+          # base64-decodes this and hands it to ssh. Passing GITHUB_TOKEN here
+          # made every run die with "Private key is not in the correct format".
+          # The secret is optional — unset, it is the empty string and
+          # CompatHelper falls back to GITHUB_TOKEN. Set it (with the matching
+          # public key added as a write deploy key) if the compat PRs should
+          # trigger CI, which a GITHUB_TOKEN-authored PR does not.
+          COMPATHELPER_PRIV: ${{ secrets.COMPATHELPER_PRIV }}
         run: julia -e 'using CompatHelper; CompatHelper.main()'

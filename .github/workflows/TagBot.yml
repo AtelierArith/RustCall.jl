@@ -4,13 +4,48 @@ on:
   issue_comment:
     types: [created]
   workflow_dispatch:
+    inputs:
+      lookback:
+        description: How many days back to look for untagged releases.
+        default: '3'
+
+# The repository's default workflow token is read-only; TagBot creates the tag
+# and the GitHub release, so it has to ask for write access to contents.
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  deployments: read
+  discussions: read
+  issues: read
+  packages: read
+  pages: read
+  pull-requests: read
+  repository-projects: read
+  security-events: read
+  statuses: read
 
 jobs:
   TagBot:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@JuliaTagBot tag'))
+    # `contents: write` above makes this condition a security boundary: in a
+    # public repository anyone can post an issue comment, so matching on the
+    # comment *body* would let any commenter start a job holding a write token.
+    # Gate on the actor instead — the JuliaTagBot account, which is what
+    # comments when a registry pull request merges — as the JuliaRegistries
+    # template does.
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'
     runs-on: ubuntu-latest
     steps:
       - uses: JuliaRegistries/TagBot@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ssh: ${{ secrets.TAGBOT_SSH_KEY }}
+          # Optional. When set (with the matching public key as a write deploy
+          # key) the tag push triggers the tag-gated workflows; unset, TagBot
+          # falls back to the token above. `TAGBOT_SSH_KEY` was never a secret
+          # in this repository; `DOCUMENTER_KEY` is the name the JuliaRegistries
+          # template uses, and the one Documenter would share.
+          ssh: ${{ secrets.DOCUMENTER_KEY }}
+          # Forwarded, so the dispatch input above is not a knob that does
+          # nothing. Empty on an `issue_comment` run, where it falls back to
+          # the action's own default of 3.
+          lookback: ${{ inputs.lookback || 3 }}
