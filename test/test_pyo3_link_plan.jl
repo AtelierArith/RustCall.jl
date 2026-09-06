@@ -188,27 +188,37 @@ _manifest(text::AbstractString) = TOML.parse(text)
             # the first `python3` on PATH; with the directory override too, the
             # pair is exactly what the caller said, and the plan carries both.
             withenv("PYO3_PYTHON" => fake, "RUSTCALL_PYTHON_LIBDIR" => libdir) do
-                @test RustCall.python_link_source() == (libdir, fake)
+                # A fake interpreter cannot report what it is: no fingerprint.
+                @test RustCall.python_link_source() == (libdir, fake, "")
                 plan = RustCall._pyo3_conservative_plan(manifest)
                 @test plan.mode === :link_libpython
                 @test plan.rpath == libdir
                 @test plan.interpreter == fake
+                @test plan.interpreter_config == ""
             end
             # Without the directory override the directory is asked of the
             # pinned interpreter itself — and one that cannot answer yields no
             # directory, never another interpreter's.
             withenv("PYO3_PYTHON" => fake, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
-                @test RustCall.python_link_source() == ("", fake)
+                @test RustCall.python_link_source() == ("", fake, "")
                 @test RustCall.python_library_dir() == ""
             end
             # The directory override alone leaves the interpreter to PATH,
-            # which is the one `python3-config` describes.
+            # which is the one `python3-config` describes — and the fingerprint
+            # is that interpreter's own account of itself.
             withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => libdir) do
-                dir, interpreter = RustCall.python_link_source()
+                dir, interpreter, config = RustCall.python_link_source()
                 @test dir == libdir
                 @test RustCall.python_library_dir() == libdir
                 @test interpreter == RustCall._python_executable_on_path()
+                @test config == RustCall._python_interpreter_fingerprint(interpreter)
+                if !isempty(interpreter)
+                    # implementation|version|SOABI|LDLIBRARY|LIBDIR|is64
+                    @test count('|', config) == 5
+                    @test occursin(r"^[A-Za-z]+\|\d+\.\d+", config)
+                end
             end
+            @test RustCall._python_interpreter_fingerprint("") == ""
             # A `:python_free` plan pins no interpreter at all.
             free = RustCall._pyo3_conservative_plan(_manifest("""
             [package]

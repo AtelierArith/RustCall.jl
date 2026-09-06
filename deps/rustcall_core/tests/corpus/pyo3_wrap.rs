@@ -23,6 +23,14 @@ pub fn shout(s: String) -> String {
     s
 }
 
+/// Refused (`symbol_collision:add`): its wrapper symbol would be
+/// `rustcall_add_take_panic`, which is the panic reader `add`'s wrapper
+/// already exports.
+#[pyfunction]
+pub fn add_take_panic() -> i32 {
+    0
+}
+
 /// `&str` in, `&str` out with no string argument to borrow from — a borrowed
 /// view.
 #[pyfunction]

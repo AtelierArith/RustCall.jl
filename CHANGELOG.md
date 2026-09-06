@@ -46,16 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment the wrapper inherits (`artifact_build_env()`, the #282
   allowlist, which now captures the `PYO3_*` namespace, plus the contents of
   `PYO3_CONFIG_FILE`) and, for a `:link_libpython` build, the interpreter
-  `PYO3_PYTHON` is pinned to. That interpreter and the library directory are
-  decided together (`python_link_source()`, `plan.interpreter`): a caller's
-  own `PYO3_PYTHON` is honoured rather than replaced by the first `python3` on
-  `PATH`, and the cfg probe follows the build profile
-  (`pyo3_link_plan(crate; release = false)`). `#[pyo3(get)]` and
+  `PYO3_PYTHON` is pinned to — its path and what it reports about itself
+  (`plan.interpreter_config`: implementation, version, ABI tag, library), so a
+  Python upgraded in place is a different wrapper. That interpreter and the
+  library directory are decided together (`python_link_source()`,
+  `plan.interpreter`): a caller's own `PYO3_PYTHON` is honoured rather than
+  replaced by the first `python3` on `PATH`, and the cfg probe follows the
+  build profile (`pyo3_link_plan(crate; release = false)`). `#[pyo3(get)]` and
   `#[pyo3(set)]` are independent — a `set`-only field is a setter with no
   getter. A `#[pymethods]` method is boxed as the class only as a `#[new]` or
   a `Self` return, never for being named `new`; a class member whose own
   `#[cfg]` the scan could not decide is refused (`cfg_undecided`) like an
-  item. Anything the generator cannot
+  item; `impl super::C` is resolved against the parent module (and a `use
+  super::C` disambiguates a bare `impl C`) instead of falling back to a
+  same-named local class; and the panic reader `<symbol>_take_panic` is a
+  reserved symbol, so an item that would *be* one is reported as a
+  `symbol_collision`. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
   `py_result_payload`, `cfg_undecided`) instead of being emitted — including a
   plain `Result` / `Option` on a `#[pymethods]` **method**, which the `#[julia]`

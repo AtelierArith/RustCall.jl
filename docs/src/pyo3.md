@@ -329,6 +329,7 @@ plan.dependency_default_features # what its [dependencies] entry must say
 plan.cfg_text                    # the configuration the crate is scanned under
 plan.rpath                       # the interpreter's library directory
 plan.interpreter                 # the interpreter PYO3_PYTHON is pinned to
+plan.interpreter_config          # what it reports about itself (version, ABI, library)
 plan.resolved                    # whether Cargo answered
 plan.reason                      # why this mode was chosen
 ```
@@ -476,10 +477,12 @@ build script configures itself for (`PYO3_PYTHON`, `plan.interpreter`).
 3. a loaded CondaPkg (PythonCall) names both from its environment;
 4. otherwise the `python3` / `python` on `PATH` and the directory it reports.
 
-The interpreter is part of the wrapper's artifact identity, so switching
-interpreters rebuilds the wrapper rather than reusing one configured for the
-other; so are pyo3's other build inputs — every `PYO3_*` variable, and the
-*contents* of `PYO3_CONFIG_FILE`. The cfg probe the scan runs under follows the
+The interpreter — its path *and* what it reports about itself
+(implementation, version, ABI tag, the library it links; `plan.interpreter_config`)
+— is part of the wrapper's artifact identity, so switching interpreters, or
+upgrading one in place behind the same path, rebuilds the wrapper rather than
+reusing one configured for the other; so are pyo3's other build inputs — every
+`PYO3_*` variable, and the *contents* of `PYO3_CONFIG_FILE`. The cfg probe the scan runs under follows the
 build profile (`release = false` probes the debug configuration, where
 `debug_assertions` is set).
 

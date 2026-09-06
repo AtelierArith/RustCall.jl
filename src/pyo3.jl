@@ -132,6 +132,12 @@ configuration to scan the crate under (#275 Phase 1.5).
   `PYO3_PYTHON` to, decided together with `rpath` by `python_link_source` so
   the two never name different Pythons; `""` when none could be identified
   (pyo3 then picks for itself). Part of the wrapper's artifact identity.
+- `interpreter_config::String`: what that interpreter *is* — implementation,
+  version, ABI tag, the library it links, its `LIBDIR`, pointer width — as one
+  line the interpreter itself reported (`_python_interpreter_fingerprint`). Also
+  part of the identity, so a Python upgraded in place behind the same path, or
+  a retargeted symlink, is a different wrapper rather than a stale cache hit
+  (#307 review; the analogue of `artifact_compiler_identity` for `rustc`).
 - `resolved::Bool`: whether Cargo answered. `false` means the plan is the
   conservative reading of `Cargo.toml` described below.
 - `reason::String`: why this mode was chosen, in words.
@@ -180,6 +186,7 @@ struct PyO3LinkPlan
     cfg_text::String
     resolved::Bool
     interpreter::String
+    interpreter_config::String
 end
 
 function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String,
@@ -187,9 +194,10 @@ function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String
                       pyo3_features::Vector{String} = String[],
                       crate_features::Vector{String} = String[],
                       cfg_text::String = "", resolved::Bool = false,
-                      interpreter::String = "")
+                      interpreter::String = "", interpreter_config::String = "")
     PyO3LinkPlan(mode, feature_flags, rpath, reason, dependency_default_features,
-                 pyo3_features, crate_features, cfg_text, resolved, interpreter)
+                 pyo3_features, crate_features, cfg_text, resolved, interpreter,
+                 interpreter_config)
 end
 
 """
@@ -359,7 +367,7 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                             cfg_text = cfg_text, resolved = true)
     end
 
-    rpath, interpreter = _python_link_source_or_empty()
+    rpath, interpreter, interpreter_config = _python_link_source_or_empty()
     detail = isempty(rpath) ?
         " — and the interpreter's library directory could not be located (tried " *
         "RUSTCALL_PYTHON_LIBDIR, python3-config --ldflags and sysconfig LIBDIR)" :
@@ -373,7 +381,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                         "with $(label), Cargo resolves pyo3, so the wrapper cdylib links " *
                         "libpython$(detail)$(extension_note)", !no_defaults;
                         pyo3_features = pyo3_features, crate_features = crate_features,
-                        cfg_text = cfg_text, resolved = true, interpreter = interpreter)
+                        cfg_text = cfg_text, resolved = true, interpreter = interpreter,
+                        interpreter_config = interpreter_config)
 end
 
 """
@@ -418,16 +427,17 @@ function _pyo3_unresolved_cfg_plan(crate_path::AbstractString, flags::Vector{Str
     note = "with $(label), Cargo resolved the feature graph but would not print the " *
            "configuration this build compiles under (`cargo rustc -- --print cfg` failed), " *
            "so every #[cfg] item is reported and none of them can be wrapped"
-    mode, rpath, interpreter = if !pyo3_active
-        (:python_free, "", "")
+    mode, rpath, interpreter, interpreter_config = if !pyo3_active
+        (:python_free, "", "", "")
     elseif "extension-module" in pyo3_features && !extension_module_is_linkable()
-        (:unlinkable, "", "")
+        (:unlinkable, "", "", "")
     else
         (:link_libpython, _python_link_source_or_empty()...)
     end
     return PyO3LinkPlan(mode, copy(flags), rpath, note, !no_defaults;
                         pyo3_features = pyo3_features, crate_features = crate_features,
-                        cfg_text = "", resolved = false, interpreter = interpreter)
+                        cfg_text = "", resolved = false, interpreter = interpreter,
+                        interpreter_config = interpreter_config)
 end
 
 """
@@ -547,14 +557,15 @@ function _pyo3_conservative_plan(cargo_toml::AbstractDict)
     # not disagree about one crate.
     extension = any(dep -> "extension-module" in
                         String[String(f) for f in get(dep.spec, "features", String[])], found)
-    rpath, interpreter = _python_link_source_or_empty()
+    rpath, interpreter, interpreter_config = _python_link_source_or_empty()
     return PyO3LinkPlan(:link_libpython, String[], rpath,
                         "the crate declares a pyo3 dependency, so the wrapper cdylib may link " *
                         "libpython" *
                         (extension ?
                          ". On Windows pyo3 still links the interpreter's import library with " *
                          "`extension-module`, so this build is linkable where a Unix one would " *
-                         "not be" : "") * note; interpreter = interpreter)
+                         "not be" : "") * note;
+                        interpreter = interpreter, interpreter_config = interpreter_config)
 end
 
 # One pyo3 dependency declaration: the (possibly renamed) key it is declared
@@ -636,14 +647,16 @@ the directory that was wrong.
 python_library_dir() = python_link_source()[1]
 
 """
-    python_link_source() -> (libdir::String, interpreter::String)
+    python_link_source() -> (libdir::String, interpreter::String, config::String)
 
 The library directory a `:link_libpython` wrapper links against **and the
 interpreter it pins `PYO3_PYTHON` to**, decided together so the two cannot
 name different Pythons: pyo3's build script configures itself for
 `PYO3_PYTHON` while the linker searches `libdir`, and a pair taken from two
 sources is a cdylib configured for one ABI and linked against another (#307
-review). Either half is `""` when it cannot be identified.
+review). The third value is what that interpreter reports about itself
+(`_python_interpreter_fingerprint`), the identity the artifact key records
+alongside the path. Any of the three is `""` when it cannot be identified.
 
 In order:
 
@@ -667,9 +680,12 @@ function python_link_source()
     pinned = get(ENV, "PYO3_PYTHON", "")
     if !isempty(pinned)
         dir = isempty(override) ? _python_library_dir_of(pinned) : override_dir
-        return (dir, String(pinned))
+        return (dir, String(pinned), _python_interpreter_fingerprint(pinned))
     end
-    isempty(override) || return (override_dir, _python_executable_on_path())
+    if !isempty(override)
+        interpreter = _python_executable_on_path()
+        return (override_dir, interpreter, _python_interpreter_fingerprint(interpreter))
+    end
 
     conda = _condapkg_link_source()
     conda === nothing || return conda
@@ -680,15 +696,35 @@ function python_link_source()
         dir = Sys.isapple() ? _python_framework_prefix(exe) : ""
         isempty(dir) && (dir = _python_config_libdir())
         isempty(dir) && (dir = _python_sysconfig_libdir(exe))
-        return (dir, interpreter)
+        return (dir, interpreter, _python_interpreter_fingerprint(exe))
     end
-    return ("", "")
+    return ("", "", "")
 end
 
 _python_link_source_or_empty() = try
     python_link_source()
 catch
-    ("", "")
+    ("", "", "")
+end
+
+# What pyo3's build script decides from an interpreter, as one line the
+# interpreter reports about itself: implementation, version, ABI tag, the
+# library it links, its `LIBDIR`, pointer width. Recording this next to the
+# path makes a Python upgraded in place — same `sys.executable`, different
+# Python — a different artifact, the way `artifact_compiler_identity` records
+# what `rustc` *is* rather than where it lives (#307 review, #278). "" when
+# the interpreter cannot be run.
+function _python_interpreter_fingerprint(exe::AbstractString)
+    isempty(exe) && return ""
+    code = "import platform, sys, sysconfig; " *
+           "print('|'.join([platform.python_implementation(), sys.version.split()[0], " *
+           "sysconfig.get_config_var('SOABI') or '', sysconfig.get_config_var('LDLIBRARY') or '', " *
+           "sysconfig.get_config_var('LIBDIR') or '', str(sys.maxsize > 2**32)]))"
+    try
+        return String(strip(read(`$exe -c $code`, String)))
+    catch
+        return ""
+    end
 end
 
 # `sys.executable` of `exe`; "" when it cannot be run.
@@ -735,7 +771,7 @@ end
 
 # CondaPkg is not a dependency of RustCall; it is used only when the user's
 # session already loaded it (PythonCall), in which case its environment holds
-# the interpreter the wrapper should link against — both halves of the pair.
+# the interpreter the wrapper should link against — every part of the answer.
 # `nothing` when CondaPkg is not loaded or its environment has no `lib`.
 function _condapkg_link_source()
     for (id, mod) in Base.loaded_modules
@@ -745,7 +781,8 @@ function _condapkg_link_source()
             dir = joinpath(env, "lib")
             isdir(dir) || break
             exe = Sys.iswindows() ? joinpath(env, "python.exe") : joinpath(env, "bin", "python")
-            return (dir, isfile(exe) ? exe : "")
+            interpreter = isfile(exe) ? exe : ""
+            return (dir, interpreter, _python_interpreter_fingerprint(interpreter))
         catch
         end
         break
@@ -990,8 +1027,12 @@ and the contents of `PYO3_CONFIG_FILE` are hashed here on top.
 function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String})
     build_env = artifact_build_env()
     push!(build_env, "rustcall-link-flags" => join(rustflags, " "))
-    plan.mode === :link_libpython &&
+    if plan.mode === :link_libpython
         push!(build_env, "rustcall-pyo3-python" => plan.interpreter)
+        # ... and what it is, not only where it is: the same path can be a
+        # different Python after an in-place upgrade (#307 review).
+        push!(build_env, "rustcall-pyo3-python-config" => plan.interpreter_config)
+    end
     # pyo3's own build inputs are captured by prefix (`PYO3_*`, #282's
     # allowlist), but `PYO3_CONFIG_FILE` names a file whose *contents* decide
     # the configuration — version, ABI, library directory — so the contents

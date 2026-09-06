@@ -73,6 +73,35 @@ rust_type = "String"
 abi = "string"
 
 [[functions]]
+name = "add_take_panic"
+symbol = "rustcall_add_take_panic"
+attribute = "py_function"
+vis = "pub"
+skip_reason = "symbol_collision:add"
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 26
+module_path = []
+
+[[functions]]
 name = "tag"
 symbol = "rustcall_tag"
 attribute = "py_function"
@@ -98,7 +127,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 26
+line = 34
 module_path = []
 
 [[functions]]
@@ -126,7 +155,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 33
+line = 41
 module_path = []
 
 [[functions.args]]
@@ -159,7 +188,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 41
+line = 49
 module_path = []
 
 [[functions.args]]
@@ -193,7 +222,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 48
+line = 56
 module_path = []
 
 [[functions]]
@@ -222,7 +251,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 55
+line = 63
 module_path = []
 
 [[functions]]
@@ -250,7 +279,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 61
+line = 69
 module_path = []
 
 [[functions.args]]
@@ -283,7 +312,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 67
+line = 75
 module_path = []
 
 [[functions.args]]
@@ -321,7 +350,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 74
+line = 82
 module_path = []
 
 [[functions.args]]
@@ -354,7 +383,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 80
+line = 88
 module_path = []
 
 [[functions.args]]
@@ -387,7 +416,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 91
+line = 99
 module_path = ["geometry"]
 
 [[functions.args]]
@@ -415,7 +444,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
-line = 97
+line = 105
 module_path = ["geometry"]
 
 [[structs.fields]]
@@ -718,7 +747,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
-line = 175
+line = 183
 module_path = ["geometry"]
 
 [[structs.methods]]

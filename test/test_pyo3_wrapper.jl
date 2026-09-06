@@ -373,11 +373,20 @@ end
             key_two = RustCall.compute_crate_hash(info; kind = "pyo3-wrapper",
                                                   build_env = RustCall._pyo3_wrapper_build_env(two, flags))
             @test key_one != key_two
+            # ... and *what* the interpreter is, not only where: the same path
+            # after an in-place upgrade reports a different configuration and
+            # is a different wrapper (#307 review).
+            upgraded = RustCall.PyO3LinkPlan(:link_libpython, String[], @__DIR__, "test";
+                                             interpreter = "/opt/one/bin/python3",
+                                             interpreter_config = "CPython|3.13.0|cpython-313-darwin|libpython3.13.dylib|/opt/one/lib|True")
+            key_upgraded = RustCall.compute_crate_hash(info; kind = "pyo3-wrapper",
+                                                       build_env = RustCall._pyo3_wrapper_build_env(upgraded, flags))
+            @test key_upgraded != key_one
             # A `:python_free` build consults no interpreter, so its key
             # carries none: the same plan with or without one is one artifact.
             free = RustCall.PyO3LinkPlan(:python_free, String[], "", "test";
                                          interpreter = "/opt/one/bin/python3")
-            @test !any(p -> p.first == "rustcall-pyo3-python",
+            @test !any(p -> startswith(p.first, "rustcall-pyo3-python"),
                        RustCall._pyo3_wrapper_build_env(free, String[]))
             # `PYO3_CONFIG_FILE` names a file whose contents decide the
             # configuration: the key carries the contents, so rewriting the

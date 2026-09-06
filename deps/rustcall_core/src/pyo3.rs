@@ -138,8 +138,13 @@ enum PathAnchor {
     SelfModule,
     /// A bare path: the enclosing module first, then the crate root.
     Relative,
-    /// `super::…`, which walks up an unknown number of levels for this
-    /// matcher. Nothing is matched on the qualifier at all.
+    /// `super::…` (repeated `n` times): the module `n` levels above the one
+    /// the path was written in, and nothing else. Treating it as
+    /// uninformative sent `impl super::C` to a same-named `C` in the impl's
+    /// own module (#307 review).
+    Super(usize),
+    /// A path this matcher cannot follow: `super` after another segment,
+    /// which Rust itself rejects. Nothing is matched on the qualifier at all.
     Unknown,
 }
 
@@ -159,15 +164,23 @@ impl PathQualifier {
         }
     }
 
-    /// Whether the qualifier says nothing (a bare `impl C`, or a `super::`
-    /// path this matcher cannot follow).
+    /// Whether the qualifier says nothing (a bare `impl C`, or a path this
+    /// matcher cannot follow).
     fn is_uninformative(&self) -> bool {
         self.anchor == PathAnchor::Unknown
             || (self.anchor == PathAnchor::Relative && self.segments.is_empty())
     }
 
+    /// Whether the qualifier names one place and one place only, so that when
+    /// no class is found there the block must be dropped rather than matched
+    /// by its bare name: `super::C` is never the impl's own module's `C`.
+    fn forbids_fallback(&self) -> bool {
+        matches!(self.anchor, PathAnchor::Super(_))
+    }
+
     /// The module paths this qualifier can name, from inside `module_path`,
-    /// nearest first.
+    /// nearest first. A `super::` that walks past the crate root names
+    /// nothing.
     fn candidates(&self, module_path: &[String]) -> Vec<Vec<String>> {
         let mut nested = module_path.to_vec();
         nested.extend(self.segments.iter().cloned());
@@ -176,6 +189,14 @@ impl PathQualifier {
             PathAnchor::Crate => vec![self.segments.clone()],
             PathAnchor::SelfModule => vec![nested],
             PathAnchor::Relative => vec![nested, self.segments.clone()],
+            PathAnchor::Super(levels) => {
+                if levels > module_path.len() {
+                    return Vec::new();
+                }
+                let mut base = module_path[..module_path.len() - levels].to_vec();
+                base.extend(self.segments.iter().cloned());
+                vec![base]
+            }
         }
     }
 }
@@ -194,6 +215,7 @@ fn path_qualifier(segments: impl IntoIterator<Item = String>) -> PathQualifier {
     let all: Vec<String> = segments.into_iter().collect();
     let mut anchor = PathAnchor::Relative;
     let mut out = Vec::new();
+    let mut levels = 0usize;
     let count = all.len();
     for (i, name) in all.into_iter().enumerate() {
         if i == 0 {
@@ -207,14 +229,20 @@ fn path_qualifier(segments: impl IntoIterator<Item = String>) -> PathQualifier {
                     continue;
                 }
                 "super" => {
-                    return PathQualifier {
-                        anchor: PathAnchor::Unknown,
-                        segments: Vec::new(),
-                    }
+                    levels = 1;
+                    anchor = PathAnchor::Super(levels);
+                    continue;
                 }
                 _ => {}
             }
         } else if name == "super" {
+            // A run of leading `super`s walks up one level each; a `super`
+            // after a named segment is not a path Rust accepts.
+            if matches!(anchor, PathAnchor::Super(_)) && out.is_empty() {
+                levels += 1;
+                anchor = PathAnchor::Super(levels);
+                continue;
+            }
             return PathQualifier {
                 anchor: PathAnchor::Unknown,
                 segments: Vec::new(),
@@ -345,10 +373,11 @@ impl Pyo3Scan {
                     flatten_use_tree(&u.tree, &mut prefix, &mut bindings);
                     for (alias, anchored) in bindings {
                         let qualifier = path_qualifier(anchored.iter().cloned());
-                        // The anchor segment is not part of the module path.
+                        // The anchor segments are not part of the module path;
+                        // the qualifier keeps what they meant.
                         let path: Vec<String> = anchored
                             .into_iter()
-                            .filter(|s| s != "crate" && s != "self")
+                            .filter(|s| s != "crate" && s != "self" && s != "super")
                             .collect();
                         self.imports.push(ScannedImport {
                             module_path: module_path.clone(),
@@ -441,6 +470,13 @@ impl Pyo3Scan {
                     return Some(i);
                 }
             }
+            // `impl super::C` names the parent module's `C` and nothing else:
+            // with none there, attaching to a `C` in the impl's own module —
+            // or to the one `C` anywhere — would be exactly the wrong class
+            // (#307 review).
+            if imp.qualifier.forbids_fallback() {
+                return None;
+            }
         }
 
         if let Some(i) = self
@@ -499,8 +535,9 @@ struct ScannedImport {
 /// `use crate::a::{C, D as E};` yields `("C", ["crate", "a", "C"])` and
 /// `("E", ["crate", "a", "D"])`; the caller splits the anchor off with
 /// [`path_qualifier`], so `use crate::a::C;` and `use a::C;` stay distinct.
-/// A glob (`use a::*;`) binds no name it can be matched on and is skipped;
-/// `super::` is dropped for the same reason [`type_path_qualifier`] drops it.
+/// A glob (`use a::*;`) binds no name it can be matched on and is skipped.
+/// `super::` is kept: [`path_qualifier`] resolves it against the module the
+/// `use` was written in, like any other anchor (#307 review).
 fn flatten_use_tree(
     tree: &syn::UseTree,
     prefix: &mut Vec<String>,
@@ -509,9 +546,6 @@ fn flatten_use_tree(
     match tree {
         syn::UseTree::Path(path) => {
             let segment = path.ident.to_string();
-            if segment == "super" {
-                return;
-            }
             prefix.push(segment);
             flatten_use_tree(&path.tree, prefix, out);
             prefix.pop();
@@ -565,7 +599,9 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         .filter(|f| !f.attribute.is_pyo3_scan())
     {
         if f.exported && !f.symbol.is_empty() {
-            taken.push((f.symbol.clone(), qualified(&f.module_path, &f.name)));
+            for symbol in wrapper_symbols(&f.symbol) {
+                taken.push((symbol, qualified(&f.module_path, &f.name)));
+            }
         }
     }
     for s in manifest
@@ -592,14 +628,16 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() || f.symbol.is_empty() {
             continue;
         }
-        let symbol = f.symbol.clone();
-        if let Some((_, owner)) = taken.iter().find(|(s, _)| *s == symbol) {
+        let symbols = wrapper_symbols(&f.symbol);
+        if let Some((_, owner)) = taken.iter().find(|(s, _)| symbols.contains(s)) {
             let owner = owner.clone();
             manifest.functions[i].skip_reason =
                 skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner);
         } else {
             let owner = qualified(&f.module_path, &f.name);
-            taken.push((symbol, owner));
+            for symbol in symbols {
+                taken.push((symbol, owner.clone()));
+            }
         }
     }
 
@@ -657,11 +695,16 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             if !m.skip_reason.is_empty() || m.symbol.is_empty() {
                 continue;
             }
-            match taken.iter().find(|(t, _)| *t == m.symbol) {
+            let symbols = wrapper_symbols(&m.symbol);
+            match taken.iter().find(|(t, _)| symbols.contains(t)) {
                 Some((_, other)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, other);
                 }
-                None => taken.push((m.symbol.clone(), owner.clone())),
+                None => {
+                    for symbol in symbols {
+                        taken.push((symbol, owner.clone()));
+                    }
+                }
             }
         }
         for f in &mut s.fields {
@@ -682,13 +725,27 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
     }
 }
 
-/// Every symbol a struct entry claims: its wrappable methods and its field
-/// accessors.
+/// Every exported symbol a wrapper derives from one manifest symbol: the entry
+/// point itself and its panic-channel reader (`<symbol>_take_panic`,
+/// `codegen::PANIC_SYMBOL_SUFFIX`). A clash on either is a duplicate
+/// definition in the generated crate — `foo` and `foo_take_panic` as two
+/// `#[pyfunction]`s both want `rustcall_foo_take_panic` — so both are
+/// reserved and both are checked (#307 review). Field accessors have no
+/// reader and derive nothing.
+fn wrapper_symbols(symbol: &str) -> [String; 2] {
+    [
+        symbol.to_string(),
+        format!("{symbol}{}", crate::codegen::PANIC_SYMBOL_SUFFIX),
+    ]
+}
+
+/// Every symbol a struct entry claims: its wrappable methods (with their
+/// panic readers) and its field accessors.
 fn struct_symbols(s: &Struct) -> Vec<String> {
     let mut out = Vec::new();
     for m in &s.methods {
         if m.skip_reason.is_empty() && !m.symbol.is_empty() {
-            out.push(m.symbol.clone());
+            out.extend(wrapper_symbols(&m.symbol));
         }
     }
     for f in &s.fields {

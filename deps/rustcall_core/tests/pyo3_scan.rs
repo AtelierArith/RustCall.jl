@@ -979,3 +979,116 @@ fn undecided_member_cfg_is_recorded() {
     assert_eq!(by("plain").cfg, "");
     assert_eq!(by("gated").skip_reason, "");
 }
+
+/// `impl super::C` names the parent module's `C` — not a same-named `C` in the
+/// impl's own module, which is where treating `super` as uninformative sent it
+/// (#307 review).
+#[test]
+fn a_super_anchored_pymethods_target_is_the_parent_class() {
+    let manifest = scan(
+        "pub mod m { #[pyclass] pub struct C {}\n\
+            pub mod inner { #[pyclass] pub struct C {}\n\
+               #[pymethods] impl super::C { pub fn parent(&self) -> i32 { 1 } } } }",
+    );
+    let parent = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string()])
+        .expect("parent class");
+    let local = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "inner".to_string()])
+        .expect("local class");
+    assert_eq!(
+        parent
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["parent"]
+    );
+    assert!(local.methods.is_empty());
+}
+
+/// `super::super::` walks two levels; a `super` past the crate root, or a
+/// `super::C` with no `C` in the parent, attaches to nothing — never to the
+/// local class by its bare name.
+#[test]
+fn a_super_path_that_names_no_class_attaches_to_nothing() {
+    let manifest = scan(
+        "#[pyclass] pub struct R {}\n\
+         pub mod m { pub mod inner {\n\
+            #[pyclass] pub struct C {}\n\
+            #[pymethods] impl super::super::R { pub fn two_up(&self) -> i32 { 1 } }\n\
+            #[pymethods] impl super::C { pub fn lost(&self) -> i32 { 2 } }\n\
+            #[pymethods] impl super::super::super::C { pub fn past_root(&self) -> i32 { 3 } } } }",
+    );
+    let root = manifest.structs.iter().find(|s| s.name == "R").unwrap();
+    let local = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["two_up"]
+    );
+    assert!(local.methods.is_empty());
+}
+
+/// A `use super::C;` disambiguates a bare `impl C` like any other anchored
+/// import: with two `C`s elsewhere in the crate, only the parent's gets the
+/// block.
+#[test]
+fn a_super_anchored_import_disambiguates() {
+    let manifest = scan(
+        "pub mod other { #[pyclass] pub struct C {} }\n\
+         pub mod m { #[pyclass] pub struct C {}\n\
+            pub mod inner { use super::C;\n\
+               #[pymethods] impl C { pub fn via_use(&self) -> i32 { 1 } } } }",
+    );
+    let parent = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string()])
+        .unwrap();
+    let other = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["other".to_string()])
+        .unwrap();
+    assert_eq!(
+        parent
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["via_use"]
+    );
+    assert!(other.methods.is_empty());
+}
+
+/// The panic reader `<symbol>_take_panic` is a symbol the wrapper exports too,
+/// so a second item that would *be* it collides (#307 review) — for functions
+/// and for methods.
+#[test]
+fn the_panic_reader_symbol_is_reserved_too() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }\n\
+         #[pyfunction] pub fn foo_take_panic() -> i32 { 2 }\n\
+         #[pyclass] pub struct C {}\n\
+         #[pymethods] impl C {\n\
+            pub fn m(&self) -> i32 { 1 }\n\
+            pub fn m_take_panic(&self) -> i32 { 2 }\n\
+         }",
+    );
+    assert_eq!(function(&manifest, "foo").skip_reason, "");
+    assert_eq!(
+        function(&manifest, "foo_take_panic").skip_reason,
+        "symbol_collision:foo"
+    );
+    let c = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    let by = |n: &str| c.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(by("m").skip_reason, "");
+    assert_eq!(by("m_take_panic").skip_reason, "symbol_collision:C");
+}
