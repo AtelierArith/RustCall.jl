@@ -478,9 +478,10 @@ build script configures itself for (`PYO3_PYTHON`, `plan.interpreter`).
 
 The interpreter is part of the wrapper's artifact identity, so switching
 interpreters rebuilds the wrapper rather than reusing one configured for the
-other. The cfg probe the scan runs under follows the build profile
-(`release = false` probes the debug configuration, where `debug_assertions` is
-set).
+other; so are pyo3's other build inputs — every `PYO3_*` variable, and the
+*contents* of `PYO3_CONFIG_FILE`. The cfg probe the scan runs under follows the
+build profile (`release = false` probes the debug configuration, where
+`debug_assertions` is set).
 
 ## Making pyo3 optional: the `cfg_attr` limitation
 

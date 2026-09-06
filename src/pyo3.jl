@@ -983,13 +983,22 @@ the interpreter the build pins `PYO3_PYTHON` to: it is decided by the plan,
 *before* the key, so a wrapper configured for one Python never answers a lookup
 made for another that happens to share its library directory (#307 review;
 #278's rule that identity is exhaustive). A `:python_free` build pins nothing
-and records nothing.
+and records nothing. pyo3's other build inputs (`PYO3_CONFIG_FILE`,
+`PYO3_CROSS_*`, …) reach the key through the `PYO3_*` prefix of the allowlist,
+and the contents of `PYO3_CONFIG_FILE` are hashed here on top.
 """
 function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String})
     build_env = artifact_build_env()
     push!(build_env, "rustcall-link-flags" => join(rustflags, " "))
     plan.mode === :link_libpython &&
         push!(build_env, "rustcall-pyo3-python" => plan.interpreter)
+    # pyo3's own build inputs are captured by prefix (`PYO3_*`, #282's
+    # allowlist), but `PYO3_CONFIG_FILE` names a file whose *contents* decide
+    # the configuration — version, ABI, library directory — so the contents
+    # are hashed the way a path dependency's are (#278), not the path.
+    config = get(ENV, "PYO3_CONFIG_FILE", "")
+    isempty(config) ||
+        push!(build_env, "pyo3-config-file-digest" => _file_content_digest(config))
     return build_env
 end
 

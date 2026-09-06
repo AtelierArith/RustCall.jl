@@ -1092,6 +1092,12 @@ const ARTIFACT_BUILD_ENV_PREFIXES = String[
     "CARGO_CFG_",
     "CARGO_ENCODED_RUSTFLAGS",
     "CARGO_PROFILE_",
+    # pyo3's build-script namespace (`PYO3_PYTHON`, `PYO3_CONFIG_FILE`,
+    # `PYO3_CROSS_LIB_DIR`, `PYO3_NO_PYTHON`, …): every one of them changes
+    # which Python a wrapper cdylib is configured for and links against
+    # (#307 review). The *contents* of `PYO3_CONFIG_FILE` are hashed by the
+    # wrapper build on top of this (`_pyo3_wrapper_build_env`).
+    "PYO3_",
 ]
 
 "See `ARTIFACT_BUILD_ENV_PREFIXES`."

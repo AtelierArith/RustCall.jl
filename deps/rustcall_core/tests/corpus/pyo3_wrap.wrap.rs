@@ -1518,3 +1518,80 @@ pub extern "C" fn rustcall_Rect_scaled(
         }
     }
 }
+#[no_mangle]
+pub extern "C" fn Counter_free(ptr: *mut user_crate::geometry::Counter) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(Box::from_raw(ptr));
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_PANIC_RUSTCALL_COUNTER_NEW : ::std::cell::RefCell <
+    ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_Counter_new_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_COUNTER_NEW
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
+#[no_mangle]
+pub extern "C" fn rustcall_Counter_new() -> i32 {
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { user_crate::geometry::Counter::new() }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Counter::new", rustcall_message
+            );
+            __RUSTCALL_PANIC_RUSTCALL_COUNTER_NEW
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<i32>() }
+        }
+    }
+}

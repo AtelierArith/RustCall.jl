@@ -173,7 +173,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
             out.structs.push(entry);
             continue;
         }
-        items.extend(class_wrappers(&krate, &mut entry));
+        items.extend(class_wrappers(&krate, &mut entry, cfg_resolved));
         out.structs.push(entry);
     }
 
@@ -281,7 +281,12 @@ fn function_wrapper(
 /// The class is an **opaque handle**: a `#[pyclass]` is never `#[repr(C)]`
 /// (pyo3 owns its layout), so Julia only ever holds a `*mut Class` and reaches
 /// the fields through the accessors pyo3's own `#[pyo3(get, set)]` declared.
-fn class_wrappers(krate: &Ident, s: &mut Struct) -> TokenStream2 {
+///
+/// A member whose own `#[cfg]` the scan could not decide (`cfg_resolved` is
+/// false and the predicate survived pruning) is refused exactly as an item is:
+/// the build the wrapper is compiled against may not have it, and a call to a
+/// missing member is a compile error in generated code (#307 review).
+fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStream2 {
     let class = item_path(krate, &s.module_path, &s.name);
     let mut out = TokenStream2::new();
 
@@ -300,6 +305,14 @@ fn class_wrappers(krate: &Ident, s: &mut Struct) -> TokenStream2 {
     // getter (`RustCall._ffi_field_return` names it after the struct).
     let owned_helper = format_ident!("{}_RustCallOwnedString", s.name);
     let owned_free = format_ident!("{}_free_rust_string", s.name);
+    for f in &mut s.fields {
+        if cfg_refusal(&f.cfg, cfg_resolved).is_some() {
+            f.ffi_compatible = false;
+            f.getter.clear();
+            f.setter.clear();
+        }
+    }
+
     let needs_owned = s.fields.iter().any(|f| {
         !f.getter.is_empty() && f.ffi_compatible && field_abi_of(&f.rust_type) == "string"
     });
@@ -379,6 +392,10 @@ fn class_wrappers(krate: &Ident, s: &mut Struct) -> TokenStream2 {
     let class_name = s.name.clone();
     for m in &mut s.methods {
         if !m.skip_reason.is_empty() {
+            continue;
+        }
+        if let Some(reason) = cfg_refusal(&m.cfg, cfg_resolved) {
+            m.skip_reason = reason;
             continue;
         }
         match method_wrapper(&class, &class_name, m) {

@@ -439,6 +439,17 @@ python_name = ""
 vis = "pub"
 
 [[structs.fields]]
+name = "extra"
+rust_type = "f64"
+abi = ""
+ffi_compatible = false
+getter = ""
+setter = ""
+python_name = ""
+vis = "pub"
+cfg = 'feature = "extra"'
+
+[[structs.fields]]
 name = "name"
 rust_type = "String"
 abi = "string"
@@ -664,5 +675,71 @@ inner_abi = ""
 returns_boxed_struct = false
 args = []
 return_type = "Option<f64>"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods]]
+name = "extra_area"
+symbol = "rustcall_Rect_extra_area"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = 'cfg_undecided:feature = "extra"'
+python_name = ""
+accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "f64"
+return_abi = ""
+generic_wrapper = ""
+cfg = 'feature = "extra"'
+
+[[structs]]
+name = "Counter"
+attribute = "py_class"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+fields = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 175
+module_path = ["geometry"]
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_Counter_new"
+is_static = true
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "i32"
 return_abi = ""
 generic_wrapper = ""

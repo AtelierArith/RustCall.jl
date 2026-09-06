@@ -68,7 +68,11 @@ use serde::{Deserialize, Serialize};
 ///   (`crate::wrap::PYERR_CODE`) rather than being empty, and the
 ///   [`skip_reason`] vocabulary gains the four reasons the *generator* can
 ///   refuse an item for. A version-5 consumer would read a wrapper manifest as
-///   a scan and never call anything.
+///   a scan and never call anything. Within version 6, additively:
+///   [`Method::cfg`] and [`Field::cfg`] carry a class member's own undecided
+///   `#[cfg]` predicate (serialized only when non-empty), so a wrapper
+///   generated from a lenient scan refuses the member the way it refuses an
+///   item; no consumer reads the column, only the generator (#307 review).
 pub const SCHEMA_VERSION: u32 = 6;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
@@ -381,6 +385,13 @@ pub struct Field {
     /// field gets accessors from the PyO3 scan (#275).
     #[serde(default)]
     pub vis: String,
+    /// `#[cfg(...)]` predicate on the field that the scan could not decide
+    /// (see [`Function::cfg`]); empty — and then omitted — when there is
+    /// none. A wrapper crate generated from a leniently evaluated scan refuses
+    /// the accessors of such a field instead of naming a member the build it
+    /// is compiled against may not have (#307 review).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cfg: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,6 +470,13 @@ pub struct Method {
     /// monomorphization. Empty otherwise.
     #[serde(default)]
     pub generic_wrapper: String,
+    /// `#[cfg(...)]` predicate on the method that the scan could not decide
+    /// (see [`Function::cfg`]); empty — and then omitted — when there is
+    /// none. A wrapper crate generated from a leniently evaluated scan refuses
+    /// such a method with [`skip_reason::CFG_UNDECIDED`], as it refuses an
+    /// item (#307 review).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cfg: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

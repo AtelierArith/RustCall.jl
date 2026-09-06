@@ -927,3 +927,55 @@ fn a_crate_anchored_import_disambiguates_absolutely() {
     );
     assert!(nested.methods.is_empty());
 }
+
+/// A `#[pymethods]` method is boxed when it is a `#[new]` or returns `Self` /
+/// the class — never because it happens to be called `new` (#307 review): a
+/// `#[staticmethod] fn new() -> i32` promised as `*mut Class` would not
+/// compile.
+#[test]
+fn boxing_follows_the_constructor_marker_not_the_name() {
+    let manifest = scan(
+        "#[pyclass] pub struct P {}\n\
+         #[pymethods] impl P {\n\
+            #[staticmethod] pub fn new() -> i32 { 0 }\n\
+            #[new] pub fn create() -> Self { P {} }\n\
+            #[staticmethod] pub fn make() -> P { P {} }\n\
+            pub fn count(&self) -> i32 { 0 }\n\
+         }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let by = |n: &str| p.methods.iter().find(|m| m.name == n).unwrap();
+    assert!(!by("new").is_constructor);
+    assert!(!by("new").returns_boxed_struct);
+    assert!(by("create").is_constructor);
+    assert!(by("create").returns_boxed_struct);
+    assert!(!by("make").is_constructor);
+    assert!(by("make").returns_boxed_struct);
+    assert!(!by("count").returns_boxed_struct);
+}
+
+/// A class member's own `#[cfg]` is recorded when the scan could not decide
+/// it, so a wrapper generated from a lenient scan can refuse the member rather
+/// than name one the build may not have (#307 review). The scan itself still
+/// lists the member: refusing is the generator's decision.
+#[test]
+fn undecided_member_cfg_is_recorded() {
+    let manifest = scan(
+        "#[pyclass] pub struct P {\n\
+            #[cfg(feature = \"x\")] #[pyo3(get)] pub gated: f64,\n\
+            #[pyo3(get)] pub plain: f64,\n\
+         }\n\
+         #[pymethods] impl P {\n\
+            #[cfg(feature = \"x\")] pub fn gated(&self) -> f64 { 0.0 }\n\
+            pub fn plain(&self) -> f64 { 0.0 }\n\
+         }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let field = |n: &str| p.fields.iter().find(|f| f.name == n).unwrap();
+    let by = |n: &str| p.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(field("gated").cfg, "feature = \"x\"");
+    assert_eq!(field("plain").cfg, "");
+    assert_eq!(by("gated").cfg, "feature = \"x\"");
+    assert_eq!(by("plain").cfg, "");
+    assert_eq!(by("gated").skip_reason, "");
+}

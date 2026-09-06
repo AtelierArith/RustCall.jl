@@ -44,14 +44,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature set the wrapper is built against and are part of the artifact
   identity (`ArtifactId` kind `pyo3-wrapper`), together with the build
   environment the wrapper inherits (`artifact_build_env()`, the #282
-  allowlist) and, for a `:link_libpython` build, the interpreter `PYO3_PYTHON`
-  is pinned to. That interpreter and the library directory are decided
-  together (`python_link_source()`, `plan.interpreter`): a caller's own
-  `PYO3_PYTHON` is honoured rather than replaced by the first `python3` on
+  allowlist, which now captures the `PYO3_*` namespace, plus the contents of
+  `PYO3_CONFIG_FILE`) and, for a `:link_libpython` build, the interpreter
+  `PYO3_PYTHON` is pinned to. That interpreter and the library directory are
+  decided together (`python_link_source()`, `plan.interpreter`): a caller's
+  own `PYO3_PYTHON` is honoured rather than replaced by the first `python3` on
   `PATH`, and the cfg probe follows the build profile
   (`pyo3_link_plan(crate; release = false)`). `#[pyo3(get)]` and
   `#[pyo3(set)]` are independent — a `set`-only field is a setter with no
-  getter. Anything the generator cannot
+  getter. A `#[pymethods]` method is boxed as the class only as a `#[new]` or
+  a `Self` return, never for being named `new`; a class member whose own
+  `#[cfg]` the scan could not decide is refused (`cfg_undecided`) like an
+  item. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
   `py_result_payload`, `cfg_undecided`) instead of being emitted — including a
   plain `Result` / `Option` on a `#[pymethods]` **method**, which the `#[julia]`

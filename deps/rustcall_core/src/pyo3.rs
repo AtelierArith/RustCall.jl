@@ -837,6 +837,10 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
                 },
                 python_name: access.python_name,
                 vis: visibility_string(&f.vis),
+                // Whatever `#[cfg]` survived pruning is one the scan could not
+                // decide; the generator refuses the accessors under a lenient
+                // scan (#307 review).
+                cfg: predicate_string(&f.attrs),
             });
         }
     }
@@ -917,14 +921,22 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
         ok_abi: String::new(),
         err_abi: String::new(),
         inner_abi: String::new(),
-        // A `#[new]`, and any other method returning `Self`, hands back the
-        // class itself — an opaque handle a wrapper boxes (`#[pyclass]` is
-        // never `repr(C)`), decided by the same rule the `#[julia]` path uses.
-        returns_boxed_struct: crate::codegen::returns_boxed_struct(struct_ident, func),
+        // A `#[new]`, and any other method returning `Self` / the class, hands
+        // back the class itself — an opaque handle a wrapper boxes
+        // (`#[pyclass]` is never `repr(C)`). Decided from the PyO3 marker and
+        // the return type, never from the method's name: a
+        // `#[staticmethod] fn new() -> i32` is an ordinary method, and boxing
+        // its `i32` as a `*mut Class` would not compile (#307 review).
+        returns_boxed_struct: is_constructor
+            || matches!(
+                &func.sig.output,
+                syn::ReturnType::Type(_, ty) if crate::types::is_self_type(ty, struct_ident)
+            ),
         args: fn_args(&func.sig),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
         generic_wrapper: String::new(),
+        cfg: predicate_string(&func.attrs),
     }
 }
 

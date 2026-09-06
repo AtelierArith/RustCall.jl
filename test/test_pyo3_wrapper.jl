@@ -379,6 +379,24 @@ end
                                          interpreter = "/opt/one/bin/python3")
             @test !any(p -> p.first == "rustcall-pyo3-python",
                        RustCall._pyo3_wrapper_build_env(free, String[]))
+            # `PYO3_CONFIG_FILE` names a file whose contents decide the
+            # configuration: the key carries the contents, so rewriting the
+            # file — same path — is a different wrapper (#307 review).
+            mktempdir() do dir
+                cfg = joinpath(dir, "pyo3-config.txt")
+                write(cfg, "implementation=CPython\nversion=3.12\n")
+                k_312 = withenv("PYO3_CONFIG_FILE" => cfg) do
+                    RustCall.compute_crate_hash(info; kind = "pyo3-wrapper",
+                                                build_env = RustCall._pyo3_wrapper_build_env(one, flags))
+                end
+                write(cfg, "implementation=CPython\nversion=3.13\n")
+                k_313 = withenv("PYO3_CONFIG_FILE" => cfg) do
+                    RustCall.compute_crate_hash(info; kind = "pyo3-wrapper",
+                                                build_env = RustCall._pyo3_wrapper_build_env(one, flags))
+                end
+                @test k_312 != k_313
+                @test k_312 != key_one
+            end
             # And the registry name follows the key, so two feature sets of one
             # crate do not clobber each other's entry.
             @test RustCall.crate_library_name(info; kind = "pyo3-wrapper") !=

@@ -529,6 +529,15 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         end
         @test RustCall.artifact_build_env_captured("PKG_CONFIG_PATH")
 
+        # pyo3's build-script namespace decides which Python a wrapper is
+        # configured for (#307 review): the prefix is captured, secrets in it
+        # still are not.
+        for n in ("PYO3_PYTHON", "PYO3_CONFIG_FILE", "PYO3_CROSS_LIB_DIR",
+                  "PYO3_CROSS_PYTHON_VERSION", "PYO3_NO_PYTHON")
+            @test RustCall.artifact_build_env_captured(n)
+        end
+        @test !RustCall.artifact_build_env_captured("PYO3_SECRET_TOKEN")
+
         # Unrelated variables stay out.
         for n in ("EDITOR", "LANG", "TERM", "SHELL", "PWD")
             @test !RustCall.artifact_build_env_captured(n)

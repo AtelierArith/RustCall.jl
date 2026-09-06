@@ -83,6 +83,12 @@ pub mod geometry {
         /// emits `rustcall_Rect_set_depth` and nothing reads the field.
         #[pyo3(set)]
         pub depth: f64,
+        /// Refused under a lenient scan: the scan cannot decide whether the
+        /// field exists in the build the wrapper is compiled against, so no
+        /// accessor is emitted for it.
+        #[cfg(feature = "extra")]
+        #[pyo3(get)]
+        pub extra: f64,
         #[pyo3(get)]
         pub name: String,
     }
@@ -93,6 +99,8 @@ pub mod geometry {
             Rect {
                 w,
                 depth: 0.0,
+                #[cfg(feature = "extra")]
+                extra: 0.0,
                 name: String::new(),
             }
         }
@@ -126,6 +134,24 @@ pub mod geometry {
         /// Refused for the same reason.
         pub fn maybe_w(&self) -> Option<f64> {
             Some(self.w)
+        }
+        /// Refused under a lenient scan (`cfg_undecided`): a member's own
+        /// `#[cfg]` is as undecidable as an item's.
+        #[cfg(feature = "extra")]
+        pub fn extra_area(&self) -> f64 {
+            self.w
+        }
+    }
+    /// A method *named* `new` that is not a constructor: without `#[new]` and
+    /// without a `Self` return it is an ordinary static method returning an
+    /// `i32`, and the wrapper must not box it as a `*mut Counter`.
+    #[pyclass]
+    pub struct Counter {}
+    #[pymethods]
+    impl Counter {
+        #[staticmethod]
+        pub fn new() -> i32 {
+            0
         }
     }
 }
