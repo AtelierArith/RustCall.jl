@@ -311,7 +311,10 @@ fn class_wrappers(krate: &Ident, s: &mut Struct) -> TokenStream2 {
     }
 
     for f in &mut s.fields {
-        if !f.ffi_compatible || f.getter.is_empty() {
+        // A getter, a setter, or both: `#[pyo3(get)]` and `#[pyo3(set)]` are
+        // independent, so a `set`-only field is a setter with no getter, not a
+        // field with nothing (#307 review).
+        if !f.ffi_compatible || (f.getter.is_empty() && f.setter.is_empty()) {
             continue;
         }
         let Ok(field) = syn::parse_str::<Ident>(&f.name) else {
@@ -326,32 +329,41 @@ fn class_wrappers(krate: &Ident, s: &mut Struct) -> TokenStream2 {
             f.setter.clear();
             continue;
         };
-        let getter = format_ident!("{}", f.getter);
         if is_string_type(&ty) {
-            out.extend(quote! {
-                #[no_mangle]
-                pub extern "C" fn #getter(ptr: *const #class) -> #owned_helper {
-                    let mut rustcall_bytes = unsafe { (*ptr).#field.clone().into_bytes() };
-                    let rustcall_ret = #owned_helper {
-                        ptr: rustcall_bytes.as_mut_ptr(),
-                        len: rustcall_bytes.len(),
-                        cap: rustcall_bytes.capacity(),
-                    };
-                    ::std::mem::forget(rustcall_bytes);
-                    rustcall_ret
-                }
-            });
+            if !f.getter.is_empty() {
+                let getter = format_ident!("{}", f.getter);
+                out.extend(quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #getter(ptr: *const #class) -> #owned_helper {
+                        let mut rustcall_bytes = unsafe { (*ptr).#field.clone().into_bytes() };
+                        let rustcall_ret = #owned_helper {
+                            ptr: rustcall_bytes.as_mut_ptr(),
+                            len: rustcall_bytes.len(),
+                            cap: rustcall_bytes.capacity(),
+                        };
+                        ::std::mem::forget(rustcall_bytes);
+                        rustcall_ret
+                    }
+                });
+            }
             // A `String` field is read by copying it out; writing one would
             // need the byte-pair ABI on a setter, which no accessor shape
-            // covers yet (#303).
+            // covers yet (#303). A `set`-only `String` field therefore has no
+            // accessor at all, and the manifest says so.
             f.setter.clear();
+            if f.getter.is_empty() {
+                f.ffi_compatible = false;
+            }
         } else {
-            out.extend(quote! {
-                #[no_mangle]
-                pub extern "C" fn #getter(ptr: *const #class) -> #ty {
-                    unsafe { (*ptr).#field }
-                }
-            });
+            if !f.getter.is_empty() {
+                let getter = format_ident!("{}", f.getter);
+                out.extend(quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #getter(ptr: *const #class) -> #ty {
+                        unsafe { (*ptr).#field }
+                    }
+                });
+            }
             if !f.setter.is_empty() {
                 let setter = format_ident!("{}", f.setter);
                 out.extend(quote! {

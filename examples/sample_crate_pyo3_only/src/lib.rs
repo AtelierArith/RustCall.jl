@@ -75,6 +75,11 @@ pub struct Point {
     pub x: f64,
     #[pyo3(get)]
     pub y: f64,
+    /// `#[pyo3(set)]` alone: write-only from Python, so the wrapper exports
+    /// the setter and no getter; `scaled_norm` is how a test observes the
+    /// write.
+    #[pyo3(set)]
+    pub scale: f64,
 }
 
 impl Drop for Point {
@@ -87,16 +92,25 @@ impl Drop for Point {
 impl Point {
     #[new]
     pub fn new(x: f64, y: f64) -> Self {
-        Point { x, y }
+        Point { x, y, scale: 1.0 }
     }
 
     #[staticmethod]
     pub fn origin() -> Self {
-        Point { x: 0.0, y: 0.0 }
+        Point {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+        }
     }
 
     pub fn norm(&self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
+    }
+
+    /// Reads the write-only `scale` field, so a test can prove its setter ran.
+    pub fn scaled_norm(&self) -> f64 {
+        self.norm() * self.scale
     }
 
     /// A `#[getter]`: an ordinary method from the C side.

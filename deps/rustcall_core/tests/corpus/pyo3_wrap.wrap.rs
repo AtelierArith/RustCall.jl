@@ -961,6 +961,15 @@ pub extern "C" fn rustcall_Rect_set_w(ptr: *mut user_crate::geometry::Rect, valu
     }
 }
 #[no_mangle]
+pub extern "C" fn rustcall_Rect_set_depth(
+    ptr: *mut user_crate::geometry::Rect,
+    value: f64,
+) {
+    unsafe {
+        (*ptr).depth = value;
+    }
+}
+#[no_mangle]
 pub extern "C" fn rustcall_Rect_get_name(
     ptr: *const user_crate::geometry::Rect,
 ) -> Rect_RustCallOwnedString {

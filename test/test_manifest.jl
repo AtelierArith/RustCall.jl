@@ -64,13 +64,17 @@ using TOML
         @test point.name == "Point"
         @test point.attribute === :py_class
         @test point.skip_reason == ""
-        @test [f[1] for f in point.fields] == ["x", "y"]
+        @test [f[1] for f in point.fields] == ["x", "y", "scale"]
         @test point.field_getters["x"] == "rustcall_Point_get_x"
         @test point.field_setters["x"] == "rustcall_Point_set_x"
         @test !haskey(point.field_setters, "y")
+        # `#[pyo3(set)]` alone is a setter with no getter, not nothing (#307
+        # review): the two accessor columns are independent.
+        @test !haskey(point.field_getters, "scale")
+        @test point.field_setters["scale"] == "rustcall_Point_set_scale"
         methods = Dict(m.name => m for m in point.methods)
         @test sort(collect(keys(methods))) ==
-              ["label", "new", "norm", "origin", "scaled", "set_both", "sum"]
+              ["label", "new", "norm", "origin", "scaled", "scaled_norm", "set_both", "sum"]
         @test methods["new"].is_constructor
         @test methods["new"].symbol == "rustcall_Point_new"
         @test methods["origin"].is_static

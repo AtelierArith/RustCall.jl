@@ -429,6 +429,16 @@ python_name = ""
 vis = "pub"
 
 [[structs.fields]]
+name = "depth"
+rust_type = "f64"
+abi = ""
+ffi_compatible = true
+getter = ""
+setter = "rustcall_Rect_set_depth"
+python_name = ""
+vis = "pub"
+
+[[structs.fields]]
 name = "name"
 rust_type = "String"
 abi = "string"

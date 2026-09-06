@@ -955,9 +955,10 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
         push!(exprs, method_wrapper)
     end
 
-    # Generate field accessors (get_field, set_field! functions)
+    # Generate field accessors (get_field, set_field! functions), for every
+    # field the manifest names an accessor of — a setter alone included.
     for (field_name, field_type) in info.fields
-        if field_is_accessible(info, field_name)
+        if field_is_accessible(info, field_name) || field_is_writable(info, field_name)
             accessor_wrapper = _generate_crate_field_accessor(info, field_name, field_type)
             push!(exprs, accessor_wrapper)
         end
@@ -1034,16 +1035,23 @@ function _generate_property_accessors(info::RustStructInfo)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
 
-    # Filter to FFI-compatible fields
-    compatible_fields = [(name, type) for (name, type) in info.fields if field_is_accessible(info, name)]
+    # A field is a property when the manifest names an accessor for it: a
+    # getter, a setter, or both. `#[julia]` structs carry both; a `#[pyclass]`
+    # field carries exactly what `#[pyo3(get)]` / `#[pyo3(set)]` declared, so a
+    # write-only field gets a `setproperty!` branch and no `getproperty` one.
+    # Nothing here invents a symbol the manifest did not list (#307 review).
+    readable_fields = [(name, type) for (name, type) in info.fields if field_is_accessible(info, name)]
+    writable_fields = [(name, type) for (name, type) in info.fields if field_is_writable(info, name)]
+    property_fields = [(name, type) for (name, type) in info.fields
+                       if field_is_accessible(info, name) || field_is_writable(info, name)]
 
-    if isempty(compatible_fields)
+    if isempty(property_fields)
         return nothing
     end
 
     # Build getproperty branches
     getprop_branches = Expr[]
-    for (field_name, field_type) in compatible_fields
+    for (field_name, field_type) in readable_fields
         field_sym = QuoteNode(Symbol(field_name))
         getter_fn = info.field_getters[field_name]
         # A `String` field getter hands back an owned buffer, on the crate path
@@ -1059,9 +1067,9 @@ function _generate_property_accessors(info::RustStructInfo)
 
     # Build setproperty! branches
     setprop_branches = Expr[]
-    for (field_name, field_type) in compatible_fields
+    for (field_name, field_type) in writable_fields
         field_sym = QuoteNode(Symbol(field_name))
-        setter_fn = get(info.field_setters, field_name, "$(struct_name_str)_set_$(field_name)")
+        setter_fn = info.field_setters[field_name]
 
         push!(setprop_branches, quote
             if field === $field_sym
@@ -1073,7 +1081,7 @@ function _generate_property_accessors(info::RustStructInfo)
     end
 
     # Generate the field names tuple for propertynames
-    field_symbols = [QuoteNode(Symbol(name)) for (name, _) in compatible_fields]
+    field_symbols = [QuoteNode(Symbol(name)) for (name, _) in property_fields]
 
     quote
         function Base.getproperty(self::$struct_name, field::Symbol)
@@ -1408,28 +1416,33 @@ end
 
 function _generate_crate_field_accessor(info::RustStructInfo, field_name::String, field_type::String)
     struct_name = Symbol(info.name)
-    struct_name_str = info.name
-    getter_name = info.field_getters[field_name]
-    setter_name = get(info.field_setters, field_name, "$(struct_name_str)_set_$(field_name)")
+    exprs = Expr[]
 
-    read = _crate_field_read(info, field_name, field_type, getter_name,
-                             :(self.ptr))
-
-    field_sym = Symbol(field_name)
-
-    # Generate getproperty and setproperty! methods will be handled separately
-    # For now, just generate get_field and set_field! functions
-    quote
-        function $(Symbol("get_$field_name"))(self::$struct_name)
-            $read
-        end
-
-        function $(Symbol("set_$(field_name)!"))(self::$struct_name, value)
-            func_ptr = _get_func_ptr($setter_name)
-            call_rust_function(func_ptr, Cvoid, self.ptr, value)
-            value
-        end
+    # `get_<field>` and `set_<field>!`, each only when the manifest names the
+    # accessor: a `set`-only `#[pyo3(set)]` field has the second and not the
+    # first (#307 review).
+    if field_is_accessible(info, field_name)
+        getter_name = info.field_getters[field_name]
+        read = _crate_field_read(info, field_name, field_type, getter_name,
+                                 :(self.ptr))
+        push!(exprs, quote
+            function $(Symbol("get_$field_name"))(self::$struct_name)
+                $read
+            end
+        end)
     end
+    if field_is_writable(info, field_name)
+        setter_name = info.field_setters[field_name]
+        push!(exprs, quote
+            function $(Symbol("set_$(field_name)!"))(self::$struct_name, value)
+                func_ptr = _get_func_ptr($setter_name)
+                call_rust_function(func_ptr, Cvoid, self.ptr, value)
+                value
+            end
+        end)
+    end
+
+    return Expr(:block, exprs...)
 end
 
 # ============================================================================
@@ -2552,17 +2565,22 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
         push!(lines, "")
     end
 
-    # Property access
-    compatible_fields = [(name, type) for (name, type) in info.fields if field_is_accessible(info, name)]
+    # Property access. The same split as `_generate_property_accessors`: a
+    # getter branch per readable field, a setter branch per writable one, and
+    # a write-only `#[pyo3(set)]` field is a property with no read (#307 review).
+    readable_fields = [(name, type) for (name, type) in info.fields if field_is_accessible(info, name)]
+    writable_fields = [(name, type) for (name, type) in info.fields if field_is_writable(info, name)]
+    property_fields = [(name, type) for (name, type) in info.fields
+                       if field_is_accessible(info, name) || field_is_writable(info, name)]
 
-    if !isempty(compatible_fields)
+    if !isempty(property_fields)
         # getproperty
         push!(lines, "function Base.getproperty(self::$struct_name, field::Symbol)")
         push!(lines, "    if field === :ptr")
         push!(lines, "        return getfield(self, :ptr)")
         push!(lines, "    end")
         push!(lines, "    _check_not_freed(self, \"$struct_name\")")
-        for (field_name, field_type) in compatible_fields
+        for (field_name, field_type) in readable_fields
             getter_fn = info.field_getters[field_name]
             read = _crate_field_read_source(info, field_name, field_type, getter_fn,
                                             "getfield(self, :ptr)"; strict = strict)
@@ -2580,8 +2598,8 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
         push!(lines, "        error(\"cannot set internal field :ptr\")")
         push!(lines, "    end")
         push!(lines, "    _check_not_freed(self, \"$struct_name\")")
-        for (field_name, field_type) in compatible_fields
-            setter_fn = get(info.field_setters, field_name, "$(struct_name)_set_$(field_name)")
+        for (field_name, field_type) in writable_fields
+            setter_fn = info.field_setters[field_name]
             push!(lines, "    if field === :$field_name")
             push!(lines, "        func_ptr = _get_func_ptr(\"$setter_fn\")")
             push!(lines, "        call_rust_function(func_ptr, Cvoid, getfield(self, :ptr), value)")
@@ -2593,7 +2611,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
         push!(lines, "")
 
         # propertynames
-        field_syms = join([":$name" for (name, _) in compatible_fields], ", ")
+        field_syms = join([":$name" for (name, _) in property_fields], ", ")
         push!(lines, "function Base.propertynames(self::$struct_name)")
         push!(lines, "    ($field_syms,)")
         push!(lines, "end")

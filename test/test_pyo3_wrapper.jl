@@ -211,6 +211,15 @@ end
             @test call(getproperty, p, :x) == 6.0
             @test call(getproperty, p, :y) == 2.0
 
+            # `#[pyo3(set)]` alone is a setter with no getter (#307 review):
+            # the write reaches Rust — `scaled_norm` reads the field — and the
+            # read is refused as a missing field rather than served through a
+            # symbol the manifest never listed.
+            call(setproperty!, p, :scale, 3.0)
+            @test M.scaled_norm(p) ≈ 3 * M.norm(p)
+            @test_throws ErrorException call(getproperty, p, :scale)
+            @test :scale in call(propertynames, p)
+
             # A `String`-returning method comes back through the per-method
             # owned buffer.
             @test M.label(p) == "(6, 2)"
@@ -294,6 +303,35 @@ end
         end
     end
 
+    @testset "a setter-only field is a property with no read, in both emitters (#307 review)" begin
+        # The manifest's two accessor columns are independent; the emitters
+        # must not key the setter on the getter, nor invent a getter symbol.
+        info = RustCall.RustStructInfo("Knob", String[], RustCall.RustMethod[], "",
+                                       [("level", "f64"), ("gain", "f64")], true,
+                                       Dict{String, Bool}("JuliaStruct" => true);
+                                       field_abis = Dict("level" => "", "gain" => ""),
+                                       field_getters = Dict("level" => "rustcall_Knob_get_level"),
+                                       field_setters = Dict("level" => "rustcall_Knob_set_level",
+                                                            "gain" => "rustcall_Knob_set_gain"))
+        @test RustCall.field_is_writable(info, "gain")
+        @test !RustCall.field_is_accessible(info, "gain")
+
+        # Source text (`write_bindings_to_file`).
+        code = RustCall._emit_struct_code(info)
+        @test occursin("rustcall_Knob_set_gain", code)
+        @test occursin("rustcall_Knob_get_level", code)
+        @test !occursin("Knob_get_gain", code)
+        @test occursin("(:level, :gain,)", code)
+
+        # In memory (`@rust_crate`).
+        text = string(RustCall._generate_property_accessors(info))
+        @test occursin("rustcall_Knob_set_gain", text)
+        @test !occursin("Knob_get_gain", text)
+        accessor = string(RustCall._generate_crate_field_accessor(info, "gain", "f64"))
+        @test occursin("set_gain!", accessor)
+        @test !occursin("get_gain", accessor)
+    end
+
     @testset "artifact identity separates wrapper builds from plain ones" begin
         if !RustCall.check_rustc_available()
             @test_skip "rustc is not available"
@@ -320,6 +358,27 @@ end
             # set, which is the point: an empty environment is not a different
             # build. What must never collide is a *different* environment.
             @test length(Set([plain, wrapper, featured, flagged])) == 4
+            # The interpreter a `:link_libpython` build pins `PYO3_PYTHON` to
+            # is decided by the plan and folded into the key *before* the
+            # lookup, so two interpreters sharing one library directory are two
+            # wrappers, not one cache hit (#307 review, #278).
+            one = RustCall.PyO3LinkPlan(:link_libpython, String[], @__DIR__, "test";
+                                        interpreter = "/opt/one/bin/python3")
+            two = RustCall.PyO3LinkPlan(:link_libpython, String[], @__DIR__, "test";
+                                        interpreter = "/opt/two/bin/python3")
+            flags = RustCall.pyo3_link_rustflags(one)
+            @test flags == RustCall.pyo3_link_rustflags(two)
+            key_one = RustCall.compute_crate_hash(info; kind = "pyo3-wrapper",
+                                                  build_env = RustCall._pyo3_wrapper_build_env(one, flags))
+            key_two = RustCall.compute_crate_hash(info; kind = "pyo3-wrapper",
+                                                  build_env = RustCall._pyo3_wrapper_build_env(two, flags))
+            @test key_one != key_two
+            # A `:python_free` build consults no interpreter, so its key
+            # carries none: the same plan with or without one is one artifact.
+            free = RustCall.PyO3LinkPlan(:python_free, String[], "", "test";
+                                         interpreter = "/opt/one/bin/python3")
+            @test !any(p -> p.first == "rustcall-pyo3-python",
+                       RustCall._pyo3_wrapper_build_env(free, String[]))
             # And the registry name follows the key, so two feature sets of one
             # crate do not clobber each other's entry.
             @test RustCall.crate_library_name(info; kind = "pyo3-wrapper") !=

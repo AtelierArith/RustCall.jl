@@ -174,6 +174,52 @@ _manifest(text::AbstractString) = TOML.parse(text)
         @test !occursin("default-features", RustCall.pyo3_dependency_toml(on, "t", "/tmp/x"))
     end
 
+    @testset "the interpreter and the library directory come from one source (#307 review)" begin
+        mktempdir() do libdir
+            fake = joinpath(libdir, "not-a-python")
+            manifest = _manifest("""
+            [package]
+            name = "mandatory"
+            version = "0.1.0"
+            [dependencies]
+            pyo3 = "0.29"
+            """)
+            # An explicit `PYO3_PYTHON` is the interpreter, never replaced by
+            # the first `python3` on PATH; with the directory override too, the
+            # pair is exactly what the caller said, and the plan carries both.
+            withenv("PYO3_PYTHON" => fake, "RUSTCALL_PYTHON_LIBDIR" => libdir) do
+                @test RustCall.python_link_source() == (libdir, fake)
+                plan = RustCall._pyo3_conservative_plan(manifest)
+                @test plan.mode === :link_libpython
+                @test plan.rpath == libdir
+                @test plan.interpreter == fake
+            end
+            # Without the directory override the directory is asked of the
+            # pinned interpreter itself — and one that cannot answer yields no
+            # directory, never another interpreter's.
+            withenv("PYO3_PYTHON" => fake, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
+                @test RustCall.python_link_source() == ("", fake)
+                @test RustCall.python_library_dir() == ""
+            end
+            # The directory override alone leaves the interpreter to PATH,
+            # which is the one `python3-config` describes.
+            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => libdir) do
+                dir, interpreter = RustCall.python_link_source()
+                @test dir == libdir
+                @test RustCall.python_library_dir() == libdir
+                @test interpreter == RustCall._python_executable_on_path()
+            end
+            # A `:python_free` plan pins no interpreter at all.
+            free = RustCall._pyo3_conservative_plan(_manifest("""
+            [package]
+            name = "plain"
+            version = "0.1.0"
+            """))
+            @test free.mode === :python_free
+            @test free.interpreter == ""
+        end
+    end
+
     @testset "a missing Cargo.toml is an error, not a mode" begin
         mktempdir() do dir
             @test_throws RustCall.RustError RustCall.pyo3_link_plan(dir)
@@ -225,6 +271,21 @@ _manifest(text::AbstractString) = TOML.parse(text)
             # The configuration the crate scan then runs under.
             @test !isempty(plan.cfg_text)
             @test occursin("target_pointer_width", plan.cfg_text)
+        end
+
+        @testset "resolved: the cfg probe follows the requested profile (#307 review)" begin
+            # `debug_assertions` is set in a debug build and not in a release
+            # one, so a scan under the wrong profile decides a
+            # `#[cfg(debug_assertions)]` item the other way round: the plan for
+            # `build_release = false` must probe the debug configuration.
+            release = RustCall.pyo3_link_plan(mandatory_crate)
+            debug = RustCall.pyo3_link_plan(mandatory_crate; release = false)
+            @test release.resolved && debug.resolved
+            @test !occursin(r"^debug_assertions$"m, release.cfg_text)
+            @test occursin(r"^debug_assertions$"m, debug.cfg_text)
+            # Everything but the configuration is the same build.
+            @test debug.mode === release.mode
+            @test debug.pyo3_features == release.pyo3_features
         end
 
         @testset "resolved: the feature set is the caller's choice" begin

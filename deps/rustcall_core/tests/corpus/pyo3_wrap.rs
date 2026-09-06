@@ -98,6 +98,10 @@ pub mod geometry {
     pub struct Rect {
         #[pyo3(get, set)]
         pub w: f64,
+        /// `#[pyo3(set)]` alone: a setter with no getter, so the wrapper
+        /// emits `rustcall_Rect_set_depth` and nothing reads the field.
+        #[pyo3(set)]
+        pub depth: f64,
         #[pyo3(get)]
         pub name: String,
     }
@@ -108,6 +112,7 @@ pub mod geometry {
         pub fn new(w: f64) -> Self {
             Rect {
                 w,
+                depth: 0.0,
                 name: String::new(),
             }
         }

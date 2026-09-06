@@ -248,10 +248,13 @@ code must never format a `PyErr`.
 
 A `#[pyclass]` is never `#[repr(C)]` — pyo3 owns its layout — so it is always
 boxed and reached through accessors. Fields are exposed only when pyo3 exposes
-them, with `#[pyo3(get)]` / `#[pyo3(get, set)]`, **and only when they are
-`pub`**: pyo3 generates its descriptor inside the crate, so `#[pyo3(get)]` works
-on a private field, but a wrapper crate compiled outside cannot read
-`Struct::field`. A private one is still listed, with no getter and no setter. Methods are collected from
+them — `#[pyo3(get)]`, `#[pyo3(set)]` or both, or `get_all` / `set_all` on the
+class — each accessor on its own, so a `set`-only field is a setter with no
+getter (`obj.field = v` works, `obj.field` is a missing field) — **and only
+when they are `pub`**: pyo3 generates its descriptor inside the crate, so
+`#[pyo3(get)]` works on a private field, but a wrapper crate compiled outside
+cannot read `Struct::field`. A private one is still listed, with no getter and
+no setter. Methods are collected from
 *every* `#[pymethods]` block for the type: `#[new]` becomes the constructor,
 `#[staticmethod]` and `#[classmethod]` are static, `#[getter]` / `#[setter]`
 are accessors. (A `#[classmethod]` takes a `&Bound<'_, PyType>` first argument,
@@ -316,6 +319,7 @@ features are on.
 plan = RustCall.pyo3_link_plan("path/to/crate")                        # default features
 plan = RustCall.pyo3_link_plan(crate; features = ["python"],
                                       default_features = false)        # a specific build
+plan = RustCall.pyo3_link_plan(crate; release = false)                 # the debug profile
 
 plan.mode                        # :python_free | :link_libpython | :unlinkable
 plan.feature_flags               # the Cargo flags that select this build
@@ -324,6 +328,7 @@ plan.pyo3_features               # pyo3's resolved features (empty when absent)
 plan.dependency_default_features # what its [dependencies] entry must say
 plan.cfg_text                    # the configuration the crate is scanned under
 plan.rpath                       # the interpreter's library directory
+plan.interpreter                 # the interpreter PYO3_PYTHON is pinned to
 plan.resolved                    # whether Cargo answered
 plan.reason                      # why this mode was chosen
 ```
@@ -454,6 +459,28 @@ On macOS a framework build of Python is linked as
 `@rpath/Python3.framework/Versions/3.x/Python3`, so
 `RustCall.python_library_dir()` returns the directory *containing* the
 `.framework` rather than `LIBDIR`, which sits one level inside it.
+
+### Which Python
+
+A `:link_libpython` wrapper involves two Pythons that must be the same one: the
+library directory the linker searches (`plan.rpath`) and the interpreter pyo3's
+build script configures itself for (`PYO3_PYTHON`, `plan.interpreter`).
+`RustCall.python_link_source()` decides them **together**, in this order:
+
+1. `PYO3_PYTHON`, when you set it, is the interpreter — a virtual environment
+   or a Conda interpreter is never replaced by the first `python3` on `PATH` —
+   and the directory is `RUSTCALL_PYTHON_LIBDIR` if set, else what that
+   interpreter itself reports;
+2. `RUSTCALL_PYTHON_LIBDIR` alone names the directory, and the interpreter is
+   the `python3` on `PATH`;
+3. a loaded CondaPkg (PythonCall) names both from its environment;
+4. otherwise the `python3` / `python` on `PATH` and the directory it reports.
+
+The interpreter is part of the wrapper's artifact identity, so switching
+interpreters rebuilds the wrapper rather than reusing one configured for the
+other. The cfg probe the scan runs under follows the build profile
+(`release = false` probes the debug configuration, where `debug_assertions` is
+set).
 
 ## Making pyo3 optional: the `cfg_attr` limitation
 

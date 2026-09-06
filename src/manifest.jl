@@ -1070,8 +1070,12 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             name = _mstr(f, "name")
             push!(fields, (name, _mstr(f, "rust_type")))
             field_abis[name] = _mstr(f, "abi")
-            if _mbool(f, "ffi_compatible") && !isempty(_mstr(f, "getter"))
-                getters[name] = _mstr(f, "getter")
+            # Each accessor on its own: a `#[julia]` struct carries both, a
+            # `#[pyclass]` field carries what `#[pyo3(get)]` / `#[pyo3(set)]`
+            # declared, and a `set`-only field is a setter with no getter
+            # rather than nothing (#307 review).
+            if _mbool(f, "ffi_compatible")
+                isempty(_mstr(f, "getter")) || (getters[name] = _mstr(f, "getter"))
                 isempty(_mstr(f, "setter")) || (setters[name] = _mstr(f, "setter"))
             end
         end
