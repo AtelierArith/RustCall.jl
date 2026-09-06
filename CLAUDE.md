@@ -164,3 +164,27 @@ A replaced image is **retired, not closed**, so a call already inside one stays 
 - Create a topic branch for any implementation or documentation change
 - Push the topic branch and open a draft PR for review-oriented sharing
 - If work is accidentally committed on `main`, move it onto a topic branch and reset local `main` back to `origin/main`
+
+## Pull Request Workflow
+
+Every change goes through this loop; the definition of done is the issue's acceptance criteria, not "the cause is gone".
+
+1. **Open a draft PR** from a topic branch off `origin/main`. Commit in logical steps, each leaving `Pkg.test()` green. Commit messages and the PR body carry the attribution trailers the session was given.
+2. **Request review**: comment `@codex review` once CI is green. Codex re-reviews automatically on every later push, so keep the branch quiet until a round is answered.
+3. **Monitor per head SHA**: CI results (`gh pr checks`) and Codex reviews are tracked against the current head; a green result on an older SHA means nothing.
+4. **Answer every finding**: fix real ones (with a regression test), reply on the thread with the fixing SHA, resolve the thread. Never resolve a thread you did not act on.
+5. **Scope decision**: when findings converge on one class that a tech-debt issue solves structurally, fix the current round, post a "scope decision" comment naming that issue, stop re-requesting review, and merge on green. Record the deferred items on the issue.
+6. **`Closes #N` only when every acceptance criterion of #N has a named test** (list criterion → test in the PR body). Otherwise write `Advances #N` and list what remains. A tech-debt fix removes the *class* of bug; the bug issue's concrete deliverables still need their own work.
+7. **Merge**: squash, subject `<PR title> (#PR)`, after CI is green, no unresolved threads, and the scope decision (if any) is recorded. Then pull `main` and rebase any open PR that overlaps.
+
+Practical rules that CI enforces or that have bitten before:
+
+- Docstrings in `src/*.jl` must not use `(@ref)` links to internal bindings — the Documentation job fails. Plain backticks.
+- `test/runtests.jl` auto-discovers `test_*.jl`; never add an `include`.
+- Rebuild the extractor (`cd deps/rustcall_extract && cargo build --release`) and export `RUSTCALL_EXTRACT` before running Julia tests; a stale binary is rejected by the manifest schema check.
+- Golden corpus: run the plain `cargo test` in `deps/rustcall_core` first — a golden failure is the signal that the extractor's output changed. Only when that change is intended, regenerate with `UPDATE_GOLDEN=1 cargo test` (it overwrites without comparing) and review `git diff tests/corpus` before committing.
+- Run every `scripts/lint_*.sh src` locally; they are all CI jobs.
+- On Windows a loaded DLL cannot be deleted or overwritten: tests unload libraries before removing temp trees and clean up best-effort; hot reload opens a fresh generation path per rebuild.
+- Finalizers must never take `REGISTRY_LOCK`, `dlsym`, or log; they use pointers captured at construction. Enforced by `test/test_finalizers.jl` from #277 Phase B (PR #289) onward; older finalizers in `src/types.jl` / `src/crate_bindings.jl` are migrated there.
+- `docs/src/api.md` is close to Documenter's size threshold (#288); a new docstring can break the docs job — check `julia --project=docs docs/make.jl` locally.
+- Verify tests pass before every commit; never commit red.
