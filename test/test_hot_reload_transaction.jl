@@ -86,11 +86,43 @@ _hrt_write_stress(crate, generation) = write(joinpath(crate, "src", "lib.rs"), "
     #[no_mangle]
     pub extern "C" fn stress_generation() -> i32 { $(generation) }
 
+    thread_local! {
+        static BOOM_QUIET: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    }
+    static BOOM_HOOK: std::sync::Once = std::sync::Once::new();
+
+    /// The quiet hook `rustcall_core::codegen` now emits beside every panic
+    /// channel: silent while this thread is inside the boundary, delegating to
+    /// the previous hook otherwise. Without it this test alone prints ~2300
+    /// `thread '<unnamed>' panicked at ...` lines, because it panics on
+    /// purpose thousands of times.
+    struct BoomQuiet;
+    impl BoomQuiet {
+        fn new() -> Self {
+            BOOM_HOOK.call_once(|| {
+                let previous = std::panic::take_hook();
+                std::panic::set_hook(Box::new(move |info| {
+                    if BOOM_QUIET.try_with(|d| d.get()).unwrap_or(0) == 0 {
+                        previous(info);
+                    }
+                }));
+            });
+            BOOM_QUIET.with(|d| d.set(d.get() + 1));
+            Self
+        }
+    }
+    impl Drop for BoomQuiet {
+        fn drop(&mut self) {
+            let _ = BOOM_QUIET.try_with(|d| d.set(d.get().saturating_sub(1)));
+        }
+    }
+
     /// The shape `rustcall_core::codegen` emits: the body runs inside
     /// `catch_unwind`, a panic is recorded in this wrapper's thread-local
     /// channel, and a sentinel of the right shape is returned.
     #[no_mangle]
     pub extern "C" fn stress_boom() -> i32 {
+        let _quiet = BoomQuiet::new();
         match std::panic::catch_unwind(|| -> i32 {
             panic!("boom from generation $(generation)")
         }) {
@@ -687,11 +719,17 @@ end
                     # Windows, so `mktempdir`'s cleanup fails with ENOTEMPTY
                     # under `chase/target/release` and logs it at Error level.
                     # Closing first is what makes the cleanup succeed.
+                    # This test's handles, by name — never the no-argument
+                    # form. `close_retired_handles!()` sweeps *every* retired
+                    # image in the process, and under the parallel runner that
+                    # can unmap another testset's retired library while it
+                    # still has live objects or a call inside it (#301 review).
+                    mine = RustCall.retired_handles(lib_name)
                     try
                         RustCall.unload_library(lib_name; close = true)
                     catch
                     end
-                    RustCall.close_retired_handles!()
+                    isempty(mine) || RustCall.close_retired_handles!(mine)
                 end
             end
         end
