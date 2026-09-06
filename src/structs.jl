@@ -215,18 +215,24 @@ function emit_julia_definitions(info::RustStructInfo)
                 free_ptr::Ptr{Cvoid}
                 alive::Base.RefValue{Bool}
 
-                function $where_clause(ptr::Ptr{Cvoid}, lib::String) where {$(esc_T_params...)}
-                    # One snapshot, exactly as the non-generic path takes one:
-                    # the instantiated destructor and the liveness flag of the
-                    # image that exports it. Taken separately, an unload
-                    # between them handed the object a destructor from the
-                    # retired image and a *freshly invented* live flag, so it
-                    # never learned that image had closed (#249, #277).
-                    gen = RustCall.generic_struct_generation_snapshot(
-                        $generic_free_name, ($(esc_T_params...),), lib)
-                    obj = new{$(esc_T_params...)}(ptr, lib, gen.free_ptr, gen.alive)
+                # The destructor and the flag are handed in by the call that
+                # allocated `ptr`, from that call's own snapshot: resolving
+                # them here would be a second step after the allocation, and a
+                # reload or unload in between would pair a pointer from one
+                # image with another image's `free` (#249, #277).
+                function $where_clause(ptr::Ptr{Cvoid}, lib::String,
+                                       free_ptr::Ptr{Cvoid},
+                                       alive::Base.RefValue{Bool}) where {$(esc_T_params...)}
+                    obj = new{$(esc_T_params...)}(ptr, lib, free_ptr, alive)
                     finalizer(RustCall.finalize_rust_object!, obj)
                     return obj
+                end
+
+                # For a pointer that did not come from a call of this library.
+                function $where_clause(ptr::Ptr{Cvoid}, lib::String) where {$(esc_T_params...)}
+                    gen = RustCall.generic_struct_generation_snapshot(
+                        $generic_free_name, ($(esc_T_params...),), lib)
+                    return $esc_struct{$(esc_T_params...)}(ptr, lib, gen.free_ptr, gen.alive)
                 end
             end
         end)
@@ -263,10 +269,11 @@ function emit_julia_definitions(info::RustStructInfo)
                              # Call generic constructor
                              # Point_new<T>(...)
                              # Pass args and types as tuples to separate them
-                             ptr_lib_tuple = _call_generic_constructor($wrapper_name, ($(esc_args...),), ($(esc_T_params...),))
-
-                             (ptr_val, lib_val) = ptr_lib_tuple
-                             return $esc_struct{$(esc_T_params...)}(ptr_val, lib_val)
+                             ptr_val, lib_val, gen = _call_generic_constructor(
+                                 $wrapper_name, $struct_name_str,
+                                 ($(esc_args...),), ($(esc_T_params...),))
+                             return $esc_struct{$(esc_T_params...)}(ptr_val, lib_val,
+                                                                    gen.free_ptr, gen.alive)
                          end
                      end)
                  end
@@ -950,7 +957,42 @@ function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
 end
 
 # Generic helpers
-function _call_generic_constructor(func_name::String, args::Tuple, types::Tuple)
+"""
+    _call_generic_constructor(func_name, struct_name, args, types) -> (ptr, lib_name, gen)
+
+Run a generic constructor and hand back the pointer **and** the snapshot the
+object it allocated must capture.
+
+The destructor is looked for on the constructor's **own** image first: the
+instantiation `rustcall-extract specialize` produces carries the whole
+`#[julia]` item, so `<Struct>_free` is normally exported by the very artifact
+that allocated the object — one image, one allocator, one liveness flag. Only
+when it is not does this fall back to monomorphizing the destructor separately,
+which is the pre-existing behaviour and is recorded in
+`docs/src/panics.md` as a limit of the generic path: an object allocated by one
+`cdylib` and freed through another crosses an allocator boundary.
+"""
+function _call_generic_constructor(func_name::String, struct_name::AbstractString,
+                                   args::Tuple, types::Tuple)
+    ptr, lib_name, handle, generation = _generic_constructor_call(func_name, args, types)
+    free_symbol = ffi_struct_free_symbol(struct_name)
+    own = handle == C_NULL ? C_NULL :
+          (found = Libdl.dlsym(handle, free_symbol; throw_error = false);
+           found === nothing ? C_NULL : found)
+    if own != C_NULL
+        gen = lock(REGISTRY_LOCK) do
+            ArtifactGeneration(handle, own, alive_ref_for_handle(handle, lib_name),
+                               generation)
+        end
+        return (ptr, lib_name, gen)
+    end
+    # The destructor lives in its own instantiation: take its snapshot, whose
+    # flag belongs to the image the finalizer will actually call into.
+    return (ptr, lib_name,
+            generic_struct_generation_snapshot(free_symbol, types, lib_name))
+end
+
+function _generic_constructor_call(func_name::String, args::Tuple, types::Tuple)
     # Use explicit types to monomorphize
     # We assume types correspond to T, U... in order
     # We need parameter names (T, U).
@@ -969,7 +1011,7 @@ function _call_generic_constructor(func_name::String, args::Tuple, types::Tuple)
     # (fixed `String` / `&str` parameters travel as (ptr, len) pairs, #242).
     ptr = _call_monomorphized(info, args...)
 
-    return (ptr, info.lib_name)
+    return (ptr, info.lib_name, info.handle, info.generation)
 end
 
 function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple)

@@ -245,7 +245,10 @@ with no mappings rather than losing the rebuilt library.
 """
 function _scan_crate_signatures(crate_path::String)
     return try
-        cfg_text = _crate_build_cfg_text(crate_path)
+        # A reload re-probes rather than trusting the memo: a `build.rs` can
+        # change its `cargo::rustc-cfg` output without any input RustCall is
+        # able to enumerate (#255).
+        cfg_text = _crate_build_cfg_text(crate_path; memo = false)
         if isempty(cfg_text)
             @debug "Hot reload: no build cfg for $(crate_path); scanning leniently"
             scan_crate(crate_path).julia_functions
@@ -592,8 +595,12 @@ function _drain_source_changes(state::HotReloadState, window::Real)
         saw_event = false
         if isdir(src_dir)
             try
-                FileWatching.watch_folder(src_dir, remaining)
-                saw_event = true
+                event = FileWatching.watch_folder(src_dir, remaining)
+                # The wait expiring is the *end* of the burst, not another
+                # event: treating it as one restarted the window every time,
+                # so a single save waited out `MAX_DEBOUNCE_WINDOWS` instead
+                # of one window (#255).
+                saw_event = !_watch_timed_out(event)
             catch e
                 e isa InterruptException && rethrow()
                 sleep(min(remaining, 0.01))

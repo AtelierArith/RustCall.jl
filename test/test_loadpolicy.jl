@@ -809,6 +809,105 @@ _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
         end
     end
 
+    # -----------------------------------------------------------------
+    # One mapped image, one liveness flag — across an unload and a reopen.
+    # `unload_library(name)` retires without closing, so the image stays
+    # mapped and its objects hold its flag; the next `dlopen` of that path
+    # answers with the same handle (#277).
+    # -----------------------------------------------------------------
+    @testset "reopening a retired image keeps its liveness flag" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            path = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_reopen_probe() -> i32 { 4 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_reopen_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, path; lib_name = name)
+                # An object allocated now would hold this flag.
+                held = a.alive
+                @test held[]
+
+                RustCall.unload_artifact!(policy, name)
+                @test a.handle in RustCall.retired_handles()
+                @test held[]           # retired, not closed: still callable
+
+                # Reopening the same path: the loader hands back the very same
+                # image, so it must keep the very same flag. A fresh one would
+                # leave `held` watching nothing — and a later close of the new
+                # generation would flip a flag no live object holds.
+                b = RustCall.load_artifact!(policy, path; lib_name = name)
+                @test b.handle == a.handle
+                @test b.alive === held
+                @test !(b.handle in RustCall.retired_handles())
+                @test held[]
+
+                # ...and closing it now does reach the objects that held it.
+                RustCall.unload_artifact!(policy, name)
+                RustCall.close_retired_handles!([b.handle])
+                @test !held[]
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    delete!(RustCall.RUST_LIBRARIES, name)
+                    delete!(RustCall.ARTIFACT_ALIVE, name)
+                end
+            end
+        end
+    end
+
+    # -----------------------------------------------------------------
+    # The drain closes what the *retirement* owned, never what a reopen
+    # acquired afterwards (#277).
+    # -----------------------------------------------------------------
+    @testset "the retired drain does not steal a reopen's reference" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to open a real image"
+        else
+            path = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_steal_probe() -> i32 { 5 }
+                """)
+            policy = RustCall.inline_rustc_policy()
+            name = "loadpolicy_steal_$(getpid())"
+            other = "loadpolicy_steal_other_$(getpid())"
+            try
+                a = RustCall.load_artifact!(policy, path; lib_name = name)
+                RustCall.unload_artifact!(policy, name)
+                record = lock(() -> RustCall.RETIRED_HANDLES[a.handle],
+                              RustCall.REGISTRY_LOCK)
+                # The record remembers what it was retired with...
+                @test record.owned == 1
+
+                # ...and a reopen under another name takes a reference of its
+                # own, which the drain must not touch.
+                b = RustCall.load_artifact!(policy, path; lib_name = other)
+                @test b.handle == a.handle
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+
+                # The reopen removed the retirement, so there is nothing to
+                # drain — and the live reference survives.
+                @test isempty(intersect(RustCall.retired_handles(), [a.handle]))
+                before = RustCall.DLCLOSE_COUNT[]
+                @test RustCall.close_retired_handles!([a.handle]) == 0
+                @test RustCall.DLCLOSE_COUNT[] == before
+                @test RustCall.artifact_handle_open_count(a.handle) == 2
+                @test RustCall.call_rust_function(
+                    RustCall.resolve_call_target(other, "rustcall_steal_probe").func_ptr,
+                    Int32) == Int32(5)
+            finally
+                lock(RustCall.REGISTRY_LOCK) do
+                    for n in (name, other)
+                        delete!(RustCall.RUST_LIBRARIES, n)
+                        delete!(RustCall.ARTIFACT_ALIVE, n)
+                    end
+                end
+            end
+        end
+    end
+
     # A generated `@rust_crate` module reads its handle from its own `Ref` on
     # every call. A hot reload closes the previous image and `unload_library`
     # closes it outright, so a raw copy would be a `dlsym` into unmapped

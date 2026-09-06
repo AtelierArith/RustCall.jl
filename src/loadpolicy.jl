@@ -1151,6 +1151,13 @@ struct RetiredImage
     path::String
     alive::Base.RefValue{Bool}
     names::Vector{String}
+    # How many owned opens this image had when it was retired — the number of
+    # `dlclose`s the retirement is responsible for, captured **then** rather
+    # than read from the live counter later. A concurrent reopen of the same
+    # path increments the live counter, and draining "until the counter says
+    # zero" would close that reopen's reference too, unmapping an image the
+    # program is using (#277).
+    owned::Int
 end
 
 """
@@ -1269,7 +1276,7 @@ function _record_retired!(handle::Ptr{Cvoid}, names::Vector{String},
     RETIRED_HANDLES[handle] =
         RetiredImage(String(path), alive === nothing ?
                      (existing === nothing ? Ref(true) : existing.alive) : alive,
-                     merged)
+                     merged, get(OWNED_HANDLES, handle, 0))
     return nothing
 end
 
@@ -1300,14 +1307,15 @@ function close_retired_handles!(handles = retired_handles())
         end
         found
     end
-    for (handle, _) in records
-        # Drain the handle's owned opens, not just one of them. `dlopen`
-        # refcounts, so one image loaded under two names owes two closes, and
-        # closing once left the last loader reference unreclaimable — the image
-        # stayed mapped for the life of the process even though its record was
-        # gone. `close_artifact_handle!` decrements and returns `false` once
-        # the debt is paid, so this terminates on its own.
-        while close_artifact_handle!(handle)
+    for (handle, record) in records
+        # Close once per owned open **this retirement owned**. One image loaded
+        # under two names owes two closes, and closing once left the last
+        # loader reference unreclaimable. Draining the *live* counter instead
+        # would go too far the other way: a task reopening the same path while
+        # this loop runs increments that counter, and closing its reference
+        # would unmap an image it is about to call (#277).
+        for _ in 1:record.owned
+            close_artifact_handle!(handle) || break
         end
     end
     return length(records)
@@ -1627,13 +1635,29 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         # `true` because that image is still mapped and its objects must still
         # free through it (`RETIRED_HANDLES`).
         previous_alive = get(ARTIFACT_ALIVE, name, nothing)
-        alive = (previous_alive !== nothing && replaced == handle) ?
-                previous_alive : Ref(true)
+        # ...and that includes an image that was *unloaded* and is being opened
+        # again. `unload_library(name)` retires the image without closing it,
+        # so it stays mapped and the objects it produced hold its flag. The
+        # loader answers the next `dlopen` of that path with the same handle;
+        # minting a fresh flag for it would leave those objects watching a flag
+        # nobody will ever flip, while the image they point into could later be
+        # closed under a different one. The retired record's flag *is* this
+        # image's flag, so it is adopted and the record retired no more.
+        retired = get(RETIRED_HANDLES, handle, nothing)
+        alive = if previous_alive !== nothing && replaced == handle
+            previous_alive
+        elseif retired !== nothing
+            retired.alive
+        else
+            Ref(true)
+        end
         ARTIFACT_ALIVE[name] = alive
         RUST_LIBRARIES[name] = (handle, cache)
         # This image is live again, so it is no longer retired: a record left
         # behind would let a later `close = true` close an image that is in
         # the registry (and flip a flag that belongs to a live generation).
+        # The owned opens it accounted for stay in `OWNED_HANDLES`, which is
+        # the single count of what the process still owes.
         delete!(RETIRED_HANDLES, handle)
         # Module-local copies of the handle move in the same critical section,
         # so a generated `@rust_crate` module's fast path can never read a

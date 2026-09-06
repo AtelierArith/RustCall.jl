@@ -543,15 +543,24 @@ build-script change reused the previous probe and rescanned the crate against
 `#[cfg]`s the new build does not have — registering the wrong ABI for the
 functions it then called (#255, #277).
 
+**A reload passes `memo = false` and always probes.** The digest above covers
+what RustCall can enumerate, and that is not everything: a `build.rs` may read
+an environment variable, a generated file, or a sibling crate, and emit a
+different `cargo::rustc-cfg` with its own source unchanged. A hot reload is
+exactly the workload where that matters and exactly the one that can afford the
+probe — it has just run a full `cargo build`. The memo therefore serves first
+loads, where the crate has not been built under this process before; a reload
+re-probes unconditionally.
+
 `--print cfg` still resolves and builds the crate's dependencies, but every
 caller today has just built the crate anyway.
 """
-function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release")
+function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
+                               memo::Bool = true)
     path = abspath(String(crate_path))
     key = path * "\n" * String(profile) * "\n" * _cargo_cfg_env_key() * "\n" *
           _crate_cfg_inputs_digest(path)
-    lock(_EXTRACTOR_LOCK) do
-        get!(_CRATE_CFG_TEXT, key) do
+    probe = () -> begin
             try
                 flag = profile == "release" ? `--release` : ``
                 out = read(setenv(`$(cargo()) rustc -q $flag --lib -- --print cfg`; dir = path), String)
@@ -560,7 +569,10 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
                 @debug "Could not probe the build cfg of $(path)" exception = e
                 ""
             end
-        end
+    end
+    lock(_EXTRACTOR_LOCK) do
+        memo || return (_CRATE_CFG_TEXT[key] = probe())
+        get!(probe, _CRATE_CFG_TEXT, key)
     end
 end
 

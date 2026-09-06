@@ -269,6 +269,21 @@ end
             t0 = time()
             RustCall._drain_source_changes(state, 0.05)
             @test time() - t0 < 0.05 * RustCall.MAX_DEBOUNCE_WINDOWS + 2.0
+
+            # ...and with nothing happening it lasts ONE window, not the cap.
+            # A `watch_folder` timeout used to count as an event and restart
+            # the deadline, so a single save waited out `MAX_DEBOUNCE_WINDOWS`
+            # before its rebuild — a tenth of a second became a second (#255).
+            window = 0.2
+            t0 = time()
+            RustCall._drain_source_changes(state, window)
+            elapsed = time() - t0
+            @test elapsed >= window * 0.5           # it did wait the window
+            @test elapsed < window * 3              # ...and not the cap
+            # It also did not scan on each timeout.
+            before_scans = RustCall.source_scan_count()
+            RustCall._drain_source_changes(state, window)
+            @test RustCall.source_scan_count() - before_scans <= 2
         end
     end
 
