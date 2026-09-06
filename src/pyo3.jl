@@ -932,8 +932,13 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
                            "2021", wrapper_path)
     env = Dict{String, String}(ENV)
     isempty(rustflags) || (env["RUSTFLAGS"] = _merge_rustflags(get(env, "RUSTFLAGS", ""), rustflags))
-    interpreter = _pyo3_interpreter_path()
-    isempty(interpreter) || (env["PYO3_PYTHON"] = interpreter)
+    # Only where pyo3 is actually in the graph: a `:python_free` build has no
+    # pyo3 build script to configure, and pinning an interpreter it will never
+    # consult would misdescribe the build.
+    if plan.mode === :link_libpython
+        interpreter = _pyo3_interpreter_path()
+        isempty(interpreter) || (env["PYO3_PYTHON"] = interpreter)
+    end
     try
         built = build_cargo_project(project; release = release, env = env,
                                     policy = crate_wrapper_policy())
