@@ -1,4 +1,4 @@
-# Rust compiler (rustc) wrapper for LLVM IR generation
+# Rust compiler (rustc) wrapper: compiles Rust source to a shared library
 
 using RustToolChain: rustc, cargo
 using SHA
@@ -163,184 +163,6 @@ function get_library_extension()
 end
 
 """
-    compile_rust_to_llvm_ir(code::String; compiler=get_default_compiler()) -> String
-
-Compile Rust code to LLVM IR and return the path to the generated .ll file.
-
-# Arguments
-- `code::String`: Rust source code
-
-# Keyword Arguments
-- `compiler::RustCompiler`: Compiler configuration (default: default compiler)
-
-# Returns
-- Path to the generated LLVM IR file (.ll)
-
-# Throws
-- `CompilationError` if compilation fails
-
-!!! warning "Deprecated"
-    The LLVM IR integration path is deprecated and will be removed in a future
-    release (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
-    Use `@rust` instead.
-"""
-function compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_default_compiler())
-    _llvm_path_depwarn("compile_rust_to_llvm_ir", :compile_rust_to_llvm_ir)
-    return _compile_rust_to_llvm_ir(code; compiler)
-end
-
-function _compile_rust_to_llvm_ir(code::String; compiler::RustCompiler = get_default_compiler())
-    # Create a unique temporary directory for this compilation
-    if compiler.debug_mode && compiler.debug_dir !== nothing
-        tmp_dir = compiler.debug_dir
-        mkpath(tmp_dir)
-    else
-        tmp_dir = mktempdir()
-    end
-
-    # Use unique filenames in debug_dir to avoid overwriting across compilations
-    base_name = _unique_source_name(code, compiler)
-    rs_file = joinpath(tmp_dir, "$(base_name).rs")
-    ll_file = joinpath(tmp_dir, "$(base_name).ll")
-    success_flag = false
-
-    try
-        # Write the Rust code to the temporary file
-        write(rs_file, code)
-
-        # Build the rustc command using RustToolChain.jl
-        rustc_cmd = rustc()
-        cmd_args = vcat(
-            [string(rustc_cmd.exec[1])],  # Get the actual rustc path from RustToolChain
-            [
-                "--emit=llvm-ir",
-                "--crate-type=cdylib",
-                "-C", "opt-level=$(compiler.optimization_level)",
-                # Unwinding is what makes the generated `catch_unwind`
-                # boundary able to catch anything at all: an aborting profile
-                # terminates the process before any boundary runs, so a Rust
-                # bug would still take the Julia session with it (#244).
-                # Pinned by the policy, not left to rustc's default, so this
-                # cannot drift from what the Cargo path does.
-                rustc_panic_flags(inline_rustc_policy())...,
-                "--target=$(compiler.target_triple)",
-                "-o", ll_file,
-                rs_file
-            ]
-        )
-
-        if compiler.emit_debug_info
-            push!(cmd_args, "-g")
-        end
-
-        # Run rustc and capture stderr
-        cmd = Cmd(cmd_args)
-        cmd_str = join(cmd_args, " ")
-
-        try
-            # Capture stderr for better error messages
-            stderr_io = IOBuffer()
-            try
-                proc = run(pipeline(cmd, stderr=stderr_io), wait=false)
-                wait(proc)
-
-                if !Base.success(proc)
-                    stderr_str = String(take!(stderr_io))
-
-                    if compiler.debug_mode
-                        @warn "Debug mode: keeping intermediate files in $tmp_dir"
-                        @info "Debug mode: You can inspect the files to debug the compilation error"
-                        @info "Debug mode: Source file" file=rs_file
-                        @info "Debug mode: Command" cmd=cmd_str
-                    end
-
-                    # Extract error line numbers and file path
-                    error_lines = RustCall._extract_error_line_numbers_impl(stderr_str)
-                    line_num = isempty(error_lines) ? 0 : error_lines[1]
-
-                    # Build context dictionary
-                    context = Dict{String, Any}(
-                        "tmp_dir" => tmp_dir,
-                        "rs_file" => rs_file,
-                        "ll_file" => ll_file,
-                        "error_count" => length(error_lines),
-                        "debug_mode" => compiler.debug_mode
-                    )
-
-                    # Format and throw compilation error
-                    throw(CompilationError(
-                        "Failed to compile Rust code to LLVM IR",
-                        stderr_str,
-                        code,
-                        cmd_str;
-                        file_path=rs_file,
-                        line_number=line_num,
-                        context=context
-                    ))
-                end
-            finally
-                close(stderr_io)
-            end
-        catch e
-            if isa(e, CompilationError)
-                rethrow(e)
-            end
-
-            if compiler.debug_mode
-                @warn "Debug mode: keeping intermediate files in $tmp_dir"
-            end
-
-            # Fallback error
-            throw(CompilationError(
-                "Unexpected error during compilation: $e",
-                "",
-                code,
-                cmd_str
-            ))
-        end
-
-        # Verify the output file exists
-        if !isfile(ll_file)
-            context = Dict{String, Any}(
-                "expected_file" => ll_file,
-                "tmp_dir" => tmp_dir,
-                "debug_mode" => compiler.debug_mode
-            )
-
-            throw(CompilationError(
-                "LLVM IR file was not generated",
-                "Output file does not exist: $ll_file",
-                code,
-                cmd_str;
-                file_path=rs_file,
-                context=context
-            ))
-        end
-
-        # Debug mode: print file locations and additional info
-        if compiler.debug_mode
-            @info "Debug mode: LLVM IR generated" file=ll_file source=rs_file
-            @info "Debug mode: Temporary directory" dir=tmp_dir
-            if compiler.emit_debug_info
-                @info "Debug mode: Debug info enabled"
-            end
-        end
-
-        success_flag = true
-        return ll_file
-    finally
-        # Clean up temp directory on error paths, unless debug mode retains files
-        if !success_flag && !compiler.debug_mode && isdir(tmp_dir)
-            try
-                rm(tmp_dir, recursive=true, force=true)
-            catch
-                # Best-effort cleanup; ignore errors (e.g., locked files on Windows)
-            end
-        end
-    end
-end
-
-"""
     compile_rust_to_shared_lib(code::String; compiler=get_default_compiler()) -> String
 
 Compile Rust code to a shared library and return the path.
@@ -384,8 +206,12 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
             [
                 "--crate-type=cdylib",
                 "-C", "opt-level=$(compiler.optimization_level)",
-                # See the LLVM-IR path above: unwinding is what the generated
-                # `catch_unwind` boundary needs (#244).
+                # Unwinding is what makes the generated `catch_unwind`
+                # boundary able to catch anything at all: an aborting profile
+                # terminates the process before any boundary runs, so a Rust
+                # bug would still take the Julia session with it (#244).
+                # Pinned by the policy, not left to rustc's default, so this
+                # cannot drift from what the Cargo path does.
                 rustc_panic_flags(inline_rustc_policy())...,
                 "--target=$(compiler.target_triple)",
                 "-o", lib_file,

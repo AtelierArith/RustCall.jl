@@ -523,60 +523,6 @@ function use_resource()
 end
 ```
 
-### LLVM IR Integration (deprecated)
-
-!!! warning "Deprecated"
-    The LLVM IR integration path is deprecated and will be removed in a future
-    release ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)). `@rust_llvm` uses the same `ccall` as `@rust`, so
-    use `@rust` for hot paths. The snippets below emit deprecation warnings.
-
-```julia
-using RustCall
-
-rust"""
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-"""
-
-info = RustCall.compile_and_register_rust_function("""
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 { a + b }
-""", "add")
-
-result = @rust_llvm add(Int32(10), Int32(20))  # => 30
-```
-
-Optimization configuration is exposed explicitly:
-
-```julia
-using RustCall
-
-rust_code = """
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-"""
-
-wrapped_code = RustCall.wrap_rust_code(rust_code)
-compiler = RustCall.get_default_compiler()
-ir_path = RustCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
-rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped_code)
-llvm_mod = rust_mod.mod
-
-config = RustCall.OptimizationConfig(
-    level=3,
-    enable_vectorization=true,
-    inline_threshold=300,
-)
-
-RustCall.optimize_module!(llvm_mod; config=config)
-RustCall.optimize_for_speed!(llvm_mod)
-RustCall.optimize_for_size!(llvm_mod)
-```
-
 ### Compilation Caching
 
 Compilation results are cached automatically for repeated Rust snippets.
@@ -1051,7 +997,7 @@ data = rand(10000)
 
 **Performance tips:**
 - Use `GC.@preserve` for large arrays to prevent garbage collection during Rust calls
-- Let `rustc` optimize the Rust side (`-C opt-level`); `@rust_llvm` is deprecated and offers no speedup over `@rust`
+- Let `rustc` optimize the Rust side (`-C opt-level`, see `RustCall.RustCompiler`)
 - Leverage caching to avoid recompilation (functions are cached automatically)
 - Always specify explicit types in `@rust` macro calls
 

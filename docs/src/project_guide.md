@@ -9,7 +9,7 @@ This page collects repository-oriented information that no longer lives in the t
 - `docs/`: Documenter sources and generated-site configuration.
 - `deps/`: Rust helper/runtime code and the `juliacall_macros` proc-macro crate.
 - `examples/`: runnable examples covering inline Rust, crate bindings, Pluto, and package-style usage.
-- `benchmark/`: benchmark scripts for core calls, LLVM integration, arrays, generics, and ownership helpers.
+- `benchmark/`: benchmark scripts for core calls, arrays, generics, and ownership helpers.
 
 ## Bundled Examples
 
@@ -50,7 +50,7 @@ every push.
 ## Test Suite
 
 - Root entry point: `test/runtests.jl`
-- Coverage includes cache behavior, ownership types, arrays, generics, LLVM integration, cargo dependencies, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
+- Coverage includes cache behavior, ownership types, arrays, generics, cargo dependencies, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
 - Documentation examples are checked by `test/test_docs_examples.jl`.
 - The proc-macro crate has its own tests in `deps/juliacall_macros/tests/`.
 
@@ -66,11 +66,10 @@ cd deps/juliacall_macros && cargo test --all-features
 
 ## Benchmarks
 
-The repository includes benchmark scripts comparing native Julia paths with `@rust` and, where applicable, `@rust_llvm`.
+The repository includes benchmark scripts comparing native Julia paths with `@rust`.
 
 ```bash
 julia --project benchmark/benchmarks.jl
-julia --project benchmark/benchmarks_llvm.jl
 julia --project benchmark/benchmarks_arrays.jl
 julia --project benchmark/benchmarks_generics.jl
 julia --project benchmark/benchmarks_ownership.jl
@@ -109,7 +108,7 @@ This checkout does not currently include a top-level `LICENSE` file. If licensin
 ## Credits
 
 - Inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
-- Built on top of [LLVM.jl](https://github.com/maleadt/LLVM.jl).
+- Built on [RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl) for the Rust toolchain.
 - Development has been supported by AI coding tools and agents including Codex, Claude Code, and Cursor.
 
 ## Related Projects

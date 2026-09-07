@@ -371,28 +371,14 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
                                     channel, func_name)
     end
 
-    # Try to get type info from LLVM analysis. The `try` covers the *inference*
-    # and nothing else: it used to wrap the call as well, with a catch that
-    # swallowed every exception but `RustPanicError`, so a fail-closed error
-    # from the FFI type contract — an unregistered by-value aggregate (#245),
-    # an invalid-UTF-8 argument (#246) — was replaced by the unrelated "no
-    # return type" message below. Swallowing a fail-closed error is the
-    # fail-open pattern the contract exists to remove.
-    inferred = try
-        infer_function_types(lib_name, func_name)
-    catch e
-        e isa SignatureInferenceError || rethrow()
-        nothing
-    end
-    if inferred !== nothing
-        inferred_ret, _ = inferred
-        return guard_rust_panic_ptr(call_rust_function(func_ptr, inferred_ret, args...),
-                                    channel, func_name)
-    end
-
     # No last resort. Guessing the return type from the first argument was the
     # #245 / #246 shape: the guess is not derivable from an argument, and a
-    # return slot read at the wrong width is undefined behaviour (#276).
+    # return slot read at the wrong width is undefined behaviour (#276). (The
+    # LLVM IR inference that used to sit here read a module registry nothing
+    # ever wrote to; it went with the LLVM path, #265.) Nothing is caught on
+    # the way here: a fail-closed error from the FFI type contract — an
+    # unregistered by-value aggregate (#245), an invalid-UTF-8 argument (#246)
+    # — propagates as itself rather than as this message.
     throw(RustError(
         "`@rust $func_name(...)` has no return type: the manifest records none " *
         "for '$func_name' in library '$lib_name', and RustCall no longer " *

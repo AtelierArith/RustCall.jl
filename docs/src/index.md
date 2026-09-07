@@ -16,8 +16,6 @@
 - **Compilation caching**: one artifact identity (`RustCall.ArtifactId` / `artifact_key`) keys every cached library, so a changed source, compiler, cfg set, dependency or toolchain rebuilds and nothing else does
 
 ### Phase 2: Runtime and Ownership ✅
-- **`@rust_llvm` macro**: Deprecated. The LLVM IR integration path is scheduled for removal because it has no benefit over `@rust` and rustc's LLVM IR no longer matches Julia's LLVM ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265))
-- **LLVM optimization**: Deprecated together with `@rust_llvm`
 - **Ownership types**: `RustBox`, `RustRc`, `RustArc`, `RustVec`, `RustSlice`
 - **Array operations**: Indexing, iteration, Julia ↔ Rust conversion
 - **Generics support**: Automatic monomorphization and type parameter inference
@@ -361,7 +359,6 @@ Pages = [
     "reference/ownership.md",
     "reference/generics.md",
     "reference/loading.md",
-    "reference/llvm.md",
     "status.md",
 ]
 Depth = 2

@@ -57,7 +57,6 @@ makedocs(
                 "Types, memory and ownership" => "reference/ownership.md",
                 "Generics and #[julia] functions" => "reference/generics.md",
                 "Errors and load policy" => "reference/loading.md",
-                "LLVM integration (deprecated)" => "reference/llvm.md",
             ],
             "Project Status" => "status.md",
             "Developer Pitfalls" => "developer_pitfalls.md",

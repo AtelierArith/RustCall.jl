@@ -27,15 +27,14 @@
 # So this lint forbids, outside the file that *defines* each of them, the
 # individual resolvers they are made of.
 #
-# Allowlist: src/llvmcodegen.jl, the deprecated LLVM IR path that #265 Phase 2
-# removes; it keeps its own lookups and is not part of the supported call path.
+# There is no allowlist: the last exemption, the LLVM IR path, was removed with
+# #265 Phase 2.
 #
 # Usage: bash scripts/lint_generation_snapshot.sh [src]
 
 set -euo pipefail
 
 dir="${1:-src}"
-llvm='(^|/)llvmcodegen\.jl:'
 status=0
 
 report() {
@@ -55,7 +54,6 @@ call_sites() {
     grep -rnE --include='*.jl' "(^|[^[:alnum:]_.])${pattern}\(" "$dir" \
         | grep -viE '^[^:]*:[0-9]+: *#' \
         | grep -vE "(^|/)${owner}:" \
-        | grep -vE "$llvm" \
         | grep -vE '^[^:]*:[0-9]+: *(function|const) ' \
         | grep -vE "^[^:]*:[0-9]+: *${pattern}\(" || true
 }

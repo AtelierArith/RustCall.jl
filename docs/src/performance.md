@@ -5,7 +5,7 @@ RustCall.jl provides multiple features to optimize performance when calling Rust
 ## Table of Contents
 
 1. [Compilation Caching](#compilation-caching)
-2. [LLVM Optimization](#llvm-optimization)
+2. [LLVM Optimization (removed)](#llvm-optimization-removed)
 3. [Function Call Optimization](#function-call-optimization)
 4. [Memory Management](#memory-management)
 5. [Benchmark Results](#benchmark-results)
@@ -150,43 +150,43 @@ RustCall.clear_cache(sweep_legacy = true)
 2. **Production**: Warm up cache beforehand to avoid first-run delays
 3. **CI/CD**: Save and restore cache to reduce build time
 
-## LLVM Optimization
+## LLVM Optimization (removed)
 
-!!! warning "Deprecated"
-    The LLVM IR integration path (`@rust_llvm`, `compile_rust_to_llvm_ir`,
-    `load_llvm_ir`, `OptimizationConfig`, `optimize_module!` and friends) is
-    deprecated and will be removed in a future release. Every entry point now
-    emits a deprecation warning. See [#265](https://github.com/AtelierArith/RustCall.jl/issues/265).
+`@rust_llvm` and the LLVM IR integration path — `compile_rust_to_llvm_ir`,
+`load_llvm_ir`, `compile_and_register_rust_function`, `OptimizationConfig`,
+`optimize_module!` and friends — were deprecated in 0.2.0 and **removed in
+0.3.0** ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+RustCall no longer depends on `LLVM.jl`. Use `@rust`.
 
 The path was an experiment inspired by Cxx.jl: load the LLVM IR that rustc emits
-into Julia's LLVM and optimize across the language boundary. It is being removed
-for two reasons.
+into Julia's LLVM and optimize across the language boundary. It was removed for
+two reasons, quoting the issue:
 
-- **The call path is equivalent to `@rust`.** `@rust_llvm` calls the Rust
-  function through a function pointer with a plain `ccall`; no Rust IR is inlined
-  into Julia code, so there is no performance difference.
+- **The call path was equivalent to `@rust`.** `@rust_llvm` called the Rust
+  function through a function pointer with a plain `ccall`; no Rust IR was ever
+  inlined into Julia code, so there was no performance difference.
 - **rustc and Julia do not share an LLVM version.** rustc follows LLVM releases
   every six weeks while Julia pins a major version per release (Julia 1.12 ships
   LLVM 18, rustc 1.98 emits LLVM 22 IR). The textual IR format is not forward
-  compatible, so newer rustc output cannot be parsed reliably by Julia's LLVM.
+  compatible, so newer rustc output could not be parsed reliably by Julia's LLVM
+  — the path already stripped attributes it did not know by regex before
+  parsing, and there is no way to make rustc emit an older IR format.
 
-Use `@rust` for all calls. Optimization of the Rust code itself belongs to
-`rustc` (`-C opt-level`, see `RustCall.RustCompiler`).
+Optimization of the Rust code itself belongs to `rustc` (`-C opt-level`, see
+`RustCall.RustCompiler`).
 
 ## Function Call Optimization
 
-### `@rust` vs `@rust_llvm`
+### One call mechanism
 
-- **`@rust`**: Standard call via `ccall`. Highly stable, recommended for all cases
-- **`@rust_llvm`**: Deprecated (see [#265](https://github.com/AtelierArith/RustCall.jl/issues/265)). Internally it performs the same
-  `ccall` as `@rust`, so it has no performance benefit, and it emits a deprecation warning
+Every `@rust` call is a `ccall` through a function pointer resolved from the
+library's own handle (one snapshot per call, see the project guide). There is no
+second, faster call path: the former `@rust_llvm` used the very same `ccall`
+and was removed in 0.3.0 (see above).
 
 ```julia
 # Standard call (recommended)
 result = @rust add(Int32(10), Int32(20))::Int32
-
-# Deprecated: same call mechanism, plus a deprecation warning
-result = @rust_llvm add(Int32(10), Int32(20))
 ```
 
 ### Type Inference Optimization
@@ -201,12 +201,13 @@ result = @rust add(10, 20)
 result = @rust add(Int32(10), Int32(20))::Int32
 ```
 
-### Function Registration Optimization
+### No registration step
 
-`RustCall.compile_and_register_rust_function` registered a function for the
-deprecated LLVM path. It is no longer recommended: `rust"""..."""` blocks
-already compile once and are cached, so an explicit registration step buys
-nothing. Prefer `@rust` with explicit argument and return types.
+`rust"""..."""` blocks compile once and are cached, and the manifest registers
+every function's symbol and return type when the library is loaded, so there is
+nothing to pre-register. (`compile_and_register_rust_function`, the registration
+step of the removed LLVM path, is gone.) Prefer `@rust` with explicit argument
+and return types.
 
 ## Memory Management
 
@@ -283,24 +284,22 @@ end
 
 ### Basic Operations
 
-The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS. The
-`@rust_llvm` column is kept for reference only; the macro is deprecated and uses the
-same call mechanism as `@rust`.
+The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS.
 
-| Operation | Julia Native | @rust | @rust_llvm |
-|-----------|-------------|-------|------------|
-| i32 addition | 1.0x | 1.2x | 1.1x |
-| i64 addition | 1.0x | 1.2x | 1.1x |
-| f64 addition | 1.0x | 1.3x | 1.2x |
-| i32 multiplication | 1.0x | 1.2x | 1.1x |
-| f64 multiplication | 1.0x | 1.3x | 1.2x |
+| Operation | Julia Native | @rust |
+|-----------|-------------|-------|
+| i32 addition | 1.0x | 1.2x |
+| i64 addition | 1.0x | 1.2x |
+| f64 addition | 1.0x | 1.3x |
+| i32 multiplication | 1.0x | 1.2x |
+| f64 multiplication | 1.0x | 1.3x |
 
 ### Complex Computations
 
-| Computation | Julia Native | @rust | @rust_llvm |
-|-------------|-------------|-------|------------|
-| Fibonacci (n=30) | 1.0x | 1.1x | 1.0x |
-| Sum Range (1..1000) | 1.0x | 1.2x | 1.1x |
+| Computation | Julia Native | @rust |
+|-------------|-------------|-------|
+| Fibonacci (n=30) | 1.0x | 1.1x |
+| Sum Range (1..1000) | 1.0x | 1.2x |
 
 ### Ownership Type Operations
 
@@ -328,9 +327,6 @@ same call mechanism as `@rust`.
 ```bash
 # Basic benchmarks
 julia --project benchmark/benchmarks.jl
-
-# LLVM integration benchmarks (deprecated path, emits deprecation warnings)
-julia --project benchmark/benchmarks_llvm.jl
 
 # Ownership type benchmarks
 julia --threads=4 --project benchmark/benchmarks_ownership.jl
@@ -361,7 +357,6 @@ RustCall.set_default_compiler(compiler)
 ### 2. Improving Runtime Performance
 
 - **Explicit types**: Reduce type inference overhead
-- **Register functions**: Pre-register frequently called functions
 - **Batch processing**: Combine multiple calls
 
 ```julia

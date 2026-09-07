@@ -459,16 +459,6 @@ end
         @test !occursin("_check_not_freed", RustCall._emit_method_code(info, static))
     end
 
-    @testset "LLVM optimization uses New Pass Manager (#140)" begin
-        @test isdefined(RustCall, :optimize_module!)
-        @test isdefined(RustCall, :optimize_function!)
-        config = RustCall.OptimizationConfig()
-        @test config.level == 2
-        @test config.size_level == 0
-        @test config.enable_vectorization
-        @test RustCall.OptimizationConfig(level = 0, size_level = 0).level == 0
-    end
-
     @testset "Float types supported in ownership wrappers (#144)" begin
         for wrapper in (RustCall.RustRc, RustCall.RustArc, RustCall.RustBox)
             @test hasmethod(wrapper, Tuple{Float32})
@@ -498,9 +488,7 @@ end
     end
 
     @testset "Registry locks and deferred drops (#148/#150)" begin
-        @test RustCall.LLVM_REGISTRY_LOCK isa ReentrantLock
         @test RustCall.REGISTRY_LOCK isa ReentrantLock
-        @test isdefined(RustCall, :RUST_MODULES)
         initial = RustCall.deferred_drop_count()
         RustCall._defer_drop(Ptr{Cvoid}(UInt(0xDEAD)), "TestType{Int32}", :test_drop_sym)
         @test RustCall.deferred_drop_count() == initial + 1
@@ -1211,11 +1199,13 @@ end
 end
 
 # #245: the fail-closed contract error has to *reach* the caller.
-# `_rust_call_dynamic` tries LLVM inference as one of several ways to learn a
-# return type, inside a `try` whose `catch` swallowed everything but
-# `RustPanicError` — so a `RustError` from the type contract was replaced by
-# the unrelated "no return type" message. Swallowing a fail-closed error is the
-# fail-open pattern the contract exists to remove.
+# `_rust_call_dynamic` used to try return-type inference inside a `try` whose
+# `catch` swallowed everything but `RustPanicError` — so a `RustError` from the
+# type contract was replaced by the unrelated "no return type" message.
+# Swallowing a fail-closed error is the fail-open pattern the contract exists
+# to remove. (The inference step itself went with the LLVM IR path, #265; the
+# guarantee that nothing between the snapshot and the call catches a contract
+# error stays.)
 @testset "#245: a contract error is not swallowed by return-type inference" begin
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"
@@ -1231,9 +1221,8 @@ end
         v = Rc245Vec2Julia(3.0, 4.0)
         @test RustCall.ffi_by_value_registered(Rc245Vec2Julia) == false
 
-        # Unannotated: the manifest records nothing for a plain `#[no_mangle]`
-        # function with a struct argument, so the call reaches the inference
-        # branch — and the contract's refusal is what must come out.
+        # Unannotated: the contract's refusal is what must come out, not a
+        # generic "no return type" message from a catch that swallowed it.
         err = try
             RustCall._rust_call_dynamic(lib, "rc245_infer_norm2", v)
             nothing
@@ -1250,18 +1239,6 @@ end
         # Annotated, the same refusal comes through the typed door too.
         @test_throws RustCall.RustError RustCall._rust_call_typed(
             lib, "rc245_infer_norm2", Float64, v)
-
-        # The inference failure itself is now a named type, which is what makes
-        # the narrow catch possible.
-        @test_throws RustCall.SignatureInferenceError RustCall.infer_function_types(
-            lib, "rc245_no_such_function")
-        infer_err = try
-            RustCall.infer_function_types(lib, "rc245_no_such_function")
-            nothing
-        catch e
-            e
-        end
-        @test occursin("rc245_no_such_function", sprint(showerror, infer_err))
     end
 end
 

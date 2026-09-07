@@ -2,7 +2,7 @@
     RustCall.jl
 
 A Foreign Function Interface (FFI) package for calling Rust code from Julia
-using LLVM IR integration.
+through a C-compatible ABI.
 
 # Exported Macros
 - `@rust`: Call a registered Rust function
@@ -26,10 +26,9 @@ result = @rust add(10i32, 20i32)
 """
 module RustCall
 
-using LLVM
 using Libdl
 
-# Thread-safety lock for global registries and LLVM operations
+# Thread-safety lock for global registries
 const REGISTRY_LOCK = ReentrantLock()
 
 # Include submodules in order of dependency
@@ -37,7 +36,6 @@ include("types.jl")
 include("typetranslation.jl")
 include("ffi_contract.jl")
 include("compiler.jl")
-include("llvmintegration.jl")
 include("codegen.jl")
 include("exceptions.jl")
 include("cache.jl")
@@ -64,10 +62,6 @@ include("cargobuild.jl")
 include("ruststr.jl")
 include("rustmacro.jl")
 
-# Phase 2: LLVM IR integration
-include("llvmoptimization.jl")
-include("llvmcodegen.jl")
-
 # Phase 2: Generics support
 include("generics.jl")
 
@@ -93,7 +87,6 @@ include("hot_reload.jl")
 # Export public API — only macros/string literals are exported.
 # All other identifiers are accessible via RustCall.XXX or import RustCall: XXX.
 export @rust, @rust_str, @irust, @irust_str
-export @rust_llvm
 export @rust_crate
 # The by-value opt-in of #245. A macro, because it must define its method in
 # the *calling* module for that method to survive the caller's precompilation.

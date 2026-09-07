@@ -495,29 +495,11 @@ hot_reload_policy() = LoadPolicy("hot-reload";
             "rebuild can leave the registry without the previous entry.")
 
 """
-    llvm_policy() -> LoadPolicy
-
-The deprecated LLVM IR path (`src/llvmcodegen.jl:347`).  Loads `RTLD_GLOBAL`
-and does not register in `RUST_LIBRARIES` at all.  Scheduled for removal with
-#265 Phase 2; recorded here only so the inventory is complete.
-"""
-llvm_policy() = LoadPolicy("llvm-ir";
-    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :abort,
-    boundary_catches_panics = false,
-    registry = :none,
-    registry_key_kind = :none,
-    sets_current_lib = false,
-    finalizer_frees = false,
-    call_sites = ["src/llvmcodegen.jl:347"],
-    issues = [250],
-    notes = "Deprecated path (#265 Phase 2); handle is never registered.")
-
-"""
     ALL_LOAD_POLICIES
 
-Every named policy, in the order the inventory in the #277 PR body lists them.
-Used by `test/test_loadpolicy.jl` to pin down the current divergences.
+Every named policy, in the order the inventory in the #277 PR body lists them
+(the `llvm-ir` policy that inventory also listed went with the LLVM IR path,
+#265). Used by `test/test_loadpolicy.jl` to pin down the current divergences.
 """
 const ALL_LOAD_POLICIES = (
     inline_rustc_policy,
@@ -528,7 +510,6 @@ const ALL_LOAD_POLICIES = (
     generics_policy,
     irust_policy,
     hot_reload_policy,
-    llvm_policy,
 )
 
 # ---------------------------------------------------------------------------
