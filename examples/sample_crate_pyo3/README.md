@@ -137,10 +137,13 @@ SampleCratePyo3.translate(p, 1.0, 2.0)
 SampleCratePyo3.scaled(p, 2.0)       # => new Point
 ```
 
-Run the demo:
+Or use the Julia **package** around this crate,
+[`../SampleCratePyO3.jl`](../SampleCratePyO3.jl/), whose `Pkg.test()` makes the
+same assertions as `main.py` below:
 
 ```bash
-julia --project=../.. main.jl
+cd ../SampleCratePyO3.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
 
 ### From Python
@@ -224,7 +227,9 @@ sample_crate_pyo3/
 ├── Cargo.toml      # Crate config with the `python` feature
 ├── src/
 │   └── lib.rs      # Rust code: #[julia] + PyO3 attributes
-├── main.jl         # Julia demo
 ├── main.py         # Python demo
 └── README.md       # This file
+
+../SampleCratePyO3.jl/   # The Julia package: Project.toml, deps/build.jl,
+                         # src/SampleCratePyO3.jl, test/runtests.jl
 ```

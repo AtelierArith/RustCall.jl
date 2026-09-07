@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same rule to a `#[julia] impl` block's static methods (`add(MathUtils, a, b)`).
   `examples/sample_crate` is unchanged and now binds both `shout`s.
 
+### Changed
+- **The sample crates have Julia packages beside them.** `examples/SampleCrate.jl`
+  wraps `examples/sample_crate` and `examples/SampleCratePyO3.jl` wraps
+  `examples/sample_crate_pyo3`, each a `Pkg`-testable package in the shape of
+  `examples/MyExample.jl` and of the documented package workflow: Rust stays in
+  the crate's `src/lib.rs`, `deps/build.jl` writes `src/generated/Bindings.jl`
+  with `write_bindings_to_file` (loading the package runs it once when the file
+  is missing; `Pkg.build` regenerates), `src/<Package>.jl` holds the
+  hand-written Julia (a `Result` becomes a value or an exception, an `Option` a
+  value or `nothing`), and `test/runtests.jl` is what `Pkg.test()` runs. The ad
+  hoc scripts `examples/sample_crate/example.jl` and
+  `examples/sample_crate_pyo3/main.jl` moved into those tests, and the suite no
+  longer spawns `main.jl` (`test_crate_bindings.jl`); the `Examples` GitHub
+  workflow runs every example package's `Pkg.test()` instead.
+
 ## [0.2.0] - 2026-09-07
 
 ### Deprecated

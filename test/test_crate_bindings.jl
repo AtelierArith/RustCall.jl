@@ -485,24 +485,9 @@ end
     @test use_bindings_in_function(SAMPLE_CRATE_PATH) == (Int32(5), 5.0, 3.0, 10.0)
 end
 
-@testset "sample_crate_pyo3 Julia Demo" begin
-    if !isdir(SAMPLE_CRATE_PYO3_PATH)
-        @warn "sample_crate_pyo3 not found, skipping Julia demo test"
-        return
-    end
-
-    try
-        run(pipeline(`$(cargo()) --version`, devnull))
-    catch
-        @warn "Cargo not available, skipping Julia demo test"
-        return
-    end
-
-    project_dir = dirname(@__DIR__)
-    cmd = Cmd(`julia --project=../.. main.jl`, dir=SAMPLE_CRATE_PYO3_PATH)
-    proc = run(ignorestatus(cmd), wait=true)
-    @test success(proc)
-end
+# The Julia demo of `examples/sample_crate_pyo3` is the package
+# `examples/SampleCratePyO3.jl`, whose `Pkg.test()` the Examples workflow runs
+# in CI; it is no longer run from inside this suite.
 
 @testset "Precompilation Support" begin
     if !isdir(SAMPLE_CRATE_PATH)

@@ -14,20 +14,27 @@ This page collects repository-oriented information that no longer lives in the t
 ## Bundled Examples
 
 - `examples/MyExample.jl`: package-style example using inline `rust"""..."""` blocks.
-- `examples/sample_crate`: external Rust crate using `#[julia]` and `@rust_crate`.
-- `examples/sample_crate_pyo3`: dual Julia/Python bindings example.
-- `examples/sample_crate_pyo3_only`: a crate carrying PyO3 attributes only, used by the
-  #275 scan and link-plan tests.
+- `examples/sample_crate`: external Rust crate using `#[julia]` and `@rust_crate`;
+  `examples/SampleCrate.jl` is the Julia package around it (Rust and Julia in
+  separate files, bindings written by `deps/build.jl`, tested with `Pkg.test()`).
+- `examples/sample_crate_pyo3`: dual Julia/Python bindings example;
+  `examples/SampleCratePyO3.jl` is its Julia package, `main.py` its Python consumer.
+- `examples/sample_crate_pyo3_only`, `_mixed`, `_optional`: crates carrying PyO3
+  attributes, used by the #275 scan and link-plan tests.
 - `examples/pluto/hello.jl`: Pluto-oriented walkthrough.
 
-Run the bundled examples from the repository root:
+Every `examples/*.jl` directory is a Julia package. Run its tests against the
+RustCall of this checkout from the repository root:
 
 ```bash
-julia --project examples/sample_crate/example.jl
-julia --project examples/sample_crate_pyo3/main.jl
-julia --project=examples/MyExample.jl -e 'using Pkg; Pkg.test()'
+julia --project=examples/MyExample.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
+julia --project=examples/SampleCrate.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
+julia --project=examples/SampleCratePyO3.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 julia --project examples/pluto/hello.jl
 ```
+
+The `Examples` GitHub workflow runs the same `Pkg.test()` for each package on
+every push.
 
 ## Test Suite
 

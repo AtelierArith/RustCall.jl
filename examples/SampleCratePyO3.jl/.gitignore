@@ -1,0 +1,6 @@
+# Written by deps/build.jl (Pkg.build("SampleCratePyO3")): the generated
+# bindings module and the compiled library it loads.
+/src/generated/
+/deps/lib/
+/deps/build.log
+/Manifest.toml

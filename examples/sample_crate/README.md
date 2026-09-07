@@ -29,36 +29,21 @@ p.x  # => 3.0
 p.y  # => 4.0
 ```
 
-### Usage in Tests
+### Usage as a Julia package
 
-```julia
-using Test
-using Pkg
+[`../SampleCrate.jl`](../SampleCrate.jl/) is the Julia package around this
+crate: `deps/build.jl` writes the bindings with
+`RustCall.write_bindings_to_file`, `src/SampleCrate.jl` adds idiomatic wrappers
+(a `Result` becomes a value or an exception, an `Option` a value or `nothing`),
+and `test/runtests.jl` is run by `Pkg.test()` — locally and in CI:
 
-Pkg.activate(joinpath(@__DIR__, "..", ".."))
-
-using RustCall
-
-sample_crate_path = joinpath(pkgdir(RustCall), "examples", "sample_crate")
-const SampleCrate = @rust_crate sample_crate_path
-
-@testset "SampleCrate" begin
-    @testset "Point" begin
-        p = SampleCrate.Point(3.0, 4.0)
-        @test p isa SampleCrate.Point
-        @test SampleCrate.distance_from_origin(p) == 5.0
-        @test p.x == 3.0
-        @test p.y == 4.0
-    end
-
-    @testset "Basic functions" begin
-        @test SampleCrate.add(Int32(2), Int32(3)) == Int32(5)
-        @test SampleCrate.multiply(2.0, 3.0) == 6.0
-        @test SampleCrate.fibonacci(UInt32(10)) == UInt64(55)
-        @test SampleCrate.is_prime(UInt32(7)) == true
-    end
-end
+```bash
+cd examples/SampleCrate.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
+
+The Rust stays in this crate's `src/lib.rs`; the package contains no Rust
+source.
 
 ### Usage in Functions
 
@@ -136,6 +121,20 @@ Methods:
 - `add(&mut self, amount)` - Add value
 - `get(&self)` - Get current value
 - `reset(&mut self)` - Reset to zero
+
+#### Labeler
+
+Methods with `String` / `&str` arguments and returns (#242).
+
+```rust
+pub struct Labeler { pub count: u32 }
+```
+
+Methods:
+- `new(count)` - Create a labeler
+- `label(&mut self, name)` - `"<name>#<count>"`, counting the labels produced
+- `byte_len(&self, s)`, `kind(&self)`, `echo(&self, s)` - string arguments and returns of each kind
+- `shout(s)` - a static method (no `self`), called as `shout(Labeler, s)`; the crate's free `fn shout` keeps the bare `shout(s)` (#323)
 
 #### Rectangle
 

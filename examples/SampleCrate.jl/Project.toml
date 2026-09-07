@@ -1,0 +1,18 @@
+name = "SampleCrate"
+uuid = "4c00aa8a-5919-44f8-8099-5a10d6dc7940"
+version = "0.1.0"
+authors = ["Satoshi Terasaki <terasakisatoshi.math@gmail.com>"]
+
+[deps]
+Libdl = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
+
+[compat]
+julia = "1.12"
+RustCall = "0.2"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
