@@ -838,6 +838,59 @@ _manifest(text::AbstractString) = TOML.parse(text)
               plain
     end
 
+    @testset "the conservative plan keeps the requested features (#307 review)" begin
+        # When Cargo cannot resolve the crate the plan is read off Cargo.toml,
+        # but the wrapper's dependency entry is still written from the plan:
+        # dropping the caller's `features` / `default_features` there would
+        # build the crate's default configuration instead of the requested one.
+        toml = _manifest("""
+            [package]
+            name = "opt"
+            version = "0.1.0"
+            [dependencies]
+            pyo3 = { version = "0.22", optional = true }
+            [features]
+            python = ["pyo3"]
+            """)
+        flags = RustCall._pyo3_feature_flags(["python"], false)
+        plan = RustCall._pyo3_conservative_plan(toml; flags = flags, features = ["python"],
+                                                default_features = false)
+        @test !plan.resolved
+        @test plan.feature_flags == flags
+        @test plan.crate_features == ["python"]
+        @test !plan.dependency_default_features
+        entry = RustCall.pyo3_dependency_toml(plan, "opt", "/crates/opt")
+        @test occursin("default-features = false", entry)
+        @test occursin("features = [\"python\"]", entry)
+        # The same through `pyo3_link_plan` on a crate Cargo cannot resolve (no
+        # such registry package), which is where the fallback is taken.
+        mktempdir() do dir
+            _write_crate(dir, """
+                [package]
+                name = "unresolvable"
+                version = "0.1.0"
+                edition = "2021"
+                [dependencies]
+                pyo3 = { version = "0.22", optional = true }
+                rustcall-no-such-package-ever = "=99.99.99"
+                [features]
+                python = ["pyo3"]
+                """)
+            fallback = RustCall.pyo3_link_plan(dir; features = ["python"], default_features = false)
+            if !fallback.resolved
+                @test fallback.feature_flags == flags
+                @test fallback.crate_features == ["python"]
+                @test !fallback.dependency_default_features
+            else
+                @test_skip "Cargo resolved a crate it was expected to reject"
+            end
+        end
+        # Without a request the plan is the default build, as before.
+        default = RustCall._pyo3_conservative_plan(toml)
+        @test default.feature_flags == String[] && default.crate_features == String[]
+        @test default.dependency_default_features
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`

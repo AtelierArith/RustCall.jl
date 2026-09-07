@@ -450,8 +450,11 @@ impl Pyo3Scan {
         manifest
             .structs
             .extend(self.classes.into_iter().map(|c| c.entry));
-        mark_symbol_collisions(manifest);
+        // The Julia surface first: an item it refuses claims no symbol, so a
+        // `fn User()` refused for the class `User`'s name does not also cost the
+        // class its `String` getters' helper (#307 review).
         mark_julia_surface_collisions(manifest);
+        mark_symbol_collisions(manifest);
     }
 
     fn locate_class(&self, imp: &ScannedImpl) -> Option<usize> {
@@ -571,35 +574,42 @@ fn flatten_use_tree(
     }
 }
 
-/// Flag every wrappable PyO3 entry whose exported symbol another one already
-/// claims (#275).
-///
-/// The symbol scheme is `rustcall_<name>` (#279), which does not include the
-/// module path, so two `pub fn run` in different modules of one crate both want
-/// `rustcall_run` — and a single wrapper crate cannot export both. The scan
-/// reports the clash rather than emitting a manifest that cannot be built;
-/// changing the scheme is a decision that has to be made for `#[julia]` at the
-/// same time, since it has the identical collision (#300).
-///
-/// The first entry in manifest order keeps the symbol so the outcome does not
-/// depend on which file was visited first.
 /// The Julia surface a wrapper is bound to has a namespace of its own, apart
-/// from the exported symbols: a `#[staticmethod]` becomes a module-level Julia
-/// function named after the method, with one untyped argument per Rust
-/// argument (`crate_bindings.jl`), exactly as a `#[pyfunction]` does. Two
-/// classes with a `parse(s)` each, or a class `parse(s)` next to a free
-/// `parse(s)`, therefore define one Julia method twice, and the later
-/// definition silently replaces the earlier — while the Rust symbols are
-/// class-qualified and never clash, so [`mark_symbol_collisions`] lets both
-/// through. The later item is refused with `julia_name_collision:<earlier>`
-/// (#307 review): free functions claim their names first (a caller writing
-/// `parse(s)` means the free function), then classes in manifest order.
+/// from the exported symbols, and the scan refuses what that namespace cannot
+/// hold twice (`julia_name_collision:<earlier>`, #307 review):
+///
+/// * a class is a Julia type *and* its constructor function, so its name is
+///   taken for every arity — a free function or a static method of that name
+///   would redefine the constant (`function User()` before `mutable struct
+///   User`) or graft an extra constructor onto the type. Classes claim first;
+/// * a `#[staticmethod]` becomes a module-level Julia function named after the
+///   method, with one untyped argument per Rust argument (`crate_bindings.jl`),
+///   exactly as a `#[pyfunction]` does, so two classes with a `parse(s)` each,
+///   or a class `parse(s)` next to a free `parse(s)`, define one Julia method
+///   twice and the later silently replaces the earlier. Free functions claim
+///   their name and arity next (a caller writing `parse(s)` means the free
+///   function), then classes in manifest order.
+///
+/// The Rust symbols of all of these are distinct — class-qualified, or in
+/// different modules — so [`mark_symbol_collisions`] lets them through.
 /// Constructors are named after their class and instance methods dispatch on
 /// `self::Class`; neither can collide this way.
 fn mark_julia_surface_collisions(manifest: &mut Manifest) {
+    let class_names: Vec<(String, String)> = manifest
+        .structs
+        .iter()
+        .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
+        .map(|s| (s.name.clone(), qualified(&s.module_path, &s.name)))
+        .collect();
+    let class_named = |name: &str| class_names.iter().find(|(n, _)| n == name);
+
     let mut taken: Vec<((String, usize), String)> = Vec::new();
-    for f in &manifest.functions {
+    for f in &mut manifest.functions {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
+            continue;
+        }
+        if let Some((_, class)) = class_named(&f.name) {
+            f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
             continue;
         }
         taken.push((
@@ -616,6 +626,10 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
                 continue;
             }
+            if let Some((_, class)) = class_named(&m.name) {
+                m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
+                continue;
+            }
             let key = (m.name.clone(), m.args.len());
             match taken.iter().find(|(k, _)| *k == key) {
                 Some((_, other)) => {
@@ -627,6 +641,18 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
     }
 }
 
+/// Flag every wrappable PyO3 entry whose exported symbol another one already
+/// claims (#275).
+///
+/// The symbol scheme is `rustcall_<name>` (#279), which does not include the
+/// module path, so two `pub fn run` in different modules of one crate both want
+/// `rustcall_run` — and a single wrapper crate cannot export both. The scan
+/// reports the clash rather than emitting a manifest that cannot be built;
+/// changing the scheme is a decision that has to be made for `#[julia]` at the
+/// same time, since it has the identical collision (#300).
+///
+/// The first entry in manifest order keeps the symbol so the outcome does not
+/// depend on which file was visited first.
 fn mark_symbol_collisions(manifest: &mut Manifest) {
     // One table for every exported symbol of the whole manifest, whatever
     // produces it: a `#[julia]` function's wrapper, a `#[julia]` struct's
@@ -766,10 +792,12 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
         // The struct-level owned-string helper every `String` field getter of
         // the class shares (`<Class>_RustCallOwnedString`, `class_wrappers`)
-        // is a declaration like any other: when another item already made it
-        // — a `#[pyfunction] fn User() -> String` next to a `#[pyclass] User`
-        // — the `String` getters are what give way, and the rest of the class
-        // stays wrappable (#307 review).
+        // is a declaration like any other: when another item already made it,
+        // the `String` getters are what give way, and the rest of the class
+        // stays wrappable (#307 review). A `#[pyfunction] fn User() -> String`
+        // next to a `#[pyclass] User` used to be the case; it is now refused on
+        // the Julia surface first (`mark_julia_surface_collisions`), so what
+        // reaches this is an item whose own symbols spell a helper's name.
         if s.fields
             .iter()
             .any(|f| !f.getter.is_empty() && is_string_spelling(&f.rust_type))

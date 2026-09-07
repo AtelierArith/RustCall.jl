@@ -106,10 +106,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one (a `cdylib`) and as a wrapper's dependency otherwise, so the profile the
   probe sees is the profile the build applies; the cfg probe runs under the
   plan's interpreter (`PYO3_PYTHON`), as the wrapper build does; a
-  `#[staticmethod]` whose Julia name and arity another item already defines is
-  refused (`julia_name_collision`) instead of silently replacing it; and the
-  generated `get_<field>` / `set_<field>!` helpers check the object is live,
-  as `getproperty` / `setproperty!` do; and
+  `#[staticmethod]` whose Julia name and arity another item already defines —
+  or a function named like a class — is refused (`julia_name_collision`)
+  instead of silently replacing it; the generated `get_<field>` /
+  `set_<field>!` helpers check the object is live, as `getproperty` /
+  `setproperty!` do; and the conservative plan (Cargo could not resolve the
+  crate) keeps the requested `features` / `default_features`, so the wrapper's
+  dependency entry is the configuration asked for; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

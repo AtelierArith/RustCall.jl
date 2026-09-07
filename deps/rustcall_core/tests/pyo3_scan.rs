@@ -1151,10 +1151,13 @@ fn boxing_follows_the_class_not_the_last_path_segment() {
 
 /// The string helpers a wrapper declares (`<owner>_RustCallOwnedString`,
 /// `<owner>_free_rust_string`, `<owner>_RustCallBorrowedString`) are reserved
-/// per owner like any symbol (#307 review): a `#[pyfunction] fn User() ->
-/// String` and a `#[pyclass] User` with a `String` getter would otherwise both
-/// declare `User_RustCallOwnedString`, and a `#[pyfunction] fn User_label()
-/// -> String` would clash with `User::label(&self) -> String`.
+/// per owner like any symbol (#307 review): a `#[pyfunction] fn User_label()
+/// -> String` clashes with `User::label(&self) -> String`, whose owner is
+/// `User_label` too. A `#[pyfunction] fn User() -> String` next to a
+/// `#[pyclass] User` used to cost the class its `String` getters the same way;
+/// it is refused on the Julia surface first now (a function cannot share a
+/// class's name), and, refused, it claims no symbol — the class keeps its
+/// getters.
 #[test]
 fn string_helper_names_are_reserved_too() {
     let manifest = scan(
@@ -1169,19 +1172,23 @@ fn string_helper_names_are_reserved_too() {
             pub fn count(&self) -> i32 { 0 }\n\
          }",
     );
-    // The functions come first in manifest order and keep their names.
-    assert_eq!(function(&manifest, "User").skip_reason, "");
+    // `fn User` is refused for the class's name, and so claims nothing.
+    assert_eq!(
+        function(&manifest, "User").skip_reason,
+        "julia_name_collision:User"
+    );
     assert_eq!(function(&manifest, "User_label").skip_reason, "");
     let user = manifest.structs.iter().find(|s| s.name == "User").unwrap();
     let field = |n: &str| user.fields.iter().find(|f| f.name == n).unwrap();
     let by = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
-    // The class's `String` getter would declare `User_RustCallOwnedString`,
-    // which `fn User` already did: that getter gives way, the `i32` one stays.
-    assert!(!field("name").ffi_compatible);
-    assert_eq!(field("name").getter, "");
+    // The class's `String` getter declares `User_RustCallOwnedString`, which
+    // nothing else does any more: both getters stay.
+    assert!(field("name").ffi_compatible);
+    assert_eq!(field("name").getter, "rustcall_User_get_name");
     assert!(field("n").ffi_compatible);
     assert_eq!(field("n").getter, "rustcall_User_get_n");
-    // `User::label` shares its owner `User_label` with the function.
+    // `User::label` shares its owner `User_label` with the free function,
+    // which came first.
     assert_eq!(by("label").skip_reason, "symbol_collision:User_label");
     assert_eq!(by("count").skip_reason, "");
 }
@@ -1285,4 +1292,42 @@ fn julia_surface_collisions_are_refused() {
     assert_eq!(method("B", "describe"), "");
     assert_eq!(class("A").skip_reason, "");
     assert_eq!(class("B").skip_reason, "");
+}
+
+/// A class is a Julia type *and* its constructor function, so its name is
+/// taken for every arity: a free function or a static method of that name
+/// would redefine the constant (`function User()` before `mutable struct
+/// User`) or graft an extra constructor onto the type. Classes claim their
+/// names first; the function gives way (#307 review).
+#[test]
+fn class_names_are_reserved_on_the_julia_surface() {
+    let manifest = scan(
+        "pub mod a { use pyo3::prelude::*;\n\
+             #[pyfunction] pub fn User() -> i32 { 0 }\n\
+             #[pyfunction] pub fn Other(x: i32) -> i32 { x }\n\
+         }\n\
+         pub mod b { use pyo3::prelude::*;\n\
+             #[pyclass] pub struct User;\n\
+             #[pymethods] impl User {\n\
+                 #[new] pub fn new() -> Self { User }\n\
+                 #[staticmethod] pub fn Other(x: i32) -> i32 { 1 }\n\
+                 #[staticmethod] pub fn Other2() -> i32 { 1 }\n\
+             }\n\
+         }",
+    );
+    // The class keeps its name; the same-named free function is refused and
+    // names the class.
+    assert_eq!(
+        function(&manifest, "User").skip_reason,
+        "julia_name_collision:b::User"
+    );
+    let user = manifest.structs.iter().find(|s| s.name == "User").unwrap();
+    assert_eq!(user.skip_reason, "");
+    // A free function claims its name and arity ahead of a static method:
+    // `Other(x)` is free, so `User::Other(x)` gives way; a static of another
+    // arity is a second method of the same Julia function and stands.
+    assert_eq!(function(&manifest, "Other").skip_reason, "");
+    let method = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(method("Other").skip_reason, "julia_name_collision:a::Other");
+    assert_eq!(method("Other2").skip_reason, "");
 }

@@ -28,10 +28,10 @@ const PYO3_SKIP_REASONS = Dict{String, String}(
     "owner_skipped" => "its `#[pyclass]` is itself skipped",
     "async_fn" => "an `async fn`: a wrapper would return the future, not the value it " *
                   "resolves to, and has no executor to drive it",
-    "julia_name_collision" => "a `#[staticmethod]` whose Julia name and arity another item " *
-                              "already defines (a free function, or another class's static " *
-                              "method); both would be one module-level Julia function and the " *
-                              "later would silently replace the earlier",
+    "julia_name_collision" => "its Julia name is taken: a class's name (the Julia type and its " *
+                              "constructor), or a module-level function another free function " *
+                              "or class static method of the same name and arity already " *
+                              "defines; the later definition would silently replace the earlier",
     "symbol_collision" => "another item already claims the symbol a wrapper would give this one; " *
                           "module-qualified symbols are tracked in #300",
     # Reasons the Phase-2 *generator* refuses an item (#275 Phase 2).
@@ -279,7 +279,8 @@ function pyo3_link_plan(crate_path::AbstractString; features::Vector{String} = S
     plan = _pyo3_resolved_plan(crate_path, flags; release = release,
                                features = features, default_features = default_features)
     plan === nothing || return plan
-    return _pyo3_conservative_plan(TOML.parsefile(manifest_path))
+    return _pyo3_conservative_plan(TOML.parsefile(manifest_path); flags = flags,
+                                   features = features, default_features = default_features)
 end
 
 """
@@ -724,22 +725,33 @@ whether a pyo3 dependency is declared at all:
 * any declaration listing `extension-module` -> `:unlinkable`;
 * otherwise -> `:link_libpython`, because without Cargo nothing here can show
   that the optional dependency is off in the build the wrapper would make.
+
+The feature selection the caller asked for (`flags`, `features`,
+`default_features`) travels with the plan even though its resolved closure is
+unknown: the wrapper's dependency entry is written from the plan, and a plan
+that dropped them would build the crate's default configuration — not the one
+requested, and possibly one that re-enables a default the caller switched off
+(#307 review). `crate_features` is the *requested* list here, not Cargo's
+transitive closure.
 """
-function _pyo3_conservative_plan(cargo_toml::AbstractDict)
+function _pyo3_conservative_plan(cargo_toml::AbstractDict; flags::Vector{String} = String[],
+                                 features::Vector{String} = String[],
+                                 default_features::Bool = true)
     found = _pyo3_dependencies(cargo_toml)
     note = " (Cargo could not resolve this crate, so the features were not resolved; " *
            "this is the conservative reading of Cargo.toml)"
     if isempty(found)
-        return PyO3LinkPlan(:python_free, String[], "",
-                            "the crate declares no pyo3 dependency" * note)
+        return PyO3LinkPlan(:python_free, copy(flags), "",
+                            "the crate declares no pyo3 dependency" * note, default_features;
+                            crate_features = copy(features))
     end
     for dep in found
         feats = String[String(f) for f in get(dep.spec, "features", String[])]
         if "extension-module" in feats && !extension_module_is_linkable()
-            return PyO3LinkPlan(:unlinkable, String[], "",
+            return PyO3LinkPlan(:unlinkable, copy(flags), "",
                                 "[dependencies.$(dep.key)] lists the `extension-module` feature, " *
                                 "and a wrapper cdylib that resolves pyo3 with it cannot be loaded" *
-                                note)
+                                note, default_features; crate_features = copy(features))
         end
     end
     # Same rule as the resolved path: on Windows a DLL resolves every import at
@@ -749,13 +761,14 @@ function _pyo3_conservative_plan(cargo_toml::AbstractDict)
     extension = any(dep -> "extension-module" in
                         String[String(f) for f in get(dep.spec, "features", String[])], found)
     rpath, interpreter, interpreter_config = _python_link_source_or_empty()
-    return PyO3LinkPlan(:link_libpython, String[], rpath,
+    return PyO3LinkPlan(:link_libpython, copy(flags), rpath,
                         "the crate declares a pyo3 dependency, so the wrapper cdylib may link " *
                         "libpython" *
                         (extension ?
                          ". On Windows pyo3 still links the interpreter's import library with " *
                          "`extension-module`, so this build is linkable where a Unix one would " *
-                         "not be" : "") * note;
+                         "not be" : "") * note, default_features;
+                        crate_features = copy(features),
                         interpreter = interpreter, interpreter_config = interpreter_config,
                         runtime_libraries = _python_runtime_libraries(interpreter))
 end
