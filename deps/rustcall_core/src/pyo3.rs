@@ -441,8 +441,11 @@ impl Pyo3Scan {
                 continue;
             };
             let owner_skip = self.classes[index].entry.skip_reason.clone();
+            // The symbol is the *class's*: an `impl a::C` written elsewhere
+            // still wraps `a::C`'s methods (#300).
+            let class_path = self.classes[index].module_path.clone();
             for func in &imp.funcs {
-                let entry = method_entry(&imp.target, func, &owner_skip);
+                let entry = method_entry(&imp.target, &class_path, func, &owner_skip);
                 self.classes[index].entry.methods.push(entry);
             }
         }
@@ -674,7 +677,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                 taken.push((symbol, qualified(&f.module_path, &f.name)));
             }
             if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
-                for symbol in string_helper_symbols(&f.name) {
+                for symbol in string_helper_symbols(&f.ffi_name) {
                     taken.push((symbol, qualified(&f.module_path, &f.name)));
                 }
             }
@@ -706,7 +709,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
         let mut symbols = wrapper_symbols(&f.symbol).to_vec();
         if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
-            symbols.extend(string_helper_symbols(&f.name));
+            symbols.extend(string_helper_symbols(&f.ffi_name));
         }
         if let Some((_, owner)) = taken.iter().find(|(s, _)| symbols.contains(s)) {
             let owner = owner.clone();
@@ -720,16 +723,18 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
     }
 
-    // A class whose *name* another struct entry already claimed collides on
-    // every one of its symbols at once, so there the class is the unit. Any
-    // other clash — with a free function, or between a class's own method and
-    // one of its field accessors — is reported on the individual entry, which
-    // leaves the rest of the class wrappable.
+    // A class whose *FFI name* another struct entry already claimed collides
+    // on every one of its symbols at once, so there the class is the unit.
+    // Since #300 the FFI name carries the module path, so this is a same-module
+    // clash (or a crate-root name spelling a qualified one). Any other clash —
+    // with a free function, or between a class's own method and one of its
+    // field accessors — is reported on the individual entry, which leaves the
+    // rest of the class wrappable.
     let mut class_names: Vec<(String, String)> = manifest
         .structs
         .iter()
         .filter(|s| !s.attribute.is_pyo3_scan())
-        .map(|s| (s.name.clone(), qualified(&s.module_path, &s.name)))
+        .map(|s| (s.ffi_name.clone(), qualified(&s.module_path, &s.name)))
         .collect();
 
     let mut struct_order: Vec<usize> = (0..manifest.structs.len()).collect();
@@ -745,7 +750,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
             continue;
         }
-        let name = s.name.clone();
+        let name = s.ffi_name.clone();
 
         if let Some((_, owner)) = class_names.iter().find(|(n, _)| *n == name) {
             let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner.clone());
@@ -770,7 +775,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         // accessor, rather than taking the whole class down.
         let owner = qualified(&s.module_path, &s.name);
         let s = &mut manifest.structs[i];
-        let class_name = s.name.clone();
+        let class_name = s.ffi_name.clone();
         for m in &mut s.methods {
             if !m.skip_reason.is_empty() || m.symbol.is_empty() {
                 continue;
@@ -896,7 +901,7 @@ fn struct_symbols(s: &Struct) -> Vec<String> {
         if m.skip_reason.is_empty() && !m.symbol.is_empty() {
             out.extend(wrapper_symbols(&m.symbol));
             if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
-                out.extend(string_helper_symbols(&format!("{}_{}", s.name, m.name)));
+                out.extend(string_helper_symbols(&format!("{}_{}", s.ffi_name, m.name)));
             }
         }
     }
@@ -961,8 +966,9 @@ fn function_entry(
 
     Function {
         name: name.clone(),
+        ffi_name: crate::codegen::symbol_stem(module_path, &name),
         // What Phase 2 will export, not what exists today.
-        symbol: crate::codegen::function_symbol(&name),
+        symbol: crate::codegen::function_symbol(module_path, &name),
         attribute,
         vis: visibility_string(&func.vis),
         skip_reason: reason,
@@ -1002,6 +1008,7 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
     let is_generic = has_type_params(&item.generics);
     let reason = item_skip_reason(&item.vis, reachable, is_generic).unwrap_or_default();
     let name = item.ident.to_string();
+    let stem = crate::codegen::symbol_stem(module_path, &name);
 
     // `#[pyclass(get_all, set_all)]` exposes every field without a per-field
     // attribute, and `frozen` takes every setter away. The dual-binding shape
@@ -1042,12 +1049,12 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
                 abi: crate::codegen::field_abi(&f.ty).to_string(),
                 ffi_compatible: usable,
                 getter: if usable && access.get {
-                    crate::codegen::method_symbol(&name, &format!("get_{ident}"))
+                    crate::codegen::method_symbol_of(&stem, &format!("get_{ident}"))
                 } else {
                     String::new()
                 },
                 setter: if usable && access.set {
-                    crate::codegen::method_symbol(&name, &format!("set_{ident}"))
+                    crate::codegen::method_symbol_of(&stem, &format!("set_{ident}"))
                 } else {
                     String::new()
                 },
@@ -1063,6 +1070,7 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
 
     Struct {
         name: name.clone(),
+        ffi_name: stem,
         attribute: Attribute::PyClass,
         vis: visibility_string(&item.vis),
         skip_reason: reason,
@@ -1084,8 +1092,13 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
 }
 
 /// Manifest entry of one method of a `#[pymethods]` block.
-fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) -> Method {
-    let struct_name = struct_ident.to_string();
+fn method_entry(
+    struct_ident: &syn::Ident,
+    class_path: &[String],
+    func: &ImplItemFn,
+    owner_skip: &str,
+) -> Method {
+    let struct_stem = crate::codegen::symbol_stem(class_path, &struct_ident.to_string());
     let markers = pyo3_method_markers(&func.attrs);
     let has = |m: Pyo3MethodMarker| markers.contains(&m);
     let receiver = func.sig.inputs.iter().find_map(|a| match a {
@@ -1116,7 +1129,7 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
 
     Method {
         name: name.clone(),
-        symbol: crate::codegen::method_symbol(&struct_name, &name),
+        symbol: crate::codegen::method_symbol_of(&struct_stem, &name),
         // `#[staticmethod]` and `#[classmethod]` are both static from the C
         // side: neither takes a `self` receiver. A `#[classmethod]` takes a
         // `&Bound<'_, PyType>` first argument instead, so it is normally

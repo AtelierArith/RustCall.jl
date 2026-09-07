@@ -3,6 +3,7 @@ mode = "crate"
 
 [[functions]]
 name = "dual"
+ffi_name = "dual"
 symbol = "rustcall_dual"
 attribute = "julia"
 vis = "pub"
@@ -41,6 +42,7 @@ abi = ""
 
 [[functions]]
 name = "add"
+ffi_name = "add"
 symbol = "rustcall_add"
 attribute = "py_function"
 vis = "pub"
@@ -79,6 +81,7 @@ abi = ""
 
 [[functions]]
 name = "shout"
+ffi_name = "shout"
 symbol = "rustcall_shout"
 attribute = "py_function"
 vis = "pub"
@@ -112,6 +115,7 @@ abi = "string"
 
 [[functions]]
 name = "double"
+ffi_name = "double"
 symbol = "rustcall_double"
 attribute = "py_function"
 vis = "pub"
@@ -145,6 +149,7 @@ abi = ""
 
 [[functions]]
 name = "private_add"
+ffi_name = "private_add"
 symbol = "rustcall_private_add"
 attribute = "py_function"
 vis = ""
@@ -183,6 +188,7 @@ abi = ""
 
 [[functions]]
 name = "crate_add"
+ffi_name = "crate_add"
 symbol = "rustcall_crate_add"
 attribute = "py_function"
 vis = "pub(crate)"
@@ -221,6 +227,7 @@ abi = ""
 
 [[functions]]
 name = "with_python"
+ffi_name = "with_python"
 symbol = "rustcall_with_python"
 attribute = "py_function"
 vis = "pub"
@@ -254,6 +261,7 @@ abi = ""
 
 [[functions]]
 name = "takes_any"
+ffi_name = "takes_any"
 symbol = "rustcall_takes_any"
 attribute = "py_function"
 vis = "pub"
@@ -287,6 +295,7 @@ abi = ""
 
 [[functions]]
 name = "takes_bound"
+ffi_name = "takes_bound"
 symbol = "rustcall_takes_bound"
 attribute = "py_function"
 vis = "pub"
@@ -320,6 +329,7 @@ abi = ""
 
 [[functions]]
 name = "returns_object"
+ffi_name = "returns_object"
 symbol = "rustcall_returns_object"
 attribute = "py_function"
 vis = "pub"
@@ -349,6 +359,7 @@ module_path = []
 
 [[functions]]
 name = "returns_py_of"
+ffi_name = "returns_py_of"
 symbol = "rustcall_returns_py_of"
 attribute = "py_function"
 vis = "pub"
@@ -378,6 +389,7 @@ module_path = []
 
 [[functions]]
 name = "parse"
+ffi_name = "parse"
 symbol = "rustcall_parse"
 attribute = "py_function"
 vis = "pub"
@@ -411,6 +423,7 @@ abi = "str"
 
 [[functions]]
 name = "parse_object"
+ffi_name = "parse_object"
 symbol = "rustcall_parse_object"
 attribute = "py_function"
 vis = "pub"
@@ -444,6 +457,7 @@ abi = "str"
 
 [[functions]]
 name = "identity"
+ffi_name = "identity"
 symbol = "rustcall_identity"
 attribute = "py_function"
 vis = "pub"
@@ -480,6 +494,7 @@ abi = ""
 
 [[functions]]
 name = "demo"
+ffi_name = "demo"
 symbol = "rustcall_demo"
 attribute = "py_module"
 vis = ""
@@ -513,7 +528,8 @@ abi = ""
 
 [[functions]]
 name = "deep"
-symbol = "rustcall_deep"
+ffi_name = "nested__deep"
+symbol = "rustcall_nested__deep"
 attribute = "py_function"
 vis = "pub"
 skip_reason = ""
@@ -546,7 +562,8 @@ abi = ""
 
 [[functions]]
 name = "unreachable_add"
-symbol = "rustcall_unreachable_add"
+ffi_name = "private_0mod__unreachable_0add"
+symbol = "rustcall_private_0mod__unreachable_0add"
 attribute = "py_function"
 vis = "pub"
 skip_reason = "not_public"
@@ -579,6 +596,7 @@ abi = ""
 
 [[functions]]
 name = "gated_add"
+ffi_name = "gated_add"
 symbol = "rustcall_gated_add"
 attribute = "py_function"
 vis = "pub"
@@ -617,6 +635,7 @@ abi = ""
 
 [[structs]]
 name = "Point"
+ffi_name = "Point"
 attribute = "py_class"
 vis = "pub"
 skip_reason = ""
@@ -883,6 +902,7 @@ generic_wrapper = ""
 
 [[structs]]
 name = "Secret"
+ffi_name = "Secret"
 attribute = "py_class"
 vis = ""
 skip_reason = "not_public"
@@ -939,6 +959,7 @@ abi = ""
 
 [[structs]]
 name = "Circle"
+ffi_name = "shapes__Circle"
 attribute = "py_class"
 vis = "pub"
 skip_reason = ""
@@ -960,14 +981,14 @@ name = "r"
 rust_type = "f64"
 abi = ""
 ffi_compatible = true
-getter = "rustcall_Circle_get_r"
+getter = "rustcall_shapes__Circle_get_r"
 setter = ""
 python_name = ""
 vis = "pub"
 
 [[structs.methods]]
 name = "new"
-symbol = "rustcall_Circle_new"
+symbol = "rustcall_shapes__Circle_new"
 is_static = true
 is_mutable = false
 is_constructor = true
@@ -995,7 +1016,7 @@ abi = ""
 
 [[structs.methods]]
 name = "area"
-symbol = "rustcall_Circle_area"
+symbol = "rustcall_shapes__Circle_area"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -1019,6 +1040,7 @@ generic_wrapper = ""
 
 [[structs]]
 name = "GatedPoint"
+ffi_name = "GatedPoint"
 attribute = "py_class"
 vis = "pub"
 skip_reason = ""

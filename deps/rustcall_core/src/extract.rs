@@ -23,7 +23,7 @@ use crate::types::{
     needs_clone_for_getter, return_type_to_string, type_to_string,
 };
 
-pub fn extract(source: &str, mode: Mode) -> Result<Manifest, syn::Error> {
+pub fn extract(source: &str, mode: Mode) -> Result<Manifest, ExtractError> {
     extract_with_cfg(source, mode, None)
 }
 
@@ -33,9 +33,9 @@ pub fn extract_with_cfg(
     source: &str,
     mode: Mode,
     cfg: Option<&CfgSet>,
-) -> Result<Manifest, syn::Error> {
+) -> Result<Manifest, ExtractError> {
     match mode {
-        Mode::Inline => crate::expand::expand_with_cfg(source, cfg).map(|e| e.manifest),
+        Mode::Inline => Ok(crate::expand::expand_with_cfg(source, cfg)?.manifest),
         Mode::Crate => extract_crate_with_cfg(source, cfg),
     }
 }
@@ -156,7 +156,12 @@ fn item_fn_source(func: &ItemFn) -> String {
 ///
 /// `wrapped` says whether RustCall codegen (`transform_function`) is applied,
 /// which decides the `Result`/`Option` return kinds and the exported flag.
-pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Function {
+pub fn function_entry(
+    func: &ItemFn,
+    attribute: Attribute,
+    wrapped: bool,
+    module_path: &[String],
+) -> Function {
     let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
     let return_type = return_type_to_string(&func.sig.output);
     let mut ok_type = String::new();
@@ -203,11 +208,13 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
                 .unwrap_or(false)
     };
     let name = func.sig.ident.to_string();
+    let ffi_name = crate::codegen::symbol_stem(module_path, &name);
     // `#[julia]` is additive: the item keeps its name and the exported entry
-    // point is the wrapper next to it (#279). A plain `#[no_mangle] extern
-    // "C"` function is exported under its own name.
+    // point is the wrapper next to it (#279), qualified by the module path
+    // (#300). A plain `#[no_mangle] extern "C"` function is exported under
+    // its own name.
     let symbol = match attribute {
-        Attribute::Julia if !is_generic => crate::codegen::function_symbol(&name),
+        Attribute::Julia if !is_generic => crate::codegen::function_symbol(module_path, &name),
         _ => name.clone(),
     };
     // The wrapper only lowers strings when it is actually generated; a generic
@@ -219,6 +226,7 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
     };
     Function {
         name,
+        ffi_name,
         symbol,
         attribute,
         vis: crate::attrs::visibility_string(&func.vis),
@@ -251,16 +259,51 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
         },
         body_has_cfg: body_has_cfg(&func.block),
         line: func.span().start().line,
-        module_path: Vec::new(),
+        module_path: module_path.to_vec(),
+    }
+}
+
+/// Why crate extraction refuses a file (#300).
+///
+/// A parse failure is one thing — the CLI's `--skip-unparsable` skips such a
+/// file, since an `include!()` fragment is not a module — and a `#[julia]` item
+/// the proc-macro would export under a symbol the manifest cannot describe is
+/// another: that must fail the scan, not be skipped.
+#[derive(Debug)]
+pub enum ExtractError {
+    /// The source is not a complete Rust module.
+    Parse(syn::Error),
+    /// The source is valid but describes something RustCall refuses; the
+    /// message names the item and the fix.
+    Unsupported(String),
+}
+
+impl std::fmt::Display for ExtractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExtractError::Parse(e) => write!(f, "{e}"),
+            ExtractError::Unsupported(msg) => f.write_str(msg),
+        }
+    }
+}
+
+impl std::error::Error for ExtractError {}
+
+impl From<syn::Error> for ExtractError {
+    fn from(e: syn::Error) -> Self {
+        ExtractError::Parse(e)
     }
 }
 
 /// Manifest for a crate source file (proc-macro semantics).
-pub fn extract_crate(source: &str) -> Result<Manifest, syn::Error> {
+pub fn extract_crate(source: &str) -> Result<Manifest, ExtractError> {
     extract_crate_with_cfg(source, None)
 }
 
-pub fn extract_crate_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Manifest, syn::Error> {
+pub fn extract_crate_with_cfg(
+    source: &str,
+    cfg: Option<&CfgSet>,
+) -> Result<Manifest, ExtractError> {
     extract_crate_with_cfg_scan(source, cfg, true)
 }
 
@@ -276,13 +319,13 @@ pub fn extract_crate_with_cfg_scan(
     source: &str,
     cfg: Option<&CfgSet>,
     pyo3_scan: bool,
-) -> Result<Manifest, syn::Error> {
+) -> Result<Manifest, ExtractError> {
     let mut file = syn::parse_file(source)?;
     if let Some(set) = cfg {
         crate::cfg::prune_file_or_error(set, &mut file)?;
     }
     let mut manifest = Manifest::new(Mode::Crate);
-    extract_crate_items(&file.items, &mut manifest);
+    extract_crate_items(&file.items, &mut manifest, &[], &[], true)?;
     // Items that carry only PyO3 attributes (#275). Reported with a PyO3
     // origin, `exported = false` and the symbol a Phase-2 wrapper crate will
     // emit; an item that also carries `#[julia]` is owned by `#[julia]` and is
@@ -322,19 +365,66 @@ pub fn extract_pyo3_file(
     Ok(scan.file(&file.items, module_path, reachable, manifest))
 }
 
+/// The error for a `#[julia]` item inside an inline module that is not itself
+/// marked `#[julia]` (#300): the proc-macro would export it under the
+/// crate-root symbol, and the manifest cannot describe that honestly.
+fn unmarked_module_error(kind: &str, name: &str, full_path: &[String]) -> ExtractError {
+    let module = full_path.last().map(String::as_str).unwrap_or("");
+    ExtractError::Unsupported(format!(
+        "#[julia] {kind} `{name}` sits in the inline module `{}`, which is not marked \
+         `#[julia]`. The proc-macro cannot see the module an item is in, so it would \
+         export `{name}` under the crate-root symbol; mark the module — `#[julia] pub mod \
+         {module} {{ ... }}` — so the items inside it get module-qualified symbols (#300).",
+        full_path.join("::")
+    ))
+}
+
 /// One level of items; inline modules are visited recursively.
-fn extract_crate_items(items: &[Item], manifest: &mut Manifest) {
+///
+/// `module_path` is the chain of `#[julia]`-marked inline modules leading here
+/// — the path the proc-macro folds into the symbols — and `full_path` every
+/// inline module, for diagnostics. `marked` says whether *this* level is a
+/// marked one (the crate root counts as marked): a `#[julia]` item at an
+/// unmarked level is refused, see [`unmarked_module_error`]. An unmarked module
+/// below a marked one resets nothing — its items are simply refused — and a
+/// marked module below an unmarked one continues the path from the last marked
+/// ancestor, exactly as `codegen::transform_module` does when the proc-macro
+/// expands it.
+fn extract_crate_items(
+    items: &[Item],
+    manifest: &mut Manifest,
+    module_path: &[String],
+    full_path: &[String],
+    marked: bool,
+) -> Result<(), ExtractError> {
     for item in items {
         match item {
             Item::Fn(f) => {
                 let attribute = rustcall_attribute(&f.attrs);
+                if attribute != Attribute::None && !marked {
+                    return Err(unmarked_module_error(
+                        "function",
+                        &f.sig.ident.to_string(),
+                        full_path,
+                    ));
+                }
                 if attribute == Attribute::Julia {
-                    manifest.functions.push(function_entry(f, attribute, true));
+                    manifest
+                        .functions
+                        .push(function_entry(f, attribute, true, module_path));
                 }
             }
             Item::Mod(m) => {
                 if let Some((_, inner)) = &m.content {
-                    extract_crate_items(inner, manifest);
+                    let mut full = full_path.to_vec();
+                    full.push(m.ident.to_string());
+                    if crate::codegen::is_marked_module(m) {
+                        let mut path = module_path.to_vec();
+                        path.push(m.ident.to_string());
+                        extract_crate_items(inner, manifest, &path, &full, true)?;
+                    } else {
+                        extract_crate_items(inner, manifest, module_path, &full, false)?;
+                    }
                 }
             }
             _ => {}
@@ -342,12 +432,19 @@ fn extract_crate_items(items: &[Item], manifest: &mut Manifest) {
     }
 
     for model in collect_struct_models_in(items, Mode::Crate) {
-        manifest.structs.push(crate_struct_entry(&model));
+        if !marked {
+            return Err(unmarked_module_error("struct", &model.name(), full_path));
+        }
+        manifest
+            .structs
+            .push(crate_struct_entry(&model, module_path));
     }
+    Ok(())
 }
 
-fn crate_struct_entry(model: &StructModel) -> Struct {
+fn crate_struct_entry(model: &StructModel, module_path: &[String]) -> Struct {
     let struct_name = &model.item.ident;
+    let stem = crate::codegen::symbol_stem(module_path, &struct_name.to_string());
     let fields = model
         .named_fields()
         .iter()
@@ -359,12 +456,12 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
                 abi: crate::codegen::field_abi(ty).to_string(),
                 ffi_compatible,
                 getter: if ffi_compatible {
-                    format!("{}_get_{}", struct_name, name)
+                    crate::codegen::field_getter_symbol(&stem, &name.to_string())
                 } else {
                     String::new()
                 },
                 setter: if ffi_compatible {
-                    format!("{}_set_{}", struct_name, name)
+                    crate::codegen::field_setter_symbol(&stem, &name.to_string())
                 } else {
                     String::new()
                 },
@@ -387,7 +484,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         .enumerate()
         .map(|(i, m)| Method {
             name: m.name(),
-            symbol: crate::codegen::method_symbol(&struct_name.to_string(), &m.name()),
+            symbol: crate::codegen::method_symbol_of(&stem, &m.name()),
             is_static: m.is_static,
             is_mutable: m.is_mutable,
             is_constructor: returns_boxed_struct(struct_name, &m.func),
@@ -418,6 +515,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         cfg: predicate_string(&model.item.attrs),
         cfg_features: crate::cfg::predicate_features(&model.item.attrs),
         name: model.name(),
+        ffi_name: stem,
         attribute: model.attribute,
         vis: crate::attrs::visibility_string(&model.item.vis),
         skip_reason: String::new(),
@@ -437,6 +535,6 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
         context_source: String::new(),
         generic_wrappers: Vec::new(),
         line: model.line,
-        module_path: Vec::new(),
+        module_path: module_path.to_vec(),
     }
 }

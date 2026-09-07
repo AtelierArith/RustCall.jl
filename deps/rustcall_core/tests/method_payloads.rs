@@ -147,7 +147,7 @@ fn crate_flavour_declares_a_per_method_buffer() {
         }
     };
     let src = flatten(&prettyplease::unparse(
-        &syn::parse2(transform_impl_crate(item)).unwrap(),
+        &syn::parse2(transform_impl_crate(item, &[])).unwrap(),
     ));
 
     // The proc-macro sees one impl block and cannot share a struct-level
@@ -181,14 +181,14 @@ fn cfg_is_propagated_to_every_generated_item() {
     };
     let ty: syn::Ident = syn::parse_quote!(Div);
     let src = flatten(&prettyplease::unparse(
-        &syn::parse2(generate_method_wrapper_crate(&ty, &method)).unwrap(),
+        &syn::parse2(generate_method_wrapper_crate(&ty, &[], &method)).unwrap(),
     ));
 
     // Every item the wrapper drags in — the panic channel, its reader, the
     // string buffer, its release function, the aggregate, its impl block and
     // the wrapper itself — carries the predicate, or the crate stops compiling
     // on the other configuration.
-    let file: syn::File = syn::parse2(generate_method_wrapper_crate(&ty, &method)).unwrap();
+    let file: syn::File = syn::parse2(generate_method_wrapper_crate(&ty, &[], &method)).unwrap();
     for item in &file.items {
         let attrs = match item {
             syn::Item::Struct(s) => &s.attrs,

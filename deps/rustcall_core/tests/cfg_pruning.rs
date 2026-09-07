@@ -46,6 +46,7 @@ mod nested {
 }
 
 #[cfg(windows)]
+#[julia]
 mod winmod {
     #[julia]
     pub fn gone() -> i32 { 7 }

@@ -77,10 +77,23 @@ use serde::{Deserialize, Serialize};
 ///   the impl block a method came from (serialized only when there is one),
 ///   so the dual-binding attribute deprecated by #275 Phase 3 was reported
 ///   even on a `#[julia] struct`.
-/// * **6 → 7**: that proc-macro is removed (#312), and with it its value of
-///   the [`Attribute`] vocabulary. A version-6 consumer could still meet that
-///   origin — and bind the item under its as-written, non-lowered signature —
-///   so the two must not read each other's manifests.
+/// * **6 → 7**: two changes, landing in one breaking release (v0.3.0).
+///   (a) The dual-binding proc-macro is removed (#312), and with it its value
+///   of the [`Attribute`] vocabulary. A version-6 consumer could still meet
+///   that origin — and bind the item under its as-written, non-lowered
+///   signature — so the two must not read each other's manifests.
+///   (b) Module-qualified symbols (#300). Every exported symbol is derived
+///   from the item's **FFI name** — [`Function::ffi_name`] /
+///   [`Struct::ffi_name`], the item's name with its module path folded in
+///   (`crate::codegen::symbol_stem`: `a::run` -> `a__run`) — so two `run`s or
+///   two `struct C` in different modules of one crate no longer want the same
+///   `rustcall_run` / `C_free`. `Function.symbol` / `Method.symbol` and the
+///   field accessors are qualified accordingly, and crate mode now records
+///   [`Function::module_path`] / [`Struct::module_path`] for `#[julia]` items
+///   (the chain of `#[julia]`-marked inline modules) instead of an empty list.
+///   A version-6 consumer would derive `<Struct>_free` and
+///   `<owner>_free_rust_string` from the bare name and release a buffer through
+///   a symbol that no longer exists.
 pub const SCHEMA_VERSION: u32 = 7;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
@@ -274,6 +287,13 @@ pub struct TypeParam {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
+    /// The stem every generated symbol of the function hangs off
+    /// (`crate::codegen::symbol_stem`, schema 7, #300): `name` at the crate
+    /// root, module-qualified otherwise (`a::run` -> `a__run`). The wrapper is
+    /// `rustcall_<ffi_name>` ([`Function::symbol`]) and a string result is
+    /// released through `<ffi_name>_free_rust_string`.
+    #[serde(default)]
+    pub ffi_name: String,
     /// Exported C symbol. `#[julia]` is additive, so a wrapped function is
     /// exported as `rustcall_<name>` and never under `name` itself (#279); a
     /// plain `#[no_mangle] extern "C"` function keeps its own name.
@@ -381,6 +401,14 @@ pub struct Function {
     pub line: usize,
     /// Enclosing inline modules (`mod api { mod deep { fn f } }` -> `["api", "deep"]`).
     /// `specialize` locates the function by `module_path::name` in the expanded source.
+    ///
+    /// What the list means depends on the origin (schema 7, #300): for an
+    /// inline block it is every enclosing inline module; for a `#[julia]` item
+    /// of a crate it is the chain of `#[julia]`-marked inline modules — the
+    /// path the proc-macro folded into the symbol — with file modules
+    /// (`mod a;`) transparent; for a PyO3-scanned item it is the real path of
+    /// the crate's module tree. In every case [`Function::ffi_name`] is derived
+    /// from it, and a consumer that lays items out per module keys on it.
     #[serde(default)]
     pub module_path: Vec<String>,
 }
@@ -521,6 +549,17 @@ pub struct Method {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Struct {
     pub name: String,
+    /// The stem every generated symbol of the struct hangs off
+    /// (`crate::codegen::symbol_stem`, schema 7, #300): `name` at the crate
+    /// root, module-qualified otherwise (`a::C` -> `a__C`). The destructor is
+    /// `<ffi_name>_free`, the accessors `<ffi_name>_get_<field>` /
+    /// `<ffi_name>_set_<field>`, the clone `<ffi_name>_clone`, the shared
+    /// string buffer `<ffi_name>_RustCallOwnedString` /
+    /// `<ffi_name>_free_rust_string`, and a method's symbol
+    /// `rustcall_<ffi_name>_<method>` with its per-method buffer
+    /// `<ffi_name>_<method>_RustCallOwnedString` (crate flavour).
+    #[serde(default)]
+    pub ffi_name: String,
     pub attribute: Attribute,
     /// Visibility as written: `"pub"`, `"pub(crate)"`, `"pub(super)"`,
     /// `"pub(in path)"`, or `""` for a private item. Only a `pub` item can be
@@ -616,10 +655,69 @@ impl Manifest {
 
     /// Sort entries so output is deterministic regardless of file order.
     pub fn sort(&mut self) {
-        self.functions
-            .sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
-        self.structs
-            .sort_by(|a, b| a.name.cmp(&b.name).then(a.line.cmp(&b.line)));
+        self.functions.sort_by(|a, b| {
+            a.module_path
+                .cmp(&b.module_path)
+                .then(a.name.cmp(&b.name))
+                .then(a.line.cmp(&b.line))
+        });
+        self.structs.sort_by(|a, b| {
+            a.module_path
+                .cmp(&b.module_path)
+                .then(a.name.cmp(&b.name))
+                .then(a.line.cmp(&b.line))
+        });
+    }
+
+    /// Every exported symbol a `#[julia]` item of this manifest claims, with
+    /// the item that claims it (`module::name`, line) — the input of the
+    /// crate-wide duplicate check (#300).
+    ///
+    /// The scheme keeps items in different modules apart by construction, so
+    /// what this catches is a coincidence it cannot exclude: two file modules
+    /// (which are transparent to the scheme) both defining `#[julia] fn run`,
+    /// or a crate-root `fn a__run` next to `a::run`. Items whose `#[cfg]` the
+    /// scan could not decide are left out — two variants of one function under
+    /// mutually exclusive predicates are the normal shape of a portable crate,
+    /// not a clash. PyO3-scanned items are not listed either: the scan marks
+    /// their clashes with a `skip_reason` (`crate::pyo3`).
+    pub fn symbol_owners(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let owner = |path: &[String], name: &str, line: usize| {
+            let mut segments = path.to_vec();
+            segments.push(name.to_string());
+            format!("`{}` (line {line})", segments.join("::"))
+        };
+        for f in &self.functions {
+            if f.attribute.is_pyo3_scan() || !f.exported || f.symbol.is_empty() || !f.cfg.is_empty()
+            {
+                continue;
+            }
+            out.push((f.symbol.clone(), owner(&f.module_path, &f.name, f.line)));
+        }
+        for s in &self.structs {
+            if s.attribute.is_pyo3_scan() || !s.cfg.is_empty() || s.ffi_name.is_empty() {
+                continue;
+            }
+            let who = owner(&s.module_path, &s.name, s.line);
+            // A generic struct exports nothing itself.
+            if s.type_params.is_empty() {
+                out.push((format!("{}_free", s.ffi_name), who.clone()));
+            }
+            for field in &s.fields {
+                for accessor in [&field.getter, &field.setter] {
+                    if !accessor.is_empty() {
+                        out.push((accessor.clone(), who.clone()));
+                    }
+                }
+            }
+            for m in &s.methods {
+                if !m.symbol.is_empty() && m.cfg.is_empty() {
+                    out.push((m.symbol.clone(), who.clone()));
+                }
+            }
+        }
+        out
     }
 
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {

@@ -3,6 +3,7 @@ mode = "crate"
 
 [[functions]]
 name = "unix_only"
+ffi_name = "unix_only"
 symbol = "rustcall_unix_only"
 attribute = "julia"
 vis = "pub"
@@ -36,6 +37,7 @@ abi = ""
 
 [[functions]]
 name = "windows_wide"
+ffi_name = "windows_wide"
 symbol = "rustcall_windows_wide"
 attribute = "julia"
 vis = "pub"
@@ -65,6 +67,7 @@ module_path = []
 
 [[functions]]
 name = "maybe"
+ffi_name = "maybe"
 symbol = "rustcall_maybe"
 attribute = "julia"
 vis = "pub"
@@ -98,7 +101,8 @@ abi = ""
 
 [[functions]]
 name = "bonus"
-symbol = "rustcall_bonus"
+ffi_name = "extra__bonus"
+symbol = "rustcall_extra__bonus"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""
@@ -122,11 +126,12 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 43
-module_path = []
+line = 44
+module_path = ["extra"]
 
 [[structs]]
 name = "Handle"
+ffi_name = "Handle"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""

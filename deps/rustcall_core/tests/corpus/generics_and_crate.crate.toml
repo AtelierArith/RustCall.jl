@@ -3,6 +3,7 @@ mode = "crate"
 
 [[functions]]
 name = "generic_identity"
+ffi_name = "generic_identity"
 symbol = "generic_identity"
 attribute = "julia"
 vis = "pub"
@@ -49,6 +50,7 @@ abi = ""
 
 [[structs]]
 name = "Pair"
+ffi_name = "Pair"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""

@@ -4,6 +4,7 @@ structs = []
 
 [[functions]]
 name = "add"
+ffi_name = "add"
 symbol = "add"
 attribute = "none"
 vis = "pub"
@@ -42,6 +43,7 @@ abi = ""
 
 [[functions]]
 name = "shout"
+ffi_name = "shout"
 symbol = "shout"
 attribute = "none"
 vis = "pub"
@@ -75,6 +77,7 @@ abi = "string"
 
 [[functions]]
 name = "double"
+ffi_name = "double"
 symbol = "double"
 attribute = "none"
 vis = "pub"
@@ -108,6 +111,7 @@ abi = ""
 
 [[functions]]
 name = "private_add"
+ffi_name = "private_add"
 symbol = "private_add"
 attribute = "none"
 vis = ""
@@ -146,6 +150,7 @@ abi = ""
 
 [[functions]]
 name = "crate_add"
+ffi_name = "crate_add"
 symbol = "crate_add"
 attribute = "none"
 vis = "pub(crate)"
@@ -184,6 +189,7 @@ abi = ""
 
 [[functions]]
 name = "with_python"
+ffi_name = "with_python"
 symbol = "with_python"
 attribute = "none"
 vis = "pub"
@@ -217,6 +223,7 @@ abi = ""
 
 [[functions]]
 name = "takes_any"
+ffi_name = "takes_any"
 symbol = "takes_any"
 attribute = "none"
 vis = "pub"
@@ -250,6 +257,7 @@ abi = ""
 
 [[functions]]
 name = "takes_bound"
+ffi_name = "takes_bound"
 symbol = "takes_bound"
 attribute = "none"
 vis = "pub"
@@ -283,6 +291,7 @@ abi = ""
 
 [[functions]]
 name = "returns_object"
+ffi_name = "returns_object"
 symbol = "returns_object"
 attribute = "none"
 vis = "pub"
@@ -312,6 +321,7 @@ module_path = []
 
 [[functions]]
 name = "returns_py_of"
+ffi_name = "returns_py_of"
 symbol = "returns_py_of"
 attribute = "none"
 vis = "pub"
@@ -341,6 +351,7 @@ module_path = []
 
 [[functions]]
 name = "parse"
+ffi_name = "parse"
 symbol = "parse"
 attribute = "none"
 vis = "pub"
@@ -374,6 +385,7 @@ abi = "str"
 
 [[functions]]
 name = "parse_object"
+ffi_name = "parse_object"
 symbol = "parse_object"
 attribute = "none"
 vis = "pub"
@@ -407,6 +419,7 @@ abi = "str"
 
 [[functions]]
 name = "identity"
+ffi_name = "identity"
 symbol = "identity"
 attribute = "none"
 vis = "pub"
@@ -448,6 +461,7 @@ abi = ""
 
 [[functions]]
 name = "dual"
+ffi_name = "dual"
 symbol = "rustcall_dual"
 attribute = "julia"
 vis = "pub"
@@ -486,6 +500,7 @@ abi = ""
 
 [[functions]]
 name = "demo"
+ffi_name = "demo"
 symbol = "demo"
 attribute = "none"
 vis = ""
@@ -519,6 +534,7 @@ abi = ""
 
 [[functions]]
 name = "deep"
+ffi_name = "nested__deep"
 symbol = "deep"
 attribute = "none"
 vis = "pub"
@@ -552,6 +568,7 @@ abi = ""
 
 [[functions]]
 name = "unreachable_add"
+ffi_name = "private_0mod__unreachable_0add"
 symbol = "unreachable_add"
 attribute = "none"
 vis = "pub"
@@ -585,6 +602,7 @@ abi = ""
 
 [[functions]]
 name = "gated_add"
+ffi_name = "gated_add"
 symbol = "gated_add"
 attribute = "none"
 vis = "pub"

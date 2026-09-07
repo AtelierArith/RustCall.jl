@@ -2,121 +2,9 @@ schema_version = 7
 mode = "inline"
 
 [[functions]]
-name = "shout"
-ffi_name = "shout"
-symbol = "rustcall_shout"
-attribute = "julia"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = true
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "String"
-return_kind = "plain"
-return_abi = "string"
-ok_type = ""
-err_type = ""
-inner_type = ""
-ok_abi = ""
-err_abi = ""
-inner_abi = ""
-has_owned_string_helper = true
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 4
-module_path = []
-
-[[functions.args]]
-name = "input"
-rust_type = "String"
-abi = "string"
-
-[[functions]]
-name = "concat"
-ffi_name = "concat"
-symbol = "rustcall_concat"
-attribute = "julia"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = true
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "String"
-return_kind = "plain"
-return_abi = "string"
-ok_type = ""
-err_type = ""
-inner_type = ""
-ok_abi = ""
-err_abi = ""
-inner_abi = ""
-has_owned_string_helper = true
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 9
-module_path = []
-
-[[functions.args]]
-name = "a"
-rust_type = "&str"
-abi = "str"
-
-[[functions.args]]
-name = "b"
-rust_type = "&str"
-abi = "str"
-
-[[functions.args]]
-name = "times"
-rust_type = "u32"
-abi = ""
-
-[[functions]]
-name = "byte_len"
-ffi_name = "byte_len"
-symbol = "rustcall_byte_len"
-attribute = "julia"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = true
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "usize"
-return_kind = "plain"
-return_abi = ""
-ok_type = ""
-err_type = ""
-inner_type = ""
-ok_abi = ""
-err_abi = ""
-inner_abi = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 19
-module_path = []
-
-[[functions.args]]
-name = "s"
-rust_type = "&str"
-abi = "str"
-
-[[functions]]
-name = "greeting"
-ffi_name = "greeting"
-symbol = "rustcall_greeting"
+name = "run"
+ffi_name = "a__run"
+symbol = "rustcall_a__run"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""
@@ -127,70 +15,7 @@ cfg_features = []
 is_generic = false
 type_params = []
 args = []
-return_type = "&'static str"
-return_kind = "plain"
-return_abi = "str"
-ok_type = ""
-err_type = ""
-inner_type = ""
-ok_abi = ""
-err_abi = ""
-inner_abi = ""
-has_owned_string_helper = false
-has_borrowed_string_helper = true
-source = ""
-body_has_cfg = false
-line = 24
-module_path = []
-
-[[functions]]
-name = "unix_name"
-ffi_name = "unix_name"
-symbol = "rustcall_unix_name"
-attribute = "julia"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = true
-cfg = "unix"
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "String"
-return_kind = "plain"
-return_abi = "string"
-ok_type = ""
-err_type = ""
-inner_type = ""
-ok_abi = ""
-err_abi = ""
-inner_abi = ""
-has_owned_string_helper = true
-has_borrowed_string_helper = false
-source = ""
-body_has_cfg = false
-line = 28
-module_path = []
-
-[[functions.args]]
-name = "s"
-rust_type = "String"
-abi = "string"
-
-[[functions]]
-name = "consume"
-ffi_name = "consume"
-symbol = "rustcall_consume"
-attribute = "julia"
-vis = "pub"
-skip_reason = ""
-python_name = ""
-exported = true
-cfg = ""
-cfg_features = []
-is_generic = false
-type_params = []
-return_type = "usize"
+return_type = "i32"
 return_kind = "plain"
 return_abi = ""
 ok_type = ""
@@ -203,18 +28,13 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 36
-module_path = []
-
-[[functions.args]]
-name = "s"
-rust_type = "String"
-abi = "string"
+line = 10
+module_path = ["a"]
 
 [[functions]]
-name = "paren_ref"
-ffi_name = "paren_ref"
-symbol = "rustcall_paren_ref"
+name = "run"
+ffi_name = "a__deep_0er__run"
+symbol = "rustcall_a__deep_0er__run"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""
@@ -224,7 +44,8 @@ cfg = ""
 cfg_features = []
 is_generic = false
 type_params = []
-return_type = "usize"
+args = []
+return_type = "i32"
 return_kind = "plain"
 return_abi = ""
 ok_type = ""
@@ -237,18 +58,13 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 41
-module_path = []
-
-[[functions.args]]
-name = "s"
-rust_type = "&(str)"
-abi = "str"
+line = 46
+module_path = ["a", "deep_er"]
 
 [[functions]]
-name = "collide"
-ffi_name = "collide"
-symbol = "rustcall_collide"
+name = "snake_case_fn"
+ffi_name = "a__deep_0er__snake_0case_0fn"
+symbol = "rustcall_a__deep_0er__snake_0case_0fn"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""
@@ -258,7 +74,7 @@ cfg = ""
 cfg_features = []
 is_generic = false
 type_params = []
-return_type = "usize"
+return_type = "i32"
 return_kind = "plain"
 return_abi = ""
 ok_type = ""
@@ -271,22 +87,137 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 48
-module_path = []
+line = 51
+module_path = ["a", "deep_er"]
 
 [[functions.args]]
-name = "s"
-rust_type = "String"
-abi = "string"
-
-[[functions.args]]
-name = "s_ptr"
-rust_type = "usize"
+name = "x_1"
+rust_type = "i32"
 abi = ""
 
+[[functions]]
+name = "run"
+ffi_name = "b__run"
+symbol = "rustcall_b__run"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 60
+module_path = ["b"]
+
+[[functions]]
+name = "run"
+ffi_name = "run"
+symbol = "rustcall_run"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 86
+module_path = []
+
+[[functions]]
+name = "c"
+ffi_name = "a_0b__c"
+symbol = "rustcall_a_0b__c"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 93
+module_path = ["a_b"]
+
+[[functions]]
+name = "b_c"
+ffi_name = "a__b_0c"
+symbol = "rustcall_a__b_0c"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+args = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 101
+module_path = ["a"]
+
 [[structs]]
-name = "Greeter"
-ffi_name = "Greeter"
+name = "C"
+ffi_name = "a__C"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""
@@ -297,25 +228,35 @@ type_params = []
 derives = []
 has_clone = false
 has_owned_string_helper = true
-has_borrowed_string_helper = true
+has_borrowed_string_helper = false
 context_source = ""
 generic_wrappers = []
-line = 54
-module_path = []
+line = 14
+module_path = ["a"]
 
 [[structs.fields]]
-name = "count"
-rust_type = "u32"
+name = "v"
+rust_type = "i32"
 abi = ""
 ffi_compatible = true
-getter = "Greeter_get_count"
-setter = "Greeter_set_count"
+getter = "a__C_get_v"
+setter = "a__C_set_v"
+python_name = ""
+vis = ""
+
+[[structs.fields]]
+name = "label"
+rust_type = "String"
+abi = "string"
+ffi_compatible = true
+getter = "a__C_get_label"
+setter = "a__C_set_label"
 python_name = ""
 vis = ""
 
 [[structs.methods]]
 name = "new"
-symbol = "rustcall_Greeter_new"
+symbol = "rustcall_a__C_new"
 is_static = true
 is_mutable = false
 is_constructor = true
@@ -337,41 +278,13 @@ return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
-name = "count"
-rust_type = "u32"
+name = "v"
+rust_type = "i32"
 abi = ""
 
 [[structs.methods]]
-name = "shout"
-symbol = "rustcall_Greeter_shout"
-is_static = false
-is_mutable = false
-is_constructor = false
-vis = "pub"
-skip_reason = ""
-python_name = ""
-accessor = ""
-attribute = "julia"
-return_kind = "plain"
-ok_type = ""
-err_type = ""
-inner_type = ""
-ok_abi = ""
-err_abi = ""
-inner_abi = ""
-returns_boxed_struct = false
-return_type = "String"
-return_abi = "string"
-generic_wrapper = ""
-
-[[structs.methods.args]]
-name = "suffix"
-rust_type = "&str"
-abi = "str"
-
-[[structs.methods]]
-name = "label"
-symbol = "rustcall_Greeter_label"
+name = "get"
+symbol = "rustcall_a__C_get"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -389,15 +302,15 @@ err_abi = ""
 inner_abi = ""
 returns_boxed_struct = false
 args = []
-return_type = "&str"
-return_abi = "str"
+return_type = "i32"
+return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods]]
-name = "take"
-symbol = "rustcall_Greeter_take"
+name = "describe"
+symbol = "rustcall_a__C_describe"
 is_static = false
-is_mutable = true
+is_mutable = false
 is_constructor = false
 vis = "pub"
 skip_reason = ""
@@ -412,11 +325,112 @@ ok_abi = ""
 err_abi = ""
 inner_abi = ""
 returns_boxed_struct = false
-return_type = "usize"
+args = []
+return_type = "String"
+return_abi = "string"
+generic_wrapper = ""
+
+[[structs.methods]]
+name = "checked"
+symbol = "rustcall_a__C_checked"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "result"
+ok_type = "i32"
+err_type = "String"
+inner_type = ""
+ok_abi = ""
+err_abi = "string"
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "Result<i32, String>"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs]]
+name = "C"
+ffi_name = "b__C"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 64
+module_path = ["b"]
+
+[[structs.fields]]
+name = "v"
+rust_type = "i32"
+abi = ""
+ffi_compatible = true
+getter = "b__C_get_v"
+setter = "b__C_set_v"
+python_name = ""
+vis = ""
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_b__C_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = true
+return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
 
 [[structs.methods.args]]
-name = "s"
-rust_type = "String"
-abi = "string"
+name = "v"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods]]
+name = "get"
+symbol = "rustcall_b__C_get"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "i32"
+return_abi = ""
+generic_wrapper = ""

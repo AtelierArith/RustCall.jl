@@ -4,6 +4,7 @@ structs = []
 
 [[functions]]
 name = "nested"
+ffi_name = "nested"
 symbol = "nested"
 attribute = "julia"
 vis = "pub"
@@ -56,6 +57,7 @@ abi = ""
 
 [[functions]]
 name = "const_expression"
+ffi_name = "const_expression"
 symbol = "rustcall_const_expression"
 attribute = "julia"
 vis = ""
@@ -89,6 +91,7 @@ abi = ""
 
 [[functions]]
 name = "raw_braces"
+ffi_name = "raw_braces"
 symbol = "rustcall_raw_braces"
 attribute = "julia"
 vis = ""
@@ -118,6 +121,7 @@ module_path = []
 
 [[functions]]
 name = "cfg_disabled"
+ffi_name = "cfg_disabled"
 symbol = "rustcall_cfg_disabled"
 attribute = "julia"
 vis = ""

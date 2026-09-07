@@ -39,6 +39,7 @@ impl Handle {
 }
 
 #[cfg(feature = "extra")]
+#[julia]
 mod extra {
     #[julia]
     pub fn bonus() -> i32 {

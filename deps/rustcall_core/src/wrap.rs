@@ -239,7 +239,8 @@ fn function_wrapper(
 ) -> Result<(TokenStream2, crate::manifest::Function), String> {
     let args = wrapper_args(&f.args)?;
     let symbol = symbol_ident(&f.symbol)?;
-    let owner = format_ident!("{}", f.name);
+    // Helper types and the release function hang off the FFI name (#300).
+    let owner = format_ident!("{}", f.ffi_name);
     let plan = return_plan(
         &owner,
         &f.return_type,
@@ -290,8 +291,9 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
     let class = item_path(krate, &s.module_path, &s.name);
     let mut out = TokenStream2::new();
 
-    // `<Struct>_free`, the destructor `RustCall.ffi_struct_free_symbol` names.
-    let free = format_ident!("{}_free", s.name);
+    // `<Struct>_free`, the destructor `RustCall.ffi_struct_free_symbol` names
+    // from the manifest's `ffi_name` (#300).
+    let free = format_ident!("{}_free", s.ffi_name);
     out.extend(quote! {
         #[no_mangle]
         pub extern "C" fn #free(ptr: *mut #class) {
@@ -303,8 +305,8 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
 
     // The struct-level owned-string buffer, shared by every `String` field
     // getter (`RustCall._ffi_field_return` names it after the struct).
-    let owned_helper = format_ident!("{}_RustCallOwnedString", s.name);
-    let owned_free = format_ident!("{}_free_rust_string", s.name);
+    let owned_helper = format_ident!("{}_RustCallOwnedString", s.ffi_name);
+    let owned_free = format_ident!("{}_free_rust_string", s.ffi_name);
     for f in &mut s.fields {
         if cfg_refusal(&f.cfg, cfg_resolved).is_some() {
             f.ffi_compatible = false;
@@ -392,7 +394,7 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
         }
     }
 
-    let class_name = s.name.clone();
+    let class_name = s.ffi_name.clone();
     for m in &mut s.methods {
         if !m.skip_reason.is_empty() {
             continue;

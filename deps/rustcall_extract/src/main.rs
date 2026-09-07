@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use rustcall_core::cfg::CfgSet;
+use rustcall_core::extract::ExtractError;
 use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 
 const USAGE: &str = "usage:
@@ -158,6 +159,9 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
     // With --crate-root the PyO3 scan runs once over the module tree below, so
     // the per-file pass must not report the same items again as crate-root ones.
     let per_file_pyo3_scan = opts.crate_root.is_none();
+    // Every exported symbol seen so far and the file:item that claims it, so a
+    // second claimant is reported with both locations (#300).
+    let mut claimed: Vec<(String, String)> = Vec::new();
     for f in &opts.files {
         let src = read_source(f)?;
         let extracted = match opts.mode {
@@ -171,8 +175,15 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             }
         };
         match extracted {
-            Ok(m) => merged.merge(m),
-            Err(e) if opts.skip_unparsable => {
+            Ok(m) => {
+                if opts.mode == Mode::Crate {
+                    claim_symbols(&mut claimed, &m, f)?;
+                }
+                merged.merge(m);
+            }
+            // Only a file that is not a Rust module is skippable (an
+            // `include!()` fragment); an item RustCall refuses fails the scan.
+            Err(ExtractError::Parse(e)) if opts.skip_unparsable => {
                 eprintln!(
                     "rustcall-extract: skipping {}: not a complete Rust module ({e})",
                     f.display()
@@ -188,6 +199,35 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         merged.sort();
     }
     Ok(merged)
+}
+
+/// Record the exported symbols of one file's manifest, failing on the first
+/// one another file (or another item of this file) already claims (#300).
+///
+/// The symbol scheme keeps items of different modules apart, so a duplicate
+/// here is either two file modules — transparent to the scheme — defining the
+/// same `#[julia]` item, or a crate-root name that spells a qualified one. The
+/// `cdylib` could not export both, and a wrong binding is worse than no
+/// binding, so the scan fails closed and names the fix.
+fn claim_symbols(
+    claimed: &mut Vec<(String, String)>,
+    manifest: &Manifest,
+    file: &Path,
+) -> Result<(), String> {
+    for (symbol, owner) in manifest.symbol_owners() {
+        let here = format!("{} in {}", owner, file.display());
+        if let Some((_, first)) = claimed.iter().find(|(s, _)| *s == symbol) {
+            return Err(format!(
+                "duplicate exported symbol `{symbol}`: claimed by {first} and by {here}. \
+                 Two #[julia] items of one crate export the same symbol; only inline modules \
+                 marked `#[julia]` (`#[julia] pub mod name {{ ... }}`) qualify a symbol by \
+                 their name, while file modules (`mod name;`) do not. Wrap one of the items in \
+                 a `#[julia]` module block or rename it (#300)."
+            ));
+        }
+        claimed.push((symbol, here));
+    }
+    Ok(())
 }
 
 /// Generate the wrapper crate of a PyO3 crate (#275 Phase 2).

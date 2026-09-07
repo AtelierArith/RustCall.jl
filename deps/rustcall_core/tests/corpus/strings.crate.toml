@@ -3,6 +3,7 @@ mode = "crate"
 
 [[functions]]
 name = "shout"
+ffi_name = "shout"
 symbol = "rustcall_shout"
 attribute = "julia"
 vis = "pub"
@@ -36,6 +37,7 @@ abi = "string"
 
 [[functions]]
 name = "concat"
+ffi_name = "concat"
 symbol = "rustcall_concat"
 attribute = "julia"
 vis = "pub"
@@ -79,6 +81,7 @@ abi = ""
 
 [[functions]]
 name = "byte_len"
+ffi_name = "byte_len"
 symbol = "rustcall_byte_len"
 attribute = "julia"
 vis = "pub"
@@ -112,6 +115,7 @@ abi = "str"
 
 [[functions]]
 name = "greeting"
+ffi_name = "greeting"
 symbol = "rustcall_greeting"
 attribute = "julia"
 vis = "pub"
@@ -141,6 +145,7 @@ module_path = []
 
 [[functions]]
 name = "unix_name"
+ffi_name = "unix_name"
 symbol = "rustcall_unix_name"
 attribute = "julia"
 vis = "pub"
@@ -174,6 +179,7 @@ abi = "string"
 
 [[functions]]
 name = "consume"
+ffi_name = "consume"
 symbol = "rustcall_consume"
 attribute = "julia"
 vis = "pub"
@@ -207,6 +213,7 @@ abi = "string"
 
 [[functions]]
 name = "paren_ref"
+ffi_name = "paren_ref"
 symbol = "rustcall_paren_ref"
 attribute = "julia"
 vis = "pub"
@@ -240,6 +247,7 @@ abi = "str"
 
 [[functions]]
 name = "collide"
+ffi_name = "collide"
 symbol = "rustcall_collide"
 attribute = "julia"
 vis = "pub"
@@ -278,6 +286,7 @@ abi = ""
 
 [[structs]]
 name = "Greeter"
+ffi_name = "Greeter"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""

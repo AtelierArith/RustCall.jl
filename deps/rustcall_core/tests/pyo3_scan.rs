@@ -442,7 +442,8 @@ fn pymethods_attach_across_module_boundaries() {
     assert_eq!(circle.module_path, vec!["shapes"]);
     let names: Vec<&str> = circle.methods.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, vec!["new", "area"]);
-    assert_eq!(circle.methods[0].symbol, "rustcall_Circle_new");
+    // The symbol is the class's, qualified by the class's module (#300).
+    assert_eq!(circle.methods[0].symbol, "rustcall_shapes__Circle_new");
 }
 
 /// A block in the class's own module wins over a same-named class elsewhere.
@@ -611,12 +612,11 @@ fn a_renamed_import_disambiguates_too() {
     );
 }
 
-/// The symbol scheme is `rustcall_<name>` (#279) and carries no module path, so
-/// two `pub fn run` in different modules both want `rustcall_run` — a single
-/// wrapper crate cannot export both. The scan reports the clash instead of
-/// describing a manifest that cannot be built.
+/// Two `pub fn run` in different modules of one crate used to want one
+/// `rustcall_run`; the module path is part of the symbol since #300, so both
+/// are wrappable and `symbol_collision` is unreachable for them.
 #[test]
-fn colliding_wrapper_symbols_are_reported() {
+fn same_named_functions_in_two_modules_get_distinct_symbols() {
     let manifest = scan(
         "pub mod a { #[pyfunction] pub fn run() -> i32 { 1 } }\n\
          pub mod b { #[pyfunction] pub fn run() -> i32 { 2 } }",
@@ -627,31 +627,50 @@ fn colliding_wrapper_symbols_are_reported() {
         .filter(|f| f.name == "run")
         .collect();
     assert_eq!(entries.len(), 2);
-    // The first in manifest order keeps the symbol; the other is skipped with
-    // the module-qualified name of the owner.
-    let kept: Vec<_> = entries
+    assert!(entries.iter().all(|f| f.skip_reason.is_empty()));
+    let mut symbols: Vec<&str> = entries.iter().map(|f| f.symbol.as_str()).collect();
+    symbols.sort();
+    assert_eq!(symbols, vec!["rustcall_a__run", "rustcall_b__run"]);
+    let mut stems: Vec<&str> = entries.iter().map(|f| f.ffi_name.as_str()).collect();
+    stems.sort();
+    assert_eq!(stems, vec!["a__run", "b__run"]);
+    assert!(!manifest_mentions_symbol_collision(&manifest));
+}
+
+/// The one clash the scheme cannot exclude — a crate-root name spelling the
+/// encoding of a qualified one — is still reported, first in manifest order
+/// keeping the symbol.
+#[test]
+fn a_root_name_spelling_a_qualified_symbol_is_reported() {
+    let manifest = scan(
+        "pub mod a { #[pyfunction] pub fn run() -> i32 { 1 } }\n\
+         #[pyfunction] pub fn a__run() -> i32 { 2 }",
+    );
+    let root = manifest
+        .functions
         .iter()
-        .filter(|f| f.skip_reason.is_empty())
-        .collect();
-    let clashed: Vec<_> = entries
-        .iter()
-        .filter(|f| !f.skip_reason.is_empty())
-        .collect();
-    assert_eq!(kept.len(), 1);
-    assert_eq!(clashed.len(), 1);
+        .find(|f| f.name == "a__run")
+        .unwrap();
+    let nested = manifest.functions.iter().find(|f| f.name == "run").unwrap();
+    assert_eq!(root.symbol, nested.symbol);
+    // Manifest order is (module path, line): the crate-root item comes first.
+    assert_eq!(root.skip_reason, "");
     assert_eq!(
-        clashed[0].skip_reason,
-        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "a::run")
+        nested.skip_reason,
+        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "a__run")
     );
 }
 
 /// A `#[julia]` item is already exported under its symbol, so it owns it: a
-/// PyO3 item that wants the same one loses, whatever the source order.
+/// PyO3 item that wants the same one loses, whatever the source order. Since
+/// #300 the module path is part of the symbol, so this needs a same-module
+/// coincidence — here a `#[pyfunction]` whose own wrapper symbol is the
+/// `#[julia]` wrapper's panic-channel reader.
 #[test]
 fn a_julia_export_wins_a_symbol_collision() {
     let manifest = scan(
-        "#[julia] pub fn run() -> i32 { 1 }\n\
-         pub mod b { #[pyfunction] pub fn run() -> i32 { 2 } }",
+        "#[pyfunction] pub fn run_take_panic() -> i32 { 2 }\n\
+         #[julia] pub fn run() -> i32 { 1 }",
     );
     let pyo3 = manifest
         .functions
@@ -671,10 +690,39 @@ fn a_julia_export_wins_a_symbol_collision() {
     assert!(julia.exported);
 }
 
-/// Two same-named `#[pyclass]`es collide over every method and accessor symbol,
-/// so the class is the unit that is reported.
+/// The #300 case: a `#[julia] fn run` at the crate root and a `#[pyfunction]
+/// fn run` in a module are two symbols now, and both are wrappable.
 #[test]
-fn colliding_pyclass_names_are_reported() {
+fn a_julia_export_and_a_pyo3_item_in_another_module_both_keep_their_symbols() {
+    let manifest = scan(
+        "#[julia] pub fn run() -> i32 { 1 }\n\
+         pub mod b { #[pyfunction] pub fn run() -> i32 { 2 } }",
+    );
+    let symbols: Vec<(&str, &str)> = manifest
+        .functions
+        .iter()
+        .map(|f| (f.symbol.as_str(), f.skip_reason.as_str()))
+        .collect();
+    assert!(symbols.contains(&("rustcall_run", "")), "{symbols:?}");
+    assert!(symbols.contains(&("rustcall_b__run", "")), "{symbols:?}");
+    assert!(!manifest_mentions_symbol_collision(&manifest));
+}
+
+/// Whether any entry of the manifest carries a `symbol_collision` reason.
+fn manifest_mentions_symbol_collision(manifest: &rustcall_core::manifest::Manifest) -> bool {
+    let is = |reason: &str| reason.starts_with(skip_reason::SYMBOL_COLLISION);
+    manifest.functions.iter().any(|f| is(&f.skip_reason))
+        || manifest
+            .structs
+            .iter()
+            .any(|s| is(&s.skip_reason) || s.methods.iter().any(|m| is(&m.skip_reason)))
+}
+
+/// Two same-named `#[pyclass]`es in different modules used to collide over
+/// every method and accessor symbol; since #300 each hangs off its own
+/// module-qualified FFI name.
+#[test]
+fn same_named_pyclasses_in_two_modules_get_distinct_symbols() {
     let manifest = scan(
         "pub mod a { #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }\n\
             #[pymethods] impl C { pub fn f(&self) -> i32 { 0 } } }\n\
@@ -692,14 +740,40 @@ fn colliding_pyclass_names_are_reported() {
         .find(|s| s.module_path == vec!["b".to_string()])
         .unwrap();
     assert_eq!(in_a.skip_reason, "");
+    assert_eq!(in_b.skip_reason, "");
+    assert_eq!(in_a.ffi_name, "a__C");
+    assert_eq!(in_b.ffi_name, "b__C");
+    assert_eq!(in_a.fields[0].getter, "rustcall_a__C_get_v");
+    assert_eq!(in_b.fields[0].getter, "rustcall_b__C_get_v");
+    assert!(in_b.fields[0].ffi_compatible);
+    assert_eq!(in_a.methods[0].symbol, "rustcall_a__C_f");
+    assert_eq!(in_b.methods[0].symbol, "rustcall_b__C_g");
+    assert!(!manifest_mentions_symbol_collision(&manifest));
+}
+
+/// Two classes with one FFI name collide over every method and accessor
+/// symbol at once, so the class is the unit that is reported. Only a
+/// crate-root name spelling the encoding of a qualified one can still do that.
+#[test]
+fn colliding_pyclass_names_are_reported() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }\n\
+            #[pymethods] impl C { pub fn f(&self) -> i32 { 0 } } }\n\
+         #[pyclass] pub struct a__C { #[pyo3(get)] pub v: i32 }\n\
+         #[pymethods] impl a__C { pub fn g(&self) -> i32 { 0 } }",
+    );
+    let root = manifest.structs.iter().find(|s| s.name == "a__C").unwrap();
+    let nested = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    assert_eq!(root.ffi_name, nested.ffi_name);
+    assert_eq!(root.skip_reason, "");
     assert_eq!(
-        in_b.skip_reason,
-        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "a::C")
+        nested.skip_reason,
+        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "a__C")
     );
     // Nothing of the losing class is advertised.
-    assert!(in_b.fields[0].getter.is_empty());
-    assert!(!in_b.fields[0].ffi_compatible);
-    assert!(in_b.methods.iter().all(|m| !m.skip_reason.is_empty()));
+    assert!(nested.fields[0].getter.is_empty());
+    assert!(!nested.fields[0].ffi_compatible);
+    assert!(nested.methods.iter().all(|m| !m.skip_reason.is_empty()));
 }
 
 /// `#[pyclass(get_all, set_all)]` exposes every field without a per-field
@@ -743,14 +817,16 @@ fn class_level_field_options_are_honoured() {
 /// table over functions, `#[julia]` struct wrappers and PyO3 classes alike.
 #[test]
 fn collisions_are_checked_across_symbol_kinds() {
-    // A `#[julia]` struct's method wrapper already exports `rustcall_C_f`.
+    // A `#[julia]` struct in a marked module owns `other__C_free` and
+    // `rustcall_other__C_f`; a crate-root `#[pyclass] other__C` spells the same
+    // FFI name (#300) and loses every one of its symbols.
     let manifest = scan(
-        "#[julia] pub struct C { pub v: i32 }\n\
-         #[julia] impl C { #[julia] pub fn f(&self) -> i32 { self.v } }\n\
-         pub mod other {\n\
-            #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }\n\
-            #[pymethods] impl C { pub fn f(&self) -> i32 { 0 } }\n\
-         }",
+        "#[julia] pub mod other {\n\
+            #[julia] pub struct C { pub v: i32 }\n\
+            #[julia] impl C { #[julia] pub fn f(&self) -> i32 { self.v } }\n\
+         }\n\
+         #[pyclass] pub struct other__C { #[pyo3(get)] pub v: i32 }\n\
+         #[pymethods] impl other__C { pub fn f(&self) -> i32 { 0 } }",
     );
     let pyclass = manifest
         .structs
@@ -759,7 +835,7 @@ fn collisions_are_checked_across_symbol_kinds() {
         .unwrap();
     assert_eq!(
         pyclass.skip_reason,
-        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "C")
+        skip_reason::detailed(skip_reason::SYMBOL_COLLISION, "other::C")
     );
     assert!(pyclass.fields[0].getter.is_empty());
 
@@ -767,7 +843,7 @@ fn collisions_are_checked_across_symbol_kinds() {
     // accessor is dropped: the rest of the class is still wrappable.
     let manifest = scan(
         "#[pyclass] pub struct P { #[pyo3(get)] pub v: i32, #[pyo3(get)] pub w: i32 }\n\
-         pub mod m { #[pyfunction] pub fn P_get_v() -> i32 { 0 } }",
+         #[pyfunction] pub fn P_get_v() -> i32 { 0 }",
     );
     let func = manifest
         .functions

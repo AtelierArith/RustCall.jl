@@ -393,12 +393,13 @@ pub extern "C" fn rustcall_parse(s_ptr: *const u8, s_len: usize) -> CResult_pars
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_DEEP : ::std::cell::RefCell < ::std::option::Option
-    < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
+    static __RUSTCALL_PANIC_RUSTCALL_NESTED__DEEP : ::std::cell::RefCell <
+    ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_deep_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_DEEP
+pub extern "C" fn rustcall_nested__deep_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_NESTED__DEEP
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -429,7 +430,7 @@ pub extern "C" fn rustcall_deep_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_deep(a: i32) -> i32 {
+pub extern "C" fn rustcall_nested__deep(a: i32) -> i32 {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { user_crate::nested::deep(a) }),
     ) {
@@ -450,7 +451,7 @@ pub extern "C" fn rustcall_deep(a: i32) -> i32 {
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "deep", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_DEEP
+            __RUSTCALL_PANIC_RUSTCALL_NESTED__DEEP
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1012,7 +1013,7 @@ pub extern "C" fn rustcall_Point_set_x(ptr: *mut user_crate::Point, value: f64) 
     }
 }
 #[no_mangle]
-pub extern "C" fn Circle_free(ptr: *mut user_crate::shapes::Circle) {
+pub extern "C" fn shapes__Circle_free(ptr: *mut user_crate::shapes::Circle) {
     if !ptr.is_null() {
         unsafe {
             drop(Box::from_raw(ptr));
@@ -1020,17 +1021,22 @@ pub extern "C" fn Circle_free(ptr: *mut user_crate::shapes::Circle) {
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Circle_get_r(ptr: *const user_crate::shapes::Circle) -> f64 {
+pub extern "C" fn rustcall_shapes__Circle_get_r(
+    ptr: *const user_crate::shapes::Circle,
+) -> f64 {
     unsafe { (*ptr).r }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_CIRCLE_NEW : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_SHAPES__CIRCLE_NEW : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Circle_new_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_CIRCLE_NEW
+pub extern "C" fn rustcall_shapes__Circle_new_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_SHAPES__CIRCLE_NEW
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1061,7 +1067,9 @@ pub extern "C" fn rustcall_Circle_new_take_panic(out: *mut u8, cap: usize) -> us
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Circle_new(r: f64) -> *mut user_crate::shapes::Circle {
+pub extern "C" fn rustcall_shapes__Circle_new(
+    r: f64,
+) -> *mut user_crate::shapes::Circle {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let obj = user_crate::shapes::Circle::new(r);
@@ -1085,7 +1093,7 @@ pub extern "C" fn rustcall_Circle_new(r: f64) -> *mut user_crate::shapes::Circle
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Circle::new", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_CIRCLE_NEW
+            __RUSTCALL_PANIC_RUSTCALL_SHAPES__CIRCLE_NEW
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1096,13 +1104,16 @@ pub extern "C" fn rustcall_Circle_new(r: f64) -> *mut user_crate::shapes::Circle
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_CIRCLE_AREA : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_SHAPES__CIRCLE_AREA : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Circle_area_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_CIRCLE_AREA
+pub extern "C" fn rustcall_shapes__Circle_area_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_SHAPES__CIRCLE_AREA
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1133,7 +1144,9 @@ pub extern "C" fn rustcall_Circle_area_take_panic(out: *mut u8, cap: usize) -> u
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Circle_area(ptr: *const user_crate::shapes::Circle) -> f64 {
+pub extern "C" fn rustcall_shapes__Circle_area(
+    ptr: *const user_crate::shapes::Circle,
+) -> f64 {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -1157,7 +1170,7 @@ pub extern "C" fn rustcall_Circle_area(ptr: *const user_crate::shapes::Circle) -
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Circle::area", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_CIRCLE_AREA
+            __RUSTCALL_PANIC_RUSTCALL_SHAPES__CIRCLE_AREA
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,

@@ -25,23 +25,28 @@
 //!
 //! # Export-symbol scheme
 //!
+//! Every exported symbol hangs off the item's **FFI name** ([`symbol_stem`]):
+//! the item's own name at the crate root, and its module path folded in
+//! otherwise (`a::run` -> `a__run`, see [`symbol_stem`] for the escaping).
+//! The manifest carries it as `Function.ffi_name` / `Struct.ffi_name`
+//! (schema 7, #300); `<f>` and `<Struct>` below stand for that name.
+//!
 //! | generated item | symbol |
 //! |---|---|
-//! | free function `f` | `rustcall_f` |
-//! | method / constructor `Struct::m` | `rustcall_Struct_m` |
-//! | specialized generic instantiation `f_i32` | `rustcall_f_i32` |
-//! | struct destructor | `Struct_free` |
-//! | field accessors | `Struct_get_x` / `Struct_set_x` |
-//! | clone | `Struct_clone` |
-//! | `Result` / `Option` payload | `CResult_f` / `COption_f` |
+//! | free function `f` | `rustcall_<f>` |
+//! | method / constructor `Struct::m` | `rustcall_<Struct>_m` |
+//! | specialized generic instantiation `f_i32` | `rustcall_<f_i32>` |
+//! | struct destructor | `<Struct>_free` |
+//! | field accessors | `<Struct>_get_x` / `<Struct>_set_x` |
+//! | clone | `<Struct>_clone` |
+//! | `Result` / `Option` payload | `CResult_<f>` / `COption_<f>` |
 //! | owned string buffer / release | `<owner>_RustCallOwnedString` / `<owner>_free_rust_string` |
 //! | borrowed string view | `<owner>_RustCallBorrowedString` |
 //! | panic channel of a wrapper | `<wrapper symbol>_take_panic` |
 //!
 //! Only the first three wrap a user-written item and so must step aside from
 //! its name; `<owner>` is the free function, `<Struct>_<method>` or `<Struct>`
-//! the buffer belongs to. The remaining items are purely generated and keep
-//! the names they have always had.
+//! the buffer belongs to.
 //!
 //! The scheme is stable and part of artifact identity: the manifest carries it
 //! in `Function.symbol` / `Method.symbol` (schema 3) and every Julia-side
@@ -49,11 +54,28 @@
 //! Inline expansion additionally refuses a block in which a user item already
 //! owns a generated symbol (see `crate::expand::symbol_collisions`); the
 //! proc-macro sees one item at a time and cannot make that check.
+//!
+//! # Where the module path comes from (#300)
+//!
+//! * Inline expansion (`rust"""`) walks the block's inline modules itself and
+//!   qualifies every item by the path it finds.
+//! * In a crate the proc-macro cannot see its enclosing module, so the path is
+//!   spelled by `#[julia]` **on the module**: `#[julia] pub mod a { #[julia] pub
+//!   fn run() }` expands the nested items with `["a"]` ([`transform_module`]),
+//!   and nested marked modules accumulate. A `#[julia]` item inside an inline
+//!   module that is *not* marked would be exported under the crate-root symbol,
+//!   which is why crate extraction refuses it (`crate::extract`). File modules
+//!   (`mod a;`) cannot carry an attribute macro and are transparent: their
+//!   items keep root symbols.
+//! * PyO3-scanned items (#275) carry the real module path of the crate's tree
+//!   walk and are qualified by it, so two `#[pyclass] C` in different modules
+//!   no longer collide.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, FnArg, Ident, ItemFn, ItemImpl, ItemStruct, Pat, ReturnType, Type, Visibility,
+    Attribute, FnArg, Ident, Item, ItemFn, ItemImpl, ItemMod, ItemStruct, Pat, ReturnType, Type,
+    Visibility,
 };
 
 use crate::cfg::cfg_attrs;
@@ -66,20 +88,90 @@ use crate::types::{
 };
 
 // ============================================================================
-// Export-symbol scheme (#279)
+// Export-symbol scheme (#279, #300)
 // ============================================================================
 
 /// Prefix of every exported symbol that stands in for a user-written item.
 pub const SYMBOL_PREFIX: &str = "rustcall_";
 
-/// Exported symbol of the `extern "C"` wrapper of the free function `name`.
-pub fn function_symbol(name: &str) -> String {
-    format!("{SYMBOL_PREFIX}{name}")
+/// Separator between the segments of a module-qualified FFI name.
+pub const MODULE_SEPARATOR: &str = "__";
+
+/// Replacement for an underscore inside a segment of a module-qualified FFI
+/// name.
+pub const ESCAPED_UNDERSCORE: &str = "_0";
+
+/// The **FFI name** of an item: the stem every generated symbol of the item is
+/// derived from (`rustcall_<stem>`, `<stem>_free`, `<stem>_get_<field>`, ...).
+///
+/// * At the crate root (`module_path` empty) it is the item's own name,
+///   unchanged: `run` -> `run`, `my_fn` -> `my_fn`.
+/// * Inside modules every segment — the modules and the item name — has each
+///   `_` replaced by [`ESCAPED_UNDERSCORE`] (`_0`), and the segments are joined
+///   with [`MODULE_SEPARATOR`] (`__`): `a::run` -> `a__run`,
+///   `geometry::shapes::Circle` -> `geometry__shapes__Circle`,
+///   `my_mod::my_fn` -> `my_0mod__my_0fn`.
+///
+/// The encoding is prefix-free: in a qualified stem every `_` is followed by
+/// either `0` (an escaped underscore) or `_` (a separator), so it decodes
+/// unambiguously and two different paths never share a stem — `a_b::c` is
+/// `a_0b__c`, `a::b_c` is `a__b_0c`. A raw-identifier prefix (`r#mod`) is
+/// dropped, since `#` cannot appear in a symbol. Only identifier characters
+/// are used, so the stem is valid as a Rust item name and as a linker symbol
+/// on every platform.
+///
+/// A crate-root item whose *name* happens to spell an encoding (`fn a__run`
+/// next to `a::run`) is the one coincidence the encoding cannot exclude; crate
+/// extraction reports such a duplicate symbol instead of describing it.
+pub fn symbol_stem(module_path: &[String], name: &str) -> String {
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    if module_path.is_empty() {
+        return name.to_string();
+    }
+    module_path
+        .iter()
+        .map(|segment| segment.as_str())
+        .chain(std::iter::once(name))
+        .map(|segment| {
+            segment
+                .strip_prefix("r#")
+                .unwrap_or(segment)
+                .replace('_', ESCAPED_UNDERSCORE)
+        })
+        .collect::<Vec<_>>()
+        .join(MODULE_SEPARATOR)
 }
 
-/// Exported symbol of the `extern "C"` wrapper of `Struct::method`.
-pub fn method_symbol(struct_name: &str, method: &str) -> String {
-    format!("{SYMBOL_PREFIX}{struct_name}_{method}")
+/// Exported symbol of the `extern "C"` wrapper of the free function `name`
+/// living under `module_path`: `rustcall_<stem>`.
+pub fn function_symbol(module_path: &[String], name: &str) -> String {
+    format!("{SYMBOL_PREFIX}{}", symbol_stem(module_path, name))
+}
+
+/// Exported symbol of the `extern "C"` wrapper of `Struct::method`, the struct
+/// living under `module_path`: `rustcall_<stem>_<method>`.
+pub fn method_symbol(module_path: &[String], struct_name: &str, method: &str) -> String {
+    method_symbol_of(&symbol_stem(module_path, struct_name), method)
+}
+
+/// [`method_symbol`] from an already computed struct stem.
+pub fn method_symbol_of(struct_stem: &str, method: &str) -> String {
+    format!("{SYMBOL_PREFIX}{struct_stem}_{method}")
+}
+
+/// The destructor of a struct with FFI name `struct_stem`: `<stem>_free`.
+pub fn struct_free_symbol(struct_stem: &str) -> String {
+    format!("{struct_stem}_free")
+}
+
+/// The field accessors of a struct with FFI name `struct_stem`:
+/// `<stem>_get_<field>` and `<stem>_set_<field>`.
+pub fn field_getter_symbol(struct_stem: &str, field: &str) -> String {
+    format!("{struct_stem}_get_{field}")
+}
+
+pub fn field_setter_symbol(struct_stem: &str, field: &str) -> String {
+    format!("{struct_stem}_set_{field}")
 }
 
 // ============================================================================
@@ -1007,12 +1099,18 @@ impl Default for FreeFnOptions {
 
 /// The wrapper (and its helpers) of a free function. The function itself is
 /// **not** part of the output: the caller emits the original item next to it.
-fn free_function_wrapper(func: &ItemFn, options: &FreeFnOptions) -> TokenStream2 {
+fn free_function_wrapper(
+    func: &ItemFn,
+    module_path: &[String],
+    options: &FreeFnOptions,
+) -> TokenStream2 {
     let name = func.sig.ident.clone();
-    let symbol = format_ident!("{}", function_symbol(&name.to_string()));
+    // Every generated name of the function hangs off its FFI name (#300).
+    let stem = format_ident!("{}", symbol_stem(module_path, &name.to_string()));
+    let symbol = format_ident!("{}{}", SYMBOL_PREFIX, stem);
     let cfgs = cfg_attrs(&func.attrs);
 
-    let ret = free_fn_return(func, &name, options);
+    let ret = free_fn_return(func, &stem, options);
     generate_wrapper(WrapperSpec {
         symbol,
         cfg_attrs: cfgs,
@@ -1118,7 +1216,7 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
 /// Transform a `#[julia]` function: the annotated item is kept as written (the
 /// attribute itself is already gone) and the `extern "C"` entry point is
 /// emitted next to it under `rustcall_<fn>` (#279).
-pub fn transform_function(func: ItemFn) -> TokenStream2 {
+pub fn transform_function(func: ItemFn, module_path: &[String]) -> TokenStream2 {
     if func.sig.unsafety.is_some() {
         return quote! {
             compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
@@ -1128,7 +1226,7 @@ pub fn transform_function(func: ItemFn) -> TokenStream2 {
         return error;
     }
 
-    let wrapper = free_function_wrapper(&func, &FreeFnOptions::default());
+    let wrapper = free_function_wrapper(&func, module_path, &FreeFnOptions::default());
     quote! {
         #func
         #wrapper
@@ -1183,8 +1281,8 @@ fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
 /// `Option` are not wrapped. Used by [`crate::specialize`] for the
 /// instantiation of a generic function, whose fixed `String` / `&str`
 /// parameters still get the byte-pair ABI (#242).
-pub fn plain_function_wrapper(func: &ItemFn) -> TokenStream2 {
-    free_function_wrapper(func, &FreeFnOptions { wrap_result: false })
+pub fn plain_function_wrapper(func: &ItemFn, module_path: &[String]) -> TokenStream2 {
+    free_function_wrapper(func, module_path, &FreeFnOptions { wrap_result: false })
 }
 
 // ============================================================================
@@ -1205,10 +1303,10 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
     })
 }
 
-fn crate_field_accessors(item_struct: &ItemStruct) -> TokenStream2 {
+fn crate_field_accessors(item_struct: &ItemStruct, stem: &Ident) -> TokenStream2 {
     let struct_name = &item_struct.ident;
-    let owned_helper = format_ident!("{}_RustCallOwnedString", struct_name);
-    let owned_free = format_ident!("{}_free_rust_string", struct_name);
+    let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
+    let owned_free = format_ident!("{}_free_rust_string", stem);
     let mut ffi_functions = TokenStream2::new();
     if crate_struct_needs_owned_string_helper(item_struct) {
         ffi_functions.extend(owned_string_helper(&[], &owned_helper, &owned_free));
@@ -1222,7 +1320,7 @@ fn crate_field_accessors(item_struct: &ItemStruct) -> TokenStream2 {
             if !(is_ffi_compatible_type(field_ty) || needs_clone_for_getter(field_ty)) {
                 continue;
             }
-            let getter_name = format_ident!("{}_get_{}", struct_name, field_name);
+            let getter_name = format_ident!("{}_get_{}", stem, field_name);
             if is_string_type(field_ty) {
                 // A `String` cannot cross `extern "C"` by value: it leaves as an
                 // owned `(ptr, len, cap)` buffer the caller hands back to
@@ -1256,7 +1354,7 @@ fn crate_field_accessors(item_struct: &ItemStruct) -> TokenStream2 {
                     }
                 });
             }
-            let setter_name = format_ident!("{}_set_{}", struct_name, field_name);
+            let setter_name = format_ident!("{}_set_{}", stem, field_name);
             ffi_functions.extend(quote! {
                 #[no_mangle]
                 pub extern "C" fn #setter_name(ptr: *mut #struct_name, value: #field_ty) {
@@ -1268,8 +1366,8 @@ fn crate_field_accessors(item_struct: &ItemStruct) -> TokenStream2 {
     ffi_functions
 }
 
-fn crate_free_fn(struct_name: &Ident) -> TokenStream2 {
-    let free_fn_name = format_ident!("{}_free", struct_name);
+fn crate_free_fn(struct_name: &Ident, stem: &Ident) -> TokenStream2 {
+    let free_fn_name = format_ident!("{}_free", stem);
     quote! {
         #[no_mangle]
         pub extern "C" fn #free_fn_name(ptr: *mut #struct_name) {
@@ -1280,14 +1378,20 @@ fn crate_free_fn(struct_name: &Ident) -> TokenStream2 {
     }
 }
 
+/// The FFI name of a struct as an identifier (see [`symbol_stem`]).
+fn struct_stem(module_path: &[String], struct_name: &Ident) -> Ident {
+    format_ident!("{}", symbol_stem(module_path, &struct_name.to_string()))
+}
+
 /// Transform a `#[julia]` struct (crate flavour): `#[repr(C)]`, `pub`, free + accessors.
-pub fn transform_struct_crate(mut item_struct: ItemStruct) -> TokenStream2 {
+pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String]) -> TokenStream2 {
     let repr_c: Attribute = syn::parse_quote!(#[repr(C)]);
     item_struct.attrs.insert(0, repr_c);
     item_struct.vis = Visibility::Public(syn::token::Pub::default());
 
-    let free = crate_free_fn(&item_struct.ident);
-    let accessors = crate_field_accessors(&item_struct);
+    let stem = struct_stem(module_path, &item_struct.ident);
+    let free = crate_free_fn(&item_struct.ident, &stem);
+    let accessors = crate_field_accessors(&item_struct, &stem);
 
     quote! {
         #item_struct
@@ -1297,7 +1401,7 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct) -> TokenStream2 {
 }
 
 /// Transform a `#[julia]` impl block (crate flavour): wrap `#[julia]` methods.
-pub fn transform_impl_crate(mut item_impl: ItemImpl) -> TokenStream2 {
+pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> TokenStream2 {
     let struct_name = match item_impl.self_ty.as_ref() {
         Type::Path(type_path) => type_path.path.segments.last().map(|s| s.ident.clone()),
         _ => None,
@@ -1317,7 +1421,11 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl) -> TokenStream2 {
                 .any(|attr| attr.path().is_ident("julia"));
             if has_julia_attr {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
-                ffi_wrappers.extend(generate_method_wrapper_crate(&struct_name, method));
+                ffi_wrappers.extend(generate_method_wrapper_crate(
+                    &struct_name,
+                    module_path,
+                    method,
+                ));
             }
         }
     }
@@ -1326,6 +1434,92 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl) -> TokenStream2 {
         #item_impl
         #ffi_wrappers
     }
+}
+
+/// Transform a `#[julia]` **module** (crate flavour, #300).
+///
+/// The proc-macro cannot see the module an item sits in, so the module itself
+/// carries the marker and expands its own `#[julia]` items with the module
+/// path — `module_path` is the path of the enclosing marked modules, and this
+/// module's name is appended to it. Each nested `#[julia]` function, struct and
+/// impl block is expanded exactly as [`transform_function`],
+/// [`transform_struct_crate`] and [`transform_impl_crate`] would, its own
+/// `#[julia]` attribute removed so the item-level macro does not run on it a
+/// second time; a nested `#[julia] mod` recurses with the accumulated path;
+/// everything else is kept as written.
+///
+/// A file module (`mod a;`) has no body to expand: the attribute is refused
+/// with a `compile_error!` naming the alternative (an inline module block).
+pub fn transform_module(item_mod: ItemMod, module_path: &[String]) -> TokenStream2 {
+    let Some((_, items)) = item_mod.content else {
+        return quote! {
+            compile_error!(
+                "#[julia] on a file module (`mod name;`) is not supported: attribute macros \
+                 cannot expand a non-inline module. Write the module inline \
+                 (`#[julia] pub mod name { ... }`) to give its items a module-qualified symbol."
+            );
+        };
+    };
+    let mut path = module_path.to_vec();
+    path.push(item_mod.ident.to_string());
+
+    let mut body = TokenStream2::new();
+    for item in items {
+        body.extend(expand_marked_item(item, &path));
+    }
+
+    let attrs = &item_mod.attrs;
+    let vis = &item_mod.vis;
+    let unsafety = &item_mod.unsafety;
+    let ident = &item_mod.ident;
+    quote! { #(#attrs)* #vis #unsafety mod #ident { #body } }
+}
+
+/// One item of a `#[julia]` module body: a `#[julia]` function, struct, impl
+/// block or module is expanded with `module_path`; anything else is unchanged.
+fn expand_marked_item(item: Item, module_path: &[String]) -> TokenStream2 {
+    fn take_julia(attrs: &mut Vec<Attribute>) -> bool {
+        let before = attrs.len();
+        attrs.retain(|attr| !crate::attrs::is_julia_attr(attr));
+        attrs.len() != before
+    }
+    match item {
+        Item::Fn(mut f) => {
+            if take_julia(&mut f.attrs) {
+                transform_function(f, module_path)
+            } else {
+                quote! { #f }
+            }
+        }
+        Item::Struct(mut s) => {
+            if take_julia(&mut s.attrs) {
+                transform_struct_crate(s, module_path)
+            } else {
+                quote! { #s }
+            }
+        }
+        Item::Impl(mut i) => {
+            if take_julia(&mut i.attrs) {
+                transform_impl_crate(i, module_path)
+            } else {
+                quote! { #i }
+            }
+        }
+        Item::Mod(mut m) => {
+            if take_julia(&mut m.attrs) {
+                transform_module(m, module_path)
+            } else {
+                quote! { #m }
+            }
+        }
+        other => quote! { #other },
+    }
+}
+
+/// Whether an inline module is marked `#[julia]`, i.e. contributes its name
+/// to the symbols of the items it contains (#300).
+pub fn is_marked_module(item_mod: &ItemMod) -> bool {
+    item_mod.attrs.iter().any(crate::attrs::is_julia_attr)
 }
 
 /// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any
@@ -1349,17 +1543,20 @@ pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bo
 /// impl block untouched; the wrapper calls it (#279).
 pub fn generate_method_wrapper_crate(
     struct_name: &Ident,
+    module_path: &[String],
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
     // The origin is a manifest column; the wrapper's shape does not depend
     // on it.
     let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
-    let owner = format_ident!("{}_{}", struct_name, method.sig.ident);
+    let stem = struct_stem(module_path, struct_name);
+    let owner = format_ident!("{}_{}", stem, method.sig.ident);
     let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
     let owned_free = format_ident!("{}_free_rust_string", owner);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", owner);
     generate_wrapper(method_spec(
         struct_name,
+        &stem,
         &model,
         &owned_helper,
         &owned_free,
@@ -1439,12 +1636,16 @@ fn inline_method_is_ctor(struct_name: &Ident, m: &MethodModel) -> bool {
 }
 
 /// Generate the `extern "C"` wrappers for a non-generic inline struct.
-pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStructMeta) {
+pub fn inline_struct_wrappers(
+    model: &StructModel,
+    module_path: &[String],
+) -> (TokenStream2, InlineStructMeta) {
     let struct_name = &model.item.ident;
+    let stem = struct_stem(module_path, struct_name);
     let mut out = TokenStream2::new();
     let mut meta = InlineStructMeta::default();
 
-    let free_name = format_ident!("{}_free", struct_name);
+    let free_name = format_ident!("{}_free", stem);
     out.extend(quote! {
         #[no_mangle]
         pub extern "C" fn #free_name(ptr: *mut #struct_name) {
@@ -1470,9 +1671,9 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
         .iter()
         .any(|m| method_returns_borrowed_str(m) && !inline_method_is_ctor(struct_name, m));
 
-    let owned_helper = format_ident!("{}_RustCallOwnedString", struct_name);
-    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", struct_name);
-    let owned_free = format_ident!("{}_free_rust_string", struct_name);
+    let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
+    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", stem);
+    let owned_free = format_ident!("{}_free_rust_string", stem);
 
     if needs_owned {
         meta.has_owned_string_helper = true;
@@ -1489,16 +1690,16 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
     let method_symbols: Vec<String> = model
         .methods
         .iter()
-        .map(|m| method_symbol(&struct_name.to_string(), &m.name()))
+        .map(|m| method_symbol_of(&stem.to_string(), &m.name()))
         .collect();
     for (field_name, field_ty) in &accessible {
-        let getter = format_ident!("{}_get_{}", struct_name, field_name);
+        let getter = format_ident!("{}_get_{}", stem, field_name);
         if method_symbols.contains(&getter.to_string()) {
             meta.accessors
                 .push((field_name.to_string(), getter.to_string(), String::new()));
             continue;
         }
-        let setter = format_ident!("{}_set_{}", struct_name, field_name);
+        let setter = format_ident!("{}_set_{}", stem, field_name);
         meta.accessors.push((
             field_name.to_string(),
             getter.to_string(),
@@ -1543,7 +1744,7 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
 
     if model.derives.iter().any(|d| d == "Clone") {
         meta.has_clone = true;
-        let clone_name = format_ident!("{}_clone", struct_name);
+        let clone_name = format_ident!("{}_clone", stem);
         out.extend(quote! {
             #[no_mangle]
             pub extern "C" fn #clone_name(ptr: *const #struct_name) -> *mut #struct_name {
@@ -1555,6 +1756,7 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
     for m in &model.methods {
         out.extend(inline_method_wrapper(
             struct_name,
+            &stem,
             m,
             &owned_helper,
             &owned_free,
@@ -1571,6 +1773,7 @@ pub fn inline_struct_wrappers(model: &StructModel) -> (TokenStream2, InlineStruc
 /// (inline flavour, per struct).
 fn method_spec(
     struct_name: &Ident,
+    stem: &Ident,
     m: &MethodModel,
     owned_helper: &Ident,
     owned_free: &Ident,
@@ -1579,10 +1782,7 @@ fn method_spec(
 ) -> WrapperSpec {
     let method_name = m.func.sig.ident.clone();
     let method_name_str = method_name.to_string();
-    let symbol = format_ident!(
-        "{}",
-        method_symbol(&struct_name.to_string(), &method_name_str)
-    );
+    let symbol = format_ident!("{}", method_symbol_of(&stem.to_string(), &method_name_str));
     let receiver = (!m.is_static).then(|| WrapperReceiver {
         ty: struct_name.clone().into(),
         mutable: m.is_mutable,
@@ -1604,13 +1804,13 @@ fn method_spec(
         // `CResult_<Struct>_<method>`, with a `String` payload composed onto
         // the owner's owned-string buffer.
         WrapperReturn::CResult {
-            name: format_ident!("CResult_{}_{}", struct_name, method_name_str),
+            name: format_ident!("CResult_{}_{}", stem, method_name_str),
             ok: payload_of(&r.ok_type, owned_helper, owned_free, declare),
             err: payload_of(&r.err_type, owned_helper, owned_free, declare),
         }
     } else if let Some(o) = method_option_return(m) {
         WrapperReturn::COption {
-            name: format_ident!("COption_{}_{}", struct_name, method_name_str),
+            name: format_ident!("COption_{}_{}", stem, method_name_str),
             inner: payload_of(&o.inner_type, owned_helper, owned_free, declare),
         }
     } else if method_returns_string(m) || method_copies_str(m) {
@@ -1645,6 +1845,7 @@ fn method_spec(
 /// are shared per struct, so the wrapper only refers to them.
 fn inline_method_wrapper(
     struct_name: &Ident,
+    stem: &Ident,
     m: &MethodModel,
     owned_helper: &Ident,
     owned_free: &Ident,
@@ -1652,6 +1853,7 @@ fn inline_method_wrapper(
 ) -> TokenStream2 {
     generate_wrapper(method_spec(
         struct_name,
+        stem,
         m,
         owned_helper,
         owned_free,

@@ -4,6 +4,7 @@ structs = []
 
 [[functions]]
 name = "add"
+ffi_name = "add"
 symbol = "add"
 attribute = "none"
 vis = "pub"
@@ -42,6 +43,7 @@ abi = ""
 
 [[functions]]
 name = "shout"
+ffi_name = "shout"
 symbol = "shout"
 attribute = "none"
 vis = "pub"
@@ -75,6 +77,7 @@ abi = "string"
 
 [[functions]]
 name = "add_take_panic"
+ffi_name = "add_take_panic"
 symbol = "add_take_panic"
 attribute = "none"
 vis = "pub"
@@ -104,6 +107,7 @@ module_path = []
 
 [[functions]]
 name = "tag"
+ffi_name = "tag"
 symbol = "tag"
 attribute = "none"
 vis = "pub"
@@ -133,6 +137,7 @@ module_path = []
 
 [[functions]]
 name = "echo"
+ffi_name = "echo"
 symbol = "echo"
 attribute = "none"
 vis = "pub"
@@ -166,6 +171,7 @@ abi = "str"
 
 [[functions]]
 name = "parse"
+ffi_name = "parse"
 symbol = "parse"
 attribute = "none"
 vis = "pub"
@@ -199,6 +205,7 @@ abi = "str"
 
 [[functions]]
 name = "check"
+ffi_name = "check"
 symbol = "check"
 attribute = "none"
 vis = "pub"
@@ -232,6 +239,7 @@ abi = ""
 
 [[functions]]
 name = "render"
+ffi_name = "render"
 symbol = "render"
 attribute = "none"
 vis = "pub"
@@ -261,6 +269,7 @@ module_path = []
 
 [[functions]]
 name = "numbers"
+ffi_name = "numbers"
 symbol = "numbers"
 attribute = "none"
 vis = "pub"
@@ -290,6 +299,7 @@ module_path = []
 
 [[functions]]
 name = "total"
+ffi_name = "total"
 symbol = "total"
 attribute = "none"
 vis = "pub"
@@ -323,6 +333,7 @@ abi = ""
 
 [[functions]]
 name = "divide"
+ffi_name = "divide"
 symbol = "divide"
 attribute = "none"
 vis = "pub"
@@ -361,6 +372,7 @@ abi = ""
 
 [[functions]]
 name = "maybe"
+ffi_name = "maybe"
 symbol = "maybe"
 attribute = "none"
 vis = "pub"
@@ -394,6 +406,7 @@ abi = ""
 
 [[functions]]
 name = "note"
+ffi_name = "note"
 symbol = "note"
 attribute = "none"
 vis = "pub"
@@ -427,6 +440,7 @@ abi = ""
 
 [[functions]]
 name = "area"
+ffi_name = "geometry__area"
 symbol = "area"
 attribute = "none"
 vis = "pub"

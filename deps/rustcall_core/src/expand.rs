@@ -76,8 +76,10 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
 }
 
 /// Expand one level of items. Inline modules (`mod m { ... }`) are expanded
-/// recursively so `#[julia]` items inside them are transformed and reported;
-/// `#[no_mangle]` symbols are unaffected by the module path.
+/// recursively so `#[julia]` items inside them are transformed and reported,
+/// and every exported symbol is qualified by the module path (#300): the
+/// expander sees the whole block, so — unlike the proc-macro — it needs no
+/// `#[julia]` marker on the module (one is accepted and stripped).
 fn expand_items(
     items: &[Item],
     manifest: &mut Manifest,
@@ -85,8 +87,7 @@ fn expand_items(
 ) -> Result<Vec<Item>, syn::Error> {
     let models = collect_struct_models_in(items, Mode::Inline);
     let mut out: Vec<Item> = Vec::new();
-    let push_fn = |manifest: &mut Manifest, mut entry: crate::manifest::Function| {
-        entry.module_path = module_path.to_vec();
+    let push_fn = |manifest: &mut Manifest, entry: crate::manifest::Function| {
         manifest.functions.push(entry);
     };
 
@@ -116,19 +117,22 @@ fn expand_items(
                             };
                             out.push(syn::parse_quote! { compile_error!(#msg); });
                             f.vis = Visibility::Public(Default::default());
-                            push_fn(manifest, function_entry(&f, attribute, false));
+                            push_fn(manifest, function_entry(&f, attribute, false, module_path));
                             out.push(Item::Fn(f));
                         } else if has_type_params(&f.sig.generics) {
                             f.vis = Visibility::Public(Default::default());
-                            push_fn(manifest, function_entry(&f, attribute, false));
+                            push_fn(manifest, function_entry(&f, attribute, false, module_path));
                             out.push(Item::Fn(f));
                         } else {
-                            push_fn(manifest, function_entry(&f, attribute, true));
-                            out.extend(items_of(transform_function(f))?);
+                            push_fn(manifest, function_entry(&f, attribute, true, module_path));
+                            out.extend(items_of(transform_function(f, module_path))?);
                         }
                     }
                     _ => {
-                        push_fn(manifest, function_entry(f, Attribute::None, false));
+                        push_fn(
+                            manifest,
+                            function_entry(f, Attribute::None, false, module_path),
+                        );
                         out.push(item.clone());
                     }
                 }
@@ -145,7 +149,7 @@ fn expand_items(
                 out.push(Item::Struct(s.clone()));
 
                 if model.is_generic() {
-                    let mut entry = generic_struct_entry(model, &s);
+                    let entry = generic_struct_entry(model, &s, module_path);
                     // Emit the generic wrappers (not exported) next to the struct so
                     // `specialize` can instantiate them in place, with every
                     // module-scoped name in reach.
@@ -153,13 +157,11 @@ fn expand_items(
                         let f: syn::File = syn::parse_str(&w.source)?;
                         out.extend(f.items);
                     }
-                    entry.module_path = module_path.to_vec();
                     manifest.structs.push(entry);
                 } else {
-                    let (tokens, meta) = inline_struct_wrappers(model);
+                    let (tokens, meta) = inline_struct_wrappers(model, module_path);
                     out.extend(items_of(tokens)?);
-                    let mut entry = concrete_struct_entry(model, &meta);
-                    entry.module_path = module_path.to_vec();
+                    let entry = concrete_struct_entry(model, &meta, module_path);
                     manifest.structs.push(entry);
                 }
             }
@@ -176,6 +178,9 @@ fn expand_items(
             Item::Mod(m) => match &m.content {
                 Some((brace, inner)) => {
                     let mut m = m.clone();
+                    // A `#[julia]` marker on the module is the crate-mode
+                    // spelling of what the expander sees for itself (#300).
+                    strip_rustcall_attrs(&mut m.attrs);
                     let mut path = module_path.to_vec();
                     path.push(m.ident.to_string());
                     m.content = Some((*brace, expand_items(inner, manifest, &path)?));
@@ -192,7 +197,8 @@ fn expand_items(
             "RustCall generates an item named `{name}` in this module, but the block already \
              defines one. `#[julia]` keeps the annotated item and emits its `extern \"C\"` entry \
              point next to it (`rustcall_<fn>`, `rustcall_<Struct>_<method>`, `<Struct>_free`, \
-             `<Struct>_get_<field>`, `CResult_<fn>`, `<fn>_RustCallOwnedString`, ...), so rename \
+             `<Struct>_get_<field>`, `CResult_<fn>`, `<fn>_RustCallOwnedString`, ... — with the \
+             module path folded into `<fn>` / `<Struct>` inside a module, #300), so rename \
              the conflicting item (#279)."
         );
         out.insert(0, syn::parse_quote! { compile_error!(#msg); });
@@ -256,7 +262,7 @@ fn symbol_collisions(original: &[Item], expanded: &[Item]) -> Vec<String> {
 /// struct gets `extern "C"` wrappers with exported symbols, a generic one gets
 /// generic wrappers registered for monomorphization instead. Only the former
 /// lower `Result` / `Option` (#268).
-fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
+fn methods_of(model: &StructModel, symbols: bool, stem: &str) -> Vec<Method> {
     let struct_name = &model.item.ident;
     model
         .methods
@@ -270,7 +276,7 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
             Method {
                 name: m.name(),
                 symbol: if symbols {
-                    crate::codegen::method_symbol(&struct_name.to_string(), &m.name())
+                    crate::codegen::method_symbol_of(stem, &m.name())
                 } else {
                     String::new()
                 },
@@ -321,7 +327,12 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
         .collect()
 }
 
-fn concrete_struct_entry(model: &StructModel, meta: &crate::codegen::InlineStructMeta) -> Struct {
+fn concrete_struct_entry(
+    model: &StructModel,
+    meta: &crate::codegen::InlineStructMeta,
+    module_path: &[String],
+) -> Struct {
+    let stem = crate::codegen::symbol_stem(module_path, &model.name());
     Struct {
         cfg: predicate_string(&model.item.attrs),
         cfg_features: crate::cfg::predicate_features(&model.item.attrs),
@@ -332,7 +343,8 @@ fn concrete_struct_entry(model: &StructModel, meta: &crate::codegen::InlineStruc
         python_name: String::new(),
         type_params: Vec::new(),
         fields: fields_of(model, &meta.accessors),
-        methods: methods_of(model, true),
+        methods: methods_of(model, true, &stem),
+        ffi_name: stem,
         derives: model.derives.clone(),
         has_clone: meta.has_clone,
         has_owned_string_helper: meta.has_owned_string_helper,
@@ -340,11 +352,15 @@ fn concrete_struct_entry(model: &StructModel, meta: &crate::codegen::InlineStruc
         context_source: String::new(),
         generic_wrappers: Vec::new(),
         line: model.line,
-        module_path: Vec::new(),
+        module_path: module_path.to_vec(),
     }
 }
 
-fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) -> Struct {
+fn generic_struct_entry(
+    model: &StructModel,
+    stripped_struct: &syn::ItemStruct,
+    module_path: &[String],
+) -> Struct {
     let wrappers = inline_generic_wrappers(model);
     let wrapper_names: Vec<&str> = wrappers.iter().map(|w| w.name.as_str()).collect();
     let accessors: Vec<(String, String, String)> = model
@@ -375,7 +391,11 @@ fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) 
         context_items.push(Item::Impl(imp));
     }
 
-    let mut methods = methods_of(model, false);
+    // A generic struct exports nothing itself: its wrappers are instantiated
+    // by `specialize` under names Julia chooses, so the stem is recorded for
+    // the consumer and never spelled into a symbol here.
+    let stem = crate::codegen::symbol_stem(module_path, &model.name());
+    let mut methods = methods_of(model, false, &stem);
     for m in &mut methods {
         let wrapper_name = format!("{}_{}", model.name(), m.name);
         if let Some(w) = wrappers.iter().find(|w| w.name == wrapper_name) {
@@ -387,6 +407,7 @@ fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) 
         cfg: predicate_string(&model.item.attrs),
         cfg_features: crate::cfg::predicate_features(&model.item.attrs),
         name: model.name(),
+        ffi_name: stem,
         attribute: model.attribute,
         vis: crate::attrs::visibility_string(&model.item.vis),
         skip_reason: String::new(),
@@ -401,6 +422,6 @@ fn generic_struct_entry(model: &StructModel, stripped_struct: &syn::ItemStruct) 
         context_source: unparse_items(context_items),
         generic_wrappers: wrappers,
         line: model.line,
-        module_path: Vec::new(),
+        module_path: module_path.to_vec(),
     }
 }

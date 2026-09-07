@@ -4,6 +4,7 @@ structs = []
 
 [[functions]]
 name = "nested"
+ffi_name = "nested"
 symbol = "nested"
 attribute = "julia"
 vis = "pub"
@@ -56,6 +57,7 @@ abi = ""
 
 [[functions]]
 name = "const_expression"
+ffi_name = "const_expression"
 symbol = "rustcall_const_expression"
 attribute = "julia"
 vis = ""
@@ -89,6 +91,7 @@ abi = ""
 
 [[functions]]
 name = "raw_braces"
+ffi_name = "raw_braces"
 symbol = "rustcall_raw_braces"
 attribute = "julia"
 vis = ""
@@ -118,6 +121,7 @@ module_path = []
 
 [[functions]]
 name = "marker_in_string_is_not_an_attribute"
+ffi_name = "marker_in_string_is_not_an_attribute"
 symbol = "marker_in_string_is_not_an_attribute"
 attribute = "none"
 vis = ""
@@ -147,6 +151,7 @@ module_path = []
 
 [[functions]]
 name = "borrow_for"
+ffi_name = "borrow_for"
 symbol = "borrow_for"
 attribute = "none"
 vis = ""
@@ -185,6 +190,7 @@ abi = "str"
 
 [[functions]]
 name = "cfg_disabled"
+ffi_name = "cfg_disabled"
 symbol = "rustcall_cfg_disabled"
 attribute = "julia"
 vis = ""

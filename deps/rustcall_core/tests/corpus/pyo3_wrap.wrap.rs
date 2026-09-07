@@ -963,12 +963,13 @@ pub extern "C" fn rustcall_note(x: i32) {
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_AREA : ::std::cell::RefCell < ::std::option::Option
-    < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__AREA : ::std::cell::RefCell <
+    ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_area_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_AREA
+pub extern "C" fn rustcall_geometry__area_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__AREA
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -999,7 +1000,7 @@ pub extern "C" fn rustcall_area_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_area(w: f64, h: f64) -> f64 {
+pub extern "C" fn rustcall_geometry__area(w: f64, h: f64) -> f64 {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { user_crate::geometry::area(w, h) }),
     ) {
@@ -1020,7 +1021,7 @@ pub extern "C" fn rustcall_area(w: f64, h: f64) -> f64 {
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "area", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_AREA
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__AREA
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1031,7 +1032,7 @@ pub extern "C" fn rustcall_area(w: f64, h: f64) -> f64 {
     }
 }
 #[no_mangle]
-pub extern "C" fn Rect_free(ptr: *mut user_crate::geometry::Rect) {
+pub extern "C" fn geometry__Rect_free(ptr: *mut user_crate::geometry::Rect) {
     if !ptr.is_null() {
         unsafe {
             drop(Box::from_raw(ptr));
@@ -1039,13 +1040,13 @@ pub extern "C" fn Rect_free(ptr: *mut user_crate::geometry::Rect) {
     }
 }
 #[repr(C)]
-pub struct Rect_RustCallOwnedString {
+pub struct geometry__Rect_RustCallOwnedString {
     pub ptr: *mut u8,
     pub len: usize,
     pub cap: usize,
 }
 #[no_mangle]
-pub extern "C" fn Rect_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
+pub extern "C" fn geometry__Rect_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     if !ptr.is_null() {
         unsafe {
             drop(Vec::from_raw_parts(ptr, len, cap));
@@ -1053,17 +1054,22 @@ pub extern "C" fn Rect_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_get_w(ptr: *const user_crate::geometry::Rect) -> f64 {
+pub extern "C" fn rustcall_geometry__Rect_get_w(
+    ptr: *const user_crate::geometry::Rect,
+) -> f64 {
     unsafe { (*ptr).w }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_set_w(ptr: *mut user_crate::geometry::Rect, value: f64) {
+pub extern "C" fn rustcall_geometry__Rect_set_w(
+    ptr: *mut user_crate::geometry::Rect,
+    value: f64,
+) {
     unsafe {
         (*ptr).w = value;
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_set_depth(
+pub extern "C" fn rustcall_geometry__Rect_set_depth(
     ptr: *mut user_crate::geometry::Rect,
     value: f64,
 ) {
@@ -1072,11 +1078,11 @@ pub extern "C" fn rustcall_Rect_set_depth(
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_get_name(
+pub extern "C" fn rustcall_geometry__Rect_get_name(
     ptr: *const user_crate::geometry::Rect,
-) -> Rect_RustCallOwnedString {
+) -> geometry__Rect_RustCallOwnedString {
     let mut rustcall_bytes = unsafe { (*ptr).name.clone().into_bytes() };
-    let rustcall_ret = Rect_RustCallOwnedString {
+    let rustcall_ret = geometry__Rect_RustCallOwnedString {
         ptr: rustcall_bytes.as_mut_ptr(),
         len: rustcall_bytes.len(),
         cap: rustcall_bytes.capacity(),
@@ -1085,13 +1091,16 @@ pub extern "C" fn rustcall_Rect_get_name(
     rustcall_ret
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_RECT_NEW : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_NEW : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_new_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_RECT_NEW
+pub extern "C" fn rustcall_geometry__Rect_new_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_NEW
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1122,7 +1131,9 @@ pub extern "C" fn rustcall_Rect_new_take_panic(out: *mut u8, cap: usize) -> usiz
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_new(w: f64) -> *mut user_crate::geometry::Rect {
+pub extern "C" fn rustcall_geometry__Rect_new(
+    w: f64,
+) -> *mut user_crate::geometry::Rect {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let obj = user_crate::geometry::Rect::new(w);
@@ -1146,7 +1157,7 @@ pub extern "C" fn rustcall_Rect_new(w: f64) -> *mut user_crate::geometry::Rect {
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Rect::new", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_RECT_NEW
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_NEW
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1157,13 +1168,16 @@ pub extern "C" fn rustcall_Rect_new(w: f64) -> *mut user_crate::geometry::Rect {
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_RECT_UNIT : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_UNIT : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_unit_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_RECT_UNIT
+pub extern "C" fn rustcall_geometry__Rect_unit_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_UNIT
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1194,7 +1208,7 @@ pub extern "C" fn rustcall_Rect_unit_take_panic(out: *mut u8, cap: usize) -> usi
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_unit() -> *mut user_crate::geometry::Rect {
+pub extern "C" fn rustcall_geometry__Rect_unit() -> *mut user_crate::geometry::Rect {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let obj = user_crate::geometry::Rect::unit();
@@ -1218,7 +1232,7 @@ pub extern "C" fn rustcall_Rect_unit() -> *mut user_crate::geometry::Rect {
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Rect::unit", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_RECT_UNIT
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_UNIT
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1229,13 +1243,16 @@ pub extern "C" fn rustcall_Rect_unit() -> *mut user_crate::geometry::Rect {
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_RECT_AREA : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_AREA : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_area_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_RECT_AREA
+pub extern "C" fn rustcall_geometry__Rect_area_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_AREA
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1266,7 +1283,9 @@ pub extern "C" fn rustcall_Rect_area_take_panic(out: *mut u8, cap: usize) -> usi
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_area(ptr: *const user_crate::geometry::Rect) -> f64 {
+pub extern "C" fn rustcall_geometry__Rect_area(
+    ptr: *const user_crate::geometry::Rect,
+) -> f64 {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -1290,7 +1309,7 @@ pub extern "C" fn rustcall_Rect_area(ptr: *const user_crate::geometry::Rect) -> 
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Rect::area", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_RECT_AREA
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_AREA
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1301,13 +1320,16 @@ pub extern "C" fn rustcall_Rect_area(ptr: *const user_crate::geometry::Rect) -> 
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_RECT_SCALE : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALE : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_scale_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_RECT_SCALE
+pub extern "C" fn rustcall_geometry__Rect_scale_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1338,7 +1360,7 @@ pub extern "C" fn rustcall_Rect_scale_take_panic(out: *mut u8, cap: usize) -> us
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_scale(
+pub extern "C" fn rustcall_geometry__Rect_scale(
     ptr: *mut user_crate::geometry::Rect,
     factor: f64,
 ) {
@@ -1365,7 +1387,7 @@ pub extern "C" fn rustcall_Rect_scale(
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Rect::scale", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_RECT_SCALE
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALE
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1375,13 +1397,16 @@ pub extern "C" fn rustcall_Rect_scale(
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_RECT_LABEL : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_LABEL : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_label_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_RECT_LABEL
+pub extern "C" fn rustcall_geometry__Rect_label_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_LABEL
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1412,13 +1437,17 @@ pub extern "C" fn rustcall_Rect_label_take_panic(out: *mut u8, cap: usize) -> us
         })
 }
 #[repr(C)]
-pub struct Rect_label_RustCallOwnedString {
+pub struct geometry__Rect_label_RustCallOwnedString {
     pub ptr: *mut u8,
     pub len: usize,
     pub cap: usize,
 }
 #[no_mangle]
-pub extern "C" fn Rect_label_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
+pub extern "C" fn geometry__Rect_label_free_rust_string(
+    ptr: *mut u8,
+    len: usize,
+    cap: usize,
+) {
     if !ptr.is_null() {
         unsafe {
             drop(Vec::from_raw_parts(ptr, len, cap));
@@ -1426,15 +1455,15 @@ pub extern "C" fn Rect_label_free_rust_string(ptr: *mut u8, len: usize, cap: usi
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_label(
+pub extern "C" fn rustcall_geometry__Rect_label(
     ptr: *const user_crate::geometry::Rect,
-) -> Rect_label_RustCallOwnedString {
+) -> geometry__Rect_label_RustCallOwnedString {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
             let rustcall_value = self_obj.label();
             let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
-            let rustcall_ret = Rect_label_RustCallOwnedString {
+            let rustcall_ret = geometry__Rect_label_RustCallOwnedString {
                 ptr: rustcall_bytes.as_mut_ptr(),
                 len: rustcall_bytes.len(),
                 cap: rustcall_bytes.capacity(),
@@ -1460,13 +1489,13 @@ pub extern "C" fn rustcall_Rect_label(
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Rect::label", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_RECT_LABEL
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_LABEL
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
                     );
                 });
-            Rect_label_RustCallOwnedString {
+            geometry__Rect_label_RustCallOwnedString {
                 ptr: ::std::ptr::null_mut(),
                 len: 0,
                 cap: 0,
@@ -1475,13 +1504,16 @@ pub extern "C" fn rustcall_Rect_label(
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_RECT_SCALED : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALED : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_scaled_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_RECT_SCALED
+pub extern "C" fn rustcall_geometry__Rect_scaled_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALED
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1512,7 +1544,7 @@ pub extern "C" fn rustcall_Rect_scaled_take_panic(out: *mut u8, cap: usize) -> u
         })
 }
 #[repr(C)]
-pub struct CResult_Rect_scaled {
+pub struct CResult_geometry__Rect_scaled {
     is_ok: u8,
     /// Only initialized when `is_ok == 1`. `MaybeUninit` keeps the
     /// inactive field free of validity invariants (e.g. `NonZeroU32`).
@@ -1520,7 +1552,7 @@ pub struct CResult_Rect_scaled {
     /// Only initialized when `is_ok == 0`.
     err_value: ::std::mem::MaybeUninit<i32>,
 }
-impl CResult_Rect_scaled {
+impl CResult_geometry__Rect_scaled {
     /// Wrap a `Result` in the C-compatible representation.
     pub fn new(value: Result<f64, i32>) -> Self {
         match value {
@@ -1576,14 +1608,14 @@ impl CResult_Rect_scaled {
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Rect_scaled(
+pub extern "C" fn rustcall_geometry__Rect_scaled(
     ptr: *const user_crate::geometry::Rect,
     factor: f64,
-) -> CResult_Rect_scaled {
+) -> CResult_geometry__Rect_scaled {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            CResult_Rect_scaled::new(
+            CResult_geometry__Rect_scaled::new(
                 self_obj
                     .scaled(factor)
                     .map_err(|rustcall_py_err| {
@@ -1610,18 +1642,18 @@ pub extern "C" fn rustcall_Rect_scaled(
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Rect::scaled", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_RECT_SCALED
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALED
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
                     );
                 });
-            CResult_Rect_scaled::panicked()
+            CResult_geometry__Rect_scaled::panicked()
         }
     }
 }
 #[no_mangle]
-pub extern "C" fn Counter_free(ptr: *mut user_crate::geometry::Counter) {
+pub extern "C" fn geometry__Counter_free(ptr: *mut user_crate::geometry::Counter) {
     if !ptr.is_null() {
         unsafe {
             drop(Box::from_raw(ptr));
@@ -1629,13 +1661,16 @@ pub extern "C" fn Counter_free(ptr: *mut user_crate::geometry::Counter) {
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_COUNTER_NEW : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_NEW : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Counter_new_take_panic(out: *mut u8, cap: usize) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_COUNTER_NEW
+pub extern "C" fn rustcall_geometry__Counter_new_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_NEW
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1666,7 +1701,7 @@ pub extern "C" fn rustcall_Counter_new_take_panic(out: *mut u8, cap: usize) -> u
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Counter_new() -> i32 {
+pub extern "C" fn rustcall_geometry__Counter_new() -> i32 {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { user_crate::geometry::Counter::new() }),
     ) {
@@ -1687,7 +1722,7 @@ pub extern "C" fn rustcall_Counter_new() -> i32 {
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Counter::new", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_COUNTER_NEW
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_NEW
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
@@ -1698,16 +1733,16 @@ pub extern "C" fn rustcall_Counter_new() -> i32 {
     }
 }
 thread_local! {
-    static __RUSTCALL_PANIC_RUSTCALL_COUNTER_DESCRIBE : ::std::cell::RefCell <
+    static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_DESCRIBE : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Counter_describe_take_panic(
+pub extern "C" fn rustcall_geometry__Counter_describe_take_panic(
     out: *mut u8,
     cap: usize,
 ) -> usize {
-    __RUSTCALL_PANIC_RUSTCALL_COUNTER_DESCRIBE
+    __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_DESCRIBE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
             let rustcall_len = match rustcall_slot.as_ref() {
@@ -1738,13 +1773,13 @@ pub extern "C" fn rustcall_Counter_describe_take_panic(
         })
 }
 #[repr(C)]
-pub struct Counter_describe_RustCallOwnedString {
+pub struct geometry__Counter_describe_RustCallOwnedString {
     pub ptr: *mut u8,
     pub len: usize,
     pub cap: usize,
 }
 #[no_mangle]
-pub extern "C" fn Counter_describe_free_rust_string(
+pub extern "C" fn geometry__Counter_describe_free_rust_string(
     ptr: *mut u8,
     len: usize,
     cap: usize,
@@ -1756,15 +1791,15 @@ pub extern "C" fn Counter_describe_free_rust_string(
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Counter_describe(
+pub extern "C" fn rustcall_geometry__Counter_describe(
     ptr: *const user_crate::geometry::Counter,
-) -> Counter_describe_RustCallOwnedString {
+) -> geometry__Counter_describe_RustCallOwnedString {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
             let rustcall_value = self_obj.describe();
             let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
-            let rustcall_ret = Counter_describe_RustCallOwnedString {
+            let rustcall_ret = geometry__Counter_describe_RustCallOwnedString {
                 ptr: rustcall_bytes.as_mut_ptr(),
                 len: rustcall_bytes.len(),
                 cap: rustcall_bytes.capacity(),
@@ -1790,13 +1825,13 @@ pub extern "C" fn rustcall_Counter_describe(
             let rustcall_message = ::std::format!(
                 "{} panicked: {}", "Counter::describe", rustcall_message
             );
-            __RUSTCALL_PANIC_RUSTCALL_COUNTER_DESCRIBE
+            __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_DESCRIBE
                 .with(|rustcall_slot| {
                     *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                         rustcall_message,
                     );
                 });
-            Counter_describe_RustCallOwnedString {
+            geometry__Counter_describe_RustCallOwnedString {
                 ptr: ::std::ptr::null_mut(),
                 len: 0,
                 cap: 0,
