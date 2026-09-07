@@ -46,19 +46,131 @@ function _cargo_feature_args(features::Vector{String}, default_features::Bool)
 end
 
 """
-    _cargo_build_args(release, features, default_features) -> Vector{String}
+    cargo_offline() -> Bool
+
+Whether `RUSTCALL_OFFLINE` asks for air-gapped builds (`1`, `true`, `yes`; case
+insensitive). Every `cargo` invocation that could touch the network —
+`generate-lockfile`, `build` — then carries `--offline`, and Cargo fails at once,
+with its own message, on anything the local registry cache does not hold,
+rather than hanging on a download (#256). The flag changes where Cargo looks,
+not what it builds, so it is not part of any artifact identity.
+"""
+cargo_offline() = lowercase(strip(get(ENV, "RUSTCALL_OFFLINE", ""))) in ("1", "true", "yes")
+
+# The network half of a `cargo` argument vector: `--offline` under
+# `RUSTCALL_OFFLINE`, nothing otherwise.
+_cargo_network_args() = cargo_offline() ? ["--offline"] : String[]
+
+"""
+    _cargo_build_args(release, features, default_features; locked = false) -> Vector{String}
 
 The argument vector of the `cargo build` a project is built with: the profile,
-then the feature set (`_cargo_feature_args`). A plain `@rust_crate` build made
-with `features = ...` / `default_features = false` passes them here, so the
-crate is built with the configuration that was asked for and not its default
-one (#307 review).
+then the feature set (`_cargo_feature_args`), then `--locked` when the project's
+`Cargo.lock` is authoritative — it came from the lockfile store or was just
+generated for exactly this project (`ensure_cargo_lockfile!`) — so Cargo builds
+the resolved graph the identity describes or fails, never re-resolving behind
+the key (#256); and `--offline` under `RUSTCALL_OFFLINE`. A plain `@rust_crate`
+build made with `features = ...` / `default_features = false` passes them here,
+so the crate is built with the configuration that was asked for and not its
+default one (#307 review).
 """
-function _cargo_build_args(release::Bool, features::Vector{String}, default_features::Bool)
+function _cargo_build_args(release::Bool, features::Vector{String}, default_features::Bool;
+                           locked::Bool = false)
     args = ["build"]
     release && push!(args, "--release")
     append!(args, _cargo_feature_args(features, default_features))
+    locked && push!(args, "--locked")
+    append!(args, _cargo_network_args())
     return args
+end
+
+"""
+    lockfile_dir() -> String
+
+The directory of the persisted `Cargo.lock` files (`<cache dir>/lockfiles`),
+created on demand. Lockfiles are *inputs* of a build, not outputs, so
+`clear_cache` / `clear_cargo_cache` leave them alone: delete one to re-resolve
+its dependency set (`lockfile_path`).
+"""
+function lockfile_dir()
+    dir = joinpath(get_cache_dir(), "lockfiles")
+    mkpath(dir)
+    return dir
+end
+
+"""
+    lockfile_path(deps::Vector{DependencySpec}) -> String
+    lockfile_path(code::AbstractString) -> String
+
+Where RustCall keeps the `Cargo.lock` of a `// cargo-deps:` dependency set —
+named by `artifact_key(cargo_lockfile_id(deps))`, so the same declared set on
+any machine looks in the same place. The second form parses the dependency
+comments of a block's source (`parse_dependencies_from_code`).
+
+The file is written the first time the set is resolved (`cargo generate-lockfile`,
+`ensure_cargo_lockfile!`) and replayed with `--locked` on every later build, on
+this machine or another one that has the file. Commit it, copy it, or delete it
+to resolve afresh; its content is part of every build's identity, so a changed
+lockfile is a rebuild and never a stale cache hit (#256).
+"""
+lockfile_path(deps::Vector{DependencySpec}) =
+    joinpath(lockfile_dir(), artifact_key(cargo_lockfile_id(deps)) * ".lock")
+lockfile_path(code::AbstractString) = lockfile_path(parse_dependencies_from_code(String(code)))
+
+"""
+    ensure_cargo_lockfile!(project::CargoProject; env = nothing) -> Union{String, Nothing}
+
+Give a generated project an authoritative `Cargo.lock` and return its content
+digest — `nothing` for a project that declares no dependencies of its own
+(`project.dependencies` empty, e.g. a `@rust_crate` wrapper whose manifest was
+written by hand), which has no entry in the lockfile store.
+
+When the store has a lockfile for the project's dependency set
+(`lockfile_path`), it is copied in and nothing is resolved: the build that
+follows is `--locked`, so it either builds exactly the graph the file pins or
+fails. Otherwise `cargo generate-lockfile` resolves the set once — `--offline`
+under `RUSTCALL_OFFLINE`, failing loudly when the local registry lacks
+something — and the result is persisted for every later build of the same set
+(#256). The generated project's root package is `CARGO_BLOCK_PACKAGE` for every
+block, which is what makes one lockfile fit them all.
+
+Throws `CargoBuildError` with Cargo's own message when resolution fails.
+"""
+function ensure_cargo_lockfile!(project::CargoProject;
+                                env::Union{Nothing, AbstractDict} = nothing)
+    isempty(project.dependencies) && return nothing
+    stored = lockfile_path(project.dependencies)
+    target = joinpath(project.path, "Cargo.lock")
+    if isfile(stored)
+        cp(stored, target; force = true)
+        return _file_content_digest(target)
+    end
+    args = ["generate-lockfile"]
+    append!(args, _cargo_network_args())
+    cmd = setenv(`$(cargo()) $args`, Dict{String, String}(env === nothing ? ENV : env);
+                 dir = project.path)
+    stderr_io = IOBuffer()
+    ok = try
+        success(pipeline(cmd; stdout = devnull, stderr = stderr_io))
+    catch e
+        throw(CargoBuildError("Unexpected error while resolving dependencies: $e", "",
+                              project.path))
+    end
+    ok || throw(CargoBuildError(
+        cargo_offline() ?
+            "Cargo could not resolve the dependencies offline (RUSTCALL_OFFLINE is set and " *
+            "the local registry cache does not hold them)" :
+            "Cargo could not resolve the dependencies",
+        String(take!(stderr_io)), project.path))
+    isfile(target) || throw(CargoBuildError("cargo generate-lockfile produced no Cargo.lock",
+                                            "", project.path))
+    # Persist atomically: a concurrent build of the same set must see a whole
+    # file or none.
+    mkpath(dirname(stored))
+    tmp = stored * ".tmp-$(getpid())-$(rand(UInt32))"
+    cp(target, tmp; force = true)
+    mv(tmp, stored; force = true)
+    return _file_content_digest(target)
 end
 
 """
@@ -82,10 +194,11 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
                              env::Union{Nothing, AbstractDict} = nothing,
                              policy::LoadPolicy = inline_cargo_policy(),
                              features::Vector{String} = String[],
-                             default_features::Bool = true)
+                             default_features::Bool = true,
+                             locked::Bool = false)
     # Build command
     cargo_cmd = cargo()
-    build_args = _cargo_build_args(release, features, default_features)
+    build_args = _cargo_build_args(release, features, default_features; locked = locked)
 
     # The panic strategy is pinned twice: in the generated manifest and here,
     # in the environment Cargo runs under (#244). The manifest key already
@@ -290,7 +403,8 @@ function build_cargo_project_cached(
     project::CargoProject,
     id::ArtifactId;
     release::Bool = true,
-    env::Union{Nothing, AbstractDict} = nothing
+    env::Union{Nothing, AbstractDict} = nothing,
+    locked::Bool = false
 )
     # `id` is already the complete identity of this build — the caller computed
     # it once and looked the artifact up under it. Deriving a *richer* key here
@@ -309,7 +423,7 @@ function build_cargo_project_cached(
     end
 
     # Build the project
-    lib_path = build_cargo_project(project, release=release, env=env)
+    lib_path = build_cargo_project(project, release=release, env=env, locked=locked)
 
     # Cache the result
     try
