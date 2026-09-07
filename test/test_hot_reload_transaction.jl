@@ -227,6 +227,81 @@ end
         @test fresh.generation == 0
         @test RustCall.next_reload_generation() > b
         @test occursin("loadable_library_copy", _src_loadpolicy())
+        # The copy name carries the process id: the counter is per process,
+        # so two processes loading one built library would otherwise both pick
+        # `.1.`, and on Windows the second could not overwrite the first's
+        # mapped copy and would fall back to mapping Cargo's output (#309).
+        host = RustCall._generation_copy_host()
+        @test occursin(r"^[0-9a-f]{12}$", host)
+        @test host == RustCall._generation_copy_host()
+        @test basename(RustCall.process_generation_path(joinpath("a", "foo.dll"), 7)) ==
+              "foo.rustcall.$(host).$(getpid()).7.dll"
+        mktempdir() do dir
+            built = joinpath(dir, "libfoo.so")
+            write(built, "not a library")
+            expected = RustCall.RELOAD_GENERATION[] + 1
+            copied = RustCall.loadable_library_copy(built)
+            @test copied == joinpath(dir, "libfoo.rustcall.$(host).$(getpid()).$(expected).so")
+            @test isfile(copied) && isfile(built)
+            @test read(copied) == read(built)
+        end
+        @test occursin("process_generation_path(built, next_reload_generation())",
+                       _src_loadpolicy())
+        # Copies of processes that no longer exist are swept when the next
+        # process copies the same library, so a written module loaded by one
+        # Julia process after another does not accumulate one copy per start
+        # (#309). Kept: this process's copies, a live process's copies, the
+        # pre-marker `<lib>.<n>.<ext>` shape, any file without the
+        # `rustcall` marker — a versioned `libbar.12345.2.so` is not ours —
+        # and another host's copy on a shared volume, whose pid this host's
+        # process table cannot judge.
+        mktempdir() do dir
+            built = joinpath(dir, "libbar.so")
+            write(built, "not a library")
+            # A pid that is guaranteed to be gone: an exited child. And a pid
+            # that is guaranteed to be alive: a child still blocked on stdin.
+            child = open(`$(Base.julia_cmd()) --startup-file=no -e 0`)
+            dead_pid = getpid(child)
+            wait(child)
+            live = open(`$(Base.julia_cmd()) --startup-file=no -e "readline(stdin)"`,
+                        "w")
+            live_pid = getpid(live)
+            try
+                @test !RustCall._process_alive(dead_pid)
+                @test RustCall._process_alive(live_pid)
+                @test RustCall._process_alive(getpid())
+                host = RustCall._generation_copy_host()
+                other_host = host == "0123456789ab" ? "ba9876543210" : "0123456789ab"
+                stale = joinpath(dir, "libbar.rustcall.$(host).$(dead_pid).3.so")
+                mine = joinpath(dir, "libbar.rustcall.$(host).$(getpid()).1.so")
+                theirs = joinpath(dir, "libbar.rustcall.$(host).$(live_pid).1.so")
+                foreign = joinpath(dir, "libbar.rustcall.$(other_host).$(dead_pid).3.so")
+                hostless = joinpath(dir, "libbar.rustcall.$(dead_pid).3.so")
+                legacy = joinpath(dir, "libbar.7.so")
+                unmarked = joinpath(dir, "libbar.$(dead_pid).2.so")
+                other_lib = joinpath(dir, "libbarbaz.rustcall.$(host).$(dead_pid).2.so")
+                for f in (stale, mine, theirs, foreign, hostless, legacy, unmarked, other_lib)
+                    write(f, "stale?")
+                end
+                copied = RustCall.loadable_library_copy(built)
+                @test isfile(copied)
+                @test !isfile(stale)
+                @test isfile(mine)
+                @test isfile(theirs)
+                @test isfile(foreign)
+                @test isfile(hostless)
+                @test isfile(legacy)
+                @test isfile(unmarked)
+                @test isfile(other_lib)
+                @test isfile(built)
+            finally
+                close(live)   # closes its stdin: readline returns, the child exits
+                wait(live)
+            end
+        end
+        @test findfirst("_sweep_stale_generation_copies(built)", _src_loadpolicy()) <
+              findfirst("process_generation_path(built, next_reload_generation())",
+                        _src_loadpolicy())
         # The previous image is RETIRED after the swap, never closed under a
         # call that may still be inside it (#277).
         @test !occursin("on_replace = :dlclose", _HRT_SRC)

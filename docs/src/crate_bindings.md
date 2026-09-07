@@ -532,7 +532,14 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 4`). Regenerate after upgrading RustCall.
+(`# Bindings format: 6`). Regenerate after upgrading RustCall.
+
+Since format `6` (#309) the module's `__init__` opens a **private generation
+copy** of the library rather than the file `_LIB_PATH` names, exactly as
+`@rust_crate` does: that file is Cargo's output (or the copy
+`write_bindings_to_file` made of it), and an image mapped in place cannot be
+overwritten on Windows — the next `cargo build` of the crate, and the next
+regeneration of the file, would fail with "Access is denied".
 
 Version `3` is the first that does **not** keep working when it is older than
 the RustCall loading it: the emitted wrappers name `RustCall.ffi_string_argument`,
