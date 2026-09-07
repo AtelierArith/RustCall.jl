@@ -97,7 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused by the scan (`async_fn`) rather than wrapped as if it returned the
   value its future resolves to; a crate whose `[lib] crate-type` offers no
   `rlib` (a `["cdylib"]`-only PyO3 extension) is refused before the build with
-  the one-line fix, instead of failing inside the generated wrapper; and
+  the one-line fix, instead of failing inside the generated wrapper; a package
+  a workspace lists in `members` stays a member even under an `exclude`d
+  directory, as Cargo has it; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

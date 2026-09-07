@@ -546,13 +546,25 @@ function _workspace_root_dir(dir::AbstractString)
     end
 end
 
-# Whether the `[workspace]` table at `root` excludes `dir`: an `exclude` entry
-# naming `dir` itself or a directory it lies under, resolved against `root`.
+# Whether the `[workspace]` table at `root` excludes `dir`, with Cargo's own
+# rule (`WorkspaceRootConfig::is_excluded`): an `exclude` entry naming `dir`
+# itself or a directory it lies under excludes it — *unless* a `members` entry
+# names `dir` or a directory it lies under, in which case the explicit listing
+# wins and the package stays a member (`members = ["crates/foo/bar"]` next to
+# `exclude = ["crates/foo"]`, #307 review). Only a literal `members` entry
+# counts: Cargo compares the raw list, so a glob (`crates/*`) rescues nothing.
 function _workspace_excludes(workspace::AbstractDict, root::AbstractString, dir::AbstractString)
-    excluded = get(workspace, "exclude", nothing)
-    excluded isa AbstractVector || return false
     target = abspath(String(dir))
-    for entry in excluded
+    _workspace_lists(get(workspace, "exclude", nothing), root, target) || return false
+    return !_workspace_lists(get(workspace, "members", nothing), root, target)
+end
+
+# Whether one of `entries` (paths relative to `root`) is `target` or a
+# directory `target` lies under. Entries that are not strings, or that do not
+# resolve, are skipped.
+function _workspace_lists(entries, root::AbstractString, target::AbstractString)
+    entries isa AbstractVector || return false
+    for entry in entries
         entry isa AbstractString || continue
         path = try
             abspath(joinpath(String(root), String(entry)))

@@ -355,6 +355,47 @@ _manifest(text::AbstractString) = TOML.parse(text)
             @test !isfile(joinpath(project, "Cargo.lock"))
             rm(project; recursive = true, force = true)
 
+            # ... but an explicit `members` listing wins over `exclude`, as it
+            # does in Cargo (`is_excluded` is "excluded and not an explicit
+            # member"): `members = ["crates/foo/bar"]` next to
+            # `exclude = ["crates/foo"]` keeps `bar` a member, while its
+            # unlisted sibling under `crates/foo` is excluded, and a glob
+            # member rescues nothing because Cargo compares the raw list
+            # (#307 review).
+            table = Dict{String, Any}("members" => ["crates/foo/bar", "globbed/*"],
+                                      "exclude" => ["crates/foo", "globbed"])
+            @test !RustCall._workspace_excludes(table, ws, joinpath(ws, "crates", "foo", "bar"))
+            @test !RustCall._workspace_excludes(table, ws, joinpath(ws, "crates", "foo", "bar", "deeper"))
+            @test RustCall._workspace_excludes(table, ws, joinpath(ws, "crates", "foo", "other"))
+            @test RustCall._workspace_excludes(table, ws, joinpath(ws, "crates", "foo"))
+            @test RustCall._workspace_excludes(table, ws, joinpath(ws, "globbed", "x"))
+            @test !RustCall._workspace_excludes(table, ws, joinpath(ws, "crates", "elsewhere"))
+            # End to end: the listed descendant of an excluded directory finds
+            # the workspace root and its inputs.
+            nested_ws = mktempdir()
+            write(joinpath(nested_ws, "Cargo.toml"), """
+            [workspace]
+            members = ["crates/foo/bar"]
+            exclude = ["crates/foo"]
+            """)
+            write(joinpath(nested_ws, "Cargo.lock"), "# nested lockfile\n")
+            bar = _write_crate(joinpath(nested_ws, "crates", "foo", "bar"), """
+            [package]
+            name = "bar"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+            other = _write_crate(joinpath(nested_ws, "crates", "foo", "other"), """
+            [package]
+            name = "other"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+            @test RustCall._workspace_root_dir(bar) == nested_ws
+            @test RustCall._cargo_root_dir(bar) == nested_ws
+            @test RustCall._workspace_root_dir(other) === nothing
+            rm(nested_ws; recursive = true, force = true)
+
             # The root's manifest and lockfile are inputs of a member's
             # artifact identity: a change there that touches no file of the
             # member still rebuilds (#307 review, #278).
