@@ -392,11 +392,17 @@ pyo3's own configuration when it names one (`PYO3_CROSS_LIB_DIR`, the `lib_dir`
 of a `PYO3_CONFIG_FILE` — pyo3 then links without discovering an interpreter,
 and RustCall consults only the interpreter `PYO3_PYTHON` explicitly pins, if
 any, for the Windows runtime DLL), then the interpreter `PYO3_PYTHON` pins, then
-a loaded CondaPkg environment, and only then the `python3` on `PATH`. A `python3` whose
-package ships the shared library only in `python3-dev` / `python3-devel`, or no
-interpreter at all, makes the build refuse with a message naming the directory
-it looked in; install the development package, or point `PYO3_PYTHON` (or
-`RUSTCALL_PYTHON_LIBDIR`) at a Python that has one.
+a loaded CondaPkg environment, and only then the `python3` on `PATH`.
+
+The two ways this goes wrong look different. With **no interpreter and no
+configured directory** the plan itself refuses, naming what it looked for.
+With an **interpreter whose development package is missing**, the directory it
+reports exists and is accepted — only `isdir` is checked — so the refusal comes
+later, from the linker: the wrapper build fails with the toolchain's own
+"library not found for -lpython3.x" (or the equivalent unresolved-symbol
+error). Either way the fix is the same: install `python3-dev` /
+`python3-devel`, or point `PYO3_PYTHON` (or `RUSTCALL_PYTHON_LIBDIR`) at a
+Python that ships the library.
 
 The same requirement shapes RustCall's own test suite. The testsets that build
 and load a `:link_libpython` wrapper — in `test/test_pyo3_wrapper.jl` today,
