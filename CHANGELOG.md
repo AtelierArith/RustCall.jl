@@ -217,6 +217,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference page of the defining file.
 
 ### Fixed
+- **Metadata and documentation drift**
+  ([#261](https://github.com/AtelierArith/RustCall.jl/issues/261)). The
+  registry tarball no longer ships internal development artifacts
+  (`docs/plans/`, `docs/design/`, `docs/superpowers/` and a force-added
+  `benchmark/Manifest.toml`). This changelog states the supported Julia
+  versions the way `Project.toml` and CI do and dates 0.1.0 by its General
+  registration; `CLAUDE.md` no longer names the vendored `Cxx.jl/` / `julia/`
+  trees removed in #215; `docs/src/status.md` drops its hand-counted
+  inventory; the orphaned `docs/troubleshooting.md` is merged into the built
+  page; `deploydocs` uses the lowercase owner; the ten test files headed
+  "converted from `examples/...`" now say those files are gone; and the
+  `__init__` warning explains that `rustc` is resolved through RustToolChain.jl
+  (a `PATH` binary first, then the Artifacts toolchain) and how to diagnose a
+  failure.
 - **`test_cargo.jl`'s Cargo-cache assertions no longer race the parallel runner**
   ([#306](https://github.com/AtelierArith/RustCall.jl/issues/306)). The Cargo
   cache is a depot-level directory shared by every worker, and two testsets
@@ -813,7 +827,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `has_owned_string_helper` / `has_borrowed_string_helper`, and the Julia
   wrappers (inline blocks and `@rust_crate`) convert transparently.
 - CI/CD pipeline with GitHub Actions
-- Support for multiple Julia versions (1.10, 1.11, nightly)
+- Julia 1.12 or later is required (`Project.toml` compat `julia = "1.12"`);
+  CI tests the current stable release (`version: '1'`) on Linux, Windows and
+  macOS, plus one 4-thread Linux job
 - Cross-platform testing (Linux, macOS, Windows)
 - CompatHelper integration for dependency updates
 - TagBot integration for automated version tagging
@@ -892,7 +908,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   paths work on Windows (follow-up of #264).
 
 
-## [0.1.0] - 2026-01-XX
+## [0.1.0] - 2026-04-23
 
 ### Added
 - **Phase 1: C-Compatible ABI**

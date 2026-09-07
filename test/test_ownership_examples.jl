@@ -1,4 +1,4 @@
-# Test cases converted from examples/ownership_examples.jl
+# Originally derived from the deleted `examples/ownership_examples.jl` (removed in #9); the tests below are the reference.
 using RustCall
 using Test
 

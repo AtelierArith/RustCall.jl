@@ -8,35 +8,37 @@ using RustCall
 
 ## Installation and Setup
 
-### Problem: rustc not found
+### Problem: no working rustc
 
 **Error message:**
 ```
-rustc not found in PATH. RustCall.jl requires Rust to be installed.
+No working rustc found. RustCall.jl resolves the compiler through RustToolChain.jl, ...
 ```
+
+RustCall does not look up `rustc` itself. It asks
+[RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl), which
+uses a `rustc` on `PATH` when there is one and otherwise downloads a toolchain
+through Julia's Artifacts system. The warning means neither could be run, so
+"not on `PATH`" is only one of the possible causes.
 
 **Solution:**
 
-1. Check if Rust is installed:
-   ```bash
-   rustc --version
+1. Reproduce the resolution and read the underlying error:
+   ```julia
+   using RustToolChain
+   run(`$(RustToolChain.rustc()) --version`)
    ```
 
-2. If Rust is not installed:
-   - Install from [rustup.rs](https://rustup.rs/)
-   - Or use a package manager:
-     ```bash
-     # macOS
-     brew install rust
+2. If you want a system Rust, install it from [rustup.rs](https://rustup.rs/)
+   (or a package manager) and make sure `rustc --version` works in the shell
+   that starts Julia. A `rustc` on `PATH` takes precedence over the artifact.
 
-     # Ubuntu/Debian
-     sudo apt-get install rustc cargo
-     ```
+3. If you rely on the artifact toolchain, the usual causes are no network
+   access or a read-only depot during the first download; fix that and retry.
+   On Windows the artifact toolchain also needs the MSVC build tools (a
+   linker); see the RustToolChain.jl README.
 
-3. Ensure it's in PATH:
-   ```bash
-   echo $PATH | grep rust
-   ```
+4. Check Julia itself: RustCall requires Julia 1.12 or later (`VERSION`).
 
 ### Problem: Rust helpers library build fails
 
@@ -180,7 +182,74 @@ signal (11): Segmentation fault
 
 3. Check memory management (if using ownership types)
 
+## Memory Management Problems
+
+### Problem: Memory leak
+
+**Solution:**
+
+1. An ownership wrapper (`RustBox`, `RustRc`, `RustArc`, `RustVec`) is
+   released by its finalizer, but a finalizer runs whenever the GC gets to
+   it. Release eagerly with `RustCall.drop!` when the lifetime matters:
+   ```julia
+   box = RustCall.RustBox(Int32(42))
+   try
+       # use box
+   finally
+       RustCall.drop!(box)
+   end
+   ```
+
+2. `RustCall.drop!` is idempotent: a second call on the same wrapper is a
+   no-op, so an eager `drop!` never conflicts with the finalizer.
+
+### Problem: Double free
+
+**Error message:**
+```
+double free or corruption
+```
+
+**Solution:**
+
+A wrapper's own `drop!` cannot double free (see above). A double free means
+the same allocation is owned twice: the one raw pointer was handed to two
+owning wrappers, or the Rust side freed what a Julia wrapper also owns. Give
+every allocation exactly one owner; on the Rust side, return ownership with
+`Box::into_raw` and never free it again.
+
+### Problem: Invalid pointer access
+
+**Solution:**
+
+`RustCall.is_valid` and `RustCall.is_dropped` report the *wrapper's* state
+only: `is_valid` is false once the wrapper was dropped or its pointer is null.
+Neither can tell where a pointer came from or whether the Rust side has
+already freed the allocation, so a wrapper built from an arbitrary or dangling
+raw pointer passes both checks and still segfaults or double frees. Use them to
+catch use-after-`drop!` on a wrapper whose ownership you established (one that
+RustCall allocated, or a pointer Rust handed over with `Box::into_raw` and
+never freed), not as a substitute for that ownership:
+```julia
+if RustCall.is_valid(box)
+    # not dropped on the Julia side; ownership is still your guarantee
+end
+RustCall.is_dropped(box)  # true after drop!
+```
+
 ## FAQ
+
+### Q: When should I clear the cache?
+
+A: Normally never: the cache key covers the source, the toolchain and the
+build environment, so a change to any of them compiles fresh. Clearing
+(`RustCall.clear_cache()`) is a diagnostic step when a compiled artifact is
+suspected to be corrupt or when reclaiming disk space.
+
+### Q: Does it work on Windows?
+
+A: Yes, on Windows, macOS and Linux, given a working Rust toolchain (see
+above) and, on Windows, the MSVC build tools. See [Windows](platforms/windows.md).
 
 ### Q: Can I use multiple Rust libraries simultaneously?
 

@@ -1,4 +1,4 @@
-# Test cases converted from examples/basic_examples.jl
+# Originally derived from the deleted `examples/basic_examples.jl` (removed in #9); the tests below are the reference.
 using RustCall
 using Test
 

@@ -19,15 +19,11 @@ Last updated: 2026-09-05
 
 ## Codebase Snapshot
 
-Based on the repository state on 2026-02-07. Only the summary/test runner status above was refreshed on 2026-04-17; these inventory counts were not recomputed:
+File and line counts are not maintained by hand in this page (a hand-kept table drifted; see [#261](https://github.com/AtelierArith/RustCall.jl/issues/261)). Measure the current tree instead:
 
-| Area | Files | Approx. Lines |
-|------|-------|---------------|
-| Julia source (`src/*.jl`) | 22 | 12,750 |
-| Julia tests (`test/*.jl`) | 28 | 5,769 |
-| Benchmarks (`benchmark/*.jl`) | 5 | 1,455 |
-| Rust helpers (`deps/rust_helpers/src/lib.rs`) | 1 | 626 |
-| Proc-macro crate (`deps/juliacall_macros`) | 5 Rust files | 1,256 |
+```bash
+git ls-files 'src/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/src/*.rs' | xargs wc -l
+```
 
 ## Architecture Map
 

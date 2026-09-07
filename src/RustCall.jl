@@ -107,7 +107,19 @@ function __init__()
 
     # Check for rustc availability
     if !check_rustc_available()
-        @warn "rustc not found in PATH. RustCall.jl requires Rust to be installed."
+        @warn """
+        No working rustc found. RustCall.jl resolves the compiler through RustToolChain.jl,
+        which uses a `rustc` on PATH when there is one and otherwise the toolchain it
+        provides through Julia's Artifacts system; neither could be run.
+
+        To see the underlying error, run the same resolution yourself:
+            using RustToolChain; run(`\$(RustToolChain.rustc()) --version`)
+
+        Remedies: install Rust with rustup (https://rustup.rs) so a `rustc` is on PATH,
+        or make the artifact download possible (network access, a writable depot) and
+        retry. On Windows the artifact toolchain also needs the MSVC build tools; see the
+        RustToolChain.jl README.
+        """
     end
 
     # Try to load Rust helpers library

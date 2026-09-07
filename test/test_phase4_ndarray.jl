@@ -1,4 +1,4 @@
-# Test cases converted from examples/phase4_ndarray.jl
+# Originally derived from the deleted `examples/phase4_ndarray.jl` (removed in #9); the tests below are the reference.
 using RustCall
 using Test
 
