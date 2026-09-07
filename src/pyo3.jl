@@ -1242,9 +1242,9 @@ function build_pyo3_wrapper(info::CrateInfo;
                             release::Bool = true,
                             cache_enabled::Bool = true,
                             plan::Union{Nothing, PyO3LinkPlan} = nothing)
-    # A caller that needs the plan afterwards — to rescan under the resolved
-    # configuration when nothing is wrapped (`_resolved_plain_info`) — computes
-    # it once and passes it in.
+    # A caller that already has the plan — `generate_bindings` computes it for
+    # the artifact identity and the fallback decision — passes it in rather
+    # than resolving the crate twice.
     if plan === nothing
         plan = pyo3_link_plan(info.path; features = features, default_features = default_features,
                               release = release)
@@ -1306,24 +1306,6 @@ function build_pyo3_wrapper(info::CrateInfo;
     return PyO3Wrapper(wrapper_info, plan, source, lib_path, lib_name, skipped)
 end
 
-"""
-    _resolved_plain_info(crate_path, info, plan) -> CrateInfo
-
-The crate information the plain (pre-#275) binding path binds when a PyO3
-crate exposes nothing under the requested build and falls back to it.
-
-`info` is the lenient scan, which lists **every** feature variant of a
-`#[julia]` item because it decides only target predicates. When the plan
-resolved the build's configuration, the crate is rescanned under it, so the
-module carries exactly the items that build compiles: an item the selected
-features disable would otherwise be emitted and fail at `dlsym`, and two
-mutually exclusive variants of one function would keep the wrong signature
-(#307 review). An unresolved plan keeps `info`, as before.
-"""
-function _resolved_plain_info(crate_path::AbstractString, info::CrateInfo, plan::PyO3LinkPlan)
-    isempty(plan.cfg_text) && return info
-    return scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text)
-end
 
 """
     _pyo3_wrapper_build_env(plan, rustflags) -> Vector{Pair{String, String}}

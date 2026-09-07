@@ -474,18 +474,18 @@ _manifest(text::AbstractString) = TOML.parse(text)
             """)
             lenient = RustCall.scan_crate(dir)
             @test Set(f.name for f in lenient.julia_functions) == Set(["plain_fn", "extra_fn"])
-            # The configuration of a build with `extra` off names no such
-            # feature, so the strict rescan drops `extra_fn`.
-            os = Sys.iswindows() ? "windows" : Sys.isapple() ? "macos" : "linux"
-            family = Sys.iswindows() ? "windows" : "unix"
-            off = RustCall.PyO3LinkPlan(:python_free, String[], "", "test";
-                                        cfg_text = "target_os=\"$(os)\"\n$(family)\n",
-                                        resolved = true)
-            resolved = RustCall._resolved_plain_info(dir, lenient, off)
-            @test Set(f.name for f in resolved.julia_functions) == Set(["plain_fn"])
-            # An unresolved plan changes nothing.
-            unresolved = RustCall.PyO3LinkPlan(:python_free, String[], "", "test")
-            @test RustCall._resolved_plain_info(dir, lenient, unresolved) === lenient
+            # The fallback binds through `_plain_scan_info`, like any plain
+            # crate: probed with the shape of its build (here a wrapper's
+            # dependency — no cdylib), under the requested features. `extra`
+            # off drops `extra_fn`; `extra` on keeps it.
+            if !RustCall.check_rustc_available()
+                @test_skip "cargo is required to probe the crate"
+            else
+                off = RustCall._plain_scan_info(dir, lenient, String[], true, true)
+                @test Set(f.name for f in off.julia_functions) == Set(["plain_fn"])
+                on = RustCall._plain_scan_info(dir, lenient, ["extra"], true, true)
+                @test Set(f.name for f in on.julia_functions) == Set(["plain_fn", "extra_fn"])
+            end
         end
         # And the probe really resolves from inside a workspace: without the
         # `[workspace]` line Cargo refuses it, the plan comes back unresolved,
@@ -914,12 +914,20 @@ _manifest(text::AbstractString) = TOML.parse(text)
             @test lib_root == normpath(joinpath(shared, "lib.rs"))
             digest = RustCall.external_lib_tree_digest(crate, lib_root)
             @test digest isa String
-            # The root and its module tree count; other files beside them do not.
+            # The root, its module tree, and every other file beside them count
+            # — an `include_str!` of `notes.txt` compiles different bytes when
+            # it changes, as it would inside the package directory.
             write(joinpath(shared, "part.rs"), "pub fn g() -> i32 { 3 }\n")
             changed = RustCall.external_lib_tree_digest(crate, lib_root)
             @test changed != digest
-            write(joinpath(shared, "notes.txt"), "still not source\n")
-            @test RustCall.external_lib_tree_digest(crate, lib_root) == changed
+            write(joinpath(shared, "notes.txt"), "included data, revised\n")
+            @test RustCall.external_lib_tree_digest(crate, lib_root) != changed
+            # ... under the package walk's exclusions: build output is not input.
+            mkpath(joinpath(shared, "target"))
+            write(joinpath(shared, "target", "junk.rs"), "// output\n")
+            with_target = RustCall.external_lib_tree_digest(crate, lib_root)
+            rm(joinpath(shared, "target"); recursive = true, force = true)
+            @test RustCall.external_lib_tree_digest(crate, lib_root) == with_target
             # An in-tree root is already covered by the package digest.
             @test RustCall.external_lib_tree_digest(crate, joinpath(crate, "src", "lib.rs")) === nothing
             @test RustCall.external_lib_tree_digest(crate, nothing) === nothing

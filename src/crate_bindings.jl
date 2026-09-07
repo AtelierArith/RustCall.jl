@@ -1024,6 +1024,55 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
 end
 
 """
+    _crate_field_write(info, field_name, field_type, setter_symbol, self_ptr_expr, value_expr) -> Expr
+
+The call a field setter makes, with the value **converted to the field's
+surface type first**. `call_rust_function` derives the `ccall` signature from
+the runtime type of each argument, so passing `value` through as it came meant
+`set_scale!(obj, 3)` on an `f64` field put an `Int64` in an integer register
+while Rust read an `f64` from a floating-point one — garbage stored, or worse
+(#307 review). The type is the one the getter reads the field back as
+(`ffi_return_symbol_or_throw`), so the two directions agree, and the
+conversion raises on a value that does not fit rather than reinterpreting it.
+"""
+function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
+                            field_type::AbstractString, setter_symbol::AbstractString,
+                            self_ptr_expr, value_expr)
+    ptr_expr = :(_get_func_ptr($(String(setter_symbol))))
+    c = _ffi_field_return(info, field_name, field_type)
+    if ffi_owned_string_return(c) || ffi_borrowed_string_return(c)
+        # A `String` field's setter takes the text itself, as a C string the
+        # wrapper copies; the contract has no single-slot spelling for it and
+        # there is nothing to convert.
+        return :(call_rust_function($ptr_expr, Cvoid, $self_ptr_expr, $value_expr))
+    end
+    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+                                            _ffi_field_context(info, field_name, field_type))
+    return :(call_rust_function($ptr_expr, Cvoid, $self_ptr_expr,
+                                convert($julia_type, $value_expr)))
+end
+
+"""
+    _crate_field_write_source(info, field_name, field_type, setter_symbol, self_ptr, value; strict) -> String
+
+Source-text counterpart of `_crate_field_write` for the file emitter.
+"""
+function _crate_field_write_source(info::RustStructInfo, field_name::AbstractString,
+                                   field_type::AbstractString, setter_symbol::AbstractString,
+                                   self_ptr::String, value::String; strict::Symbol = FFI_STRICT[])
+    ptr_expr = "_get_func_ptr(\"$setter_symbol\")"
+    c = _ffi_field_return(info, field_name, field_type)
+    if ffi_owned_string_return(c) || ffi_borrowed_string_return(c)
+        # As in `_crate_field_write`: a string setter takes the text itself.
+        return "call_rust_function($ptr_expr, Cvoid, $self_ptr, $value)"
+    end
+    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+                                            _ffi_field_context(info, field_name, field_type);
+                                            strict = strict)
+    return "call_rust_function($ptr_expr, Cvoid, $self_ptr, convert($julia_type, $value))"
+end
+
+"""
     _crate_field_read_source(info, field_name, field_type, ptr_var, self_ptr) -> String
 
 Source-text counterpart of `_crate_field_read` for the file emitter.
@@ -1092,10 +1141,11 @@ function _generate_property_accessors(info::RustStructInfo)
         field_sym = QuoteNode(Symbol(field_name))
         setter_fn = info.field_setters[field_name]
 
+        write = _crate_field_write(info, field_name, field_type, setter_fn,
+                                   :(getfield(self, :ptr)), :value)
         push!(setprop_branches, quote
             if field === $field_sym
-                func_ptr = _get_func_ptr($setter_fn)
-                call_rust_function(func_ptr, Cvoid, getfield(self, :ptr), value)
+                $write
                 return value
             end
         end)
@@ -1461,11 +1511,11 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     end
     if field_is_writable(info, field_name)
         setter_name = info.field_setters[field_name]
+        write = _crate_field_write(info, field_name, field_type, setter_name, :(self.ptr), :value)
         push!(exprs, quote
             function $(Symbol("set_$(field_name)!"))(self::$struct_name, value)
                 _check_not_freed(self, $struct_name_str)
-                func_ptr = _get_func_ptr($setter_name)
-                call_rust_function(func_ptr, Cvoid, self.ptr, value)
+                $write
                 value
             end
         end)
@@ -1526,9 +1576,11 @@ function generate_bindings(crate_path::String;
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
 
     # A crate that carries only PyO3 attributes gets a generated wrapper crate
-    # (#275 Phase 2); everything else takes the pre-#275 path — under the
-    # configuration this build compiles with (`_plain_scan_info`).
-    plain = true
+    # (#275 Phase 2); everything else — including a PyO3 crate whose requested
+    # build exposes nothing to Python — takes the pre-#275 path, under the
+    # configuration *that* build compiles with (`_plain_scan_info`, which
+    # probes with the shape of the build: the crate as its own root when it is
+    # built as one, as a wrapper's dependency otherwise; #307 review).
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release)
@@ -1544,8 +1596,6 @@ function generate_bindings(crate_path::String;
             # `#[julia]` item, the resolved one says which this build compiles
             # (#307 review).
             @info "No PyO3 item is exposed by this build; binding the crate as before"
-            info = _resolved_plain_info(crate_path, info, plan)
-            plain = false
         else
             @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
                   "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
@@ -1556,7 +1606,7 @@ function generate_bindings(crate_path::String;
                                      preload = wrapper.plan.runtime_libraries)
         end
     end
-    plain && (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
+    info = _plain_scan_info(crate_path, info, features, default_features, build_release)
 
     # Check cache. The feature set is part of the identity on this path too:
     # a build the caller asked for with `features` / `default_features` is
@@ -2184,7 +2234,6 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     lib_name = nothing
     wrapper_lib_path = ""
     preload = String[]
-    plain = true
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release)
@@ -2192,20 +2241,19 @@ function write_bindings_to_file(crate_path::String, output_path::String;
                                      default_features = default_features,
                                      release = build_release, plan = plan)
         # `nothing` when this build exposes nothing to PyO3; the plain path
-        # then binds the crate under the resolved configuration, see
-        # `generate_bindings` and `_resolved_plain_info` (#307 review).
-        if wrapper === nothing
-            info = _resolved_plain_info(crate_path, info, plan)
-        else
+        # then binds the crate under the configuration it builds, like any
+        # other crate (`_plain_scan_info` below, #307 review).
+        if wrapper !== nothing
             info = wrapper.info
             lib_name = wrapper.lib_name
             wrapper_lib_path = wrapper.lib_path
             preload = wrapper.plan.runtime_libraries
         end
-        plain = false
     end
-    # The plain path scans under the configuration it builds (#307 review).
-    plain && (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
+    # The plain path scans under the configuration it builds, probed with the
+    # shape of that build (#307 review).
+    isempty(wrapper_lib_path) &&
+        (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
 
     # Build the crate. On the plain path the feature set travels with the
     # build and with the registry name, as it does for a wrapper build.
@@ -2756,9 +2804,10 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
         push!(lines, "    _check_not_freed(self, \"$struct_name\")")
         for (field_name, field_type) in writable_fields
             setter_fn = info.field_setters[field_name]
+            write = _crate_field_write_source(info, field_name, field_type, setter_fn,
+                                              "getfield(self, :ptr)", "value"; strict = strict)
             push!(lines, "    if field === :$field_name")
-            push!(lines, "        func_ptr = _get_func_ptr(\"$setter_fn\")")
-            push!(lines, "        call_rust_function(func_ptr, Cvoid, getfield(self, :ptr), value)")
+            push!(lines, "        $write")
             push!(lines, "        return value")
             push!(lines, "    end")
         end

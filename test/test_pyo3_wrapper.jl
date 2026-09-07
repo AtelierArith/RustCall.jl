@@ -233,6 +233,15 @@ end
             @test M.scaled_norm(p) ≈ 3 * M.norm(p)
             @test_throws ErrorException call(getproperty, p, :scale)
             @test :scale in call(propertynames, p)
+            # The value is converted to the field's type before the call: an
+            # `Int` written to an `f64` field arrives as `2.0`, not as an
+            # integer register Rust reads as a float (#307 review). Both the
+            # property and the helper convert; a value that does not fit raises.
+            call(setproperty!, p, :scale, 2)
+            @test M.scaled_norm(p) ≈ 2 * M.norm(p)
+            Base.invokelatest(M.set_scale!, p, 5)
+            @test M.scaled_norm(p) ≈ 5 * M.norm(p)
+            @test_throws InexactError call(setproperty!, p, :x, 1.5im)
 
             # A `String`-returning method comes back through the per-method
             # owned buffer.
@@ -352,6 +361,13 @@ end
         both = string(RustCall._generate_crate_field_accessor(info, "level", "f64"))
         @test count("_check_not_freed(self, \"Knob\")", both) == 2
         @test occursin("get_level", both) && occursin("set_level!", both)
+        # Every setter converts the value to the field's type before the
+        # call, in all three emitters, so the `ccall` signature is the field's
+        # slot and not the runtime type of what was passed (#307 review).
+        @test occursin("convert(Float64, value)", accessor)
+        @test occursin("convert(Float64, value)", text)
+        @test occursin("convert(Float64, value)", code)
+        @test !occursin("getfield(self, :ptr), value)", code)
     end
 
     @testset "artifact identity separates wrapper builds from plain ones" begin

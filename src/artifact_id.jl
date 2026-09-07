@@ -765,18 +765,20 @@ end
 
 The digest of a library root that lives **outside** its package directory —
 `[lib] path = "../shared/lib.rs"`, a layout Cargo allows and the crate scan
-follows (`crate_lib_root`) — and of the module tree beside it: every `.rs` file
-under the root's directory, by sorted relative path and content digest,
-netstring-framed like `crate_content_digest`. `nothing` when `lib_root` is
-`nothing` or lies inside `crate_dir`, where `crate_content_digest` already
+follows (`crate_lib_root`) — and of everything beside it: every file under the
+root's directory that `crate_input_files` reports (the same walk and the same
+exclusions as the package directory), by sorted relative path and content
+digest, netstring-framed like `crate_content_digest`. `nothing` when `lib_root`
+is `nothing` or lies inside `crate_dir`, where `crate_content_digest` already
 covers it.
 
 `crate_content_digest` hashes the package directory, so an edit to such an
 external root — or to a `mod foo;` file next to it — left the artifact key
 unchanged and the cache answered with the previous wrapper while the fresh
-manifest described the new source (#307 review). Only `.rs` files are read: the
-directory may be a shared tree (or the repository root), and its other contents
-are not this crate's source.
+manifest described the new source (#307 review). Every file counts, not only
+`.rs`: an `include_str!` / `include_bytes!` of a data file beside the root
+compiles different bytes when that file changes, exactly as inside the package
+directory.
 """
 function external_lib_tree_digest(crate_dir::AbstractString, lib_root)
     lib_root === nothing && return nothing
@@ -784,23 +786,22 @@ function external_lib_tree_digest(crate_dir::AbstractString, lib_root)
     inside = normpath(abspath(String(crate_dir)))
     (root == inside || startswith(root, joinpath(inside, ""))) && return nothing
     tree = dirname(root)
-    files = String[]
-    for (dir, dirs, names) in walkdir(tree)
-        filter!(d -> !(d in CRATE_INPUT_VCS_DIRS_ANY_LEVEL) && d != "target", dirs)
-        for n in names
-            endswith(n, ".rs") && push!(files, relpath(joinpath(dir, n), tree))
-        end
-    end
-    files = String[replace(f, '\\' => '/') for f in files]
-    unique!(files)
-    sort!(files)
+    strategy, files = crate_input_files(tree)
     io = IOBuffer()
     _netstring!(io, "external-lib-root")
     _netstring!(io, _hashed_relative_path(relpath(root, tree)))
+    _netstring!(io, "file-strategy")
+    _netstring!(io, strategy)
     _netstring!(io, string(length(files)))
     for rel in files
         _netstring!(io, _hashed_relative_path(rel))
-        _netstring!(io, _file_content_digest(joinpath(tree, rel)))
+        f = joinpath(tree, rel)
+        if isfile(f)
+            _netstring!(io, "content")
+            _netstring!(io, _file_content_digest(f))
+        else
+            _netstring!(io, "not-on-disk")
+        end
     end
     return bytes2hex(sha256(take!(io)))
 end

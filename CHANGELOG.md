@@ -113,8 +113,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `setproperty!` do; and the conservative plan (Cargo could not resolve the
   crate) keeps the requested `features` / `default_features`, so the wrapper's
   dependency entry is the configuration asked for; a library root outside the
-  package directory (`[lib] path = "../shared/lib.rs"`) and the module tree
-  beside it are part of the artifact identity; and
+  package directory (`[lib] path = "../shared/lib.rs"`) and every file beside
+  it are part of the artifact identity; a PyO3 crate whose requested build
+  exposes nothing is bound through the same build-shaped probe as any plain
+  crate; and a `#[pyo3(set)]` field's value is converted to the field's type
+  before the setter is called, so `set_scale!(obj, 3)` on an `f64` field stores
+  `3.0` rather than reinterpreting an integer register; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
