@@ -1412,6 +1412,73 @@ process_generation_path(lib_path::AbstractString, generation::Integer) =
     generation_path(lib_path, "$(getpid()).$(generation)")
 
 """
+    _process_alive(pid) -> Bool
+
+Whether a process with this id exists, for the stale-copy sweep.
+
+On Unix `kill(pid, 0)` delivers nothing and reports `ESRCH` for a pid nobody
+holds; any other answer (0, or `EPERM` for another user's process) counts as
+alive. On Windows the sweep does not need the answer: deleting a mapped DLL
+fails, which is exactly the "still in use" signal, so every candidate is
+handed to `rm` and the file system decides. Errs on the side of "alive".
+"""
+function _process_alive(pid::Integer)
+    Sys.iswindows() && return false
+    r = ccall(:kill, Cint, (Cint, Cint), pid, 0)
+    r == 0 && return true
+    return Libc.errno() != Libc.ESRCH
+end
+
+"""
+    _sweep_stale_generation_copies(built_path)
+
+Remove the `<lib>.<pid>.<generation>.<ext>` copies beside `built_path` whose
+process is gone.
+
+A written bindings module makes one copy per process start, and nothing
+removes it when that process exits — an image is retired, not closed, and on
+Windows a mapped DLL cannot be deleted anyway — so an application that keeps
+launching Julia would accumulate copies without bound (#309). The next process
+to copy the same library sweeps first: a copy tagged with a pid that no longer
+exists is removed; this process's own copies and those of a live pid are kept;
+a copy Windows still has mapped refuses the delete and is kept for a later
+sweep. Legacy `<lib>.<generation>.<ext>` copies (before the pid tag) are not
+touched — without a pid there is nothing to decide with. Best effort: nothing
+here can fail the load.
+"""
+function _sweep_stale_generation_copies(built_path::AbstractString)
+    dir = dirname(built_path)
+    stem, ext = splitext(basename(built_path))
+    prefix = stem * "."
+    me = getpid()
+    names = try
+        readdir(dir)
+    catch
+        return nothing
+    end
+    for name in names
+        startswith(name, prefix) && endswith(name, ext) || continue
+        ncodeunits(name) > ncodeunits(prefix) + ncodeunits(ext) || continue
+        # Byte indices are safe here: `prefix` ends and `ext` begins with an
+        # ASCII '.', so both cuts fall on character boundaries.
+        tag = SubString(name, ncodeunits(prefix) + 1, ncodeunits(name) - ncodeunits(ext))
+        parts = split(tag, '.')
+        length(parts) == 2 || continue
+        all(p -> !isempty(p) && all(isdigit, p), parts) || continue
+        pid = tryparse(Int, parts[1])
+        pid === nothing && continue
+        pid == me && continue
+        _process_alive(pid) && continue
+        try
+            rm(joinpath(dir, name))
+        catch e
+            @debug "Kept generation copy $(name): $(sprint(showerror, e))"
+        end
+    end
+    return nothing
+end
+
+"""
     loadable_library_copy(built_path) -> String
 
 A private copy of a freshly built library, for RustCall to open.
@@ -1428,6 +1495,9 @@ from the new one.
 Copying to `<lib>.<pid>.<generation>.<ext>` and opening that leaves Cargo's
 output untouched, and makes every load a genuinely distinct file — across
 processes too, since the counter alone is per process (#255, #277, #309).
+Before copying, the copies of processes that no longer exist are swept
+(`_sweep_stale_generation_copies`), so a library that is loaded by one
+process after another keeps only the live processes' copies beside it.
 
 Returns the original path when the copy cannot be made, so a platform or a
 filesystem that will not take one degrades to the previous behaviour rather
@@ -1436,6 +1506,7 @@ than failing the load.
 function loadable_library_copy(built_path::AbstractString)
     built = String(built_path)
     isfile(built) || return built
+    _sweep_stale_generation_copies(built)
     copy_path = process_generation_path(built, next_reload_generation())
     try
         cp(built, copy_path; force = true)

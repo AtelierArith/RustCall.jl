@@ -244,6 +244,37 @@ end
         end
         @test occursin("process_generation_path(built, next_reload_generation())",
                        _src_loadpolicy())
+        # Copies of processes that no longer exist are swept when the next
+        # process copies the same library, so a written module loaded by one
+        # Julia process after another does not accumulate one copy per start
+        # (#309). Kept: this process's copies, a live process's copies, and
+        # the pre-pid `<lib>.<n>.<ext>` shape (nothing to decide with).
+        mktempdir() do dir
+            built = joinpath(dir, "libbar.so")
+            write(built, "not a library")
+            child = open(`$(Base.julia_cmd()) --startup-file=no -e 0`)
+            dead_pid = getpid(child)
+            wait(child)
+            @test !RustCall._process_alive(dead_pid) || Sys.iswindows()
+            @test RustCall._process_alive(getpid()) || Sys.iswindows()
+            stale = joinpath(dir, "libbar.$(dead_pid).3.so")
+            mine = joinpath(dir, "libbar.$(getpid()).1.so")
+            legacy = joinpath(dir, "libbar.7.so")
+            other_lib = joinpath(dir, "libbarbaz.$(dead_pid).2.so")
+            for f in (stale, mine, legacy, other_lib)
+                write(f, "stale?")
+            end
+            copied = RustCall.loadable_library_copy(built)
+            @test isfile(copied)
+            @test !isfile(stale)
+            @test isfile(mine)
+            @test isfile(legacy)
+            @test isfile(other_lib)
+            @test isfile(built)
+        end
+        @test findfirst("_sweep_stale_generation_copies(built)", _src_loadpolicy()) <
+              findfirst("process_generation_path(built, next_reload_generation())",
+                        _src_loadpolicy())
         # The previous image is RETIRED after the swap, never closed under a
         # call that may still be inside it (#277).
         @test !occursin("on_replace = :dlclose", _HRT_SRC)
