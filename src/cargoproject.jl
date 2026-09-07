@@ -39,18 +39,34 @@ struct CargoProject
 end
 
 """
-    CARGO_BLOCK_PACKAGE
+    CARGO_BLOCK_PACKAGE_PREFIX
 
-The `[package] name` of every Cargo project RustCall generates for a
-`// cargo-deps:` block. It is a constant, not derived from the block's key,
-because the root package appears in `Cargo.lock` by name: a lockfile persisted
-for one dependency set (`lockfile_path`) must fit every block that declares
-that set, or it could not be shared between blocks — or between machines
-(#256). The project directory, not the package name, is what keeps concurrent
-builds apart (`create_cargo_project` makes a fresh temporary directory each
-time), and the built library is copied into the cache under the block's key.
+The prefix of the `[package] name` of every Cargo project RustCall generates
+for a `// cargo-deps:` block; see `cargo_block_package`.
 """
-const CARGO_BLOCK_PACKAGE = "rustcall_block"
+const CARGO_BLOCK_PACKAGE_PREFIX = "rustcall_block_"
+
+"""
+    cargo_block_package(deps) -> String
+
+The `[package] name` of the Cargo project generated for a `// cargo-deps:`
+block declaring `deps`: `CARGO_BLOCK_PACKAGE_PREFIX` followed by a short id of
+the dependency set's key (`cargo_lockfile_id`).
+
+It is derived from the *dependency set*, not from the block, because the root
+package appears in `Cargo.lock` by name: a lockfile persisted for one set
+(`lockfile_path`) must fit every block that declares that set, or it could not
+be shared between blocks — or between machines (#256). And it is not one fixed
+name, because a fixed name reserves a package identity a user's own crate may
+hold: a block depending on a path crate named `rustcall_block` at the same
+version could not be resolved at all (Cargo refuses two packages of one
+name and version from different sources in a lockfile; #313 review). The
+project directory, not the package name, is what keeps concurrent builds apart
+(`create_cargo_project` makes a fresh temporary directory each time), and the
+built library is copied into the cache under the block's key.
+"""
+cargo_block_package(deps) =
+    CARGO_BLOCK_PACKAGE_PREFIX * artifact_short_id(artifact_key(cargo_lockfile_id(deps)), 12)
 
 """
     create_cargo_project(name::String, dependencies::Vector{DependencySpec}; kwargs...) -> CargoProject

@@ -646,8 +646,8 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # persisted per dependency set (`lockfile_path`): when it exists, its
     # content is known before any project does; when it does not, the set is
     # resolved once, in the project that will be built, and persisted. The
-    # project's root package has one fixed name (`CARGO_BLOCK_PACKAGE`) so the
-    # lockfile fits every block declaring the set.
+    # project's root package is named from the set (`cargo_block_package`) so
+    # the lockfile fits every block declaring it.
     project = nothing
     compiler = get_default_compiler()
     cleanup = () -> begin
@@ -669,7 +669,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         cargo_lock = if isfile(stored_lock)
             _file_content_digest(stored_lock)
         else
-            project = create_cargo_project(CARGO_BLOCK_PACKAGE, dependencies)
+            project = create_cargo_project(cargo_block_package(dependencies), dependencies)
             something(ensure_cargo_lockfile!(project; env = build_env), "")
         end
         cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
@@ -726,7 +726,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         @info "Building Rust code with external dependencies..." dependencies=length(dependencies) lib_name=lib_name
 
         if project === nothing
-            project = create_cargo_project(CARGO_BLOCK_PACKAGE, dependencies)
+            project = create_cargo_project(cargo_block_package(dependencies), dependencies)
             # The store had a lockfile when the identity was computed; the
             # build must be of exactly that graph. A file that changed in
             # between would make the key describe another build — refuse.
@@ -785,8 +785,9 @@ range that resolve differently are two artifacts.
 
 `artifact_key` of this record is the in-memory library name, the disk cache
 key, the build key and the save key — one value per block evaluation (the
-generated project's package name is the constant `CARGO_BLOCK_PACKAGE`, so a
-persisted lockfile fits every block). The Cargo path used to hash the block once and then
+generated project's package name is derived from the dependency set,
+`cargo_block_package`, so a persisted lockfile fits every block declaring it).
+The Cargo path used to hash the block once and then
 re-mix that digest under a second formula for the cache key (#278); the first
 fix then left `build_cargo_project_cached` deriving a *richer* key than the one
 the outer lookup used, so a Cargo-config change still hit the old binary

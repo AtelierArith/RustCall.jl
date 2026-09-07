@@ -684,7 +684,7 @@ end
                 @test isfile(lockfile)
                 content = read(lockfile, String)
                 @test occursin("name = \"itoa\"", content)
-                @test occursin("name = \"$(RustCall.CARGO_BLOCK_PACKAGE)\"", content)
+                @test occursin("name = \"$(RustCall.cargo_block_package(deps))\"", content)
                 # The block's cache entry is keyed with that file's content.
                 expanded = RustCall.expand_inline(block; cfg = :cargo)
                 _, build_env_key = RustCall._cargo_build_env_for(nothing)
@@ -704,7 +704,7 @@ end
                 @test ccall(RustCall.get_function_pointer(lib2, "rc256_again"), Int32, ()) == 257
                 @test mtime(lockfile) == stamp
                 @test read(lockfile, String) == content
-                project = RustCall.create_cargo_project(RustCall.CARGO_BLOCK_PACKAGE, deps)
+                project = RustCall.create_cargo_project(RustCall.cargo_block_package(deps), deps)
                 try
                     digest = RustCall.ensure_cargo_lockfile!(project)
                     @test digest == RustCall._file_content_digest(lockfile)
@@ -766,7 +766,7 @@ end
                 # with Cargo's error at once, not hang on a download.
                 missing = [RustCall.DependencySpec("rustcall-no-such-package-ever";
                                                    version = "=99.99.99")]
-                project = RustCall.create_cargo_project(RustCall.CARGO_BLOCK_PACKAGE, missing)
+                project = RustCall.create_cargo_project(RustCall.cargo_block_package(missing), missing)
                 try
                     started = time()
                     err = withenv("RUSTCALL_OFFLINE" => "1") do
@@ -900,5 +900,50 @@ end
         # No temporary or claim file is left behind by any path.
         @test all(f -> !occursin(".tmp-", f) && !endswith(f, ".claim"),
                   readdir(RustCall.lockfile_dir()))
+    end
+end
+
+@testset "the generated package is named from the set, and reserves no name (#313 review)" begin
+    # The root package appears in `Cargo.lock` by name, so it is derived from
+    # the dependency set — every block declaring the set shares the lockfile —
+    # and not fixed, so a user's own crate can carry any name at all.
+    deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    name = RustCall.cargo_block_package(deps)
+    @test startswith(name, RustCall.CARGO_BLOCK_PACKAGE_PREFIX)
+    @test name == RustCall.cargo_block_package([RustCall.DependencySpec("itoa"; version = "1.0")])
+    @test name != RustCall.cargo_block_package([RustCall.DependencySpec("itoa"; version = "1.0.11")])
+    @test occursin(r"^[a-z0-9_]+$", name)
+    if !RustCall.check_rustc_available()
+        @test_skip "cargo is required to resolve a dependency set"
+    else
+        with_isolated_cargo_cache() do
+            # A path dependency that takes the very name a fixed root package
+            # used to reserve: Cargo refuses two packages of one name and
+            # version from different sources in a lockfile, so the block could
+            # not be resolved at all.
+            mktempdir() do dir
+                crate = joinpath(dir, "rustcall_block")
+                mkpath(joinpath(crate, "src"))
+                write(joinpath(crate, "Cargo.toml"), """
+                    [package]
+                    name = "rustcall_block"
+                    version = "0.1.0"
+                    edition = "2021"
+                    """)
+                write(joinpath(crate, "src", "lib.rs"), "pub fn one() -> i32 { 1 }\n")
+                local_deps = [RustCall.DependencySpec("rustcall_block"; path = crate)]
+                project = RustCall.create_cargo_project(RustCall.cargo_block_package(local_deps),
+                                                        local_deps)
+                try
+                    digest = RustCall.ensure_cargo_lockfile!(project)
+                    @test digest isa String
+                    content = read(joinpath(project.path, "Cargo.lock"), String)
+                    @test occursin("name = \"rustcall_block\"", content)
+                    @test occursin("name = \"$(RustCall.cargo_block_package(local_deps))\"", content)
+                finally
+                    RustCall.cleanup_cargo_project(project)
+                end
+            end
+        end
     end
 end

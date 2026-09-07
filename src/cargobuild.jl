@@ -154,8 +154,9 @@ follows is `--locked`, so it either builds exactly the graph the file pins or
 fails. Otherwise `cargo generate-lockfile` resolves the set once — `--offline`
 under `RUSTCALL_OFFLINE`, failing loudly when the local registry lacks
 something — and the result is persisted for every later build of the same set
-(#256). The generated project's root package is `CARGO_BLOCK_PACKAGE` for every
-block, which is what makes one lockfile fit them all.
+(#256). The generated project's root package is named from the dependency set
+(`cargo_block_package`) for every block declaring it, which is what makes one
+lockfile fit them all.
 
 Two processes — or two machines sharing the store — that both find it empty
 resolve independently, possibly from different registry snapshots. Publication

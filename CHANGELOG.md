@@ -40,8 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to every Cargo invocation and fails loudly without a warm registry cache.
   `clear_cache` keeps the lockfiles (they are inputs, not output);
   `RustCall.clear_lockfiles()` discards them. The generated project's package
-  name is now the constant `RustCall.CARGO_BLOCK_PACKAGE`, so one lockfile fits
-  every block.
+  name is now derived from the dependency set (`RustCall.cargo_block_package`),
+  so one lockfile fits every block declaring it.
 - **`@rust_crate` binds a PyO3 crate that carries no RustCall attribute**
   ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275), Phase 2).
   RustCall generates a *second* crate that depends on the target, emits one

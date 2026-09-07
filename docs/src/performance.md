@@ -83,9 +83,9 @@ persists one `Cargo.lock` per dependency set and builds against it (issue #256):
   block's source text — is `<cache dir>/lockfiles/<key>.lock`, where the key is
   `artifact_key(cargo_lockfile_id(deps))`: the declared dependency set and
   nothing else (no toolchain), so the same set on any machine looks in the same
-  place. The generated project's package is always named
-  `RustCall.CARGO_BLOCK_PACKAGE`, so one lockfile fits every block declaring the
-  set.
+  place. The generated project's package is named from the set
+  (`RustCall.cargo_block_package(deps)`), so one lockfile fits every block
+  declaring it, and no fixed name is reserved that your own crate might use.
 - **First build.** With no persisted lockfile, `cargo generate-lockfile`
   resolves the set once and the result is stored. Every later build — of this
   block or any other with the same dependencies — copies the file in and runs
