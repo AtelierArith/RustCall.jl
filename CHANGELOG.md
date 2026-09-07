@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-08
+
 ### Breaking
 - **Exported symbols carry the module path** ([#300](https://github.com/AtelierArith/RustCall.jl/issues/300)).
   The scheme of #279 (`rustcall_<name>`, `<Struct>_free`, ...) had no module
@@ -1216,7 +1218,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/atelierarith/RustCall.jl/compare/6e98d5cb62c0a0ca8b2f894c6fe53af209d9d3ea...v0.2.0
 [0.1.0]: https://github.com/atelierarith/RustCall.jl/commit/6e98d5cb62c0a0ca8b2f894c6fe53af209d9d3ea
