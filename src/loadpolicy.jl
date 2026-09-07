@@ -1383,8 +1383,8 @@ next_reload_generation() = Threads.atomic_add!(RELOAD_GENERATION, 1) + 1
 Living beside the original rather than in a temporary directory matters on
 Windows: a DLL resolves its dependencies relative to its own location.
 
-`generation` is an integer or a ready-made tag such as `"rustcall.<pid>.<n>"`
-(`process_generation_path`).
+`generation` is an integer or a ready-made tag such as
+`"rustcall.<host>.<pid>.<n>"` (`process_generation_path`).
 """
 function generation_path(lib_path::AbstractString,
                          generation::Union{Integer, AbstractString})
@@ -1397,7 +1397,7 @@ end
     GENERATION_COPY_MARKER
 
 The word in a generation copy's name that says RustCall made it:
-`libfoo.rustcall.<pid>.<generation>.dylib`.
+`libfoo.rustcall.<host>.<pid>.<generation>.dylib`.
 
 The stale-copy sweep deletes files, so the shape it matches must be one
 nothing else produces. `<stem>.<number>.<number><ext>` is not that — a
@@ -1408,10 +1408,42 @@ RustCall itself named is ever a candidate.
 const GENERATION_COPY_MARKER = "rustcall"
 
 """
+    GENERATION_COPY_HOST_LEN
+
+Length of the host tag in a generation copy's name: hex characters of
+`stable_content_hash(gethostname())`, truncated by `artifact_short_id`.
+"""
+const GENERATION_COPY_HOST_LEN = 12
+
+"""
+    _generation_copy_host() -> String
+
+The host tag of this process's generation copies: a fixed-length hex prefix of
+the digest of the host name.
+
+A pid names a process only on the host that runs it. When the library sits on
+a volume several hosts share — NFS, a bind mount into a container with its own
+pid namespace — host B's process table says nothing about host A's pids, so
+without this tag B could take A's still-running process for dead and delete
+the copy A is between `cp` and `dlopen` of, and two hosts with the same pid
+and counter could even pick one path. The sweep only ever considers copies
+carrying this host's own tag. Computed per call rather than at precompile
+time, so an image built on one machine does not carry that machine's name.
+"""
+function _generation_copy_host()
+    name = try
+        gethostname()
+    catch
+        ""
+    end
+    return artifact_short_id(stable_content_hash(name), GENERATION_COPY_HOST_LEN)
+end
+
+"""
     process_generation_path(lib_path, generation) -> String
 
-`libfoo.dylib` → `libfoo.rustcall.<pid>.<generation>.dylib`: the copy name
-`loadable_library_copy` uses.
+`libfoo.dylib` → `libfoo.rustcall.<host>.<pid>.<generation>.dylib`: the copy
+name `loadable_library_copy` uses; `<host>` is `_generation_copy_host()`.
 
 `RELOAD_GENERATION` is per process, so two Julia processes that load the same
 built library — two workers of a test run, two sessions using one crate — would
@@ -1424,7 +1456,8 @@ and can be overwritten. The `rustcall` marker is what lets the stale-copy sweep
 recognise its own files (`GENERATION_COPY_MARKER`).
 """
 process_generation_path(lib_path::AbstractString, generation::Integer) =
-    generation_path(lib_path, "$(GENERATION_COPY_MARKER).$(getpid()).$(generation)")
+    generation_path(lib_path,
+                    "$(GENERATION_COPY_MARKER).$(_generation_copy_host()).$(getpid()).$(generation)")
 
 """
     _process_alive(pid) -> Bool
@@ -1465,8 +1498,8 @@ end
 """
     _sweep_stale_generation_copies(built_path)
 
-Remove the `<lib>.rustcall.<pid>.<generation>.<ext>` copies beside
-`built_path` whose process is gone.
+Remove the `<lib>.rustcall.<host>.<pid>.<generation>.<ext>` copies beside
+`built_path` that this host made and whose process is gone.
 
 A written bindings module makes one copy per process start, and nothing
 removes it when that process exits — an image is retired, not closed, and on
@@ -1475,14 +1508,16 @@ launching Julia would accumulate copies without bound (#309). The next process
 to copy the same library sweeps first: a copy tagged with a pid that no longer
 exists is removed; this process's own copies and those of a live pid are kept;
 a copy Windows still has mapped refuses the delete and is kept for a later
-sweep. Only names carrying `GENERATION_COPY_MARKER` are candidates: the legacy
-`<lib>.<generation>.<ext>` shape and anything else beside the library are not
-RustCall's to delete. Best effort: nothing here can fail the load.
+sweep. Only names carrying `GENERATION_COPY_MARKER` **and this host's tag**
+are candidates: the legacy `<lib>.<generation>.<ext>` shape and anything else
+beside the library are not RustCall's to delete, and another host's copy
+cannot be judged from this host's process table (`_generation_copy_host`).
+Best effort: nothing here can fail the load.
 """
 function _sweep_stale_generation_copies(built_path::AbstractString)
     dir = dirname(built_path)
     stem, ext = splitext(basename(built_path))
-    prefix = stem * "." * GENERATION_COPY_MARKER * "."
+    prefix = stem * "." * GENERATION_COPY_MARKER * "." * _generation_copy_host() * "."
     me = getpid()
     names = try
         readdir(dir)
@@ -1525,10 +1560,10 @@ already mapped hands back the **old** image, so a rebuild silently has no
 effect while objects allocated by the old library start being freed by code
 from the new one.
 
-Copying to `<lib>.rustcall.<pid>.<generation>.<ext>` and opening that leaves
-Cargo's output untouched, and makes every load a genuinely distinct file —
-across processes too, since the counter alone is per process (#255, #277,
-#309).
+Copying to `<lib>.rustcall.<host>.<pid>.<generation>.<ext>` and opening that
+leaves Cargo's output untouched, and makes every load a genuinely distinct
+file — across processes and hosts too, since the counter alone is per process
+(#255, #277, #309).
 Before copying, the copies of processes that no longer exist are swept
 (`_sweep_stale_generation_copies`), so a library that is loaded by one
 process after another keeps only the live processes' copies beside it.

@@ -231,14 +231,17 @@ end
         # so two processes loading one built library would otherwise both pick
         # `.1.`, and on Windows the second could not overwrite the first's
         # mapped copy and would fall back to mapping Cargo's output (#309).
+        host = RustCall._generation_copy_host()
+        @test occursin(r"^[0-9a-f]{12}$", host)
+        @test host == RustCall._generation_copy_host()
         @test basename(RustCall.process_generation_path(joinpath("a", "foo.dll"), 7)) ==
-              "foo.rustcall.$(getpid()).7.dll"
+              "foo.rustcall.$(host).$(getpid()).7.dll"
         mktempdir() do dir
             built = joinpath(dir, "libfoo.so")
             write(built, "not a library")
             expected = RustCall.RELOAD_GENERATION[] + 1
             copied = RustCall.loadable_library_copy(built)
-            @test copied == joinpath(dir, "libfoo.rustcall.$(getpid()).$(expected).so")
+            @test copied == joinpath(dir, "libfoo.rustcall.$(host).$(getpid()).$(expected).so")
             @test isfile(copied) && isfile(built)
             @test read(copied) == read(built)
         end
@@ -248,8 +251,10 @@ end
         # process copies the same library, so a written module loaded by one
         # Julia process after another does not accumulate one copy per start
         # (#309). Kept: this process's copies, a live process's copies, the
-        # pre-marker `<lib>.<n>.<ext>` shape, and any file without the
-        # `rustcall` marker — a versioned `libbar.12345.2.so` is not ours.
+        # pre-marker `<lib>.<n>.<ext>` shape, any file without the
+        # `rustcall` marker — a versioned `libbar.12345.2.so` is not ours —
+        # and another host's copy on a shared volume, whose pid this host's
+        # process table cannot judge.
         mktempdir() do dir
             built = joinpath(dir, "libbar.so")
             write(built, "not a library")
@@ -265,13 +270,17 @@ end
                 @test !RustCall._process_alive(dead_pid)
                 @test RustCall._process_alive(live_pid)
                 @test RustCall._process_alive(getpid())
-                stale = joinpath(dir, "libbar.rustcall.$(dead_pid).3.so")
-                mine = joinpath(dir, "libbar.rustcall.$(getpid()).1.so")
-                theirs = joinpath(dir, "libbar.rustcall.$(live_pid).1.so")
+                host = RustCall._generation_copy_host()
+                other_host = host == "0123456789ab" ? "ba9876543210" : "0123456789ab"
+                stale = joinpath(dir, "libbar.rustcall.$(host).$(dead_pid).3.so")
+                mine = joinpath(dir, "libbar.rustcall.$(host).$(getpid()).1.so")
+                theirs = joinpath(dir, "libbar.rustcall.$(host).$(live_pid).1.so")
+                foreign = joinpath(dir, "libbar.rustcall.$(other_host).$(dead_pid).3.so")
+                hostless = joinpath(dir, "libbar.rustcall.$(dead_pid).3.so")
                 legacy = joinpath(dir, "libbar.7.so")
                 unmarked = joinpath(dir, "libbar.$(dead_pid).2.so")
-                other_lib = joinpath(dir, "libbarbaz.rustcall.$(dead_pid).2.so")
-                for f in (stale, mine, theirs, legacy, unmarked, other_lib)
+                other_lib = joinpath(dir, "libbarbaz.rustcall.$(host).$(dead_pid).2.so")
+                for f in (stale, mine, theirs, foreign, hostless, legacy, unmarked, other_lib)
                     write(f, "stale?")
                 end
                 copied = RustCall.loadable_library_copy(built)
@@ -279,6 +288,8 @@ end
                 @test !isfile(stale)
                 @test isfile(mine)
                 @test isfile(theirs)
+                @test isfile(foreign)
+                @test isfile(hostless)
                 @test isfile(legacy)
                 @test isfile(unmarked)
                 @test isfile(other_lib)
