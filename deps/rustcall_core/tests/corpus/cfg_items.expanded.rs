@@ -538,13 +538,16 @@ mod extra {
         42
     }
     thread_local! {
-        static __RUSTCALL_PANIC_RUSTCALL_BONUS : ::std::cell::RefCell <
+        static __RUSTCALL_PANIC_RUSTCALL_EXTRA__BONUS : ::std::cell::RefCell <
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_bonus_take_panic(out: *mut u8, cap: usize) -> usize {
-        __RUSTCALL_PANIC_RUSTCALL_BONUS
+    pub extern "C" fn rustcall_extra__bonus_take_panic(
+        out: *mut u8,
+        cap: usize,
+    ) -> usize {
+        __RUSTCALL_PANIC_RUSTCALL_EXTRA__BONUS
             .with(|rustcall_slot| {
                 let mut rustcall_slot = rustcall_slot.borrow_mut();
                 let rustcall_len = match rustcall_slot.as_ref() {
@@ -575,7 +578,7 @@ mod extra {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_bonus() -> i32 {
+    pub extern "C" fn rustcall_extra__bonus() -> i32 {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| { bonus() }),
         ) {
@@ -596,7 +599,7 @@ mod extra {
                 let rustcall_message = ::std::format!(
                     "{} panicked: {}", "bonus", rustcall_message
                 );
-                __RUSTCALL_PANIC_RUSTCALL_BONUS
+                __RUSTCALL_PANIC_RUSTCALL_EXTRA__BONUS
                     .with(|rustcall_slot| {
                         *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
                             rustcall_message,

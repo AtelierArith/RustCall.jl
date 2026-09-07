@@ -431,10 +431,12 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         Symbol(snake_to_pascal(info.name))
     end
 
-    # Generate function wrappers
+    # The crate root's items; items inside modules go into the submodules
+    # below (#300). A module name Julia cannot define next to a root binding
+    # is refused up front.
+    tree = _module_tree(info)
+    _check_module_names(tree)
     func_defs = generate_crate_function_wrappers(info, lib_path)
-
-    # Generate struct definitions and wrappers
     struct_defs = generate_crate_struct_wrappers(info, lib_path)
 
     # The registry name of this crate's library. `@rust_crate` used to keep its
@@ -577,6 +579,9 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
 
         $func_defs
         $struct_defs
+        # One Julia submodule per Rust module: `bindings.a.run()` for
+        # `a::run` (#300). Each imports the helpers above from its parent.
+        $(_submodule_exprs(tree)...)
     end
 
     # Return a clean module expression (not wrapped in a block)
@@ -587,12 +592,18 @@ end
 """
     generate_crate_function_wrappers(info::CrateInfo, lib_path::String) -> Expr
 
-Generate Julia wrapper functions for all #[julia] functions in the crate.
+Generate Julia wrapper functions for the `#[julia]` functions at the crate root.
+Functions inside modules are emitted into the submodule of their `module_path`
+by `emit_crate_module` (#300).
 """
 function generate_crate_function_wrappers(info::CrateInfo, lib_path::String)
+    _function_wrappers_expr(_module_tree(info).functions)
+end
+
+function _function_wrappers_expr(functions)
     exprs = Expr[]
 
-    for func in info.julia_functions
+    for func in functions
         if func.is_generic
             continue  # Skip generics for now
         end
@@ -606,6 +617,245 @@ function generate_crate_function_wrappers(info::CrateInfo, lib_path::String)
     end
 
     Expr(:block, exprs...)
+end
+
+# ============================================================================
+# One Julia submodule per Rust module (#300)
+# ============================================================================
+
+"""
+    ModuleNode
+
+One module of a crate's binding layout: the items whose `module_path` is
+`path`, and the modules below it. The root has an empty `path`.
+
+The generated Julia module mirrors the Rust module tree: an item at the crate
+root is bound where it always was, an item in `mod a` is bound in a submodule
+`a` (`bindings.a.run()`, `bindings.a.C`), so two `run`s or two `struct C` in
+different modules — which the symbol scheme keeps apart in the library — are
+kept apart in Julia as well. A module that only contains other modules is
+still emitted, so the path in Julia is the path in Rust.
+"""
+struct ModuleNode
+    path::Vector{String}
+    functions::Vector{RustFunctionSignature}
+    structs::Vector{RustStructInfo}
+    children::Vector{ModuleNode}
+end
+
+ModuleNode(path::Vector{String}) =
+    ModuleNode(path, RustFunctionSignature[], RustStructInfo[], ModuleNode[])
+
+"""
+    _module_tree(info::CrateInfo) -> ModuleNode
+    _module_tree(functions, structs) -> ModuleNode
+
+Arrange a crate's items by `module_path`. Children are sorted by name, so the
+layout — and a file written by `write_bindings_to_file` — is deterministic
+whatever order the manifest listed the items in.
+"""
+_module_tree(info::CrateInfo) = _module_tree(info.julia_functions, info.julia_structs)
+
+function _module_tree(functions, structs)
+    root = ModuleNode(String[])
+    node_at(path) = begin
+        node = root
+        for (depth, segment) in enumerate(path)
+            i = findfirst(c -> last(c.path) == segment, node.children)
+            if i === nothing
+                push!(node.children, ModuleNode(path[1:depth]))
+                sort!(node.children; by = c -> last(c.path))
+                i = findfirst(c -> last(c.path) == segment, node.children)
+            end
+            node = node.children[i]
+        end
+        node
+    end
+    for f in functions
+        push!(node_at(f.module_path).functions, f)
+    end
+    for s in structs
+        push!(node_at(s.module_path).structs, s)
+    end
+    return root
+end
+
+"""
+    _julia_module_name(segment::AbstractString) -> String
+
+The Julia name of a Rust module segment. A raw identifier (`r#type`) loses its
+prefix — `#` would start a comment in the written file — and what remains
+must be a Julia identifier that is not a keyword: a Rust module called `end`,
+`function` or `macro` has no
+Julia spelling, so the
+layout is refused rather than written into a file that cannot be parsed
+(#300 review).
+"""
+function _julia_module_name(segment::AbstractString)
+    name = startswith(segment, "r#") ? String(segment[3:end]) : String(segment)
+    # `Base.isidentifier` accepts keywords; parsing the bare name as an
+    # expression yields a `Symbol` exactly when it is a usable identifier.
+    (Base.isidentifier(name) && Meta.parse(name; raise = false) isa Symbol) ||
+        error("cannot lay out the bindings of Rust module `$segment`: `$name` is not a " *
+              "valid Julia module name (a Julia keyword, or not an identifier). Rename the " *
+              "module (#300).")
+    return name
+end
+
+"""
+    _check_module_names(tree::ModuleNode)
+
+Refuse a layout Julia cannot define. Rust keeps values, types and modules in
+separate namespaces, so a crate may have both `#[julia] fn a()` and `#[julia]
+mod a { ... }`; Julia has one namespace per module, and the generated parent
+would define function `a` and then module `a` — a constant-redefinition error
+that takes the whole bindings module down (#300 review). Every child module
+name is therefore checked against everything its parent binds: free functions,
+struct types, every method name (static or instance — both become functions of
+the parent), field accessors (`get_<f>`, `set_<f>!`), the helpers every
+generated module defines (`_call_target`, `_LIB_GEN`, ...) and the names it
+imports (`RustCall`, `Libdl`, the `import RustCall: ...` prelude). Module segments
+must also spell a Julia identifier (`_julia_module_name`). The error names both
+sides and the fix.
+"""
+function _check_module_names(tree::ModuleNode)
+    taken = Dict{String, String}()
+    for name in _CRATE_MODULE_HELPERS
+        taken[String(name)] = "a helper every generated module defines"
+    end
+    for name in ("_LIB_PATH", "_SYMBOLS", "_SYMBOL_LOCK", "_PRELOAD_LIBRARIES", "__init__")
+        taken[name] = "a helper every generated module defines"
+    end
+    for name in _CRATE_MODULE_PRELUDE
+        taken[String(name)] = "a name every generated module imports from RustCall"
+    end
+    for name in _CRATE_MODULE_IMPORTED_MODULES
+        taken[String(name)] = "a module every generated module imports"
+    end
+    for f in tree.functions
+        f.is_generic && continue
+        get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
+    end
+    for s in tree.structs
+        owner = qualified_name(s.module_path, s.name)
+        get!(taken, s.name, "the struct `$owner`")
+        for m in s.methods
+            (isempty(m.skip_reason) && !m.is_constructor) || continue
+            get!(taken, m.name, "the method `$owner::$(m.name)`")
+        end
+        for (field, _) in s.fields
+            field_is_accessible(s, field) && get!(taken, "get_$field", "the accessor of `$owner.$field`")
+            field_is_writable(s, field) && get!(taken, "set_$(field)!", "the accessor of `$owner.$field`")
+        end
+    end
+    for child in tree.children
+        name = _julia_module_name(last(child.path))
+        if haskey(taken, name)
+            where_ = isempty(tree.path) ? "the crate root" : "module `$(join(tree.path, "::"))`"
+            error("cannot lay out the bindings of module `$(join(child.path, "::"))`: " *
+                  "$where_ already binds `$name` as $(taken[name]), and Julia keeps " *
+                  "functions, types and modules in one namespace, so the submodule " *
+                  "`$name` would redefine it. Rename the module or the item (#300).")
+        end
+        _check_module_names(child)
+    end
+    return nothing
+end
+
+"""
+    _CRATE_MODULE_HELPERS
+
+The names a generated crate module defines once, at its root, and every
+submodule imports from its parent: the library record and the snapshot
+constructors (`_call_target`, `_ctor_target`, `_struct_generation`), the
+symbol cache and the panic guard. One definition per module tree, so a reload
+swaps the image for every submodule at once.
+"""
+const _CRATE_MODULE_HELPERS = (:_LIB_NAME, :_LIB_GEN, :_symbol, :_required_symbol,
+                               :_live_handle, :_get_func_ptr, :_call_target, :_ctor_target,
+                               :_struct_generation, :_guard_panic)
+
+# `import ..name, ..name2, ...` — every helper from the enclosing module. A
+# submodule two levels down imports from *its* parent, which imported them
+# itself, so the chain needs no knowledge of its depth.
+_parent_helper_imports_expr() =
+    Expr(:import, (Expr(:., :., :., name) for name in _CRATE_MODULE_HELPERS)...)
+
+_parent_helper_imports_source() =
+    "import " * join(("..$(name)" for name in _CRATE_MODULE_HELPERS), ", ")
+
+# The names the `import RustCall: ...` prelude of every generated module — root
+# or submodule — brings in, and the modules imported next to them. A child
+# module cannot take any of these names either (`_check_module_names`).
+const _CRATE_MODULE_PRELUDE = (:call_rust_function, :get_function_pointer_from_lib, :RustResult,
+                               :RustOption, :_check_not_freed, :_call_rust_owned_string_ptr,
+                               :_call_rust_borrowed_string_ptr, :convert_return, :_result_payload,
+                               :FFIByValue)
+const _CRATE_MODULE_IMPORTED_MODULES = (:RustCall, :Libdl, :Base, :Core)
+const _CRATE_MODULE_PRELUDE_NAMES = "call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,\n" *
+    "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,\n" *
+    "                 _result_payload, FFIByValue"
+
+"""
+    _submodule_exprs(node::ModuleNode) -> Vector{Expr}
+
+The `module <name> ... end` expressions for the children of `node`, each with
+the prelude, the helpers imported from the parent, its own items and its own
+children. Static-method name collisions (#323) are decided per module, since
+that is the scope a bare `name(args...)` definition lives in.
+"""
+function _submodule_exprs(node::ModuleNode)
+    exprs = Expr[]
+    for child in node.children
+        colliding = _static_method_collisions(child.functions, child.structs)
+        func_defs = _function_wrappers_expr(child.functions)
+        struct_defs = _struct_wrappers_expr(child.structs, colliding)
+        body = quote
+            import RustCall
+            import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
+                             _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,
+                             _result_payload, FFIByValue
+            $(_parent_helper_imports_expr())
+            $func_defs
+            $struct_defs
+            $(_submodule_exprs(child)...)
+        end
+        push!(exprs, Expr(:module, true, Symbol(_julia_module_name(last(child.path))), body))
+    end
+    return exprs
+end
+
+"""
+    _submodule_code(node::ModuleNode; strict) -> Vector{String}
+
+Source-text twin of `_submodule_exprs` for `emit_crate_module_code`.
+"""
+function _submodule_code(node::ModuleNode; strict::Symbol = FFI_STRICT[])
+    lines = String[]
+    for child in node.children
+        name = _julia_module_name(last(child.path))
+        push!(lines, "# Rust module `$(join(child.path, "::"))` (#300)")
+        push!(lines, "module $name")
+        push!(lines, "")
+        push!(lines, "import RustCall")
+        push!(lines, "import RustCall: " * _CRATE_MODULE_PRELUDE_NAMES)
+        push!(lines, _parent_helper_imports_source())
+        push!(lines, "")
+        for func in child.functions
+            func.is_generic && continue
+            push!(lines, _emit_function_code(func; strict = strict))
+            push!(lines, "")
+        end
+        colliding = _static_method_collisions(child.functions, child.structs)
+        for s in child.structs
+            push!(lines, _emit_struct_code(s; strict = strict, colliding = colliding))
+            push!(lines, "")
+        end
+        append!(lines, _submodule_code(child; strict = strict))
+        push!(lines, "end # module $name")
+        push!(lines, "")
+    end
+    return lines
 end
 
 function _generate_crate_function_wrapper(func::RustFunctionSignature)
@@ -666,9 +916,9 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
     bindings, preserved, call_args = _string_arg_plan(func, identity)
-    # The helper types stay named after the Rust item, so the owner is the
-    # function name and the contract derives `free_symbol` from it (#276).
-    c = ffi_return_contract(func.return_type; abi = func.return_abi, owner = func_name_str)
+    # The helper types are named after the Rust item's FFI name, so that is the
+    # owner and the contract derives `free_symbol` from it (#276, #300).
+    c = ffi_return_contract(func.return_type; abi = func.return_abi, owner = func.ffi_name)
     # Declared before the call expression is built, since it names them.
     channel_sym = _generated_local("panic_channel", func.arg_names)
     ptr_sym = _generated_local("func_ptr", func.arg_names)
@@ -724,8 +974,9 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
     ok_julia_type, ok_slot_type = ffi_payload_symbols(func.ok_type, func.ok_abi, ctx)
     err_julia_type, err_slot_type = ffi_payload_symbols(func.err_type, func.err_abi, ctx)
     # An owned-string payload is released through the function's own
-    # `<fn>_free_rust_string`, snapshotted with the call pointer (#268, #277).
-    free_str = _payload_free_symbol(func_name_str, (func.ok_abi, func.err_abi))
+    # `<fn>_free_rust_string`, snapshotted with the call pointer (#268, #277);
+    # `<fn>` is the FFI name (#300).
+    free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi, func.err_abi))
 
     # The C-compatible struct name generated by the proc-macro
     c_result_struct_name = Symbol("CResult_", func_name_str)
@@ -866,7 +1117,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
     # slot, the surface type is what the caller sees.
     inner_julia_type, inner_slot_type =
         ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func))
-    free_str = _payload_free_symbol(func_name_str, (func.inner_abi,))
+    free_str = _payload_free_symbol(func.ffi_name, (func.inner_abi,))
 
     # The C-compatible struct name generated by the proc-macro
     c_option_struct_name = Symbol("COption_", func_name_str)
@@ -908,13 +1159,19 @@ end
 """
     generate_crate_struct_wrappers(info::CrateInfo, lib_path::String) -> Expr
 
-Generate Julia struct definitions and wrappers for all #[julia] structs in the crate.
+Generate Julia struct definitions and wrappers for the `#[julia]` structs at the
+crate root. Structs inside modules are emitted into the submodule of their
+`module_path` by `emit_crate_module` (#300).
 """
 function generate_crate_struct_wrappers(info::CrateInfo, lib_path::String)
-    exprs = Expr[]
-    colliding = _static_method_collisions(info)
+    root = _module_tree(info)
+    _struct_wrappers_expr(root.structs, _static_method_collisions(root.functions, root.structs))
+end
 
-    for s in info.julia_structs
+function _struct_wrappers_expr(structs, colliding::Set{String})
+    exprs = Expr[]
+
+    for s in structs
         wrapper = _generate_crate_struct_wrapper(s; colliding = colliding)
         push!(exprs, wrapper)
     end
@@ -971,7 +1228,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
 
             # For a pointer that did not come from a call of this module.
             function $struct_name(ptr::Ptr{Cvoid})
-                free_ptr, alive = _struct_generation($(ffi_struct_free_symbol(struct_name_str)))
+                free_ptr, alive = _struct_generation($(ffi_struct_free_symbol(info.ffi_name)))
                 return $struct_name(ptr, free_ptr, alive)
             end
         end
@@ -1217,10 +1474,11 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
-    # Exported symbol of the method wrapper (`rustcall_<Struct>_<method>`, #279);
-    # the per-method string buffers stay named after the method itself.
-    wrapper_name = method_wrapper_symbol(struct_name_str, method)
-    helper_owner = "$(struct_name_str)_$(method.name)"
+    # Exported symbol of the method wrapper (`rustcall_<Struct>_<method>`, #279)
+    # and the owner of the per-method string buffers, both off the struct's
+    # FFI name, which carries the module path (#300).
+    wrapper_name = method_wrapper_symbol(info.ffi_name, method)
+    helper_owner = "$(info.ffi_name)_$(method.name)"
 
     arg_syms = [Symbol(name) for name in method.arg_names]
 
@@ -1284,7 +1542,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         # Constructors and `Self`-returning methods allocate, so the object is
         # bound to the generation that ran the call (#277).
         target = :(($ptr_sym, $channel_sym, $free_sym, $alive_sym) =
-                       _ctor_target($wrapper_name, $(ffi_struct_free_symbol(struct_name_str))))
+                       _ctor_target($wrapper_name, $(ffi_struct_free_symbol(info.ffi_name))))
         :($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...)),
                        $free_sym, $alive_sym))
     elseif ffi_owned_string_return(c)
@@ -1840,12 +2098,17 @@ older RustCall produced.
   mapped image cannot be overwritten on Windows, so a module emitted before
   this made the crate unbuildable (and the file unregenerable) for the rest
   of the session. The name does not exist in a RustCall older than #289.
+- `7` (#300): every symbol the file names is module-qualified (`a__C_free`,
+  `rustcall_a__run`), and items inside Rust modules live in Julia submodules
+  (`bindings.a.run`). A file emitted before this names symbols a library
+  built with the current proc-macro no longer exports for any item inside a
+  module.
 
 A file emitted by an older version still *works* — it only uses public API that
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 6
+const BINDINGS_FORMAT_VERSION = 7
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
@@ -2554,8 +2817,11 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    RustCall.guard_rust_panic_ptr(value, channel, name)")
     push!(lines, "")
 
-    # Generate function wrappers
-    for func in info.julia_functions
+    # Generate function wrappers of the crate root; items inside modules go
+    # into the submodules below (#300).
+    tree = _module_tree(info)
+    _check_module_names(tree)
+    for func in tree.functions
         if func.is_generic
             continue
         end
@@ -2565,12 +2831,15 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     end
 
     # Generate struct wrappers
-    colliding = _static_method_collisions(info)
-    for s in info.julia_structs
+    colliding = _static_method_collisions(tree.functions, tree.structs)
+    for s in tree.structs
         code = _emit_struct_code(s; strict = strict, colliding = colliding)
         push!(lines, code)
         push!(lines, "")
     end
+
+    # One Julia submodule per Rust module (#300).
+    append!(lines, _submodule_code(tree; strict = strict))
 
     # Module end
     push!(lines, "end # module $mod_name")
@@ -2670,7 +2939,7 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     c_var = _generated_local("c_result", func.arg_names)
     channel_var = _generated_local("panic_channel", func.arg_names)
     free_var = _generated_local("free_ptr", func.arg_names)
-    free_str = _payload_free_symbol(func_name, (func.ok_abi, func.err_abi))
+    free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi, func.err_abi))
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target(\"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target(\"$sym\", \"$free_str\")"
@@ -2751,7 +3020,7 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     c_var = _generated_local("c_option", func.arg_names)
     channel_var = _generated_local("panic_channel", func.arg_names)
     free_var = _generated_local("free_ptr", func.arg_names)
-    free_str = _payload_free_symbol(func_name, (func.inner_abi,))
+    free_str = _payload_free_symbol(func.ffi_name, (func.inner_abi,))
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target(\"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target(\"$sym\", \"$free_str\")"
@@ -2803,7 +3072,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
     push!(lines, "    end")
     push!(lines, "")
     push!(lines, "    function $struct_name(ptr::Ptr{Cvoid})")
-    push!(lines, "        free_ptr, alive = _struct_generation($(repr(ffi_struct_free_symbol(struct_name))))")
+    push!(lines, "        free_ptr, alive = _struct_generation($(repr(ffi_struct_free_symbol(info.ffi_name))))")
     push!(lines, "        return $struct_name(ptr, free_ptr, alive)")
     push!(lines, "    end")
     push!(lines, "end")
@@ -2919,10 +3188,10 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
                            strict::Symbol = FFI_STRICT[], bare::Bool = true)
     struct_name = struct_info.name
     method_name = method.name
-    # Exported symbol (`rustcall_<Struct>_<method>`, #279); the per-method
-    # string buffers stay named after the method itself.
-    wrapper_name = method_wrapper_symbol(struct_name, method)
-    helper_owner = "$(struct_name)_$(method_name)"
+    # Exported symbol (`rustcall_<Struct>_<method>`, #279) and the owner of the
+    # per-method string buffers, both off the struct's FFI name (#300).
+    wrapper_name = method_wrapper_symbol(struct_info.ffi_name, method)
+    helper_owner = "$(struct_info.ffi_name)_$(method_name)"
 
     arg_syms = join(method.arg_names, ", ")
 
@@ -2971,7 +3240,7 @@ $(_emit_payload_decode(plan, c_var, free_expr))"""
     end
     call = if method.returns_boxed_struct
         target = "$ptr_var, $channel_var, $free_var, $alive_var = " *
-                 "_ctor_target(\"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_name))\")"
+                 "_ctor_target(\"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_info.ffi_name))\")"
         "$struct_name(call_rust_function($ptr_var, Ptr{Cvoid}, $args_str), $free_var, $alive_var)"
     elseif ffi_owned_string_return(c)
         target = "$ptr_var, $channel_var, $free_var = _call_target(\"$wrapper_name\", \"$(c.free_symbol)\")"

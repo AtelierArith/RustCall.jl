@@ -639,6 +639,17 @@ fn cfg_producing_meta(meta: &Meta) -> Option<Meta> {
 
 /// The combined predicate text of an item's `#[cfg(...)]` attributes
 /// (`unix`, `all(unix, feature = "x")`), empty when there is none.
+/// The `#[cfg]` attributes an item is subject to: those of every enclosing
+/// inline module (`enclosing`, outermost first) followed by its own. An item in
+/// `#[cfg(feature = "x")] mod a { #[cfg(unix)] fn f }` exists only under
+/// `all(feature = "x", unix)`, and a scan that recorded `unix` alone would let
+/// a consumer bind `a::f` in a build without `x` (#300 review).
+pub fn effective_cfg_attrs(enclosing: &[Attribute], attrs: &[Attribute]) -> Vec<Attribute> {
+    let mut out: Vec<Attribute> = enclosing.to_vec();
+    out.extend(cfg_attrs(attrs));
+    out
+}
+
 pub fn predicate_string(attrs: &[Attribute]) -> String {
     let preds: Vec<String> = attrs
         .iter()

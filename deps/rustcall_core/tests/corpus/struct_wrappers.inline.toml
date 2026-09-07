@@ -3,6 +3,7 @@ mode = "inline"
 
 [[functions]]
 name = "checked_double"
+ffi_name = "checked_double"
 symbol = "rustcall_checked_double"
 attribute = "julia"
 vis = "pub"
@@ -36,6 +37,7 @@ abi = ""
 
 [[functions]]
 name = "positive"
+ffi_name = "positive"
 symbol = "rustcall_positive"
 attribute = "julia"
 vis = "pub"
@@ -69,6 +71,7 @@ abi = ""
 
 [[structs]]
 name = "Greeter"
+ffi_name = "Greeter"
 attribute = "derive_julia_struct"
 vis = "pub"
 skip_reason = ""
@@ -211,6 +214,7 @@ generic_wrapper = ""
 
 [[structs]]
 name = "Divider"
+ffi_name = "Divider"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""

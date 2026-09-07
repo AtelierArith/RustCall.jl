@@ -216,11 +216,11 @@ using TOML
         end
     end
 
-    @testset "PyO3 scan: one file used as two modules (#275)" begin
+    @testset "PyO3 scan: one file used as two modules (#275, #300)" begin
         # `#[path = "shared.rs"] pub mod a;` and the same for `b` compile the
         # file twice, as two distinct modules. Both belong in the manifest under
-        # their own module paths — and they collide with each other on the
-        # wrapper symbols, which is exactly what the scan should say.
+        # their own module paths — and since the symbol carries the module path
+        # (#300) both are wrappable, under distinct symbols.
         mktempdir() do dir
             mkpath(joinpath(dir, "src"))
             write(joinpath(dir, "Cargo.toml"), """
@@ -246,10 +246,10 @@ using TOML
             entries = [f for f in RustCall.scan_crate(dir).pyo3_functions if f.name == "shared_fn"]
             @test length(entries) == 2
             @test sort([e.module_path for e in entries]) == [["a"], ["b"]]
-            # Both want `rustcall_shared_fn`; exactly one keeps it.
-            @test count(e -> isempty(e.skip_reason), entries) == 1
-            loser = only(e for e in entries if !isempty(e.skip_reason))
-            @test startswith(loser.skip_reason, "symbol_collision:")
+            @test all(e -> isempty(e.skip_reason), entries)
+            @test sort([e.symbol for e in entries]) ==
+                  ["rustcall_a__shared_0fn", "rustcall_b__shared_0fn"]
+            @test sort([e.ffi_name for e in entries]) == ["a__shared_0fn", "b__shared_0fn"]
         end
     end
 

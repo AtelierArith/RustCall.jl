@@ -12,7 +12,11 @@ source text.
 # Fields
 - `name`, `arg_names`, `arg_types`, `return_type`: as written in Rust
 - `is_generic`, `type_params`, `constraints`: generic parameters and their trait bounds
-- `symbol`: exported C symbol (equals `name` unless generic)
+- `symbol`: exported C symbol (`rustcall_<ffi_name>`, #279/#300)
+- `ffi_name`: the stem every generated symbol of the function hangs off
+  (manifest `Function.ffi_name`, schema 7, #300): `name` at the crate root,
+  module-qualified otherwise (`a::run` -> `a__run`). The string release
+  function is `<ffi_name>_free_rust_string`
 - `attribute`: `:julia` or `:none`
 - `exported`: whether the compiled library exports `symbol`
 - `return_kind`: `:plain`, `:unit`, `:result` or `:option`
@@ -72,6 +76,10 @@ struct RustFunctionSignature
     ok_abi::String
     err_abi::String
     inner_abi::String
+    # Manifest schema 7 (#300): the stem of every generated symbol —
+    # `rustcall_<ffi_name>`, `<ffi_name>_free_rust_string`. Equal to `name`
+    # for a crate-root item; module-qualified inside modules.
+    ffi_name::String
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -93,7 +101,8 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                cfg_features::Vector{String} = String[],
                                ok_abi::String = _default_payload_abi(ok_type),
                                err_abi::String = _default_payload_abi(err_type),
-                               inner_abi::String = _default_payload_abi(inner_type))
+                               inner_abi::String = _default_payload_abi(inner_type),
+                               ffi_name::String = name)
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
@@ -101,7 +110,7 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
                           return_abi, vis, skip_reason, python_name, cfg_features,
-                          ok_abi, err_abi, inner_abi)
+                          ok_abi, err_abi, inner_abi, isempty(ffi_name) ? name : ffi_name)
 end
 
 """
@@ -247,22 +256,24 @@ _ffi_context(m::RustMethod, owner::AbstractString) =
     _ffi_function_return(sig) -> FFIContract
 
 The return contract of a free function, with the owner set: the string helpers
-are named after the Rust item, so `<fn>_free_rust_string` comes out of the
-contract rather than being spelled at the call site (#246, #249).
+are named after the Rust item's FFI name, so `<ffi_name>_free_rust_string`
+comes out of the contract rather than being spelled at the call site (#246,
+#249, #300).
 """
 _ffi_function_return(sig::RustFunctionSignature) =
-    ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.name)
+    ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.ffi_name)
 
 """
     _ffi_field_return(info, field_name, field_type) -> FFIContract
 
 The return contract of a struct field getter. `Field.abi` (manifest schema 4)
 says whether the getter hands back an owned buffer, and the struct owns the
-`<Struct>_free_rust_string` that releases it — on both wrapper flavours.
+`<Struct>_free_rust_string` that releases it — on both wrapper flavours, named
+after the struct's FFI name (#300).
 """
 _ffi_field_return(info, field_name::AbstractString, field_type::AbstractString) =
     ffi_return_contract(field_type; abi = get(info.field_abis, field_name, ""),
-                        owner = info.name)
+                        owner = info.ffi_name)
 
 # A field getter reads as `Struct::field -> T`.
 _ffi_field_context(info, field_name::AbstractString, field_type::AbstractString) =
@@ -394,9 +405,9 @@ end
 function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     bindings, preserved, call_args = _string_arg_plan(sig, esc)
     lib_sym = _generated_local("lib_name", sig.arg_names)
-    # The string helpers are named after the Rust item, not the symbol, so the
-    # owner is the function name; the contract turns that into `free_symbol`.
-    c = ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.name)
+    # The string helpers are named after the Rust item's FFI name, not the
+    # symbol; the contract turns that owner into `free_symbol` (#300).
+    c = ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.ffi_name)
     rust_name = sig.name
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     call = if ffi_owned_string_return(c)
@@ -442,7 +453,7 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
     # a `String` payload the slot is the owned `CRustString` buffer (#268).
     ok_t, ok_slot = ffi_payload_symbols(sig.ok_type, sig.ok_abi, ctx)
     err_t, err_slot = ffi_payload_symbols(sig.err_type, sig.err_abi, ctx)
-    free_sym = _payload_free_symbol(sig.name, (sig.ok_abi, sig.err_abi))
+    free_sym = _payload_free_symbol(sig.ffi_name, (sig.ok_abi, sig.err_abi))
     c_sym = _generated_local("c_result", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name
@@ -469,7 +480,7 @@ end
 function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
     ctx = _ffi_context(sig)
     inner_t, inner_slot = ffi_payload_symbols(sig.inner_type, sig.inner_abi, ctx)
-    free_sym = _payload_free_symbol(sig.name, (sig.inner_abi,))
+    free_sym = _payload_free_symbol(sig.ffi_name, (sig.inner_abi,))
     c_sym = _generated_local("c_option", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name

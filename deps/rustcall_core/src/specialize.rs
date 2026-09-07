@@ -305,12 +305,14 @@ pub fn specialize(
     func.attrs
         .retain(|a| !a.path().is_ident("no_mangle") && !a.path().is_ident("julia"));
 
-    let mut entry = function_entry(&func);
-    entry.module_path = module_path.iter().map(|s| s.to_string()).collect();
+    let path: Vec<String> = module_path.iter().map(|s| s.to_string()).collect();
+    let mut entry = function_entry(&func, &path);
 
     // The instantiation is emitted the same way `#[julia]` emits a function
     // (#279): the plain Rust function under `new_name`, and the `extern "C"`
-    // entry point next to it under `rustcall_<new_name>`. Fixed `String` /
+    // entry point next to it under `rustcall_<new_name>` — qualified by the
+    // module the generic lives in, where the instantiation is placed (#300).
+    // Fixed `String` /
     // `&str` parameters or returns get the `(ptr, len)` ABI (#242); the
     // manifest records the helpers so the caller uses the string ABI.
     entry.return_abi = crate::codegen::return_abi(&func.sig).to_string();
@@ -318,7 +320,7 @@ pub fn specialize(
     entry.has_borrowed_string_helper = entry.return_abi == "str";
     let new_items: Vec<Item> = {
         func.vis = syn::Visibility::Public(Default::default());
-        let wrapper: syn::File = syn::parse2(plain_function_wrapper(&func))
+        let wrapper: syn::File = syn::parse2(plain_function_wrapper(&func, &path))
             .map_err(|e| SpecializeError::Parse(e.to_string()))?;
         let mut items = vec![Item::Fn(func)];
         items.extend(wrapper.items);
@@ -355,7 +357,7 @@ fn locate_items<'a>(items: &'a mut Vec<Item>, path: &[&str]) -> Option<&'a mut V
     None
 }
 
-fn function_entry(func: &ItemFn) -> Function {
+fn function_entry(func: &ItemFn, module_path: &[String]) -> Function {
     let args = func
         .sig
         .inputs
@@ -377,9 +379,10 @@ fn function_entry(func: &ItemFn) -> Function {
         cfg: crate::cfg::predicate_string(&func.attrs),
         cfg_features: crate::cfg::predicate_features(&func.attrs),
         name: func.sig.ident.to_string(),
+        ffi_name: crate::codegen::symbol_stem(module_path, &func.sig.ident.to_string()),
         // The exported entry point is the additive wrapper, not the
-        // instantiation itself (#279).
-        symbol: function_symbol(&func.sig.ident.to_string()),
+        // instantiation itself (#279), under the module's path (#300).
+        symbol: function_symbol(module_path, &func.sig.ident.to_string()),
         attribute: Attribute::None,
         vis: crate::attrs::visibility_string(&func.vis),
         skip_reason: String::new(),
@@ -406,7 +409,7 @@ fn function_entry(func: &ItemFn) -> Function {
         line: 0,
         has_owned_string_helper: false,
         has_borrowed_string_helper: false,
-        module_path: Vec::new(),
+        module_path: module_path.to_vec(),
     }
 }
 
@@ -479,11 +482,14 @@ mod tests {
         )
         .unwrap();
         assert!(out.source.contains("mod api {"));
+        // The instantiation lives in `api`, so its symbol is qualified (#300).
         assert!(out
             .source
-            .contains("pub extern \"C\" fn rustcall_f_i32(x: i32) -> i32"));
+            .contains("pub extern \"C\" fn rustcall_api__f_0i32(x: i32) -> i32"));
         assert!(out.source.contains("pub fn f<T>"));
         assert_eq!(out.manifest.functions[0].module_path, vec!["api"]);
+        assert_eq!(out.manifest.functions[0].ffi_name, "api__f_0i32");
+        assert_eq!(out.manifest.functions[0].symbol, "rustcall_api__f_0i32");
         assert!(matches!(
             specialize(src, "api::nope", &[], "n").unwrap_err(),
             SpecializeError::FunctionNotFound(_)

@@ -38,30 +38,63 @@
 //! like `Point_free`, getters, and setters. `#[julia]` on an impl block leaves the
 //! methods alone and emits a wrapper next to the block for each method that is
 //! itself marked `#[julia]` (`rustcall_Point_new`, `rustcall_Point_distance`, ...).
+//!
+//! ## Modules
+//!
+//! A proc-macro cannot see the module an item sits in, so two `#[julia] fn run`
+//! in different modules would both export `rustcall_run`. Mark the **module**
+//! as well (RustCall.jl #300):
+//!
+//! ```rust,ignore
+//! #[julia]
+//! pub mod a {
+//!     #[julia]
+//!     pub fn run() -> i32 { 1 }   // exported as `rustcall_a__run`
+//! }
+//!
+//! #[julia]
+//! pub mod b {
+//!     #[julia]
+//!     pub fn run() -> i32 { 2 }   // exported as `rustcall_b__run`
+//! }
+//! ```
+//!
+//! `#[julia]` on an inline module expands the `#[julia]` items inside it with
+//! the module path folded into every generated symbol (`a__C_free`,
+//! `rustcall_a__C_new`, ...); nested marked modules accumulate the path. The
+//! attribute cannot be placed on a file module (`mod a;`), and RustCall.jl
+//! refuses a `#[julia]` item inside an inline module that is not marked.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
-use syn::{ItemFn, ItemImpl, ItemStruct};
+use syn::{ItemFn, ItemImpl, ItemMod, ItemStruct};
 
 use rustcall_core::codegen;
 
-/// The `#[julia]` attribute macro for FFI-compatible functions, structs and impl blocks.
+/// The `#[julia]` attribute macro for FFI-compatible functions, structs, impl
+/// blocks and inline modules.
 #[proc_macro_attribute]
 pub fn julia(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // An item the macro meets directly is at the crate root as far as the
+    // symbol scheme is concerned; items inside a `#[julia] mod` are expanded by
+    // the module's own expansion with its path (#300).
     if let Ok(func) = syn::parse::<ItemFn>(item.clone()) {
-        return codegen::transform_function(func).into();
+        return codegen::transform_function(func, &[]).into();
     }
     if let Ok(item_struct) = syn::parse::<ItemStruct>(item.clone()) {
-        return codegen::transform_struct_crate(item_struct).into();
+        return codegen::transform_struct_crate(item_struct, &[]).into();
     }
     if let Ok(item_impl) = syn::parse::<ItemImpl>(item.clone()) {
-        return codegen::transform_impl_crate(item_impl).into();
+        return codegen::transform_impl_crate(item_impl, &[]).into();
+    }
+    if let Ok(item_mod) = syn::parse::<ItemMod>(item.clone()) {
+        return codegen::transform_module(item_mod, &[]).into();
     }
 
     let item2: TokenStream2 = item.into();
     quote! {
-        compile_error!("#[julia] can only be applied to functions, structs, or impl blocks");
+        compile_error!("#[julia] can only be applied to functions, structs, impl blocks, or inline modules");
         #item2
     }
     .into()

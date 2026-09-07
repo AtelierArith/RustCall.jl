@@ -28,9 +28,15 @@ PyO3 wrapper crate, since neither shipped on its own: a `py_*` entry can now be
 uses, #275 Phase 2. Additive within 6: `Method.attribute`, the attribute of the
 impl block a method came from — serialized only when there is one — so the
 dual-binding attribute deprecated by #275 Phase 3 was reported even on a
-`#[julia]` struct; 7: that attribute is removed, and with it its value of the
-`attribute` origin — a schema-6 consumer could still meet that origin and bind
-the item under its as-written, non-lowered signature, #312).
+`#[julia]` struct; 7, two changes landing in one breaking release: (a) that
+attribute is removed, and with it its value of the `attribute` origin — a
+schema-6 consumer could still meet that origin and bind the item under its
+as-written, non-lowered signature, #312; (b) module-qualified symbols, #300 —
+`Function.ffi_name` / `Struct.ffi_name` carry the stem every exported symbol
+hangs off (`a::run` -> `a__run`), `symbol` and the field accessors are
+qualified by it, and crate mode records `module_path` for `#[julia]` items; a
+schema-6 consumer would derive `<Struct>_free` / `<owner>_free_rust_string`
+from the bare name).
 """
 const MANIFEST_SCHEMA_VERSION = 7
 
@@ -859,12 +865,13 @@ Result of instantiating a generic function via `rustcall-extract specialize`.
 struct SpecializedFunction
     source::String
     name::String
-    symbol::String                    # exported C symbol, `rustcall_<name>` (#279)
+    symbol::String                    # exported C symbol, `rustcall_<ffi_name>` (#279, #300)
     arg_types::Vector{String}
     return_type::String
     arg_abis::Vector{String}          # manifest `abi` per argument ("string", "str" or "")
-    has_owned_string_helper::Bool     # returns `<name>_RustCallOwnedString`, freed by `<name>_free_rust_string`
-    has_borrowed_string_helper::Bool  # returns `<name>_RustCallBorrowedString`
+    has_owned_string_helper::Bool     # returns `<ffi_name>_RustCallOwnedString`, freed by `<ffi_name>_free_rust_string`
+    has_borrowed_string_helper::Bool  # returns `<ffi_name>_RustCallBorrowedString`
+    ffi_name::String                  # the stem of those symbols: `name`, module-qualified (#300)
 end
 
 """
@@ -899,6 +906,7 @@ function specialize_generic(source::String, fn_name::String,
             String[_mstr(a, "abi") for a in args],
             _mbool(fn, "has_owned_string_helper"),
             _mbool(fn, "has_borrowed_string_helper"),
+            _ffi_name_of(fn),
         )
     end
 end
@@ -910,6 +918,15 @@ end
 _mstr(d, k) = String(get(d, k, ""))
 _mbool(d, k) = Bool(get(d, k, false))
 _mvec(d, k) = get(d, k, Any[])
+
+"""
+    _ffi_name_of(entry) -> String
+
+The `ffi_name` of a manifest function or struct entry (schema 7, #300): the
+stem every exported symbol of the item hangs off. A schema-7 manifest always
+carries it; the fallback to `name` is for entries built by hand in tests.
+"""
+_ffi_name_of(entry) = (v = _mstr(entry, "ffi_name"); isempty(v) ? _mstr(entry, "name") : v)
 
 """
     manifest_type_params(entry) -> Vector{String}
@@ -1006,6 +1023,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             ok_abi = _mstr(f, "ok_abi"),
             err_abi = _mstr(f, "err_abi"),
             inner_abi = _mstr(f, "inner_abi"),
+            ffi_name = _ffi_name_of(f),
             source = _mstr(f, "source"),
             constraints = manifest_constraints(f),
             module_path = String[String(m) for m in _mvec(f, "module_path")],
@@ -1121,6 +1139,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             skip_reason = _mstr(s, "skip_reason"),
             python_name = _mstr(s, "python_name"),
             cfg_features = String[String(c) for c in _mvec(s, "cfg_features")],
+            ffi_name = _ffi_name_of(s),
         ))
     end
     return infos

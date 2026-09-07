@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- **Exported symbols carry the module path** ([#300](https://github.com/AtelierArith/RustCall.jl/issues/300)).
+  The scheme of #279 (`rustcall_<name>`, `<Struct>_free`, ...) had no module
+  path, so two `#[julia] fn run` — or two `#[pyclass] struct C` — in different
+  modules of one crate wanted the same symbol: a duplicate-symbol error from
+  rustc, or a silently wrong binding. Every symbol now hangs off the item's
+  **FFI name** (`rustcall_core::codegen::symbol_stem`, the one derivation every
+  flavour uses — proc-macro, inline expansion, `specialize`, the PyO3 wrapper
+  generator): the bare name at the crate root, otherwise the module path and
+  the name joined with `__`, each `_` inside a segment spelled `_0`
+  (`a::run` → `rustcall_a__run`, `a::C` → `a__C_free` / `rustcall_a__C_new`,
+  `my_mod::my_fn` → `rustcall_my_0mod__my_0fn`; `a_b::c` and `a::b_c` cannot
+  meet). What changes for users:
+  - **`#[julia]` on inline modules.** A proc-macro cannot see its enclosing
+    module, so the module carries the attribute: `#[julia] pub mod a { #[julia]
+    pub fn run() ... }` expands its `#[julia]` items with the module path, and
+    nested marked modules accumulate. A `#[julia]` item inside an inline module
+    that is *not* marked is refused by the scan with the fix in the message
+    (it would have been exported under the crate-root symbol). File modules
+    (`mod a;`) cannot carry the attribute and stay transparent (root symbols);
+    a duplicate across them is reported by a new crate-wide check in
+    `rustcall-extract`, naming both locations. Items at the crate root keep
+    every symbol they had.
+  - **Symbols of items inside inline modules change**, in crates and in
+    `rust"""` blocks alike (the inline expander qualifies by the modules it
+    walks, no marker needed). Anything resolving `rustcall_<name>` by hand for
+    such an item must use the manifest's `symbol` / `ffi_name`.
+  - **One Julia submodule per Rust module.** `@rust_crate` and
+    `write_bindings_to_file` bind `a::run` as `bindings.a.run()` and `a::C` as
+    `bindings.a.C`, mirroring the Rust tree; root items stay where they were.
+    Static-method name collisions (#323) are decided per module. The bindings
+    file format marker is `7`; regenerate written modules.
+  - **Manifest schema 7** (together with the `#[julia_pyo3]` removal below):
+    `Function.ffi_name` / `Struct.ffi_name` carry the stem, `symbol` and the
+    field accessors are qualified, crate mode records `module_path` for
+    `#[julia]` items (the chain of marked modules), and entries are sorted by
+    module path. `RustFunctionSignature`, `RustStructInfo` and
+    `SpecializedFunction` gain an `ffi_name` field, which `ffi_struct_free_symbol`
+    / `ffi_free_symbol` callers now pass instead of `name`.
+  - PyO3-scanned items are qualified by their real module path, so the
+    cross-module `symbol_collision` skip reason of #294 is unreachable; the
+    reason survives only for same-module coincidences (an item whose own name
+    spells another item's generated symbol).
+  - A module name Julia cannot define next to a parent binding — Rust keeps
+    `fn a` and `mod a` in separate namespaces, Julia does not — is refused when
+    the bindings are laid out (functions, structs, methods, field accessors and
+    the generated helpers and the imported names all count), naming both sides
+    and the fix. A raw identifier module (`r#type`) is bound as `type`; a
+    module whose name is a Julia keyword (`end`, `function`, `macro`, …) is
+    refused rather than written into a file Julia cannot parse.
+  - A `#[julia] impl C` must sit in the same module as its `#[julia] struct
+    C`: the proc-macro derives the method symbols from the module the impl is
+    in, so an impl of a struct defined elsewhere — which used to be dropped
+    silently — is refused with the rule. Inside a `#[julia] mod`, a gated
+    struct's or impl block's `#[cfg]` is copied onto every helper generated
+    for it, so the crate still builds with the gate off.
+  - The PyO3 scan's Julia-surface collision check (`julia_name_collision`) is
+    scoped per module, matching the layout: `a::parse(x)` and `B::parse(x)` in
+    `b` no longer refuse each other.
+  - **A module's `#[cfg]` now gates the items inside it** in every scan: an
+    entry's `cfg` / `cfg_features` include the predicates of its enclosing
+    modules (`#[cfg(feature = "x")] mod a { fn f }` reports `f` under
+    `feature = "x"`), for `#[julia]` items in crate and inline mode and for
+    PyO3-scanned items, including files reached through a gated `mod a;`. A
+    lenient scan used to report such items as unconditional and bind them in a
+    build without the feature.
+
 ### Added
 - **`examples/SampleCratePyO3Only.jl`**, a third example package: a Julia
   package with a crate **written for PyO3 only** embedded under

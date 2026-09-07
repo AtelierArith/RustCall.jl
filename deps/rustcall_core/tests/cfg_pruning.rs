@@ -46,6 +46,7 @@ mod nested {
 }
 
 #[cfg(windows)]
+#[julia]
 mod winmod {
     #[julia]
     pub fn gone() -> i32 { 7 }
@@ -537,4 +538,197 @@ pub fn r() -> Result<i32, i32> { Ok(1) }
         "{}",
         e.source
     );
+}
+
+/// A module's `#[cfg]` gates everything inside it, so every entry inherits the
+/// predicates of its enclosing modules in `cfg` / `cfg_features` — otherwise a
+/// lenient crate scan reports `a::run` as unconditional and a consumer binds
+/// it in a build without the feature (#300 review). Checked on every walk that
+/// records entries: crate extraction, inline expansion, and the PyO3 scan of an
+/// inline module and of a file reached through a gated `mod` declaration.
+#[test]
+fn enclosing_module_cfg_is_inherited() {
+    let src = r#"
+        #[cfg(feature = "x")]
+        #[julia]
+        pub mod a {
+            #[julia]
+            pub fn run() -> i32 { 1 }
+            #[cfg(unix)]
+            #[julia]
+            pub fn nix() -> i32 { 2 }
+            #[julia]
+            pub struct C { pub v: i32 }
+            #[cfg(feature = "y")]
+            #[julia]
+            pub mod deep {
+                #[julia]
+                pub fn d() -> i32 { 3 }
+            }
+        }
+        #[julia]
+        pub fn root() -> i32 { 0 }
+    "#;
+    let check = |m: &rustcall_core::Manifest| {
+        let f = |name: &str| m.functions.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(f("root").cfg, "");
+        assert_eq!(f("run").cfg, "feature = \"x\"");
+        assert_eq!(f("run").cfg_features, vec!["x"]);
+        assert_eq!(f("nix").cfg, "all(feature = \"x\", unix)");
+        assert_eq!(f("nix").cfg_features, vec!["x"]);
+        assert_eq!(f("d").cfg, "all(feature = \"x\", feature = \"y\")");
+        assert_eq!(f("d").cfg_features, vec!["x", "y"]);
+        let c = m.structs.iter().find(|s| s.name == "C").unwrap();
+        assert_eq!(c.cfg, "feature = \"x\"");
+        assert_eq!(c.cfg_features, vec!["x"]);
+    };
+    check(&extract_with_cfg(src, Mode::Crate, None).unwrap());
+    check(&expand_with_cfg(src, None).unwrap().manifest);
+
+    // PyO3 items: an inline gated module ...
+    let py = r#"
+        #[cfg(feature = "x")]
+        pub mod a {
+            #[pyfunction] pub fn run() -> i32 { 1 }
+            #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }
+        }
+    "#;
+    let m = extract_with_cfg(py, Mode::Crate, None).unwrap();
+    assert_eq!(m.functions[0].cfg, "feature = \"x\"");
+    assert_eq!(m.functions[0].cfg_features, vec!["x"]);
+    assert_eq!(m.structs[0].cfg, "feature = \"x\"");
+    // ... and a file reached through a gated `mod a;` declaration, whose
+    // predicate the tree walk hands to the file's scan.
+    let root: syn::File = syn::parse_str("#[cfg(feature = \"x\")] pub mod a;").unwrap();
+    let mut scan = rustcall_core::pyo3::Pyo3Scan::new();
+    let mut manifest = rustcall_core::Manifest::new(Mode::Crate);
+    let pending = scan.file(&root.items, &[], true, &[], &mut manifest);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].cfg.len(), 1);
+    let more = rustcall_core::extract::extract_pyo3_file(
+        "#[pyfunction] pub fn run() -> i32 { 1 }",
+        None,
+        &pending[0].module_path,
+        pending[0].reachable,
+        &pending[0].cfg,
+        &mut scan,
+        &mut manifest,
+    )
+    .unwrap();
+    assert!(more.is_empty());
+    scan.finish(&mut manifest);
+    assert_eq!(manifest.functions[0].module_path, vec!["a"]);
+    assert_eq!(manifest.functions[0].cfg, "feature = \"x\"");
+    assert_eq!(manifest.functions[0].cfg_features, vec!["x"]);
+}
+
+/// A `#[pymethods]` block in a gated module, away from its class, gates its
+/// methods: the block's and its modules' predicates reach `Method.cfg`, so a
+/// wrapper generated from a lenient scan refuses them instead of calling a
+/// method the build may not have (#300 review).
+#[test]
+fn pymethods_blocks_inherit_their_module_cfg() {
+    let src = r#"
+        pub mod shapes { #[pyclass] pub struct Circle { pub r: f64 } }
+        #[cfg(feature = "x")]
+        pub mod extra {
+            #[pymethods]
+            impl super::shapes::Circle {
+                pub fn area(&self) -> f64 { 0.0 }
+                #[cfg(unix)]
+                pub fn nix(&self) -> f64 { 0.0 }
+            }
+        }
+        #[cfg(feature = "y")]
+        #[pymethods]
+        impl shapes::Circle {
+            pub fn perimeter(&self) -> f64 { 0.0 }
+        }
+    "#;
+    let m = extract_with_cfg(src, Mode::Crate, None).unwrap();
+    let circle = m.structs.iter().find(|s| s.name == "Circle").unwrap();
+    let method = |name: &str| circle.methods.iter().find(|mm| mm.name == name).unwrap();
+    assert_eq!(method("area").cfg, "feature = \"x\"");
+    assert_eq!(method("nix").cfg, "all(feature = \"x\", unix)");
+    assert_eq!(method("perimeter").cfg, "feature = \"y\"");
+    // The class itself is unconditional.
+    assert_eq!(circle.cfg, "");
+}
+
+/// Inside a `#[julia] mod` the module macro expands a gated struct or impl
+/// before rustc evaluates the predicate, so the generated destructor,
+/// accessors, string helpers and method wrappers must carry the same `#[cfg]`
+/// as the item they refer to — otherwise turning the feature off leaves
+/// functions that name a struct that is gone (#300 review).
+#[test]
+fn generated_struct_helpers_carry_the_struct_cfg() {
+    let item: syn::ItemStruct =
+        syn::parse_str("#[cfg(feature = \"x\")] pub struct C { pub v: i32, pub label: String }")
+            .unwrap();
+    let file: syn::File = syn::parse2(rustcall_core::codegen::transform_struct_crate(
+        item,
+        &["a".to_string()],
+    ))
+    .unwrap();
+    let has_cfg = |attrs: &[syn::Attribute]| {
+        attrs
+            .iter()
+            .any(|a| a.path().is_ident("cfg") && quote::quote!(#a).to_string().contains("feature"))
+    };
+    let mut fns = 0;
+    for it in &file.items {
+        match it {
+            syn::Item::Fn(f) => {
+                fns += 1;
+                assert!(
+                    has_cfg(&f.attrs),
+                    "helper `{}` lost the struct's cfg",
+                    f.sig.ident
+                );
+            }
+            syn::Item::Struct(s) => assert!(has_cfg(&s.attrs), "`{}` lost its cfg", s.ident),
+            _ => {}
+        }
+    }
+    // free, get_v, set_v, get_label, set_label, free_rust_string
+    assert_eq!(fns, 6);
+
+    let imp: syn::ItemImpl = syn::parse_str(
+        "#[cfg(feature = \"x\")] impl C { #[julia] pub fn get(&self) -> i32 { self.v } }",
+    )
+    .unwrap();
+    let file: syn::File = syn::parse2(rustcall_core::codegen::transform_impl_crate(
+        imp,
+        &["a".to_string()],
+    ))
+    .unwrap();
+    let wrappers: Vec<&syn::ItemFn> = file
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            syn::Item::Fn(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert!(!wrappers.is_empty());
+    for f in wrappers {
+        assert!(
+            has_cfg(&f.attrs),
+            "wrapper `{}` lost the block's cfg",
+            f.sig.ident
+        );
+    }
+    // The method inside the block is left as written: its own attrs only.
+    let imp_out = file
+        .items
+        .iter()
+        .find_map(|it| match it {
+            syn::Item::Impl(i) => Some(i),
+            _ => None,
+        })
+        .unwrap();
+    let syn::ImplItem::Fn(method) = &imp_out.items[0] else {
+        panic!()
+    };
+    assert!(method.attrs.is_empty());
 }

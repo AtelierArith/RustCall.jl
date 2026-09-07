@@ -338,7 +338,7 @@ impl Greeter {
     let mut out = proc_macro2::TokenStream::new();
     for i in &item.items {
         if let syn::ImplItem::Fn(m) = i {
-            out.extend(generate_method_wrapper_crate(&struct_name, m));
+            out.extend(generate_method_wrapper_crate(&struct_name, &[], m));
         }
     }
     let file: syn::File = syn::parse2(out).unwrap();
@@ -442,7 +442,7 @@ impl Counter {
     // ...and so does the crate flavour, through the proc-macro entry point.
     let item: syn::ItemStruct =
         syn::parse_str("pub struct Counter { count: u32, name: String }").unwrap();
-    let crate_src = flat(&rustcall_core::codegen::transform_struct_crate(item).to_string());
+    let crate_src = flat(&rustcall_core::codegen::transform_struct_crate(item, &[]).to_string());
     assert!(
         crate_src.contains("fn Counter_get_name")
             && crate_src.contains("-> Counter_RustCallOwnedString"),

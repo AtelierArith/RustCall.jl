@@ -61,7 +61,7 @@ use crate::types::{
 /// a crate-root item and miss a private parent module entirely (#275).
 pub fn extract_pyo3_items(items: &[Item], manifest: &mut Manifest) -> Vec<PendingModule> {
     let mut scan = Pyo3Scan::new();
-    let pending = scan.file(items, &[], true, manifest);
+    let pending = scan.file(items, &[], true, &[], manifest);
     scan.finish(manifest);
     pending
 }
@@ -87,6 +87,9 @@ pub struct PendingModule {
     /// directory to the search path of its out-of-line children. Empty when the
     /// declaration is at the top level of its file.
     pub dir_components: Vec<String>,
+    /// The `#[cfg]` attributes of the declaration and of every module enclosing
+    /// it, which every item in the module's file inherits (#300 review).
+    pub cfg: Vec<syn::Attribute>,
 }
 
 /// Crate-wide state of a PyO3 scan.
@@ -121,6 +124,10 @@ struct ScannedImpl {
     target: syn::Ident,
     line: usize,
     funcs: Vec<ImplItemFn>,
+    /// The `#[cfg]` of the block itself and of every module enclosing it: a
+    /// `#[pymethods]` block may sit in a gated module far from its class, and
+    /// its methods exist only under that predicate (#300 review).
+    cfg: Vec<syn::Attribute>,
 }
 
 /// Where a written path is rooted, which decides what a qualifier may match.
@@ -269,11 +276,17 @@ impl Pyo3Scan {
     ///
     /// Free functions go straight into `manifest`; classes and `#[pymethods]`
     /// blocks are held until [`Pyo3Scan::finish`].
+    ///
+    /// `enclosing_cfg` is the `#[cfg]` of every module on the way to this
+    /// file; every item found inherits it in its `cfg` / `cfg_features`, so a
+    /// wrapper generated from a lenient scan refuses an item whose *module* is
+    /// gated exactly as it refuses one gated itself (#300 review).
     pub fn file(
         &mut self,
         items: &[Item],
         module_path: &[String],
         reachable: bool,
+        enclosing_cfg: &[syn::Attribute],
         manifest: &mut Manifest,
     ) -> Vec<PendingModule> {
         let mut path = module_path.to_vec();
@@ -284,18 +297,21 @@ impl Pyo3Scan {
             &mut path,
             &mut dirs,
             reachable,
+            enclosing_cfg,
             manifest,
             &mut pending,
         );
         pending
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn level(
         &mut self,
         items: &[Item],
         module_path: &mut Vec<String>,
         dir_components: &mut Vec<String>,
         reachable: bool,
+        enclosing_cfg: &[syn::Attribute],
         manifest: &mut Manifest,
         pending: &mut Vec<PendingModule>,
     ) {
@@ -315,6 +331,7 @@ impl Pyo3Scan {
                                 Attribute::PyFunction,
                                 reachable,
                                 module_path,
+                                enclosing_cfg,
                             ));
                         }
                         Some(Pyo3Marker::Module) => {
@@ -323,6 +340,7 @@ impl Pyo3Scan {
                                 Attribute::PyModule,
                                 reachable,
                                 module_path,
+                                enclosing_cfg,
                             ));
                         }
                         _ => {}
@@ -335,7 +353,7 @@ impl Pyo3Scan {
                     if pyo3_marker(&s.attrs) == Some(Pyo3Marker::Class) {
                         self.classes.push(ScannedClass {
                             module_path: module_path.clone(),
-                            entry: class_entry(s, reachable, module_path),
+                            entry: class_entry(s, reachable, module_path, enclosing_cfg),
                         });
                     }
                 }
@@ -356,6 +374,7 @@ impl Pyo3Scan {
                         qualifier: type_path_qualifier(&imp.self_ty),
                         target,
                         line: imp.span().start().line,
+                        cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs),
                         funcs: imp
                             .items
                             .iter()
@@ -389,6 +408,7 @@ impl Pyo3Scan {
                 }
                 Item::Mod(m) => {
                     let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
+                    let inner_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs);
                     module_path.push(m.ident.to_string());
                     match &m.content {
                         Some((_, inner)) => {
@@ -398,6 +418,7 @@ impl Pyo3Scan {
                                 module_path,
                                 dir_components,
                                 inner_reachable,
+                                &inner_cfg,
                                 manifest,
                                 pending,
                             );
@@ -411,6 +432,7 @@ impl Pyo3Scan {
                             name: m.ident.to_string(),
                             path_attr: path_attribute(&m.attrs),
                             dir_components: dir_components.clone(),
+                            cfg: inner_cfg,
                         }),
                     }
                     module_path.pop();
@@ -441,8 +463,11 @@ impl Pyo3Scan {
                 continue;
             };
             let owner_skip = self.classes[index].entry.skip_reason.clone();
+            // The symbol is the *class's*: an `impl a::C` written elsewhere
+            // still wraps `a::C`'s methods (#300).
+            let class_path = self.classes[index].module_path.clone();
             for func in &imp.funcs {
-                let entry = method_entry(&imp.target, func, &owner_skip);
+                let entry = method_entry(&imp.target, &class_path, func, &owner_skip, &imp.cfg);
                 self.classes[index].entry.methods.push(entry);
             }
         }
@@ -595,25 +620,41 @@ fn flatten_use_tree(
 /// Constructors are named after their class and instance methods dispatch on
 /// `self::Class`; neither can collide this way.
 fn mark_julia_surface_collisions(manifest: &mut Manifest) {
-    let class_names: Vec<(String, String)> = manifest
+    // The Julia surface is one namespace *per generated module*, and the
+    // bindings lay one Julia module out per Rust module (#300), so every key
+    // below carries the module path: `a::parse` and `b::parse` live in
+    // `bindings.a` and `bindings.b` and never meet.
+    // (module path, name) -> qualified owner; (module path, name, arity) -> owner.
+    type Scoped = (Vec<String>, String);
+    type ScopedArity = (Vec<String>, String, usize);
+    let class_names: Vec<(Scoped, String)> = manifest
         .structs
         .iter()
         .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
-        .map(|s| (s.name.clone(), qualified(&s.module_path, &s.name)))
+        .map(|s| {
+            (
+                (s.module_path.clone(), s.name.clone()),
+                qualified(&s.module_path, &s.name),
+            )
+        })
         .collect();
-    let class_named = |name: &str| class_names.iter().find(|(n, _)| n == name);
+    let class_named = |path: &[String], name: &str| {
+        class_names
+            .iter()
+            .find(|((p, n), _)| p == path && n == name)
+    };
 
-    let mut taken: Vec<((String, usize), String)> = Vec::new();
+    let mut taken: Vec<(ScopedArity, String)> = Vec::new();
     for f in &mut manifest.functions {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
             continue;
         }
-        if let Some((_, class)) = class_named(&f.name) {
+        if let Some((_, class)) = class_named(&f.module_path, &f.name) {
             f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
             continue;
         }
         taken.push((
-            (f.name.clone(), f.args.len()),
+            (f.module_path.clone(), f.name.clone(), f.args.len()),
             qualified(&f.module_path, &f.name),
         ));
     }
@@ -626,11 +667,11 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
                 continue;
             }
-            if let Some((_, class)) = class_named(&m.name) {
+            if let Some((_, class)) = class_named(&s.module_path, &m.name) {
                 m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
                 continue;
             }
-            let key = (m.name.clone(), m.args.len());
+            let key = (s.module_path.clone(), m.name.clone(), m.args.len());
             match taken.iter().find(|(k, _)| *k == key) {
                 Some((_, other)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, other);
@@ -674,7 +715,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                 taken.push((symbol, qualified(&f.module_path, &f.name)));
             }
             if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
-                for symbol in string_helper_symbols(&f.name) {
+                for symbol in string_helper_symbols(&f.ffi_name) {
                     taken.push((symbol, qualified(&f.module_path, &f.name)));
                 }
             }
@@ -706,7 +747,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
         let mut symbols = wrapper_symbols(&f.symbol).to_vec();
         if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
-            symbols.extend(string_helper_symbols(&f.name));
+            symbols.extend(string_helper_symbols(&f.ffi_name));
         }
         if let Some((_, owner)) = taken.iter().find(|(s, _)| symbols.contains(s)) {
             let owner = owner.clone();
@@ -720,16 +761,18 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
     }
 
-    // A class whose *name* another struct entry already claimed collides on
-    // every one of its symbols at once, so there the class is the unit. Any
-    // other clash — with a free function, or between a class's own method and
-    // one of its field accessors — is reported on the individual entry, which
-    // leaves the rest of the class wrappable.
+    // A class whose *FFI name* another struct entry already claimed collides
+    // on every one of its symbols at once, so there the class is the unit.
+    // Since #300 the FFI name carries the module path, so this is a same-module
+    // clash (or a crate-root name spelling a qualified one). Any other clash —
+    // with a free function, or between a class's own method and one of its
+    // field accessors — is reported on the individual entry, which leaves the
+    // rest of the class wrappable.
     let mut class_names: Vec<(String, String)> = manifest
         .structs
         .iter()
         .filter(|s| !s.attribute.is_pyo3_scan())
-        .map(|s| (s.name.clone(), qualified(&s.module_path, &s.name)))
+        .map(|s| (s.ffi_name.clone(), qualified(&s.module_path, &s.name)))
         .collect();
 
     let mut struct_order: Vec<usize> = (0..manifest.structs.len()).collect();
@@ -745,7 +788,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
             continue;
         }
-        let name = s.name.clone();
+        let name = s.ffi_name.clone();
 
         if let Some((_, owner)) = class_names.iter().find(|(n, _)| *n == name) {
             let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner.clone());
@@ -770,7 +813,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         // accessor, rather than taking the whole class down.
         let owner = qualified(&s.module_path, &s.name);
         let s = &mut manifest.structs[i];
-        let class_name = s.name.clone();
+        let class_name = s.ffi_name.clone();
         for m in &mut s.methods {
             if !m.skip_reason.is_empty() || m.symbol.is_empty() {
                 continue;
@@ -896,12 +939,12 @@ fn struct_symbols(s: &Struct) -> Vec<String> {
         if m.skip_reason.is_empty() && !m.symbol.is_empty() {
             out.extend(wrapper_symbols(&m.symbol));
             if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
-                out.extend(string_helper_symbols(&format!("{}_{}", s.name, m.name)));
+                out.extend(string_helper_symbols(&format!("{}_{}", s.ffi_name, m.name)));
             }
         }
     }
     if s.has_owned_string_helper {
-        out.extend(string_helper_symbols(&s.name));
+        out.extend(string_helper_symbols(&s.ffi_name));
     }
     for f in &s.fields {
         if !f.getter.is_empty() {
@@ -945,8 +988,10 @@ fn function_entry(
     attribute: Attribute,
     reachable: bool,
     module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
 ) -> Function {
     let name = func.sig.ident.to_string();
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &func.attrs);
     let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
     let return_type = return_type_to_string(&func.sig.output);
 
@@ -961,15 +1006,16 @@ fn function_entry(
 
     Function {
         name: name.clone(),
+        ffi_name: crate::codegen::symbol_stem(module_path, &name),
         // What Phase 2 will export, not what exists today.
-        symbol: crate::codegen::function_symbol(&name),
+        symbol: crate::codegen::function_symbol(module_path, &name),
         attribute,
         vis: visibility_string(&func.vis),
         skip_reason: reason,
         python_name: pyo3_name(&func.attrs),
         exported: false,
-        cfg: predicate_string(&func.attrs),
-        cfg_features: crate::cfg::predicate_features(&func.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
         args: fn_args(&func.sig),
@@ -998,10 +1044,17 @@ fn function_entry(
 /// Manifest entry of a `#[pyclass]` struct: an opaque handle. A `#[pyclass]` is
 /// never `#[repr(C)]` (pyo3 owns its layout), so fields are only reachable
 /// through the accessors pyo3 itself declares with `#[pyo3(get, set)]`.
-fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> Struct {
+fn class_entry(
+    item: &ItemStruct,
+    reachable: bool,
+    module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
+) -> Struct {
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &item.attrs);
     let is_generic = has_type_params(&item.generics);
     let reason = item_skip_reason(&item.vis, reachable, is_generic).unwrap_or_default();
     let name = item.ident.to_string();
+    let stem = crate::codegen::symbol_stem(module_path, &name);
 
     // `#[pyclass(get_all, set_all)]` exposes every field without a per-field
     // attribute, and `frozen` takes every setter away. The dual-binding shape
@@ -1042,12 +1095,12 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
                 abi: crate::codegen::field_abi(&f.ty).to_string(),
                 ffi_compatible: usable,
                 getter: if usable && access.get {
-                    crate::codegen::method_symbol(&name, &format!("get_{ident}"))
+                    crate::codegen::method_symbol_of(&stem, &format!("get_{ident}"))
                 } else {
                     String::new()
                 },
                 setter: if usable && access.set {
-                    crate::codegen::method_symbol(&name, &format!("set_{ident}"))
+                    crate::codegen::method_symbol_of(&stem, &format!("set_{ident}"))
                 } else {
                     String::new()
                 },
@@ -1063,12 +1116,13 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
 
     Struct {
         name: name.clone(),
+        ffi_name: stem,
         attribute: Attribute::PyClass,
         vis: visibility_string(&item.vis),
         skip_reason: reason,
         python_name: pyo3_name(&item.attrs),
-        cfg: predicate_string(&item.attrs),
-        cfg_features: crate::cfg::predicate_features(&item.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         type_params: generics_to_type_params(&item.generics),
         fields,
         methods: Vec::new(),
@@ -1084,8 +1138,17 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
 }
 
 /// Manifest entry of one method of a `#[pymethods]` block.
-fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) -> Method {
-    let struct_name = struct_ident.to_string();
+fn method_entry(
+    struct_ident: &syn::Ident,
+    class_path: &[String],
+    func: &ImplItemFn,
+    owner_skip: &str,
+    enclosing_cfg: &[syn::Attribute],
+) -> Method {
+    // The block's and its modules' predicates gate the method as much as its
+    // own do (#300 review).
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &func.attrs);
+    let struct_stem = crate::codegen::symbol_stem(class_path, &struct_ident.to_string());
     let markers = pyo3_method_markers(&func.attrs);
     let has = |m: Pyo3MethodMarker| markers.contains(&m);
     let receiver = func.sig.inputs.iter().find_map(|a| match a {
@@ -1116,7 +1179,7 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
 
     Method {
         name: name.clone(),
-        symbol: crate::codegen::method_symbol(&struct_name, &name),
+        symbol: crate::codegen::method_symbol_of(&struct_stem, &name),
         // `#[staticmethod]` and `#[classmethod]` are both static from the C
         // side: neither takes a `self` receiver. A `#[classmethod]` takes a
         // `&Bound<'_, PyType>` first argument instead, so it is normally
@@ -1153,7 +1216,7 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
         generic_wrapper: String::new(),
-        cfg: predicate_string(&func.attrs),
+        cfg: predicate_string(&effective_cfg),
     }
 }
 

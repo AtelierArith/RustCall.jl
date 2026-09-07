@@ -3,6 +3,7 @@ mode = "crate"
 
 [[functions]]
 name = "add"
+ffi_name = "add"
 symbol = "rustcall_add"
 attribute = "py_function"
 vis = "pub"
@@ -41,6 +42,7 @@ abi = ""
 
 [[functions]]
 name = "shout"
+ffi_name = "shout"
 symbol = "rustcall_shout"
 attribute = "py_function"
 vis = "pub"
@@ -74,6 +76,7 @@ abi = "string"
 
 [[functions]]
 name = "add_take_panic"
+ffi_name = "add_take_panic"
 symbol = "rustcall_add_take_panic"
 attribute = "py_function"
 vis = "pub"
@@ -103,6 +106,7 @@ module_path = []
 
 [[functions]]
 name = "tag"
+ffi_name = "tag"
 symbol = "rustcall_tag"
 attribute = "py_function"
 vis = "pub"
@@ -132,6 +136,7 @@ module_path = []
 
 [[functions]]
 name = "echo"
+ffi_name = "echo"
 symbol = "rustcall_echo"
 attribute = "py_function"
 vis = "pub"
@@ -165,6 +170,7 @@ abi = "str"
 
 [[functions]]
 name = "parse"
+ffi_name = "parse"
 symbol = "rustcall_parse"
 attribute = "py_function"
 vis = "pub"
@@ -198,6 +204,7 @@ abi = "str"
 
 [[functions]]
 name = "check"
+ffi_name = "check"
 symbol = "rustcall_check"
 attribute = "py_function"
 vis = "pub"
@@ -231,6 +238,7 @@ abi = ""
 
 [[functions]]
 name = "render"
+ffi_name = "render"
 symbol = "rustcall_render"
 attribute = "py_function"
 vis = "pub"
@@ -260,6 +268,7 @@ module_path = []
 
 [[functions]]
 name = "numbers"
+ffi_name = "numbers"
 symbol = "rustcall_numbers"
 attribute = "py_function"
 vis = "pub"
@@ -289,6 +298,7 @@ module_path = []
 
 [[functions]]
 name = "total"
+ffi_name = "total"
 symbol = "rustcall_total"
 attribute = "py_function"
 vis = "pub"
@@ -322,6 +332,7 @@ abi = ""
 
 [[functions]]
 name = "divide"
+ffi_name = "divide"
 symbol = "rustcall_divide"
 attribute = "py_function"
 vis = "pub"
@@ -360,6 +371,7 @@ abi = ""
 
 [[functions]]
 name = "maybe"
+ffi_name = "maybe"
 symbol = "rustcall_maybe"
 attribute = "py_function"
 vis = "pub"
@@ -393,6 +405,7 @@ abi = ""
 
 [[functions]]
 name = "note"
+ffi_name = "note"
 symbol = "rustcall_note"
 attribute = "py_function"
 vis = "pub"
@@ -426,7 +439,8 @@ abi = ""
 
 [[functions]]
 name = "area"
-symbol = "rustcall_area"
+ffi_name = "geometry__area"
+symbol = "rustcall_geometry__area"
 attribute = "py_function"
 vis = "pub"
 skip_reason = ""
@@ -464,6 +478,7 @@ abi = ""
 
 [[structs]]
 name = "Rect"
+ffi_name = "geometry__Rect"
 attribute = "py_class"
 vis = "pub"
 skip_reason = ""
@@ -485,8 +500,8 @@ name = "w"
 rust_type = "f64"
 abi = ""
 ffi_compatible = true
-getter = "rustcall_Rect_get_w"
-setter = "rustcall_Rect_set_w"
+getter = "rustcall_geometry__Rect_get_w"
+setter = "rustcall_geometry__Rect_set_w"
 python_name = ""
 vis = "pub"
 
@@ -496,7 +511,7 @@ rust_type = "f64"
 abi = ""
 ffi_compatible = true
 getter = ""
-setter = "rustcall_Rect_set_depth"
+setter = "rustcall_geometry__Rect_set_depth"
 python_name = ""
 vis = "pub"
 
@@ -505,7 +520,7 @@ name = "extra"
 rust_type = "f64"
 abi = ""
 ffi_compatible = true
-getter = "rustcall_Rect_get_extra"
+getter = "rustcall_geometry__Rect_get_extra"
 setter = ""
 python_name = ""
 vis = "pub"
@@ -516,7 +531,7 @@ name = "name"
 rust_type = "String"
 abi = "string"
 ffi_compatible = true
-getter = "rustcall_Rect_get_name"
+getter = "rustcall_geometry__Rect_get_name"
 setter = ""
 python_name = ""
 vis = "pub"
@@ -533,7 +548,7 @@ vis = "pub"
 
 [[structs.methods]]
 name = "new"
-symbol = "rustcall_Rect_new"
+symbol = "rustcall_geometry__Rect_new"
 is_static = true
 is_mutable = false
 is_constructor = true
@@ -561,7 +576,7 @@ abi = ""
 
 [[structs.methods]]
 name = "unit"
-symbol = "rustcall_Rect_unit"
+symbol = "rustcall_geometry__Rect_unit"
 is_static = true
 is_mutable = false
 is_constructor = false
@@ -585,7 +600,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "area"
-symbol = "rustcall_Rect_area"
+symbol = "rustcall_geometry__Rect_area"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -609,7 +624,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "scale"
-symbol = "rustcall_Rect_scale"
+symbol = "rustcall_geometry__Rect_scale"
 is_static = false
 is_mutable = true
 is_constructor = false
@@ -637,7 +652,7 @@ abi = ""
 
 [[structs.methods]]
 name = "label"
-symbol = "rustcall_Rect_label"
+symbol = "rustcall_geometry__Rect_label"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -661,7 +676,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "scaled"
-symbol = "rustcall_Rect_scaled"
+symbol = "rustcall_geometry__Rect_scaled"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -689,7 +704,7 @@ abi = ""
 
 [[structs.methods]]
 name = "parts"
-symbol = "rustcall_Rect_parts"
+symbol = "rustcall_geometry__Rect_parts"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -713,7 +728,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "checked"
-symbol = "rustcall_Rect_checked"
+symbol = "rustcall_geometry__Rect_checked"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -737,7 +752,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "maybe_w"
-symbol = "rustcall_Rect_maybe_w"
+symbol = "rustcall_geometry__Rect_maybe_w"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -761,7 +776,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "extra_area"
-symbol = "rustcall_Rect_extra_area"
+symbol = "rustcall_geometry__Rect_extra_area"
 is_static = false
 is_mutable = false
 is_constructor = false
@@ -786,6 +801,7 @@ cfg = 'feature = "extra"'
 
 [[structs]]
 name = "Counter"
+ffi_name = "geometry__Counter"
 attribute = "py_class"
 vis = "pub"
 skip_reason = ""
@@ -805,7 +821,7 @@ module_path = ["geometry"]
 
 [[structs.methods]]
 name = "new"
-symbol = "rustcall_Counter_new"
+symbol = "rustcall_geometry__Counter_new"
 is_static = true
 is_mutable = false
 is_constructor = false
@@ -829,7 +845,7 @@ generic_wrapper = ""
 
 [[structs.methods]]
 name = "describe"
-symbol = "rustcall_Counter_describe"
+symbol = "rustcall_geometry__Counter_describe"
 is_static = false
 is_mutable = false
 is_constructor = false

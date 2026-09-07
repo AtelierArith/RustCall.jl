@@ -3,6 +3,7 @@ mode = "inline"
 
 [[functions]]
 name = "generic_identity"
+ffi_name = "generic_identity"
 symbol = "generic_identity"
 attribute = "julia"
 vis = "pub"
@@ -49,6 +50,7 @@ abi = ""
 
 [[functions]]
 name = "raw_increment"
+ffi_name = "raw_increment"
 symbol = "raw_increment"
 attribute = "none"
 vis = "pub"
@@ -82,6 +84,7 @@ abi = ""
 
 [[structs]]
 name = "Pair"
+ffi_name = "Pair"
 attribute = "julia"
 vis = "pub"
 skip_reason = ""

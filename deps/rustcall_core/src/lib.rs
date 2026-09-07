@@ -246,14 +246,48 @@ mod tests {
         assert_eq!(e.manifest.functions[1].module_path, vec!["api", "deep"]);
         assert_eq!(e.manifest.structs[0].name, "P");
         assert_eq!(e.manifest.structs[0].module_path, vec!["api"]);
-        assert!(e.source.contains("pub extern \"C\" fn rustcall_inner_add"));
-        assert!(e.source.contains("pub extern \"C\" fn rustcall_P_new"));
+        // Inline expansion qualifies every symbol by the module path it walks
+        // (#300); the manifest says so in `ffi_name` / `symbol`.
+        assert_eq!(e.manifest.functions[0].ffi_name, "api__inner_0add");
+        assert_eq!(e.manifest.functions[0].symbol, "rustcall_api__inner_0add");
+        assert_eq!(e.manifest.functions[1].symbol, "rustcall_api__deep__deeper");
+        assert_eq!(e.manifest.structs[0].ffi_name, "api__P");
+        assert_eq!(
+            e.manifest.structs[0].methods[0].symbol,
+            "rustcall_api__P_new"
+        );
+        assert!(e
+            .source
+            .contains("pub extern \"C\" fn rustcall_api__inner_0add"));
+        assert!(e.source.contains("pub extern \"C\" fn rustcall_api__P_new"));
+        assert!(e.source.contains("pub extern \"C\" fn api__P_free"));
         assert!(!e.source.contains("#[julia]"));
         assert!(e.source.contains("mod external;"));
 
-        let c = extract::extract(src, Mode::Crate).unwrap();
+        // Crate mode mirrors the proc-macro, which cannot see an unmarked
+        // module: the block is refused with the fix in the message.
+        let err = extract::extract(src, Mode::Crate).unwrap_err();
+        assert!(matches!(err, extract::ExtractError::Unsupported(_)));
+        let msg = err.to_string();
+        assert!(msg.contains("`inner_add`"), "{msg}");
+        assert!(msg.contains("#[julia] pub mod api"), "{msg}");
+
+        // Marked modules are the crate-mode spelling of the same path.
+        let marked = src
+            .replace("mod api {", "#[julia] mod api {")
+            .replace("mod deep {", "#[julia] mod deep {");
+        let c = extract::extract(&marked, Mode::Crate).unwrap();
         assert_eq!(c.functions.len(), 2);
         assert_eq!(c.structs.len(), 1);
+        assert_eq!(c.functions[0].symbol, "rustcall_api__inner_0add");
+        assert_eq!(c.functions[0].module_path, vec!["api"]);
+        assert_eq!(c.functions[1].symbol, "rustcall_api__deep__deeper");
+        assert_eq!(c.structs[0].ffi_name, "api__P");
+        assert_eq!(c.structs[0].module_path, vec!["api"]);
+        // The expanded inline block and the crate manifest agree symbol for symbol
+        // (the crate flavour wraps only `#[julia]` methods, so `P` has none here).
+        assert_eq!(c.functions[0].symbol, e.manifest.functions[0].symbol);
+        assert!(c.structs[0].methods.is_empty());
     }
 
     #[test]

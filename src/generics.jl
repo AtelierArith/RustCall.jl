@@ -327,8 +327,9 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         free_ptr = C_NULL
         if specialized.has_owned_string_helper
             string_return = :owned
-            # The string helpers keep the instantiation's own name (#279).
-            free_name = ffi_free_symbol(specialized.name)
+            # The string helpers hang off the instantiation's FFI name — its
+            # own name, qualified by the module the generic lives in (#279, #300).
+            free_name = ffi_free_symbol(specialized.ffi_name)
             free_ptr = Libdl.dlsym(artifact.handle, free_name; throw_error=false)
             if free_ptr === nothing || free_ptr == C_NULL
                 error("Function '$free_name' not found in library '$lib_path'")
