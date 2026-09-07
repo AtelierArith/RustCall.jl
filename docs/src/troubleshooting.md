@@ -222,11 +222,17 @@ every allocation exactly one owner; on the Rust side, return ownership with
 
 **Solution:**
 
-Check the wrapper before using its pointer; `RustCall.is_valid` is false once
-the value is dropped or the pointer is null:
+`RustCall.is_valid` and `RustCall.is_dropped` report the *wrapper's* state
+only: `is_valid` is false once the wrapper was dropped or its pointer is null.
+Neither can tell where a pointer came from or whether the Rust side has
+already freed the allocation, so a wrapper built from an arbitrary or dangling
+raw pointer passes both checks and still segfaults or double frees. Use them to
+catch use-after-`drop!` on a wrapper whose ownership you established (one that
+RustCall allocated, or a pointer Rust handed over with `Box::into_raw` and
+never freed), not as a substitute for that ownership:
 ```julia
 if RustCall.is_valid(box)
-    # safe to use
+    # not dropped on the Julia side; ownership is still your guarantee
 end
 RustCall.is_dropped(box)  # true after drop!
 ```
