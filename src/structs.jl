@@ -580,7 +580,10 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             # form is a delegator, emitted only while no such name exists
             # (#323). Constructors are `Labeler(...)` and never collide.
             if !is_ctor && !(m.name in colliding)
-                push!(exprs, :($fname($(esc_args...)) = $fname($esc_struct, $(esc_args...))))
+                # Hygienic (unescaped) argument names: an argument called like
+                # the method or the struct must not shadow them in the body.
+                dargs = [Symbol("__rustcall_arg", i) for i in eachindex(esc_args)]
+                push!(exprs, :($fname($(dargs...)) = $fname($esc_struct, $(dargs...))))
             end
         elseif m.return_kind === :result || m.return_kind === :option
             push!(exprs, _inline_method_payload_wrapper(

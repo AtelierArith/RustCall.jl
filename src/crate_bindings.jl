@@ -1356,8 +1356,12 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         # `Labeler::shout` — so it can never share a method table with a free
         # function or another struct's static method of the same name (#323).
         # The bare `shout(s)` form is kept only while no such name exists.
+        # The delegator names its own arguments: an argument called like the
+        # method (`fn scale(scale)`) or like the struct would otherwise shadow
+        # the function or the type inside the forwarding body.
+        dargs = [Symbol("__rustcall_arg", i) for i in eachindex(arg_syms)]
         bare_def = bare ?
-            :($method_name($(arg_syms...)) = $method_name($struct_name, $(arg_syms...))) :
+            :($method_name($(dargs...)) = $method_name($struct_name, $(dargs...))) :
             nothing
         quote
             function $method_name(::Type{$struct_name}, $(arg_syms...))
@@ -1531,8 +1535,12 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     if method.is_static
         # Type-dispatched, bare form only without a name collision (#323); see
         # `_generate_crate_method_wrapper`.
+        # The delegator names its own arguments: an argument called like the
+        # method (`fn scale(scale)`) or like the struct would otherwise shadow
+        # the function or the type inside the forwarding body.
+        dargs = [Symbol("__rustcall_arg", i) for i in eachindex(arg_syms)]
         bare_def = bare ?
-            :($method_name($(arg_syms...)) = $method_name($struct_name, $(arg_syms...))) :
+            :($method_name($(dargs...)) = $method_name($struct_name, $(dargs...))) :
             nothing
         quote
             $declaration
@@ -3052,7 +3060,11 @@ end"""
         # never shares a method table with a free function of the same name;
         # the bare form only while nothing else defines it (#323).
         comma_args = isempty(arg_syms) ? "" : ", $arg_syms"
-        bare_def = bare ? "\n$method_name($arg_syms) = $method_name($struct_name$comma_args)" : ""
+        # Own argument names in the delegator, so an argument called like the
+        # method or the struct cannot shadow them in the forwarding body.
+        dargs = join(("__rustcall_arg$i" for i in eachindex(method.arg_names)), ", ")
+        dcomma = isempty(dargs) ? "" : ", $dargs"
+        bare_def = bare ? "\n$method_name($dargs) = $method_name($struct_name$dcomma)" : ""
         """
 function $method_name(::Type{$struct_name}$comma_args)
 $body
@@ -3140,7 +3152,11 @@ end
         # Type-dispatched, bare form only without a name collision (#323); see
         # `_emit_method_definition`.
         comma_args = isempty(arg_syms) ? "" : ", $arg_syms"
-        bare_def = bare ? "\n$method_name($arg_syms) = $method_name($struct_name$comma_args)" : ""
+        # Own argument names in the delegator, so an argument called like the
+        # method or the struct cannot shadow them in the forwarding body.
+        dargs = join(("__rustcall_arg$i" for i in eachindex(method.arg_names)), ", ")
+        dcomma = isempty(dargs) ? "" : ", $dargs"
+        bare_def = bare ? "\n$method_name($dargs) = $method_name($struct_name$dcomma)" : ""
         return """$declaration
 function $method_name(::Type{$struct_name}$comma_args)
 $body

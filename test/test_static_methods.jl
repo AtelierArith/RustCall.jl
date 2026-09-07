@@ -38,9 +38,11 @@ end
         @test occursin("function shout(::Type{Labeler}, s)", code)
         @test !occursin("shout(s) = shout(Labeler, s)", code)
         @test count("\nfunction shout(", code) == 2   # `shout(input)` and `shout(::Type{Labeler}, s)`
-        # A static method that collides with nothing keeps both forms.
+        # A static method that collides with nothing keeps both forms; the
+        # delegator names its own arguments so that an argument called like
+        # the method or the struct cannot shadow them (#325 review).
         @test occursin("function parse_scale(::Type{Divider}, text)", code)
-        @test occursin("parse_scale(text) = parse_scale(Divider, text)", code)
+        @test occursin("parse_scale(__rustcall_arg1) = parse_scale(Divider, __rustcall_arg1)", code)
         # Constructors are untouched: `Labeler(count)`, not `new(...)`.
         @test occursin("function Labeler(count)", code)
         @test !occursin("function new(", code)
@@ -49,14 +51,15 @@ end
     @testset "in-memory Expr template agrees" begin
         labeler = only(filter(s -> s.name == "Labeler", info.julia_structs))
         shout_m = only(filter(m -> m.name == "shout", labeler.methods))
-        # `string(::Expr)` prints the delegator as `shout(s) = begin … shout(Labeler, s) end`.
+        # `string(::Expr)` prints the delegator as
+        # `shout(__rustcall_arg1) = begin … shout(Labeler, __rustcall_arg1) end`.
         typed = string(RustCall._generate_crate_method_wrapper(labeler, shout_m; bare = false))
         @test occursin("function shout(::Type{Labeler}, s)", typed)
-        @test !occursin("shout(s) = begin", typed)
+        @test !occursin("shout(__rustcall_arg1) = begin", typed)
         with_bare = string(RustCall._generate_crate_method_wrapper(labeler, shout_m))
         @test occursin("function shout(::Type{Labeler}, s)", with_bare)
-        @test occursin("shout(s) = begin", with_bare)
-        @test occursin("shout(Labeler, s)", with_bare)
+        @test occursin("shout(__rustcall_arg1) = begin", with_bare)
+        @test occursin("shout(Labeler, __rustcall_arg1)", with_bare)
         # Constructors never dispatch on the type.
         ctor = only(filter(m -> m.is_constructor, labeler.methods))
         @test occursin("function Labeler(count)", string(RustCall._generate_crate_method_wrapper(labeler, ctor)))
@@ -67,7 +70,10 @@ end
             @warn "rustc not available, skipping the inline #323 test"
         else
             # A free `twice` and a static `Yeller::twice` in one block, plus a
-            # static `thrice` that collides with nothing.
+            # static `thrice` that collides with nothing — whose argument is
+            # named like the method, and a `Yeller`-named argument on `level`:
+            # neither may shadow the function or the type in the bare
+            # delegator (#325 review).
             rust"""
             #[julia]
             fn twice(x: i32) -> i32 { x * 2 }
@@ -82,13 +88,17 @@ end
                 #[julia]
                 pub fn twice(x: i32) -> i32 { x * 2 + 1 }
                 #[julia]
-                pub fn thrice(x: i32) -> i32 { x * 3 }
+                pub fn thrice(thrice: i32) -> i32 { thrice * 3 }
+                #[julia]
+                pub fn level_of(Yeller: i32) -> i32 { Yeller }
             }
             """
             @test twice(Int32(5)) == 10                  # the free function, not overwritten
             @test twice(Yeller, Int32(5)) == 11          # Yeller::twice
             @test thrice(Yeller, Int32(5)) == 15         # typed form always
-            @test thrice(Int32(5)) == 15                 # bare form: no collision
+            @test thrice(Int32(5)) == 15                 # bare form: no collision, no shadowing
+            @test level_of(Yeller, Int32(7)) == 7
+            @test level_of(Int32(7)) == 7
             # `twice`: the free function's bare method plus the typed static
             # one, nothing overwritten; `thrice`: typed plus its bare delegator.
             @test length(methods(twice)) == 2
