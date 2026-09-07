@@ -176,19 +176,64 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         // checked crate-wide (#300).
         (Mode::Crate, None) => {
             let mut scan = rustcall_core::extract::TreeScan::new();
-            for f in &opts.files {
-                let src = read_source(f)?;
+            // The `include!` fragments of each file are followed here too —
+            // no `mod` declaration reaches a fragment, so nothing else would
+            // bring it in — but out-of-line `mod`s are not: without a root
+            // there is no module tree to place them in, and the caller listed
+            // the files it wants scanned.
+            let mut queue: Vec<(PathBuf, rustcall_core::extract::FilePosition, bool)> = opts
+                .files
+                .iter()
+                .rev()
+                .map(|f| {
+                    (
+                        f.clone(),
+                        rustcall_core::extract::FilePosition::module(&[], true, &[]),
+                        false,
+                    )
+                })
+                .collect();
+            let mut seen: Vec<PathBuf> = Vec::new();
+            while let Some((f, position, fragment)) = queue.pop() {
+                let canonical = fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+                if seen.contains(&canonical) {
+                    continue;
+                }
+                seen.push(canonical);
+                let src = read_source(&f)?;
                 let scanned = scan.file(
                     &src,
                     opts.cfg.as_ref(),
-                    &[],
-                    true,
-                    &[],
+                    &position,
                     &mut merged,
                     &f.display().to_string(),
                 );
-                if let Err(e) = scanned {
-                    skip_or_fail(e, f, opts.skip_unparsable)?;
+                let pending = match scanned {
+                    Ok(v) => v,
+                    Err(e) => {
+                        if fragment {
+                            eprintln!(
+                                "rustcall-extract: {} is not a list of items ({e}); skipping it",
+                                f.display()
+                            );
+                        } else {
+                            skip_or_fail(e, &f, opts.skip_unparsable)?;
+                        }
+                        continue;
+                    }
+                };
+                let here = f.parent().unwrap_or(Path::new(".")).to_path_buf();
+                for inc in pending.includes {
+                    let fragment_path = here.join(&inc.path);
+                    if !fragment_path.is_file() {
+                        eprintln!(
+                            "rustcall-extract: `include!(\"{}\")` in {} names no file; skipping it",
+                            inc.path,
+                            f.display()
+                        );
+                        continue;
+                    }
+                    queue.push((fragment_path, inc.position, true));
                 }
             }
             scan.finish(&mut merged).map_err(|e| e.to_string())?;
@@ -321,64 +366,89 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     write_manifest(&merged, out.as_deref())
 }
 
+/// One file waiting to be scanned: where it is, which directory its
+/// out-of-line children resolve against, and the position its items occupy.
+///
+/// A file of the module tree and an `include!`d fragment differ only in these
+/// two: a fragment keeps the *including* module's position (#343) and brings
+/// its own directory, because rustc resolves a `mod` written inside a fragment
+/// against the fragment's own directory.
+struct QueuedFile {
+    file: PathBuf,
+    dir: PathBuf,
+    position: rustcall_core::extract::FilePosition,
+    /// An `include!`d fragment rather than a file of the module tree. A
+    /// fragment need not be a list of items at all — `include!("table.rs")`
+    /// holding `[1, 2, 3]` is an expression — so one that does not parse as a
+    /// file is left to the compiler instead of failing the scan, whatever
+    /// `--skip-unparsable` says about the crate's own files.
+    fragment: bool,
+}
+
 /// Scan a whole crate by following its module tree from `root` (#275, #315).
 ///
 /// Only this layer touches the filesystem: `rustcall_core` hands back the
-/// out-of-line `mod` declarations of each file and this resolves them the way
-/// rustc does — `#[path = "..."]` first, then `<dir>/<name>.rs`, then
-/// `<dir>/<name>/mod.rs`. A declaration whose file does not exist (a `mod`
-/// behind a `#[cfg]` that was pruned, or a generated file) is noted on stderr
-/// and skipped rather than failing the run: the scan describes what it can see.
+/// out-of-line `mod` declarations and the `include!` fragments of each file,
+/// and this resolves them. A `mod` is resolved the way rustc does —
+/// `#[path = "..."]` first, then `<dir>/<name>.rs`, then `<dir>/<name>/mod.rs`
+/// — and an `include!` relative to the directory of the file it was written
+/// in. Anything that does not resolve (a `mod` behind a `#[cfg]` that was
+/// pruned, a generated file, an `include!` of a fragment that is not a module
+/// such as `include!("table.rs")` holding `[1, 2, 3]`) is noted on stderr and
+/// skipped rather than failing the run: the scan describes what it can see.
 fn scan_crate_tree(
     root: &Path,
     cfg: Option<&CfgSet>,
     skip_unparsable: bool,
     manifest: &mut Manifest,
 ) -> Result<(), String> {
-    // (file, directory its child modules live in, module path, reachable,
-    // the `#[cfg]` attributes of the enclosing `mod` declarations)
     let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut queue = vec![(
-        root.to_path_buf(),
-        root_dir,
-        Vec::<String>::new(),
-        true,
-        Vec::new(),
-    )];
+    let mut queue = vec![QueuedFile {
+        file: root.to_path_buf(),
+        dir: root_dir,
+        position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+        fragment: false,
+    }];
     // Keyed by (file, module path): `#[path = "shared.rs"] pub mod a;` and the
     // same for `b` compile one file as two distinct modules, and both belong in
     // the manifest — under their own module paths, and colliding with each
-    // other on the wrapper symbols.
+    // other on the wrapper symbols. An `include!`d fragment is keyed the same
+    // way, under the module that includes it.
     let mut visited: Vec<(PathBuf, Vec<String>)> = Vec::new();
     let mut scan = rustcall_core::extract::TreeScan::new();
 
-    while let Some((file, dir, module_path, reachable, enclosing_cfg)) = queue.pop() {
+    while let Some(QueuedFile {
+        file,
+        dir,
+        position,
+        fragment,
+    }) = queue.pop()
+    {
         let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
-        let key = (canonical, module_path.clone());
+        let key = (canonical, position.module_path.clone());
         if visited.contains(&key) {
             continue;
         }
         visited.push(key);
 
         let src = read_source(&file)?;
-        let scanned = scan.file(
-            &src,
-            cfg,
-            &module_path,
-            reachable,
-            &enclosing_cfg,
-            manifest,
-            &file.display().to_string(),
-        );
+        let scanned = scan.file(&src, cfg, &position, manifest, &file.display().to_string());
         let pending = match scanned {
             Ok(v) => v,
             Err(e) => {
-                skip_or_fail(e, &file, skip_unparsable)?;
+                if fragment {
+                    eprintln!(
+                        "rustcall-extract: {} is not a list of items ({e}); skipping it",
+                        file.display()
+                    );
+                } else {
+                    skip_or_fail(e, &file, skip_unparsable)?;
+                }
                 continue;
             }
         };
 
-        for m in pending {
+        for m in pending.modules {
             let Some((child_file, child_dir)) = resolve_module_file(&dir, &m) else {
                 eprintln!(
                     "rustcall-extract: `mod {};` in {} names no file under {}; skipping it",
@@ -388,13 +458,40 @@ fn scan_crate_tree(
                 );
                 continue;
             };
-            queue.push((
-                child_file,
-                child_dir,
-                m.module_path.clone(),
-                m.reachable,
-                m.cfg.clone(),
-            ));
+            queue.push(QueuedFile {
+                file: child_file,
+                dir: child_dir,
+                position: rustcall_core::extract::FilePosition::module(
+                    &m.module_path,
+                    m.reachable,
+                    &m.cfg,
+                ),
+                fragment: false,
+            });
+        }
+
+        // An `include!` is relative to the *file* it is written in, not to the
+        // module directory: `src/a.rs` is the file of module `a`, whose child
+        // modules live in `src/a/`, but `include!("x.rs")` in it names
+        // `src/x.rs`. The fragment then owns its own directory for anything it
+        // declares.
+        let here = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+        for inc in pending.includes {
+            let fragment = here.join(&inc.path);
+            if !fragment.is_file() {
+                eprintln!(
+                    "rustcall-extract: `include!(\"{}\")` in {} names no file; skipping it",
+                    inc.path,
+                    file.display()
+                );
+                continue;
+            }
+            queue.push(QueuedFile {
+                dir: fragment.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                file: fragment,
+                position: inc.position,
+                fragment: true,
+            });
         }
     }
     // Structs and their impl blocks — `#[julia]` and PyO3 alike — may live in

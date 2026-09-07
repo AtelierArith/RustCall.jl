@@ -754,8 +754,10 @@ in another file (#315) — instead of treating every file as a root. The tree *i
 the file list then: `files` is not passed on, because a file no `mod` reaches is
 not compiled by rustc and exports nothing. The walk follows a literal
 `include!("api.rs")` as well, since that file's items are compiled into the
-including module (#315 review); an include whose path is not a literal, or that
-holds a fragment rather than items, is left to the compiler.
+including module (#315 review) — and the out-of-line `mod` declarations *inside*
+such a fragment, resolved against the fragment's own directory the way rustc
+resolves them (#343). An include whose path is not a literal, or that holds a
+fragment rather than items, is left to the compiler.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
                           cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,

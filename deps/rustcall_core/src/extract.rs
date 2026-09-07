@@ -332,7 +332,14 @@ pub fn extract_crate_with_cfg_scan(
     }
     let mut manifest = Manifest::new(Mode::Crate);
     let mut scan = CrateScan::new();
-    scan.file(&file.items, &[], &[], &mut manifest, "")?;
+    // A single source with no file behind it: an `include!` in it names a path
+    // this layer cannot resolve, so the fragments it reports are dropped.
+    scan.file(
+        &file.items,
+        &FilePosition::module(&[], true, &[]),
+        &mut manifest,
+        "",
+    )?;
     scan.finish(&mut manifest)?;
     // Items that carry only PyO3 attributes (#275). Reported with a PyO3
     // origin, `exported = false` and the symbol a Phase-2 wrapper crate will
@@ -344,15 +351,95 @@ pub fn extract_crate_with_cfg_scan(
     Ok(manifest)
 }
 
+/// One `include!("...")` found while scanning a file (#315, #343).
+///
+/// `include!` is not a module: the fragment's items are compiled into the
+/// module that includes them, so it is scanned at the **including item's**
+/// position — the same module path, the same `#[julia] mod` chain, the same
+/// `#[cfg]` — and only the file it is read from differs.
+///
+/// Following it needs the filesystem, so the scan reports it the way it
+/// reports an out-of-line `mod` and the caller resolves it: `path` is relative
+/// to the directory of the file the `include!` was written in. An out-of-line
+/// `mod` **inside** the fragment then resolves against the *fragment's* own
+/// directory, which is rustc's rule and the reason a fragment is scanned as a
+/// file of its own rather than spliced into the including one: `include!(
+/// "frag/api.rs")` in `src/lib.rs` with `mod nested;` inside `api.rs` wants
+/// `src/frag/nested.rs`, and it wants that whether or not the `include!` sits
+/// in an inline module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInclude {
+    /// The literal argument, relative to the including **file's** directory.
+    pub path: String,
+    /// The position the fragment's items occupy.
+    pub position: FilePosition,
+}
+
+/// Where a file sits when it is scanned.
+///
+/// A file of the module tree is scanned at its own module path with an empty
+/// symbol path and `marked` true: its top level is expanded by the item-level
+/// proc-macro, which sees no module ([`FilePosition::module`]). An `include!`d
+/// fragment instead inherits the position of the `include!` item
+/// ([`PendingInclude::position`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FilePosition {
+    /// Where the file sits in the module tree; empty for the crate root.
+    pub module_path: Vec<String>,
+    /// Whether every `mod` on the way here is `pub` — what decides whether a
+    /// PyO3 item is reachable from outside the crate.
+    pub reachable: bool,
+    /// The `#[cfg]` of every `mod` declaration on the way, which every item in
+    /// the file inherits (#300 review).
+    pub enclosing_cfg: Vec<syn::Attribute>,
+    /// The chain of `#[julia]`-marked inline modules the file's items are
+    /// expanded under — the path the proc-macro folds into their symbols.
+    /// Empty for a file of the module tree.
+    pub symbol_path: Vec<String>,
+    /// Whether this level is a `#[julia]`-marked one; a file's top level is.
+    pub marked: bool,
+}
+
+impl FilePosition {
+    /// The position of a file of the module tree.
+    pub fn module(
+        module_path: &[String],
+        reachable: bool,
+        enclosing_cfg: &[syn::Attribute],
+    ) -> Self {
+        FilePosition {
+            module_path: module_path.to_vec(),
+            reachable,
+            enclosing_cfg: enclosing_cfg.to_vec(),
+            symbol_path: Vec::new(),
+            marked: true,
+        }
+    }
+}
+
+/// What a scanned file pulls in and only a caller that can read files can
+/// follow: its out-of-line `mod` declarations and its `include!` fragments.
+///
+/// Both are followed the same way — one more [`TreeScan::file`] call — so both
+/// scans see every file exactly once, whichever of the two brought it in
+/// (#343: before this the `#[julia]` walk followed `include!` by itself, so
+/// the PyO3 scan never saw a fragment and a `mod` declared inside one was
+/// never resolved at all).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PullIns {
+    pub modules: Vec<crate::pyo3::PendingModule>,
+    pub includes: Vec<PendingInclude>,
+}
+
 /// Both crate-wide scans of one crate — `#[julia]` items (#315) and PyO3 items
 /// (#275) — fed one file of the module tree at a time.
 ///
 /// A struct and its impl blocks may live in different files, so the structs
 /// are only written to the manifest by [`TreeScan::finish`], once every file
 /// has been seen. The caller — `rustcall-extract` — owns the walk: it resolves
-/// each returned [`crate::pyo3::PendingModule`] to a file and calls
-/// [`TreeScan::file`] again; only it can touch the filesystem. Without a crate
-/// root every file is fed as its own root (an empty `module_path`).
+/// each returned [`PullIns`] entry to a file and calls [`TreeScan::file`]
+/// again; only it can touch the filesystem. Without a crate root every file is
+/// fed as its own root (an empty `module_path`).
 #[derive(Debug, Default)]
 pub struct TreeScan {
     julia: CrateScan,
@@ -364,37 +451,32 @@ impl TreeScan {
         TreeScan::default()
     }
 
-    /// Scan one file. `module_path` is where it sits in the tree (empty for
-    /// the crate root), `reachable` whether every `mod` on the way to it is
-    /// `pub`, `enclosing_cfg` the `#[cfg]` of every `mod` declaration on the
-    /// way (which every item in the file inherits, #300 review), and `file`
-    /// labels it in diagnostics. `#[julia]` and PyO3 functions go straight
-    /// into `manifest`; the out-of-line `mod` declarations found are returned
-    /// for the caller to follow.
-    #[allow(clippy::too_many_arguments)]
+    /// Scan one file at `position` — a file of the module tree
+    /// ([`FilePosition::module`]) or an `include!`d fragment — with `file`
+    /// labelling it in diagnostics. `#[julia]` and PyO3 functions go straight
+    /// into `manifest`; what the file pulls in is returned for the caller to
+    /// follow.
     pub fn file(
         &mut self,
         source: &str,
         cfg: Option<&CfgSet>,
-        module_path: &[String],
-        reachable: bool,
-        enclosing_cfg: &[syn::Attribute],
+        position: &FilePosition,
         manifest: &mut Manifest,
         file: &str,
-    ) -> Result<Vec<crate::pyo3::PendingModule>, ExtractError> {
+    ) -> Result<PullIns, ExtractError> {
         let mut parsed = syn::parse_file(source)?;
         if let Some(set) = cfg {
             crate::cfg::prune_file_or_error(set, &mut parsed)?;
         }
-        self.julia
-            .file(&parsed.items, module_path, enclosing_cfg, manifest, file)?;
-        Ok(self.pyo3.file(
+        let includes = self.julia.file(&parsed.items, position, manifest, file)?;
+        let modules = self.pyo3.file(
             &parsed.items,
-            module_path,
-            reachable,
-            enclosing_cfg,
+            &position.module_path,
+            position.reachable,
+            &position.enclosing_cfg,
             manifest,
-        ))
+        );
+        Ok(PullIns { modules, includes })
     }
 
     /// Attach every impl block to its struct and write the structs of both
@@ -579,25 +661,35 @@ impl CrateScan {
         CrateScan::default()
     }
 
-    /// Scan one file. `module_path` is where the file sits in the module tree
-    /// (empty for the crate root, or for a file scanned as its own root),
-    /// `enclosing_cfg` the `#[cfg]` of every `mod` declaration on the way to
-    /// it, and `file` labels it in diagnostics.
+    /// Scan one file at `position`, with `file` labelling it in diagnostics.
     ///
     /// `#[julia]` functions go straight into `manifest`; structs and impl
-    /// blocks are held until [`CrateScan::finish`].
+    /// blocks are held until [`CrateScan::finish`]. The `include!` fragments
+    /// found are returned for the caller to read and feed back — a file's
+    /// items are expanded by the item-level macro, which sees no module, so a
+    /// file of the module tree starts with an empty symbol path, while a
+    /// fragment keeps the one its `include!` sits under.
     pub fn file(
         &mut self,
         items: &[Item],
-        module_path: &[String],
-        enclosing_cfg: &[syn::Attribute],
+        position: &FilePosition,
         manifest: &mut Manifest,
         file: &str,
-    ) -> Result<(), ExtractError> {
-        let mut path = module_path.to_vec();
-        // A file's items are expanded by the item-level macro, which sees no
-        // module: their symbol path starts empty whatever the file's position.
-        self.level(items, &mut path, &[], enclosing_cfg, true, manifest, file)
+    ) -> Result<Vec<PendingInclude>, ExtractError> {
+        let mut path = position.module_path.clone();
+        let mut includes = Vec::new();
+        self.level(
+            items,
+            &mut path,
+            &position.symbol_path,
+            &position.enclosing_cfg,
+            position.marked,
+            position.reachable,
+            manifest,
+            file,
+            &mut includes,
+        )?;
+        Ok(includes)
     }
 
     /// One level of items; inline modules are visited recursively.
@@ -610,7 +702,10 @@ impl CrateScan {
     /// chain: `codegen::transform_module` leaves it as written, so a marked
     /// module below it is expanded by the item-level macro and starts a chain
     /// of its own. `enclosing_cfg` is the `#[cfg]` of every enclosing module,
-    /// which every entry below inherits (#300 review).
+    /// which every entry below inherits (#300 review). `reachable` says
+    /// whether every `mod` on the way here is `pub`; it means nothing to the
+    /// `#[julia]` items themselves and is carried only so that an `include!`
+    /// found here reports the position the PyO3 scan of the fragment needs.
     #[allow(clippy::too_many_arguments)]
     fn level(
         &mut self,
@@ -619,8 +714,10 @@ impl CrateScan {
         symbol_path: &[String],
         enclosing_cfg: &[syn::Attribute],
         marked: bool,
+        reachable: bool,
         manifest: &mut Manifest,
         file: &str,
+        includes: &mut Vec<PendingInclude>,
     ) -> Result<(), ExtractError> {
         for item in items {
             match item {
@@ -722,35 +819,27 @@ impl CrateScan {
                     // disappear from the manifest while the proc-macro still
                     // wraps them (#315 review). Only a literal path can be
                     // followed: `include!(concat!(env!("OUT_DIR"), …))` names a
-                    // file the build writes later, and a fragment that is not a
-                    // module (`include!("table.rs")` holding `[1, 2, 3]`) does
-                    // not parse — both are left to the compiler.
+                    // file the build writes later, and it is left to the
+                    // compiler. Reading it is the caller's job (#343), which is
+                    // what lets the PyO3 scan see the fragment too and an
+                    // out-of-line `mod` inside it be resolved against the
+                    // fragment's own directory.
                     let Ok(literal) = m.mac.parse_body::<syn::LitStr>() else {
                         continue;
                     };
-                    let base = std::path::Path::new(file)
-                        .parent()
-                        .map(std::path::Path::to_path_buf)
-                        .unwrap_or_default();
-                    let included = base.join(literal.value());
-                    let Ok(source) = std::fs::read_to_string(&included) else {
-                        continue;
-                    };
-                    let Ok(parsed) = syn::parse_file(&source) else {
-                        continue;
-                    };
-                    let label = included.display().to_string();
-                    self.level(
-                        &parsed.items,
-                        module_path,
-                        symbol_path,
-                        enclosing_cfg,
-                        marked,
-                        manifest,
-                        &label,
-                    )?;
+                    includes.push(PendingInclude {
+                        path: literal.value(),
+                        position: FilePosition {
+                            module_path: module_path.clone(),
+                            reachable,
+                            enclosing_cfg: enclosing_cfg.to_vec(),
+                            symbol_path: symbol_path.to_vec(),
+                            marked,
+                        },
+                    });
                 }
                 Item::Mod(m) => {
+                    let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
                     let Some((_, inner)) = &m.content else {
                         // `mod name;` lives in another file; the caller follows
                         // it (see `TreeScan`).
@@ -767,11 +856,23 @@ impl CrateScan {
                             &inner_symbol,
                             &cfg,
                             true,
+                            inner_reachable,
                             manifest,
                             file,
+                            includes,
                         )
                     } else {
-                        self.level(inner, module_path, &[], &cfg, false, manifest, file)
+                        self.level(
+                            inner,
+                            module_path,
+                            &[],
+                            &cfg,
+                            false,
+                            inner_reachable,
+                            manifest,
+                            file,
+                            includes,
+                        )
                     };
                     module_path.pop();
                     result?;

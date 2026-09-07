@@ -449,5 +449,106 @@ end
         @test gauge_exports("CmiInlineGauge_free_rust_string")
         @test gauge_exports("CmiInlineGauge_cmi_cross_label_free_rust_string")
         @test gauge_exports("CmiInlineGauge_cmi_cross_split_free_rust_string")
+# rustc resolves a `mod` written inside an `include!`d fragment against the
+# **fragment's own** directory, not the including file's module directory:
+# `include!("frag/api.rs")` in `src/lib.rs` with `mod nested;` in `api.rs`
+# compiles `src/frag/nested.rs`. (Verified against rustc: with the file only at
+# `src/nested.rs` the build fails with "create file src/frag/nested.rs".) The
+# fragment's items still belong to the *including* module — `nested` is a child
+# of the crate root here, not of anything called `frag`.
+@testset "A mod declared inside an include! fragment is followed (#343)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the include!-plus-mod scan test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "frag"))
+            macros = replace(CMI_MACROS_PATH, "\\" => "/")
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "included_mod"
+                version = "0.1.0"
+                edition = "2021"
+
+                [lib]
+                crate-type = ["cdylib"]
+
+                [dependencies]
+                juliacall_macros = { path = "$macros" }
+                """)
+            write(joinpath(dir, "src", "frag", "api.rs"), """
+                pub mod nested;
+                #[julia]
+                pub fn from_api() -> i32 { nested::deep() }
+                """)
+            # Next to the fragment, which is where rustc looks. It is a
+            # module of its own, so it brings its own `use` — the fragment
+            # above inherits the crate root's, because it is compiled into it.
+            write(joinpath(dir, "src", "frag", "nested.rs"), """
+                use juliacall_macros::julia;
+                #[julia]
+                pub fn deep() -> i32 { 7 }
+                """)
+            write(joinpath(dir, "src", "lib.rs"), """
+                use juliacall_macros::julia;
+                include!("frag/api.rs");
+                #[julia]
+                pub fn root_one() -> i32 { 1 }
+                """)
+
+            info = RustCall.scan_crate(dir)
+            names = sort([f.name for f in info.julia_functions])
+            @test names == ["deep", "from_api", "root_one"]
+            symbols = Dict(f.name => f.symbol for f in info.julia_functions)
+            # A file module is transparent to the `#[julia]` symbol scheme
+            # (#300), so `deep` keeps the crate-root symbol; what #343 fixes is
+            # that it is in the manifest at all.
+            @test symbols["deep"] == "rustcall_deep"
+
+            # And the crate really does compile with this layout, so the
+            # manifest describes what rustc builds.
+            bindings = RustCall.@rust_crate dir
+            @test bindings.deep() == 7
+            @test bindings.from_api() == 7
+            @test bindings.root_one() == 1
+        end
+    end
+end
+
+# A `mod` inside a fragment whose file does not exist is noted and skipped, the
+# way a missing `mod` target has always been: the scan describes what it can
+# see rather than failing (#343).
+@testset "A mod inside a fragment that names no file is skipped (#343)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the missing-mod-in-fragment test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            macros = replace(CMI_MACROS_PATH, "\\" => "/")
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "missing_mod_in_fragment"
+                version = "0.1.0"
+                edition = "2021"
+
+                [lib]
+                crate-type = ["cdylib"]
+
+                [dependencies]
+                juliacall_macros = { path = "$macros" }
+                """)
+            write(joinpath(dir, "src", "api.rs"), """
+                #[cfg(feature = "never")]
+                pub mod absent;
+                #[julia]
+                pub fn present() -> i32 { 3 }
+                """)
+            write(joinpath(dir, "src", "lib.rs"), """
+                use juliacall_macros::julia;
+                include!("api.rs");
+                """)
+
+            info = RustCall.scan_crate(dir)
+            @test [f.name for f in info.julia_functions] == ["present"]
+        end
     end
 end

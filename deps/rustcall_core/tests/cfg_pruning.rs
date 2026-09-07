@@ -2,7 +2,7 @@
 
 use rustcall_core::cfg::CfgSet;
 use rustcall_core::expand::{expand, expand_with_cfg};
-use rustcall_core::extract::extract_with_cfg;
+use rustcall_core::extract::{extract_with_cfg, FilePosition};
 use rustcall_core::manifest::Mode;
 use rustcall_core::specialize::specialize;
 
@@ -605,27 +605,28 @@ fn enclosing_module_cfg_is_inherited() {
         .file(
             "#[cfg(feature = \"x\")] pub mod a;",
             None,
-            &[],
-            true,
-            &[],
+            &FilePosition::module(&[], true, &[]),
             &mut manifest,
             "src/lib.rs",
         )
-        .unwrap();
+        .unwrap()
+        .modules;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].cfg.len(), 1);
     let more = scan
         .file(
             "#[pyfunction] pub fn run() -> i32 { 1 }",
             None,
-            &pending[0].module_path,
-            pending[0].reachable,
-            &pending[0].cfg,
+            &FilePosition::module(
+                &pending[0].module_path,
+                pending[0].reachable,
+                &pending[0].cfg,
+            ),
             &mut manifest,
             "src/a.rs",
         )
         .unwrap();
-    assert!(more.is_empty());
+    assert!(more.modules.is_empty() && more.includes.is_empty());
     scan.finish(&mut manifest).unwrap();
     assert_eq!(manifest.functions[0].module_path, vec!["a"]);
     assert_eq!(manifest.functions[0].cfg, "feature = \"x\"");

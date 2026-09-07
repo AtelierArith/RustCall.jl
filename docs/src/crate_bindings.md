@@ -179,9 +179,20 @@ elsewhere: annotate that struct, or spell the intended one
 (`impl crate::Counter`).
 
 A file reached only by a literal `include!("api.rs")` is scanned too: its items
-are compiled into the including module, so that is where they bind. An include
-whose path is not a literal (`include!(concat!(env!("OUT_DIR"), "/api.rs"))`)
-names a file the build writes later and is left to the compiler.
+are compiled into the including module, so that is where they bind — the
+`#[julia] mod` chain included — so a fragment included inside
+`#[julia] pub mod ops` gets `ops`-qualified symbols. An include whose path is
+not a literal (`include!(concat!(env!("OUT_DIR"), "/api.rs"))`) names a file the
+build writes later and is left to the compiler, as is a fragment that is not a
+list of items (`include!("table.rs")` holding `[1, 2, 3]`).
+
+A fragment may declare out-of-line modules of its own, and those are followed
+(#343). Their files are resolved against the **fragment's** directory, which is
+what rustc does: with `include!("frag/api.rs")` in `src/lib.rs` and
+`pub mod nested;` inside `api.rs`, the module's file is `src/frag/nested.rs` —
+not `src/nested.rs` — even though `nested` is a child of the *including*
+module. A declaration whose file does not exist is noted and skipped, exactly
+as a missing `mod` target elsewhere in the tree.
 
 !!! note "Inline blocks: the wrapper is emitted where the block is"
     A `rust"""` block follows the same rule (#342): the wrappers of a method
