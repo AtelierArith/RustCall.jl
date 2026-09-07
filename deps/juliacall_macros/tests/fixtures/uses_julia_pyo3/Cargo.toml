@@ -1,0 +1,20 @@
+# A crate that still uses the deprecated `#[julia_pyo3]` attribute (#275
+# Phase 3). `tests/deprecated.rs` checks it with a nested `cargo check` and
+# asserts the deprecation warning is reported at every use site.
+[package]
+name = "uses_julia_pyo3"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+python = []
+
+[dependencies]
+juliacall_macros = { path = "../../.." }
+
+[workspace]

@@ -1128,6 +1128,7 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
         skip_reason: reason,
         python_name: pyo3_name(&func.attrs),
         accessor: accessor.to_string(),
+        attribute: Attribute::PyMethods,
         return_kind,
         ok_type,
         err_type,

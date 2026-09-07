@@ -18,11 +18,11 @@ const SampleCratePyo3 = @rust_crate crate_path
 println("\n✅ Crate loaded as module: SampleCratePyo3\n")
 
 # ============================================================================
-# Test basic functions (Julia-only bindings via #[julia])
+# Test basic functions (#[julia] stacked with #[pyfunction])
 # ============================================================================
 
 println("=" ^ 60)
-println("Testing basic functions (#[julia_pyo3] bindings)")
+println("Testing basic functions (#[julia] + #[pyfunction] bindings)")
 println("=" ^ 60)
 
 # Test add function
@@ -52,11 +52,11 @@ println("shout_twice(\"hi\") = $twice")
 println("\n✅ Basic functions work!\n")
 
 # ============================================================================
-# Test Point struct (unified bindings via #[julia_pyo3])
+# Test Point struct (#[julia] struct and impl, #[pyclass] for Python)
 # ============================================================================
 
 println("=" ^ 60)
-println("Testing Point struct (#[julia_pyo3] bindings)")
+println("Testing Point struct (#[julia] + #[pyclass] bindings)")
 println("=" ^ 60)
 
 # Create a Point using the constructor
@@ -106,12 +106,13 @@ println("=" ^ 60)
 println("All tests passed! 🎉")
 println("=" ^ 60)
 println("""
-Summary of available bindings (all from #[julia_pyo3]):
+Summary of available bindings (one definition each: #[julia] for Julia,
+PyO3's own attributes for Python):
 
   Functions:
     - add(a, b) -> Int32
     - fibonacci(n) -> UInt64
-    - shout(s) -> String            (#[julia] + #[pyfunction], #279)
+    - shout(s) -> String
     - shout_twice(s) -> String
 
   Point struct:

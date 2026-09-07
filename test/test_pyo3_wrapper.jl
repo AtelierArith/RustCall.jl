@@ -486,9 +486,19 @@ end
                 @test M.julia_shout("hey") == "HEY!"
                 @test M.shared_add(Int32(2), Int32(3)) == 5
                 @test M.py_triple(Int32(4)) == 12
+                @test M.legacy_add(Int32(2), Int32(3)) == 5   # #[julia_pyo3], deprecated
                 tally = Base.invokelatest(M.Tally, Int64(7))
                 @test M.doubled(tally) == 14
                 @test Base.invokelatest(getproperty, tally, :count) == 7
+
+                # The crate's `#[julia_pyo3]` item is not in the wrapper's
+                # manifest, so the deprecation notice has to come from the
+                # crate's own scan — on the wrapper path too, in both entry
+                # points (#314 review).
+                @test_logs (:warn, r"#\[julia_pyo3\]` is deprecated.*1 item\(s\) of sample_crate_pyo3_mixed") match_mode=:any RustCall.generate_bindings(PYO3_MIXED_CRATE)
+                mktempdir() do dir
+                    @test_logs (:warn, r"#\[julia_pyo3\]` is deprecated") match_mode=:any RustCall.write_bindings_to_file(PYO3_MIXED_CRATE, joinpath(dir, "mixed.jl"))
+                end
             end
         end
     end

@@ -25,7 +25,10 @@ payload travels as an owned string buffer, #268 — bumped together with the
 PyO3 wrapper crate, since neither shipped on its own: a `py_*` entry can now be
 `exported` with a `return_abi`, a lowered `PyResult` reports the `i32` code in
 `err_type`, and the skip-reason vocabulary gains the four the *generator*
-uses, #275 Phase 2).
+uses, #275 Phase 2. Additive within 6: `Method.attribute`, the attribute of the
+impl block a method came from — serialized only when there is one — so the
+deprecated `#[julia_pyo3]` is reported even on a `#[julia]` struct, #275
+Phase 3).
 """
 const MANIFEST_SCHEMA_VERSION = 6
 
@@ -1046,8 +1049,13 @@ function _manifest_method(m)
         ok_abi = _mstr(m, "ok_abi"),
         err_abi = _mstr(m, "err_abi"),
         inner_abi = _mstr(m, "inner_abi"),
+        # The impl block's attribute; omitted by the extractor when there is
+        # none (an inline-mode impl), additive within schema 6 (#275 Phase 3).
+        attribute = Symbol(something(_mstr_or_nothing(m, "attribute"), "none")),
     )
 end
+
+_mstr_or_nothing(d, k) = (v = get(d, k, nothing); v === nothing || isempty(v) ? nothing : String(v))
 
 """
     manifest_struct_infos(manifest; origins=nothing) -> Vector{RustStructInfo}

@@ -73,6 +73,10 @@ use serde::{Deserialize, Serialize};
 ///   `#[cfg]` predicate (serialized only when non-empty), so a wrapper
 ///   generated from a lenient scan refuses the member the way it refuses an
 ///   item; no consumer reads the column, only the generator (#307 review).
+///   Also additive within version 6: [`Method::attribute`], the attribute of
+///   the impl block a method came from (serialized only when there is one),
+///   so the deprecated `#[julia_pyo3]` is reported even on a `#[julia] struct`
+///   (#275 Phase 3).
 pub const SCHEMA_VERSION: u32 = 6;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
@@ -197,6 +201,20 @@ impl Attribute {
             self,
             Attribute::PyFunction | Attribute::PyClass | Attribute::PyMethods | Attribute::PyModule
         )
+    }
+
+    /// `serde(skip_serializing_if)` predicate for the optional
+    /// [`Method::attribute`] column: no attribute, nothing written.
+    pub fn is_none(&self) -> bool {
+        matches!(self, Attribute::None)
+    }
+}
+
+/// The absence of an attribute, which is what a `#[serde(default)]` column
+/// reads as when the extractor omitted it.
+impl Default for Attribute {
+    fn default() -> Self {
+        Attribute::None
     }
 }
 
@@ -433,6 +451,16 @@ pub struct Method {
     /// `#[pymethods]` block, empty otherwise (#275).
     #[serde(default)]
     pub accessor: String,
+    /// The attribute of the **impl block** the method came from — `julia` for
+    /// a `#[julia] impl`, `julia_pyo3` for a (deprecated) `#[julia_pyo3] impl`,
+    /// `py_methods` for a scanned `#[pymethods]` block — which need not be the
+    /// struct's own: a `#[julia] struct` may still have a `#[julia_pyo3] impl`,
+    /// and a consumer that reports the deprecated attribute has to see it
+    /// there (#275 Phase 3). `None` — and then omitted — for an inline-mode
+    /// impl, which carries no attribute. Additive within schema 6, like
+    /// [`Method::cfg`].
+    #[serde(default, skip_serializing_if = "Attribute::is_none")]
+    pub attribute: Attribute,
     /// Shape of the return value, as for a free function. A `#[julia]` method
     /// returning `Result<T, E>` / `Option<T>` is [`ReturnKind::Result`] /
     /// [`ReturnKind::Option`] (schema 6, #268); a scanned `#[pymethods]` method

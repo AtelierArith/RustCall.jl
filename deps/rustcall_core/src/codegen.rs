@@ -1384,7 +1384,9 @@ pub fn generate_method_wrapper_crate(
     struct_name: &Ident,
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
-    let model = MethodModel::from_fn(method);
+    // The origin is a manifest column; the wrapper's shape does not depend
+    // on it.
+    let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
     let owner = format_ident!("{}_{}", struct_name, method.sig.ident);
     let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
     let owned_free = format_ident!("{}_free_rust_string", owner);
@@ -1400,14 +1402,23 @@ pub fn generate_method_wrapper_crate(
 }
 
 // ============================================================================
-// Crate flavour: #[julia_pyo3]
+// Crate flavour: #[julia_pyo3] — deprecated (#275 Phase 3)
+//
+// The attribute is deprecated in favour of `#[julia]` stacked with PyO3's own
+// attributes, which `#[julia]`'s additivity (#279) made possible. Its lowering
+// is frozen as it stands — the either/or `cfg(feature = "python")` shape and
+// the as-written signature — so that crates still using it build exactly as
+// they did; `juliacall_macros` marks the proc-macro `#[deprecated]`, and the
+// whole flavour goes with the next breaking release.
 // ============================================================================
 
 /// `#[julia_pyo3]` keeps its either/or `cfg(feature = "python")` shape, but the
-/// non-Python branch is now "original item + additive wrapper" like `#[julia]`
+/// non-Python branch is "original item + additive wrapper" like `#[julia]`
 /// (#279). The exported signature stays the one that was written — no
 /// `Result` / `Option` wrapping and no string lowering — so the manifest `abi`
-/// this attribute advertises remains honest (pending #275).
+/// this attribute advertises remains honest. Deprecated (#275 Phase 3): this
+/// divergence from `#[julia]` is why the attribute is going away rather than
+/// being extended.
 pub fn transform_function_julia_pyo3(func: ItemFn) -> TokenStream2 {
     let func_attrs = &func.attrs;
     let func_vis = &func.vis;

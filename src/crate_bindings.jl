@@ -238,6 +238,42 @@ function crate_lib_root(crate_path::AbstractString, cargo_toml::AbstractDict)
 end
 
 """
+    _warn_deprecated_attributes(info::CrateInfo)
+
+Warn, once per crate, when the scan found items produced by a deprecated
+RustCall attribute — today `#[julia_pyo3]` (#275 Phase 3). The items are still
+bound exactly as before; the warning is the Julia-side counterpart of the
+`use of deprecated macro` rustc reports at each use site, for users who only
+ever see the build through `@rust_crate`. Returns the number of such items.
+"""
+function _warn_deprecated_attributes(info::CrateInfo)
+    # A struct counts once whether the attribute sits on the struct itself or
+    # only on one of its impl blocks (`RustMethod.attribute`): a `#[julia]
+    # struct` with a `#[julia_pyo3] impl` is a use of the deprecated macro too.
+    deprecated = count(f -> f.attribute === :julia_pyo3, info.julia_functions) +
+                 count(s -> _uses_julia_pyo3(s), info.julia_structs)
+    deprecated == 0 && return 0
+    @warn "`#[julia_pyo3]` is deprecated (#275 Phase 3) and will be removed in the next " *
+          "breaking release: $(deprecated) item(s) of $(info.name) use it. Write `#[julia]` next " *
+          "to PyO3's own attributes instead — see docs/src/pyo3.md, \"Migrating from " *
+          "#[julia_pyo3]\". The items are still bound as before." crate = info.path
+    return deprecated
+end
+
+"""
+    _uses_julia_pyo3(item) -> Bool
+
+Whether a manifest item was produced by the deprecated `#[julia_pyo3]`: a
+function or struct carrying the attribute itself, or a struct any of whose
+methods came from a `#[julia_pyo3] impl` (the impl block's attribute is recorded
+per method, `RustMethod.attribute`, precisely because it need not match the
+struct's).
+"""
+_uses_julia_pyo3(item::RustFunctionSignature) = item.attribute === :julia_pyo3
+_uses_julia_pyo3(item::RustStructInfo) =
+    item.attribute === :julia_pyo3 || any(m -> m.attribute === :julia_pyo3, item.methods)
+
+"""
     find_rust_sources(crate_path::String) -> Vector{String}
 
 Find all .rs files in a crate's src directory.
@@ -1599,6 +1635,11 @@ function generate_bindings(crate_path::String;
         else
             @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
                   "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
+            # A mixed crate can carry `#[julia_pyo3]` items next to the PyO3
+            # ones the wrapper exports; they are in the crate's scan, not the
+            # wrapper's, so the notice looks there — under the wrapper's build
+            # (#314 review).
+            _warn_deprecated_attributes(_scan_under_plan(crate_path, info, wrapper.plan))
             return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
                                      module_name = output_module_name,
                                      build_release = build_release,
@@ -1607,6 +1648,10 @@ function generate_bindings(crate_path::String;
         end
     end
     info = _plain_scan_info(crate_path, info, features, default_features, build_release)
+    # On the *resolved* scan: a `#[cfg_attr(feature = "legacy", julia_pyo3)]`
+    # is an attribute only under the build that enables it, which the lenient
+    # scan leaves undecided (#314 review).
+    _warn_deprecated_attributes(info)
 
     # Check cache. The feature set is part of the identity on this path too:
     # a build the caller asked for with `features` / `default_features` is
@@ -2244,6 +2289,10 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         # then binds the crate under the configuration it builds, like any
         # other crate (`_plain_scan_info` below, #307 review).
         if wrapper !== nothing
+            # The crate's own `#[julia_pyo3]` items live in the crate's scan,
+            # not the wrapper's manifest that replaces `info` below (#314
+            # review).
+            _warn_deprecated_attributes(_scan_under_plan(crate_path, info, wrapper.plan))
             info = wrapper.info
             lib_name = wrapper.lib_name
             wrapper_lib_path = wrapper.lib_path
@@ -2251,9 +2300,12 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         end
     end
     # The plain path scans under the configuration it builds, probed with the
-    # shape of that build (#307 review).
-    isempty(wrapper_lib_path) &&
-        (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
+    # shape of that build (#307 review), and decides the deprecation notice on
+    # that resolved scan, as `generate_bindings` does (#314 review).
+    if isempty(wrapper_lib_path)
+        info = _plain_scan_info(crate_path, info, features, default_features, build_release)
+        _warn_deprecated_attributes(info)
+    end
 
     # Build the crate. On the plain path the feature set travels with the
     # build and with the registry name, as it does for a wrapper build.

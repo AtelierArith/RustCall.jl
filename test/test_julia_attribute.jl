@@ -623,6 +623,90 @@ end
     @test !RustCall._uses_string_ffi(py["py_len"])
     @test py["py_plain"].arg_abis == [""]
 
+    # `#[julia_pyo3]` is deprecated (#275 Phase 3): still scanned and bound
+    # exactly as above, but `@rust_crate` / `write_bindings_to_file` warn once
+    # per crate, and `scan_report` marks each item it produced.
+    mktempdir() do dir
+        mkpath(joinpath(dir, "src"))
+        write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "still_dual"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+        write(joinpath(dir, "src", "lib.rs"), """
+            #[julia_pyo3]
+            pub fn dual(x: i32) -> i32 { x }
+            #[julia_pyo3]
+            pub struct Knob { pub level: i32 }
+            #[julia]
+            pub fn plain(x: i32) -> i32 { x }
+            // A partially migrated struct: `#[julia]` on the struct, the
+            // deprecated attribute only on its impl block.
+            #[julia]
+            pub struct Gauge { pub value: i32 }
+            #[julia_pyo3]
+            impl Gauge {
+                pub fn read(&self) -> i32 { self.value }
+            }
+            #[julia]
+            pub struct Clean { pub v: i32 }
+            #[julia]
+            impl Clean {
+                #[julia]
+                pub fn get(&self) -> i32 { self.v }
+            }
+            """)
+        info = RustCall.scan_crate(dir)
+        @test Set(f.name for f in info.julia_functions) == Set(["dual", "plain"])
+        by_name = Dict(s.name => s for s in info.julia_structs)
+        # The impl block's attribute travels with each method, so the struct
+        # that is `#[julia]` itself still shows where the deprecated macro is.
+        @test by_name["Gauge"].attribute === :julia
+        @test only(by_name["Gauge"].methods).attribute === :julia_pyo3
+        @test only(by_name["Clean"].methods).attribute === :julia
+        @test RustCall._uses_julia_pyo3(by_name["Knob"])
+        @test RustCall._uses_julia_pyo3(by_name["Gauge"])
+        @test !RustCall._uses_julia_pyo3(by_name["Clean"])
+        @test_logs (:warn, r"#\[julia_pyo3\]` is deprecated.*3 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(info)
+        @test RustCall._warn_deprecated_attributes(info) == 3
+        # A crate without the attribute says nothing.
+        write(joinpath(dir, "src", "lib.rs"), "#[julia]\npub fn plain(x: i32) -> i32 { x }\n")
+        clean = RustCall.scan_crate(dir)
+        @test_logs RustCall._warn_deprecated_attributes(clean)
+        @test RustCall._warn_deprecated_attributes(clean) == 0
+
+        # The attribute may sit behind a feature: `#[cfg_attr(feature =
+        # "legacy", julia_pyo3)]` is an attribute only under a build that
+        # enables it, so the warning is decided on the *resolved* scan the
+        # bindings are emitted from, not on the lenient one (#314 review).
+        if !RustCall.check_rustc_available()
+            @test_skip "cargo is required to probe the crate"
+        else
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "still_dual"
+                version = "0.1.0"
+                edition = "2021"
+                [features]
+                legacy = []
+                """)
+            write(joinpath(dir, "src", "lib.rs"), """
+                #[cfg_attr(feature = "legacy", julia_pyo3)]
+                #[cfg_attr(not(feature = "legacy"), julia)]
+                pub fn old(x: i32) -> i32 { x }
+                """)
+            lenient = RustCall.scan_crate(dir)
+            off = RustCall._plain_scan_info(dir, lenient, String[], true, true)
+            @test [f.name for f in off.julia_functions] == ["old"]
+            @test only(off.julia_functions).attribute === :julia
+            @test RustCall._warn_deprecated_attributes(off) == 0
+            on = RustCall._plain_scan_info(dir, lenient, ["legacy"], true, true)
+            @test only(on.julia_functions).attribute === :julia_pyo3
+            @test_logs (:warn, r"1 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(on)
+        end
+    end
+
     # #279: `#[julia]` is additive. The compiled block exports the wrapper
     # `rustcall_<fn>`; the Rust name is *not* a C symbol any more, while the
     # generated Julia function still goes by that name.
