@@ -483,3 +483,54 @@ fn a_literal_include_is_followed() {
     assert_eq!(names, vec!["included_add", "root_add"]);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// An `enum` or a `union` is a target too — neither can carry `#[julia]`, so a
+/// local one shadows a same-named annotated struct elsewhere and the block is
+/// refused rather than attached to the wrong type (#315 review).
+#[test]
+fn an_impl_on_a_plain_local_enum_is_refused() {
+    for (kind, decl) in [
+        ("enum", "pub enum Gauge { A, B }"),
+        ("union", "pub union Gauge { a: i32, b: u32 }"),
+    ] {
+        let err = scan_tree(&[
+            (
+                &[],
+                "src/lib.rs",
+                "mod ops;\n#[julia] pub struct Gauge { pub value: i32 }",
+            ),
+            (
+                &["ops"],
+                "src/ops.rs",
+                &format!(
+                    "{decl}\n#[julia] impl Gauge {{ #[julia] pub fn read(&self) -> i32 {{ 0 }} }}"
+                ),
+            ),
+        ])
+        .expect_err("a #[julia] impl of a plain local type must fail the scan");
+        assert!(err.contains("not a `#[julia]` struct"), "{kind}: {err}");
+        assert!(err.contains("module `ops`"), "{kind}: {err}");
+    }
+}
+
+/// A renamed import makes the proc-macro export `rustcall_Meter_*` while the
+/// manifest resolves the struct to `Gauge`: the stems differ, so the scan
+/// refuses and names the header to write (#315 review).
+#[test]
+fn a_renamed_import_in_an_impl_header_is_refused() {
+    let err = scan_tree(&[
+        (
+            &[],
+            "src/lib.rs",
+            "mod ops;\n#[julia] pub struct Gauge { pub value: i32 }",
+        ),
+        (
+            &["ops"],
+            "src/ops.rs",
+            "use crate::Gauge as Meter;\n\
+             #[julia] impl Meter { #[julia] pub fn read(&self) -> i32 { self.value } }",
+        ),
+    ])
+    .expect_err("a renamed import must not silently bind the wrong symbol");
+    assert!(err.contains("impl crate::Gauge"), "{err}");
+}

@@ -641,6 +641,24 @@ impl CrateScan {
                         manifest.functions.push(entry);
                     }
                 }
+                // An `enum` or a `union` is a type an `impl` header resolves to
+                // as readily as a struct, and neither can carry `#[julia]`:
+                // recording them keeps a local one from being passed over for a
+                // same-named annotated struct elsewhere (#315 review).
+                Item::Enum(e) => {
+                    self.plain_structs.push(PlainStruct {
+                        name: e.ident.to_string(),
+                        module_path: module_path.clone(),
+                        file: file.to_string(),
+                    });
+                }
+                Item::Union(u) => {
+                    self.plain_structs.push(PlainStruct {
+                        name: u.ident.to_string(),
+                        module_path: module_path.clone(),
+                        file: file.to_string(),
+                    });
+                }
                 Item::Struct(s) => {
                     let Some(model) = StructModel::of(s, Mode::Crate) else {
                         // Not a `#[julia]` struct, but still a name an `impl`
@@ -908,7 +926,12 @@ impl CrateScan {
         let scanned = &self.structs[index];
         let name = scanned.model.name();
         let macro_path = imp.header.qualifier.macro_target_path(&imp.symbol_path);
-        let macro_stem = symbol_stem(&macro_path, &name);
+        // The macro reads the header's own last identifier, which a renamed
+        // import makes something else entirely (`use crate::Gauge as Meter;
+        // impl Meter` exports `rustcall_Meter_*`), so the stem is derived from
+        // what the macro sees, not from the struct the header resolves to
+        // (#315 review).
+        let macro_stem = symbol_stem(&macro_path, &imp.header.target.to_string());
         let struct_stem = symbol_stem(&scanned.symbol_path, &name);
         if macro_stem == struct_stem {
             return Ok(());
