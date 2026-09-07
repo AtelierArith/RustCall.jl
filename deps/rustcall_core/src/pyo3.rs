@@ -1131,7 +1131,17 @@ fn item_skip_reason(vis: &syn::Visibility, reachable: bool, is_generic: bool) ->
 ///
 /// A `PyResult<T>` return is exempt — the error is opaque, never rendered — but
 /// its `Ok` type is still checked, so `PyResult<PyObject>` is skipped.
+///
+/// An `async fn` is refused outright: its declared output is what the future
+/// *resolves to*, and a wrapper that called it would hand back the future
+/// itself — a type error in the generated crate, which no `extern "C"` can
+/// return anyway. pyo3 lets a `#[pyfunction]` be `async` (with its
+/// `experimental-async` feature); the wrapper has no executor to drive it
+/// (#307 review).
 fn signature_skip_reason(sig: &syn::Signature, return_kind: ReturnKind) -> Option<String> {
+    if sig.asyncness.is_some() {
+        return Some(skip_reason::ASYNC_FN.to_string());
+    }
     for input in &sig.inputs {
         let FnArg::Typed(pt) = input else { continue };
         if let Some(found) = pyo3_type_in(&pt.ty) {

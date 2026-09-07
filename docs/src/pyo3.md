@@ -85,7 +85,9 @@ allowlist), which reaches `cargo` and so decides the binary.
 
 The scan refuses what a wrapper crate could not *name* (a non-`pub` item, a
 signature mentioning a type that needs a live interpreter, a generic, a
-`#[pymodule]`). The generator then refuses what it could not *lower*:
+`#[pymodule]`) or could not *call* (an `async fn`, `async_fn`: a wrapper would
+return the future rather than the value it resolves to, and has no executor to
+drive it). The generator then refuses what it could not *lower*:
 
 | reason | meaning |
 | --- | --- |

@@ -122,6 +122,11 @@ pub mod skip_reason {
     /// unknown; calling an item that is not there is a compile error in
     /// generated code. The predicate follows the colon (#275 Phase 2).
     pub const CFG_UNDECIDED: &str = "cfg_undecided";
+    /// An `async fn`: its declared output is what the future resolves to, and
+    /// a wrapper calling it would hand back the future — a type error in the
+    /// generated crate, and nothing an `extern "C"` could return. The wrapper
+    /// has no executor to drive it (#307 review).
+    pub const ASYNC_FN: &str = "async_fn";
 
     /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
     pub fn detailed(kind: &str, detail: &str) -> String {

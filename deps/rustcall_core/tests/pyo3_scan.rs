@@ -1204,3 +1204,30 @@ fn case_folded_panic_slots_are_reserved() {
     );
     assert_eq!(function(&manifest, "bar").skip_reason, "");
 }
+
+/// An `async fn` declares what its future *resolves to*; a wrapper that called
+/// it would return the future itself, a type error in the generated crate. The
+/// scan refuses it — function or method — with a reason of its own (#307
+/// review), and a plain sibling is unaffected.
+#[test]
+fn async_items_are_refused_before_wrapping() {
+    let manifest = scan(
+        "#[pyfunction] pub async fn fetch() -> i32 { 1 }\n\
+         #[pyfunction] pub fn ready() -> i32 { 2 }\n\
+         #[pyclass] pub struct Client;\n\
+         #[pymethods] impl Client {\n\
+             pub async fn get(&self) -> i32 { 3 }\n\
+             pub fn id(&self) -> i32 { 4 }\n\
+         }",
+    );
+    assert_eq!(function(&manifest, "fetch").skip_reason, "async_fn");
+    assert_eq!(function(&manifest, "ready").skip_reason, "");
+    let client = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "Client")
+        .expect("Client is scanned");
+    let method = |name: &str| client.methods.iter().find(|m| m.name == name).unwrap();
+    assert_eq!(method("get").skip_reason, "async_fn");
+    assert_eq!(method("id").skip_reason, "");
+}

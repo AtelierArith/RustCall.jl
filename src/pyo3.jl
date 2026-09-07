@@ -26,6 +26,8 @@ const PYO3_SKIP_REASONS = Dict{String, String}(
     "pymodule" => "a `#[pymodule]` initializer: it only means something to Python's import machinery",
     "generic" => "generic; monomorphizing PyO3 items is not supported",
     "owner_skipped" => "its `#[pyclass]` is itself skipped",
+    "async_fn" => "an `async fn`: a wrapper would return the future, not the value it " *
+                  "resolves to, and has no executor to drive it",
     "symbol_collision" => "another item already claims the symbol a wrapper would give this one; " *
                           "module-qualified symbols are tracked in #300",
     # Reasons the Phase-2 *generator* refuses an item (#275 Phase 2).
