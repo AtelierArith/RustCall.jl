@@ -1,0 +1,32 @@
+# A crate written for PyO3 only: it knows nothing about RustCall and carries no
+# RustCall attribute anywhere, and it does not depend on `juliacall_macros`.
+# RustCall binds it anyway (#275 Phase 2): `write_bindings_to_file` in
+# ../build.jl generates a *second* crate that depends on this one, builds that,
+# and binds the result. Nothing in this directory is changed for Julia's sake.
+#
+# pyo3 is a plain mandatory dependency with `default-features = false,
+# features = ["macros"]`, which is what most real PyO3 crates look like: making
+# pyo3 optional would need `#[cfg_attr(feature = "python", ...)]`, and that
+# does not work for pyo3's inner attributes (`new`, `staticmethod`, `getter`,
+# `setter`, `pyo3(get, set)`) because the outer macro runs before `cfg_attr`
+# expands. The price is that the generated wrapper links libpython (link plan
+# `:link_libpython`), so building this package needs a Python interpreter.
+#
+# Two things a PyO3 crate needs for RustCall to be able to wrap it:
+#
+#   * an `rlib` target, so the wrapper crate can depend on it as a Rust
+#     library — a crate that is `crate-type = ["cdylib"]` alone provides no
+#     linkable target (write `["cdylib", "rlib"]` for a real extension module);
+#   * `extension-module` NOT enabled unconditionally: a build whose pyo3 has
+#     that feature cannot be loaded outside a Python interpreter (link plan
+#     `:unlinkable`). Put it behind a feature maturin enables.
+[package]
+name = "sample_crate_pyo3_only"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+pyo3 = { version = "0.29", default-features = false, features = ["macros"] }

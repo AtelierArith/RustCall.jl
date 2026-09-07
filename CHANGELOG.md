@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`examples/SampleCratePyO3Only.jl`**, a third example package: a Julia
+  package with a crate **written for PyO3 only** embedded under
+  `deps/sample_crate_pyo3_only` — no RustCall attribute anywhere, no
+  `juliacall_macros` dependency — bound through the wrapper crate RustCall
+  generates (`write_bindings_to_file`, [#275](https://github.com/AtelierArith/RustCall.jl/issues/275)
+  Phase 2). It shows `#[pyfunction]` / `#[pyclass(get_all, set_all)]` /
+  `#[new]` / `#[staticmethod]` bindings without `#[julia]`, `PyResult<T>`
+  arriving as `RustResult{T, String}` with the opaque
+  `RustCall.PYO3_OPAQUE_ERROR` and a Julia layer over it, and the
+  `:link_libpython` link plan: the wrapper links libpython, so the package
+  needs a Python interpreter to build (`PYO3_PYTHON` pins one). The
+  `Examples` workflow tests it with a `actions/setup-python` interpreter.
+
 ### Removed
 - **`#[julia_pyo3]`** ([#312](https://github.com/AtelierArith/RustCall.jl/issues/312)),
   deprecated in 0.2.0 (#275 Phase 3). The proc-macro is gone from
