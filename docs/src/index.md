@@ -351,6 +351,17 @@ Pages = [
     "troubleshooting.md",
     "project_guide.md",
     "api.md",
+    "reference/artifacts.md",
+    "reference/ffi_contract.md",
+    "reference/compilation.md",
+    "reference/manifest.md",
+    "reference/cargo.md",
+    "reference/crates.md",
+    "reference/pyo3.md",
+    "reference/ownership.md",
+    "reference/generics.md",
+    "reference/loading.md",
+    "reference/llvm.md",
     "status.md",
 ]
 Depth = 2

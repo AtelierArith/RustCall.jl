@@ -100,7 +100,7 @@ For crate-side bindings, use the companion `juliacall_macros` crate and mark exp
 - Documentation: <https://atelierarith.github.io/RustCall.jl>
 - Examples: [`examples/`](examples)
 - Tutorial source: [`docs/src/tutorial.md`](docs/src/tutorial.md)
-- API reference source: [`docs/src/api.md`](docs/src/api.md)
+- API reference source: [`docs/src/api.md`](docs/src/api.md) (index) and [`docs/src/reference/`](docs/src/reference) (one page per group of source files)
 - Troubleshooting source: [`docs/src/troubleshooting.md`](docs/src/troubleshooting.md)
 
 ## Development

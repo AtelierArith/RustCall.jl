@@ -15,19 +15,16 @@ makedocs(
         canonical = "https://atelierarith.github.io/RustCall.jl",
         assets = String[],
         edit_link = :commit,
-        # `api.md` is a single generated page that renders every docstring in
-        # the package, so its size is a function of how well documented
-        # RustCall is — and Documenter's limit has already been hit twice by
-        # ordinary docstring additions (the previous bump to 500 KiB, then
-        # #287 at 501.2 KiB). A limit that turns "wrote a docstring" into a red
-        # Documentation job pushes in exactly the wrong direction, so give it
-        # real margin instead of tracking the page upwards a kilobyte at a time.
-        #
-        # This is a stopgap. The proper fix is to split the reference into
-        # per-module pages with their own `@autodocs` `Pages` filters, after
-        # which the threshold can go back near Documenter's default: #288.
-        size_threshold = 1_000 * 2^10,       # 1000 KiB — hard failure
-        size_threshold_warn = 750 * 2^10,    # 750 KiB — warn, act before it fails
+        # The API reference is one page per group of source files
+        # (`docs/src/reference/`, #288), each with its own `@autodocs`
+        # `Pages` filter, so no single page renders every docstring in the
+        # package and the hard limit is Documenter's default again (the
+        # largest page renders at about 125 KiB). If a reference page grows
+        # past the warning, split it further rather than raising the limit:
+        # the single-page reference hit the limit twice (500 KiB, then #287
+        # at 501.2 KiB).
+        size_threshold = 200 * 2^10,         # 200 KiB — hard failure (Documenter's default)
+        size_threshold_warn = 150 * 2^10,    # 150 KiB — warn, split before it fails
     ),
     warnonly = [:missing_docs],
     pages = [
@@ -48,7 +45,20 @@ makedocs(
         ],
         "Reference" => [
             "Project Guide" => "project_guide.md",
-            "API Reference" => "api.md",
+            "API Reference" => [
+                "Overview" => "api.md",
+                "Artifact identity and caching" => "reference/artifacts.md",
+                "The FFI type contract" => "reference/ffi_contract.md",
+                "Compilation and codegen" => "reference/compilation.md",
+                "The FFI manifest" => "reference/manifest.md",
+                "Cargo projects and dependencies" => "reference/cargo.md",
+                "External crates and hot reload" => "reference/crates.md",
+                "PyO3 crates" => "reference/pyo3.md",
+                "Types, memory and ownership" => "reference/ownership.md",
+                "Generics and #[julia] functions" => "reference/generics.md",
+                "Errors and load policy" => "reference/loading.md",
+                "LLVM integration (deprecated)" => "reference/llvm.md",
+            ],
             "Project Status" => "status.md",
             "Developer Pitfalls" => "developer_pitfalls.md",
         ],
