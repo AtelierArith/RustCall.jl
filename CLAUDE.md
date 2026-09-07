@@ -49,8 +49,8 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 ### Compilation pipeline
 
 1. `rust"""..."""` (`src/ruststr.jl`) calls `expand_inline` (extractor) at macro-expansion time, emits Julia definitions from the manifest, and compiles the expanded source at run time (direct `rustc`, or a temporary Cargo project when `// cargo-deps:` is present)
-2. `src/compiler.jl` invokes `rustc` to produce shared libraries or LLVM IR
-3. `src/codegen.jl` generates `ccall` expressions; `src/llvmcodegen.jl` / `src/llvmintegration.jl` handle the LLVM IR path (deprecated, see #265)
+2. `src/compiler.jl` invokes `rustc` to produce shared libraries
+3. `src/codegen.jl` generates `ccall` expressions (the LLVM IR path and `@rust_llvm` were removed in 0.3.0, #265)
 4. `src/rustmacro.jl` expands `@rust` and `@irust` into the appropriate call mechanism
 5. `src/cache.jl` provides caching of compiled artifacts in a **Scratch.jl space** (#252): `get_cache_dir()` is `<depot>/scratchspaces/<RustCall UUID>/cache-v$(CACHE_FORMAT_VERSION)`, with `metadata/` and `cargo/` under it. RustCall writes **nothing** under `~/.julia/compiled/` — that is Julia's own precompile directory, read-only for RustCall and never created by it; `_legacy_cache_root()` is read only by the opt-in legacy sweep (`clear_cache(sweep_legacy = true)`), which removes RustCall's own `v<n>`/`cargo`/`metadata` directories and loose files matching the exact pre-#278 naming, and nothing else. The depot is the first *writable* entry of `DEPOT_PATH`, so a read-only `DEPOT_PATH[1]` still works; `RUSTCALL_CACHE_DIR` overrides the location outright.
 
@@ -81,7 +81,7 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 - `src/loadpolicy.jl` — `LoadPolicy` (the four decisions a front door used to make for itself: `dlopen` flags, panic strategy, registration, finalizer policy) and the one load path: `load_artifact!` / `adopt_artifact!` / `register_artifact_metadata!` / `unload_artifact!` / `alias_artifact!`. Every door names its own policy (`inline_rustc_policy()`, `inline_cargo_policy()`, `irust_policy()`, `generics_policy()`, `hot_reload_policy()`, `crate_direct_policy()`, `crate_wrapper_policy()`, `helper_library_policy()`), so changing a policy is one edit.
 - Every policy is `RTLD_LOCAL | RTLD_NOW`: nothing RustCall loads needs process-global symbols, because every call goes through `dlsym` on a specific handle. `RUSTCALL_DLOPEN_GLOBAL=1` is a deprecated escape hatch.
 - Every policy RustCall builds is pinned to `panic = "unwind"` — on the `rustc` command line, in the generated `Cargo.toml`, and in `CARGO_PROFILE_<PROFILE>_PANIC` — because the generated `catch_unwind` boundary can only catch a panic that unwinds. See `docs/src/panics.md` for the semantics matrix.
-- Do not call `Libdl.dlopen`/`dlclose` or write `RUST_LIBRARIES[...]` in `src/`; `scripts/lint_load_path.sh` fails CI (`src/llvmcodegen.jl` is the one allowlist, pending #265 Phase 2).
+- Do not call `Libdl.dlopen`/`dlclose` or write `RUST_LIBRARIES[...]` in `src/`; `scripts/lint_load_path.sh` fails CI (no allowlist since #265 Phase 2).
 
 ### Other modules
 
@@ -95,7 +95,7 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 
 ## Thread Safety
 
-Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `RUST_MODULE_REGISTRY`, `GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables in `src/codegen.jl` and `ARTIFACT_ALIVE`. A separate `LLVM_REGISTRY_LOCK` protects LLVM operations.
+Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `RUST_MODULE_REGISTRY`, `GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables in `src/codegen.jl` and `ARTIFACT_ALIVE`.
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 
@@ -155,7 +155,7 @@ A replaced image is **retired, not closed**, so a call already inside one stays 
 - Extend existing modules rather than introducing parallel pipelines
 - Keep generated/binding code deterministic and cache-aware
 - Add tests alongside new functionality; include regression coverage for macro/parsing changes
-- **Minimal exports**: Only macros (`@rust`, `@rust_str`, `@irust`, `@irust_str`, `@rust_llvm`, `@rust_crate`) are exported. All other identifiers should be accessed via `RustCall.XXX` or `using RustCall: XXX`. Do not add new `export` statements unless the identifier is a macro intended for end-user use.
+- **Minimal exports**: Only macros (`@rust`, `@rust_str`, `@irust`, `@irust_str`, `@rust_crate`, `@register_ffi_struct`) are exported. All other identifiers should be accessed via `RustCall.XXX` or `using RustCall: XXX`. Do not add new `export` statements unless the identifier is a macro intended for end-user use.
 
 ## Git Workflow
 
