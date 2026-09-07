@@ -81,6 +81,30 @@ cached libraries and two different registry entries — as is the build
 environment the wrapper inherits (`RUSTFLAGS` and the rest of the #282
 allowlist), which reaches `cargo` and so decides the binary.
 
+### The crate needs an `rlib` target
+
+The wrapper crate depends on yours **as a Rust library**, so your `[lib]` must
+offer a target a dependent can link: no `crate-type` at all (Cargo's default is
+an rlib), or a list containing `"rlib"` (or `"lib"` / `"dylib"`). A PyO3
+extension crate is often
+
+```toml
+[lib]
+crate-type = ["cdylib"]
+```
+
+alone — Cargo then warns that the dependency "provides no linkable target" and
+the generated wrapper fails to compile. RustCall refuses such a crate *before*
+building anything, with the fix in the message:
+
+```toml
+[lib]
+crate-type = ["cdylib", "rlib"]
+```
+
+The extra target changes nothing about the Python extension module; it only
+lets other Rust code — the wrapper — link the crate.
+
 ### What is not wrapped, and why
 
 The scan refuses what a wrapper crate could not *name* (a non-`pub` item, a

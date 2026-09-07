@@ -1160,7 +1160,10 @@ The steps, in the order their failures matter:
 2. **Generate.** `wrap_crate` re-runs the scan `scan_crate` reported and turns
    it into a `lib.rs` plus the manifest of what that file exports.
 3. **Build.** A temporary Cargo project with `crate-type = ["cdylib"]`, the
-   target crate as its only dependency (with the plan's features, and
+   target crate as its only dependency — which the target must be able to be:
+   a `crate-type = ["cdylib"]`-only crate has no `rlib` for a dependent to
+   link and is refused with the one-line fix (`_require_linkable_lib_target`)
+   — (with the plan's features, and
    `default-features` switched off there when the plan says so — nothing on the
    `cargo build` command line can do that for a *dependency*), `panic =
    "unwind"` pinned as every RustCall build is, and the plan's link flags.
@@ -1218,6 +1221,14 @@ function build_pyo3_wrapper(info::CrateInfo;
     # so has nothing for a wrapper crate to export. The caller falls back to the
     # pre-#275 path rather than building an empty cdylib.
     pyo3_exports == 0 && return nothing
+
+    # The wrapper depends on the crate *as a Rust library*, which needs an
+    # `rlib` (or `dylib`) target. A PyO3 extension crate is often
+    # `crate-type = ["cdylib"]` alone — Cargo then warns that the dependency
+    # "provides no linkable target" and every `user_crate::item` in the
+    # generated source is an unresolved crate. Refused here, before anything is
+    # built, with the one-line fix (#307 review).
+    _require_linkable_lib_target(info.name, cargo_toml)
 
     # Raises for :unlinkable and for :link_libpython with no interpreter
     # directory. After generation, which compiles nothing, and before the build.
@@ -1463,6 +1474,36 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     finally
         cleanup_cargo_project(project)
     end
+end
+
+"""
+    _linkable_lib_target(cargo_toml) -> Bool
+
+Whether a dependent crate can link this one as a Rust library: its `[lib]
+crate-type` is absent (Cargo's default is `lib`, i.e. an rlib) or lists `lib`,
+`rlib` or `dylib`. A `["cdylib"]`, `["staticlib"]` or `["proc-macro"]`-only
+library has no target a `path` dependency can use, and Cargo builds the
+dependent with a "provides no linkable target" warning followed by an
+unresolved-crate error.
+"""
+function _linkable_lib_target(cargo_toml::AbstractDict)
+    lib = get(cargo_toml, "lib", nothing)
+    lib isa AbstractDict || return true
+    types = get(lib, "crate-type", nothing)
+    types === nothing && return true
+    return any(t -> String(t) in ("lib", "rlib", "dylib"), types)
+end
+
+# Refuse a crate the wrapper could not depend on, naming the fix. Adding
+# `"rlib"` next to `"cdylib"` leaves the Python extension exactly as it was.
+function _require_linkable_lib_target(name::AbstractString, cargo_toml::AbstractDict)
+    _linkable_lib_target(cargo_toml) && return nothing
+    types = join((repr(String(t)) for t in cargo_toml["lib"]["crate-type"]), ", ")
+    throw(RustError(
+        "`$(name)` declares `[lib] crate-type = [$(types)]`, which provides no target another " *
+        "Rust crate can link. The PyO3 wrapper crate RustCall generates depends on `$(name)` " *
+        "as a Rust library, so it needs an `rlib` target: add \"rlib\" to the list " *
+        "(`crate-type = [$(types), \"rlib\"]`). The Python extension module is unaffected."))
 end
 
 """

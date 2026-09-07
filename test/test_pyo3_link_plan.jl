@@ -704,6 +704,69 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a cdylib-only crate is refused before the wrapper is built (#307 review)" begin
+        # The wrapper depends on the crate as a Rust library; a `["cdylib"]`-only
+        # `[lib]` has no rlib for it to link, and Cargo would build the wrapper
+        # into "provides no linkable target" plus an unresolved crate.
+        linkable = RustCall._linkable_lib_target
+        @test linkable(_manifest("[package]\nname = \"a\"\n"))                 # Cargo's default: lib
+        @test linkable(_manifest("[lib]\nname = \"a\"\n"))                     # no crate-type: lib
+        @test linkable(_manifest("[lib]\ncrate-type = [\"rlib\"]\n"))
+        @test linkable(_manifest("[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n"))
+        @test linkable(_manifest("[lib]\ncrate-type = [\"lib\"]\n"))
+        @test linkable(_manifest("[lib]\ncrate-type = [\"dylib\"]\n"))
+        @test !linkable(_manifest("[lib]\ncrate-type = [\"cdylib\"]\n"))
+        @test !linkable(_manifest("[lib]\ncrate-type = [\"staticlib\"]\n"))
+        @test !linkable(_manifest("[lib]\ncrate-type = [\"cdylib\", \"staticlib\"]\n"))
+
+        err = try
+            RustCall._require_linkable_lib_target("ext", _manifest("[lib]\ncrate-type = [\"cdylib\"]\n"))
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        msg = sprint(showerror, err)
+        @test occursin("`ext` declares `[lib] crate-type = [\"cdylib\"]`", msg)
+        @test occursin("crate-type = [\"cdylib\", \"rlib\"]", msg)
+
+        # End to end: a crate with something to wrap but nothing to link is
+        # refused by `build_pyo3_wrapper` before any Cargo project exists — and
+        # after the "nothing to wrap" decision, so a crate that exposes nothing
+        # still falls back to the plain path rather than erroring here.
+        if !RustCall.check_rustc_available()
+            @test_skip "the extractor is required to scan a crate"
+        else
+            mktempdir() do dir
+                _write_crate(dir, """
+                    [package]
+                    name = "cdylib_only"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["cdylib"]
+                    """)
+                write(joinpath(dir, "src", "lib.rs"), """
+                    #[pyfunction]
+                    pub fn answer() -> i32 { 42 }
+                    """)
+                info = RustCall.scan_crate(dir)
+                plan = RustCall.PyO3LinkPlan(:python_free, String[], "", "test"; resolved = true,
+                                             cfg_text = "unix\n")
+                err = try
+                    RustCall.build_pyo3_wrapper(info; plan = plan, cache_enabled = false)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa RustCall.RustError
+                @test occursin("\"rlib\"", sprint(showerror, err))
+                @test !isdir(joinpath(dir, "target"))
+            end
+        end
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`
