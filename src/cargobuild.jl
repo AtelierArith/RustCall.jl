@@ -198,49 +198,76 @@ function ensure_cargo_lockfile!(project::CargoProject;
 end
 
 """
-    _publish_lockfile!(stored, target) -> String
+    _publish_lockfile!(stored, target; wait = 10.0, stale_after = 60.0) -> String
 
 Publish the lockfile a project just resolved (`target`) to the store (`stored`)
-without clobbering, and return the digest of the file the project ends up with.
+so that exactly one resolution wins, and return the digest of the file the
+project ends up with.
 
-A whole file or none: the content is staged next to `stored` and linked into
-place with `hardlink`, which fails with `EEXIST` when another process published
-first (a plain rename would silently replace the winner). When that happens —
-or when `hardlink` is unavailable and `stored` appeared in between — the
-project's own resolution is discarded, the published file is copied into the
-project, and its digest is returned: every racer builds the published graph.
+The primitive is an exclusive create (`O_CREAT | O_EXCL`) of a claim file
+beside the entry (`_claim_lockfile!`), which every filesystem makes atomic — a
+rename guarded by an `isfile` check is not, and two first-time builders could
+pass the check together. The process that creates the claim is the publisher:
+it stages the content beside the entry and renames it into place (a whole file
+or none), then removes the claim. Every other process is a loser: it waits up
+to `wait` seconds for the published file to appear, discards its own
+resolution, copies the published file into its project and returns *that*
+digest — so every racer builds the published graph (#313 review). A claim older
+than `stale_after` seconds with no published file behind it is a publisher that
+died; the next comer removes it and claims for itself.
+
+Throws `CargoBuildError` when the claim is held and nothing is published within
+`wait` seconds.
 """
-function _publish_lockfile!(stored::AbstractString, target::AbstractString)
+function _publish_lockfile!(stored::AbstractString, target::AbstractString;
+                            wait::Real = 10.0, stale_after::Real = 60.0)
     stored = String(stored)
     target = String(target)
     mkpath(dirname(stored))
-    tmp = stored * ".tmp-$(getpid())-$(rand(UInt32))"
-    cp(target, tmp; force = true)
-    published = try
-        if isfile(stored)
-            false
-        else
-            try
-                hardlink(tmp, stored)
-                true
-            catch e
-                e isa Base.IOError || rethrow(e)
-                # `EEXIST`: somebody else landed first. Any other failure
-                # (a filesystem without hardlinks) falls back to a rename that
-                # is no-clobber up to a check.
-                if isfile(stored)
-                    false
-                else
-                    mv(tmp, stored; force = false)
-                    true
-                end
+    claim = stored * ".claim"
+    if _claim_lockfile!(claim)
+        try
+            if !isfile(stored)
+                tmp = stored * ".tmp-$(getpid())-$(rand(UInt32))"
+                cp(target, tmp; force = true)
+                # Only the claim holder renames, so this replaces nothing.
+                mv(tmp, stored; force = true)
             end
+        finally
+            rm(claim; force = true)
         end
-    finally
-        rm(tmp; force = true)
+    else
+        deadline = time() + Float64(wait)
+        while !isfile(stored) && time() < deadline
+            if isfile(claim) && time() - mtime(claim) > Float64(stale_after)
+                # The publisher died holding the claim: take it over.
+                rm(claim; force = true)
+                return _publish_lockfile!(stored, target; wait = wait, stale_after = stale_after)
+            end
+            sleep(0.05)
+        end
+        isfile(stored) || throw(CargoBuildError(
+            "Another process is resolving the same dependency set and has not published " *
+            "its Cargo.lock within $(wait)s",
+            "claim: $(claim)", dirname(target)))
     end
-    published || cp(stored, target; force = true)
+    # Whoever published, the project builds the published file.
+    cp(stored, target; force = true)
     return _file_content_digest(target)
+end
+
+# Exclusive create of `claim`: `true` when this call made it, `false` when it
+# already existed. The one atomic no-clobber primitive every filesystem has.
+function _claim_lockfile!(claim::AbstractString)
+    flags = Base.Filesystem.JL_O_WRONLY | Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_EXCL
+    f = try
+        Base.Filesystem.open(String(claim), flags, 0o644)
+    catch e
+        (e isa Base.IOError && e.code == Base.UV_EEXIST) && return false
+        rethrow(e)
+    end
+    close(f)
+    return true
 end
 
 """

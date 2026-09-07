@@ -819,18 +819,22 @@ end
 @testset "the first resolution is published once; a racing loser replays the winner (#313 review)" begin
     # Two processes (or machines sharing the store) that both find the store
     # empty resolve independently, from possibly different registry snapshots.
-    # Publication is no-clobber: the first file to land is the resolution, and
-    # whoever loses replays *that* file into its project and digests it — so
-    # both builds are of one graph, never each of its own.
+    # Publication goes through an exclusive-create claim — the one atomic
+    # no-clobber primitive every filesystem has — so exactly one resolution
+    # lands, and whoever loses replays *that* file into its project and
+    # digests it: every build is of one graph, never each of its own.
     with_isolated_cargo_cache() do
         deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
         stored = RustCall.lockfile_path(deps)
+        claim = stored * ".claim"
         mktempdir() do a
-            # No file in the store yet: this project's resolution is published.
+            # No file in the store yet: this project's resolution is published,
+            # and the claim is released.
             mine = joinpath(a, "Cargo.lock")
             write(mine, "# resolution A\n")
             digest = RustCall._publish_lockfile!(stored, mine)
             @test isfile(stored)
+            @test !isfile(claim)
             @test read(stored, String) == "# resolution A\n"
             @test digest == RustCall._file_content_digest(stored)
             @test read(mine, String) == "# resolution A\n"
@@ -846,7 +850,48 @@ end
             @test read(theirs, String) == "# resolution A\n"
             @test digest == RustCall._file_content_digest(stored)
         end
-        # No temporary file is left behind either way.
-        @test all(f -> !occursin(".tmp-", f), readdir(RustCall.lockfile_dir()))
+        # The claim itself is atomic: a second claimant is refused.
+        @test RustCall._claim_lockfile!(claim)
+        @test !RustCall._claim_lockfile!(claim)
+        # A held claim with nothing published behind it: the loser waits for
+        # the publisher, and gives up loudly rather than hanging.
+        rm(stored; force = true)
+        mktempdir() do c
+            waiting = joinpath(c, "Cargo.lock")
+            write(waiting, "# resolution C\n")
+            err = try
+                RustCall._publish_lockfile!(stored, waiting; wait = 0.3, stale_after = 60.0)
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.CargoBuildError
+            @test occursin("resolving the same dependency set", sprint(showerror, err))
+            @test !isfile(stored)
+            # ... unless the claim is stale — the publisher died — in which
+            # case the next comer takes it over and publishes.
+            digest = RustCall._publish_lockfile!(stored, waiting; wait = 0.3, stale_after = 0.0)
+            @test read(stored, String) == "# resolution C\n"
+            @test digest == RustCall._file_content_digest(stored)
+            @test !isfile(claim)
+        end
+        # Racing publishers, interleaved at every yield: exactly one content
+        # wins, every racer ends up with it, and nothing is left behind.
+        rm(stored; force = true)
+        racers = 8
+        dirs = [mktempdir() for _ in 1:racers]
+        for (i, d) in enumerate(dirs)
+            write(joinpath(d, "Cargo.lock"), "# resolution $(i)\n")
+        end
+        digests = fetch.([Threads.@spawn(RustCall._publish_lockfile!(stored, joinpath(d, "Cargo.lock")))
+                          for d in dirs])
+        winner = read(stored, String)
+        @test winner in ["# resolution $(i)\n" for i in 1:racers]
+        @test all(==(RustCall._file_content_digest(stored)), digests)
+        @test all(d -> read(joinpath(d, "Cargo.lock"), String) == winner, dirs)
+        foreach(d -> rm(d; recursive = true, force = true), dirs)
+        # No temporary or claim file is left behind by any path.
+        @test all(f -> !occursin(".tmp-", f) && !endswith(f, ".claim"),
+                  readdir(RustCall.lockfile_dir()))
     end
 end
