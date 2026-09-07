@@ -95,7 +95,7 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 
 ## Thread Safety
 
-Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `RUST_MODULE_REGISTRY`, `GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables in `src/codegen.jl` and `ARTIFACT_ALIVE`.
+Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables in `src/codegen.jl` and `ARTIFACT_ALIVE`.
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 
