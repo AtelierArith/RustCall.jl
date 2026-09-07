@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-07
+
 ### Added
 - **The Pluto notebook `examples/pluto/hello.jl` runs in CI.** The `Examples`
   workflow gains a `Pluto - hello.jl` job that opens the notebook headlessly in
@@ -1030,6 +1032,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/atelierarith/RustCall.jl/compare/6e98d5cb62c0a0ca8b2f894c6fe53af209d9d3ea...v0.2.0
 [0.1.0]: https://github.com/atelierarith/RustCall.jl/commit/6e98d5cb62c0a0ca8b2f894c6fe53af209d9d3ea
