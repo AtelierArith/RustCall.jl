@@ -8,6 +8,11 @@ name: Examples
 #
 # One job per package (the matrix), Ubuntu only: the platform matrix lives in
 # CI.yml, and an example package exercises the front doors, not the platform.
+#
+# A second job runs the Pluto notebook `examples/pluto/hello.jl` headlessly
+# with Pluto itself (`examples/pluto/run_notebook.jl`) and fails when any cell
+# errors — a notebook is not a script, so a plain `julia hello.jl` would not
+# evaluate it the way a reader sees it.
 
 on:
   push:
@@ -54,3 +59,34 @@ jobs:
             Pkg.build()
             Pkg.test()
           '
+
+  pluto:
+    name: Pluto - hello.jl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+          arch: x64
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: julia-actions/cache@v2
+      - name: Instantiate and build this checkout's RustCall
+        # The notebook's first cell does `Pkg.activate` on the repository root
+        # and `using RustCall`, so the root environment must be instantiated
+        # and RustCall's helper library built before the notebook runs.
+        run: >
+          julia --color=yes --project=. -e '
+            using Pkg
+            Pkg.instantiate()
+            Pkg.build("RustCall")
+          '
+      - name: Run the notebook with Pluto and fail on any errored cell
+        # examples/pluto/Project.toml provides Pluto; run_notebook.jl opens
+        # hello.jl in a headless Pluto session, runs every cell in Pluto's own
+        # worker process and exits non-zero when any cell errored.
+        run: |
+          julia --color=yes --project=examples/pluto -e 'using Pkg; Pkg.instantiate()'
+          julia --color=yes --project=examples/pluto examples/pluto/run_notebook.jl

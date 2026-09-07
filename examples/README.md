@@ -22,6 +22,7 @@ Before running the examples, ensure you have:
 | [MyExample.jl](./MyExample.jl/) | Julia package using `rust""` string literal | Beginner | Inline Rust code, basic FFI |
 | [sample_crate](./sample_crate/) + [SampleCrate.jl](./SampleCrate.jl/) | Rust crate using `#[julia]`, and the Julia package around it | Intermediate | `#[julia]`, `@rust_crate`, `write_bindings_to_file`, Rust and Julia in separate files |
 | [sample_crate_pyo3](./sample_crate_pyo3/) + [SampleCratePyO3.jl](./SampleCratePyO3.jl/) | Dual bindings for Julia and Python, and the Julia package around it | Advanced | PyO3 integration, feature flags |
+| [pluto/hello.jl](./pluto/hello.jl) | Pluto notebook with a `// cargo-deps:` block | Beginner | Inline Rust in Pluto, run headlessly in CI |
 
 Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
 `Examples` GitHub workflow runs them for every push. The Rust crates are plain
@@ -177,6 +178,27 @@ julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```python
 import sample_crate_pyo3 as m
 m.add(2, 3)  # => 5
+```
+
+### pluto/hello.jl
+
+A [Pluto](https://plutojl.org/) notebook that compiles a `rust"""..."""` block with a
+`// cargo-deps:` dependency (`ndarray`) and calls it. Its first cell activates the
+repository root, so it uses the RustCall of this checkout.
+
+**How to run interactively:**
+```julia
+using Pluto
+Pluto.run(notebook = "examples/pluto/hello.jl")
+```
+
+**How it is tested:** the `Pluto - hello.jl` job of `.github/workflows/Examples.yml`
+runs the notebook headlessly with `examples/pluto/run_notebook.jl` and fails when any
+cell errors. The same check locally, from the repository root:
+```bash
+julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.build("RustCall")'
+julia --project=examples/pluto -e 'using Pkg; Pkg.instantiate()'
+julia --project=examples/pluto examples/pluto/run_notebook.jl
 ```
 
 ## Learning Progression
