@@ -378,23 +378,31 @@ plan.reason                      # why this mode was chosen
 ### What a `:link_libpython` build needs from the machine
 
 A `:link_libpython` wrapper is only as portable as the Python it links. The
-build needs an interpreter whose library directory holds a **linkable**
-`libpython3.x` (`libpython3.x.so` / `.dylib`, or `python3xy.dll` plus its import
-library on Windows): RustCall finds it through `python_link_source()` — the
-interpreter `PYO3_PYTHON` names, else the first `python3` on `PATH` — and adds
-that directory as `-L` and as an rpath (on Windows the interpreter's
-`python3xy.dll` is preloaded before the wrapper instead). A `python3` without
-the shared-library symlink (some distribution packages ship it only in
-`python3-dev` / `python3-devel`) or no interpreter at all makes the build
-refuse with a message naming the directory it looked in; set `PYO3_PYTHON` to
-an interpreter that has one, or install the development package.
+build needs a library directory that holds a **linkable** `libpython3.x`
+(`libpython3.x.so` / `.dylib`, or `python3xy.dll` plus its import library on
+Windows); RustCall adds that directory as `-L` and as an rpath (on Windows the
+interpreter's `python3xy.dll` is preloaded before the wrapper instead). Where
+the directory comes from is decided by `python_link_source()`, in the order
+the "Which Python" section below spells out: the `RUSTCALL_PYTHON_LIBDIR`
+override, then pyo3's own configuration when it names one (`PYO3_CROSS_LIB_DIR`,
+the `lib_dir` of a `PYO3_CONFIG_FILE` — a configured cross-build consults no
+interpreter at all), then the interpreter `PYO3_PYTHON` pins, then a loaded
+CondaPkg environment, and only then the `python3` on `PATH`. A `python3` whose
+package ships the shared library only in `python3-dev` / `python3-devel`, or no
+interpreter at all, makes the build refuse with a message naming the directory
+it looked in; install the development package, or point `PYO3_PYTHON` (or
+`RUSTCALL_PYTHON_LIBDIR`) at a Python that has one.
 
-The same requirement shapes RustCall's own test suite: the testsets that build
-and load a `:link_libpython` wrapper (in `test/test_pyo3_wrapper.jl`, and the
-PyO3 cross-module case of `test/test_module_symbols.jl`) **skip** — with
-`@info "skipping the :link_libpython wrapper testset"` — when no linkable
-libpython is found, so a green run on such a machine has not exercised them.
-The Ubuntu CI jobs do run them. `test/test_pyo3_link_plan.jl` and
+The same requirement shapes RustCall's own test suite. The testsets that build
+and load a `:link_libpython` wrapper — in `test/test_pyo3_wrapper.jl` today,
+and the PyO3 cross-module case that #300 (PR #333) adds in
+`test/test_module_symbols.jl` — call a helper that tries the build first and
+**skips** the testset with `@info "skipping the :link_libpython wrapper
+testset"` when it fails. The helper catches *every* failure of that build, not
+only a missing libpython, so a skip is never a pass and can also hide a wrapper
+or Cargo regression: read the `exception` the `@info` carries before trusting a
+green run on a machine that skipped them. The Ubuntu CI jobs have a linkable
+Python and run them in full. `test/test_pyo3_link_plan.jl` and
 `test/test_manifest.jl` only compute the plan and always run, as do the
 scan-level assertions and every `:python_free` case
 (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`, and

@@ -19,7 +19,7 @@ The project conventions live in `CLAUDE.md` (the `@CLAUDE.md` line above include
 - `cd deps/rustcall_extract && cargo build --release` and export `RUSTCALL_EXTRACT=<path to rustcall-extract>`.
 - Golden corpus: run the plain `cargo test` in `deps/rustcall_core` first; a golden failure means the extractor output changed. Only if that change is intended, regenerate with `UPDATE_GOLDEN=1 cargo test` (it overwrites without comparing) and review `git diff tests/corpus`.
 - All `scripts/lint_*.sh src` must pass; `julia --project=docs docs/make.jl` must exit 0.
-- PyO3 wrapper testsets that build and load a `:link_libpython` wrapper (`test_pyo3_wrapper.jl`; the PyO3 case of `test_module_symbols.jl` from #300) skip when no linkable `libpython3.x` is found (`@info "skipping the :link_libpython wrapper testset"`); a skip is not a pass — run them on a machine with `python3-dev` or with `PYO3_PYTHON` set before relying on them. Ubuntu CI runs them. `test_pyo3_link_plan.jl` / `test_manifest.jl` only compute the plan and always run.
+- PyO3 wrapper testsets that build and load a `:link_libpython` wrapper (`test_pyo3_wrapper.jl`; the PyO3 case of `test_module_symbols.jl` once #300 / PR #333 lands) skip when the wrapper build fails (`@info "skipping the :link_libpython wrapper testset"` — usually no linkable `libpython3.x`, but the helper catches every failure, so read its `exception`); a skip is not a pass — run them on a machine with `python3-dev` or with `PYO3_PYTHON` set before relying on them. Ubuntu CI runs them. `test_pyo3_link_plan.jl` / `test_manifest.jl` only compute the plan and always run.
 
 ## Rules CI enforces
 
