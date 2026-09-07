@@ -402,16 +402,17 @@ The same requirement shapes RustCall's own test suite. The testsets that build
 and load a `:link_libpython` wrapper — in `test/test_pyo3_wrapper.jl` today,
 and the PyO3 cross-module case that #300 (PR #333) adds in
 `test/test_module_symbols.jl` — try the build first and **skip** the testset
-when it fails: most through a shared helper that logs
-`@info "skipping the :link_libpython wrapper testset"`, and the mixed-crate
-testset ("a mixed crate keeps its `#[julia]` items") through its own `try`
-that logs `@info "skipping the mixed-crate build"` and records
-`@test_skip "the mixed crate's wrapper (:link_libpython) cannot be built here"`.
-Both catch *every* failure of that build, not only a missing libpython, so a
-skip is never a pass and can also hide a wrapper or Cargo regression: read the
-`exception` those `@info`s carry before trusting a green run on a machine that
-skipped them (narrowing the catch to the prerequisite is tracked as #336). The
-Ubuntu CI jobs have a linkable Python and run them in full. `test/test_pyo3_link_plan.jl` and
+when it fails, each logging an `@info` whose message starts with `skipping`
+(`"skipping the :link_libpython wrapper testset"` from the shared helper, and
+the per-testset `"skipping the mixed-crate build"`,
+`"skipping the feature-gated build"`, `"skipping the configured-crate build"`),
+some also recording a `@test_skip`. Every one of these catches *every* failure
+of that build, not only a missing libpython, so a skip is never a pass and can
+also hide a wrapper or Cargo regression: grep a run's output for `skipping` and
+read the `exception` those `@info`s carry before trusting a green run on a
+machine that skipped them (routing them all through one prerequisite check is
+tracked as #336). The Ubuntu CI jobs have a linkable Python and run them in
+full. `test/test_pyo3_link_plan.jl` and
 `test/test_manifest.jl` only compute the plan and always run, as do the
 scan-level assertions and every `:python_free` case
 (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`, and
