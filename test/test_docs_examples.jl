@@ -496,7 +496,11 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
 
     @testset "crate_bindings.md - Explicit Binding" begin
         if _DOCS_SAMPLE_CRATE_AVAILABLE
-            # @rust_crate should return a local bindings value, not inject a module into Main.
+            # @rust_crate returns a local bindings value. The module it
+            # generates is defined in the calling module *under the name the
+            # caller gave* (#339: that is what lets a package precompile it
+            # and `using .Name: ...` from it); without `name=` nothing visible
+            # is added to the caller's namespace (#222).
             let DocsSampleCrate = @rust_crate DOCS_SAMPLE_CRATE_PATH name="DocsSampleCrateInjected"
                 @test DocsSampleCrate.add(Int32(1), Int32(2)) == Int32(3)
                 @test DocsSampleCrate.Point isa DataType
@@ -504,7 +508,22 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
                 @test point isa DocsSampleCrate.Point
                 @test DocsSampleCrate.distance_from_origin(point) == 5.0
                 @test Base.invokelatest(getproperty, point, :x) == 3.0
-                @test !isdefined(Main, :DocsSampleCrateInjected)
+                @test isdefined(@__MODULE__, :DocsSampleCrateInjected)
+                @test getfield(@__MODULE__, :DocsSampleCrateInjected) === DocsSampleCrate.module_ref
+            end
+            # `names` reads the binding table in the *current* world age, and
+            # this testset body runs in the world it started in — so a
+            # binding created inside it is only visible through `invokelatest`.
+            let before = Set(Base.invokelatest(names, @__MODULE__; all = true)),
+                DocsAnonymous = @rust_crate DOCS_SAMPLE_CRATE_PATH
+                @test DocsAnonymous.add(Int32(1), Int32(2)) == Int32(3)
+                added = setdiff(Set(Base.invokelatest(names, @__MODULE__; all = true)), before)
+                # Only the hidden namespace appears, never the crate's module
+                # name — and it is a child of this module, not of Main.
+                @test !isempty(added)
+                @test all(n -> startswith(String(n), "##RustCallCrateRuntime#"), added)
+                @test !isdefined(@__MODULE__, :SampleCrate)
+                @test parentmodule(parentmodule(DocsAnonymous.module_ref)) === @__MODULE__
             end
         else
             @test_skip "test/fixtures/sample_crate not available"

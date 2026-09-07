@@ -452,14 +452,31 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
                          _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,
                          _result_payload, FFIByValue
-        import Libdl
+        # Through RustCall, not `import Libdl`: this module is evaluated inside
+        # the caller, and `import Libdl` would be resolved in the *caller's*
+        # environment — a package that uses `@rust_crate` would then need
+        # `Libdl` among its own dependencies to precompile (#339).
+        import RustCall.Libdl
 
+        # The *durable* library — RustCall's cache copy, or Cargo's output —
+        # never the per-process generation copy, which is swept once the
+        # process that made it is gone. This module may be precompiled as part
+        # of a package (`@rust_crate` at top level, #339): its `__init__` then
+        # runs in a later session, which must still find this file.
         const _LIB_PATH = $lib_path
         const _LIB_NAME = $lib_key
         # Libraries the image imports by name that the loader would not find on
         # its own — a PyO3 wrapper's `python3xy.dll` on Windows, where there is
         # no rpath — opened before it (`PyO3LinkPlan.runtime_libraries`).
         const _PRELOAD_LIBRARIES = $preload
+
+        # When a package precompiles this module, the library becomes one of
+        # that package's precompile dependencies: rebuilt or removed
+        # (`RustCall.clear_cache()`), and Julia treats the package's cache as
+        # stale, re-precompiles it, and `@rust_crate` builds the crate again —
+        # rather than `__init__` opening a path that is gone (#339). Outside
+        # precompilation this records nothing.
+        Base.include_dependency(_LIB_PATH)
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -484,7 +501,14 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
-            RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;
+            # A private generation copy, never `_LIB_PATH` itself: that file is
+            # Cargo's output or the cache copy, and an image mapped in place
+            # cannot be overwritten on Windows — the next `cargo build` of the
+            # crate would fail (#255, #277, #309). Copied *here*, not when the
+            # module was generated, because `__init__` may run in a later
+            # session than the one that generated this module (#339).
+            RustCall.load_artifact!(RustCall.crate_direct_policy(),
+                                    RustCall.loadable_library_copy(_LIB_PATH);
                                     lib_name = _LIB_NAME, preload = _PRELOAD_LIBRARIES)
         end
 
@@ -1873,6 +1897,34 @@ end
 # ============================================================================
 
 """
+    _cache_built_library(cache_key, built, cache_enabled) -> String
+
+The path a generated module should name for a library that was just built:
+the cache copy when caching is on, and `built` itself when it is off or the
+cache could not be written.
+
+Caching is what makes the path *durable*. `built` is either Cargo's output
+under the crate's own `target/` — rewritten by the next build of the crate —
+or a file inside a wrapper project that is about to be deleted; the cache copy
+is neither, which is what a module compiled into a package's precompile image
+needs when its `__init__` runs in a later session (#339).
+
+Returning `built` unchanged is the caller's signal that nothing was copied, so
+a caller whose `built` is about to disappear can keep a copy of its own.
+"""
+function _cache_built_library(cache_key::String, built::String, cache_enabled::Bool)
+    cache_enabled || return built
+    try
+        save_cargo_cached_library(cache_key, built)
+        cached = get_cargo_cached_library(cache_key)
+        cached === nothing || return cached
+    catch e
+        @debug "Failed to cache library: $e"
+    end
+    return built
+end
+
+"""
     generate_bindings(crate_path::String; kwargs...) -> Expr
 
 Generate Julia bindings for an external Rust crate.
@@ -1943,7 +1995,10 @@ function generate_bindings(crate_path::String;
         else
             @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
                   "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
-            return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
+            # `wrapper.lib_path` is the cache copy (or, with caching off, a copy
+            # of Cargo's output); the module copies it per process in
+            # `__init__`.
+            return emit_crate_module(wrapper.info, wrapper.lib_path;
                                      module_name = output_module_name,
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
@@ -1968,9 +2023,15 @@ function generate_bindings(crate_path::String;
         if crate_has_cdylib(crate_path)
             # Build the crate directly
             @info "Building crate directly (already has cdylib crate-type)..."
-            lib_path = build_crate_directly(info, build_release;
-                                            features = features,
-                                            default_features = default_features)
+            built = build_crate_directly(info, build_release;
+                                         features = features,
+                                         default_features = default_features)
+            # Cargo's own output under the crate's `target/`: durable, but the
+            # next `cargo build` of the crate rewrites it, so with caching on
+            # the module names the cache copy instead — which is what a module
+            # precompiled into a package needs when its `__init__` runs in a
+            # later session (#339).
+            _cache_built_library(cache_key, built, cache_enabled)
         else
             # Create wrapper crate and build
             @info "Creating wrapper crate..."
@@ -1986,31 +2047,38 @@ function generate_bindings(crate_path::String;
             )
 
             try
-                lib_path = build_cargo_project(wrapper_project, release=build_release,
-                                               policy=crate_wrapper_policy())
+                built = build_cargo_project(wrapper_project, release=build_release,
+                                            policy=crate_wrapper_policy())
+                # The library must leave the wrapper project *here*: the
+                # `finally` below removes the whole project, the build output
+                # included, so anything that names a path inside it afterwards
+                # — the cache write, the module's `_LIB_PATH`, the per-process
+                # copy `__init__` makes — is naming a file that no longer
+                # exists. With caching on that is the cache copy; with
+                # `cache = false` it is a copy in a directory of its own, as
+                # `_build_pyo3_wrapper_project` already does for the PyO3
+                # wrapper. Before this, `@rust_crate <crate> cache=false` on a
+                # crate that needs a wrapper failed to open its own library.
+                kept = _cache_built_library(cache_key, built, cache_enabled)
+                if kept == built
+                    kept = joinpath(mktempdir(prefix = "rustcall_wrapper_lib_"),
+                                    basename(built))
+                    cp(built, kept; force = true)
+                end
+                kept
             finally
                 cleanup_cargo_project(wrapper_project)
             end
         end
-
-        # Cache the result
-        if cache_enabled
-            try
-                save_cargo_cached_library(cache_key, lib_path)
-            catch e
-                @debug "Failed to cache library: $e"
-            end
-        end
-
-        lib_path
     end
 
     # RustCall never maps the file Cargo writes: a later build of the same
     # crate rewrites its output in place, which on Windows *fails* against a
     # mapped DLL (`Access is denied`) and elsewhere silently hands the old
-    # image back to the next `dlopen`. Opening a private copy leaves Cargo's
-    # output free (#255, #277).
-    lib_path = loadable_library_copy(lib_path)
+    # image back to the next `dlopen`. The module's `__init__` opens a private
+    # generation copy of `_LIB_PATH` (#255, #277) — in `__init__`, not here,
+    # because that copy belongs to the process that loads the module, which
+    # after precompilation is not the one that generated it (#339).
 
     # Generate module. The registry name follows the key, feature set
     # included, so two feature sets of one crate are two entries.
@@ -2394,13 +2462,41 @@ end
 Base.show(io::IO, proxy::CrateBindingObject) = _show_crate_binding_object(io, proxy)
 Base.show(io::IO, ::MIME"text/plain", proxy::CrateBindingObject) = _show_crate_binding_object(io, proxy)
 
-function _instantiate_runtime_bindings(bindings_expr::Expr)
-    runtime_namespace = Module(gensym(:RustCallCrateRuntime))
+"""
+    _instantiate_runtime_bindings(bindings_expr; target_module, visible) -> Module
+
+Evaluate the generated module expression and return the module.
+
+Where it is evaluated decides whether the caller can be precompiled (#339):
+
+- `target_module === nothing` — the run-time API, `load_crate_bindings` called
+  from a function with no expanding module: a fresh anonymous `Module` under
+  `Main`, as before. Nothing rooted in `Main` can be part of a package's
+  precompile image, and nothing that calls this way is being precompiled.
+- `target_module` given (the `@rust_crate` macro passes `__module__`): the
+  module is evaluated **inside the caller**, so it belongs to the module tree
+  Julia is precompiling. `visible = true` defines it directly as
+  `target_module.<name>` — the `name=` form, for `using .Name: ...`.
+  Otherwise it goes into a hidden child namespace
+  `target_module.var"##RustCallCrateRuntime#N"`, unique per call, so nothing
+  the caller did not name appears in its namespace and a repeated call never
+  replaces anything (the #222 contract).
+"""
+function _instantiate_runtime_bindings(bindings_expr::Expr;
+                                       target_module::Union{Module, Nothing} = nothing,
+                                       visible::Bool = false)
+    if target_module === nothing
+        runtime_namespace = Module(gensym(:RustCallCrateRuntime))
+        return Base.invokelatest(Core.eval, runtime_namespace, bindings_expr)
+    end
+    visible && return Base.invokelatest(Core.eval, target_module, bindings_expr)
+    namespace_expr = Expr(:module, true, gensym(:RustCallCrateRuntime), Expr(:block))
+    runtime_namespace = Base.invokelatest(Core.eval, target_module, namespace_expr)
     return Base.invokelatest(Core.eval, runtime_namespace, bindings_expr)
 end
 
 """
-    load_crate_bindings(crate_path::String; output_module_name=nothing, build_release=true, cache_enabled=true) -> CrateBindings
+    load_crate_bindings(crate_path::String; output_module_name=nothing, build_release=true, cache_enabled=true, target_module=nothing) -> CrateBindings
 
 Generate, load, and return explicit bindings for a Rust crate.
 
@@ -2413,8 +2509,14 @@ p = MyCrate.Point(3.0, 4.0)
 p isa MyCrate.Point
 ```
 
-`output_module_name` controls the generated runtime module name stored inside the
-returned bindings object; it does not inject a caller-visible module.
+`target_module` is where the generated module is defined. The `@rust_crate`
+macro passes the module that expands it, which is what lets a package that
+uses the macro at top level be precompiled (#339); called without it, the
+module lives in an anonymous namespace under `Main` and the caller cannot be
+precompiled. With a `target_module`, `output_module_name` names a module
+defined **in** it (`target_module.Name`, so `using .Name: f` works); without
+one, or without a name, no caller-visible module is defined and the bindings
+are reached through the returned value only.
 """
 function load_crate_bindings(crate_path::String;
     output_module_name::Union{String, Nothing} = nothing,
@@ -2422,6 +2524,7 @@ function load_crate_bindings(crate_path::String;
     cache_enabled::Bool = true,
     features::Vector{String} = String[],
     default_features::Bool = true,
+    target_module::Union{Module, Nothing} = nothing,
 )
     bindings_expr = generate_bindings(
         crate_path;
@@ -2432,7 +2535,11 @@ function load_crate_bindings(crate_path::String;
         default_features = default_features,
     )
 
-    crate_module = _instantiate_runtime_bindings(bindings_expr)
+    crate_module = _instantiate_runtime_bindings(
+        bindings_expr;
+        target_module = target_module,
+        visible = output_module_name !== nothing,
+    )
     return CrateBindings(crate_module)
 end
 
@@ -2450,9 +2557,26 @@ Generate and load bindings for an external Rust crate.
 - `path`: Path to the Rust crate (string literal)
 
 # Options
-- `name="ModuleName"`: Override the generated runtime module name used inside the returned bindings object
+- `name="ModuleName"`: define the generated module under that name **in the
+  calling module**, so that `using .ModuleName: f, T` works. Without it the
+  module gets a hidden, per-call name and is reached only through the returned
+  value.
 - `release=true/false`: Build in release mode (default: true)
 - `cache=true/false`: Enable caching (default: true)
+
+# Where the module lives
+
+The generated module is evaluated inside the module that expands the macro, so
+a package that uses `@rust_crate` at top level can be precompiled (#339): the
+crate is built and the bindings generated when the package is precompiled, and
+the module's `__init__` opens the library — RustCall's cache copy — in the
+session that loads the package. If that copy has been rebuilt or removed
+(`RustCall.clear_cache()`), the package's precompile cache is stale and Julia
+re-precompiles it, building the crate again.
+
+A second `@rust_crate ... name="X"` in the same module replaces `X` (Julia
+warns `replacing module X`); bindings obtained earlier keep the module they
+hold. Without `name=`, repeated calls never collide.
 
 # Example
 ```julia
@@ -2466,6 +2590,14 @@ const MyBindings = @rust_crate "/path/to/my_crate" name="MyBindings" release=tru
 MyCrate.add(Int32(1), Int32(2))
 p = MyCrate.Point(3.0, 4.0)
 MyCrate.distance(p)
+
+# In a package: name the module and re-export from it
+module MyPkg
+using RustCall
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") name="Bindings"
+using .Bindings: add, Point
+export add, Point
+end
 ```
 """
 macro rust_crate(path, options...)
@@ -2494,6 +2626,9 @@ macro rust_crate(path, options...)
         end
     end
 
+    # `__module__` is the module the macro expands in; the generated module is
+    # defined inside it, which is what a package precompiling this call site
+    # needs (#339).
     quote
         load_crate_bindings(
             $(esc(path));
@@ -2502,6 +2637,7 @@ macro rust_crate(path, options...)
             cache_enabled = $cache,
             features = String[$(esc(features))...],
             default_features = $(esc(default_features)),
+            target_module = $__module__,
         )
     end
 end

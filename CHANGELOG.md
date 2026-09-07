@@ -134,6 +134,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is not a list of items (`include!("table.rs")` holding `[1, 2, 3]`), is noted
   on stderr and skipped as a missing `mod` target already was — never a failed
   scan.
+- **A package that uses `@rust_crate` at top level can be precompiled**
+  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). The macro
+  evaluated the generated module into an anonymous `Module` under `Main`, so
+  `Pkg.precompile()` of such a package failed with ``Evaluation into the closed
+  module `##RustCallCrateRuntime#N` breaks incremental compilation``. The
+  module is now defined **inside the module that expands the macro**
+  (`load_crate_bindings(...; target_module = __module__)`): with `name="X"` as
+  `Caller.X`, visibly, so `using .X: f, T` works — the package idiom is
+  `@rust_crate path name="Bindings"` followed by `using .Bindings: ...`, the
+  same shape as `include("generated/Bindings.jl")`; without `name=` inside a
+  hidden, per-call child namespace (`Caller.var"##RustCallCrateRuntime#N"`), so
+  nothing the caller did not name appears in its namespace and repeated calls
+  never collide (the #222 contract). A second `@rust_crate ... name="X"` in the
+  same module replaces `X` (Julia warns); bindings obtained earlier keep the
+  module they hold. The return value is unchanged, a `RustCall.CrateBindings`;
+  `load_crate_bindings` called without `target_module` keeps the anonymous
+  module. Two consequences for the generated module: `_LIB_PATH` of an
+  in-memory `@rust_crate` module is now the **durable** library — RustCall's
+  cache copy, or Cargo's output — instead of the per-process generation copy,
+  which is made in `__init__` (as the written file already did since format 6),
+  because after precompilation `__init__` runs in a later session than the one
+  that generated the module (visible only through `Bindings.module_ref._LIB_PATH`);
+  and the module declares that library with `Base.include_dependency`, so
+  after `RustCall.clear_cache()` — or a rebuild of the crate — the package's
+  precompile cache is stale and the next `using` re-precompiles it and builds
+  the crate again, instead of `__init__` opening a path that is gone. The
+  crate is built when the package is precompiled, nothing is written into the
+  package, and the library is not opened during precompilation (`__init__` is
+  deferred to load time), so the bindings are callable after the package's
+  `__init__`, not from its own top level. The generated module imports `Libdl`
+  through RustCall (`import RustCall.Libdl`), so the package does not need
+  `Libdl` among its dependencies.
+- **`@rust_crate <crate> cache=false` on a crate that RustCall has to wrap**
+  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). A crate
+  whose `[lib]` is not a `cdylib` is bound through a generated wrapper project
+  in a temporary directory, which is deleted as soon as the build returns.
+  With caching on, the library had already been copied into the cache; with
+  `cache = false` nothing copied it, so the generated module named a file that
+  no longer existed and loading it failed with `could not load library
+  ".../rustcall_wrapper_XXXXXX/target/release/..."`. The library is now taken
+  out of the wrapper project before the cleanup — into the cache, or into a
+  directory of its own — as `_build_pyo3_wrapper_project` already did for the
+  PyO3 wrapper path. `cache = false` is still not the shape to use inside a
+  package: `docs/src/crate_bindings.md` says which path the module then carries
+  and what makes its precompile cache stale.
+
 
 ## [0.3.0] - 2026-09-08
 
