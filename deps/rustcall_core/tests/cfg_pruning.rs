@@ -621,3 +621,36 @@ fn enclosing_module_cfg_is_inherited() {
     assert_eq!(manifest.functions[0].cfg, "feature = \"x\"");
     assert_eq!(manifest.functions[0].cfg_features, vec!["x"]);
 }
+
+/// A `#[pymethods]` block in a gated module, away from its class, gates its
+/// methods: the block's and its modules' predicates reach `Method.cfg`, so a
+/// wrapper generated from a lenient scan refuses them instead of calling a
+/// method the build may not have (#300 review).
+#[test]
+fn pymethods_blocks_inherit_their_module_cfg() {
+    let src = r#"
+        pub mod shapes { #[pyclass] pub struct Circle { pub r: f64 } }
+        #[cfg(feature = "x")]
+        pub mod extra {
+            #[pymethods]
+            impl super::shapes::Circle {
+                pub fn area(&self) -> f64 { 0.0 }
+                #[cfg(unix)]
+                pub fn nix(&self) -> f64 { 0.0 }
+            }
+        }
+        #[cfg(feature = "y")]
+        #[pymethods]
+        impl shapes::Circle {
+            pub fn perimeter(&self) -> f64 { 0.0 }
+        }
+    "#;
+    let m = extract_with_cfg(src, Mode::Crate, None).unwrap();
+    let circle = m.structs.iter().find(|s| s.name == "Circle").unwrap();
+    let method = |name: &str| circle.methods.iter().find(|mm| mm.name == name).unwrap();
+    assert_eq!(method("area").cfg, "feature = \"x\"");
+    assert_eq!(method("nix").cfg, "all(feature = \"x\", unix)");
+    assert_eq!(method("perimeter").cfg, "feature = \"y\"");
+    // The class itself is unconditional.
+    assert_eq!(circle.cfg, "");
+}

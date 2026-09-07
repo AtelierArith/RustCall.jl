@@ -221,6 +221,29 @@ end
         # A module named like a generated helper.
         helper = RustCall._module_tree([sig("f", ["_call_target"])], RustCall.RustStructInfo[])
         @test_throws ErrorException RustCall._check_module_names(helper)
+        # Instance methods and field accessors are parent bindings too: `run(self::C)`
+        # and `get_v(self::C)` would each be redefined by a submodule of that name.
+        meth = RustCall.RustMethod("run", false, false, String[], String[], "i32")
+        withrun = RustCall.RustStructInfo("C", String[], [meth], "", [("v", "i32")], true,
+                                          Dict{String, Bool}(); field_getters = Dict("v" => "C_get_v"))
+        @test_throws ErrorException RustCall._check_module_names(
+            RustCall._module_tree([sig("f", ["run"])], [withrun]))
+        @test_throws ErrorException RustCall._check_module_names(
+            RustCall._module_tree([sig("f", ["get_v"])], [withrun]))
+        @test RustCall._check_module_names(
+            RustCall._module_tree([sig("f", ["other"])], [withrun])) === nothing
+        # Rust module names Julia cannot spell: a raw identifier loses its prefix,
+        # a keyword is refused rather than written into an unparsable file.
+        @test RustCall._julia_module_name("r#type") == "type"
+        @test RustCall._julia_module_name("shapes") == "shapes"
+        @test_throws ErrorException RustCall._julia_module_name("end")
+        @test_throws ErrorException RustCall._julia_module_name("r#function")
+        @test_throws ErrorException RustCall._check_module_names(
+            RustCall._module_tree([sig("f", ["macro"])], RustCall.RustStructInfo[]))
+        raw = RustCall._module_tree([sig("f", ["r#type"])], RustCall.RustStructInfo[])
+        @test RustCall._check_module_names(raw) === nothing
+        @test occursin("module type", string(RustCall._submodule_exprs(raw)[1]))
+        @test occursin("\nmodule type\n", join(RustCall._submodule_code(raw), "\n"))
     end
 
     @testset "a #[julia] item in an unmarked inline module is refused" begin

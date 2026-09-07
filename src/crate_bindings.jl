@@ -681,6 +681,28 @@ function _module_tree(functions, structs)
 end
 
 """
+    _julia_module_name(segment::AbstractString) -> String
+
+The Julia name of a Rust module segment. A raw identifier (`r#type`) loses its
+prefix — `#` would start a comment in the written file — and what remains
+must be a Julia identifier that is not a keyword: a Rust module called `end`,
+`function` or `macro` has no
+Julia spelling, so the
+layout is refused rather than written into a file that cannot be parsed
+(#300 review).
+"""
+function _julia_module_name(segment::AbstractString)
+    name = startswith(segment, "r#") ? String(segment[3:end]) : String(segment)
+    # `Base.isidentifier` accepts keywords; parsing the bare name as an
+    # expression yields a `Symbol` exactly when it is a usable identifier.
+    (Base.isidentifier(name) && Meta.parse(name; raise = false) isa Symbol) ||
+        error("cannot lay out the bindings of Rust module `$segment`: `$name` is not a " *
+              "valid Julia module name (a Julia keyword, or not an identifier). Rename the " *
+              "module (#300).")
+    return name
+end
+
+"""
     _check_module_names(tree::ModuleNode)
 
 Refuse a layout Julia cannot define. Rust keeps values, types and modules in
@@ -688,33 +710,39 @@ separate namespaces, so a crate may have both `#[julia] fn a()` and `#[julia]
 mod a { ... }`; Julia has one namespace per module, and the generated parent
 would define function `a` and then module `a` — a constant-redefinition error
 that takes the whole bindings module down (#300 review). Every child module
-name is therefore checked against what its parent defines: free functions,
-struct types, static-method names, and the helpers every generated module
-defines (`_call_target`, `_LIB_GEN`, ...). The error names both sides and the
-fix.
+name is therefore checked against everything its parent binds: free functions,
+struct types, every method name (static or instance — both become functions of
+the parent), field accessors (`get_<f>`, `set_<f>!`), and the helpers every
+generated module defines (`_call_target`, `_LIB_GEN`, ...). Module segments
+must also spell a Julia identifier (`_julia_module_name`). The error names both
+sides and the fix.
 """
 function _check_module_names(tree::ModuleNode)
     taken = Dict{String, String}()
     for name in _CRATE_MODULE_HELPERS
         taken[String(name)] = "a helper every generated module defines"
     end
-    taken["_LIB_PATH"] = "a helper every generated module defines"
-    taken["_SYMBOLS"] = "a helper every generated module defines"
-    taken["_SYMBOL_LOCK"] = "a helper every generated module defines"
-    taken["_PRELOAD_LIBRARIES"] = "a helper every generated module defines"
+    for name in ("_LIB_PATH", "_SYMBOLS", "_SYMBOL_LOCK", "_PRELOAD_LIBRARIES", "__init__")
+        taken[name] = "a helper every generated module defines"
+    end
     for f in tree.functions
         f.is_generic && continue
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
     end
     for s in tree.structs
-        get!(taken, s.name, "the struct `$(qualified_name(s.module_path, s.name))`")
+        owner = qualified_name(s.module_path, s.name)
+        get!(taken, s.name, "the struct `$owner`")
         for m in s.methods
-            (m.is_static && !m.is_constructor && isempty(m.skip_reason)) || continue
-            get!(taken, m.name, "the static method `$(qualified_name(s.module_path, s.name))::$(m.name)`")
+            (isempty(m.skip_reason) && !m.is_constructor) || continue
+            get!(taken, m.name, "the method `$owner::$(m.name)`")
+        end
+        for (field, _) in s.fields
+            field_is_accessible(s, field) && get!(taken, "get_$field", "the accessor of `$owner.$field`")
+            field_is_writable(s, field) && get!(taken, "set_$(field)!", "the accessor of `$owner.$field`")
         end
     end
     for child in tree.children
-        name = last(child.path)
+        name = _julia_module_name(last(child.path))
         if haskey(taken, name)
             where_ = isempty(tree.path) ? "the crate root" : "module `$(join(tree.path, "::"))`"
             error("cannot lay out the bindings of module `$(join(child.path, "::"))`: " *
@@ -779,7 +807,7 @@ function _submodule_exprs(node::ModuleNode)
             $struct_defs
             $(_submodule_exprs(child)...)
         end
-        push!(exprs, Expr(:module, true, Symbol(last(child.path)), body))
+        push!(exprs, Expr(:module, true, Symbol(_julia_module_name(last(child.path))), body))
     end
     return exprs
 end
@@ -792,7 +820,7 @@ Source-text twin of `_submodule_exprs` for `emit_crate_module_code`.
 function _submodule_code(node::ModuleNode; strict::Symbol = FFI_STRICT[])
     lines = String[]
     for child in node.children
-        name = last(child.path)
+        name = _julia_module_name(last(child.path))
         push!(lines, "# Rust module `$(join(child.path, "::"))` (#300)")
         push!(lines, "module $name")
         push!(lines, "")

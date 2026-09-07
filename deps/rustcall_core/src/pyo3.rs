@@ -124,6 +124,10 @@ struct ScannedImpl {
     target: syn::Ident,
     line: usize,
     funcs: Vec<ImplItemFn>,
+    /// The `#[cfg]` of the block itself and of every module enclosing it: a
+    /// `#[pymethods]` block may sit in a gated module far from its class, and
+    /// its methods exist only under that predicate (#300 review).
+    cfg: Vec<syn::Attribute>,
 }
 
 /// Where a written path is rooted, which decides what a qualifier may match.
@@ -370,6 +374,7 @@ impl Pyo3Scan {
                         qualifier: type_path_qualifier(&imp.self_ty),
                         target,
                         line: imp.span().start().line,
+                        cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs),
                         funcs: imp
                             .items
                             .iter()
@@ -462,7 +467,7 @@ impl Pyo3Scan {
             // still wraps `a::C`'s methods (#300).
             let class_path = self.classes[index].module_path.clone();
             for func in &imp.funcs {
-                let entry = method_entry(&imp.target, &class_path, func, &owner_skip);
+                let entry = method_entry(&imp.target, &class_path, func, &owner_skip, &imp.cfg);
                 self.classes[index].entry.methods.push(entry);
             }
         }
@@ -1122,7 +1127,11 @@ fn method_entry(
     class_path: &[String],
     func: &ImplItemFn,
     owner_skip: &str,
+    enclosing_cfg: &[syn::Attribute],
 ) -> Method {
+    // The block's and its modules' predicates gate the method as much as its
+    // own do (#300 review).
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &func.attrs);
     let struct_stem = crate::codegen::symbol_stem(class_path, &struct_ident.to_string());
     let markers = pyo3_method_markers(&func.attrs);
     let has = |m: Pyo3MethodMarker| markers.contains(&m);
@@ -1191,7 +1200,7 @@ fn method_entry(
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
         generic_wrapper: String::new(),
-        cfg: predicate_string(&func.attrs),
+        cfg: predicate_string(&effective_cfg),
     }
 }
 
