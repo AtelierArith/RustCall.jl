@@ -16,8 +16,9 @@ Pages = [joinpath("src", "RustCall.jl")]
 - [`@rust`](@ref) — call a registered Rust function.
 - [`@irust`](@ref) / [`@irust_str`](@ref) — inline Rust with `$var` binding.
 - [`@rust_crate`](@ref) — bind an external crate.
-- [`@rust_llvm`](@ref) — deprecated; use `@rust` instead
-  ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)).
+
+`@rust_llvm` and the LLVM IR integration path were removed in 0.3.0
+([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)); use `@rust`.
 
 ## Pages
 
@@ -49,9 +50,6 @@ Pages = [joinpath("src", "RustCall.jl")]
   functions (`generics.jl`, `julia_functions.jl`).
 - [Errors and load policy](reference/loading.md) — the exception types and the
   one load/unload path (`exceptions.jl`, `loadpolicy.jl`).
-- [LLVM integration (deprecated)](reference/llvm.md) — the LLVM IR path, kept
-  until #265 removes it (`llvmintegration.jl`, `llvmoptimization.jl`,
-  `llvmcodegen.jl`).
 
 Internal registries and constants (`RustCall.RUST_LIBRARIES`,
 `RustCall.CURRENT_LIB`, `RustCall.GENERIC_FUNCTION_REGISTRY`, …) are rendered on

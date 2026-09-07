@@ -26,6 +26,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `scan_report` marker — together with its fixtures. Write `#[julia]` next
   to PyO3's own attributes instead; the migration table stays in
   `docs/src/pyo3.md`, "Migrating from `#[julia_pyo3]`", for this release.
+- **`@rust_llvm` and the LLVM IR integration path** ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265),
+  Phase 2; deprecated in 0.2.0 by [#267](https://github.com/AtelierArith/RustCall.jl/pull/267)).
+  `@rust_llvm` performed the same function-pointer `ccall` as `@rust`, and
+  rustc tracks a newer LLVM than the one bundled with Julia (Julia 1.12 ships
+  LLVM 18, rustc 1.98 emits LLVM 22 IR), so the emitted IR could not be parsed
+  reliably. **Breaking**: use `@rust name(args...)::T`. RustCall no longer
+  depends on `LLVM.jl`. Removed, so a user can grep:
+  - macros and calls: `@rust_llvm`, `_rust_llvm_call`, `rust_call_generated`
+  - registration: `compile_and_register_rust_function`,
+    `get_registered_function`, `RustFunctionInfo`, `LLVM_FUNCTION_REGISTRY`,
+    `LLVMCodeGenerator`, `get_default_codegen`, `generate_llvmcall_ir`,
+    `build_llvmcall_expr`, `extract_function_ir`, `julia_type_to_llvm_ir_string`
+  - IR loading: `compile_rust_to_llvm_ir`, `load_llvm_ir`, `RustModule`,
+    `RUST_MODULES`, `LLVM_REGISTRY_LOCK`, `get_function`, `list_functions`,
+    `get_function_signature`, `get_or_compile_function`, `dispose_module`,
+    `llvm_type_to_julia`, `julia_type_to_llvm`,
+    `sanitize_unsupported_llvm_ir_attributes`, `parse_llvm_module_with_fallback`
+  - optimization: `OptimizationConfig`, `get_default_opt_config`,
+    `set_default_opt_config`, `optimize_module!`, `optimize_function!`,
+    `optimize_for_speed!`, `optimize_for_size!`, `optimize_balanced!`,
+    `get_optimization_stats`, `verify_module`, `print_module_ir`,
+    `print_function_ir`
+  - Julia-side helpers that existed only for the path: `RUST_MODULE_REGISTRY`
+    (nothing ever wrote to it), `get_rust_module`, `infer_function_types`,
+    `SignatureInferenceError`, `get_cached_llvm_ir`, `save_cached_llvm_ir`,
+    `llvm_to_julia_type`, `julia_to_llvm_type` (the string-based helpers in
+    `typetranslation.jl`), and the `llvm_policy` load policy.
+  - `benchmark/benchmarks_llvm.jl`, the `@rust_llvm` column of
+    `benchmark/benchmarks.jl`, and the "LLVM integration (deprecated)"
+    reference page.
+  `list_library_functions(lib)` now returns the function names the manifest
+  recorded for the library instead of always returning an empty list.
 
 ## [0.2.1] - 2026-09-07
 
