@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A static `#[julia]` method no longer overwrites a free function of the same
+  name** ([#323](https://github.com/AtelierArith/RustCall.jl/issues/323)). A
+  method without `self` was bound as a bare Julia function named after the
+  method, so `Labeler::shout` and the crate's free `fn shout` defined
+  `shout(::Any)` twice: the second silently replaced the first under
+  `@rust_crate`, and a module written by `write_bindings_to_file` failed to
+  precompile ("Method overwriting is not permitted"). A static method now
+  dispatches on the type — `shout(Labeler, s)` — and keeps the bare
+  `shout(s)` form only when no free function or other static method of the
+  crate has that name, so every existing non-colliding call still works and the
+  free function always keeps its name. The inline `rust"""` path applies the
+  same rule to a `#[julia] impl` block's static methods (`add(MathUtils, a, b)`).
+  `examples/sample_crate` is unchanged and now binds both `shout`s.
+
 ## [0.2.0] - 2026-09-07
 
 ### Deprecated

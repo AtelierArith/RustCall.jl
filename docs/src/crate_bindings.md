@@ -161,6 +161,23 @@ The generated Julia bindings keep the Rust names (`Counter(1)`, `get(c)`);
 they resolve the exported symbol through the manifest, so nothing in the Julia
 API changes.
 
+### Static methods
+
+A method without `self` (other than a constructor) is called with the type as
+its first argument, the Julia spelling of `Labeler::shout(s)`:
+
+```julia
+shout(Labeler, "hi")     # Labeler::shout
+parse_scale(Divider, "7") # Divider::parse_scale
+```
+
+The bare `shout("hi")` form is generated as well, **unless** the crate also
+has a free `#[julia] fn shout` or another struct with a static `shout`: two
+bare definitions would overwrite each other — silently under `@rust_crate`,
+and as a hard error when a module written by `write_bindings_to_file` is
+precompiled — so in that case only the typed form exists and the free function
+keeps the bare name (#323).
+
 ## Property Access Syntax
 
 Generated struct wrappers support Julia's property access syntax for natural field access:

@@ -298,11 +298,23 @@ impl MathUtils {
 }
 """
 
-# Create an instance and call static methods
-utils = MathUtils()
-result1 = add(3.0, 4.0)      # => 7.0
-result2 = multiply(3.0, 4.0) # => 12.0
+# Call static methods with the type first — the Julia spelling of
+# `MathUtils::add(3.0, 4.0)`:
+result1 = add(MathUtils, 3.0, 4.0)      # => 7.0
+result2 = multiply(MathUtils, 3.0, 4.0) # => 12.0
+
+# The bare form exists too, as long as nothing else in the block is called
+# `add` or `multiply`:
+result1 = add(3.0, 4.0)                 # => 7.0
 ```
+
+A static method dispatches on the type so that it never shares a method table
+with a free `#[julia] fn` of the same name: `MathUtils::add` and a free
+`fn add` in one block used to define `add(::Any, ::Any)` twice and overwrite
+each other — silently, or as a hard error when the module is precompiled. When
+such a name exists in the block, only the typed form is generated for the
+static method and the free function keeps the bare name (#323). The same rule
+applies to `@rust_crate` bindings.
 
 !!! note
     Unit struct support is still planned for a future release, so the example
