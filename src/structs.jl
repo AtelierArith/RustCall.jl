@@ -256,12 +256,37 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
 end
 
 """
-    emit_julia_definitions(info::RustStructInfo)
+    _static_method_collisions(functions, structs) -> Set{String}
+
+The names a static (non-constructor) method shares with a free function or with
+another struct's static method, among the items one generated module (a
+`rust\"\"\"` block, or a crate) defines. Such a name gets no bare
+`name(args...)` form — only the type-dispatched `name(Struct, args...)` — so
+two definitions never overwrite each other (#323). Free functions always keep
+their bare name.
+"""
+function _static_method_collisions(functions, structs)
+    counts = Dict{String, Int}()
+    for func in functions
+        func.is_generic && continue
+        counts[func.name] = get(counts, func.name, 0) + 1
+    end
+    for s in structs, m in s.methods
+        (m.is_static && !m.is_constructor && isempty(m.skip_reason)) || continue
+        counts[m.name] = get(counts, m.name, 0) + 1
+    end
+    return Set{String}(name for (name, n) in counts if n > 1)
+end
+
+"""
+    emit_julia_definitions(info::RustStructInfo; colliding = Set{String}())
 
 Generate Julia code to define a corresponding mutable struct and its methods.
 Only generates definitions for structs marked with #[derive(JuliaStruct)] or #[julia].
+`colliding` is `_static_method_collisions` of the whole block: a static method
+whose name is in it gets no bare `name(args...)` form (#323).
 """
-function emit_julia_definitions(info::RustStructInfo)
+function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = Set{String}())
     # Only generate Julia definitions for structs with #[derive(JuliaStruct)]
     # This is set when #[julia] attribute is used (transformed to #[derive(JuliaStruct)])
     if !info.has_derive_julia_struct
@@ -513,14 +538,14 @@ function emit_julia_definitions(info::RustStructInfo)
             elseif m.return_kind === :result || m.return_kind === :option
                 push!(exprs, _inline_method_payload_wrapper(
                     info, m, fname, wrapper_name, esc_args, bindings, preserved,
-                    expanded_call_args; self = nothing))
+                    expanded_call_args; self = nothing, static_type = esc_struct))
             else
                 mc = ffi_return_contract(m.return_type; abi = m.return_abi,
                                          owner = struct_name_str)
                 if ffi_owned_string_return(mc)
                     free_fn = mc.free_symbol
                     push!(exprs, quote
-                        function $fname($(esc_args...))
+                        function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = get_current_library()
                             return GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...))
@@ -528,7 +553,7 @@ function emit_julia_definitions(info::RustStructInfo)
                     end)
                 elseif ffi_borrowed_string_return(mc)
                     push!(exprs, quote
-                        function $fname($(esc_args...))
+                        function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = get_current_library()
                             return GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...))
@@ -541,13 +566,21 @@ function emit_julia_definitions(info::RustStructInfo)
                     jl_ret_type = ffi_return_type_or_throw(m.return_type, m.return_abi,
                                                            _ffi_context(m, struct_name_str))
                     push!(exprs, quote
-                        function $fname($(esc_args...))
+                        function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = get_current_library()
                             return GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...))
                         end
                     end)
                 end
+            end
+            # A static method dispatches on the type — `shout(Labeler, s)` —
+            # so it cannot share a method table with a free `#[julia] fn` of
+            # the block or another struct's static method; the bare `shout(s)`
+            # form is a delegator, emitted only while no such name exists
+            # (#323). Constructors are `Labeler(...)` and never collide.
+            if !is_ctor && !(m.name in colliding)
+                push!(exprs, :($fname($(esc_args...)) = $fname($esc_struct, $(esc_args...))))
             end
         elseif m.return_kind === :result || m.return_kind === :option
             push!(exprs, _inline_method_payload_wrapper(
@@ -730,7 +763,8 @@ that is the owner the release symbol comes from.
 """
 function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fname,
                                         wrapper_name::AbstractString, esc_args, bindings,
-                                        preserved, call_args; self = nothing)
+                                        preserved, call_args; self = nothing,
+                                        static_type = nothing)
     ctx = _ffi_context(m, info.name)
     if m.return_kind === :result
         ok_t, ok_slot = ffi_payload_symbols(m.ok_type, m.ok_abi, ctx)
@@ -760,9 +794,12 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
         $(decode(c, tgt))
     end
     if self === nothing
+        # A static method dispatches on the type (#323); the bare form, when
+        # there is one, is a delegator emitted by `emit_julia_definitions`.
+        static_type === nothing && throw(ArgumentError("a static method needs `static_type`"))
         inner = body(:(get_current_library()), (), preserved)
         return quote
-            function $fname($(esc_args...))
+            function $fname(::Type{$static_type}, $(esc_args...))
                 $inner
             end
         end

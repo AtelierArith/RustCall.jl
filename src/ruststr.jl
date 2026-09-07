@@ -236,9 +236,12 @@ macro rust_str(code)
     cargo_env = cfg_mode === :cargo ? _cargo_cfg_env_key() : nothing
     expanded = expand_inline(code_str; cfg = cfg_mode, cfg_text = cfg_text)
     struct_infos = manifest_struct_infos(expanded.manifest)
-    julia_defs = [emit_julia_definitions(info) for info in struct_infos]
-
     julia_func_signatures = manifest_function_signatures(expanded.manifest)
+    # A static method whose name a free function of this block (or another
+    # struct's static method) also has gets no bare form (#323).
+    colliding = _static_method_collisions(julia_func_signatures, struct_infos)
+    julia_defs = [emit_julia_definitions(info; colliding = colliding) for info in struct_infos]
+
     julia_func_wrappers = emit_julia_function_wrappers(julia_func_signatures)
     # The symbols this block exports, known at macro-expansion time. They are
     # recorded per *module* so that a wrapper resolves through the library its

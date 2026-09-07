@@ -948,9 +948,10 @@ Generate Julia struct definitions and wrappers for all #[julia] structs in the c
 """
 function generate_crate_struct_wrappers(info::CrateInfo, lib_path::String)
     exprs = Expr[]
+    colliding = _static_method_collisions(info)
 
     for s in info.julia_structs
-        wrapper = _generate_crate_struct_wrapper(s)
+        wrapper = _generate_crate_struct_wrapper(s; colliding = colliding)
         push!(exprs, wrapper)
     end
 
@@ -961,7 +962,24 @@ function generate_crate_struct_wrappers(info::CrateInfo, lib_path::String)
     Expr(:block, exprs...)
 end
 
-function _generate_crate_struct_wrapper(info::RustStructInfo)
+"""
+    _static_method_collisions(info::CrateInfo) -> Set{String}
+
+The names a static (non-constructor) `#[julia]` method shares with a free
+function or with another struct's static method in the same crate.
+
+A static method is bound as `name(::Type{Struct}, args...)` (#323); it also gets
+the bare `name(args...)` form for convenience, but only when nothing else in the
+generated module would define `name(args...)` too — two such definitions
+overwrite each other (silently under `@rust_crate`, a hard error when a written
+module is precompiled). Free functions always keep their bare name; the static
+method yields.
+"""
+_static_method_collisions(info::CrateInfo) =
+    _static_method_collisions(info.julia_functions, info.julia_structs)
+
+function _generate_crate_struct_wrapper(info::RustStructInfo;
+                                        colliding::Set{String} = Set{String}())
     struct_name = Symbol(info.name)
     struct_name_str = info.name
 
@@ -1008,7 +1026,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo)
 
     # Generate constructor and method wrappers
     for m in info.methods
-        method_wrapper = _generate_crate_method_wrapper(info, m)
+        method_wrapper = _generate_crate_method_wrapper(info, m; bare = !(m.name in colliding))
         push!(exprs, method_wrapper)
     end
 
@@ -1230,7 +1248,8 @@ one message, both flavours (#249, #277 Phase B4).
 """
 _check_not_freed(obj, type_name::String) = check_not_freed(obj, type_name)
 
-function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod)
+function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod;
+                                        bare::Bool = true)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
@@ -1265,7 +1284,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # is built whole rather than as one `call` expression (#275 Phase 2).
     if method.return_kind === :py_result
         return _generate_py_result_method_wrapper(info, method, arg_syms, bindings, preserved,
-                                                  converted_args, wrapper_name)
+                                                  converted_args, wrapper_name; bare = bare)
     end
     # Definitions the wrapper needs next to it: the `#[repr(C)]` mirror of a
     # `CResult_<Struct>_<method>` / `COption_<Struct>_<method>` aggregate (#268).
@@ -1333,10 +1352,18 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             end
         end
     elseif method.is_static
+        # A static method dispatches on the type — `shout(Labeler, s)` for
+        # `Labeler::shout` — so it can never share a method table with a free
+        # function or another struct's static method of the same name (#323).
+        # The bare `shout(s)` form is kept only while no such name exists.
+        bare_def = bare ?
+            :($method_name($(arg_syms...)) = $method_name($struct_name, $(arg_syms...))) :
+            nothing
         quote
-            function $method_name($(arg_syms...))
+            function $method_name(::Type{$struct_name}, $(arg_syms...))
                 $body
             end
+            $bare_def
             export $method_name
         end
     else
@@ -1459,7 +1486,7 @@ generator gives it.
 function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMethod,
                                             arg_syms::Vector{Symbol}, bindings::Vector,
                                             preserved::Vector, converted_args::Vector,
-                                            wrapper_name::String)
+                                            wrapper_name::String; bare::Bool = true)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
@@ -1502,11 +1529,17 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     end
 
     if method.is_static
+        # Type-dispatched, bare form only without a name collision (#323); see
+        # `_generate_crate_method_wrapper`.
+        bare_def = bare ?
+            :($method_name($(arg_syms...)) = $method_name($struct_name, $(arg_syms...))) :
+            nothing
         quote
             $declaration
-            function $method_name($(arg_syms...))
+            function $method_name(::Type{$struct_name}, $(arg_syms...))
                 $body
             end
+            $bare_def
             export $method_name
         end
     else
@@ -2575,8 +2608,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     end
 
     # Generate struct wrappers
+    colliding = _static_method_collisions(info)
     for s in info.julia_structs
-        code = _emit_struct_code(s; strict = strict)
+        code = _emit_struct_code(s; strict = strict, colliding = colliding)
         push!(lines, code)
         push!(lines, "")
     end
@@ -2790,7 +2824,8 @@ end
 
 Generate Julia code for a struct wrapper as a string.
 """
-function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
+function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
+                           colliding::Set{String} = Set{String}())
     struct_name = info.name
 
     lines = String[]
@@ -2828,7 +2863,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[])
 
     # Method wrappers
     for m in info.methods
-        code = _emit_method_code(info, m; strict = strict)
+        code = _emit_method_code(info, m; strict = strict, bare = !(m.name in colliding))
         push!(lines, code)
         push!(lines, "")
     end
@@ -2924,7 +2959,7 @@ end
 Generate Julia code for a method wrapper as a string.
 """
 function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
-                           strict::Symbol = FFI_STRICT[])
+                           strict::Symbol = FFI_STRICT[], bare::Bool = true)
     struct_name = struct_info.name
     method_name = method.name
     # Exported symbol (`rustcall_<Struct>_<method>`, #279); the per-method
@@ -2956,7 +2991,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     alive_var = _generated_local("alive", method.arg_names)
     if method.return_kind === :py_result
         return _emit_py_result_method_code(struct_info, method, arg_syms, converted_args_str,
-                                           wrapper_name; prologue, preserve_str, strict)
+                                           wrapper_name; prologue, preserve_str, strict, bare)
     end
     method_label = "$(struct_name)::$(method_name)"
     # `Result` / `Option` returns are lowered like a free function's (#268):
@@ -2975,7 +3010,7 @@ $(prologue)    $payload_target
     _guard_panic(nothing, $channel_var, "$method_label")
 $(_emit_payload_decode(plan, c_var, free_expr))"""
         return _emit_method_definition(struct_name, method, arg_syms, payload_body;
-                                       predef = plan.source)
+                                       predef = plan.source, bare = bare)
     end
     call = if method.returns_boxed_struct
         target = "$ptr_var, $channel_var, $free_var, $alive_var = " *
@@ -2996,15 +3031,16 @@ $(_emit_payload_decode(plan, c_var, free_expr))"""
 $(prologue)    $target
     _guard_panic($(_emit_preserved(preserve_str, call)), $channel_var, "$method_label")"""
 
-    return _emit_method_definition(struct_name, method, arg_syms, body)
+    return _emit_method_definition(struct_name, method, arg_syms, body; bare = bare)
 end
 
 # The `function ... end` (and `export`) wrapper shared by every method-emitting
 # branch, so a new return shape cannot forget the freed-object check or the
-# receiver argument. `predef` is emitted above the definition.
+# receiver argument. `predef` is emitted above the definition. `bare` says
+# whether a static method also gets its bare `name(args)` form (#323).
 function _emit_method_definition(struct_name::AbstractString, method::RustMethod,
                                  arg_syms::AbstractString, body::AbstractString;
-                                 predef::AbstractString = "")
+                                 predef::AbstractString = "", bare::Bool = true)
     method_name = method.name
     definition = if method.is_static && method.is_constructor
         """
@@ -3012,10 +3048,15 @@ function $struct_name($arg_syms)
 $body
 end"""
     elseif method.is_static
+        # Type-dispatched — `shout(Labeler, s)` for `Labeler::shout` — so it
+        # never shares a method table with a free function of the same name;
+        # the bare form only while nothing else defines it (#323).
+        comma_args = isempty(arg_syms) ? "" : ", $arg_syms"
+        bare_def = bare ? "\n$method_name($arg_syms) = $method_name($struct_name$comma_args)" : ""
         """
-function $method_name($arg_syms)
+function $method_name(::Type{$struct_name}$comma_args)
 $body
-end
+end$bare_def
 export $method_name"""
     else
         self_args = isempty(arg_syms) ? "" : ", $arg_syms"
@@ -3059,7 +3100,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
                                      wrapper_name::String;
                                      prologue::AbstractString = "",
                                      preserve_str::AbstractString = "",
-                                     strict::Symbol = FFI_STRICT[])
+                                     strict::Symbol = FFI_STRICT[], bare::Bool = true)
     struct_name = info.name
     method_name = method.name
     ok_type_str, ok_slot_str, is_unit =
@@ -3096,10 +3137,14 @@ end
 """
 
     if method.is_static
+        # Type-dispatched, bare form only without a name collision (#323); see
+        # `_emit_method_definition`.
+        comma_args = isempty(arg_syms) ? "" : ", $arg_syms"
+        bare_def = bare ? "\n$method_name($arg_syms) = $method_name($struct_name$comma_args)" : ""
         return """$declaration
-function $method_name($arg_syms)
+function $method_name(::Type{$struct_name}$comma_args)
 $body
-end
+end$bare_def
 export $method_name"""
     end
     self_args = isempty(arg_syms) ? "" : ", $arg_syms"
