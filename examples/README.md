@@ -20,8 +20,21 @@ Before running the examples, ensure you have:
 | Example | Description | Difficulty | Key Features |
 |---------|-------------|------------|--------------|
 | [MyExample.jl](./MyExample.jl/) | Julia package using `rust""` string literal | Beginner | Inline Rust code, basic FFI |
-| [sample_crate](./sample_crate/) | Rust crate using `#[julia]` attribute | Intermediate | External crate, `@rust_crate` macro |
-| [sample_crate_pyo3](./sample_crate_pyo3/) | Dual bindings for Julia and Python | Advanced | PyO3 integration, feature flags |
+| [sample_crate](./sample_crate/) + [SampleCrate.jl](./SampleCrate.jl/) | Rust crate using `#[julia]`, and the Julia package around it | Intermediate | `#[julia]`, `@rust_crate`, `write_bindings_to_file`, Rust and Julia in separate files |
+| [sample_crate_pyo3](./sample_crate_pyo3/) + [SampleCratePyO3.jl](./SampleCratePyO3.jl/) | Dual bindings for Julia and Python, and the Julia package around it | Advanced | PyO3 integration, feature flags |
+
+Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
+`Examples` GitHub workflow runs them for every push. The Rust crates are plain
+Cargo crates; the Julia packages beside them contain no Rust source.
+
+```bash
+# any of MyExample.jl, SampleCrate.jl, SampleCratePyO3.jl
+cd examples/SampleCrate.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
+```
+
+(`Pkg.develop(path="../..")` uses the RustCall of this checkout; with a
+registered RustCall, `Pkg.instantiate()` is enough.)
 
 ## Quick Start Guide
 
@@ -81,23 +94,24 @@ julia --project=. test/runtests.jl
 
 For normal use, `Pkg.instantiate()` resolves RustCall.jl from Julia's General registry. Use `Pkg.develop(path="../../")` only when testing local changes from this checkout.
 
-### sample_crate
+### sample_crate and SampleCrate.jl
 
-A standalone Rust crate demonstrating the `#[julia]` attribute from `juliacall_macros`.
+A standalone Rust crate demonstrating the `#[julia]` attribute from `juliacall_macros`, and the Julia package built around it.
 
 **Features demonstrated:**
 - `#[julia]` attribute for automatic FFI generation
-- `Result<T, E>` and `Option<T>` type handling
+- `Result<T, E>` and `Option<T>` type handling, and idiomatic Julia wrappers over them
 - Struct definitions with methods
 - Property access syntax for struct fields
+- The package workflow: `deps/build.jl` writes the bindings with `write_bindings_to_file`, `Pkg.test()` tests them; Rust in `sample_crate/src/lib.rs`, Julia in `SampleCrate.jl/src/`
 
-**How to build:**
+**How to build the crate alone:**
 ```bash
 cd examples/sample_crate
 cargo build --release
 ```
 
-**How to use from Julia:**
+**How to use from Julia, ad hoc (`@rust_crate`):**
 ```julia
 using RustCall
 const SampleCrate = @rust_crate "/path/to/examples/sample_crate"
@@ -113,9 +127,19 @@ p.y  # => 4.0
 SampleCrate.distance_from_origin(p)  # => 5.0
 ```
 
-### sample_crate_pyo3
+**How to use from Julia, as a package:**
+```bash
+cd examples/SampleCrate.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
+```
+```julia
+using SampleCrate
+safe_divide(1.0, 0.0)   # throws DivideError — the Julia layer over Result<f64, i32>
+```
 
-A Rust crate demonstrating **dual bindings** for both Julia and Python using feature flags.
+### sample_crate_pyo3 and SampleCratePyO3.jl
+
+A Rust crate demonstrating **dual bindings** for both Julia and Python using feature flags, and the Julia package built around it (`test/runtests.jl` makes the same assertions as the crate's `main.py`).
 
 **Features demonstrated:**
 - Coexistence of `#[julia]` and PyO3 in a single crate
@@ -143,6 +167,11 @@ const SampleCratePyo3 = @rust_crate "/path/to/examples/sample_crate_pyo3"
 
 SampleCratePyo3.add(Int32(2), Int32(3))  # => 5
 ```
+or as the package:
+```bash
+cd examples/SampleCratePyO3.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
+```
 
 **How to use from Python:**
 ```python
@@ -159,13 +188,14 @@ We recommend learning RustCall.jl in this order:
    - Understand basic type mappings (Int32 ↔ i32, Float64 ↔ f64)
    - Practice calling Rust functions from Julia
 
-2. **Move to sample_crate**
+2. **Move to sample_crate and SampleCrate.jl**
    - Learn about the `#[julia]` attribute
    - Understand `@rust_crate` for external crates
    - Explore struct handling and property access
    - Learn about `Result<T, E>` and `Option<T>` support
+   - See how a package keeps Rust and Julia in separate files and tests them with `Pkg.test()`
 
-3. **Explore sample_crate_pyo3** (optional)
+3. **Explore sample_crate_pyo3 and SampleCratePyO3.jl** (optional)
    - Learn how to create dual Julia/Python bindings
    - Understand feature flags for conditional compilation
    - See how to share core logic between languages
