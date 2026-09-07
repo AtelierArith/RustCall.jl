@@ -20,6 +20,12 @@ This page collects repository-oriented information that no longer lives in the t
 - `examples/SampleCratePyO3.jl`: a Julia package with the dual Julia/Python
   crate `deps/sample_crate_pyo3` embedded in it; `deps/sample_crate_pyo3/main.py`
   is its Python consumer.
+- `examples/SampleCratePyO3Only.jl`: a Julia package with the **PyO3-only**
+  crate `deps/sample_crate_pyo3_only` embedded in it — no RustCall attribute
+  anywhere — bound through the wrapper crate RustCall generates
+  (`write_bindings_to_file`, #275 Phase 2; see [PyO3 Crates](pyo3.md)). pyo3 is
+  a mandatory dependency of that crate, so the wrapper links libpython and
+  building the package needs a Python interpreter (`PYO3_PYTHON` pins one).
 - `examples/pluto/hello.jl`: Pluto-oriented walkthrough. CI runs it headlessly with
   Pluto (`examples/pluto/run_notebook.jl`, the `Pluto - hello.jl` job of the
   `Examples` workflow) and fails when any cell errors.
@@ -28,13 +34,15 @@ Every `examples/*.jl` directory is a Julia package, and each is self-contained:
 the crate it binds lives under its own `deps/<crate>/`, in the layout the
 [Precompilation Support](precompilation.md) guide prescribes, and the only
 reference it makes outside its directory is the `juliacall_macros` path
-dependency (the proc-macro crate is not on crates.io yet). Run its tests against
-the RustCall of this checkout from the repository root:
+dependency (the proc-macro crate is not on crates.io yet; the PyO3-only crate
+has none, its generated wrapper being what depends on `juliacall_macros`). Run
+its tests against the RustCall of this checkout from the repository root:
 
 ```bash
 julia --project=examples/MyExample.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 julia --project=examples/SampleCrate.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 julia --project=examples/SampleCratePyO3.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
+julia --project=examples/SampleCratePyO3Only.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 ```
 
 The Pluto notebook activates the repository root itself, so instantiate and build
