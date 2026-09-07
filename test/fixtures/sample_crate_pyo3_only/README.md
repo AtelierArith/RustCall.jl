@@ -38,7 +38,7 @@ for pyo3's inner attributes (`new`, `staticmethod`, `getter`, `setter`,
 `pyo3(get, set)`). So the link plan for this crate is `:link_libpython`: the
 wrapper cdylib links libpython and needs the interpreter's library directory at
 build and load time. `test/fixtures/sample_crate_pyo3_optional` is the
-`:python_free` counterpart. See [the PyO3 page](../../docs/src/pyo3.md) for the
+`:python_free` counterpart. See [the PyO3 page](../../../docs/src/pyo3.md) for the
 three modes.
 
 The class has exactly **one** `#[pymethods]` block: more than one needs pyo3's

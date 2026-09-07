@@ -46,4 +46,4 @@ functions to Python behind a feature, but not a `#[pyclass]` with methods.
 `test/fixtures/sample_crate_pyo3_only` is the other shape — pyo3 mandatory,
 `:link_libpython`, with a full `#[pyclass]` — and is where the class,
 accessor, `PyResult` and destructor coverage lives. See
-[the PyO3 page](../../docs/src/pyo3.md) for both.
+[the PyO3 page](../../../docs/src/pyo3.md) for both.

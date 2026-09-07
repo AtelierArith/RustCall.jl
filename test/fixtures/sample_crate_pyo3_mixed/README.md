@@ -35,4 +35,4 @@ Two things it pins down:
 
 `pyo3` is mandatory here, so the link plan is `:link_libpython` and the wrapper
 needs an interpreter's library directory at build and load time. See
-[the PyO3 page](../../docs/src/pyo3.md).
+[the PyO3 page](../../../docs/src/pyo3.md).
