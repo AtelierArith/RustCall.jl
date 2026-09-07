@@ -28,6 +28,10 @@ const PYO3_SKIP_REASONS = Dict{String, String}(
     "owner_skipped" => "its `#[pyclass]` is itself skipped",
     "async_fn" => "an `async fn`: a wrapper would return the future, not the value it " *
                   "resolves to, and has no executor to drive it",
+    "julia_name_collision" => "a `#[staticmethod]` whose Julia name and arity another item " *
+                              "already defines (a free function, or another class's static " *
+                              "method); both would be one module-level Julia function and the " *
+                              "later would silently replace the earlier",
     "symbol_collision" => "another item already claims the symbol a wrapper would give this one; " *
                           "module-qualified symbols are tracked in #300",
     # Reasons the Phase-2 *generator* refuses an item (#275 Phase 2).

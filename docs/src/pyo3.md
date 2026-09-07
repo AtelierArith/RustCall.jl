@@ -111,7 +111,12 @@ The scan refuses what a wrapper crate could not *name* (a non-`pub` item, a
 signature mentioning a type that needs a live interpreter, a generic, a
 `#[pymodule]`) or could not *call* (an `async fn`, `async_fn`: a wrapper would
 return the future rather than the value it resolves to, and has no executor to
-drive it). The generator then refuses what it could not *lower*:
+drive it), and what the Julia module could not *hold* (`julia_name_collision`):
+a `#[staticmethod]` is bound as a module-level Julia function named after the
+method, like a `#[pyfunction]`, so a second class with a `parse(s)` of its own —
+or a class `parse(s)` next to a free `parse(s)` — would silently replace the
+first definition; the later item is refused and the reason names the earlier
+one. The generator then refuses what it could not *lower*:
 
 | reason | meaning |
 | --- | --- |

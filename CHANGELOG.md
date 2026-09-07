@@ -102,8 +102,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory, as Cargo has it; the plain `#[julia]` path scans the crate under
   the configuration it builds — profile and requested feature set — so a
   feature-gated item is bound exactly when the library exports it (hot reload
-  already rescanned this way); and the cfg probe runs under the plan's
-  interpreter (`PYO3_PYTHON`), as the wrapper build does; and
+  already rescanned this way) — probed as the Cargo root when it is built as
+  one (a `cdylib`) and as a wrapper's dependency otherwise, so the profile the
+  probe sees is the profile the build applies; the cfg probe runs under the
+  plan's interpreter (`PYO3_PYTHON`), as the wrapper build does; a
+  `#[staticmethod]` whose Julia name and arity another item already defines is
+  refused (`julia_name_collision`) instead of silently replacing it; and the
+  generated `get_<field>` / `set_<field>!` helpers check the object is live,
+  as `getproperty` / `setproperty!` do; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

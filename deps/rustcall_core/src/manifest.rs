@@ -127,6 +127,12 @@ pub mod skip_reason {
     /// generated crate, and nothing an `extern "C"` could return. The wrapper
     /// has no executor to drive it (#307 review).
     pub const ASYNC_FN: &str = "async_fn";
+    /// A `#[staticmethod]` whose Julia name and arity another item already
+    /// defines — a free function, or another class's static method of the
+    /// same name: both become one untyped module-level Julia function, and the
+    /// later definition would silently replace the earlier. The earlier
+    /// item's qualified name follows the colon (#307 review).
+    pub const JULIA_NAME_COLLISION: &str = "julia_name_collision";
 
     /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
     pub fn detailed(kind: &str, detail: &str) -> String {

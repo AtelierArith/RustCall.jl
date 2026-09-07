@@ -642,6 +642,7 @@ end
         if !RustCall.check_rustc_available()
             @test_skip "cargo is required to probe a crate's configuration"
         else
+            fn_names(info) = sort([f.name for f in info.julia_functions])
             mktempdir() do dir
                 mkpath(joinpath(dir, "src"))
                 write(joinpath(dir, "Cargo.toml"), """
@@ -668,18 +669,56 @@ end
                     pub fn extra() -> i32 { 1 }
                     """)
                 lenient = RustCall.scan_crate(dir)
-                names(info) = sort([f.name for f in info.julia_functions])
-                @test names(lenient) == ["base", "extra"]
+                @test fn_names(lenient) == ["base", "extra"]
                 # Default build: `extra` is off, and the scan says so.
                 default = RustCall._plain_scan_info(dir, lenient, String[], true, true)
-                @test names(default) == ["base"]
+                @test fn_names(default) == ["base"]
                 # The requested build: `extra` is on, and the scan says so.
                 with_extra = RustCall._plain_scan_info(dir, lenient, ["extra"], true, true)
-                @test names(with_extra) == ["base", "extra"]
+                @test fn_names(with_extra) == ["base", "extra"]
                 # `--no-default-features` alone changes nothing here, and the
                 # debug profile is probed as debug.
-                @test names(RustCall._plain_scan_info(dir, lenient, String[], false, false)) ==
+                @test fn_names(RustCall._plain_scan_info(dir, lenient, String[], false, false)) ==
                       ["base"]
+            end
+
+            # The probe has the shape of the build. A crate *without* a cdylib is
+            # built as the dependency of a generated `_julia_wrapper` root, whose
+            # release profile replaces the crate's own — so the crate's
+            # `[profile.release] debug-assertions = true` does not reach the
+            # build, and a `#[cfg(debug_assertions)]` item is not bound. The
+            # same crate with a cdylib is built as the root, its profile
+            # applies, and the item is (#307 review).
+            for (cdylib, expected) in ((false, ["base"]), (true, ["base", "checked"]))
+                mktempdir() do dir
+                    mkpath(joinpath(dir, "src"))
+                    lib_table = cdylib ? "[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n" : ""
+                    write(joinpath(dir, "Cargo.toml"), """
+                        [package]
+                        name = "profiled"
+                        version = "0.1.0"
+                        edition = "2021"
+
+                        $lib_table
+                        [profile.release]
+                        debug-assertions = true
+
+                        [workspace]
+                        """)
+                    write(joinpath(dir, "src", "lib.rs"), """
+                        #[julia]
+                        pub fn base() -> i32 { 0 }
+
+                        #[cfg(debug_assertions)]
+                        #[julia]
+                        pub fn checked() -> i32 { 1 }
+                        """)
+                    lenient = RustCall.scan_crate(dir)
+                    @test fn_names(lenient) == ["base", "checked"]
+                    @test RustCall.crate_has_cdylib(dir) == cdylib
+                    @test fn_names(RustCall._plain_scan_info(dir, lenient, String[], true, true)) ==
+                          expected
+                end
             end
         end
     end

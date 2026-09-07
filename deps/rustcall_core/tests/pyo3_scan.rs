@@ -1231,3 +1231,58 @@ fn async_items_are_refused_before_wrapping() {
     assert_eq!(method("get").skip_reason, "async_fn");
     assert_eq!(method("id").skip_reason, "");
 }
+
+/// A `#[staticmethod]` is bound as a module-level Julia function named after
+/// the method, one untyped argument per Rust argument — the same surface a
+/// `#[pyfunction]` gets. Two definitions of one name and arity would leave only
+/// the later; the scan refuses the later item and names the earlier (#307
+/// review). Different arity, constructors and instance methods never collide.
+#[test]
+fn julia_surface_collisions_are_refused() {
+    let manifest = scan(
+        "#[pyfunction] pub fn parse(s: &str) -> i32 { 0 }\n\
+         #[pyclass] pub struct A;\n\
+         #[pymethods] impl A {\n\
+             #[new] pub fn new() -> Self { A }\n\
+             #[staticmethod] pub fn parse(s: &str) -> i32 { 1 }\n\
+             #[staticmethod] pub fn parse2(s: &str, radix: i32) -> i32 { 1 }\n\
+             #[staticmethod] pub fn make() -> i32 { 1 }\n\
+             pub fn describe(&self) -> i32 { 1 }\n\
+         }\n\
+         #[pyclass] pub struct B;\n\
+         #[pymethods] impl B {\n\
+             #[new] pub fn new() -> Self { B }\n\
+             #[staticmethod] pub fn make() -> i32 { 2 }\n\
+             #[staticmethod] pub fn make2(x: i32) -> i32 { 2 }\n\
+             pub fn describe(&self) -> i32 { 2 }\n\
+         }",
+    );
+    let class = |name: &str| manifest.structs.iter().find(|s| s.name == name).unwrap();
+    let method = |class: &str, name: &str| {
+        let s = manifest.structs.iter().find(|s| s.name == class).unwrap();
+        s.methods
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap()
+            .skip_reason
+            .clone()
+    };
+    // The free function owns `parse/1`; A's static of the same shape gives way.
+    assert_eq!(function(&manifest, "parse").skip_reason, "");
+    assert_eq!(method("A", "parse"), "julia_name_collision:parse");
+    // Arity distinguishes.
+    assert_eq!(method("A", "parse2"), "");
+    // First class to claim a name keeps it; the next class's same-shaped
+    // static is refused, naming the earlier owner.
+    assert_eq!(method("A", "make"), "");
+    assert_eq!(method("B", "make"), "julia_name_collision:A::make");
+    assert_eq!(method("B", "make2"), "");
+    // Constructors are named after their class, instance methods dispatch on
+    // it: neither is a collision.
+    assert_eq!(method("A", "new"), "");
+    assert_eq!(method("B", "new"), "");
+    assert_eq!(method("A", "describe"), "");
+    assert_eq!(method("B", "describe"), "");
+    assert_eq!(class("A").skip_reason, "");
+    assert_eq!(class("B").skip_reason, "");
+}

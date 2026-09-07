@@ -451,6 +451,7 @@ impl Pyo3Scan {
             .structs
             .extend(self.classes.into_iter().map(|c| c.entry));
         mark_symbol_collisions(manifest);
+        mark_julia_surface_collisions(manifest);
     }
 
     fn locate_class(&self, imp: &ScannedImpl) -> Option<usize> {
@@ -582,6 +583,50 @@ fn flatten_use_tree(
 ///
 /// The first entry in manifest order keeps the symbol so the outcome does not
 /// depend on which file was visited first.
+/// The Julia surface a wrapper is bound to has a namespace of its own, apart
+/// from the exported symbols: a `#[staticmethod]` becomes a module-level Julia
+/// function named after the method, with one untyped argument per Rust
+/// argument (`crate_bindings.jl`), exactly as a `#[pyfunction]` does. Two
+/// classes with a `parse(s)` each, or a class `parse(s)` next to a free
+/// `parse(s)`, therefore define one Julia method twice, and the later
+/// definition silently replaces the earlier — while the Rust symbols are
+/// class-qualified and never clash, so [`mark_symbol_collisions`] lets both
+/// through. The later item is refused with `julia_name_collision:<earlier>`
+/// (#307 review): free functions claim their names first (a caller writing
+/// `parse(s)` means the free function), then classes in manifest order.
+/// Constructors are named after their class and instance methods dispatch on
+/// `self::Class`; neither can collide this way.
+fn mark_julia_surface_collisions(manifest: &mut Manifest) {
+    let mut taken: Vec<((String, usize), String)> = Vec::new();
+    for f in &manifest.functions {
+        if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
+            continue;
+        }
+        taken.push((
+            (f.name.clone(), f.args.len()),
+            qualified(&f.module_path, &f.name),
+        ));
+    }
+    for s in &mut manifest.structs {
+        if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
+            continue;
+        }
+        let owner = qualified(&s.module_path, &s.name);
+        for m in &mut s.methods {
+            if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
+                continue;
+            }
+            let key = (m.name.clone(), m.args.len());
+            match taken.iter().find(|(k, _)| *k == key) {
+                Some((_, other)) => {
+                    m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, other);
+                }
+                None => taken.push((key, format!("{owner}::{}", m.name))),
+            }
+        }
+    }
+}
+
 fn mark_symbol_collisions(manifest: &mut Manifest) {
     // One table for every exported symbol of the whole manifest, whatever
     // produces it: a `#[julia]` function's wrapper, a `#[julia]` struct's

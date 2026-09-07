@@ -1442,12 +1442,19 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     # `get_<field>` and `set_<field>!`, each only when the manifest names the
     # accessor: a `set`-only `#[pyo3(set)]` field has the second and not the
     # first (#307 review).
+    # Both helpers check the object is still live before touching its pointer,
+    # as `getproperty` / `setproperty!` and every instance method do: after an
+    # explicit `finalize(obj)` the pointer is `C_NULL`, and handing that to the
+    # Rust accessor is a crash where the others raise a `RustError` (#307
+    # review).
+    struct_name_str = info.name
     if field_is_accessible(info, field_name)
         getter_name = info.field_getters[field_name]
         read = _crate_field_read(info, field_name, field_type, getter_name,
                                  :(self.ptr))
         push!(exprs, quote
             function $(Symbol("get_$field_name"))(self::$struct_name)
+                _check_not_freed(self, $struct_name_str)
                 $read
             end
         end)
@@ -1456,6 +1463,7 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
         setter_name = info.field_setters[field_name]
         push!(exprs, quote
             function $(Symbol("set_$(field_name)!"))(self::$struct_name, value)
+                _check_not_freed(self, $struct_name_str)
                 func_ptr = _get_func_ptr($setter_name)
                 call_rust_function(func_ptr, Cvoid, self.ptr, value)
                 value
@@ -1639,16 +1647,30 @@ does too, and the feature set a caller asks for (`features`,
 `default_features`) is what the probe runs under, as it is what the build
 runs under (#307 review; #277 Phase B).
 
+The probe has the shape of the build. A crate with a `cdylib` target is built
+**as the Cargo root** (`build_crate_directly`), so it is probed as one and its
+own `[profile.*]` applies. Any other crate is built as the dependency of a
+generated `_julia_wrapper` root, whose profile — RustCall's, `panic = "unwind"`
+pinned — replaces the crate's own; such a crate is probed as a wrapper's
+dependency (`_wrapper_probe_cfg_text`), so a `#[cfg(debug_assertions)]` item
+under a crate-level `debug-assertions = true` is scanned the way the build
+compiles it: out (#307 review).
+
 `info` is returned unchanged when Cargo will not answer (no cargo, an
 unresolvable crate); the build then fails on its own terms.
 """
 function _plain_scan_info(crate_path::AbstractString, info::CrateInfo,
                           features::Vector{String}, default_features::Bool, release::Bool)
-    cfg_text = _crate_build_cfg_text(String(crate_path);
-                                     profile = release ? "release" : "debug",
-                                     features = _cargo_feature_args(features, default_features))
+    path = String(crate_path)
+    cfg_text = if crate_has_cdylib(path)
+        _crate_build_cfg_text(path; profile = release ? "release" : "debug",
+                              features = _cargo_feature_args(features, default_features))
+    else
+        _wrapper_probe_cfg_text(path; features = features, default_features = default_features,
+                                release = release)
+    end
     isempty(cfg_text) && return info
-    return scan_crate(String(crate_path); cfg = :cargo, cfg_text = cfg_text)
+    return scan_crate(path; cfg = :cargo, cfg_text = cfg_text)
 end
 
 """

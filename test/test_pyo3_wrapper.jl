@@ -344,6 +344,14 @@ end
         accessor = string(RustCall._generate_crate_field_accessor(info, "gain", "f64"))
         @test occursin("set_gain!", accessor)
         @test !occursin("get_gain", accessor)
+        # Both helpers check the object is live before touching its pointer,
+        # as `getproperty` / `setproperty!` do: after `finalize(obj)` the
+        # pointer is `C_NULL`, and handing it to Rust is a crash where the
+        # others raise (#307 review).
+        @test occursin("_check_not_freed(self, \"Knob\")", accessor)
+        both = string(RustCall._generate_crate_field_accessor(info, "level", "f64"))
+        @test count("_check_not_freed(self, \"Knob\")", both) == 2
+        @test occursin("get_level", both) && occursin("set_level!", both)
     end
 
     @testset "artifact identity separates wrapper builds from plain ones" begin
