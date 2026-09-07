@@ -218,9 +218,14 @@ end
                                      module_path = ["a"])
         nested = RustCall._module_tree([sig("f", ["a", "deep"])], [st])
         @test_throws ErrorException RustCall._check_module_names(nested)
-        # A module named like a generated helper.
+        # A module named like a generated helper, an imported module or a
+        # prelude import.
         helper = RustCall._module_tree([sig("f", ["_call_target"])], RustCall.RustStructInfo[])
         @test_throws ErrorException RustCall._check_module_names(helper)
+        for reserved in ("RustCall", "Libdl", "call_rust_function", "RustResult", "FFIByValue")
+            @test_throws ErrorException RustCall._check_module_names(
+                RustCall._module_tree([sig("f", [reserved])], RustCall.RustStructInfo[]))
+        end
         # Instance methods and field accessors are parent bindings too: `run(self::C)`
         # and `get_v(self::C)` would each be redefined by a submodule of that name.
         meth = RustCall.RustMethod("run", false, false, String[], String[], "i32")

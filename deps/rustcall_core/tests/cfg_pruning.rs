@@ -654,3 +654,81 @@ fn pymethods_blocks_inherit_their_module_cfg() {
     // The class itself is unconditional.
     assert_eq!(circle.cfg, "");
 }
+
+/// Inside a `#[julia] mod` the module macro expands a gated struct or impl
+/// before rustc evaluates the predicate, so the generated destructor,
+/// accessors, string helpers and method wrappers must carry the same `#[cfg]`
+/// as the item they refer to — otherwise turning the feature off leaves
+/// functions that name a struct that is gone (#300 review).
+#[test]
+fn generated_struct_helpers_carry_the_struct_cfg() {
+    let item: syn::ItemStruct =
+        syn::parse_str("#[cfg(feature = \"x\")] pub struct C { pub v: i32, pub label: String }")
+            .unwrap();
+    let file: syn::File = syn::parse2(rustcall_core::codegen::transform_struct_crate(
+        item,
+        &["a".to_string()],
+    ))
+    .unwrap();
+    let has_cfg = |attrs: &[syn::Attribute]| {
+        attrs
+            .iter()
+            .any(|a| a.path().is_ident("cfg") && quote::quote!(#a).to_string().contains("feature"))
+    };
+    let mut fns = 0;
+    for it in &file.items {
+        match it {
+            syn::Item::Fn(f) => {
+                fns += 1;
+                assert!(
+                    has_cfg(&f.attrs),
+                    "helper `{}` lost the struct's cfg",
+                    f.sig.ident
+                );
+            }
+            syn::Item::Struct(s) => assert!(has_cfg(&s.attrs), "`{}` lost its cfg", s.ident),
+            _ => {}
+        }
+    }
+    // free, get_v, set_v, get_label, set_label, free_rust_string
+    assert_eq!(fns, 6);
+
+    let imp: syn::ItemImpl = syn::parse_str(
+        "#[cfg(feature = \"x\")] impl C { #[julia] pub fn get(&self) -> i32 { self.v } }",
+    )
+    .unwrap();
+    let file: syn::File = syn::parse2(rustcall_core::codegen::transform_impl_crate(
+        imp,
+        &["a".to_string()],
+    ))
+    .unwrap();
+    let wrappers: Vec<&syn::ItemFn> = file
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            syn::Item::Fn(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert!(!wrappers.is_empty());
+    for f in wrappers {
+        assert!(
+            has_cfg(&f.attrs),
+            "wrapper `{}` lost the block's cfg",
+            f.sig.ident
+        );
+    }
+    // The method inside the block is left as written: its own attrs only.
+    let imp_out = file
+        .items
+        .iter()
+        .find_map(|it| match it {
+            syn::Item::Impl(i) => Some(i),
+            _ => None,
+        })
+        .unwrap();
+    let syn::ImplItem::Fn(method) = &imp_out.items[0] else {
+        panic!()
+    };
+    assert!(method.attrs.is_empty());
+}

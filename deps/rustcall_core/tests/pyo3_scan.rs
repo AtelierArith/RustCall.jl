@@ -1378,11 +1378,9 @@ fn julia_surface_collisions_are_refused() {
 #[test]
 fn class_names_are_reserved_on_the_julia_surface() {
     let manifest = scan(
-        "pub mod a { use pyo3::prelude::*;\n\
+        "pub mod b { use pyo3::prelude::*;\n\
              #[pyfunction] pub fn User() -> i32 { 0 }\n\
              #[pyfunction] pub fn Other(x: i32) -> i32 { x }\n\
-         }\n\
-         pub mod b { use pyo3::prelude::*;\n\
              #[pyclass] pub struct User;\n\
              #[pymethods] impl User {\n\
                  #[new] pub fn new() -> Self { User }\n\
@@ -1404,6 +1402,34 @@ fn class_names_are_reserved_on_the_julia_surface() {
     // arity is a second method of the same Julia function and stands.
     assert_eq!(function(&manifest, "Other").skip_reason, "");
     let method = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
-    assert_eq!(method("Other").skip_reason, "julia_name_collision:a::Other");
+    assert_eq!(method("Other").skip_reason, "julia_name_collision:b::Other");
     assert_eq!(method("Other2").skip_reason, "");
+}
+
+/// The Julia surface is one namespace per generated module (#300): a free
+/// `parse(x)` in `a` and a static `B::parse(x)` in `b` land in `bindings.a`
+/// and `bindings.b`, as does a class `User` in `b` next to a free `User()` in
+/// `a` — none of them collide.
+#[test]
+fn julia_surface_collisions_are_scoped_per_module() {
+    let manifest = scan(
+        "pub mod a { use pyo3::prelude::*;\n\
+             #[pyfunction] pub fn parse(x: i32) -> i32 { x }\n\
+             #[pyfunction] pub fn User() -> i32 { 0 }\n\
+         }\n\
+         pub mod b { use pyo3::prelude::*;\n\
+             #[pyclass] pub struct User;\n\
+             #[pymethods] impl User {\n\
+                 #[new] pub fn new() -> Self { User }\n\
+                 #[staticmethod] pub fn parse(x: i32) -> i32 { 1 }\n\
+             }\n\
+         }",
+    );
+    assert!(
+        manifest.functions.iter().all(|f| f.skip_reason.is_empty()),
+        "{manifest:?}"
+    );
+    let user = manifest.structs.iter().find(|s| s.name == "User").unwrap();
+    assert_eq!(user.skip_reason, "");
+    assert!(user.methods.iter().all(|m| m.skip_reason.is_empty()));
 }

@@ -1303,13 +1303,22 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
     })
 }
 
-fn crate_field_accessors(item_struct: &ItemStruct, stem: &Ident) -> TokenStream2 {
+/// `cfgs` is the struct's own `#[cfg]` set, copied onto every generated
+/// helper: inside a `#[julia] mod` the module macro expands a
+/// `#[cfg(feature = "x")] #[julia] pub struct C` before rustc evaluates the
+/// predicate, and a helper without it would refer to a struct that is gone
+/// when `x` is off (#300 review).
+fn crate_field_accessors(
+    item_struct: &ItemStruct,
+    stem: &Ident,
+    cfgs: &[Attribute],
+) -> TokenStream2 {
     let struct_name = &item_struct.ident;
     let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
     let owned_free = format_ident!("{}_free_rust_string", stem);
     let mut ffi_functions = TokenStream2::new();
     if crate_struct_needs_owned_string_helper(item_struct) {
-        ffi_functions.extend(owned_string_helper(&[], &owned_helper, &owned_free));
+        ffi_functions.extend(owned_string_helper(cfgs, &owned_helper, &owned_free));
     }
     if let syn::Fields::Named(ref fields) = item_struct.fields {
         for field in &fields.named {
@@ -1327,6 +1336,7 @@ fn crate_field_accessors(item_struct: &ItemStruct, stem: &Ident) -> TokenStream2
                 // `<Struct>_free_rust_string`, exactly as the inline flavour
                 // and the string-returning method wrappers do (#246).
                 ffi_functions.extend(quote! {
+                    #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #owned_helper {
                         let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
@@ -1341,6 +1351,7 @@ fn crate_field_accessors(item_struct: &ItemStruct, stem: &Ident) -> TokenStream2
                 });
             } else if needs_clone_for_getter(field_ty) {
                 ffi_functions.extend(quote! {
+                    #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name.clone() }
@@ -1348,6 +1359,7 @@ fn crate_field_accessors(item_struct: &ItemStruct, stem: &Ident) -> TokenStream2
                 });
             } else {
                 ffi_functions.extend(quote! {
+                    #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name }
@@ -1356,6 +1368,7 @@ fn crate_field_accessors(item_struct: &ItemStruct, stem: &Ident) -> TokenStream2
             }
             let setter_name = format_ident!("{}_set_{}", stem, field_name);
             ffi_functions.extend(quote! {
+                #(#cfgs)*
                 #[no_mangle]
                 pub extern "C" fn #setter_name(ptr: *mut #struct_name, value: #field_ty) {
                     unsafe { (*ptr).#field_name = value; }
@@ -1366,9 +1379,10 @@ fn crate_field_accessors(item_struct: &ItemStruct, stem: &Ident) -> TokenStream2
     ffi_functions
 }
 
-fn crate_free_fn(struct_name: &Ident, stem: &Ident) -> TokenStream2 {
+fn crate_free_fn(struct_name: &Ident, stem: &Ident, cfgs: &[Attribute]) -> TokenStream2 {
     let free_fn_name = format_ident!("{}_free", stem);
     quote! {
+        #(#cfgs)*
         #[no_mangle]
         pub extern "C" fn #free_fn_name(ptr: *mut #struct_name) {
             if !ptr.is_null() {
@@ -1390,8 +1404,10 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String
     item_struct.vis = Visibility::Public(syn::token::Pub::default());
 
     let stem = struct_stem(module_path, &item_struct.ident);
-    let free = crate_free_fn(&item_struct.ident, &stem);
-    let accessors = crate_field_accessors(&item_struct, &stem);
+    // The struct's `#[cfg]` gates its helpers too (#300 review).
+    let cfgs = cfg_attrs(&item_struct.attrs);
+    let free = crate_free_fn(&item_struct.ident, &stem, &cfgs);
+    let accessors = crate_field_accessors(&item_struct, &stem, &cfgs);
 
     quote! {
         #item_struct
@@ -1412,6 +1428,10 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
         };
     };
 
+    // The block's own `#[cfg]` gates every wrapper it produces: inside a
+    // `#[julia] mod` the module macro expands a gated impl before rustc
+    // evaluates the predicate (#300 review).
+    let block_cfgs = cfg_attrs(&item_impl.attrs);
     let mut ffi_wrappers = TokenStream2::new();
     for item in &mut item_impl.items {
         if let syn::ImplItem::Fn(method) = item {
@@ -1421,10 +1441,15 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
                 .any(|attr| attr.path().is_ident("julia"));
             if has_julia_attr {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
+                // The generator reads the method's `#[cfg]` set and puts it on
+                // every item it emits; the block's predicates join that set
+                // for the wrapper only, the method itself is left as written.
+                let mut gated = method.clone();
+                gated.attrs.splice(0..0, block_cfgs.iter().cloned());
                 ffi_wrappers.extend(generate_method_wrapper_crate(
                     &struct_name,
                     module_path,
-                    method,
+                    &gated,
                 ));
             }
         }

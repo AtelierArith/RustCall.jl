@@ -330,3 +330,28 @@ fn pyo3_wrapper_flavour() {
         .iter()
         .any(|m| m.skip_reason.starts_with("symbol_collision"))),);
 }
+
+/// A `#[julia] impl C` away from its `#[julia] struct C` would take the
+/// symbol of the module it sits in, not the struct's; crate extraction refuses
+/// it instead of dropping the methods silently (#300 review).
+#[test]
+fn an_impl_outside_its_structs_module_is_refused() {
+    let src = r#"
+        #[julia] pub mod a { #[julia] pub struct C { pub v: i32 } }
+        use a::C;
+        #[julia] impl C { #[julia] pub fn run(&self) -> i32 { self.v } }
+    "#;
+    let err = extract(src, Mode::Crate).unwrap_err();
+    assert!(matches!(err, ExtractError::Unsupported(_)), "{err}");
+    let msg = err.to_string();
+    assert!(msg.contains("#[julia] impl `C` at the crate root"), "{msg}");
+    assert!(msg.contains("move the impl next to the struct"), "{msg}");
+    // Next to the struct it is wrapped under the struct's stem.
+    let ok = extract(
+        "#[julia] pub mod a { #[julia] pub struct C { pub v: i32 } \
+         #[julia] impl C { #[julia] pub fn run(&self) -> i32 { self.v } } }",
+        Mode::Crate,
+    )
+    .unwrap();
+    assert_eq!(ok.structs[0].methods[0].symbol, "rustcall_a__C_run");
+}

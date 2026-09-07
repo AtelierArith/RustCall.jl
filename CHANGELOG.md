@@ -53,10 +53,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A module name Julia cannot define next to a parent binding — Rust keeps
     `fn a` and `mod a` in separate namespaces, Julia does not — is refused when
     the bindings are laid out (functions, structs, methods, field accessors and
-    the generated helpers all count), naming both sides and the fix. A raw
-    identifier module (`r#type`) is bound as `type`; a module whose name is a
-    Julia keyword (`end`, `function`, `macro`, …) is refused rather than
-    written into a file Julia cannot parse.
+    the generated helpers and the imported names all count), naming both sides
+    and the fix. A raw identifier module (`r#type`) is bound as `type`; a
+    module whose name is a Julia keyword (`end`, `function`, `macro`, …) is
+    refused rather than written into a file Julia cannot parse.
+  - A `#[julia] impl C` must sit in the same module as its `#[julia] struct
+    C`: the proc-macro derives the method symbols from the module the impl is
+    in, so an impl of a struct defined elsewhere — which used to be dropped
+    silently — is refused with the rule. Inside a `#[julia] mod`, a gated
+    struct's or impl block's `#[cfg]` is copied onto every helper generated
+    for it, so the crate still builds with the gate off.
+  - The PyO3 scan's Julia-surface collision check (`julia_name_collision`) is
+    scoped per module, matching the layout: `a::parse(x)` and `B::parse(x)` in
+    `b` no longer refuse each other.
   - **A module's `#[cfg]` now gates the items inside it** in every scan: an
     entry's `cfg` / `cfg_features` include the predicates of its enclosing
     modules (`#[cfg(feature = "x")] mod a { fn f }` reports `f` under

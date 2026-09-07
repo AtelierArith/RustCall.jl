@@ -712,8 +712,9 @@ would define function `a` and then module `a` — a constant-redefinition error
 that takes the whole bindings module down (#300 review). Every child module
 name is therefore checked against everything its parent binds: free functions,
 struct types, every method name (static or instance — both become functions of
-the parent), field accessors (`get_<f>`, `set_<f>!`), and the helpers every
-generated module defines (`_call_target`, `_LIB_GEN`, ...). Module segments
+the parent), field accessors (`get_<f>`, `set_<f>!`), the helpers every
+generated module defines (`_call_target`, `_LIB_GEN`, ...) and the names it
+imports (`RustCall`, `Libdl`, the `import RustCall: ...` prelude). Module segments
 must also spell a Julia identifier (`_julia_module_name`). The error names both
 sides and the fix.
 """
@@ -724,6 +725,12 @@ function _check_module_names(tree::ModuleNode)
     end
     for name in ("_LIB_PATH", "_SYMBOLS", "_SYMBOL_LOCK", "_PRELOAD_LIBRARIES", "__init__")
         taken[name] = "a helper every generated module defines"
+    end
+    for name in _CRATE_MODULE_PRELUDE
+        taken[String(name)] = "a name every generated module imports from RustCall"
+    end
+    for name in _CRATE_MODULE_IMPORTED_MODULES
+        taken[String(name)] = "a module every generated module imports"
     end
     for f in tree.functions
         f.is_generic && continue
@@ -777,8 +784,14 @@ _parent_helper_imports_expr() =
 _parent_helper_imports_source() =
     "import " * join(("..$(name)" for name in _CRATE_MODULE_HELPERS), ", ")
 
-# The `import RustCall: ...` prelude every generated module — root or
-# submodule — starts with, as an expression and as source text.
+# The names the `import RustCall: ...` prelude of every generated module — root
+# or submodule — brings in, and the modules imported next to them. A child
+# module cannot take any of these names either (`_check_module_names`).
+const _CRATE_MODULE_PRELUDE = (:call_rust_function, :get_function_pointer_from_lib, :RustResult,
+                               :RustOption, :_check_not_freed, :_call_rust_owned_string_ptr,
+                               :_call_rust_borrowed_string_ptr, :convert_return, :_result_payload,
+                               :FFIByValue)
+const _CRATE_MODULE_IMPORTED_MODULES = (:RustCall, :Libdl, :Base, :Core)
 const _CRATE_MODULE_PRELUDE_NAMES = "call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,\n" *
     "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,\n" *
     "                 _result_payload, FFIByValue"

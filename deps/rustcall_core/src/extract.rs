@@ -446,7 +446,36 @@ fn extract_crate_items(
         }
     }
 
-    for model in collect_struct_models_in(items, Mode::Crate) {
+    // A `#[julia] impl C` is only wrapped next to the `#[julia] struct C` of the
+    // same module: the proc-macro derives the method symbols from the module
+    // it runs in, so an impl written elsewhere (`use a::C; #[julia] impl C`
+    // at the crate root) would export `rustcall_C_run` for what the struct
+    // knows as `a__C`. Such an impl used to be dropped silently; it is
+    // refused with the rule instead (#300 review).
+    let models = collect_struct_models_in(items, Mode::Crate);
+    for item in items {
+        let Item::Impl(imp) = item else { continue };
+        if imp.trait_.is_some() || !imp.attrs.iter().any(crate::attrs::is_julia_attr) {
+            continue;
+        }
+        let Some(target) = crate::types::last_ident(&imp.self_ty) else {
+            continue;
+        };
+        if !models.iter().any(|m| m.item.ident == *target) {
+            return Err(ExtractError::Unsupported(format!(
+                "#[julia] impl `{target}` at {} has no `#[julia] struct {target}` in the same \
+                 module. The proc-macro derives a method's symbol from the module the impl \
+                 block is in, so an impl of a struct defined elsewhere would export a symbol \
+                 the manifest cannot describe; move the impl next to the struct (#300).",
+                if full_path.is_empty() {
+                    "the crate root".to_string()
+                } else {
+                    format!("module `{}`", full_path.join("::"))
+                }
+            )));
+        }
+    }
+    for model in models {
         if !marked {
             return Err(unmarked_module_error("struct", &model.name(), full_path));
         }

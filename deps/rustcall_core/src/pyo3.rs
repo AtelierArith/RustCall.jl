@@ -620,25 +620,41 @@ fn flatten_use_tree(
 /// Constructors are named after their class and instance methods dispatch on
 /// `self::Class`; neither can collide this way.
 fn mark_julia_surface_collisions(manifest: &mut Manifest) {
-    let class_names: Vec<(String, String)> = manifest
+    // The Julia surface is one namespace *per generated module*, and the
+    // bindings lay one Julia module out per Rust module (#300), so every key
+    // below carries the module path: `a::parse` and `b::parse` live in
+    // `bindings.a` and `bindings.b` and never meet.
+    // (module path, name) -> qualified owner; (module path, name, arity) -> owner.
+    type Scoped = (Vec<String>, String);
+    type ScopedArity = (Vec<String>, String, usize);
+    let class_names: Vec<(Scoped, String)> = manifest
         .structs
         .iter()
         .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
-        .map(|s| (s.name.clone(), qualified(&s.module_path, &s.name)))
+        .map(|s| {
+            (
+                (s.module_path.clone(), s.name.clone()),
+                qualified(&s.module_path, &s.name),
+            )
+        })
         .collect();
-    let class_named = |name: &str| class_names.iter().find(|(n, _)| n == name);
+    let class_named = |path: &[String], name: &str| {
+        class_names
+            .iter()
+            .find(|((p, n), _)| p == path && n == name)
+    };
 
-    let mut taken: Vec<((String, usize), String)> = Vec::new();
+    let mut taken: Vec<(ScopedArity, String)> = Vec::new();
     for f in &mut manifest.functions {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
             continue;
         }
-        if let Some((_, class)) = class_named(&f.name) {
+        if let Some((_, class)) = class_named(&f.module_path, &f.name) {
             f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
             continue;
         }
         taken.push((
-            (f.name.clone(), f.args.len()),
+            (f.module_path.clone(), f.name.clone(), f.args.len()),
             qualified(&f.module_path, &f.name),
         ));
     }
@@ -651,11 +667,11 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
                 continue;
             }
-            if let Some((_, class)) = class_named(&m.name) {
+            if let Some((_, class)) = class_named(&s.module_path, &m.name) {
                 m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
                 continue;
             }
-            let key = (m.name.clone(), m.args.len());
+            let key = (s.module_path.clone(), m.name.clone(), m.args.len());
             match taken.iter().find(|(k, _)| *k == key) {
                 Some((_, other)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, other);

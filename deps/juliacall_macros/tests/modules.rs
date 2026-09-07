@@ -52,6 +52,33 @@ pub mod a {
     pub fn helper() -> i32 {
         run() + 10
     }
+
+    // A gated struct and impl: the module macro expands them before rustc
+    // evaluates the predicate, so their generated helpers must be gated too
+    // or the crate would not compile with the gate off.
+    #[cfg(any())]
+    #[julia]
+    pub struct Gated {
+        pub v: i32,
+        pub label: String,
+    }
+
+    #[cfg(any())]
+    #[julia]
+    impl Gated {
+        #[julia]
+        pub fn new(v: i32) -> Self {
+            Self {
+                v,
+                label: String::new(),
+            }
+        }
+
+        #[julia]
+        pub fn describe(&self) -> String {
+            self.label.clone()
+        }
+    }
 }
 
 #[julia]
