@@ -1383,7 +1383,7 @@ next_reload_generation() = Threads.atomic_add!(RELOAD_GENERATION, 1) + 1
 Living beside the original rather than in a temporary directory matters on
 Windows: a DLL resolves its dependencies relative to its own location.
 
-`generation` is an integer or a ready-made tag such as `"<pid>.<n>"`
+`generation` is an integer or a ready-made tag such as `"rustcall.<pid>.<n>"`
 (`process_generation_path`).
 """
 function generation_path(lib_path::AbstractString,
@@ -1394,9 +1394,23 @@ function generation_path(lib_path::AbstractString,
 end
 
 """
+    GENERATION_COPY_MARKER
+
+The word in a generation copy's name that says RustCall made it:
+`libfoo.rustcall.<pid>.<generation>.dylib`.
+
+The stale-copy sweep deletes files, so the shape it matches must be one
+nothing else produces. `<stem>.<number>.<number><ext>` is not that — a
+versioned or application-managed `libfoo.12345.2.dylib` beside `libfoo.dylib`
+would be deleted the moment pid 12345 is absent. With the marker, only a file
+RustCall itself named is ever a candidate.
+"""
+const GENERATION_COPY_MARKER = "rustcall"
+
+"""
     process_generation_path(lib_path, generation) -> String
 
-`libfoo.dylib` → `libfoo.<pid>.<generation>.dylib`: the copy name
+`libfoo.dylib` → `libfoo.rustcall.<pid>.<generation>.dylib`: the copy name
 `loadable_library_copy` uses.
 
 `RELOAD_GENERATION` is per process, so two Julia processes that load the same
@@ -1406,10 +1420,11 @@ first has mapped, and a copy that fails would fall back to mapping Cargo's
 output in place, which is the very failure the copy exists to prevent (#309).
 With the process id in the name, the copies of two live processes never share
 a path; a leftover of a dead process with a reused id is not mapped by anyone
-and can be overwritten.
+and can be overwritten. The `rustcall` marker is what lets the stale-copy sweep
+recognise its own files (`GENERATION_COPY_MARKER`).
 """
 process_generation_path(lib_path::AbstractString, generation::Integer) =
-    generation_path(lib_path, "$(getpid()).$(generation)")
+    generation_path(lib_path, "$(GENERATION_COPY_MARKER).$(getpid()).$(generation)")
 
 """
     _process_alive(pid) -> Bool
@@ -1418,12 +1433,30 @@ Whether a process with this id exists, for the stale-copy sweep.
 
 On Unix `kill(pid, 0)` delivers nothing and reports `ESRCH` for a pid nobody
 holds; any other answer (0, or `EPERM` for another user's process) counts as
-alive. On Windows the sweep does not need the answer: deleting a mapped DLL
-fails, which is exactly the "still in use" signal, so every candidate is
-handed to `rm` and the file system decides. Errs on the side of "alive".
+alive. On Windows `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION`
+fails with `ERROR_INVALID_PARAMETER` for a pid nobody holds, and an open
+handle whose `GetExitCodeProcess` is `STILL_ACTIVE` is a running process;
+anything else — access denied, a query that fails — counts as alive.
+
+The answer matters on Windows too, not only the file system's refusal to
+delete a mapped DLL: between a process's `cp` and its `dlopen` the copy is not
+mapped yet, so a sweep in another process that treated every pid as dead
+could delete it in that window. Errs on the side of "alive".
 """
 function _process_alive(pid::Integer)
-    Sys.iswindows() && return false
+    if Sys.iswindows()
+        PROCESS_QUERY_LIMITED_INFORMATION = UInt32(0x1000)
+        ERROR_INVALID_PARAMETER = UInt32(87)
+        STILL_ACTIVE = UInt32(259)
+        h = ccall((:OpenProcess, "kernel32"), stdcall, Ptr{Cvoid},
+                  (UInt32, Cint, UInt32), PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+        h == C_NULL && return Libc.GetLastError() != ERROR_INVALID_PARAMETER
+        code = Ref{UInt32}(0)
+        ok = ccall((:GetExitCodeProcess, "kernel32"), stdcall, Cint,
+                   (Ptr{Cvoid}, Ref{UInt32}), h, code)
+        ccall((:CloseHandle, "kernel32"), stdcall, Cint, (Ptr{Cvoid},), h)
+        return ok == 0 || code[] == STILL_ACTIVE
+    end
     r = ccall(:kill, Cint, (Cint, Cint), pid, 0)
     r == 0 && return true
     return Libc.errno() != Libc.ESRCH
@@ -1432,8 +1465,8 @@ end
 """
     _sweep_stale_generation_copies(built_path)
 
-Remove the `<lib>.<pid>.<generation>.<ext>` copies beside `built_path` whose
-process is gone.
+Remove the `<lib>.rustcall.<pid>.<generation>.<ext>` copies beside
+`built_path` whose process is gone.
 
 A written bindings module makes one copy per process start, and nothing
 removes it when that process exits — an image is retired, not closed, and on
@@ -1442,14 +1475,14 @@ launching Julia would accumulate copies without bound (#309). The next process
 to copy the same library sweeps first: a copy tagged with a pid that no longer
 exists is removed; this process's own copies and those of a live pid are kept;
 a copy Windows still has mapped refuses the delete and is kept for a later
-sweep. Legacy `<lib>.<generation>.<ext>` copies (before the pid tag) are not
-touched — without a pid there is nothing to decide with. Best effort: nothing
-here can fail the load.
+sweep. Only names carrying `GENERATION_COPY_MARKER` are candidates: the legacy
+`<lib>.<generation>.<ext>` shape and anything else beside the library are not
+RustCall's to delete. Best effort: nothing here can fail the load.
 """
 function _sweep_stale_generation_copies(built_path::AbstractString)
     dir = dirname(built_path)
     stem, ext = splitext(basename(built_path))
-    prefix = stem * "."
+    prefix = stem * "." * GENERATION_COPY_MARKER * "."
     me = getpid()
     names = try
         readdir(dir)
@@ -1492,9 +1525,10 @@ already mapped hands back the **old** image, so a rebuild silently has no
 effect while objects allocated by the old library start being freed by code
 from the new one.
 
-Copying to `<lib>.<pid>.<generation>.<ext>` and opening that leaves Cargo's
-output untouched, and makes every load a genuinely distinct file — across
-processes too, since the counter alone is per process (#255, #277, #309).
+Copying to `<lib>.rustcall.<pid>.<generation>.<ext>` and opening that leaves
+Cargo's output untouched, and makes every load a genuinely distinct file —
+across processes too, since the counter alone is per process (#255, #277,
+#309).
 Before copying, the copies of processes that no longer exist are swept
 (`_sweep_stale_generation_copies`), so a library that is loaded by one
 process after another keeps only the live processes' copies beside it.

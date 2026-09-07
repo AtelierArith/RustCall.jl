@@ -232,13 +232,13 @@ end
         # `.1.`, and on Windows the second could not overwrite the first's
         # mapped copy and would fall back to mapping Cargo's output (#309).
         @test basename(RustCall.process_generation_path(joinpath("a", "foo.dll"), 7)) ==
-              "foo.$(getpid()).7.dll"
+              "foo.rustcall.$(getpid()).7.dll"
         mktempdir() do dir
             built = joinpath(dir, "libfoo.so")
             write(built, "not a library")
             expected = RustCall.RELOAD_GENERATION[] + 1
             copied = RustCall.loadable_library_copy(built)
-            @test copied == joinpath(dir, "libfoo.$(getpid()).$(expected).so")
+            @test copied == joinpath(dir, "libfoo.rustcall.$(getpid()).$(expected).so")
             @test isfile(copied) && isfile(built)
             @test read(copied) == read(built)
         end
@@ -247,30 +247,46 @@ end
         # Copies of processes that no longer exist are swept when the next
         # process copies the same library, so a written module loaded by one
         # Julia process after another does not accumulate one copy per start
-        # (#309). Kept: this process's copies, a live process's copies, and
-        # the pre-pid `<lib>.<n>.<ext>` shape (nothing to decide with).
+        # (#309). Kept: this process's copies, a live process's copies, the
+        # pre-marker `<lib>.<n>.<ext>` shape, and any file without the
+        # `rustcall` marker — a versioned `libbar.12345.2.so` is not ours.
         mktempdir() do dir
             built = joinpath(dir, "libbar.so")
             write(built, "not a library")
+            # A pid that is guaranteed to be gone: an exited child. And a pid
+            # that is guaranteed to be alive: a child still blocked on stdin.
             child = open(`$(Base.julia_cmd()) --startup-file=no -e 0`)
             dead_pid = getpid(child)
             wait(child)
-            @test !RustCall._process_alive(dead_pid) || Sys.iswindows()
-            @test RustCall._process_alive(getpid()) || Sys.iswindows()
-            stale = joinpath(dir, "libbar.$(dead_pid).3.so")
-            mine = joinpath(dir, "libbar.$(getpid()).1.so")
-            legacy = joinpath(dir, "libbar.7.so")
-            other_lib = joinpath(dir, "libbarbaz.$(dead_pid).2.so")
-            for f in (stale, mine, legacy, other_lib)
-                write(f, "stale?")
+            live = open(`$(Base.julia_cmd()) --startup-file=no -e "readline(stdin)"`,
+                        "w")
+            live_pid = getpid(live)
+            try
+                @test !RustCall._process_alive(dead_pid)
+                @test RustCall._process_alive(live_pid)
+                @test RustCall._process_alive(getpid())
+                stale = joinpath(dir, "libbar.rustcall.$(dead_pid).3.so")
+                mine = joinpath(dir, "libbar.rustcall.$(getpid()).1.so")
+                theirs = joinpath(dir, "libbar.rustcall.$(live_pid).1.so")
+                legacy = joinpath(dir, "libbar.7.so")
+                unmarked = joinpath(dir, "libbar.$(dead_pid).2.so")
+                other_lib = joinpath(dir, "libbarbaz.rustcall.$(dead_pid).2.so")
+                for f in (stale, mine, theirs, legacy, unmarked, other_lib)
+                    write(f, "stale?")
+                end
+                copied = RustCall.loadable_library_copy(built)
+                @test isfile(copied)
+                @test !isfile(stale)
+                @test isfile(mine)
+                @test isfile(theirs)
+                @test isfile(legacy)
+                @test isfile(unmarked)
+                @test isfile(other_lib)
+                @test isfile(built)
+            finally
+                close(live)   # closes its stdin: readline returns, the child exits
+                wait(live)
             end
-            copied = RustCall.loadable_library_copy(built)
-            @test isfile(copied)
-            @test !isfile(stale)
-            @test isfile(mine)
-            @test isfile(legacy)
-            @test isfile(other_lib)
-            @test isfile(built)
         end
         @test findfirst("_sweep_stale_generation_copies(built)", _src_loadpolicy()) <
               findfirst("process_generation_path(built, next_reload_generation())",

@@ -994,9 +994,11 @@ end
             @test isfile(built)
             @test realpath(loaded) != realpath(built)
             @test dirname(realpath(loaded)) == dirname(realpath(built))
-            # `<lib>.<pid>.<generation>.<ext>`: the process id keeps two
-            # processes that load the same crate from choosing one copy name.
-            @test occursin(Regex("\\.$(getpid())\\.\\d+\\.[A-Za-z]+\$"), basename(loaded))
+            # `<lib>.rustcall.<pid>.<generation>.<ext>`: the process id keeps
+            # two processes that load the same crate from choosing one copy
+            # name, and the marker is what the stale-copy sweep recognises.
+            @test occursin(Regex("\\.rustcall\\.$(getpid())\\.\\d+\\.[A-Za-z]+\$"),
+                           basename(loaded))
             @test Base.invokelatest(Base.invokelatest(getfield, mod, :add), 2, 3) == 5
             try
                 RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
@@ -1052,7 +1054,8 @@ end
             @test dirname(realpath(lib_path)) == realpath(lib_dir)
             @test realpath(loaded) != realpath(lib_path)
             @test dirname(realpath(loaded)) == realpath(lib_dir)
-            @test occursin(Regex("\\.$(getpid())\\.\\d+\\.[A-Za-z]+\$"), basename(loaded))
+            @test occursin(Regex("\\.rustcall\\.$(getpid())\\.\\d+\\.[A-Za-z]+\$"),
+                           basename(loaded))
             backup = joinpath(output_dir, basename(lib_path))
             cp(lib_path, backup; force = true)
             @test (rm(lib_path); !isfile(lib_path))
