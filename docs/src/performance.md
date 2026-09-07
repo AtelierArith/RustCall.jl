@@ -54,7 +54,7 @@ RustCall.jl automatically caches compiled Rust libraries. This eliminates the ne
 Two inputs are tracked **best effort** and are documented limits, not proofs:
 
 - **Build environment.** `RustCall.artifact_build_env` captures a documented
-  allowlist (`RUSTFLAGS`, `CARGO_PROFILE_*`, `CC`, `PKG_CONFIG_PATH`, …; never
+  allowlist (`RUSTFLAGS`, `CARGO_PROFILE_*`, `PYO3_*`, `CC`, `PKG_CONFIG_PATH`, …; never
   anything that looks like a credential). A build script may read any variable it
   likes, and the only exhaustive answer is Cargo's own fingerprint. Extend
   `ARTIFACT_BUILD_ENV_*` in `src/artifact_id.jl` — the one place — if you need

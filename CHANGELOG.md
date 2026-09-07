@@ -8,6 +8,130 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`@rust_crate` binds a PyO3 crate that carries no RustCall attribute**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275), Phase 2).
+  RustCall generates a *second* crate that depends on the target, emits one
+  `extern "C"` entry point per wrappable item, builds it under the Phase-1.5
+  link plan and loads the result. A `#[pyfunction]` becomes `rustcall_<name>`;
+  a `#[pyclass]` becomes an opaque handle with `<Class>_free`, one wrapper per
+  `#[pymethods]` method (`#[new]`, `#[staticmethod]`, `#[getter]`, `#[setter]`
+  included) and accessors for the fields `#[pyo3(get, set)]` / `get_all` /
+  `set_all` expose. Every entry point comes out of
+  `rustcall_core::codegen::generate_wrapper`, the generator `#[julia]` has used
+  since #279, so the string ABI, the `CResult`/`COption` aggregates and the
+  per-wrapper panic channel are identical and the Julia emitters bind both
+  kinds the same way. `write_bindings_to_file` takes the same path.
+
+  A `PyResult<T>` becomes `RustResult{T, String}` whose error is always
+  `RustCall.PYO3_OPAQUE_ERROR`: creating and dropping a `PyErr` without an
+  interpreter is safe, but rendering one panics inside pyo3 and the panic
+  crossing `extern "C"` aborts the process, so the generated code drops it
+  without looking at it.
+
+  A crate carrying **both** kinds of marker keeps both: the wrapper generates
+  entry points for the PyO3 items and links the `#[julia]` ones the crate
+  already exports, and one `@rust_crate` module exposes them together. The
+  Rust path in generated calls is the crate's **library target** name
+  (`[lib] name`), not its package name.
+
+  The scan that feeds the generator runs under the configuration the wrapper is
+  compiled with whenever Cargo could resolve it, so a `#[cfg]`-gated item that
+  the requested feature set enables is wrapped rather than refused; a build that
+  exposes nothing to PyO3 (every marker behind a feature that is off) falls back
+  to the pre-#275 binding path instead of producing an empty cdylib.
+
+  `@rust_crate` gains `features=` and `default_features=`, which select the
+  feature set the wrapper is built against and are part of the artifact
+  identity (`ArtifactId` kind `pyo3-wrapper`), together with the build
+  environment the wrapper inherits (`artifact_build_env()`, the #282
+  allowlist, which now captures the `PYO3_*` namespace, plus the contents of
+  `PYO3_CONFIG_FILE`) and, for a `:link_libpython` build, the interpreter
+  `PYO3_PYTHON` is pinned to — its path and what it reports about itself
+  (`plan.interpreter_config`: implementation, version, ABI tag, library), so a
+  Python upgraded in place is a different wrapper. That interpreter and the
+  library directory are decided together (`python_link_source()`,
+  `plan.interpreter`): a caller's own `PYO3_PYTHON` is honoured rather than
+  replaced by the first `python3` on `PATH`, and the cfg probe follows the
+  build profile (`pyo3_link_plan(crate; release = false)`). `#[pyo3(get)]` and
+  `#[pyo3(set)]` are independent — a `set`-only field is a setter with no
+  getter. A `#[pymethods]` method is boxed as the class only as a `#[new]` or
+  a `Self` return, never for being named `new`; a class member whose own
+  `#[cfg]` the scan could not decide is refused (`cfg_undecided`) like an
+  item; `impl super::C` is resolved against the parent module (and a `use
+  super::C` disambiguates a bare `impl C`) instead of falling back to a
+  same-named local class; and the panic reader `<symbol>_take_panic` is a
+  reserved symbol, so an item that would *be* one is reported as a
+  `symbol_collision`. A `&str` returned by an item that takes a string leaves
+  as an owned copy (it may point into the argument the wrapper built), a
+  `Vec<T>` field gets no accessor (there is no owned-vector ABI on the Julia
+  side yet), the cfg probe runs the crate as the wrapper's
+  dependency rather than as its own Cargo root, and the feature set a caller
+  asks for is honoured — and is in the artifact identity — on the plain
+  `@rust_crate` path as well. The wrapper and the probe are built under the
+  crate's own `target/` with its `Cargo.lock` and `[patch]` table carried
+  over, so the crate's `.cargo/config.toml`, pins and overrides apply as they
+  do to the crate (for a workspace member, from its workspace root, whose
+  manifest and lockfile are then part of the member's artifact identity; a
+  package the workspace `exclude`s is its own root; both generated manifests
+  declare an empty `[workspace]` so they are roots of their own); the probe
+  runs under the wrapper's panic policy and its memo follows the root's
+  manifest and lockfile and pyo3's own configuration (`PYO3_*`, the contents
+  of `PYO3_CONFIG_FILE`), so a changed Python is a new probe as it is a new
+  artifact; a PyO3 crate that exposes nothing under the
+  requested build falls back to the plain path **under that build's
+  configuration**, so a `#[julia]` item the selected features disable is not
+  bound; the wrapper's link options travel in a generated `build.rs` rather
+  than in `RUSTFLAGS` (which `CARGO_ENCODED_RUSTFLAGS` overrides and which
+  replaced a crate's `[build] rustflags`); a `std::`-anchored return type is
+  never mistaken for a class of the same name; the string helpers a wrapper
+  declares (`<owner>_RustCallOwnedString` and friends) are reserved per owner
+  like every other symbol, as is the case-folded panic slot two items whose
+  names differ only by case would share; on Windows, where there is no rpath,
+  the plan records the interpreter's own `python3xy.dll`
+  (`plan.runtime_libraries`) and the generated module opens it before the
+  wrapper (`load_artifact!`'s `preload`), so a `PYO3_PYTHON` that is not on
+  `PATH` loads; every project RustCall generates is built with its output
+  pinned to its own `target/` (`CARGO_TARGET_DIR`), so an inherited
+  `CARGO_TARGET_DIR` or a discovered `[build] target-dir` no longer turns a
+  successful build into "Library not found after build"; an `async fn` is
+  refused by the scan (`async_fn`) rather than wrapped as if it returned the
+  value its future resolves to; a crate whose `[lib] crate-type` offers no
+  `rlib` (a `["cdylib"]`-only PyO3 extension) is refused before the build with
+  the one-line fix, instead of failing inside the generated wrapper; a package
+  a workspace lists in `members` stays a member even under an `exclude`d
+  directory, as Cargo has it; the plain `#[julia]` path scans the crate under
+  the configuration it builds — profile and requested feature set — so a
+  feature-gated item is bound exactly when the library exports it (hot reload
+  already rescanned this way) — probed as the Cargo root when it is built as
+  one (a `cdylib`) and as a wrapper's dependency otherwise, so the profile the
+  probe sees is the profile the build applies; the cfg probe runs under the
+  plan's interpreter (`PYO3_PYTHON`), as the wrapper build does; a
+  `#[staticmethod]` whose Julia name and arity another item already defines —
+  or a function named like a class — is refused (`julia_name_collision`)
+  instead of silently replacing it; the generated `get_<field>` /
+  `set_<field>!` helpers check the object is live, as `getproperty` /
+  `setproperty!` do; and the conservative plan (Cargo could not resolve the
+  crate) keeps the requested `features` / `default_features`, so the wrapper's
+  dependency entry is the configuration asked for; a library root outside the
+  package directory (`[lib] path = "../shared/lib.rs"`) and every file beside
+  it are part of the artifact identity; a PyO3 crate whose requested build
+  exposes nothing is bound through the same build-shaped probe as any plain
+  crate; and a `#[pyo3(set)]` field's value is converted to the field's type
+  before the setter is called, so `set_scale!(obj, 3)` on an `f64` field stores
+  `3.0` rather than reinterpreting an integer register; and
+  `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
+  directory ahead of any interpreter. Anything the generator cannot
+  lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
+  `py_result_payload`, `cfg_undecided`) instead of being emitted — including a
+  plain `Result` / `Option` on a `#[pymethods]` **method**, which the `#[julia]`
+  method wrappers have never lowered either. `scan_report`
+  gains a "wrapper crate exports" column naming each symbol. The generated
+  `CResult_*` mirrors subtype `RustCall.FFIByValue`, the layout assertion #245
+  requires and #295 enforces, exactly as the `#[julia]` path's do. New extractor
+  subcommand `rustcall-extract wrap`; new example
+  `examples/sample_crate_pyo3_optional`, a crate whose wrapper links no
+  libpython at all.
+
 - **`Result` and `Option` returns on `#[julia]` struct methods**
   ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268)). A method
   returning `Result<T, E>` / `Option<T>` is now lowered exactly like a free
@@ -37,12 +161,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error on a free function, returned as written on a method.
 
 ### Changed
-- **Manifest schema 6** ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268)).
+- **Manifest schema 5 → 6** (`RustCall.MANIFEST_SCHEMA_VERSION`,
+  `rustcall_core::manifest::SCHEMA_VERSION`), bundling two changes that neither
+  shipped separately ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268),
+  [#275](https://github.com/AtelierArith/RustCall.jl/issues/275) Phase 2).
   `Method.return_kind` now reports `result` / `option` where it always said
   `plain`, which is an **ABI change** for those methods and not merely a richer
   description: a schema-5 consumer would read a two-payload aggregate as the
   scalar it used to be. `Function` and `Method` also gain `ok_abi` / `err_abi` /
   `inner_abi`, which say whether a payload travels as an owned string buffer.
+  Separately, a `py_*` entry can now be `exported` with a `return_abi`, a
+  lowered `PyResult` reports the `i32` code in `err_type`, and the skip-reason
+  vocabulary gains the four reasons the wrapper *generator* uses; a schema-5
+  consumer would read a wrapper manifest as a scan and never call anything.
   Rebuild the extractor (`Pkg.build("RustCall")`) after upgrading.
 
 - **Bindings format 5** ([#268](https://github.com/AtelierArith/RustCall.jl/issues/268)).
@@ -51,6 +182,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Regenerate after upgrading.
 
 ### Fixed
+- **`test_cargo.jl`'s Cargo-cache assertions no longer race the parallel runner**
+  ([#306](https://github.com/AtelierArith/RustCall.jl/issues/306)). The Cargo
+  cache is a depot-level directory shared by every worker, and two testsets
+  asserted on its whole contents — its size after a clear, and the number of
+  libraries in it after one evaluation — so any other worker compiling a Cargo
+  block in the meantime failed them. Both now run under a cache root of their
+  own (`RUSTCALL_CACHE_DIR`), and the "exactly one key" assertion is also made
+  key-specifically, which is what it actually means.
+
+- **`extension-module` is no longer called unlinkable on Windows**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)). A DLL
+  resolves every import at link time, so pyo3 links the interpreter's import
+  library there regardless of the feature and the wrapper loads like any other
+  `:link_libpython` build; only Unix leaves the symbols undefined.
+  `RustCall.extension_module_is_linkable()` is the predicate — applied on the
+  resolved path and on the conservative `Cargo.toml` fallback alike, so the two
+  cannot disagree about one crate — and
+  `pyo3_link_rustflags` no longer emits `-Wl,-rpath` — which `link.exe` rejects
+  — on Windows, where the interpreter's DLL directory belongs on `PATH`
+  instead.
+
+- **A link plan whose `--print cfg` probe failed no longer claims to be
+  resolved** ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)).
+  `cargo tree` can answer while `cargo rustc -- --print cfg` does not; the plan
+  then had an empty `cfg_text` with `resolved = true`, and `scan_report`
+  silently fell back to a lenient scan. Such a plan is now `resolved = false`
+  with the probe failure in its `reason`.
+
+- **macOS framework builds of Python get the right rpath**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)). A framework
+  build is linked as `@rpath/Python3.framework/Versions/3.x/Python3`, so
+  `python_library_dir()` now returns the directory *containing* the
+  `.framework` rather than `LIBDIR`, which sits one level inside it and
+  produced a cdylib that could not be loaded.
+
+- **`#[pymethods]` matching keeps the anchor of a written path**
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)).
+  `impl crate::a::C` inside module `m` was matched against `m::a::C` first,
+  because the `crate::` prefix was stripped before matching; when both classes
+  existed the block attached to the wrong one. `crate::` now resolves only at
+  the crate root, `self::` only in the enclosing module, and the same
+  distinction applies to `use` paths.
+
 - **Re-aliasing a library under a name it already has no longer declares it
   dead** ([#291](https://github.com/AtelierArith/RustCall.jl/issues/291)).
   `alias_artifact!` retired whatever was registered under the target name —

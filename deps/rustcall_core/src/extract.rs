@@ -385,6 +385,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
                 },
                 python_name: String::new(),
                 vis: String::new(),
+                cfg: String::new(),
             }
         })
         .collect();
@@ -417,6 +418,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             err_abi: shapes[i].err_abi.clone(),
             inner_abi: shapes[i].inner_abi.clone(),
             returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
+            cfg: crate::cfg::predicate_string(&m.func.attrs),
             args: fn_args(&m.func.sig),
             return_type: return_type_to_string(&m.func.sig.output),
             // Crate method wrappers (`generate_method_wrapper_crate`) use the

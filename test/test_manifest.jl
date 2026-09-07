@@ -64,27 +64,36 @@ using TOML
         @test point.name == "Point"
         @test point.attribute === :py_class
         @test point.skip_reason == ""
-        @test [f[1] for f in point.fields] == ["x", "y"]
+        @test [f[1] for f in point.fields] == ["x", "y", "scale"]
         @test point.field_getters["x"] == "rustcall_Point_get_x"
         @test point.field_setters["x"] == "rustcall_Point_set_x"
         @test !haskey(point.field_setters, "y")
+        # `#[pyo3(set)]` alone is a setter with no getter, not nothing (#307
+        # review): the two accessor columns are independent.
+        @test !haskey(point.field_getters, "scale")
+        @test point.field_setters["scale"] == "rustcall_Point_set_scale"
         methods = Dict(m.name => m for m in point.methods)
-        @test sort(collect(keys(methods))) == ["new", "norm", "origin", "sum"]
+        @test sort(collect(keys(methods))) ==
+              ["label", "new", "norm", "origin", "scaled", "scaled_norm", "set_both", "sum"]
         @test methods["new"].is_constructor
         @test methods["new"].symbol == "rustcall_Point_new"
         @test methods["origin"].is_static
         @test methods["origin"].returns_boxed_struct
         @test methods["sum"].accessor == "getter"
+        @test methods["set_both"].accessor == "setter"
+        @test methods["set_both"].is_mutable
 
         # A `#[pymethods]` method returning `PyResult` carries its return
         # shape, so Phase 2 never re-reads the Rust type spelling (#264).
         @test methods["new"].return_kind === :plain
         @test methods["norm"].return_kind === :plain
+        @test methods["scaled"].return_kind === :py_result
+        @test methods["scaled"].ok_type == "f64"
 
         # scan_report groups the same items and never throws on a crate it
         # cannot wrap.
         report = sprint(io -> RustCall.scan_report(crate; io = io))
-        @test occursin("PyO3 items wrappable by Phase 2", report)
+        @test occursin("PyO3 items the scan can name", report)
         @test occursin("rustc E0603", report)
         @test occursin("Link plan:", report)
     end

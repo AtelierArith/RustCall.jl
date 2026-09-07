@@ -293,6 +293,7 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
                 return_type: return_type_to_string(&m.func.sig.output),
                 return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
                 generic_wrapper: String::new(),
+                cfg: crate::cfg::predicate_string(&m.func.attrs),
             }
         })
         .collect()
@@ -313,6 +314,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
                 setter: acc.map(|a| a.2.clone()).unwrap_or_default(),
                 python_name: String::new(),
                 vis: String::new(),
+                cfg: String::new(),
             }
         })
         .collect()

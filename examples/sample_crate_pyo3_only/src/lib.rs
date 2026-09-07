@@ -1,9 +1,16 @@
 //! A small PyO3 crate with no RustCall attribute anywhere.
 //!
-//! RustCall scans it with `RustCall.scan_report(...)`: the `pub` items with
-//! interpreter-free signatures are what a Phase-2 wrapper crate will be able to
-//! export as `rustcall_<name>` / `rustcall_<Struct>_<method>`; everything else
-//! is reported with a reason.
+//! `RustCall.scan_report(...)` says what a wrapper crate could export from it
+//! (#275 Phase 1); `@rust_crate` generates and builds that wrapper crate and
+//! binds the result (#275 Phase 2). The `pub` items with interpreter-free
+//! signatures are exported as `rustcall_<name>` / `rustcall_<Struct>_<method>`;
+//! everything else is reported with a reason.
+//!
+//! The crate is built by `test/test_pyo3_wrapper.jl`, so everything here must
+//! compile: only **one** `#[pymethods]` block per class, because more than one
+//! needs pyo3's `multiple-pymethods` feature.
+
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use pyo3::prelude::*;
 
@@ -29,6 +36,24 @@ pub fn parse(s: &str) -> PyResult<i32> {
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
+/// Wrappable, and deliberately explosive: the generated wrapper catches the
+/// panic and Julia raises `RustCall.RustPanicError` instead of the process
+/// aborting (#244).
+#[pyfunction]
+pub fn boom(n: i32) -> i32 {
+    if n < 0 {
+        panic!("boom: n must not be negative");
+    }
+    n * 2
+}
+
+/// How many `Point`s have been dropped, so a test can prove the generated
+/// `Point_free` really runs the Rust destructor.
+#[pyfunction]
+pub fn dropped_points() -> i64 {
+    DROPPED.load(Ordering::SeqCst)
+}
+
 /// Skipped: not `pub`, so a wrapper crate cannot name it (rustc E0603).
 #[pyfunction]
 fn private_add(a: i32, b: i32) -> i32 {
@@ -42,38 +67,78 @@ pub fn describe(py: Python<'_>) -> i32 {
     0
 }
 
+static DROPPED: AtomicI64 = AtomicI64::new(0);
+
 #[pyclass]
 pub struct Point {
     #[pyo3(get, set)]
     pub x: f64,
     #[pyo3(get)]
     pub y: f64,
+    /// `#[pyo3(set)]` alone: write-only from Python, so the wrapper exports
+    /// the setter and no getter; `scaled_norm` is how a test observes the
+    /// write.
+    #[pyo3(set)]
+    pub scale: f64,
+}
+
+impl Drop for Point {
+    fn drop(&mut self) {
+        DROPPED.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 #[pymethods]
 impl Point {
     #[new]
     pub fn new(x: f64, y: f64) -> Self {
-        Point { x, y }
+        Point { x, y, scale: 1.0 }
+    }
+
+    #[staticmethod]
+    pub fn origin() -> Self {
+        Point {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+        }
     }
 
     pub fn norm(&self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
     }
-}
 
-/// A second `#[pymethods]` block for the same class: its methods join the
-/// first block's.
-#[pymethods]
-impl Point {
-    #[staticmethod]
-    pub fn origin() -> Self {
-        Point { x: 0.0, y: 0.0 }
+    /// Reads the write-only `scale` field, so a test can prove its setter ran.
+    pub fn scaled_norm(&self) -> f64 {
+        self.norm() * self.scale
     }
 
+    /// A `#[getter]`: an ordinary method from the C side.
     #[getter]
     pub fn sum(&self) -> f64 {
         self.x + self.y
+    }
+
+    /// A `#[setter]`: `&mut self`, so the wrapper takes `*mut Point`.
+    #[setter]
+    pub fn set_both(&mut self, value: f64) {
+        self.x = value;
+        self.y = value;
+    }
+
+    /// A `PyResult` method: the error is opaque on the Julia side.
+    pub fn scaled(&self, factor: f64) -> PyResult<f64> {
+        if factor.is_finite() {
+            Ok(self.norm() * factor)
+        } else {
+            Err(pyo3::exceptions::PyValueError::new_err("factor must be finite"))
+        }
+    }
+
+    /// A `String`-returning method: an owned buffer released through
+    /// `Point_label_free_rust_string`.
+    pub fn label(&self) -> String {
+        format!("({}, {})", self.x, self.y)
     }
 }
 

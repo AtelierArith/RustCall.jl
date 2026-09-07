@@ -1,0 +1,28 @@
+# A PyO3 crate whose pyo3 dependency is **optional**, so RustCall can wrap it
+# with no Python in the picture at all (`PyO3LinkPlan` mode `:python_free`).
+#
+# This is the rarer of the two shapes — see `sample_crate_pyo3_only` for the
+# common one — and it is rare for a reason the #275 MWE pinned down:
+# `#[cfg_attr(feature = "python", pyfunction)]` works, but pyo3's *inner*
+# attributes (`new`, `staticmethod`, `getter`, `setter`, `pyo3(get, set)`)
+# cannot be gated that way, because the outer macro runs before `cfg_attr`
+# expands. So a crate like this can expose free functions to Python behind a
+# feature, but not a `#[pyclass]` with methods.
+#
+# What makes it wrappable without the feature is that the *marker* is
+# conditional and the *item* is not: `add` is an ordinary `pub fn` in every
+# build, and the wrapper crate calls the function, not the Python binding.
+[package]
+name = "sample_crate_pyo3_optional"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dependencies]
+pyo3 = { version = "0.29", optional = true, default-features = false, features = ["macros"] }

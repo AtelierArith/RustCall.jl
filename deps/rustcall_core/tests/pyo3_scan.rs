@@ -835,3 +835,499 @@ fn inline_mode_does_not_scan_pyo3_items() {
     assert_eq!(add.symbol, "add");
     assert_eq!(add.skip_reason, "");
 }
+
+/// `crate::a::C` is the crate root's `a::C`, never the enclosing module's.
+///
+/// A qualifier used to have its anchor stripped, so `impl crate::a::C` written
+/// inside module `m` was matched against `m::a::C` first and attached to the
+/// wrong class whenever both existed. Phase 2 then generated a call to a type
+/// that does not have the method (#294 review).
+#[test]
+fn a_crate_anchored_pymethods_target_is_not_matched_relatively() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod m { pub mod a { #[pyclass] pub struct C {} }\n\
+            #[pymethods] impl crate::a::C { pub fn at_root(&self) -> i32 { 1 } } }",
+    );
+    let root = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .expect("crate-root class");
+    let nested = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "a".to_string()])
+        .expect("nested class");
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["at_root"]
+    );
+    assert!(nested.methods.is_empty());
+}
+
+/// `self::a::C` is the enclosing module's, and only that one.
+#[test]
+fn a_self_anchored_pymethods_target_is_not_matched_absolutely() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod m { pub mod a { #[pyclass] pub struct C {} }\n\
+            #[pymethods] impl self::a::C { pub fn nested(&self) -> i32 { 1 } } }",
+    );
+    let root = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .expect("crate-root class");
+    let nested = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "a".to_string()])
+        .expect("nested class");
+    assert!(root.methods.is_empty());
+    assert_eq!(
+        nested
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["nested"]
+    );
+}
+
+/// The same distinction through a `use`: `use crate::a::C;` names the crate
+/// root's class even when the enclosing module has an `a` of its own.
+#[test]
+fn a_crate_anchored_import_disambiguates_absolutely() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod m { pub mod a { #[pyclass] pub struct C {} }\n\
+            use crate::a::C;\n\
+            #[pymethods] impl C { pub fn at_root(&self) -> i32 { 1 } } }",
+    );
+    let root = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .expect("crate-root class");
+    let nested = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "a".to_string()])
+        .expect("nested class");
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["at_root"]
+    );
+    assert!(nested.methods.is_empty());
+}
+
+/// A `#[pymethods]` method is boxed when it is a `#[new]` or returns `Self` /
+/// the class — never because it happens to be called `new` (#307 review): a
+/// `#[staticmethod] fn new() -> i32` promised as `*mut Class` would not
+/// compile.
+#[test]
+fn boxing_follows_the_constructor_marker_not_the_name() {
+    let manifest = scan(
+        "#[pyclass] pub struct P {}\n\
+         #[pymethods] impl P {\n\
+            #[staticmethod] pub fn new() -> i32 { 0 }\n\
+            #[new] pub fn create() -> Self { P {} }\n\
+            #[staticmethod] pub fn make() -> P { P {} }\n\
+            pub fn count(&self) -> i32 { 0 }\n\
+         }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let by = |n: &str| p.methods.iter().find(|m| m.name == n).unwrap();
+    assert!(!by("new").is_constructor);
+    assert!(!by("new").returns_boxed_struct);
+    assert!(by("create").is_constructor);
+    assert!(by("create").returns_boxed_struct);
+    assert!(!by("make").is_constructor);
+    assert!(by("make").returns_boxed_struct);
+    assert!(!by("count").returns_boxed_struct);
+}
+
+/// A class member's own `#[cfg]` is recorded when the scan could not decide
+/// it, so a wrapper generated from a lenient scan can refuse the member rather
+/// than name one the build may not have (#307 review). The scan itself still
+/// lists the member: refusing is the generator's decision.
+#[test]
+fn undecided_member_cfg_is_recorded() {
+    let manifest = scan(
+        "#[pyclass] pub struct P {\n\
+            #[cfg(feature = \"x\")] #[pyo3(get)] pub gated: f64,\n\
+            #[pyo3(get)] pub plain: f64,\n\
+         }\n\
+         #[pymethods] impl P {\n\
+            #[cfg(feature = \"x\")] pub fn gated(&self) -> f64 { 0.0 }\n\
+            pub fn plain(&self) -> f64 { 0.0 }\n\
+         }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let field = |n: &str| p.fields.iter().find(|f| f.name == n).unwrap();
+    let by = |n: &str| p.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(field("gated").cfg, "feature = \"x\"");
+    assert_eq!(field("plain").cfg, "");
+    assert_eq!(by("gated").cfg, "feature = \"x\"");
+    assert_eq!(by("plain").cfg, "");
+    assert_eq!(by("gated").skip_reason, "");
+}
+
+/// `impl super::C` names the parent module's `C` — not a same-named `C` in the
+/// impl's own module, which is where treating `super` as uninformative sent it
+/// (#307 review).
+#[test]
+fn a_super_anchored_pymethods_target_is_the_parent_class() {
+    let manifest = scan(
+        "pub mod m { #[pyclass] pub struct C {}\n\
+            pub mod inner { #[pyclass] pub struct C {}\n\
+               #[pymethods] impl super::C { pub fn parent(&self) -> i32 { 1 } } } }",
+    );
+    let parent = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string()])
+        .expect("parent class");
+    let local = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string(), "inner".to_string()])
+        .expect("local class");
+    assert_eq!(
+        parent
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["parent"]
+    );
+    assert!(local.methods.is_empty());
+}
+
+/// `super::super::` walks two levels; a `super` past the crate root, or a
+/// `super::C` with no `C` in the parent, attaches to nothing — never to the
+/// local class by its bare name.
+#[test]
+fn a_super_path_that_names_no_class_attaches_to_nothing() {
+    let manifest = scan(
+        "#[pyclass] pub struct R {}\n\
+         pub mod m { pub mod inner {\n\
+            #[pyclass] pub struct C {}\n\
+            #[pymethods] impl super::super::R { pub fn two_up(&self) -> i32 { 1 } }\n\
+            #[pymethods] impl super::C { pub fn lost(&self) -> i32 { 2 } }\n\
+            #[pymethods] impl super::super::super::C { pub fn past_root(&self) -> i32 { 3 } } } }",
+    );
+    let root = manifest.structs.iter().find(|s| s.name == "R").unwrap();
+    let local = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["two_up"]
+    );
+    assert!(local.methods.is_empty());
+}
+
+/// A `use super::C;` disambiguates a bare `impl C` like any other anchored
+/// import: with two `C`s elsewhere in the crate, only the parent's gets the
+/// block.
+#[test]
+fn a_super_anchored_import_disambiguates() {
+    let manifest = scan(
+        "pub mod other { #[pyclass] pub struct C {} }\n\
+         pub mod m { #[pyclass] pub struct C {}\n\
+            pub mod inner { use super::C;\n\
+               #[pymethods] impl C { pub fn via_use(&self) -> i32 { 1 } } } }",
+    );
+    let parent = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["m".to_string()])
+        .unwrap();
+    let other = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["other".to_string()])
+        .unwrap();
+    assert_eq!(
+        parent
+            .methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["via_use"]
+    );
+    assert!(other.methods.is_empty());
+}
+
+/// The panic reader `<symbol>_take_panic` is a symbol the wrapper exports too,
+/// so a second item that would *be* it collides (#307 review) — for functions
+/// and for methods.
+#[test]
+fn the_panic_reader_symbol_is_reserved_too() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }\n\
+         #[pyfunction] pub fn foo_take_panic() -> i32 { 2 }\n\
+         #[pyclass] pub struct C {}\n\
+         #[pymethods] impl C {\n\
+            pub fn m(&self) -> i32 { 1 }\n\
+            pub fn m_take_panic(&self) -> i32 { 2 }\n\
+         }",
+    );
+    assert_eq!(function(&manifest, "foo").skip_reason, "");
+    assert_eq!(
+        function(&manifest, "foo_take_panic").skip_reason,
+        "symbol_collision:foo"
+    );
+    let c = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    let by = |n: &str| c.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(by("m").skip_reason, "");
+    assert_eq!(by("m_take_panic").skip_reason, "symbol_collision:C");
+}
+
+/// A `Vec<T>` field gets no accessor: the Julia side has no ABI for it yet,
+/// and an advertised getter it cannot bind would fail the whole binding after
+/// the wrapper had built (#307 review; #303). A `String` field still does.
+#[test]
+fn vec_fields_get_no_accessor() {
+    let manifest = scan(
+        "#[pyclass] pub struct P {\n\
+            #[pyo3(get, set)] pub tags: Vec<i32>,\n\
+            #[pyo3(get)] pub name: String,\n\
+            #[pyo3(get)] pub n: i32,\n\
+         }",
+    );
+    let p = manifest.structs.iter().find(|s| s.name == "P").unwrap();
+    let field = |n: &str| p.fields.iter().find(|f| f.name == n).unwrap();
+    assert!(!field("tags").ffi_compatible);
+    assert_eq!(field("tags").getter, "");
+    assert_eq!(field("tags").setter, "");
+    assert!(field("name").ffi_compatible);
+    assert_eq!(field("name").getter, "rustcall_P_get_name");
+    assert!(field("n").ffi_compatible);
+    assert_eq!(field("n").setter, "");
+}
+
+/// A method returns the class when its type is `Self`, the bare class name, or
+/// a `crate::` / `self::` / `super::` path ending in it — not when a path
+/// anchored elsewhere merely ends in the same identifier (#307 review): a
+/// `#[pyclass] struct String` method returning `std::string::String` returns a
+/// string.
+#[test]
+fn boxing_follows_the_class_not_the_last_path_segment() {
+    let manifest = scan(
+        "pub mod m {\n\
+            #[pyclass] pub struct String {}\n\
+            #[pymethods] impl String {\n\
+                pub fn text(&self) -> std::string::String { std::string::String::new() }\n\
+                pub fn me(&self) -> Self { String {} }\n\
+                pub fn bare(&self) -> String { String {} }\n\
+                pub fn anchored(&self) -> crate::m::String { String {} }\n\
+                pub fn relative(&self) -> self::String { String {} }\n\
+            }\n\
+         }",
+    );
+    let s = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "String" && s.module_path == vec!["m".to_string()])
+        .unwrap();
+    let by = |n: &str| s.methods.iter().find(|m| m.name == n).unwrap();
+    assert!(!by("text").returns_boxed_struct);
+    assert_eq!(by("text").return_type, "std::string::String");
+    assert!(by("me").returns_boxed_struct);
+    assert!(by("bare").returns_boxed_struct);
+    assert!(by("anchored").returns_boxed_struct);
+    assert!(by("relative").returns_boxed_struct);
+}
+
+/// The string helpers a wrapper declares (`<owner>_RustCallOwnedString`,
+/// `<owner>_free_rust_string`, `<owner>_RustCallBorrowedString`) are reserved
+/// per owner like any symbol (#307 review): a `#[pyfunction] fn User_label()
+/// -> String` clashes with `User::label(&self) -> String`, whose owner is
+/// `User_label` too. A `#[pyfunction] fn User() -> String` next to a
+/// `#[pyclass] User` used to cost the class its `String` getters the same way;
+/// it is refused on the Julia surface first now (a function cannot share a
+/// class's name), and, refused, it claims no symbol — the class keeps its
+/// getters.
+#[test]
+fn string_helper_names_are_reserved_too() {
+    let manifest = scan(
+        "#[pyfunction] pub fn User() -> String { String::new() }\n\
+         #[pyfunction] pub fn User_label() -> String { String::new() }\n\
+         #[pyclass] pub struct User {\n\
+            #[pyo3(get)] pub name: String,\n\
+            #[pyo3(get)] pub n: i32,\n\
+         }\n\
+         #[pymethods] impl User {\n\
+            pub fn label(&self) -> String { String::new() }\n\
+            pub fn count(&self) -> i32 { 0 }\n\
+         }",
+    );
+    // `fn User` is refused for the class's name, and so claims nothing.
+    assert_eq!(
+        function(&manifest, "User").skip_reason,
+        "julia_name_collision:User"
+    );
+    assert_eq!(function(&manifest, "User_label").skip_reason, "");
+    let user = manifest.structs.iter().find(|s| s.name == "User").unwrap();
+    let field = |n: &str| user.fields.iter().find(|f| f.name == n).unwrap();
+    let by = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
+    // The class's `String` getter declares `User_RustCallOwnedString`, which
+    // nothing else does any more: both getters stay.
+    assert!(field("name").ffi_compatible);
+    assert_eq!(field("name").getter, "rustcall_User_get_name");
+    assert!(field("n").ffi_compatible);
+    assert_eq!(field("n").getter, "rustcall_User_get_n");
+    // `User::label` shares its owner `User_label` with the free function,
+    // which came first.
+    assert_eq!(by("label").skip_reason, "symbol_collision:User_label");
+    assert_eq!(by("count").skip_reason, "");
+}
+
+/// The private thread-local slot a wrapper's panic reader drains is named from
+/// the upper-cased symbol (`__RUSTCALL_PANIC_RUSTCALL_FOO`), so two items whose
+/// names differ only by case would declare it twice. It is reserved like the
+/// symbols it belongs to (#307 review): the second item is a collision.
+#[test]
+fn case_folded_panic_slots_are_reserved() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }\n\
+         #[pyfunction] pub fn FOO() -> i32 { 2 }\n\
+         #[pyfunction] pub fn bar() -> i32 { 3 }",
+    );
+    assert_eq!(function(&manifest, "foo").skip_reason, "");
+    assert_eq!(
+        function(&manifest, "FOO").skip_reason,
+        "symbol_collision:foo"
+    );
+    assert_eq!(function(&manifest, "bar").skip_reason, "");
+}
+
+/// An `async fn` declares what its future *resolves to*; a wrapper that called
+/// it would return the future itself, a type error in the generated crate. The
+/// scan refuses it — function or method — with a reason of its own (#307
+/// review), and a plain sibling is unaffected.
+#[test]
+fn async_items_are_refused_before_wrapping() {
+    let manifest = scan(
+        "#[pyfunction] pub async fn fetch() -> i32 { 1 }\n\
+         #[pyfunction] pub fn ready() -> i32 { 2 }\n\
+         #[pyclass] pub struct Client;\n\
+         #[pymethods] impl Client {\n\
+             pub async fn get(&self) -> i32 { 3 }\n\
+             pub fn id(&self) -> i32 { 4 }\n\
+         }",
+    );
+    assert_eq!(function(&manifest, "fetch").skip_reason, "async_fn");
+    assert_eq!(function(&manifest, "ready").skip_reason, "");
+    let client = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "Client")
+        .expect("Client is scanned");
+    let method = |name: &str| client.methods.iter().find(|m| m.name == name).unwrap();
+    assert_eq!(method("get").skip_reason, "async_fn");
+    assert_eq!(method("id").skip_reason, "");
+}
+
+/// A `#[staticmethod]` is bound as a module-level Julia function named after
+/// the method, one untyped argument per Rust argument — the same surface a
+/// `#[pyfunction]` gets. Two definitions of one name and arity would leave only
+/// the later; the scan refuses the later item and names the earlier (#307
+/// review). Different arity, constructors and instance methods never collide.
+#[test]
+fn julia_surface_collisions_are_refused() {
+    let manifest = scan(
+        "#[pyfunction] pub fn parse(s: &str) -> i32 { 0 }\n\
+         #[pyclass] pub struct A;\n\
+         #[pymethods] impl A {\n\
+             #[new] pub fn new() -> Self { A }\n\
+             #[staticmethod] pub fn parse(s: &str) -> i32 { 1 }\n\
+             #[staticmethod] pub fn parse2(s: &str, radix: i32) -> i32 { 1 }\n\
+             #[staticmethod] pub fn make() -> i32 { 1 }\n\
+             pub fn describe(&self) -> i32 { 1 }\n\
+         }\n\
+         #[pyclass] pub struct B;\n\
+         #[pymethods] impl B {\n\
+             #[new] pub fn new() -> Self { B }\n\
+             #[staticmethod] pub fn make() -> i32 { 2 }\n\
+             #[staticmethod] pub fn make2(x: i32) -> i32 { 2 }\n\
+             pub fn describe(&self) -> i32 { 2 }\n\
+         }",
+    );
+    let class = |name: &str| manifest.structs.iter().find(|s| s.name == name).unwrap();
+    let method = |class: &str, name: &str| {
+        let s = manifest.structs.iter().find(|s| s.name == class).unwrap();
+        s.methods
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap()
+            .skip_reason
+            .clone()
+    };
+    // The free function owns `parse/1`; A's static of the same shape gives way.
+    assert_eq!(function(&manifest, "parse").skip_reason, "");
+    assert_eq!(method("A", "parse"), "julia_name_collision:parse");
+    // Arity distinguishes.
+    assert_eq!(method("A", "parse2"), "");
+    // First class to claim a name keeps it; the next class's same-shaped
+    // static is refused, naming the earlier owner.
+    assert_eq!(method("A", "make"), "");
+    assert_eq!(method("B", "make"), "julia_name_collision:A::make");
+    assert_eq!(method("B", "make2"), "");
+    // Constructors are named after their class, instance methods dispatch on
+    // it: neither is a collision.
+    assert_eq!(method("A", "new"), "");
+    assert_eq!(method("B", "new"), "");
+    assert_eq!(method("A", "describe"), "");
+    assert_eq!(method("B", "describe"), "");
+    assert_eq!(class("A").skip_reason, "");
+    assert_eq!(class("B").skip_reason, "");
+}
+
+/// A class is a Julia type *and* its constructor function, so its name is
+/// taken for every arity: a free function or a static method of that name
+/// would redefine the constant (`function User()` before `mutable struct
+/// User`) or graft an extra constructor onto the type. Classes claim their
+/// names first; the function gives way (#307 review).
+#[test]
+fn class_names_are_reserved_on_the_julia_surface() {
+    let manifest = scan(
+        "pub mod a { use pyo3::prelude::*;\n\
+             #[pyfunction] pub fn User() -> i32 { 0 }\n\
+             #[pyfunction] pub fn Other(x: i32) -> i32 { x }\n\
+         }\n\
+         pub mod b { use pyo3::prelude::*;\n\
+             #[pyclass] pub struct User;\n\
+             #[pymethods] impl User {\n\
+                 #[new] pub fn new() -> Self { User }\n\
+                 #[staticmethod] pub fn Other(x: i32) -> i32 { 1 }\n\
+                 #[staticmethod] pub fn Other2() -> i32 { 1 }\n\
+             }\n\
+         }",
+    );
+    // The class keeps its name; the same-named free function is refused and
+    // names the class.
+    assert_eq!(
+        function(&manifest, "User").skip_reason,
+        "julia_name_collision:b::User"
+    );
+    let user = manifest.structs.iter().find(|s| s.name == "User").unwrap();
+    assert_eq!(user.skip_reason, "");
+    // A free function claims its name and arity ahead of a static method:
+    // `Other(x)` is free, so `User::Other(x)` gives way; a static of another
+    // arity is a second method of the same Julia function and stands.
+    assert_eq!(function(&manifest, "Other").skip_reason, "");
+    let method = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
+    assert_eq!(method("Other").skip_reason, "julia_name_collision:a::Other");
+    assert_eq!(method("Other2").skip_reason, "");
+}

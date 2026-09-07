@@ -32,6 +32,36 @@ function _cargo_panic_env(policy::LoadPolicy, env::Union{Nothing, AbstractDict},
 end
 
 """
+    _cargo_feature_args(features, default_features) -> Vector{String}
+
+The Cargo flags naming a feature set, in the spelling `cargo build` takes:
+`--no-default-features` when `default_features` is off, then `--features a,b`
+when `features` is non-empty. Empty for the default build.
+"""
+function _cargo_feature_args(features::Vector{String}, default_features::Bool)
+    args = String[]
+    default_features || push!(args, "--no-default-features")
+    isempty(features) || append!(args, ["--features", join(features, ",")])
+    return args
+end
+
+"""
+    _cargo_build_args(release, features, default_features) -> Vector{String}
+
+The argument vector of the `cargo build` a project is built with: the profile,
+then the feature set (`_cargo_feature_args`). A plain `@rust_crate` build made
+with `features = ...` / `default_features = false` passes them here, so the
+crate is built with the configuration that was asked for and not its default
+one (#307 review).
+"""
+function _cargo_build_args(release::Bool, features::Vector{String}, default_features::Bool)
+    args = ["build"]
+    release && push!(args, "--release")
+    append!(args, _cargo_feature_args(features, default_features))
+    return args
+end
+
+"""
     build_cargo_project(project::CargoProject; release::Bool = true) -> String
 
 Build a Cargo project and return the path to the compiled library.
@@ -50,14 +80,12 @@ Build a Cargo project and return the path to the compiled library.
 """
 function build_cargo_project(project::CargoProject; release::Bool = true,
                              env::Union{Nothing, AbstractDict} = nothing,
-                             policy::LoadPolicy = inline_cargo_policy())
+                             policy::LoadPolicy = inline_cargo_policy(),
+                             features::Vector{String} = String[],
+                             default_features::Bool = true)
     # Build command
     cargo_cmd = cargo()
-    build_args = ["build"]
-
-    if release
-        push!(build_args, "--release")
-    end
+    build_args = _cargo_build_args(release, features, default_features)
 
     # The panic strategy is pinned twice: in the generated manifest and here,
     # in the environment Cargo runs under (#244). The manifest key already
@@ -69,17 +97,28 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     # of whatever the Julia process inherited.
     build_env = _cargo_panic_env(policy, env, release)
 
+    # The output goes where `get_built_library_path` looks, whatever the
+    # process inherited: an ambient `CARGO_TARGET_DIR`, or a `[build]
+    # target-dir` in a `.cargo/config.toml` Cargo discovers above the project
+    # (a wrapper built under a target crate's `target/` sees that crate's
+    # config), would otherwise send a successful build somewhere this function
+    # never checks and report "Library not found after build" (#307 review).
+    # The environment variable outranks the config key, and the target
+    # directory is not part of the artifact (`_is_cargo_env_key`).
+    build_env = Dict{String, String}(build_env === nothing ? ENV : build_env)
+    build_env["CARGO_TARGET_DIR"] = joinpath(project.path, "target")
+
     # Run cargo build
     cd(project.path) do
         try
             stderr_io = IOBuffer()
             stdout_io = IOBuffer()
 
-            cmd = `$cargo_cmd $build_args`
             # A recorded Cargo environment (precompiled block reload) replaces
             # the inherited one so profile overrides and RUSTFLAGS match; the
-            # pinned panic strategy is applied on top of either.
-            build_env === nothing || (cmd = setenv(cmd, build_env))
+            # pinned panic strategy and target directory are applied on top of
+            # either.
+            cmd = setenv(`$cargo_cmd $build_args`, build_env)
             proc = run(pipeline(cmd, stdout=stdout_io, stderr=stderr_io), wait=false)
             wait(proc)
 

@@ -223,21 +223,28 @@ end
         d = InlineDivider(Int32(1))
         chunk = 1 << 20   # 1 MiB per call
         # Warm up, then measure the resident high-water mark across calls that
-        # would leak 200 MiB if the `Ok` buffer were never handed back to
-        # `InlineDivider_free_rust_string`.
+        # would leak 1000 MiB if the `Ok` buffer were never handed back to
+        # `InlineDivider_free_rust_string`. `Sys.maxrss()` is a coarse,
+        # monotonic-within-process high-water mark: under `Pkg.test()`'s
+        # parallel runner, unrelated sibling worker processes' own memory use
+        # was measured to move a leak-free run's mark by ~190-440 MiB on its
+        # own (0 MiB and up to ~85 MiB for the same workload run in complete
+        # isolation), so both the workload and the threshold here are sized an
+        # order of magnitude past that: a real per-call leak is unambiguous at
+        # ~1000 MiB, comfortably clear of the noise this measurement carries.
         for _ in 1:5
             @test length(RustCall.unwrap(wide(d, chunk))) == chunk
         end
         GC.gc(true)
         before = Sys.maxrss()
-        for i in 1:200
+        for i in 1:1000
             s = RustCall.unwrap(wide(d, chunk))
             @test length(s) == chunk
             i % 20 == 0 && GC.gc(false)
         end
         GC.gc(true)
         growth = Sys.maxrss() - before
-        @test growth < 80 * 1024 * 1024
+        @test growth < 700 * 1024 * 1024
     end
 end
 
@@ -356,11 +363,20 @@ end
             @test RustCall.unwrap(call("tag", d, "s")) == "s10"
             @test_throws RustCall.RustPanicError call("panicky_div", d, Int32(-1))
         finally
-            # Windows cannot delete a mapped DLL: unload the image the module
-            # loaded before the temporary tree goes away.
+            # A written bindings file bakes Cargo's *own* output path into
+            # `_LIB_PATH` (it has to outlive this session, so it cannot be a
+            # generation copy), and its `__init__` maps that file in place.
+            # Retiring the image is not enough on Windows: a mapped DLL stays
+            # locked for the life of the process, and the next `cargo build`
+            # of `examples/sample_crate` anywhere in the test run — the hot
+            # reload testset, on whichever worker it lands — then fails with
+            # "failed to remove file ... Access is denied". Close it (#289
+            # made that safe: the objects it produced went inert when it was
+            # retired), as `test_load_conformance.jl` does.
             if mod !== nothing
                 try
-                    RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME))
+                    RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME);
+                                            close = true)
                 catch
                 end
             end

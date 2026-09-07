@@ -59,6 +59,20 @@ use serde::{Deserialize, Serialize};
 ///   their `Method` counterparts, which say whether a payload travels as an
 ///   owned `<owner>_RustCallOwnedString` buffer — the composition of the
 ///   `Result` and string lowerings that makes `Result<String, String>` work.
+///   The same version 6 bump also covers the PyO3 wrapper crate (#275 Phase
+///   2), landing together since neither shipped separately: the manifest a
+///   wrapper build emits
+///   describes generated entry points rather than a scan, so a `py_*` entry can
+///   now have `exported = true` and a filled-in `return_abi`, a `PyResult`
+///   entry's `err_type` is the `i32` code the wrapper reports
+///   (`crate::wrap::PYERR_CODE`) rather than being empty, and the
+///   [`skip_reason`] vocabulary gains the four reasons the *generator* can
+///   refuse an item for. A version-5 consumer would read a wrapper manifest as
+///   a scan and never call anything. Within version 6, additively:
+///   [`Method::cfg`] and [`Field::cfg`] carry a class member's own undecided
+///   `#[cfg]` predicate (serialized only when non-empty), so a wrapper
+///   generated from a lenient scan refuses the member the way it refuses an
+///   item; no consumer reads the column, only the generator (#307 review).
 pub const SCHEMA_VERSION: u32 = 6;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
@@ -91,6 +105,34 @@ pub mod skip_reason {
     /// both kinds at once rather than gaining a PyO3-only variant here: #300
     /// owns that, and this reason goes away when it lands.
     pub const SYMBOL_COLLISION: &str = "symbol_collision";
+    /// The wrapper generator cannot lower an argument: its type is neither
+    /// FFI-compatible nor a `String` / `&str`, or its name is not an
+    /// identifier. The spelling follows the colon (#275 Phase 2).
+    pub const UNSUPPORTED_ARG: &str = "unsupported_arg";
+    /// The wrapper generator cannot lower the return value: the type, or a
+    /// `Result` / `Option` payload inside it, does not cross the C ABI as a
+    /// single value. The spelling follows the colon (#275 Phase 2).
+    pub const UNSUPPORTED_RETURN: &str = "unsupported_return";
+    /// A `PyResult<T>` whose `Ok` type does not fit in the `CResult`
+    /// aggregate (`String`, `Self`, a `Vec`, ...). The spelling follows the
+    /// colon. Widening this is tracked by #303 (#275 Phase 2).
+    pub const PY_RESULT_PAYLOAD: &str = "py_result_payload";
+    /// The item carries a `#[cfg(...)]` predicate the scan could not decide,
+    /// so whether the build the wrapper links against has it at all is
+    /// unknown; calling an item that is not there is a compile error in
+    /// generated code. The predicate follows the colon (#275 Phase 2).
+    pub const CFG_UNDECIDED: &str = "cfg_undecided";
+    /// An `async fn`: its declared output is what the future resolves to, and
+    /// a wrapper calling it would hand back the future — a type error in the
+    /// generated crate, and nothing an `extern "C"` could return. The wrapper
+    /// has no executor to drive it (#307 review).
+    pub const ASYNC_FN: &str = "async_fn";
+    /// A `#[staticmethod]` whose Julia name and arity another item already
+    /// defines — a free function, or another class's static method of the
+    /// same name: both become one untyped module-level Julia function, and the
+    /// later definition would silently replace the earlier. The earlier
+    /// item's qualified name follows the colon (#307 review).
+    pub const JULIA_NAME_COLLISION: &str = "julia_name_collision";
 
     /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
     pub fn detailed(kind: &str, detail: &str) -> String {
@@ -354,6 +396,13 @@ pub struct Field {
     /// field gets accessors from the PyO3 scan (#275).
     #[serde(default)]
     pub vis: String,
+    /// `#[cfg(...)]` predicate on the field that the scan could not decide
+    /// (see [`Function::cfg`]); empty — and then omitted — when there is
+    /// none. A wrapper crate generated from a leniently evaluated scan refuses
+    /// the accessors of such a field instead of naming a member the build it
+    /// is compiled against may not have (#307 review).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cfg: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -384,11 +433,12 @@ pub struct Method {
     /// `#[pymethods]` block, empty otherwise (#275).
     #[serde(default)]
     pub accessor: String,
-    /// Shape of the return value, as for a free function. Method wrappers of
-    /// `#[julia]` structs never wrap `Result`/`Option`, so they are `Plain` or
-    /// `Unit`; a scanned `#[pymethods]` method returning `PyResult<T>` is
-    /// [`ReturnKind::PyResult`] with `T` in [`Method::ok_type`], so a Phase-2
-    /// wrapper never has to re-read the Rust type spelling (#275).
+    /// Shape of the return value, as for a free function. A `#[julia]` method
+    /// returning `Result<T, E>` / `Option<T>` is [`ReturnKind::Result`] /
+    /// [`ReturnKind::Option`] (schema 6, #268); a scanned `#[pymethods]` method
+    /// returning `PyResult<T>` is [`ReturnKind::PyResult`] with `T` in
+    /// [`Method::ok_type`], so a Phase-2 wrapper never has to re-read the Rust
+    /// type spelling (#275).
     #[serde(default)]
     pub return_kind: ReturnKind,
     /// `T` of a `PyResult<T>` / `Result<T, E>` return, empty otherwise (#275).
@@ -431,6 +481,13 @@ pub struct Method {
     /// monomorphization. Empty otherwise.
     #[serde(default)]
     pub generic_wrapper: String,
+    /// `#[cfg(...)]` predicate on the method that the scan could not decide
+    /// (see [`Function::cfg`]); empty — and then omitted — when there is
+    /// none. A wrapper crate generated from a leniently evaluated scan refuses
+    /// such a method with [`skip_reason::CFG_UNDECIDED`], as it refuses an
+    /// item (#307 review).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub cfg: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

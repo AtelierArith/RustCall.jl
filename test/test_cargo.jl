@@ -229,20 +229,62 @@ end
     end
 end
 
+"""
+    with_isolated_cargo_cache(f)
+
+Run `f` with RustCall's cache in a directory of its own (#306).
+
+The Cargo cache is a **depot-level, process-shared** directory, and the two
+testsets below assert on its *whole contents* — its total size after a clear,
+and the number of libraries in it after one evaluation. Under `Pkg.test()`'s
+parallel runner any other worker that compiles a Cargo block writes into that
+same directory, so those assertions were being made about somebody else's
+artifacts and failed intermittently. #275's PyO3 wrapper builds go through the
+same cache, which made it far more likely.
+
+`RUSTCALL_CACHE_DIR` is the documented override (#252) and is part of the
+memo key, but the memo is also consulted by code already running, so it is
+reset on the way in and on the way out.
+
+The directory is **not** removed by `mktempdir`'s cleanup: a library this
+testset loaded is mapped into the process, and Windows refuses to delete a
+mapped file. It is removed best-effort instead, exactly as `clear_cargo_cache`
+tolerates the same thing.
+"""
+function with_isolated_cargo_cache(f)
+    dir = mktempdir(; cleanup = false)
+    try
+        withenv("RUSTCALL_CACHE_DIR" => dir) do
+            RustCall._reset_cache_dir_memo!()
+            f()
+        end
+    finally
+        RustCall._reset_cache_dir_memo!()
+        try
+            rm(dir; recursive = true, force = true)
+        catch
+        end
+    end
+end
+
 @testset "Cargo Cache" begin
 
+    # The whole-directory assertions below only mean what they say when nothing
+    # else is writing to that directory; see `with_isolated_cargo_cache` (#306).
     @testset "cache operations" begin
-        # Test cache directory creation
-        cache_dir = RustCall.get_cargo_cache_dir()
-        @test isdir(cache_dir)
+        with_isolated_cargo_cache() do
+            # Test cache directory creation
+            cache_dir = RustCall.get_cargo_cache_dir()
+            @test isdir(cache_dir)
 
-        # Test clearing cache
-        RustCall.clear_cargo_cache()
-        @test isdir(cache_dir)  # Directory should still exist
+            # Test clearing cache
+            RustCall.clear_cargo_cache()
+            @test isdir(cache_dir)  # Directory should still exist
 
-        # Test cache size (should be 0 after clear)
-        size = RustCall.get_cargo_cache_size()
-        @test size == 0
+            # Test cache size (should be 0 after clear)
+            size = RustCall.get_cargo_cache_size()
+            @test size == 0
+        end
     end
 end
 
@@ -368,6 +410,9 @@ end
     if !RustCall.check_rustc_available()
         @test_skip "rustc/cargo are required for a Cargo-backed block"
     else
+      # Its own cache root, so "exactly one entry" is a statement about this
+      # block and not about whatever a parallel worker compiled (#306).
+      with_isolated_cargo_cache() do
         block = """
         // cargo-deps: itoa="1.0"
 
@@ -389,13 +434,19 @@ end
         _, build_env_key = RustCall._cargo_build_env_for(nothing)
         id = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
             cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()))
-        @test only(cached) == RustCall.artifact_key(id) * lib_ext
-        @test lib == "rust_cargo_$(RustCall.artifact_short_id(RustCall.artifact_key(id), 16))"
+        key = RustCall.artifact_key(id)
+        # Named by this block's own key, whatever else is in the directory:
+        # the assertion the testset is really making is "this block produced
+        # exactly one key", so it is also checked that way.
+        @test only(cached) == key * lib_ext
+        @test count(==(key * lib_ext), cached) == 1
+        @test lib == "rust_cargo_$(RustCall.artifact_short_id(key, 16))"
 
         # A second evaluation adds nothing: it is the same key.
         RustCall._compile_and_load_rust(block, "one-key", 0)
-        @test length(filter(f -> endswith(f, lib_ext),
-                            readdir(RustCall.get_cargo_cache_dir()))) == 1
+        after = filter(f -> endswith(f, lib_ext), readdir(RustCall.get_cargo_cache_dir()))
+        @test length(after) == 1
+        @test count(==(key * lib_ext), after) == 1
 
         # The builder refuses a profile that disagrees with the identity it was
         # handed, rather than quietly caching under a second key.
@@ -406,6 +457,7 @@ end
         finally
             RustCall.cleanup_cargo_project(project)
         end
+      end
     end
 end
 
@@ -498,5 +550,53 @@ end
                 @warn "Could not remove the Cargo config sandbox; leaving it behind" sandbox exception = e
             end
         end
+    end
+end
+
+@testset "A generated project's output is pinned to its own target/ (#307 review)" begin
+    # `build_cargo_project` looks for the library under `<project>/target`. An
+    # inherited `CARGO_TARGET_DIR`, or a `[build] target-dir` in a
+    # `.cargo/config.toml` Cargo discovers above the project (a PyO3 wrapper is
+    # built under its target crate's `target/`, so that crate's config applies),
+    # would send a successful build elsewhere and turn it into "Library not
+    # found after build". The build pins the directory instead.
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc/cargo are required to build a Cargo project"
+    else
+        sandbox = mktempdir()
+        project_dir = joinpath(sandbox, "pinned")
+        mkpath(joinpath(project_dir, "src"))
+        mkpath(joinpath(project_dir, ".cargo"))
+        write(joinpath(project_dir, "Cargo.toml"), """
+            [package]
+            name = "pinned"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [workspace]
+            """)
+        write(joinpath(project_dir, "src", "lib.rs"), """
+            #[no_mangle]
+            pub extern "C" fn rustcall_pinned() -> i32 { 42 }
+            """)
+        # Both ways of moving the output, at once.
+        write(joinpath(project_dir, ".cargo", "config.toml"), """
+            [build]
+            target-dir = "config-elsewhere"
+            """)
+        foreign = joinpath(sandbox, "env-elsewhere")
+        project = RustCall.CargoProject("pinned", "0.1.0", RustCall.DependencySpec[],
+                                        "2021", project_dir)
+        lib = withenv("CARGO_TARGET_DIR" => foreign) do
+            RustCall.build_cargo_project(project; release = true)
+        end
+        @test isfile(lib)
+        @test startswith(lib, joinpath(project_dir, "target"))
+        @test !isdir(foreign)
+        @test !isdir(joinpath(project_dir, "config-elsewhere"))
+        rm(sandbox; recursive = true, force = true)
     end
 end
