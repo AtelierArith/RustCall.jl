@@ -1,0 +1,270 @@
+schema_version = 7
+mode = "crate"
+functions = []
+
+[[structs]]
+name = "Gauge"
+ffi_name = "Gauge"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 12
+module_path = []
+
+[[structs.fields]]
+name = "value"
+rust_type = "i32"
+abi = ""
+ffi_compatible = true
+getter = "Gauge_get_value"
+setter = "Gauge_set_value"
+python_name = ""
+vis = ""
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_Gauge_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "value"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods]]
+name = "label"
+symbol = "rustcall_Gauge_label"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "String"
+return_abi = "string"
+generic_wrapper = ""
+
+[[structs.methods]]
+name = "scaled"
+symbol = "rustcall_Gauge_scaled"
+is_static = true
+is_mutable = false
+is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "value"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods.args]]
+name = "factor"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods]]
+name = "read"
+symbol = "rustcall_Gauge_read"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "i32"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods]]
+name = "bump"
+symbol = "rustcall_Gauge_bump"
+is_static = false
+is_mutable = true
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "unit"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "()"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods]]
+name = "halved"
+symbol = "rustcall_Gauge_halved"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "result"
+ok_type = "i32"
+err_type = "String"
+inner_type = ""
+ok_abi = ""
+err_abi = "string"
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "Result<i32, String>"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs]]
+name = "C"
+ffi_name = "a__C"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 77
+module_path = ["a"]
+
+[[structs.fields]]
+name = "v"
+rust_type = "i32"
+abi = ""
+ffi_compatible = true
+getter = "a__C_get_v"
+setter = "a__C_set_v"
+python_name = ""
+vis = ""
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_a__C_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
+
+[[structs.methods.args]]
+name = "v"
+rust_type = "i32"
+abi = ""
+
+[[structs.methods]]
+name = "get"
+symbol = "rustcall_a__C_get"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "julia"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+args = []
+return_type = "i32"
+return_abi = ""
+generic_wrapper = ""

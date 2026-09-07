@@ -17,6 +17,10 @@ pub struct MethodModel {
     /// (`Julia`, or `None` for an inline-mode impl that carries none).
     /// Recorded on the manifest entry (`Method.attribute`, #275 Phase 3).
     pub attribute: Attribute,
+    /// The `#[cfg]` of the impl block and of every module enclosing it: the
+    /// method exists only under those predicates as much as under its own
+    /// (#300 review, #315). Empty for a wrapper generated from a lone method.
+    pub enclosing_cfg: Vec<syn::Attribute>,
 }
 
 impl MethodModel {
@@ -30,6 +34,7 @@ impl MethodModel {
             is_static: receiver.is_none(),
             is_mutable: receiver.map(|r| r.mutability.is_some()).unwrap_or(false),
             attribute,
+            enclosing_cfg: Vec::new(),
         }
     }
 
@@ -68,6 +73,88 @@ impl StructModel {
             _ => Vec::new(),
         }
     }
+
+    /// The model of a struct item selected under `mode`: a `#[julia]` struct,
+    /// or in inline mode also a `#[derive(JuliaStruct)]` one. `None` when the
+    /// struct carries neither.
+    pub fn of(s: &ItemStruct, mode: Mode) -> Option<StructModel> {
+        let attribute = rustcall_attribute(&s.attrs);
+        let selected = matches!(
+            (mode, attribute),
+            (_, Attribute::Julia) | (Mode::Inline, Attribute::DeriveJuliaStruct)
+        );
+        if !selected {
+            return None;
+        }
+        Some(StructModel {
+            item: s.clone(),
+            attribute,
+            derives: derive_list(&s.attrs)
+                .into_iter()
+                .filter(|d| d != "JuliaStruct")
+                .collect(),
+            impls: Vec::new(),
+            methods: Vec::new(),
+            line: s.span().start().line,
+        })
+    }
+
+    /// Record an inherent impl block of this struct and the methods of it that
+    /// get wrapped under `mode`. The caller has decided that the block is this
+    /// struct's (by name at one level, or by resolved path across modules,
+    /// #315); a method already seen under the same name is not added twice.
+    /// `enclosing_cfg` is the `#[cfg]` of every module enclosing the block.
+    pub fn attach_impl(&mut self, imp: &ItemImpl, mode: Mode, enclosing_cfg: &[syn::Attribute]) {
+        self.impls.push(imp.clone());
+        for m in wrapped_methods(imp, mode, enclosing_cfg) {
+            if !self.methods.iter().any(|seen| seen.name() == m.name()) {
+                self.methods.push(m);
+            }
+        }
+    }
+}
+
+/// Whether the block carries `#[julia]` itself, which in crate mode is what
+/// makes its `#[julia]` methods get wrapped.
+pub fn impl_has_julia(imp: &ItemImpl) -> bool {
+    imp.attrs.iter().any(is_julia_attr)
+}
+
+/// The methods of an inherent impl block that get wrapped under `mode`, in
+/// source order. Each carries the block's `#[cfg]` on top of `enclosing_cfg`,
+/// the predicates of the modules around the block.
+pub fn wrapped_methods(
+    imp: &ItemImpl,
+    mode: Mode,
+    enclosing_cfg: &[syn::Attribute],
+) -> Vec<MethodModel> {
+    let has_julia = impl_has_julia(imp);
+    let block_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs);
+    // What the manifest records as the method's origin: the impl block's
+    // attribute, which an inline-mode impl does not have.
+    let impl_attribute = if has_julia {
+        Attribute::Julia
+    } else {
+        Attribute::None
+    };
+    imp.items
+        .iter()
+        .filter_map(|ii| match ii {
+            ImplItem::Fn(func) => Some(func),
+            _ => None,
+        })
+        .filter(|func| match mode {
+            // Historical inline rule: every `pub fn` of an inherent impl.
+            Mode::Inline => matches!(func.vis, Visibility::Public(_)),
+            // Proc-macro rule: `#[julia]` methods inside a `#[julia] impl`.
+            Mode::Crate => has_julia && func.attrs.iter().any(is_julia_attr),
+        })
+        .map(|func| {
+            let mut m = MethodModel::from_fn(func, impl_attribute);
+            m.enclosing_cfg = block_cfg.clone();
+            m
+        })
+        .collect()
 }
 
 fn impl_target_name(item: &ItemImpl) -> Option<String> {
@@ -84,67 +171,136 @@ pub fn collect_struct_models(file: &syn::File, mode: Mode) -> Vec<StructModel> {
     collect_struct_models_in(&file.items, mode)
 }
 
-/// Same as [`collect_struct_models`] for one level of items (a file or the body
-/// of an inline `mod`). Impl blocks are matched within the same level only.
-pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> {
-    let mut models: Vec<StructModel> = Vec::new();
+/// The struct models of a whole item tree, every inherent impl block attached
+/// to its struct wherever the block sits (#315).
+///
+/// This is the inline expander's view of a `rust"""` block: every inline module
+/// counts, so a struct is identified by its module path and its name, and an
+/// `impl super::Gauge` in `mod ops` or an `impl Gauge` next to a
+/// `use crate::Gauge;` reaches the struct at the root exactly as a block next
+/// to it does. Headers are resolved by the resolver the crate scans share
+/// (`crate::paths::locate`). A block that names no selected struct is left
+/// alone — an inherent impl of an ordinary struct is ordinary code.
+#[derive(Debug, Default)]
+pub struct ModelTree {
+    entries: Vec<LocatedModel>,
+}
 
-    for item in items {
-        if let Item::Struct(s) = item {
-            let attribute = rustcall_attribute(&s.attrs);
-            let selected = matches!(
-                (mode, attribute),
-                (_, Attribute::Julia) | (Mode::Inline, Attribute::DeriveJuliaStruct)
-            );
-            if !selected {
-                continue;
+#[derive(Debug)]
+struct LocatedModel {
+    module_path: Vec<String>,
+    name: String,
+    model: StructModel,
+}
+
+/// An inherent impl block seen by [`ModelTree::collect`], with the `#[cfg]` of
+/// the modules around it.
+#[derive(Debug)]
+struct ScannedBlock {
+    item: ItemImpl,
+    header: crate::paths::ImplHeader,
+    enclosing_cfg: Vec<syn::Attribute>,
+}
+
+impl crate::paths::Located for LocatedModel {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn module_path(&self) -> &[String] {
+        &self.module_path
+    }
+}
+
+impl ModelTree {
+    pub fn collect(items: &[Item], mode: Mode) -> ModelTree {
+        let mut tree = ModelTree::default();
+        let mut impls: Vec<ScannedBlock> = Vec::new();
+        let mut imports = Vec::new();
+        let mut path = Vec::new();
+        tree.walk(items, mode, &mut path, &[], &mut impls, &mut imports);
+        for block in &impls {
+            if let Ok(index) = crate::paths::locate(&tree.entries, &block.header, &imports) {
+                tree.entries[index]
+                    .model
+                    .attach_impl(&block.item, mode, &block.enclosing_cfg);
             }
-            models.push(StructModel {
-                item: s.clone(),
-                attribute,
-                derives: derive_list(&s.attrs)
-                    .into_iter()
-                    .filter(|d| d != "JuliaStruct")
-                    .collect(),
-                impls: Vec::new(),
-                methods: Vec::new(),
-                line: s.span().start().line,
-            });
+        }
+        tree
+    }
+
+    fn walk(
+        &mut self,
+        items: &[Item],
+        mode: Mode,
+        path: &mut Vec<String>,
+        enclosing_cfg: &[syn::Attribute],
+        impls: &mut Vec<ScannedBlock>,
+        imports: &mut Vec<crate::paths::ScannedImport>,
+    ) {
+        for item in items {
+            match item {
+                Item::Struct(s) => {
+                    if let Some(model) = StructModel::of(s, mode) {
+                        self.entries.push(LocatedModel {
+                            module_path: path.clone(),
+                            name: model.name(),
+                            model,
+                        });
+                    }
+                }
+                Item::Impl(imp) => {
+                    if let Some(header) = crate::paths::ImplHeader::of(imp, path) {
+                        impls.push(ScannedBlock {
+                            item: imp.clone(),
+                            header,
+                            enclosing_cfg: enclosing_cfg.to_vec(),
+                        });
+                    }
+                }
+                Item::Use(u) => imports.extend(crate::paths::imports_of_use(u, path)),
+                Item::Mod(m) => {
+                    if let Some((_, inner)) = &m.content {
+                        path.push(m.ident.to_string());
+                        let cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs);
+                        self.walk(inner, mode, path, &cfg, impls, imports);
+                        path.pop();
+                    }
+                }
+                _ => {}
+            }
         }
     }
+
+    /// The model of `name` declared directly in `module_path`, if selected.
+    pub fn find(&self, module_path: &[String], name: &str) -> Option<&StructModel> {
+        self.entries
+            .iter()
+            .find(|e| e.module_path == module_path && e.name == name)
+            .map(|e| &e.model)
+    }
+}
+
+/// Same as [`collect_struct_models`] for one level of items (a file or the body
+/// of an inline `mod`). Impl blocks are matched within the same level only;
+/// [`ModelTree`] and the crate scan (`crate::extract::CrateScan`) match them
+/// across the whole module tree (#315).
+pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> {
+    let mut models: Vec<StructModel> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Struct(s) => StructModel::of(s, mode),
+            _ => None,
+        })
+        .collect();
 
     for item in items {
         let Item::Impl(imp) = item else { continue };
         let Some(target) = impl_target_name(imp) else {
             continue;
         };
-        let Some(model) = models.iter_mut().find(|m| m.name() == target) else {
-            continue;
-        };
-        model.impls.push(imp.clone());
-
-        let impl_has_julia = imp.attrs.iter().any(is_julia_attr);
-        // What the manifest records as the method's origin: the impl block's
-        // attribute, which an inline-mode impl does not have.
-        let impl_attribute = if impl_has_julia {
-            Attribute::Julia
-        } else {
-            Attribute::None
-        };
-
-        for ii in &imp.items {
-            let ImplItem::Fn(func) = ii else { continue };
-            let wrap = match mode {
-                // Historical inline rule: every `pub fn` of an inherent impl.
-                Mode::Inline => matches!(func.vis, Visibility::Public(_)),
-                // Proc-macro rule: `#[julia]` methods inside a `#[julia] impl`.
-                Mode::Crate => impl_has_julia && func.attrs.iter().any(is_julia_attr),
-            };
-            if wrap && !model.methods.iter().any(|m| func.sig.ident == m.name()) {
-                model
-                    .methods
-                    .push(MethodModel::from_fn(func, impl_attribute));
-            }
+        if let Some(model) = models.iter_mut().find(|m| m.name() == target) {
+            model.attach_impl(imp, mode, &[]);
         }
     }
 

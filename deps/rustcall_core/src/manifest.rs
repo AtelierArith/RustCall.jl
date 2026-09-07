@@ -627,6 +627,62 @@ pub struct GenericWrapper {
     pub type_params: Vec<String>,
 }
 
+/// `` `a::C` (line 3) `` — how [`Manifest::symbol_owners`] names an item.
+fn symbol_owner(path: &[String], name: &str, line: usize) -> String {
+    let mut segments = path.to_vec();
+    segments.push(name.to_string());
+    format!("`{}` (line {line})", segments.join("::"))
+}
+
+impl Function {
+    /// The exported symbol this `#[julia]` function claims, with the owner
+    /// label of [`Manifest::symbol_owners`]; empty when it claims none (a PyO3
+    /// item, an unexported or generic one, an undecided `#[cfg]`).
+    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
+        if self.attribute.is_pyo3_scan()
+            || !self.exported
+            || self.symbol.is_empty()
+            || !self.cfg.is_empty()
+        {
+            return Vec::new();
+        }
+        vec![(
+            self.symbol.clone(),
+            symbol_owner(&self.module_path, &self.name, self.line),
+        )]
+    }
+}
+
+impl Struct {
+    /// The exported symbols this `#[julia]` struct claims — `free`, the field
+    /// accessors and the method wrappers — with the owner label of
+    /// [`Manifest::symbol_owners`].
+    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
+        if self.attribute.is_pyo3_scan() || !self.cfg.is_empty() || self.ffi_name.is_empty() {
+            return Vec::new();
+        }
+        let who = symbol_owner(&self.module_path, &self.name, self.line);
+        let mut out = Vec::new();
+        // A generic struct exports nothing itself.
+        if self.type_params.is_empty() {
+            out.push((format!("{}_free", self.ffi_name), who.clone()));
+        }
+        for field in &self.fields {
+            for accessor in [&field.getter, &field.setter] {
+                if !accessor.is_empty() {
+                    out.push((accessor.clone(), who.clone()));
+                }
+            }
+        }
+        for m in &self.methods {
+            if !m.symbol.is_empty() && m.cfg.is_empty() {
+                out.push((m.symbol.clone(), who.clone()));
+            }
+        }
+        out
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub schema_version: u32,
@@ -683,39 +739,11 @@ impl Manifest {
     /// their clashes with a `skip_reason` (`crate::pyo3`).
     pub fn symbol_owners(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        let owner = |path: &[String], name: &str, line: usize| {
-            let mut segments = path.to_vec();
-            segments.push(name.to_string());
-            format!("`{}` (line {line})", segments.join("::"))
-        };
         for f in &self.functions {
-            if f.attribute.is_pyo3_scan() || !f.exported || f.symbol.is_empty() || !f.cfg.is_empty()
-            {
-                continue;
-            }
-            out.push((f.symbol.clone(), owner(&f.module_path, &f.name, f.line)));
+            out.extend(f.claimed_symbols());
         }
         for s in &self.structs {
-            if s.attribute.is_pyo3_scan() || !s.cfg.is_empty() || s.ffi_name.is_empty() {
-                continue;
-            }
-            let who = owner(&s.module_path, &s.name, s.line);
-            // A generic struct exports nothing itself.
-            if s.type_params.is_empty() {
-                out.push((format!("{}_free", s.ffi_name), who.clone()));
-            }
-            for field in &s.fields {
-                for accessor in [&field.getter, &field.setter] {
-                    if !accessor.is_empty() {
-                        out.push((accessor.clone(), who.clone()));
-                    }
-                }
-            }
-            for m in &s.methods {
-                if !m.symbol.is_empty() && m.cfg.is_empty() {
-                    out.push((m.symbol.clone(), who.clone()));
-                }
-            }
+            out.extend(s.claimed_symbols());
         }
         out
     }

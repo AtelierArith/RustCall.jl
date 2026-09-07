@@ -733,41 +733,49 @@ function expand_inline(code::String; cfg = :strict, cfg_text::Union{Nothing, Abs
 end
 
 """
-    extract_manifest(files::Vector{String}; mode::String, skip_unparsable=false) -> Dict
+    extract_manifest(files::Vector{String}; mode::String, skip_unparsable=false,
+                     crate_root=nothing) -> Dict
 
 Run the extractor over source files (`mode` is `"inline"` or `"crate"`).
 With `skip_unparsable`, files that are not complete Rust modules (for example
 `include!("table.rs")` fragments) are skipped with a warning instead of failing.
 
 `crate_root` (crate mode only) names the crate's root source file, usually
-`src/lib.rs`. The PyO3 scan of #275 then follows the crate's module tree from
-there — recording each item's real `module_path` and whether every enclosing
-`mod` is `pub` — instead of reporting every file's items as crate-root items.
+`src/lib.rs`. The extractor then scans the crate by following its module tree
+from there — recording each item's real `module_path`, whether every enclosing
+`mod` is `pub` (#275), and marrying a `#[julia] impl` block to a struct declared
+in another file (#315) — instead of treating every file as a root. The tree *is*
+the file list then: `files` is not passed on, because a file no `mod` reaches is
+not compiled by rustc and exports nothing.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
                           cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
                           crate_root::Union{Nothing, AbstractString} = nothing)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
-    isempty(files) && return Dict{String, Any}(
+    isempty(files) && crate_root === nothing && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
     args = ["manifest", "--mode", mode]
     skip_unparsable && push!(args, "--skip-unparsable")
-    # With a crate root the extractor scans PyO3 items (#275) by following the
-    # crate's `mod` tree instead of treating each file as a root, so an item in
-    # `src/api.rs` is reported as `api::item` and a `mod api;` that is not `pub`
-    # makes everything below it unreachable.
-    if crate_root !== nothing
-        push!(args, "--crate-root")
-        push!(args, String(crate_root))
-    end
     if cfg_text === nothing
         append!(args, _cfg_file_args(cfg))
     else
         append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
     end
-    text = _run_extractor(vcat(args, files))
+    text = _run_extractor(vcat(args, _scan_inputs(files, crate_root)))
     return _parse_manifest(text)
+end
+
+"""
+    _scan_inputs(files, crate_root) -> Vector{String}
+
+What a crate-mode scan reads: the module tree below `crate_root` when there is
+one (`--crate-root`, which the extractor does not accept FILE arguments with),
+otherwise every file, each as its own root.
+"""
+function _scan_inputs(files::Vector{String}, crate_root::Union{Nothing, AbstractString})
+    crate_root === nothing && return files
+    return ["--crate-root", String(crate_root)]
 end
 
 """
@@ -811,19 +819,16 @@ function wrap_crate(files::Vector{String}; crate_name::AbstractString,
                     cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
                     crate_root::Union{Nothing, AbstractString} = nothing,
                     skip_unparsable::Bool = false)
-    isempty(files) && throw(ArgumentError("wrap_crate needs at least one source file"))
+    isempty(files) && crate_root === nothing &&
+        throw(ArgumentError("wrap_crate needs at least one source file"))
     args = ["wrap", "--crate-name", String(crate_name)]
     skip_unparsable && push!(args, "--skip-unparsable")
-    if crate_root !== nothing
-        push!(args, "--crate-root")
-        push!(args, String(crate_root))
-    end
     if cfg_text === nothing
         append!(args, _cfg_file_args(cfg))
     else
         append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
     end
-    text = _run_extractor(vcat(args, files))
+    text = _run_extractor(vcat(args, _scan_inputs(files, crate_root)))
     doc = try
         TOML.parse(text)
     catch e
