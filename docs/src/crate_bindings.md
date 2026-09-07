@@ -172,6 +172,25 @@ block's own `#[julia]` module path. A block whose header names no `#[julia]`
 struct — or one whose symbols the proc-macro would qualify differently, such
 as a bare `impl Counter` inside a `#[julia] mod` for a struct at the crate root
 — fails the scan with the header to write instead of silently binding nothing.
+A header that resolves to a struct **without** `#[julia]` — a plain `struct
+Counter` declared beside the block, which is what Rust itself resolves to —
+fails the same way rather than attaching to a same-named annotated struct
+elsewhere: annotate that struct, or spell the intended one
+(`impl crate::Counter`).
+
+A file reached only by a literal `include!("api.rs")` is scanned too: its items
+are compiled into the including module, so that is where they bind. An include
+whose path is not a literal (`include!(concat!(env!("OUT_DIR"), "/api.rs"))`)
+names a file the build writes later and is left to the compiler.
+
+!!! note "Inline blocks: keep the method signature in scope at the struct"
+    In a `rust"""` block the wrappers are emitted next to the struct, so a
+    cross-module method whose signature names a type that only the impl's
+    module can see (`type Count = i32;` beside the block) does not compile.
+    Qualify it (`super::ops::Count`) or keep the impl beside the struct;
+    [#342](https://github.com/AtelierArith/RustCall.jl/issues/342) tracks
+    emitting such a wrapper inside the impl's module instead. A crate's
+    wrappers are emitted at the impl site by the proc-macro and are unaffected.
 
 ### Static methods
 

@@ -431,6 +431,32 @@ fn crate_path(path: &[String]) -> String {
 
 /// Where an item is, for a diagnostic: `(line 3 in src/ops.rs)`, or just the
 /// line for an in-memory source.
+/// The error for a `#[julia] impl` whose target resolves to a struct that
+/// carries no `#[julia]` (#315 review). The proc-macro wrapped the methods
+/// with *that* type as the receiver, so attaching them to a same-named
+/// annotated struct elsewhere would describe a wrapper that dereferences a
+/// pointer to the wrong type.
+fn plain_target_error(imp: &ScannedImpl, target: &Candidate) -> ExtractError {
+    let header = imp.header.display();
+    let where_ = location(imp.line, &imp.file);
+    let name = &target.name;
+    let module = if target.module_path.is_empty() {
+        "the crate root".to_string()
+    } else {
+        format!("module `{}`", target.module_path.join("::"))
+    };
+    let declared = if target.file.is_empty() {
+        String::new()
+    } else {
+        format!(" (in {})", target.file)
+    };
+    ExtractError::Unsupported(format!(
+        "`{header}` {where_} names `{name}` in {module}{declared}, which is not a \
+         `#[julia]` struct. Mark that struct with `#[julia]`, or point the block at the \
+         annotated one with an explicit path (`impl crate::path::to::{name}`)."
+    ))
+}
+
 fn location(line: usize, file: &str) -> String {
     if file.is_empty() {
         format!("(line {line})")
@@ -471,6 +497,13 @@ fn location(line: usize, file: &str) -> String {
 #[derive(Debug, Default)]
 pub struct CrateScan {
     structs: Vec<ScannedStruct>,
+    /// Every struct the crate declares **without** `#[julia]`, by name and
+    /// module. Rust resolves an `impl` header by scope, not by attribute, so a
+    /// plain `struct C` in the block's own module is its target even when a
+    /// `#[julia] struct C` exists elsewhere; without these the resolver would
+    /// fall back to the annotated one and the manifest would name a wrapper
+    /// whose receiver is the *other* type (#315 review).
+    plain_structs: Vec<PlainStruct>,
     impls: Vec<ScannedImpl>,
     imports: Vec<ScannedImport>,
     /// Every exported symbol seen so far and the item that claims it, so a
@@ -490,6 +523,35 @@ struct ScannedStruct {
 }
 
 impl Located for ScannedStruct {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn module_path(&self) -> &[String] {
+        &self.module_path
+    }
+}
+
+/// A struct with no `#[julia]`: a resolution candidate, never a target.
+#[derive(Debug)]
+struct PlainStruct {
+    name: String,
+    module_path: Vec<String>,
+    file: String,
+}
+
+/// A struct an `impl` header may name, annotated or not: `julia` is its index
+/// in [`CrateScan::structs`] when it carries `#[julia]`, and `None` when it is
+/// a [`PlainStruct`] (#315 review).
+#[derive(Debug)]
+struct Candidate {
+    name: String,
+    module_path: Vec<String>,
+    julia: Option<usize>,
+    file: String,
+}
+
+impl Located for Candidate {
     fn name(&self) -> &str {
         &self.name
     }
@@ -581,6 +643,13 @@ impl CrateScan {
                 }
                 Item::Struct(s) => {
                     let Some(model) = StructModel::of(s, Mode::Crate) else {
+                        // Not a `#[julia]` struct, but still a name an `impl`
+                        // header can resolve to (#315 review).
+                        self.plain_structs.push(PlainStruct {
+                            name: s.ident.to_string(),
+                            module_path: module_path.clone(),
+                            file: file.to_string(),
+                        });
                         continue;
                     };
                     if !marked {
@@ -617,6 +686,41 @@ impl CrateScan {
                 }
                 Item::Use(u) => {
                     self.imports.extend(imports_of_use(u, module_path));
+                }
+                Item::Macro(m) if m.mac.path.is_ident("include") => {
+                    // `include!("api.rs")` compiles that file's items into
+                    // *this* module — no `mod` declaration reaches it, so the
+                    // tree walk has to follow it or the items it exports
+                    // disappear from the manifest while the proc-macro still
+                    // wraps them (#315 review). Only a literal path can be
+                    // followed: `include!(concat!(env!("OUT_DIR"), …))` names a
+                    // file the build writes later, and a fragment that is not a
+                    // module (`include!("table.rs")` holding `[1, 2, 3]`) does
+                    // not parse — both are left to the compiler.
+                    let Ok(literal) = m.mac.parse_body::<syn::LitStr>() else {
+                        continue;
+                    };
+                    let base = std::path::Path::new(file)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_default();
+                    let included = base.join(literal.value());
+                    let Ok(source) = std::fs::read_to_string(&included) else {
+                        continue;
+                    };
+                    let Ok(parsed) = syn::parse_file(&source) else {
+                        continue;
+                    };
+                    let label = included.display().to_string();
+                    self.level(
+                        &parsed.items,
+                        module_path,
+                        symbol_path,
+                        enclosing_cfg,
+                        marked,
+                        manifest,
+                        &label,
+                    )?;
                 }
                 Item::Mod(m) => {
                     let Some((_, inner)) = &m.content else {
@@ -684,6 +788,23 @@ impl CrateScan {
     /// Blocks are visited by (module path, line) so the result does not
     /// depend on the order the caller happened to visit files in.
     pub fn finish(mut self, manifest: &mut Manifest) -> Result<(), ExtractError> {
+        let candidates: Vec<Candidate> = self
+            .structs
+            .iter()
+            .enumerate()
+            .map(|(i, s)| Candidate {
+                name: s.name.clone(),
+                module_path: s.module_path.clone(),
+                julia: Some(i),
+                file: s.file.clone(),
+            })
+            .chain(self.plain_structs.iter().map(|p| Candidate {
+                name: p.name.clone(),
+                module_path: p.module_path.clone(),
+                julia: None,
+                file: p.file.clone(),
+            }))
+            .collect();
         let mut impls = std::mem::take(&mut self.impls);
         impls.sort_by(|a, b| {
             a.header
@@ -699,8 +820,15 @@ impl CrateScan {
             if wrapped_methods(&imp.item, Mode::Crate, &imp.cfg).is_empty() {
                 continue;
             }
-            let index = match locate(&self.structs, &imp.header, &self.imports) {
-                Ok(index) => index,
+            // Resolution follows Rust's own rules, so the plain structs are
+            // candidates too; a header that lands on one names a type the
+            // proc-macro wrapped as its receiver and RustCall cannot describe
+            // (#315 review).
+            let index = match locate(&candidates, &imp.header, &self.imports) {
+                Ok(index) => match candidates[index].julia {
+                    Some(julia) => julia,
+                    None => return Err(plain_target_error(imp, &candidates[index])),
+                },
                 Err(why) => return Err(self.unresolved_impl(imp, why)),
             };
             self.check_symbol_path(imp, index)?;

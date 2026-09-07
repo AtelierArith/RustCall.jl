@@ -189,3 +189,48 @@ end
         end
     end
 end
+
+@testset "A literal include! is part of the including module (#315 review)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the include! scan test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            macros = replace(CMI_MACROS_PATH, "\\" => "/")
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "included_items"
+                version = "0.1.0"
+                edition = "2021"
+
+                [lib]
+                crate-type = ["cdylib"]
+
+                [dependencies]
+                juliacall_macros = { path = "$macros" }
+                """)
+            # `api.rs` is reached by no `mod` declaration: rustc compiles its
+            # items into the crate root, and so must the scan.
+            write(joinpath(dir, "src", "api.rs"), """
+                #[julia]
+                pub fn included_add(a: i32, b: i32) -> i32 { a + b }
+                """)
+            write(joinpath(dir, "src", "table.rs"), "[1, 2, 3]\n")
+            write(joinpath(dir, "src", "lib.rs"), """
+                use juliacall_macros::julia;
+                include!("api.rs");
+                const TABLE: [i32; 3] = include!("table.rs");
+                #[julia]
+                pub fn root_sum() -> i32 { TABLE.iter().sum() }
+                """)
+
+            info = RustCall.scan_crate(dir)
+            names = sort([f.name for f in info.julia_functions])
+            @test names == ["included_add", "root_sum"]
+            # The included items sit in the module that included them, so they
+            # keep the crate-root symbols the proc-macro gives them (#300).
+            symbols = Dict(f.name => f.symbol for f in info.julia_functions)
+            @test symbols["included_add"] == "rustcall_included_add"
+        end
+    end
+end

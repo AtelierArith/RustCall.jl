@@ -179,8 +179,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proc-macro would qualify differently from the struct fails the scan with the
   header to write instead of being dropped; the crate-wide duplicate-symbol
   check of #300 now runs inside the scan, within one file as much as across
-  files. The `#[julia_pyo3]` half of the issue is moot: that macro was removed
-  in v0.3.0 (#330).
+  files. A header that resolves to a struct **without** `#[julia]` — the plain
+  `struct C` beside the block, which is what Rust resolves to — is refused with
+  the fix to make, never attached to a same-named annotated struct elsewhere.
+  A file reached only by a literal `include!("api.rs")` is scanned as part of
+  the including module, so items the proc-macro wraps there are in the manifest
+  too. The `#[julia_pyo3]` half of the issue is moot: that macro was removed
+  in v0.3.0 (#330). Known limitation: in a `rust"""` block a cross-module
+  method's signature must be in scope at the struct
+  ([#342](https://github.com/AtelierArith/RustCall.jl/issues/342)).
 
 ## [0.2.1] - 2026-09-07
 

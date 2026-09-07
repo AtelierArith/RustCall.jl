@@ -228,8 +228,10 @@ fn an_unresolved_header_is_reported_not_dropped() {
     )
     .expect_err("a #[julia] impl of a plain struct must fail the scan")
     .to_string();
-    assert!(err.contains("no `struct Plain` marked `#[julia]`"), "{err}");
-    assert!(err.contains("anywhere in the crate"), "{err}");
+    // The struct is found — resolution follows Rust's own rules — and refused
+    // for carrying no `#[julia]`, which names the fix (#315 review).
+    assert!(err.contains("not a `#[julia]` struct"), "{err}");
+    assert!(err.contains("the crate root"), "{err}");
 
     // A block with no `#[julia]` method emits nothing, whatever it names.
     let manifest = extract_crate(
@@ -398,4 +400,86 @@ fn the_inline_flavour_attaches_across_modules_as_well() {
         method_symbols(the_struct(&krate, "Gauge")),
         method_symbols(gauge)
     );
+}
+
+/// Rust resolves `impl Gauge` by scope, not by attribute: a plain `struct
+/// Gauge` beside the block is its target even though a `#[julia] struct Gauge`
+/// exists elsewhere. Attaching the methods to the annotated one would describe
+/// wrappers that dereference a pointer to the wrong type, so the scan refuses
+/// and says which struct to annotate (#315 review).
+#[test]
+fn an_impl_on_a_plain_local_struct_is_refused() {
+    let err = scan_tree(&[
+        (
+            &[],
+            "src/lib.rs",
+            "mod ops;\n#[julia] pub struct Gauge { pub value: i32 }",
+        ),
+        (
+            &["ops"],
+            "src/ops.rs",
+            "pub struct Gauge { pub other: i32 }\n\
+             #[julia] impl Gauge { #[julia] pub fn read(&self) -> i32 { self.other } }",
+        ),
+    ])
+    .expect_err("an impl on the module's own plain struct must not attach to the annotated one");
+    assert!(err.contains("not a `#[julia]` struct"), "{err}");
+    assert!(err.contains("module `ops`"), "{err}");
+    assert!(err.contains("src/ops.rs"), "{err}");
+}
+
+/// The same layout with an explicit path names the annotated struct, and binds.
+#[test]
+fn an_explicit_path_reaches_past_a_plain_local_struct() {
+    let manifest = scan_tree(&[
+        (
+            &[],
+            "src/lib.rs",
+            "mod ops;\n#[julia] pub struct Gauge { pub value: i32 }",
+        ),
+        (
+            &["ops"],
+            "src/ops.rs",
+            "pub struct Gauge { pub other: i32 }\n\
+             #[julia] impl crate::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }",
+        ),
+    ])
+    .expect("`impl crate::Gauge` names the annotated struct");
+    assert_eq!(
+        method_symbols(the_struct(&manifest, "Gauge")),
+        vec!["rustcall_Gauge_read"]
+    );
+}
+
+/// `include!("api.rs")` compiles that file's items into the including module,
+/// with no `mod` declaration to follow: the tree walk reads it, so the items
+/// the proc-macro wraps are in the manifest too (#315 review).
+#[test]
+fn a_literal_include_is_followed() {
+    let dir = std::env::temp_dir().join(format!(
+        "rustcall_include_{}_{}",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("api.rs"),
+        "#[julia] pub fn included_add(a: i32, b: i32) -> i32 { a + b }",
+    )
+    .unwrap();
+    // A fragment that is not a module is left to the compiler, as before.
+    std::fs::write(dir.join("table.rs"), "[1, 2, 3]").unwrap();
+    let lib = dir.join("lib.rs");
+    let manifest = scan_tree(&[(
+        &[],
+        lib.to_str().unwrap(),
+        "include!(\"api.rs\");\n\
+         const TABLE: [i32; 3] = include!(\"table.rs\");\n\
+         #[julia] pub fn root_add(a: i32, b: i32) -> i32 { a + b }",
+    )])
+    .expect("a literal include! is followed");
+    let mut names: Vec<&str> = manifest.functions.iter().map(|f| f.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, vec!["included_add", "root_add"]);
+    std::fs::remove_dir_all(&dir).ok();
 }
