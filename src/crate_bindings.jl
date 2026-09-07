@@ -1635,6 +1635,11 @@ function generate_bindings(crate_path::String;
         else
             @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
                   "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
+            # A mixed crate can carry `#[julia_pyo3]` items next to the PyO3
+            # ones the wrapper exports; they are in the crate's scan, not the
+            # wrapper's, so the notice looks there — under the wrapper's build
+            # (#314 review).
+            _warn_deprecated_attributes(_scan_under_plan(crate_path, info, wrapper.plan))
             return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
                                      module_name = output_module_name,
                                      build_release = build_release,
@@ -2284,6 +2289,10 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         # then binds the crate under the configuration it builds, like any
         # other crate (`_plain_scan_info` below, #307 review).
         if wrapper !== nothing
+            # The crate's own `#[julia_pyo3]` items live in the crate's scan,
+            # not the wrapper's manifest that replaces `info` below (#314
+            # review).
+            _warn_deprecated_attributes(_scan_under_plan(crate_path, info, wrapper.plan))
             info = wrapper.info
             lib_name = wrapper.lib_name
             wrapper_lib_path = wrapper.lib_path
@@ -2291,11 +2300,12 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         end
     end
     # The plain path scans under the configuration it builds, probed with the
-    # shape of that build (#307 review).
-    isempty(wrapper_lib_path) &&
-        (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
-    # On the resolved scan, as in `generate_bindings` (#314 review).
-    _warn_deprecated_attributes(info)
+    # shape of that build (#307 review), and decides the deprecation notice on
+    # that resolved scan, as `generate_bindings` does (#314 review).
+    if isempty(wrapper_lib_path)
+        info = _plain_scan_info(crate_path, info, features, default_features, build_release)
+        _warn_deprecated_attributes(info)
+    end
 
     # Build the crate. On the plain path the feature set travels with the
     # build and with the registry name, as it does for a wrapper build.

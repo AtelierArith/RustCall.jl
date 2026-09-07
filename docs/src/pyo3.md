@@ -601,8 +601,9 @@ nothing to PyO3, so nothing is wrapped; with `features = ["python"]` the same
 crate is wrapped in full.
 
 `examples/sample_crate_pyo3_mixed` carries `#[julia]` and PyO3 markers together,
-one item marked both ways, and a `[lib] name` that differs from its package
-name.
+one item marked both ways, one item still marked with the deprecated
+`#[julia_pyo3]` (so the deprecation notice is exercised on the wrapper path), and
+a `[lib] name` that differs from its package name.
 
 Note that a class needs **one** `#[pymethods]` block unless the crate enables
 pyo3's `multiple-pymethods` feature; the scan matches every block it finds, but
