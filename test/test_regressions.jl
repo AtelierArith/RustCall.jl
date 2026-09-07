@@ -1841,7 +1841,13 @@ end
 @testset "#276: strict is threaded, not stashed in a global" begin
     unsupported = RustCall.RustFunctionSignature(
         "rc276_histogram", ["n"], ["u32"], "Vec<f64>", false, String[])
-    info = RustCall.CrateInfo("rc276_crate", ".", "0.1.0", RustCall.DependencySpec[],
+    # The fake crate lives in its own empty directory: the emitter walks the
+    # crate path, and `"."` (the test directory) holds `fixtures/*/target/`,
+    # whose rustc temp directories other workers of the parallel run create and
+    # remove under our feet — `readdir` then raised ENOENT instead of the
+    # `RustError` under test (flaky macOS CI on #334).
+    rc276_dir = mktempdir()
+    info = RustCall.CrateInfo("rc276_crate", rc276_dir, "0.1.0", RustCall.DependencySpec[],
                               [unsupported], RustCall.RustStructInfo[], String[])
 
     previous = RustCall.FFI_STRICT[]
@@ -1878,6 +1884,7 @@ end
         @test RustCall.FFI_STRICT[] === :none
     finally
         RustCall.FFI_STRICT[] = previous
+        rm(rc276_dir; recursive = true, force = true)
     end
 end
 
