@@ -318,28 +318,8 @@ impl<T: Copy> Tagged<T> {
 }
 
 #[test]
-fn julia_pyo3_functions_report_no_string_abi() {
-    // `#[julia_pyo3]` exports the signature as written (no string conversion,
-    // see #275), so the manifest must not advertise the (ptr, len) ABI.
-    let src = r#"
-#[julia_pyo3]
-pub fn py_len(s: String) -> usize { s.len() }
-#[julia_pyo3]
-pub fn py_greet(s: &str) -> String { s.to_string() }
-"#;
-    let m = extract(src, Mode::Crate).unwrap();
-    assert_eq!(m.functions.len(), 2);
-    for f in &m.functions {
-        assert!(f.args.iter().all(|a| a.abi.is_empty()), "{}", f.name);
-        assert!(!f.has_owned_string_helper && !f.has_borrowed_string_helper);
-        assert_eq!(f.attribute, rustcall_core::manifest::Attribute::JuliaPyo3);
-    }
-    assert_eq!(m.functions[0].args[0].rust_type, "String");
-}
-
-#[test]
 fn crate_method_wrappers_use_the_string_abi() {
-    use rustcall_core::codegen::{generate_method_wrapper_crate, transform_impl_julia_pyo3};
+    use rustcall_core::codegen::generate_method_wrapper_crate;
 
     let item: syn::ItemImpl = syn::parse_str(
         r#"
@@ -422,19 +402,6 @@ impl Greeter {
     assert_eq!(method("take").args[0].abi, "string");
     assert_eq!(method("take").return_abi, "");
     assert_eq!(method("new").symbol, "rustcall_Greeter_new");
-
-    // `#[julia_pyo3] impl` methods go through the same wrapper generator, so
-    // their manifest entries keep the string ABI.
-    let py_impl: syn::ItemImpl = syn::parse_str(
-        "impl DualCounter { pub fn describe(&self, s: &str) -> String { s.to_string() } }",
-    )
-    .unwrap();
-    let py_file: syn::File = syn::parse2(transform_impl_julia_pyo3(py_impl)).unwrap();
-    let py = flat(&prettyplease::unparse(&py_file));
-    assert!(
-        py.contains("pub extern \"C\" fn rustcall_DualCounter_describe(ptr: *const DualCounter, s_ptr: *const u8, s_len: usize) -> DualCounter_describe_RustCallOwnedString"),
-        "{py}"
-    );
 }
 
 /// A `String` field cannot cross `extern "C"` by value. Both wrapper flavours

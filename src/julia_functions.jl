@@ -13,7 +13,7 @@ source text.
 - `name`, `arg_names`, `arg_types`, `return_type`: as written in Rust
 - `is_generic`, `type_params`, `constraints`: generic parameters and their trait bounds
 - `symbol`: exported C symbol (equals `name` unless generic)
-- `attribute`: `:julia`, `:julia_pyo3` or `:none`
+- `attribute`: `:julia` or `:none`
 - `exported`: whether the compiled library exports `symbol`
 - `return_kind`: `:plain`, `:unit`, `:result` or `:option`
 - `ok_type`/`err_type`/`inner_type`: components of `Result`/`Option` returns
@@ -55,7 +55,7 @@ struct RustFunctionSignature
     arg_abis::Vector{String}
     return_abi::String
     # Manifest schema 5 (#275). `attribute` doubles as the *origin* of the
-    # entry: `:julia` / `:julia_pyo3` come from a RustCall attribute,
+    # entry: `:julia` comes from a RustCall attribute,
     # `:py_function` / `:py_module` from the PyO3 scan of a crate that carries
     # no RustCall attribute at all. `vis` is the visibility as written,
     # `skip_reason` says why the item cannot be wrapped (empty when it can) and

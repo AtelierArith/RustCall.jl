@@ -1004,8 +1004,8 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
     let name = item.ident.to_string();
 
     // `#[pyclass(get_all, set_all)]` exposes every field without a per-field
-    // attribute, and `frozen` takes every setter away. `transform_struct_julia_pyo3`
-    // in this repository generates exactly that shape, so a scan that read only
+    // attribute, and `frozen` takes every setter away. The dual-binding shape
+    // `docs/src/pyo3.md` recommends is exactly that, so a scan that read only
     // field attributes would drop those fields.
     let options = crate::attrs::pyo3_class_options(&item.attrs);
 

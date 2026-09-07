@@ -1308,21 +1308,6 @@ end
 
 
 """
-    _scan_under_plan(crate_path, info, plan) -> CrateInfo
-
-`info` (the lenient scan) rescanned under the configuration the plan resolved,
-when it resolved one; `info` itself otherwise. The wrapper path binds PyO3
-items from the wrapper's own manifest, so this is how it looks at the crate's
-*RustCall* items under the build it is making — today for the `#[julia_pyo3]`
-deprecation notice, which must see a `#[cfg_attr(feature = ..., julia_pyo3)]`
-exactly when the build enables it (#314 review).
-"""
-function _scan_under_plan(crate_path::AbstractString, info::CrateInfo, plan::PyO3LinkPlan)
-    isempty(plan.cfg_text) && return info
-    return scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text)
-end
-
-"""
     _pyo3_wrapper_build_env(plan, rustflags) -> Vector{Pair{String, String}}
 
 The build-environment half of a wrapper's `ArtifactId`. The environment the
@@ -1710,8 +1695,8 @@ own evaluator and the items listed are exactly the items that build has.
 
 Returns `(; julia, wrappable, wrapped, skipped, plan, info, candidates)`:
 
-* `julia` — items carrying a RustCall attribute (`#[julia]`, `#[julia_pyo3]`),
-  which `@rust_crate` wraps today;
+* `julia` — items carrying a RustCall attribute (`#[julia]`), which
+  `@rust_crate` wraps today;
 * `wrappable` — PyO3 items the *scan* found no reason to reject: a wrapper crate
   can name each of them;
 * `wrapped` — the items the Phase-2 **generator** actually emitted an entry point
@@ -1806,10 +1791,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             plan.resolved ? "" : " (Cargo could not resolve it; every #[cfg] item is reported)")
     println(io, "  RustCall items (wrapped today): $(length(julia_items))")
     for item in julia_items
-        # `#[julia_pyo3]` still works and is still reported, but it is
-        # deprecated (#275 Phase 3): say so next to each item it produced.
-        note = _uses_julia_pyo3(item) ? "  [#[julia_pyo3] is deprecated; see docs/src/pyo3.md]" : ""
-        println(io, "    $(_pyo3_item_label(item))$(note)")
+        println(io, "    $(_pyo3_item_label(item))")
     end
     println(io, "  PyO3 items the scan can name: $(length(wrappable))")
     for item in wrappable

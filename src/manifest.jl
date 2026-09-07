@@ -27,10 +27,12 @@ PyO3 wrapper crate, since neither shipped on its own: a `py_*` entry can now be
 `err_type`, and the skip-reason vocabulary gains the four the *generator*
 uses, #275 Phase 2. Additive within 6: `Method.attribute`, the attribute of the
 impl block a method came from — serialized only when there is one — so the
-deprecated `#[julia_pyo3]` is reported even on a `#[julia]` struct, #275
-Phase 3).
+dual-binding attribute deprecated by #275 Phase 3 was reported even on a
+`#[julia]` struct; 7: that attribute is removed, and with it its value of the
+`attribute` origin — a schema-6 consumer could still meet that origin and bind
+the item under its as-written, non-lowered signature, #312).
 """
-const MANIFEST_SCHEMA_VERSION = 6
+const MANIFEST_SCHEMA_VERSION = 7
 
 """
     ExtractorError <: Exception
@@ -961,7 +963,7 @@ the *origin* of the entry and can also name a PyO3 one (`py_function`,
 `py_class`, `py_methods`, `py_module`), which `@rust_crate` reports but does
 not wrap (#275).
 """
-const RUSTCALL_ATTRIBUTE_ORIGINS = ("julia", "julia_pyo3")
+const RUSTCALL_ATTRIBUTE_ORIGINS = ("julia",)
 
 """
     PYO3_ATTRIBUTE_ORIGINS
@@ -975,7 +977,7 @@ const PYO3_ATTRIBUTE_ORIGINS = ("py_function", "py_class", "py_methods", "py_mod
 
 Signatures of the free functions in a manifest. With `only_attributed`, only
 functions whose `attribute` origin is in `origins` are returned — by default the
-`#[julia]`/`#[julia_pyo3]` ones that get Julia wrappers. Pass
+`#[julia]` ones that get Julia wrappers. Pass
 `origins = PYO3_ATTRIBUTE_ORIGINS` for the PyO3-scanned items instead (#275).
 """
 function manifest_function_signatures(manifest::Dict; only_attributed::Bool = true,
@@ -1063,14 +1065,13 @@ _mstr_or_nothing(d, k) = (v = get(d, k, nothing); v === nothing || isempty(v) ? 
 Struct descriptions of a manifest, in the shape the Julia emitters consume.
 
 `origins` filters on the `attribute` column: the default keeps everything a
-RustCall attribute produced (`julia`, `julia_pyo3`, `derive_julia_struct`) and
-drops the `#[pyclass]` entries the PyO3 scan adds, because nothing generates
-Julia types for them yet (#275). Pass `PYO3_ATTRIBUTE_ORIGINS` to get exactly
-those, or an empty tuple for no filtering at all.
+RustCall attribute produced (`julia`, `derive_julia_struct`) and drops the
+`#[pyclass]` entries the PyO3 scan adds, because nothing generates Julia types
+for them yet (#275). Pass `PYO3_ATTRIBUTE_ORIGINS` to get exactly those, or an
+empty tuple for no filtering at all.
 """
 function manifest_struct_infos(manifest::Dict; origins = nothing)
-    keep = origins === nothing ?
-        ("julia", "julia_pyo3", "derive_julia_struct", "none", "") : origins
+    keep = origins === nothing ? ("julia", "derive_julia_struct", "none", "") : origins
     infos = RustStructInfo[]
     for s in _mvec(manifest, "structs")
         isempty(keep) || _mstr(s, "attribute") in keep || continue

@@ -203,13 +203,11 @@ pub fn function_entry(func: &ItemFn, attribute: Attribute, wrapped: bool) -> Fun
                 .unwrap_or(false)
     };
     let name = func.sig.ident.to_string();
-    // `#[julia]` / `#[julia_pyo3]` are additive: the item keeps its name and
-    // the exported entry point is the wrapper next to it (#279). A plain
-    // `#[no_mangle] extern "C"` function is exported under its own name.
+    // `#[julia]` is additive: the item keeps its name and the exported entry
+    // point is the wrapper next to it (#279). A plain `#[no_mangle] extern
+    // "C"` function is exported under its own name.
     let symbol = match attribute {
-        Attribute::Julia | Attribute::JuliaPyo3 if !is_generic => {
-            crate::codegen::function_symbol(&name)
-        }
+        Attribute::Julia if !is_generic => crate::codegen::function_symbol(&name),
         _ => name.clone(),
     };
     // The wrapper only lowers strings when it is actually generated; a generic
@@ -330,22 +328,8 @@ fn extract_crate_items(items: &[Item], manifest: &mut Manifest) {
         match item {
             Item::Fn(f) => {
                 let attribute = rustcall_attribute(&f.attrs);
-                match attribute {
-                    Attribute::Julia => manifest.functions.push(function_entry(f, attribute, true)),
-                    // `#[julia_pyo3]` exports the signature as written: no
-                    // Result/Option wrapping and no string conversion, so the
-                    // manifest must not advertise the `(ptr, len)` string ABI
-                    // either. The attribute is deprecated (#275 Phase 3) and
-                    // its lowering frozen until it is removed.
-                    Attribute::JuliaPyo3 => {
-                        let mut entry = function_entry(f, attribute, false);
-                        entry.exported = !entry.is_generic;
-                        for arg in &mut entry.args {
-                            arg.abi.clear();
-                        }
-                        manifest.functions.push(entry);
-                    }
-                    _ => {}
+                if attribute == Attribute::Julia {
+                    manifest.functions.push(function_entry(f, attribute, true));
                 }
             }
             Item::Mod(m) => {

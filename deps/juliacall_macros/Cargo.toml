@@ -12,11 +12,6 @@ readme = "README.md"
 [lib]
 proc-macro = true
 
-[features]
-default = []
-# Enable Python binding generation via PyO3
-python = []
-
 [dependencies]
 rustcall_core = { path = "../rustcall_core" }
 quote = "1.0"

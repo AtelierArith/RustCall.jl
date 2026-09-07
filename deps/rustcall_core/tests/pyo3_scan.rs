@@ -703,8 +703,8 @@ fn colliding_pyclass_names_are_reported() {
 }
 
 /// `#[pyclass(get_all, set_all)]` exposes every field without a per-field
-/// attribute — the shape this repository's own `transform_struct_julia_pyo3`
-/// generates — and `frozen` takes every setter away.
+/// attribute — the dual-binding shape `docs/src/pyo3.md` recommends — and
+/// `frozen` takes every setter away.
 #[test]
 fn class_level_field_options_are_honoured() {
     let manifest = scan(

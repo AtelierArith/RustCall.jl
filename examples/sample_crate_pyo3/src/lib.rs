@@ -10,8 +10,7 @@
 //! `rustcall_Point_new`, `Point_get_x`, …). The Python half is PyO3's own
 //! attributes, which likewise keep the item — so the two stack on the same
 //! `fn` / `struct`, and pyo3 stays an *optional* dependency behind the
-//! `python` feature. This is the shape `#[julia_pyo3]` is deprecated in favour
-//! of (#275 Phase 3); see `docs/src/pyo3.md`, "Migrating from `#[julia_pyo3]`".
+//! `python` feature. See `docs/src/pyo3.md`.
 
 // The generated `extern "C"` wrappers take the raw `*const Struct` / `*mut
 // Struct` pointers Julia hands back; that is the FFI contract, not an oversight.

@@ -19,11 +19,9 @@ A method of a `#[julia]` struct as recorded in the manifest.
   this by comparing `return_type` against `"Self"` (#276)
 - `generic_wrapper`: generic wrapper source registered for monomorphization
 - `attribute`: the attribute of the **impl block** the method came from —
-  `:julia`, the deprecated `:julia_pyo3`, `:py_methods` for a scanned
-  `#[pymethods]` block, `:none` for an inline-mode impl (which carries none) or
-  a hand-built method. It need not be the struct's own: a `#[julia]` struct may
-  still have a `#[julia_pyo3] impl`, and the deprecation notice has to see it
-  (#275 Phase 3)
+  `:julia`, `:py_methods` for a scanned `#[pymethods]` block, `:none` for an
+  inline-mode impl (which carries none) or a hand-built method. It need not be
+  the struct's own (#275 Phase 3)
 """
 struct RustMethod
     name::String
@@ -64,7 +62,7 @@ struct RustMethod
     err_abi::String
     inner_abi::String
     # The impl block's attribute (`Method.attribute`, additive within schema
-    # 6, #275 Phase 3): `:julia`, `:julia_pyo3`, `:py_methods`, or `:none`.
+    # 6, #275 Phase 3): `:julia`, `:py_methods`, or `:none`.
     attribute::Symbol
 end
 
@@ -174,7 +172,7 @@ struct RustStructInfo
     constraints::Dict{Symbol, TypeConstraints}
     module_path::Vector{String}
     # Manifest schema 5 (#275): which attribute the struct was reported for
-    # (`:julia`, `:julia_pyo3`, `:derive_julia_struct`, or `:py_class` for a
+    # (`:julia`, `:derive_julia_struct`, or `:py_class` for a
     # `#[pyclass]` found by the PyO3 scan), its visibility, and why it cannot
     # be wrapped (empty when it can).
     attribute::Symbol

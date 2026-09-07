@@ -4,13 +4,13 @@
 //!
 //! * **crate** codegen, used by the `juliacall_macros` proc-macro for
 //!   `@rust_crate` (`transform_function`, `transform_struct_crate`,
-//!   `transform_impl_crate`, and the `julia_pyo3` variants);
+//!   `transform_impl_crate`);
 //! * **inline** codegen, used by the extractor CLI's `expand` command for
 //!   `rust"""` blocks (`inline_struct_wrappers`, `inline_generic_wrappers`).
 //!
 //! Every `extern "C"` entry point — inline function, crate function,
-//! specialized generic instantiation, inline method, crate method,
-//! `julia_pyo3` function — is produced by the one generator
+//! specialized generic instantiation, inline method, crate method — is
+//! produced by the one generator
 //! [`generate_wrapper`]; the public `transform_*` functions are thin adapters
 //! that fill in a [`WrapperSpec`]. Adding a flavour therefore cannot lose the
 //! string ABI, the `#[cfg]` propagation or the receiver handling again (#279).
@@ -391,9 +391,6 @@ pub(crate) struct WrapperSpec {
     pub cfg_attrs: Vec<Attribute>,
     pub receiver: Option<WrapperReceiver>,
     pub args: Vec<(Ident, Type)>,
-    /// Whether `String` / `&str` arguments are lowered to `(ptr, len)` pairs.
-    /// Only `#[julia_pyo3]`, which exports the signature as written, says no.
-    pub lower_strings: bool,
     pub ret: WrapperReturn,
     pub target: CallTarget,
     /// Tokens appended to the call expression before the return lowering sees
@@ -561,7 +558,6 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         cfg_attrs,
         receiver,
         args,
-        lower_strings,
         ret,
         target,
         call_suffix,
@@ -584,13 +580,9 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         });
     }
     for (name, ty) in &args {
-        if lower_strings {
-            let (a, conversion) = string_arg_conversion(name, ty, &taken);
-            wrapper_args.extend(a);
-            conversions.extend(conversion);
-        } else {
-            wrapper_args.push(quote! { #name: #ty });
-        }
+        let (a, conversion) = string_arg_conversion(name, ty, &taken);
+        wrapper_args.extend(a);
+        conversions.extend(conversion);
         call_args.push(quote! { #name });
     }
 
@@ -1005,19 +997,11 @@ fn generate_c_option_type(
 struct FreeFnOptions {
     /// Wrap a `Result` / `Option` return into `CResult_<fn>` / `COption_<fn>`.
     wrap_result: bool,
-    /// Lower `String` / `&str` arguments and returns to the byte-pair ABI.
-    lower_strings: bool,
-    /// Extra `#[cfg]` attributes (the `julia_pyo3` non-Python branch).
-    extra_cfg: Vec<Attribute>,
 }
 
 impl Default for FreeFnOptions {
     fn default() -> Self {
-        FreeFnOptions {
-            wrap_result: true,
-            lower_strings: true,
-            extra_cfg: Vec::new(),
-        }
+        FreeFnOptions { wrap_result: true }
     }
 }
 
@@ -1026,8 +1010,7 @@ impl Default for FreeFnOptions {
 fn free_function_wrapper(func: &ItemFn, options: &FreeFnOptions) -> TokenStream2 {
     let name = func.sig.ident.clone();
     let symbol = format_ident!("{}", function_symbol(&name.to_string()));
-    let mut cfgs = cfg_attrs(&func.attrs);
-    cfgs.extend(options.extra_cfg.iter().cloned());
+    let cfgs = cfg_attrs(&func.attrs);
 
     let ret = free_fn_return(func, &name, options);
     generate_wrapper(WrapperSpec {
@@ -1035,7 +1018,6 @@ fn free_function_wrapper(func: &ItemFn, options: &FreeFnOptions) -> TokenStream2
         cfg_attrs: cfgs,
         receiver: None,
         args: arg_pairs(&func.sig),
-        lower_strings: options.lower_strings,
         ret,
         target: CallTarget::Free(name.into()),
         call_suffix: TokenStream2::new(),
@@ -1044,16 +1026,9 @@ fn free_function_wrapper(func: &ItemFn, options: &FreeFnOptions) -> TokenStream2
 
 /// The [`WrapperPayload`] of one `Result` / `Option` component: a `String` /
 /// `&str` becomes the owner's owned-string buffer, everything else is stored as
-/// written (#268). `lower_strings` is false only for `#[julia_pyo3]`, which
-/// exports the signature as written and does no `Result` wrapping either.
-fn payload_of(
-    ty: &Type,
-    helper: &Ident,
-    free: &Ident,
-    lower_strings: bool,
-    declare: bool,
-) -> WrapperPayload {
-    if lower_strings && (is_string_type(ty) || is_str_ref_type(ty)) {
+/// written (#268).
+fn payload_of(ty: &Type, helper: &Ident, free: &Ident, declare: bool) -> WrapperPayload {
+    if is_string_type(ty) || is_str_ref_type(ty) {
         WrapperPayload::OwnedString {
             helper: helper.clone(),
             free: free.clone(),
@@ -1109,7 +1084,7 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
         // buffer, which this wrapper declares (#268).
         let helper = format_ident!("{}_RustCallOwnedString", name);
         let free = format_ident!("{}_free_rust_string", name);
-        let payload = |ty: &Type| payload_of(ty, &helper, &free, options.lower_strings, true);
+        let payload = |ty: &Type| payload_of(ty, &helper, &free, true);
         if let Some(r) = extract_result_type(ty) {
             return WrapperReturn::CResult {
                 name: format_ident!("CResult_{}", name),
@@ -1124,20 +1099,18 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
             };
         }
     }
-    if options.lower_strings {
-        if function_returns_string(&func.sig) || returns_copied_str(&func.sig) {
-            return WrapperReturn::OwnedString {
-                helper: format_ident!("{}_RustCallOwnedString", name),
-                free: format_ident!("{}_free_rust_string", name),
-                declare: true,
-            };
-        }
-        if returns_borrowed_str(&func.sig) {
-            return WrapperReturn::BorrowedStr {
-                helper: format_ident!("{}_RustCallBorrowedString", name),
-                declare: true,
-            };
-        }
+    if function_returns_string(&func.sig) || returns_copied_str(&func.sig) {
+        return WrapperReturn::OwnedString {
+            helper: format_ident!("{}_RustCallOwnedString", name),
+            free: format_ident!("{}_free_rust_string", name),
+            declare: true,
+        };
+    }
+    if returns_borrowed_str(&func.sig) {
+        return WrapperReturn::BorrowedStr {
+            helper: format_ident!("{}_RustCallBorrowedString", name),
+            declare: true,
+        };
     }
     WrapperReturn::Plain((**ty).clone())
 }
@@ -1211,13 +1184,7 @@ fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
 /// instantiation of a generic function, whose fixed `String` / `&str`
 /// parameters still get the byte-pair ABI (#242).
 pub fn plain_function_wrapper(func: &ItemFn) -> TokenStream2 {
-    free_function_wrapper(
-        func,
-        &FreeFnOptions {
-            wrap_result: false,
-            ..Default::default()
-        },
-    )
+    free_function_wrapper(func, &FreeFnOptions { wrap_result: false })
 }
 
 // ============================================================================
@@ -1399,130 +1366,6 @@ pub fn generate_method_wrapper_crate(
         &borrowed_helper,
         true,
     ))
-}
-
-// ============================================================================
-// Crate flavour: #[julia_pyo3] — deprecated (#275 Phase 3)
-//
-// The attribute is deprecated in favour of `#[julia]` stacked with PyO3's own
-// attributes, which `#[julia]`'s additivity (#279) made possible. Its lowering
-// is frozen as it stands — the either/or `cfg(feature = "python")` shape and
-// the as-written signature — so that crates still using it build exactly as
-// they did; `juliacall_macros` marks the proc-macro `#[deprecated]`, and the
-// whole flavour goes with the next breaking release.
-// ============================================================================
-
-/// `#[julia_pyo3]` keeps its either/or `cfg(feature = "python")` shape, but the
-/// non-Python branch is "original item + additive wrapper" like `#[julia]`
-/// (#279). The exported signature stays the one that was written — no
-/// `Result` / `Option` wrapping and no string lowering — so the manifest `abi`
-/// this attribute advertises remains honest. Deprecated (#275 Phase 3): this
-/// divergence from `#[julia]` is why the attribute is going away rather than
-/// being extended.
-pub fn transform_function_julia_pyo3(func: ItemFn) -> TokenStream2 {
-    let func_attrs = &func.attrs;
-    let func_vis = &func.vis;
-    let func_sig = &func.sig;
-    let func_block = &func.block;
-
-    let wrapper = free_function_wrapper(
-        &func,
-        &FreeFnOptions {
-            wrap_result: false,
-            lower_strings: false,
-            extra_cfg: vec![syn::parse_quote!(#[cfg(not(feature = "python"))])],
-        },
-    );
-
-    quote! {
-        #[cfg(not(feature = "python"))]
-        #(#func_attrs)*
-        #func_vis #func_sig #func_block
-
-        #wrapper
-
-        #[cfg(feature = "python")]
-        #[pyo3::pyfunction]
-        pub #func_sig #func_block
-    }
-}
-
-pub fn transform_struct_julia_pyo3(mut item_struct: ItemStruct) -> TokenStream2 {
-    let repr_c: Attribute = syn::parse_quote!(#[repr(C)]);
-    item_struct.attrs.insert(0, repr_c);
-    item_struct.vis = Visibility::Public(syn::token::Pub::default());
-
-    let free = crate_free_fn(&item_struct.ident);
-    let accessors = crate_field_accessors(&item_struct);
-
-    quote! {
-        #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))]
-        #item_struct
-        #free
-        #accessors
-    }
-}
-
-pub fn transform_impl_julia_pyo3(item_impl: ItemImpl) -> TokenStream2 {
-    let struct_name = match item_impl.self_ty.as_ref() {
-        Type::Path(type_path) => type_path.path.segments.last().map(|s| s.ident.clone()),
-        _ => None,
-    };
-    let Some(struct_name) = struct_name else {
-        return quote! {
-            compile_error!("#[julia_pyo3] on impl block requires a simple type path");
-        };
-    };
-
-    let mut julia_ffi_wrappers = TokenStream2::new();
-    let mut pyo3_methods = TokenStream2::new();
-
-    for item in &item_impl.items {
-        if let syn::ImplItem::Fn(method) = item {
-            julia_ffi_wrappers.extend(generate_method_wrapper_crate(&struct_name, method));
-            pyo3_methods.extend(generate_pyo3_method_impl(method));
-        }
-    }
-
-    quote! {
-        #[cfg(not(feature = "python"))]
-        #item_impl
-
-        #[cfg(feature = "python")]
-        #[pyo3::pymethods]
-        impl #struct_name {
-            #pyo3_methods
-        }
-
-        #julia_ffi_wrappers
-    }
-}
-
-fn generate_pyo3_method_impl(method: &syn::ImplItemFn) -> TokenStream2 {
-    let method_vis = &method.vis;
-    let method_attrs = &method.attrs;
-    let method_block = &method.block;
-    let method_sig = &method.sig;
-
-    let is_static = !method
-        .sig
-        .inputs
-        .iter()
-        .any(|arg| matches!(arg, FnArg::Receiver(_)));
-    let is_pyo3_constructor = method.sig.ident == "new" && is_static;
-
-    if is_pyo3_constructor {
-        quote! {
-            #(#method_attrs)*
-            #[new]
-            #method_vis #method_sig #method_block
-        }
-    } else {
-        quote! {
-            #(#method_attrs)*
-            #method_vis #method_sig #method_block
-        }
-    }
 }
 
 // ============================================================================
@@ -1762,13 +1605,13 @@ fn method_spec(
         // the owner's owned-string buffer.
         WrapperReturn::CResult {
             name: format_ident!("CResult_{}_{}", struct_name, method_name_str),
-            ok: payload_of(&r.ok_type, owned_helper, owned_free, true, declare),
-            err: payload_of(&r.err_type, owned_helper, owned_free, true, declare),
+            ok: payload_of(&r.ok_type, owned_helper, owned_free, declare),
+            err: payload_of(&r.err_type, owned_helper, owned_free, declare),
         }
     } else if let Some(o) = method_option_return(m) {
         WrapperReturn::COption {
             name: format_ident!("COption_{}_{}", struct_name, method_name_str),
-            inner: payload_of(&o.inner_type, owned_helper, owned_free, true, declare),
+            inner: payload_of(&o.inner_type, owned_helper, owned_free, declare),
         }
     } else if method_returns_string(m) || method_copies_str(m) {
         WrapperReturn::OwnedString {
@@ -1792,7 +1635,6 @@ fn method_spec(
         cfg_attrs: cfg_attrs(&m.func.attrs),
         receiver,
         args: arg_pairs(&m.func.sig),
-        lower_strings: true,
         ret,
         target,
         call_suffix: TokenStream2::new(),

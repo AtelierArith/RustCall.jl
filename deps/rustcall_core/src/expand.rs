@@ -95,7 +95,7 @@ fn expand_items(
             Item::Fn(f) => {
                 let attribute = rustcall_attribute(&f.attrs);
                 match attribute {
-                    Attribute::Julia | Attribute::JuliaPyo3 => {
+                    Attribute::Julia => {
                         let mut f = f.clone();
                         strip_rustcall_attrs(&mut f.attrs);
                         let consts = const_param_names(&f.sig.generics);
