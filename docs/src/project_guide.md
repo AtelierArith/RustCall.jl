@@ -21,7 +21,9 @@ This page collects repository-oriented information that no longer lives in the t
   `examples/SampleCratePyO3.jl` is its Julia package, `main.py` its Python consumer.
 - `examples/sample_crate_pyo3_only`, `_mixed`, `_optional`: crates carrying PyO3
   attributes, used by the #275 scan and link-plan tests.
-- `examples/pluto/hello.jl`: Pluto-oriented walkthrough.
+- `examples/pluto/hello.jl`: Pluto-oriented walkthrough. CI runs it headlessly with
+  Pluto (`examples/pluto/run_notebook.jl`, the `Pluto - hello.jl` job of the
+  `Examples` workflow) and fails when any cell errors.
 
 Every `examples/*.jl` directory is a Julia package. Run its tests against the
 RustCall of this checkout from the repository root:
@@ -30,7 +32,16 @@ RustCall of this checkout from the repository root:
 julia --project=examples/MyExample.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 julia --project=examples/SampleCrate.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 julia --project=examples/SampleCratePyO3.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
-julia --project examples/pluto/hello.jl
+```
+
+The Pluto notebook activates the repository root itself, so instantiate and build
+the root project before running it headlessly (Pluto comes from
+`examples/pluto/Project.toml`):
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.build("RustCall")'
+julia --project=examples/pluto -e 'using Pkg; Pkg.instantiate()'
+julia --project=examples/pluto examples/pluto/run_notebook.jl
 ```
 
 The `Examples` GitHub workflow runs the same `Pkg.test()` for each package on

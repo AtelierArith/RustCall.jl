@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The Pluto notebook `examples/pluto/hello.jl` runs in CI.** The `Examples`
+  workflow gains a `Pluto - hello.jl` job that opens the notebook headlessly in
+  a Pluto session (`examples/pluto/run_notebook.jl`, with Pluto provided by
+  `examples/pluto/Project.toml`), runs every cell in Pluto's own worker process
+  against the RustCall of the checkout, and fails when any cell errors — so the
+  notebook is tested like the example packages instead of being found broken
+  by a reader.
+
 ### Fixed
 - **A static `#[julia]` method no longer overwrites a free function of the same
   name** ([#323](https://github.com/AtelierArith/RustCall.jl/issues/323)). A
