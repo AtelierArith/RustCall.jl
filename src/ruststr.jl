@@ -7,12 +7,6 @@ Maps library name to (library handle, functions dict).
 const RUST_LIBRARIES = Dict{String, Tuple{Ptr{Cvoid}, Dict{String, Ptr{Cvoid}}}}()
 
 """
-Registry for loaded RustModules (LLVM IR).
-Maps code hash to RustModule.
-"""
-const RUST_MODULE_REGISTRY = Dict{String, RustModule}()
-
-"""
 Current active library name.
 """
 const CURRENT_LIB = Ref{String}("")
@@ -539,8 +533,9 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
 
     # Save to cache
     try
-        # Extract function names for metadata (simplified - we'll get them from LLVM IR if available)
-        functions = String[]  # Will be populated if LLVM IR is available
+        # The function list in the metadata is informational only; the
+        # manifest is what registers a library's functions.
+        functions = String[]
 
         metadata = CacheMetadata(
             cache_key,
@@ -555,9 +550,6 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     catch e
         @warn "Failed to save library to cache: $e"
     end
-
-    # Temporarily disabled LLVM IR loading for stability
-    # (LLVM IR is used for type inference and @rust_llvm)
 
     # Load and register the library: the handle and the manifest's lookup
     # tables are published in one critical section (#279 follow-up, #277).
@@ -1033,40 +1025,6 @@ function _manifest_return_type(sig)
 end
 
 """
-    get_rust_module(code::String) -> Union{RustModule, Nothing}
-
-Get the `RustModule` recorded for a given code string, if available.
-
-Keyed by the library name the direct-`rustc` path derives for that source
-(`_rustc_block_identity` through `artifact_short_id`), so the registry and the
-libraries it describes agree. It used to be keyed by Julia's `hash`, which is
-randomized per session and could therefore never match the `rust_<short id>`
-names the compilation path produces.
-"""
-function get_rust_module(code::String)
-    key = try
-        _rust_module_key(code)
-    catch
-        return nothing
-    end
-    return lock(REGISTRY_LOCK) do
-        get(RUST_MODULE_REGISTRY, key, nothing)
-    end
-end
-
-"""
-    _rust_module_key(code::AbstractString) -> String
-
-The `RUST_MODULE_REGISTRY` key for a block of source: the same library name the
-direct-`rustc` path registers it under.
-"""
-function _rust_module_key(code::AbstractString)
-    compiler = get_default_compiler()
-    key = _rustc_block_identity(wrap_rust_code(String(code)), compiler, nothing)
-    return "rust_$(artifact_short_id(key))"
-end
-
-"""
     list_loaded_libraries() -> Vector{String}
 
 List all currently loaded Rust libraries.
@@ -1080,15 +1038,19 @@ end
 """
     list_library_functions(lib_name::String) -> Vector{String}
 
-List all exported functions in a loaded library.
-Note: This uses the LLVM IR module if available, otherwise returns an empty list.
+The Rust function names the manifest recorded for a loaded library, sorted.
+
+Read from `FUNCTION_SYMBOLS_BY_LIB`, the per-library name-to-symbol table the
+manifest fills when the library is registered (#279). A library that is not
+loaded, or whose manifest recorded no functions, yields an empty list. (Until
+0.3.0 this consulted the module registry of the removed LLVM IR path, which
+nothing ever wrote to, so it always returned an empty list; #265.)
 """
 function list_library_functions(lib_name::String)
-    mod = lock(REGISTRY_LOCK) do
-        get(RUST_MODULE_REGISTRY, lib_name, nothing)
+    names = lock(REGISTRY_LOCK) do
+        [name for (lib, name) in keys(FUNCTION_SYMBOLS_BY_LIB) if lib == lib_name]
     end
-    mod === nothing && return String[]
-    return list_functions(mod)
+    return sort!(names)
 end
 
 """

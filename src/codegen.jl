@@ -512,33 +512,6 @@ function get_function_return_type(lib_name::String, func_name::String)
 end
 
 """
-    infer_function_types(lib_name::String, func_name::String) -> Tuple{Type, Vector{Type}}
-
-Try to infer the return type and argument types for a function.
-Uses LLVM IR analysis if available.
-"""
-function infer_function_types(lib_name::String, func_name::String)
-    # The RustModule for this library, if the LLVM IR path recorded one.
-    # `RUST_MODULE_REGISTRY` is keyed by library name (#278); it used to be
-    # keyed by Julia's session-randomized `hash`, which no name could match.
-    mod = lock(REGISTRY_LOCK) do
-        get(RUST_MODULE_REGISTRY, lib_name, nothing)
-    end
-    if mod !== nothing
-        fn = get_function(mod, func_name)
-        if fn !== nothing
-            return _get_function_signature(fn)
-        end
-    end
-
-    # If we can't infer, say so with a type the caller can catch *narrowly*.
-    # This used to be a bare `error(...)`, and the one caller wrapped it in a
-    # `try`/`catch` that swallowed every exception — including the fail-closed
-    # errors the FFI contract raises (#245).
-    throw(SignatureInferenceError(func_name, lib_name))
-end
-
-"""
     julia_to_c_type(::Type{T}) -> Type
 
 Convert a Julia type to its C-compatible equivalent for ccall.

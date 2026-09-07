@@ -8,7 +8,7 @@
 # Julia processes (cache keys, library names, file names).
 #
 # Use `stable_content_hash()` (defined below) for all persistent identifiers.
-# In-memory-only Dict keys (e.g., RUST_MODULE_REGISTRY, IRUST_FUNCTIONS) may
+# In-memory-only Dict keys (e.g., IRUST_FUNCTIONS) may
 # still use `hash()` since they are never written to disk.
 
 using SHA
@@ -263,7 +263,8 @@ The exact naming the pre-#278 layout used for loose files in
 
 - `save_cached_library`  → `<cache_key><lib_ext>`
 - `_save_checksum`       → `<cache_key><lib_ext>.sha256`
-- `save_cached_llvm_ir`  → `<cache_key>.ll`
+- the LLVM IR cache of the LLVM path removed in 0.3.0 (#265)
+                         → `<cache_key>.ll`
 
 `cache_key` was always a `stable_content_hash` digest, i.e. lowercase hex (64
 characters, or 32 for the Cargo-side keys). That is what makes the pattern safe
@@ -490,23 +491,6 @@ function get_cached_library(cache_key::String)
 end
 
 """
-    get_cached_llvm_ir(cache_key::String) -> Union{String, Nothing}
-
-Check if a cached LLVM IR file exists for the given cache key.
-Returns the path to the cached IR file if it exists, nothing otherwise.
-"""
-function get_cached_llvm_ir(cache_key::String)
-    cache_dir = get_cache_dir()
-    ir_path = joinpath(cache_dir, "$(cache_key).ll")
-
-    if isfile(ir_path)
-        return ir_path
-    end
-
-    return nothing
-end
-
-"""
     _compute_file_checksum(path::String) -> String
 
 Compute SHA-256 checksum of a file for integrity verification.
@@ -576,23 +560,6 @@ function save_cached_library(cache_key::String, lib_path::String, metadata::Cach
         _save_cache_metadata_unlocked(cache_key, metadata)
 
         return dest_lib_path
-    end
-end
-
-"""
-    save_cached_llvm_ir(cache_key::String, ir_path::String)
-
-Save a compiled LLVM IR file to the cache.
-"""
-function save_cached_llvm_ir(cache_key::String, ir_path::String)
-    lock(CACHE_LOCK) do
-        cache_dir = get_cache_dir()
-        dest_ir_path = joinpath(cache_dir, "$(cache_key).ll")
-
-        # Copy the IR file
-        cp(ir_path, dest_ir_path, force=true)
-
-        return dest_ir_path
     end
 end
 
