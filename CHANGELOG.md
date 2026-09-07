@@ -59,6 +59,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `list_library_functions(lib)` now returns the function names the manifest
   recorded for the library instead of always returning an empty list.
 
+### Changed
+- **Every example under `examples/` is self-contained.** `examples/SampleCrate.jl`
+  and `examples/SampleCratePyO3.jl` used to build the sibling crates
+  `examples/sample_crate` and `examples/sample_crate_pyo3`, which were also the
+  test suite's fixtures. Each package now embeds its own crate in the layout the
+  Precompilation Support guide prescribes — `deps/sample_crate/` and
+  `deps/sample_crate_pyo3/` (with `main.py`) — and `deps/build.jl` builds that;
+  the embedded `sample_crate` is trimmed to what the package exports and tests.
+  The only reference an example makes outside its directory is the
+  `juliacall_macros` path dependency, because the proc-macro crate is not on
+  crates.io yet. The fixtures moved to `test/fixtures/sample_crate`,
+  `test/fixtures/sample_crate_pyo3`, `test/fixtures/sample_crate_pyo3_only`,
+  `_mixed` and `_optional`, and their `cargo test` passes again (the
+  `Result` / `Option` unit tests of `sample_crate` still read the pre-#279
+  `CResult` fields). Documentation that pointed `@rust_crate` at
+  `examples/sample_crate*` now names the embedded crate or the fixture.
+
 ## [0.2.1] - 2026-09-07
 
 ### Added

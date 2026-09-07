@@ -14,19 +14,22 @@ This page collects repository-oriented information that no longer lives in the t
 ## Bundled Examples
 
 - `examples/MyExample.jl`: package-style example using inline `rust"""..."""` blocks.
-- `examples/sample_crate`: external Rust crate using `#[julia]` and `@rust_crate`;
-  `examples/SampleCrate.jl` is the Julia package around it (Rust and Julia in
+- `examples/SampleCrate.jl`: a Julia package with the Rust crate
+  `deps/sample_crate` embedded in it, using `#[julia]` (Rust and Julia in
   separate files, bindings written by `deps/build.jl`, tested with `Pkg.test()`).
-- `examples/sample_crate_pyo3`: dual Julia/Python bindings example;
-  `examples/SampleCratePyO3.jl` is its Julia package, `main.py` its Python consumer.
-- `examples/sample_crate_pyo3_only`, `_mixed`, `_optional`: crates carrying PyO3
-  attributes, used by the #275 scan and link-plan tests.
+- `examples/SampleCratePyO3.jl`: a Julia package with the dual Julia/Python
+  crate `deps/sample_crate_pyo3` embedded in it; `deps/sample_crate_pyo3/main.py`
+  is its Python consumer.
 - `examples/pluto/hello.jl`: Pluto-oriented walkthrough. CI runs it headlessly with
   Pluto (`examples/pluto/run_notebook.jl`, the `Pluto - hello.jl` job of the
   `Examples` workflow) and fails when any cell errors.
 
-Every `examples/*.jl` directory is a Julia package. Run its tests against the
-RustCall of this checkout from the repository root:
+Every `examples/*.jl` directory is a Julia package, and each is self-contained:
+the crate it binds lives under its own `deps/<crate>/`, in the layout the
+[Precompilation Support](precompilation.md) guide prescribes, and the only
+reference it makes outside its directory is the `juliacall_macros` path
+dependency (the proc-macro crate is not on crates.io yet). Run its tests against
+the RustCall of this checkout from the repository root:
 
 ```bash
 julia --project=examples/MyExample.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
@@ -50,6 +53,12 @@ every push.
 ## Test Suite
 
 - Root entry point: `test/runtests.jl`
+- Fixture crates: `test/fixtures/sample_crate` (the `#[julia]` crate the crate-binding,
+  hot-reload and static-method tests load, with test-only items such as `panicky_*`
+  and `Divider`), `test/fixtures/sample_crate_pyo3` (dual bindings) and
+  `test/fixtures/sample_crate_pyo3_only`, `_mixed`, `_optional` (crates carrying
+  PyO3 attributes, used by the #275 scan and link-plan tests). They are test
+  material, not examples; the examples under `examples/` embed their own crates.
 - Coverage includes cache behavior, ownership types, arrays, generics, cargo dependencies, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
 - Documentation examples are checked by `test/test_docs_examples.jl`.
 - The proc-macro crate has its own tests in `deps/juliacall_macros/tests/`.
