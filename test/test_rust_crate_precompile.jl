@@ -8,7 +8,7 @@
 # to hold, and each needs a *separate* process, because a precompile image is
 # only ever consumed by a session other than the one that produced it:
 #
-#   1. a package with `@rust_crate <crate> name="Bindings"` at top level,
+#   1. a package with `@rust_crate <crate> submodule="Bindings"` at top level,
 #      re-exporting through `using .Bindings: ...`, precompiles;
 #   2. a fresh session loads it from the image: the module's `__init__` opens
 #      the library — RustCall's durable cache copy, not the generation copy
@@ -69,7 +69,7 @@ end
         write(joinpath(pkgdir_, "src", "$pkg_name.jl"), """
         module $pkg_name
         using RustCall
-        @rust_crate $(repr(abspath(PRECOMP_SAMPLE_CRATE))) name="Bindings"
+        @rust_crate $(repr(abspath(PRECOMP_SAMPLE_CRATE))) submodule="Bindings"
         using .Bindings: add, Point, distance_from_origin
         export add, Point, distance_from_origin
         const LOADED_AT_PRECOMPILE = Bindings._LIB_GEN[].handle != C_NULL
@@ -185,5 +185,65 @@ end
         # This crate exposes nothing without its `python` feature, so there is
         # no binding to call: the library and its load are the whole claim.
         @test isempty(RustCall.scan_crate(PRECOMP_WRAPPED_CRATE).julia_functions)
+    end
+end
+
+# `const X = @rust_crate <crate> name="X"` is the form the macro's docstring has
+# always shown. It must keep working, and that is why `name=` names the
+# generated module without defining it in the caller: a version that defined
+# `X` and then bound the returned `CrateBindings` over it produced a package
+# whose precompile image **segfaulted** on load (signal 11), not merely a
+# redefinition error (#339 review).
+@testset "const X = @rust_crate ... name=\"X\" still loads (#339 review)" begin
+    if !isdir(PRECOMP_SAMPLE_CRATE) || !_precomp_cargo_available()
+        @test_skip "cargo and test/fixtures/sample_crate are required"
+    else
+        # In-process first: the name is not defined here, only the value.
+        bindings = @rust_crate PRECOMP_SAMPLE_CRATE name="PrecompSameName"
+        @test bindings isa RustCall.CrateBindings
+        @test !isdefined(@__MODULE__, :PrecompSameName)
+        @test nameof(bindings.module_ref) === :PrecompSameName
+
+        # And in a package that is precompiled and then loaded in a fresh
+        # session, which is where the crash happened.
+        root = mktempdir()
+        pkg_name = "RustCrateSameName339"
+        pkg_uuid = "5c7e1b90-2d43-4f18-9a06-3b8e7d24c1af"
+        pkgdir_ = joinpath(root, pkg_name)
+        cache_dir = joinpath(root, "rustcall-cache")
+        mkpath(joinpath(pkgdir_, "src"))
+        mkpath(cache_dir)
+        write(joinpath(pkgdir_, "Project.toml"), """
+        name = "$pkg_name"
+        uuid = "$pkg_uuid"
+        version = "0.1.0"
+
+        [deps]
+        RustCall = "$(Base.PkgId(RustCall).uuid)"
+        """)
+        write(joinpath(pkgdir_, "src", "$pkg_name.jl"), """
+        module $pkg_name
+        using RustCall
+        const MyBindings = @rust_crate $(repr(abspath(PRECOMP_SAMPLE_CRATE))) name="MyBindings"
+        end
+        """)
+        pkgid = Base.PkgId(Base.UUID(pkg_uuid), pkg_name)
+        sep = Sys.iswindows() ? ";" : ":"
+        try
+            out = withenv("JULIA_LOAD_PATH" => join((pkgdir(RustCall), root, "@stdlib"), sep),
+                          "RUSTCALL_CACHE_DIR" => cache_dir,
+                          "RUSTCALL_SUPPRESS_HELPERS_WARNING" => "1") do
+                readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e """
+                    using $pkg_name
+                    print($pkg_name.MyBindings.add(Int32(1), Int32(2)))
+                    """`; stderr = devnull))
+            end
+            @test out == "3"
+        finally
+            for dir in unique(dirname.(Base.find_all_in_cache_path(pkgid)))
+                rm(dir; recursive = true, force = true)
+            end
+            rm(root; recursive = true, force = true)
+        end
     end
 end

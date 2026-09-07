@@ -140,17 +140,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Pkg.precompile()` of such a package failed with ``Evaluation into the closed
   module `##RustCallCrateRuntime#N` breaks incremental compilation``. The
   module is now defined **inside the module that expands the macro**
-  (`load_crate_bindings(...; target_module = __module__)`): with `name="X"` as
-  `Caller.X`, visibly, so `using .X: f, T` works — the package idiom is
-  `@rust_crate path name="Bindings"` followed by `using .Bindings: ...`, the
-  same shape as `include("generated/Bindings.jl")`; without `name=` inside a
-  hidden, per-call child namespace (`Caller.var"##RustCallCrateRuntime#N"`), so
-  nothing the caller did not name appears in its namespace and repeated calls
-  never collide (the #222 contract). A second `@rust_crate ... name="X"` in the
-  same module replaces `X` (Julia warns); bindings obtained earlier keep the
-  module they hold. The return value is unchanged, a `RustCall.CrateBindings`;
-  `load_crate_bindings` called without `target_module` keeps the anonymous
-  module. Two consequences for the generated module: `_LIB_PATH` of an
+  (`load_crate_bindings(...; target_module = __module__)`), in a hidden,
+  per-call child namespace (`Caller.var"##RustCallCrateRuntime#N"`), so nothing
+  the caller did not name appears in its namespace and repeated calls never
+  collide (the #222 contract). The return value is unchanged, a
+  `RustCall.CrateBindings`; `load_crate_bindings` called without a
+  `target_module` keeps the anonymous module. Two consequences for the
+  generated module: `_LIB_PATH` of an
   in-memory `@rust_crate` module is now the **durable** library — RustCall's
   cache copy, or Cargo's output — instead of the per-process generation copy,
   which is made in `__init__` (as the written file already did since format 6),
@@ -166,6 +162,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `__init__`, not from its own top level. The generated module imports `Libdl`
   through RustCall (`import RustCall.Libdl`), so the package does not need
   `Libdl` among its dependencies.
+
+### Added
+- **`@rust_crate ... submodule="Bindings"`**
+  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)) defines the
+  generated module in the calling module under that name, so a package can
+  `using .Bindings: f, T` from it — the idiom that pairs with the precompile
+  fix above, and the same shape as `include("generated/Bindings.jl")`. `name=`
+  is unchanged: it names the generated module and defines nothing, which is
+  what keeps the documented `const MyBindings = @rust_crate path name="MyBindings"`
+  working. The two are separate options on purpose: an earlier cut of this
+  change made `name=` define the module, and a package written that way
+  precompiled and then **segfaulted** on load, because the constant was bound
+  over the module binding the macro had just created (found in review of
+  [#351](https://github.com/AtelierArith/RustCall.jl/pull/351)).
 - **`@rust_crate <crate> cache=false` on a crate that RustCall has to wrap**
   ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). A crate
   whose `[lib]` is not a `cdylib` is bound through a generated wrapper project

@@ -19,7 +19,7 @@ When you use `@rust_crate` in a Julia package, the bindings can be precompiled a
 
 Two ways to put a crate's bindings in a package, both precompiled:
 
-**`@rust_crate` at the package's top level** (`@rust_crate path name="Bindings"`
+**`@rust_crate` at the package's top level** (`@rust_crate path submodule="Bindings"`
 followed by `using .Bindings: ...`; see "Using `@rust_crate` inside a package"
 in [Crate Bindings](crate_bindings.md)):
 1. During precompilation: `@rust_crate` scans the crate, builds it (into

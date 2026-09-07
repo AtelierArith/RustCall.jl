@@ -496,11 +496,11 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
 
     @testset "crate_bindings.md - Explicit Binding" begin
         if _DOCS_SAMPLE_CRATE_AVAILABLE
-            # @rust_crate returns a local bindings value. The module it
-            # generates is defined in the calling module *under the name the
-            # caller gave* (#339: that is what lets a package precompile it
-            # and `using .Name: ...` from it); without `name=` nothing visible
-            # is added to the caller's namespace (#222).
+            # @rust_crate returns a local bindings value and adds nothing
+            # visible to the caller's namespace (#222) — `name=` only names
+            # the generated module. `submodule=` is the option that defines it
+            # in the caller (#339), and it is exercised in
+            # test_rust_crate_precompile.jl.
             let DocsSampleCrate = @rust_crate DOCS_SAMPLE_CRATE_PATH name="DocsSampleCrateInjected"
                 @test DocsSampleCrate.add(Int32(1), Int32(2)) == Int32(3)
                 @test DocsSampleCrate.Point isa DataType
@@ -508,8 +508,7 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
                 @test point isa DocsSampleCrate.Point
                 @test DocsSampleCrate.distance_from_origin(point) == 5.0
                 @test Base.invokelatest(getproperty, point, :x) == 3.0
-                @test isdefined(@__MODULE__, :DocsSampleCrateInjected)
-                @test getfield(@__MODULE__, :DocsSampleCrateInjected) === DocsSampleCrate.module_ref
+                @test !isdefined(@__MODULE__, :DocsSampleCrateInjected)
             end
             # `names` reads the binding table in the *current* world age, and
             # this testset body runs in the world it started in — so a

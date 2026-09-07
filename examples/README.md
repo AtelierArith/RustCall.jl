@@ -309,9 +309,10 @@ When using `@rust_crate`, the returned bindings object wraps a generated module 
 
 Example: `sample_crate` → `SampleCrate`
 
-Without `name=` that module is hidden inside the calling module (reached only through the returned value); `name=` defines it in the calling module under that name, so a package can `using` from it (#339):
+By default that module is hidden inside the calling module and is reached only through the returned value; `name=` chooses its name, and `submodule=` is what defines it in the calling module so a package can `using` from it (#339):
 ```julia
-const bindings = @rust_crate "/path/to/crate" name="MyCustomName"   # also defines MyCustomName here
+const bindings = @rust_crate "/path/to/crate" name="MyCustomName"        # nothing new is defined here
+@rust_crate "/path/to/crate" submodule="MyCustomName"                   # defines MyCustomName here
 using .MyCustomName: add
 ```
 

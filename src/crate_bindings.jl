@@ -2476,11 +2476,18 @@ Where it is evaluated decides whether the caller can be precompiled (#339):
 - `target_module` given (the `@rust_crate` macro passes `__module__`): the
   module is evaluated **inside the caller**, so it belongs to the module tree
   Julia is precompiling. `visible = true` defines it directly as
-  `target_module.<name>` — the `name=` form, for `using .Name: ...`.
+  `target_module.<name>` — the `submodule=` form, for `using .Name: ...`.
   Otherwise it goes into a hidden child namespace
   `target_module.var"##RustCallCrateRuntime#N"`, unique per call, so nothing
   the caller did not name appears in its namespace and a repeated call never
   replaces anything (the #222 contract).
+
+Only `submodule=` makes it visible, never `name=`, and that separation is not
+cosmetic: `const B = @rust_crate path name="B"` is a documented form, and
+defining a module `B` in the caller and *then* binding the returned value to
+the same constant produced a package whose precompile image segfaults on load
+(#339 review). `name=` therefore keeps naming the module without defining
+anything the caller did not ask for.
 """
 function _instantiate_runtime_bindings(bindings_expr::Expr;
                                        target_module::Union{Module, Nothing} = nothing,
@@ -2496,7 +2503,7 @@ function _instantiate_runtime_bindings(bindings_expr::Expr;
 end
 
 """
-    load_crate_bindings(crate_path::String; output_module_name=nothing, build_release=true, cache_enabled=true, target_module=nothing) -> CrateBindings
+    load_crate_bindings(crate_path::String; output_module_name=nothing, submodule_name=nothing, build_release=true, cache_enabled=true, target_module=nothing) -> CrateBindings
 
 Generate, load, and return explicit bindings for a Rust crate.
 
@@ -2513,22 +2520,35 @@ p isa MyCrate.Point
 macro passes the module that expands it, which is what lets a package that
 uses the macro at top level be precompiled (#339); called without it, the
 module lives in an anonymous namespace under `Main` and the caller cannot be
-precompiled. With a `target_module`, `output_module_name` names a module
-defined **in** it (`target_module.Name`, so `using .Name: f` works); without
-one, or without a name, no caller-visible module is defined and the bindings
-are reached through the returned value only.
+precompiled.
+
+`output_module_name` names the generated module; it defines nothing in
+`target_module`, so the bindings are reached through the returned value.
+`submodule_name` is what defines it there — `target_module.Name`, so
+`using .Name: f` works — and it also names it, so the two are not given
+together.
 """
 function load_crate_bindings(crate_path::String;
     output_module_name::Union{String, Nothing} = nothing,
+    submodule_name::Union{String, Nothing} = nothing,
     build_release::Bool = true,
     cache_enabled::Bool = true,
     features::Vector{String} = String[],
     default_features::Bool = true,
     target_module::Union{Module, Nothing} = nothing,
 )
+    if submodule_name !== nothing && output_module_name !== nothing &&
+       submodule_name != output_module_name
+        throw(ArgumentError(
+            "load_crate_bindings: `submodule_name` ($(repr(submodule_name))) and " *
+            "`output_module_name` ($(repr(output_module_name))) name the same module " *
+            "and must agree; pass only `submodule_name` to define it in the caller"))
+    end
+    module_name = submodule_name === nothing ? output_module_name : submodule_name
+
     bindings_expr = generate_bindings(
         crate_path;
-        output_module_name = output_module_name,
+        output_module_name = module_name,
         build_release = build_release,
         cache_enabled = cache_enabled,
         features = features,
@@ -2538,7 +2558,7 @@ function load_crate_bindings(crate_path::String;
     crate_module = _instantiate_runtime_bindings(
         bindings_expr;
         target_module = target_module,
-        visible = output_module_name !== nothing,
+        visible = submodule_name !== nothing,
     )
     return CrateBindings(crate_module)
 end
@@ -2557,10 +2577,11 @@ Generate and load bindings for an external Rust crate.
 - `path`: Path to the Rust crate (string literal)
 
 # Options
-- `name="ModuleName"`: define the generated module under that name **in the
-  calling module**, so that `using .ModuleName: f, T` works. Without it the
-  module gets a hidden, per-call name and is reached only through the returned
-  value.
+- `name="ModuleName"`: name the generated module. It defines nothing in the
+  calling module; the bindings are reached through the returned value.
+- `submodule="ModuleName"`: define the generated module under that name **in
+  the calling module**, so that `using .ModuleName: f, T` works — the shape a
+  package uses. Do not assign the result to the same name.
 - `release=true/false`: Build in release mode (default: true)
 - `cache=true/false`: Enable caching (default: true)
 
@@ -2574,9 +2595,13 @@ session that loads the package. If that copy has been rebuilt or removed
 (`RustCall.clear_cache()`), the package's precompile cache is stale and Julia
 re-precompiles it, building the crate again.
 
-A second `@rust_crate ... name="X"` in the same module replaces `X` (Julia
-warns `replacing module X`); bindings obtained earlier keep the module they
-hold. Without `name=`, repeated calls never collide.
+Without `submodule=` the module has a hidden, per-call name inside the caller,
+so repeated calls never collide and nothing the caller did not name appears in
+its namespace. With `submodule="X"`, a second `@rust_crate ... submodule="X"`
+in the same module replaces `X` (Julia warns `replacing module X`); bindings
+obtained earlier keep the module they hold. `submodule="X"` defines `X`, so do
+not also write `const X = @rust_crate ... submodule="X"` — binding the returned
+value over the module it just defined is what `name=` deliberately avoids.
 
 # Example
 ```julia
@@ -2591,10 +2616,10 @@ MyCrate.add(Int32(1), Int32(2))
 p = MyCrate.Point(3.0, 4.0)
 MyCrate.distance(p)
 
-# In a package: name the module and re-export from it
+# In a package: define the module here and re-export from it
 module MyPkg
 using RustCall
-@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") name="Bindings"
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") submodule="Bindings"
 using .Bindings: add, Point
 export add, Point
 end
@@ -2602,6 +2627,7 @@ end
 """
 macro rust_crate(path, options...)
     module_name = nothing
+    submodule_name = nothing
     release = true
     cache = true
     features = :(String[])
@@ -2614,6 +2640,8 @@ macro rust_crate(path, options...)
 
             if key == :name
                 module_name = value
+            elseif key == :submodule
+                submodule_name = value
             elseif key == :release
                 release = value
             elseif key == :cache
@@ -2626,13 +2654,14 @@ macro rust_crate(path, options...)
         end
     end
 
-    # `__module__` is the module the macro expands in; the generated module is
-    # defined inside it, which is what a package precompiling this call site
-    # needs (#339).
+    # `__module__` is the module the macro expands in. The generated module is
+    # placed inside it — hidden unless `submodule=` names it — which is what a
+    # package precompiling this call site needs (#339).
     quote
         load_crate_bindings(
             $(esc(path));
             output_module_name = $module_name,
+            submodule_name = $submodule_name,
             build_release = $release,
             cache_enabled = $cache,
             features = String[$(esc(features))...],

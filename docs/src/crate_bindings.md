@@ -514,7 +514,7 @@ module MyPackage
 using RustCall
 
 # Build the crate and generate its bindings; define them as `MyPackage.Bindings`.
-@rust_crate joinpath(@__DIR__, "..", "deps", "my_rust_crate") name="Bindings"
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_rust_crate") submodule="Bindings"
 using .Bindings: add, multiply, MyStruct
 
 export add, multiply, MyStruct
@@ -549,18 +549,25 @@ its own — one that does not survive the process — for a crate RustCall has t
 wrap. In the first case the next `cargo build` of the crate invalidates the
 package's cache; in the second the package is re-precompiled at every session.
 
-The naming rule: `name="Bindings"` defines the module as `MyPackage.Bindings`,
-which is what `using .Bindings: ...` needs; without `name=` the module gets a
-hidden, per-call name (`MyPackage.var"##RustCallCrateRuntime#N"...`) and is
-reached only through the value the macro returns — nothing the caller did not
-name appears in its namespace. A second `@rust_crate ... name="Bindings"` in
-the same module replaces the module (Julia warns `replacing module Bindings`);
-values obtained earlier keep the module they hold. The return value is the same
-`CrateBindings` in every position — REPL, function body, package — so a
-package may also keep it: `const B = @rust_crate path` gives `B.add(...)`,
-world-age-safe, without any visible module. The generated module needs only
-`RustCall` among the package's dependencies (it reaches `Libdl` through
-RustCall).
+The naming rule: **`submodule="Bindings"` is what defines** the module as
+`MyPackage.Bindings`, which is what `using .Bindings: ...` needs. Without it
+the module gets a hidden, per-call name (`MyPackage.var"##RustCallCrateRuntime#N"...`)
+and is reached only through the value the macro returns — nothing the caller
+did not name appears in its namespace. `name="Bindings"` chooses that hidden
+module's name and still defines nothing, which is why
+`const MyBindings = @rust_crate path name="MyBindings"` — the form the macro's
+docstring has always shown — keeps working: the constant is the only binding
+the caller gets.
+
+A second `@rust_crate ... submodule="Bindings"` in the same module replaces the
+module (Julia warns `replacing module Bindings`); values obtained earlier keep
+the module they hold. Do not write `const Bindings = @rust_crate path submodule="Bindings"`:
+that binds the returned value over the module the macro just defined. The
+return value is the same `CrateBindings` in every position — REPL, function
+body, package — so a package may also keep it: `const B = @rust_crate path`
+gives `B.add(...)`, world-age-safe, without any visible module. The generated
+module needs only `RustCall` among the package's dependencies (it reaches
+`Libdl` through RustCall).
 
 Prefer this shape when the machine that loads the package has a Rust toolchain
 and building the crate on first use is acceptable; the bindings can never be
