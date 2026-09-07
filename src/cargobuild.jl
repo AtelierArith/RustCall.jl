@@ -46,19 +46,250 @@ function _cargo_feature_args(features::Vector{String}, default_features::Bool)
 end
 
 """
-    _cargo_build_args(release, features, default_features) -> Vector{String}
+    cargo_offline() -> Bool
+
+Whether `RUSTCALL_OFFLINE` asks for air-gapped builds (`1`, `true`, `yes`; case
+insensitive). Every `cargo` invocation that could touch the network —
+`generate-lockfile`, `build` — then carries `--offline`, and Cargo fails at once,
+with its own message, on anything the local registry cache does not hold,
+rather than hanging on a download (#256). The flag changes where Cargo looks,
+not what it builds, so it is not part of any artifact identity.
+"""
+cargo_offline() = lowercase(strip(get(ENV, "RUSTCALL_OFFLINE", ""))) in ("1", "true", "yes")
+
+# The network half of a `cargo` argument vector: `--offline` under
+# `RUSTCALL_OFFLINE`, nothing otherwise.
+_cargo_network_args() = cargo_offline() ? ["--offline"] : String[]
+
+"""
+    _cargo_build_args(release, features, default_features; locked = false) -> Vector{String}
 
 The argument vector of the `cargo build` a project is built with: the profile,
-then the feature set (`_cargo_feature_args`). A plain `@rust_crate` build made
-with `features = ...` / `default_features = false` passes them here, so the
-crate is built with the configuration that was asked for and not its default
-one (#307 review).
+then the feature set (`_cargo_feature_args`), then `--locked` when the project's
+`Cargo.lock` is authoritative — it came from the lockfile store or was just
+generated for exactly this project (`ensure_cargo_lockfile!`) — so Cargo builds
+the resolved graph the identity describes or fails, never re-resolving behind
+the key (#256); and `--offline` under `RUSTCALL_OFFLINE`. A plain `@rust_crate`
+build made with `features = ...` / `default_features = false` passes them here,
+so the crate is built with the configuration that was asked for and not its
+default one (#307 review).
 """
-function _cargo_build_args(release::Bool, features::Vector{String}, default_features::Bool)
+function _cargo_build_args(release::Bool, features::Vector{String}, default_features::Bool;
+                           locked::Bool = false)
     args = ["build"]
     release && push!(args, "--release")
     append!(args, _cargo_feature_args(features, default_features))
+    locked && push!(args, "--locked")
+    append!(args, _cargo_network_args())
     return args
+end
+
+"""
+    lockfile_dir() -> String
+
+The directory of the persisted `Cargo.lock` files (`<cache dir>/lockfiles`),
+created on demand. Lockfiles are *inputs* of a build, not outputs, so
+`clear_cache` / `clear_cargo_cache` leave them alone: delete one to re-resolve
+its dependency set (`lockfile_path`).
+"""
+function lockfile_dir()
+    dir = joinpath(get_cache_dir(), "lockfiles")
+    mkpath(dir)
+    return dir
+end
+
+"""
+    clear_lockfiles()
+
+Remove every persisted `Cargo.lock` (`lockfile_dir`), so the next build of each
+`// cargo-deps:` dependency set resolves it afresh. This is the one operation
+that discards resolutions: `clear_cache` keeps them, because they are inputs of
+a build and not compiled output (#256). To re-resolve a single set, delete
+`lockfile_path(deps)` instead.
+"""
+function clear_lockfiles()
+    dir = joinpath(get_cache_dir(), "lockfiles")
+    isdir(dir) || return nothing
+    for entry in readdir(dir; join = true)
+        try
+            rm(entry; force = true)
+        catch e
+            e isa Base.IOError || rethrow(e)
+            @debug "Could not remove a lockfile" entry exception = e
+        end
+    end
+    return nothing
+end
+
+"""
+    lockfile_path(deps::Vector{DependencySpec}) -> String
+    lockfile_path(code::AbstractString) -> String
+
+Where RustCall keeps the `Cargo.lock` of a `// cargo-deps:` dependency set —
+named by `artifact_key(cargo_lockfile_id(deps))`, so the same declared set on
+any machine looks in the same place. The second form parses the dependency
+comments of a block's source (`parse_dependencies_from_code`).
+
+The file is written the first time the set is resolved (`cargo generate-lockfile`,
+`ensure_cargo_lockfile!`) and replayed with `--locked` on every later build, on
+this machine or another one that has the file. Commit it, copy it, or delete it
+to resolve afresh; its content is part of every build's identity, so a changed
+lockfile is a rebuild and never a stale cache hit (#256).
+"""
+lockfile_path(deps::Vector{DependencySpec}) =
+    joinpath(lockfile_dir(), artifact_key(cargo_lockfile_id(deps)) * ".lock")
+lockfile_path(code::AbstractString) = lockfile_path(parse_dependencies_from_code(String(code)))
+
+"""
+    ensure_cargo_lockfile!(project::CargoProject; env = nothing) -> Union{String, Nothing}
+
+Give a generated project an authoritative `Cargo.lock` and return its content
+digest — `nothing` for a project that declares no dependencies of its own
+(`project.dependencies` empty, e.g. a `@rust_crate` wrapper whose manifest was
+written by hand), which has no entry in the lockfile store.
+
+When the store has a lockfile for the project's dependency set
+(`lockfile_path`), it is copied in and nothing is resolved: the build that
+follows is `--locked`, so it either builds exactly the graph the file pins or
+fails. Otherwise `cargo generate-lockfile` resolves the set once — `--offline`
+under `RUSTCALL_OFFLINE`, failing loudly when the local registry lacks
+something — and the result is persisted for every later build of the same set
+(#256). The generated project's root package is named from the dependency set
+(`cargo_block_package`) for every block declaring it, which is what makes one
+lockfile fit them all.
+
+Two processes — or two machines sharing the store — that both find it empty
+resolve independently, possibly from different registry snapshots. Publication
+is therefore **no-clobber** (`_publish_lockfile!`): the first file to land is
+the resolution of the set, and whoever loses discards its own, replays the
+published file into its project and returns *that* digest — so both builds are
+of one graph, which is the point of the store (#313 review).
+
+Throws `CargoBuildError` with Cargo's own message when resolution fails.
+"""
+function ensure_cargo_lockfile!(project::CargoProject;
+                                env::Union{Nothing, AbstractDict} = nothing)
+    isempty(project.dependencies) && return nothing
+    stored = lockfile_path(project.dependencies)
+    target = joinpath(project.path, "Cargo.lock")
+    if isfile(stored) && _lockfile_names_root(stored, project.name)
+        cp(stored, target; force = true)
+        return _file_content_digest(target)
+    end
+    # Either no resolution yet, or a file that is not this set's resolution: it
+    # does not name the project's root package (a stale scheme, a hand-edited
+    # file), and `--locked` would reject it. Resolve afresh and publish over
+    # it (`replace`), rather than fail every build of the set until someone
+    # deletes the file by hand.
+    replace_stale = isfile(stored)
+    args = ["generate-lockfile"]
+    append!(args, _cargo_network_args())
+    cmd = setenv(`$(cargo()) $args`, Dict{String, String}(env === nothing ? ENV : env);
+                 dir = project.path)
+    stderr_io = IOBuffer()
+    ok = try
+        success(pipeline(cmd; stdout = devnull, stderr = stderr_io))
+    catch e
+        throw(CargoBuildError("Unexpected error while resolving dependencies: $e", "",
+                              project.path))
+    end
+    ok || throw(CargoBuildError(
+        cargo_offline() ?
+            "Cargo could not resolve the dependencies offline (RUSTCALL_OFFLINE is set and " *
+            "the local registry cache does not hold them)" :
+            "Cargo could not resolve the dependencies",
+        String(take!(stderr_io)), project.path))
+    isfile(target) || throw(CargoBuildError("cargo generate-lockfile produced no Cargo.lock",
+                                            "", project.path))
+    return _publish_lockfile!(stored, target; replace = replace_stale)
+end
+
+# Whether the lockfile at `path` carries a `[[package]]` entry for `root` — the
+# generated project's own package, which every lockfile Cargo writes for it
+# names. A stored file that does not is not this project's resolution.
+function _lockfile_names_root(path::AbstractString, root::AbstractString)
+    needle = "name = \"$(root)\""
+    return any(l -> strip(l) == needle, eachline(String(path)))
+end
+
+"""
+    _publish_lockfile!(stored, target; wait = 10.0) -> String
+
+Publish the lockfile a project just resolved (`target`) to the store (`stored`)
+so that exactly one resolution wins, and return the digest of the file the
+project ends up with.
+
+The primitive is an exclusive create (`O_CREAT | O_EXCL`) of a claim file
+beside the entry (`_claim_lockfile!`), which every filesystem makes atomic — a
+rename guarded by an `isfile` check is not, and two first-time builders could
+pass the check together. The process that creates the claim is the publisher:
+it stages the content beside the entry and renames it into place (a whole file
+or none), then removes the claim. Every other process is a loser: it waits up
+to `wait` seconds for the published file to appear, discards its own
+resolution, copies the published file into its project and returns *that*
+digest — so every racer builds the published graph (#313 review).
+
+A claim is never expired by age. Deciding that a publisher is dead from a
+file's mtime against this process's clock is wrong across machines sharing the
+store (their clocks need not agree), and a takeover of a *live* claim is
+precisely the two-publisher race the claim exists to prevent. A claim that
+outlives `wait` with nothing published behind it therefore fails loudly, naming
+the file: if no other RustCall process is resolving the set, a previous one
+died holding the claim — delete that file (or run `clear_lockfiles()`) and
+build again.
+
+With `replace = true` the claim holder publishes over an existing file: the
+caller has established that the stored file is not this set's resolution
+(`_lockfile_names_root`), and the claim still serialises the writers.
+
+Throws `CargoBuildError` in that case.
+"""
+function _publish_lockfile!(stored::AbstractString, target::AbstractString;
+                            wait::Real = 10.0, replace::Bool = false)
+    stored = String(stored)
+    target = String(target)
+    mkpath(dirname(stored))
+    claim = stored * ".claim"
+    if _claim_lockfile!(claim)
+        try
+            if replace || !isfile(stored)
+                tmp = stored * ".tmp-$(getpid())-$(rand(UInt32))"
+                cp(target, tmp; force = true)
+                # Only the claim holder renames, so this replaces nothing.
+                mv(tmp, stored; force = true)
+            end
+        finally
+            rm(claim; force = true)
+        end
+    else
+        deadline = time() + Float64(wait)
+        while !isfile(stored) && time() < deadline
+            sleep(0.05)
+        end
+        isfile(stored) || throw(CargoBuildError(
+            "Another RustCall process holds the claim on this dependency set's Cargo.lock " *
+            "and published nothing within $(wait)s. If no other process is resolving it, " *
+            "a previous one died holding the claim: delete `$(claim)` (or run " *
+            "`RustCall.clear_lockfiles()`) and build again",
+            "claim: $(claim)", dirname(target)))
+    end
+    # Whoever published, the project builds the published file.
+    cp(stored, target; force = true)
+    return _file_content_digest(target)
+end
+
+# Exclusive create of `claim`: `true` when this call made it, `false` when it
+# already existed. The one atomic no-clobber primitive every filesystem has.
+function _claim_lockfile!(claim::AbstractString)
+    flags = Base.Filesystem.JL_O_WRONLY | Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_EXCL
+    f = try
+        Base.Filesystem.open(String(claim), flags, 0o644)
+    catch e
+        (e isa Base.IOError && e.code == Base.UV_EEXIST) && return false
+        rethrow(e)
+    end
+    close(f)
+    return true
 end
 
 """
@@ -82,10 +313,11 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
                              env::Union{Nothing, AbstractDict} = nothing,
                              policy::LoadPolicy = inline_cargo_policy(),
                              features::Vector{String} = String[],
-                             default_features::Bool = true)
+                             default_features::Bool = true,
+                             locked::Bool = false)
     # Build command
     cargo_cmd = cargo()
-    build_args = _cargo_build_args(release, features, default_features)
+    build_args = _cargo_build_args(release, features, default_features; locked = locked)
 
     # The panic strategy is pinned twice: in the generated manifest and here,
     # in the environment Cargo runs under (#244). The manifest key already
@@ -127,8 +359,16 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
                 close(stderr_io)
                 close(stdout_io)
 
+                message = "Cargo build failed"
+                if locked && occursin("lock file", stderr_str)
+                    # The pinned resolution no longer fits the manifest: the
+                    # persisted lockfile is the input to change (#256).
+                    message *= ": the persisted Cargo.lock no longer matches this dependency " *
+                               "set. Delete it to resolve afresh — `RustCall.lockfile_path(deps)` " *
+                               "names the file, `RustCall.clear_lockfiles()` removes them all"
+                end
                 throw(CargoBuildError(
-                    "Cargo build failed",
+                    message,
                     stderr_str,
                     project.path
                 ))
@@ -290,7 +530,8 @@ function build_cargo_project_cached(
     project::CargoProject,
     id::ArtifactId;
     release::Bool = true,
-    env::Union{Nothing, AbstractDict} = nothing
+    env::Union{Nothing, AbstractDict} = nothing,
+    locked::Bool = false
 )
     # `id` is already the complete identity of this build — the caller computed
     # it once and looked the artifact up under it. Deriving a *richer* key here
@@ -309,7 +550,7 @@ function build_cargo_project_cached(
     end
 
     # Build the project
-    lib_path = build_cargo_project(project, release=release, env=env)
+    lib_path = build_cargo_project(project, release=release, env=env, locked=locked)
 
     # Cache the result
     try

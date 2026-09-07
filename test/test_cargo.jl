@@ -432,8 +432,11 @@ end
         expanded = RustCall.expand_inline(block; cfg = :cargo)
         deps = RustCall.parse_dependencies_from_code(block)
         _, build_env_key = RustCall._cargo_build_env_for(nothing)
+        # ... including the resolved graph: the lockfile the build persisted
+        # for this dependency set is part of the identity (#256).
         id = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
-            cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()))
+            cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()),
+            cargo_lock = RustCall._file_content_digest(RustCall.lockfile_path(deps)))
         key = RustCall.artifact_key(id)
         # Named by this block's own key, whatever else is in the directory:
         # the assertion the testset is really making is "this block produced
@@ -598,5 +601,413 @@ end
         @test !isdir(foreign)
         @test !isdir(joinpath(project_dir, "config-elsewhere"))
         rm(sandbox; recursive = true, force = true)
+    end
+end
+
+@testset "Pinned, lockfile-driven dependency builds (#256)" begin
+    # A `// cargo-deps:` block used to be resolved afresh on every build, with
+    # no lockfile and a cache key over the *requested* ranges: two machines
+    # (or one machine a week apart) built different graphs for the same
+    # source, and a cache hit could serve a binary built from a graph that no
+    # longer resolves. The resolution is now persisted per dependency set and
+    # its content is part of the build's identity.
+    deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    same = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    other = [RustCall.DependencySpec("itoa"; version = "1.0.11")]
+
+    @testset "the lockfile is named by the dependency set alone" begin
+        with_isolated_cargo_cache() do
+            path = RustCall.lockfile_path(deps)
+            @test startswith(path, RustCall.lockfile_dir())
+            @test endswith(path, ".lock")
+            @test RustCall.lockfile_path(same) == path
+            @test RustCall.lockfile_path(other) != path
+            # The block's own comments name the same file.
+            @test RustCall.lockfile_path("// cargo-deps: itoa=\"1.0\"\n") == path
+            # Not the toolchain: the same declared set on another machine, with
+            # another rustc, looks in the same place — that is what sharing the
+            # file between machines means.
+            id = RustCall.cargo_lockfile_id(deps)
+            @test id.kind == "cargo-lockfile"
+            @test id.toolchain == "" && id.compiler == ""
+            @test id.dependencies == RustCall.artifact_dependency_strings(deps)
+        end
+    end
+
+    @testset "the resolved graph is in the build key" begin
+        # Same source, same requested ranges, different resolution: different
+        # artifact — the cache describes what was built, not what was asked.
+        base = RustCall._cargo_block_id("fn f() {}", deps, "env"; cargo_lock = "aaaa")
+        @test RustCall.artifact_key(base) !=
+              RustCall.artifact_key(RustCall._cargo_block_id("fn f() {}", deps, "env";
+                                                             cargo_lock = "bbbb"))
+        @test RustCall.artifact_key(base) !=
+              RustCall.artifact_key(RustCall._cargo_block_id("fn f() {}", deps, "env"))
+        @test any(p -> p == ("cargo-lock" => "aaaa"), base.extra)
+    end
+
+    @testset "--locked and --offline reach cargo" begin
+        args = RustCall._cargo_build_args(true, String[], true; locked = true)
+        @test "--locked" in args
+        @test !("--locked" in RustCall._cargo_build_args(true, String[], true))
+        withenv("RUSTCALL_OFFLINE" => nothing) do
+            @test !RustCall.cargo_offline()
+            @test !("--offline" in RustCall._cargo_build_args(true, String[], true))
+        end
+        for v in ("1", "true", "YES")
+            withenv("RUSTCALL_OFFLINE" => v) do
+                @test RustCall.cargo_offline()
+                @test "--offline" in RustCall._cargo_build_args(true, String[], true)
+            end
+        end
+        withenv("RUSTCALL_OFFLINE" => "0") do
+            @test !RustCall.cargo_offline()
+        end
+    end
+
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc/cargo are required for a Cargo-backed block"
+    else
+        @testset "one resolution, replayed byte for byte" begin
+            with_isolated_cargo_cache() do
+                block = """
+                // cargo-deps: itoa="1.0"
+
+                #[no_mangle]
+                pub extern "C" fn rc256_pinned() -> i32 { 256 }
+                """
+                lockfile = RustCall.lockfile_path(block)
+                @test !isfile(lockfile)
+                lib = RustCall._compile_and_load_rust(block, "pinned", 0)
+                @test ccall(RustCall.get_function_pointer(lib, "rc256_pinned"), Int32, ()) == 256
+                # The first build resolved and persisted the set.
+                @test isfile(lockfile)
+                content = read(lockfile, String)
+                @test occursin("name = \"itoa\"", content)
+                @test occursin("name = \"$(RustCall.cargo_block_package(deps))\"", content)
+                # The block's cache entry is keyed with that file's content.
+                expanded = RustCall.expand_inline(block; cfg = :cargo)
+                _, build_env_key = RustCall._cargo_build_env_for(nothing)
+                id = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
+                    cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()),
+                    cargo_lock = RustCall._file_content_digest(lockfile))
+                @test RustCall.get_cargo_cached_library(RustCall.artifact_key(id)) !== nothing
+
+                # A second block declaring the same set — another machine, or
+                # this one later — replays the file: no re-resolution (the file
+                # is untouched) and a project seeded from it carries the
+                # identical bytes, which is what `--locked` then enforces.
+                stamp = mtime(lockfile)
+                second = replace(block, "rc256_pinned() -> i32 { 256 }" =>
+                                        "rc256_again() -> i32 { 257 }")
+                lib2 = RustCall._compile_and_load_rust(second, "pinned-again", 0)
+                @test ccall(RustCall.get_function_pointer(lib2, "rc256_again"), Int32, ()) == 257
+                @test mtime(lockfile) == stamp
+                @test read(lockfile, String) == content
+                project = RustCall.create_cargo_project(RustCall.cargo_block_package(deps), deps)
+                try
+                    digest = RustCall.ensure_cargo_lockfile!(project)
+                    @test digest == RustCall._file_content_digest(lockfile)
+                    @test read(joinpath(project.path, "Cargo.lock"), String) == content
+                finally
+                    RustCall.cleanup_cargo_project(project)
+                end
+                # A project with no dependencies of its own has no store entry.
+                bare = RustCall.create_cargo_project("rc256_bare", RustCall.DependencySpec[])
+                try
+                    @test RustCall.ensure_cargo_lockfile!(bare) === nothing
+                finally
+                    RustCall.cleanup_cargo_project(bare)
+                end
+
+                # A changed resolution is a different artifact: rewrite the
+                # persisted file and the key moves, so a cache hit can never
+                # answer for another graph.
+                moved = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
+                    cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()),
+                    cargo_lock = RustCall._file_content_digest(lockfile) * "-other")
+                @test RustCall.artifact_key(moved) != RustCall.artifact_key(id)
+
+                # Offline: with the registry warm from the build above, the same
+                # set builds again — `--locked --offline` — after the cache is
+                # cleared; the lockfile survives `clear_cargo_cache`, being an
+                # input and not an output. The block's library is unloaded
+                # first and the disk cache emptied, so neither the in-memory
+                # fast path nor a cached binary can answer: the only way to a
+                # working `lib3` is a Cargo build, which is what leaves exactly
+                # one fresh entry in the cleared cache (#313 review).
+                RustCall.unload_library(lib2)
+                RustCall.clear_cargo_cache()
+                @test isfile(lockfile)
+                lib_ext = RustCall.get_library_extension()
+                @test isempty(filter(f -> endswith(f, lib_ext),
+                                     readdir(RustCall.get_cargo_cache_dir())))
+                lib3 = withenv("RUSTCALL_OFFLINE" => "1") do
+                    RustCall._compile_and_load_rust(second, "pinned-offline", 0)
+                end
+                @test ccall(RustCall.get_function_pointer(lib3, "rc256_again"), Int32, ()) == 257
+                @test length(filter(f -> endswith(f, lib_ext),
+                                    readdir(RustCall.get_cargo_cache_dir()))) == 1
+                # ... and it was the pinned graph that was built: the lockfile
+                # is untouched by the rebuild.
+                @test read(lockfile, String) == content
+                for name in unique([lib, lib2, lib3])
+                    try
+                        RustCall.unload_library(name)
+                    catch
+                    end
+                end
+            end
+        end
+
+        @testset "offline without a registry cache fails loudly, not slowly" begin
+            with_isolated_cargo_cache() do
+                # A package no registry has: offline resolution must come back
+                # with Cargo's error at once, not hang on a download.
+                missing = [RustCall.DependencySpec("rustcall-no-such-package-ever";
+                                                   version = "=99.99.99")]
+                project = RustCall.create_cargo_project(RustCall.cargo_block_package(missing), missing)
+                try
+                    started = time()
+                    err = withenv("RUSTCALL_OFFLINE" => "1") do
+                        try
+                            RustCall.ensure_cargo_lockfile!(project)
+                            nothing
+                        catch e
+                            e
+                        end
+                    end
+                    @test err isa RustCall.CargoBuildError
+                    @test occursin("RUSTCALL_OFFLINE", sprint(showerror, err))
+                    @test time() - started < 60
+                    @test !isfile(RustCall.lockfile_path(missing))
+                finally
+                    RustCall.cleanup_cargo_project(project)
+                end
+            end
+        end
+    end
+end
+
+@testset "clear_cache keeps the lockfiles; clear_lockfiles removes them (#256 review)" begin
+    # A lockfile is an input of a build, not compiled output: clearing the
+    # compiled cache must not silently re-resolve every dependency set. The
+    # store lives under the cache directory, so `clear_cache` removes the
+    # directory entry by entry and skips it.
+    with_isolated_cargo_cache() do
+        deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+        lockfile = RustCall.lockfile_path(deps)
+        write(lockfile, "# a pinned resolution\n")
+        # Something to clear next to it.
+        cargo_dir = RustCall.get_cargo_cache_dir()
+        write(joinpath(cargo_dir, "stale.bin"), "x")
+        RustCall.clear_cache()
+        @test isfile(lockfile)
+        @test read(lockfile, String) == "# a pinned resolution\n"
+        @test !isfile(joinpath(cargo_dir, "stale.bin"))
+        # ... and a cleared cache reads as empty: the size is that of the
+        # compiled cache, not of the inputs kept beside it.
+        @test RustCall.get_cache_size() == 0
+        # The explicit operation is the one that discards resolutions.
+        RustCall.clear_lockfiles()
+        @test !isfile(lockfile)
+        @test isdir(RustCall.lockfile_dir())
+        @test "lockfiles" in RustCall.CACHE_INPUT_DIRS
+    end
+end
+
+@testset "the first resolution is published once; a racing loser replays the winner (#313 review)" begin
+    # Two processes (or machines sharing the store) that both find the store
+    # empty resolve independently, from possibly different registry snapshots.
+    # Publication goes through an exclusive-create claim — the one atomic
+    # no-clobber primitive every filesystem has — so exactly one resolution
+    # lands, and whoever loses replays *that* file into its project and
+    # digests it: every build is of one graph, never each of its own.
+    with_isolated_cargo_cache() do
+        deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+        stored = RustCall.lockfile_path(deps)
+        claim = stored * ".claim"
+        mktempdir() do a
+            # No file in the store yet: this project's resolution is published,
+            # and the claim is released.
+            mine = joinpath(a, "Cargo.lock")
+            write(mine, "# resolution A\n")
+            digest = RustCall._publish_lockfile!(stored, mine)
+            @test isfile(stored)
+            @test !isfile(claim)
+            @test read(stored, String) == "# resolution A\n"
+            @test digest == RustCall._file_content_digest(stored)
+            @test read(mine, String) == "# resolution A\n"
+        end
+        mktempdir() do b
+            # The store was filled in between: the loser's own resolution is
+            # discarded, the published one is replayed into its project, and
+            # the digest is the published file's.
+            theirs = joinpath(b, "Cargo.lock")
+            write(theirs, "# resolution B\n")
+            digest = RustCall._publish_lockfile!(stored, theirs)
+            @test read(stored, String) == "# resolution A\n"
+            @test read(theirs, String) == "# resolution A\n"
+            @test digest == RustCall._file_content_digest(stored)
+        end
+        # The claim itself is atomic: a second claimant is refused.
+        @test RustCall._claim_lockfile!(claim)
+        @test !RustCall._claim_lockfile!(claim)
+        # A held claim with nothing published behind it: the loser waits for
+        # the publisher, and gives up loudly rather than hanging. A claim is
+        # never expired by age — a dead publisher is reported, with the file
+        # to delete, not taken over on this machine's reading of the clock.
+        rm(stored; force = true)
+        mktempdir() do c
+            waiting = joinpath(c, "Cargo.lock")
+            write(waiting, "# resolution C\n")
+            err = try
+                RustCall._publish_lockfile!(stored, waiting; wait = 0.3)
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.CargoBuildError
+            msg = sprint(showerror, err)
+            @test occursin("holds the claim", msg)
+            @test occursin(claim, msg)
+            @test occursin("clear_lockfiles", msg)
+            @test !isfile(stored)
+            @test isfile(claim)
+            # Recovery is the documented one: remove the claim (here, as
+            # `clear_lockfiles` would) and publish again.
+            rm(claim)
+            digest = RustCall._publish_lockfile!(stored, waiting; wait = 0.3)
+            @test read(stored, String) == "# resolution C\n"
+            @test digest == RustCall._file_content_digest(stored)
+            @test !isfile(claim)
+        end
+        # Racing publishers, interleaved at every yield: exactly one content
+        # wins, every racer ends up with it, and nothing is left behind.
+        rm(stored; force = true)
+        racers = 8
+        dirs = [mktempdir() for _ in 1:racers]
+        for (i, d) in enumerate(dirs)
+            write(joinpath(d, "Cargo.lock"), "# resolution $(i)\n")
+        end
+        digests = fetch.([Threads.@spawn(RustCall._publish_lockfile!(stored, joinpath(d, "Cargo.lock")))
+                          for d in dirs])
+        winner = read(stored, String)
+        @test winner in ["# resolution $(i)\n" for i in 1:racers]
+        @test all(==(RustCall._file_content_digest(stored)), digests)
+        @test all(d -> read(joinpath(d, "Cargo.lock"), String) == winner, dirs)
+        foreach(d -> rm(d; recursive = true, force = true), dirs)
+        # No temporary or claim file is left behind by any path.
+        @test all(f -> !occursin(".tmp-", f) && !endswith(f, ".claim"),
+                  readdir(RustCall.lockfile_dir()))
+    end
+end
+
+@testset "the generated package is named from the set, and reserves no name (#313 review)" begin
+    # The root package appears in `Cargo.lock` by name, so it is derived from
+    # the dependency set — every block declaring the set shares the lockfile —
+    # and not fixed, so a user's own crate can carry any name at all.
+    deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    name = RustCall.cargo_block_package(deps)
+    @test startswith(name, RustCall.CARGO_BLOCK_PACKAGE_PREFIX)
+    @test name == RustCall.cargo_block_package([RustCall.DependencySpec("itoa"; version = "1.0")])
+    @test name != RustCall.cargo_block_package([RustCall.DependencySpec("itoa"; version = "1.0.11")])
+    @test occursin(r"^[a-z0-9_]+$", name)
+    if !RustCall.check_rustc_available()
+        @test_skip "cargo is required to resolve a dependency set"
+    else
+        with_isolated_cargo_cache() do
+            # A path dependency that takes the very name a fixed root package
+            # used to reserve: Cargo refuses two packages of one name and
+            # version from different sources in a lockfile, so the block could
+            # not be resolved at all.
+            mktempdir() do dir
+                crate = joinpath(dir, "rustcall_block")
+                mkpath(joinpath(crate, "src"))
+                write(joinpath(crate, "Cargo.toml"), """
+                    [package]
+                    name = "rustcall_block"
+                    version = "0.1.0"
+                    edition = "2021"
+                    """)
+                write(joinpath(crate, "src", "lib.rs"), "pub fn one() -> i32 { 1 }\n")
+                local_deps = [RustCall.DependencySpec("rustcall_block"; path = crate)]
+                project = RustCall.create_cargo_project(RustCall.cargo_block_package(local_deps),
+                                                        local_deps)
+                try
+                    digest = RustCall.ensure_cargo_lockfile!(project)
+                    @test digest isa String
+                    content = read(joinpath(project.path, "Cargo.lock"), String)
+                    @test occursin("name = \"rustcall_block\"", content)
+                    @test occursin("name = \"$(RustCall.cargo_block_package(local_deps))\"", content)
+                finally
+                    RustCall.cleanup_cargo_project(project)
+                end
+            end
+        end
+    end
+end
+
+@testset "a stored lockfile that does not name this set's root is not replayed (#313 CI)" begin
+    # CI carries the scratch space across runs (julia-actions/cache), so a
+    # store written under an older root-package scheme met a project named
+    # under the new one, and `--locked` refused every build of the set. Two
+    # defences: the scheme is in the lockfile key, so a new scheme is a new
+    # entry; and a stored file that does not name the project's root is
+    # re-resolved and replaced rather than replayed.
+    deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    id = RustCall.cargo_lockfile_id(deps)
+    @test ("root-package-prefix" => RustCall.CARGO_BLOCK_PACKAGE_PREFIX) in id.extra
+    if !RustCall.check_rustc_available()
+        @test_skip "cargo is required to resolve a dependency set"
+    else
+        with_isolated_cargo_cache() do
+            stored = RustCall.lockfile_path(deps)
+            root = RustCall.cargo_block_package(deps)
+            mktempdir() do dir
+                write(joinpath(dir, "Cargo.lock"), """
+                    version = 4
+
+                    [[package]]
+                    name = "rustcall_block"
+                    version = "0.1.0"
+                    """)
+                @test RustCall._lockfile_names_root(joinpath(dir, "Cargo.lock"), "rustcall_block")
+                @test !RustCall._lockfile_names_root(joinpath(dir, "Cargo.lock"), root)
+                # Seed the store with the stale file.
+                mkpath(dirname(stored))
+                cp(joinpath(dir, "Cargo.lock"), stored; force = true)
+            end
+            project = RustCall.create_cargo_project(root, deps)
+            try
+                digest = RustCall.ensure_cargo_lockfile!(project)
+                # Re-resolved and published over the stale file: the store now
+                # names this root, and the project carries the same bytes.
+                @test RustCall._lockfile_names_root(stored, root)
+                @test occursin("name = \"itoa\"", read(stored, String))
+                @test read(joinpath(project.path, "Cargo.lock"), String) == read(stored, String)
+                @test digest == RustCall._file_content_digest(stored)
+                @test !isfile(stored * ".claim")
+                # A build against a lockfile that no longer fits says which
+                # file to delete, rather than only quoting Cargo.
+                # (The CI shape: a valid lockfile whose root is the old
+                # scheme's name, which Cargo would have to rewrite.)
+                doctored = replace(read(stored, String), "name = \"$(root)\"" => "name = \"rustcall_block\"")
+                @test doctored != read(stored, String)
+                write(joinpath(project.path, "Cargo.lock"), doctored)
+                RustCall.write_rust_code_to_project(project, "pub fn f() -> i32 { 1 }\n")
+                err = try
+                    RustCall.build_cargo_project(project; release = true, locked = true)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa RustCall.CargoBuildError
+                @test occursin("lockfile_path", sprint(showerror, err))
+                @test occursin("clear_lockfiles", sprint(showerror, err))
+            finally
+                RustCall.cleanup_cargo_project(project)
+            end
+        end
     end
 end
