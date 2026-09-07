@@ -623,6 +623,36 @@ end
     @test !RustCall._uses_string_ffi(py["py_len"])
     @test py["py_plain"].arg_abis == [""]
 
+    # `#[julia_pyo3]` is deprecated (#275 Phase 3): still scanned and bound
+    # exactly as above, but `@rust_crate` / `write_bindings_to_file` warn once
+    # per crate, and `scan_report` marks each item it produced.
+    mktempdir() do dir
+        mkpath(joinpath(dir, "src"))
+        write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "still_dual"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+        write(joinpath(dir, "src", "lib.rs"), """
+            #[julia_pyo3]
+            pub fn dual(x: i32) -> i32 { x }
+            #[julia_pyo3]
+            pub struct Knob { pub level: i32 }
+            #[julia]
+            pub fn plain(x: i32) -> i32 { x }
+            """)
+        info = RustCall.scan_crate(dir)
+        @test Set(f.name for f in info.julia_functions) == Set(["dual", "plain"])
+        @test_logs (:warn, r"#\[julia_pyo3\]` is deprecated.*2 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(info)
+        @test RustCall._warn_deprecated_attributes(info) == 2
+        # A crate without the attribute says nothing.
+        write(joinpath(dir, "src", "lib.rs"), "#[julia]\npub fn plain(x: i32) -> i32 { x }\n")
+        clean = RustCall.scan_crate(dir)
+        @test_logs RustCall._warn_deprecated_attributes(clean)
+        @test RustCall._warn_deprecated_attributes(clean) == 0
+    end
+
     # #279: `#[julia]` is additive. The compiled block exports the wrapper
     # `rustcall_<fn>`; the Rust name is *not* a C symbol any more, while the
     # generated Julia function still goes by that name.

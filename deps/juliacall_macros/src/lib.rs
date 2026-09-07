@@ -69,8 +69,32 @@ pub fn julia(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// The `#[julia_pyo3]` attribute macro for unified Julia + Python bindings.
 ///
-/// Generates Julia FFI bindings (always) and Python/PyO3 bindings (when the
-/// `python` feature is enabled in the downstream crate).
+/// **Deprecated** (RustCall.jl #275, Phase 3). `#[julia]` is additive since
+/// #279 — it keeps the annotated item exactly as written and emits the C entry
+/// point next to it — so it composes with PyO3's own attributes, which do the
+/// Python half properly (options, `#[new]`, `#[getter]`, `#[pyo3(name = ...)]`,
+/// …) where this macro could only guess. Write, instead of `#[julia_pyo3]`:
+///
+/// | item | replacement |
+/// | --- | --- |
+/// | function | `#[julia] #[cfg_attr(feature = "python", pyo3::pyfunction)] pub fn f(...)` |
+/// | struct | `#[julia] #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))] pub struct S { ... }` |
+/// | impl block | `#[julia] impl S { #[julia] pub fn m(...) }` for Julia, plus a `#[cfg(feature = "python")] #[pyo3::pymethods] impl S { ... }` written as PyO3 code (`#[new]`, `#[pyo3(name = "...")]`) that delegates to the Rust methods — pyo3's inner attributes cannot be gated with `cfg_attr` |
+///
+/// The macro still expands as it always did — Julia FFI bindings when the
+/// downstream `python` feature is off, PyO3 bindings when it is on — and the
+/// `rustcall-extract` manifest keeps reporting its items under the
+/// `julia_pyo3` origin, so existing crates keep building; rustc reports
+/// `use of deprecated macro` at every use site. It is removed in the next
+/// breaking release. See `docs/src/pyo3.md`, "Migrating from `#[julia_pyo3]`".
+#[deprecated(
+    note = "`#[julia_pyo3]` is deprecated (RustCall.jl #275 Phase 3) and will be removed: write \
+            `#[julia]` next to PyO3's own attributes — `#[julia] #[cfg_attr(feature = \"python\", \
+            pyo3::pyfunction)]` on a function, `#[julia] #[cfg_attr(feature = \"python\", \
+            pyo3::pyclass(get_all, set_all))]` on a struct, and a `#[cfg(feature = \"python\")] \
+            #[pyo3::pymethods] impl` next to the `#[julia] impl` for methods. See docs/src/pyo3.md, \
+            \"Migrating from #[julia_pyo3]\"."
+)]
 #[proc_macro_attribute]
 pub fn julia_pyo3(_attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Ok(func) = syn::parse::<ItemFn>(item.clone()) {

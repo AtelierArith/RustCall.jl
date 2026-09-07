@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- **`#[julia_pyo3]`** ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275),
+  Phase 3). `#[julia]` is additive since #279 and composes with PyO3's own
+  attributes, which spell the Python half with their full option surface
+  where this macro could only guess (`#[pyfunction]` per function,
+  `#[pyclass(get_all, set_all)]` per struct, `#[new]` on anything named
+  `new`). Write `#[julia] #[cfg_attr(feature = "python", pyo3::pyfunction)]`
+  on a function, `#[julia] #[cfg_attr(feature = "python", pyo3::pyclass(...))]`
+  on a struct, and a `#[cfg(feature = "python")] #[pyo3::pymethods] impl`
+  beside the `#[julia] impl` for methods. The macro still expands as before
+  and the manifest still reports its items under the `julia_pyo3` origin, so
+  existing crates keep building; rustc now reports `use of deprecated macro`
+  at every use site, `@rust_crate` / `write_bindings_to_file` warn once per
+  crate, and `scan_report` marks each item. Removal comes with the next
+  breaking release. `examples/sample_crate_pyo3` is migrated to the new shape
+  and `docs/src/pyo3.md` gains "Migrating from `#[julia_pyo3]`".
+
 ### Added
 - **`@rust_crate` binds a PyO3 crate that carries no RustCall attribute**
   ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275), Phase 2).

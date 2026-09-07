@@ -608,6 +608,57 @@ Note that a class needs **one** `#[pymethods]` block unless the crate enables
 pyo3's `multiple-pymethods` feature; the scan matches every block it finds, but
 the crate has to compile for a wrapper to be built against it.
 
-`examples/sample_crate_pyo3` is the older, different example: a crate that uses
-RustCall's own `#[julia_pyo3]` attribute for dual Julia/Python bindings. That
-attribute is unchanged by #275.
+`examples/sample_crate_pyo3` is the dual-binding example: one crate that serves
+Julia through `#[julia]` and Python through PyO3's own attributes, with pyo3
+behind an optional `python` feature. It is the shape the section below migrates
+to.
+
+## Migrating from `#[julia_pyo3]`
+
+`#[julia_pyo3]` is **deprecated** ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)
+Phase 3) and will be removed in the next breaking release. It still expands as
+it always did, the manifest still reports its items under the `julia_pyo3`
+origin, `@rust_crate` still binds them, and `RustCall.scan_report` marks each
+of them — but rustc now reports `use of deprecated macro `julia_pyo3`` at every
+use site, and `@rust_crate` / `write_bindings_to_file` warn once per crate.
+
+The reason is #279: `#[julia]` is **additive**. It keeps the annotated item
+exactly as written and emits the `extern "C"` entry point next to it under a
+distinct symbol, so PyO3's own attributes — which likewise keep the item — can
+sit on the same definition. What `#[julia_pyo3]` did by guessing (a
+`#[pyfunction]` per function, `#[pyclass(get_all, set_all)]` per struct, a
+`#[new]` on anything called `new`) PyO3's attributes do with their full option
+surface, and the Julia half is exactly `#[julia]`. One definition still gives
+both bindings; there is simply no RustCall-specific way to spell the Python
+half any more.
+
+| you wrote | write instead |
+| --- | --- |
+| `#[julia_pyo3] fn add(a: i32, b: i32) -> i32` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyfunction)] fn add(a: i32, b: i32) -> i32` |
+| `#[julia_pyo3] pub struct Point { pub x: f64, pub y: f64 }` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))] pub struct Point { pub x: f64, pub y: f64 }` |
+| `#[julia_pyo3] impl Point { pub fn new(..) -> Self; pub fn norm(&self) -> f64 }` | `#[julia] impl Point { #[julia] pub fn new(..) -> Self; #[julia] pub fn norm(&self) -> f64 }` **and** a `#[cfg(feature = "python")] #[pyo3::pymethods] impl Point { #[new] fn py_new(..) -> Self { Point::new(..) } #[pyo3(name = "norm")] fn py_norm(&self) -> f64 { self.norm() } }` |
+
+Two things to know about the impl-block row:
+
+* **pyo3's inner attributes cannot be gated.** `#[cfg_attr(feature = "python", new)]`
+  fails with `cannot find attribute 'new' in this scope` (see "Making pyo3
+  optional" above), so a crate that keeps pyo3 optional writes the
+  `#[pymethods]` block as a separate, `#[cfg(feature = "python")]`-gated impl.
+  A crate whose pyo3 dependency is mandatory can instead put `#[julia]` and
+  `#[pymethods]` on **one** impl block and `#[julia]` next to `#[new]` on each
+  method — both attributes leave the methods in place.
+* **A type has one inherent method of a given name.** The Python impl therefore
+  names its methods differently in Rust (`py_norm`) and restores the Python
+  name with `#[pyo3(name = "norm")]`; the bodies are one-line delegations.
+
+The Julia surface does not change: `#[julia_pyo3] fn add` and `#[julia] fn add`
+both export `rustcall_add`, and the struct helpers (`Point_free`,
+`Point_get_x`, …) are the same. What does change is the string and
+`Result`/`Option` lowering: `#[julia_pyo3]` exported such signatures **as
+written** (a `String` argument arrived as a Rust `String` the caller could not
+produce), while `#[julia]` lowers them to the `(ptr, len)` / `CResult_*` ABI
+like everywhere else — which is the ABI divergence #269 described, and the
+reason this attribute is going away rather than being extended.
+
+`examples/sample_crate_pyo3` shows the migrated shape end to end, including the
+Python-side impl block; `examples/sample_crate_pyo3/README.md` walks through it.

@@ -238,6 +238,27 @@ function crate_lib_root(crate_path::AbstractString, cargo_toml::AbstractDict)
 end
 
 """
+    _warn_deprecated_attributes(info::CrateInfo)
+
+Warn, once per crate, when the scan found items produced by a deprecated
+RustCall attribute — today `#[julia_pyo3]` (#275 Phase 3). The items are still
+bound exactly as before; the warning is the Julia-side counterpart of the
+`use of deprecated macro` rustc reports at each use site, for users who only
+ever see the build through `@rust_crate`. Returns the number of such items.
+"""
+function _warn_deprecated_attributes(info::CrateInfo)
+    deprecated = count(f -> f.attribute === :julia_pyo3, info.julia_functions) +
+                 count(s -> s.attribute === :julia_pyo3, info.julia_structs)
+    deprecated == 0 && return 0
+    @warn "`#[julia_pyo3]` is deprecated (#275 Phase 3) and will be removed in the next " *
+          "breaking release: $(deprecated) item(s) of $(info.name) use it. Write `#[julia]` next " *
+          "to PyO3's own attributes instead — see docs/src/pyo3.md, \"Migrating from " *
+          "#[julia_pyo3]\". The items are still bound as before." crate = info.path maxlog = 1 _id = Symbol(
+        "julia_pyo3_deprecated:", info.path)
+    return deprecated
+end
+
+"""
     find_rust_sources(crate_path::String) -> Vector{String}
 
 Find all .rs files in a crate's src directory.
@@ -1574,6 +1595,7 @@ function generate_bindings(crate_path::String;
     @info "Scanning crate at $crate_path"
     info = scan_crate(crate_path)
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
+    _warn_deprecated_attributes(info)
 
     # A crate that carries only PyO3 attributes gets a generated wrapper crate
     # (#275 Phase 2); everything else — including a PyO3 crate whose requested
@@ -2227,6 +2249,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     @info "Scanning crate at $crate_path"
     info = scan_crate(crate_path)
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
+    _warn_deprecated_attributes(info)
 
     # A PyO3-only crate is bound through a generated wrapper crate, exactly as
     # `@rust_crate` binds it (#275 Phase 2); `info` and the library name that
