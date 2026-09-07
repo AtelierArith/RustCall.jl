@@ -659,6 +659,16 @@ impl CrateScan {
                         file: file.to_string(),
                     });
                 }
+                // `type Gauge = …;` names a type an inherent impl can be
+                // written through, so it shadows a same-named annotated struct
+                // in another module exactly as a local declaration does.
+                Item::Type(t) => {
+                    self.plain_structs.push(PlainStruct {
+                        name: t.ident.to_string(),
+                        module_path: module_path.clone(),
+                        file: file.to_string(),
+                    });
+                }
                 Item::Struct(s) => {
                     let Some(model) = StructModel::of(s, Mode::Crate) else {
                         // Not a `#[julia]` struct, but still a name an `impl`

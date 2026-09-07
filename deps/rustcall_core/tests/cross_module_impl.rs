@@ -492,6 +492,10 @@ fn an_impl_on_a_plain_local_enum_is_refused() {
     for (kind, decl) in [
         ("enum", "pub enum Gauge { A, B }"),
         ("union", "pub union Gauge { a: i32, b: u32 }"),
+        (
+            "type alias",
+            "pub struct Other { pub v: i32 }\npub type Gauge = Other;",
+        ),
     ] {
         let err = scan_tree(&[
             (
