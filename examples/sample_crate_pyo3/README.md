@@ -194,7 +194,7 @@ pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
 
 [features]
 default = []
-python = ["pyo3", "juliacall_macros/python"]
+python = ["pyo3"]
 ```
 
 ## Why the feature flag?
