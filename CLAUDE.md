@@ -170,7 +170,7 @@ A replaced image is **retired, not closed**, so a call already inside one stays 
 Every change goes through this loop; the definition of done is the issue's acceptance criteria, not "the cause is gone".
 
 1. **Open a draft PR** from a topic branch off `origin/main`. Commit in logical steps, each leaving `Pkg.test()` green. Commit messages and the PR body carry the attribution trailers the session was given.
-2. **Request review**: comment `@codex review` once CI is green. Codex re-reviews automatically on every later push, so keep the branch quiet until a round is answered.
+2. **Request review the moment a push lands**: comment `@codex review` right after every push (the first one and each fix), without waiting for CI — CI and Codex run in parallel. Codex does **not** re-review on its own in this repository; a push without a fresh request gets no review. Keep the branch quiet until the round is answered, then fix, push, request again.
 3. **Monitor per head SHA**: CI results (`gh pr checks`) and Codex reviews are tracked against the current head; a green result on an older SHA means nothing.
 4. **Answer every finding**: fix real ones (with a regression test), reply on the thread with the fixing SHA, resolve the thread. Never resolve a thread you did not act on.
 5. **Scope decision**: when findings converge on one class that a tech-debt issue solves structurally, fix the current round, post a "scope decision" comment naming that issue, stop re-requesting review, and merge on green. Record the deferred items on the issue.

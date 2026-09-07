@@ -7,7 +7,7 @@ The project conventions live in `CLAUDE.md` (the `@CLAUDE.md` line above include
 ## Pull request loop
 
 1. Branch off `origin/main`, never commit to `main`. Open a **draft** PR; commit in steps that each leave `Pkg.test()` green.
-2. When CI is green, comment `@codex review`. Codex re-reviews on every push; do not push mid-round.
+2. Comment `@codex review` the moment a push lands — the first push and every fix push — without waiting for CI; CI and Codex run in parallel. Codex does **not** re-review on its own here: a push without a fresh request gets no review. Do not push mid-round.
 3. Track CI and Codex **per head SHA**.
 4. For every finding: fix it with a regression test, reply on the thread with the fixing SHA, resolve. Do not resolve threads you did not act on.
 5. When findings converge on one class that a tech-debt issue owns, post a "scope decision" comment naming that issue, stop re-requesting review, merge on green, and record the deferred items on the issue.
