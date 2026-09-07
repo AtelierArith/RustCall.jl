@@ -256,8 +256,7 @@ function _warn_deprecated_attributes(info::CrateInfo)
     @warn "`#[julia_pyo3]` is deprecated (#275 Phase 3) and will be removed in the next " *
           "breaking release: $(deprecated) item(s) of $(info.name) use it. Write `#[julia]` next " *
           "to PyO3's own attributes instead — see docs/src/pyo3.md, \"Migrating from " *
-          "#[julia_pyo3]\". The items are still bound as before." crate = info.path maxlog = 1 _id = Symbol(
-        "julia_pyo3_deprecated:", info.path)
+          "#[julia_pyo3]\". The items are still bound as before." crate = info.path
     return deprecated
 end
 
@@ -1611,7 +1610,6 @@ function generate_bindings(crate_path::String;
     @info "Scanning crate at $crate_path"
     info = scan_crate(crate_path)
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
-    _warn_deprecated_attributes(info)
 
     # A crate that carries only PyO3 attributes gets a generated wrapper crate
     # (#275 Phase 2); everything else — including a PyO3 crate whose requested
@@ -1645,6 +1643,10 @@ function generate_bindings(crate_path::String;
         end
     end
     info = _plain_scan_info(crate_path, info, features, default_features, build_release)
+    # On the *resolved* scan: a `#[cfg_attr(feature = "legacy", julia_pyo3)]`
+    # is an attribute only under the build that enables it, which the lenient
+    # scan leaves undecided (#314 review).
+    _warn_deprecated_attributes(info)
 
     # Check cache. The feature set is part of the identity on this path too:
     # a build the caller asked for with `features` / `default_features` is
@@ -2265,7 +2267,6 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     @info "Scanning crate at $crate_path"
     info = scan_crate(crate_path)
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
-    _warn_deprecated_attributes(info)
 
     # A PyO3-only crate is bound through a generated wrapper crate, exactly as
     # `@rust_crate` binds it (#275 Phase 2); `info` and the library name that
@@ -2293,6 +2294,8 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     # shape of that build (#307 review).
     isempty(wrapper_lib_path) &&
         (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
+    # On the resolved scan, as in `generate_bindings` (#314 review).
+    _warn_deprecated_attributes(info)
 
     # Build the crate. On the plain path the feature set travels with the
     # build and with the registry name, as it does for a wrapper build.

@@ -675,6 +675,36 @@ end
         clean = RustCall.scan_crate(dir)
         @test_logs RustCall._warn_deprecated_attributes(clean)
         @test RustCall._warn_deprecated_attributes(clean) == 0
+
+        # The attribute may sit behind a feature: `#[cfg_attr(feature =
+        # "legacy", julia_pyo3)]` is an attribute only under a build that
+        # enables it, so the warning is decided on the *resolved* scan the
+        # bindings are emitted from, not on the lenient one (#314 review).
+        if !RustCall.check_rustc_available()
+            @test_skip "cargo is required to probe the crate"
+        else
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "still_dual"
+                version = "0.1.0"
+                edition = "2021"
+                [features]
+                legacy = []
+                """)
+            write(joinpath(dir, "src", "lib.rs"), """
+                #[cfg_attr(feature = "legacy", julia_pyo3)]
+                #[cfg_attr(not(feature = "legacy"), julia)]
+                pub fn old(x: i32) -> i32 { x }
+                """)
+            lenient = RustCall.scan_crate(dir)
+            off = RustCall._plain_scan_info(dir, lenient, String[], true, true)
+            @test [f.name for f in off.julia_functions] == ["old"]
+            @test only(off.julia_functions).attribute === :julia
+            @test RustCall._warn_deprecated_attributes(off) == 0
+            on = RustCall._plain_scan_info(dir, lenient, ["legacy"], true, true)
+            @test only(on.julia_functions).attribute === :julia_pyo3
+            @test_logs (:warn, r"1 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(on)
+        end
     end
 
     # #279: `#[julia]` is additive. The compiled block exports the wrapper
