@@ -64,7 +64,7 @@ using Test
         @test max_result == 10
     end
 
-    @testset "LLVM Optimization" begin
+    @testset "Loop computation" begin
         rust"""
         #[no_mangle]
         pub extern "C" fn optimized_compute(x: f64) -> f64 {

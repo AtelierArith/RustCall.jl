@@ -168,7 +168,8 @@ end
     end
 
     @testset "named constructors cover every front door" begin
-        @test length(RustCall.ALL_LOAD_POLICIES) == 9
+        # Eight since #265 Phase 2 removed the `llvm-ir` policy with its path.
+        @test length(RustCall.ALL_LOAD_POLICIES) == 8
         names = String[]
         for ctor in RustCall.ALL_LOAD_POLICIES
             p = ctor()
@@ -210,14 +211,12 @@ end
             global_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", src))
         end
         # B1 finished the migration: every door reads its flags off its
-        # policy. What is left open-coded outside loadpolicy.jl is the
-        # deprecated LLVM path (#265 Phase 2 deletes it) and the two
-        # @rust_crate module templates, whose dlopen runs in the *generated*
-        # module (B5 routes them through the loader too).
-        # Only the deprecated LLVM IR path still opens anything itself
-        # (#265 Phase 2 deletes it).
+        # policy, and the two @rust_crate module templates, whose dlopen runs
+        # in the *generated* module, go through the loader too (B5). The last
+        # open-coded site, the LLVM IR path, was removed with #265 Phase 2, so
+        # nothing outside loadpolicy.jl opens anything itself.
         @test local_sites == 0
-        @test global_sites == 1
+        @test global_sites == 0
         for file in ("cache.jl", "ruststr.jl", "generics.jl", "hot_reload.jl",
                      "memory.jl", "rustmacro.jl", "crate_bindings.jl")
             @test !occursin(r"dlopen\(", _src(file))
@@ -374,7 +373,9 @@ end
     @testset "panic: pinned unwind and a catching boundary (#244)" begin
         # The rustc path no longer hard-codes a strategy: it asks the policy.
         @test _count_in("compiler.jl", r"panic=abort") == 0
-        @test _count_in("compiler.jl", r"rustc_panic_flags\(inline_rustc_policy\(\)\)") == 2
+        # One rustc invocation is left (the shared-library build; the LLVM IR
+        # one went with #265 Phase 2), and it asks the policy.
+        @test _count_in("compiler.jl", r"rustc_panic_flags\(inline_rustc_policy\(\)\)") == 1
 
         # Every RustCall-owned door: pinned unwind, boundary catches.
         owned = (RustCall.inline_rustc_policy(), RustCall.inline_cargo_policy(),
@@ -546,10 +547,8 @@ end
         @test RustCall.registers_in_rust_libraries(RustCall.crate_direct_policy())
         @test RustCall.registers_in_rust_libraries(RustCall.crate_wrapper_policy())
         @test RustCall.crate_direct_policy().registry_key_kind === :crate_lib_name
-        # The helper library's home is RUST_HELPERS_LIB, and the deprecated
-        # LLVM path registers nowhere at all.
+        # The helper library's home is RUST_HELPERS_LIB.
         @test !RustCall.registers_in_rust_libraries(RustCall.helper_library_policy())
-        @test !RustCall.registers_in_rust_libraries(RustCall.llvm_policy())
 
         # The hot-reload registry transaction is `load_artifact!`'s, and the
         # rebuild that precedes it holds no registry lock — see the #255
@@ -654,7 +653,7 @@ end
         # Every policy frees.
         for ctor in RustCall.ALL_LOAD_POLICIES
             p = ctor()
-            p.name in ("irust", "llvm-ir", "generics-monomorphization") && continue
+            p.name in ("irust", "generics-monomorphization") && continue
             @test RustCall.finalizer_frees(p)
         end
         @test RustCall.finalizer_frees(RustCall.inline_rustc_policy()) ===

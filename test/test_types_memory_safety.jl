@@ -198,9 +198,6 @@ using Test
             """
             compiler = RustCall.RustCompiler(debug_mode=false)
 
-            # compile_rust_to_llvm_ir error path
-            @test_throws RustCall.CompilationError RustCall.compile_rust_to_llvm_ir(invalid_code; compiler=compiler)
-
             # compile_rust_to_shared_lib error path
             @test_throws RustCall.CompilationError RustCall.compile_rust_to_shared_lib(invalid_code; compiler=compiler)
 

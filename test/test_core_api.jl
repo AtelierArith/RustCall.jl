@@ -125,12 +125,12 @@ using Test
             "Compilation failed",
             "error: expected `;`, found `}`",
             "fn test() {",
-            "rustc --emit=llvm-ir test.rs"
+            "rustc --crate-type=cdylib test.rs"
         )
         @test comp_err.message == "Compilation failed"
         @test comp_err.raw_stderr == "error: expected `;`, found `}`"
         @test comp_err.source_code == "fn test() {"
-        @test comp_err.command == "rustc --emit=llvm-ir test.rs"
+        @test comp_err.command == "rustc --crate-type=cdylib test.rs"
 
         # Test RuntimeError creation
         runtime_err = RustCall.RuntimeError("Function failed", "test_func", "stack trace here")
@@ -347,140 +347,11 @@ using Test
             @test result == 0
         end
         # ============================================================
-        # Phase 2 Tests: LLVM IR Integration
+        # Phase 2 Tests: runtime and ownership (the LLVM IR integration
+        # testsets that used to open this block went with the path, #265)
         # ============================================================
 
-        @testset "Phase 2: LLVM Integration" begin
-            @testset "Optimization Configuration" begin
-                # Test default config
-                config = RustCall.OptimizationConfig()
-                @test config.level == 2
-                @test config.enable_vectorization == true
-
-                # Test custom config
-                custom_config = RustCall.OptimizationConfig(
-                    level=3,
-                    enable_vectorization=false,
-                    inline_threshold=100
-                )
-                @test custom_config.level == 3
-                @test custom_config.enable_vectorization == false
-                @test custom_config.inline_threshold == 100
-            end
-
-            @testset "LLVM parser fallback sanitizes unsupported attributes" begin
-                mktempdir() do dir
-                    ir_path = joinpath(dir, "unsupported_attr.ll")
-                    write(ir_path, """
-                    ; ModuleID = 'unsupported_attr'
-                    source_filename = "unsupported_attr"
-
-                    define i32 @unsupported_attr_test(i32 %x) #0 {
-                    entry:
-                      ret i32 %x
-                    }
-
-                    attributes #0 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }
-                    """)
-
-                    rust_mod = RustCall.load_llvm_ir(ir_path)
-                    @test haskey(rust_mod.functions, "unsupported_attr_test")
-                end
-            end
-
-            @testset "Optimization passes are not no-ops" begin
-                # Verify that optimize_module! actually modifies IR (issue #95)
-                # Create unoptimized Rust IR with dead code that optimization should remove
-                rust_code = """
-                #[no_mangle]
-                pub extern "C" fn opt_test_dead_code(a: i32, b: i32) -> i32 {
-                    let _unused = a * b;
-                    let _also_unused = a + b + 1;
-                    a + b
-                }
-                """
-                wrapped = RustCall.wrap_rust_code(rust_code)
-                # Use opt_level=0 to get unoptimized IR
-                compiler_o0 = RustCall.RustCompiler(optimization_level=0)
-                ir_path = RustCall.compile_rust_to_llvm_ir(wrapped; compiler=compiler_o0)
-
-                rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped)
-                llvm_mod = rust_mod.mod
-
-                # Count instructions before optimization
-                stats_before = RustCall.get_optimization_stats(llvm_mod)
-
-                # Run optimization at level 2
-                config = RustCall.OptimizationConfig(level=2)
-                RustCall.optimize_module!(llvm_mod; config=config)
-
-                # Count instructions after optimization
-                stats_after = RustCall.get_optimization_stats(llvm_mod)
-
-                # Optimization should reduce instruction count (dead code removal)
-                @test stats_after["total_instructions"] <= stats_before["total_instructions"]
-            end
-
-            @testset "LLVM Type Conversion" begin
-                # Test Julia to LLVM IR string conversion
-                @test RustCall.julia_type_to_llvm_ir_string(Int32) == "i32"
-                @test RustCall.julia_type_to_llvm_ir_string(Int64) == "i64"
-                @test RustCall.julia_type_to_llvm_ir_string(Float32) == "float"
-                @test RustCall.julia_type_to_llvm_ir_string(Float64) == "double"
-                @test RustCall.julia_type_to_llvm_ir_string(Bool) == "i8"  # C ABI uses i8 (#165)
-                @test RustCall.julia_type_to_llvm_ir_string(Cvoid) == "void"
-            end
-
-            @testset "LLVM Module Loading" begin
-                # Compile Rust code to LLVM IR
-                rust_code = """
-                #[no_mangle]
-                pub extern "C" fn llvm_test_add(a: i32, b: i32) -> i32 {
-                    a + b
-                }
-                """
-
-                wrapped_code = RustCall.wrap_rust_code(rust_code)
-                compiler = RustCall.get_default_compiler()
-                ir_path = RustCall.compile_rust_to_llvm_ir(wrapped_code; compiler=compiler)
-
-                @test isfile(ir_path)
-                @test endswith(ir_path, ".ll")
-
-                # Load the LLVM IR
-                rust_mod = RustCall.load_llvm_ir(ir_path; source_code=wrapped_code)
-                @test rust_mod !== nothing
-                @test rust_mod isa RustCall.RustModule
-
-                # List functions
-                funcs = RustCall.list_functions(rust_mod)
-                @test "llvm_test_add" in funcs
-
-                # Get function signature
-                fn = RustCall.get_function(rust_mod, "llvm_test_add")
-                @test fn !== nothing
-
-                ret_type, arg_types = RustCall.get_function_signature(fn)
-                @test ret_type == Int32
-                @test arg_types == [Int32, Int32]
-            end
-
-            @testset "LLVM Code Generator" begin
-                # Test code generator configuration
-                codegen = RustCall.LLVMCodeGenerator()
-                @test codegen.optimization_level == 2
-                @test codegen.enable_vectorization == true
-
-                # Test custom code generator
-                custom_codegen = RustCall.LLVMCodeGenerator(
-                    optimization_level=3,
-                    inline_threshold=300,
-                    enable_vectorization=false
-                )
-                @test custom_codegen.optimization_level == 3
-                @test custom_codegen.inline_threshold == 300
-            end
-
+        @testset "Phase 2: Runtime" begin
             @testset "Function Registration" begin
                 # Define and compile a function
                 rust"""
@@ -493,38 +364,6 @@ using Test
                 # The function should be callable via @rust
                 result = @rust registered_add(Int32(5), Int32(7))::Int32
                 @test result == 12
-            end
-
-            @testset "LLVM Registry Thread Safety" begin
-                # Verify LLVM_REGISTRY_LOCK exists and is a ReentrantLock
-                @test isdefined(RustCall, :LLVM_REGISTRY_LOCK)
-                @test RustCall.LLVM_REGISTRY_LOCK isa ReentrantLock
-
-                # Verify lock works correctly with concurrent access
-                n_tasks = 4
-                n_ops = 10
-                results = Vector{Bool}(undef, n_tasks)
-
-                tasks = []
-                for t in 1:n_tasks
-                    task = Threads.@spawn begin
-                        for i in 1:n_ops
-                            # get_registered_function should safely return nothing
-                            # for unknown functions without crashing
-                            info = RustCall.get_registered_function("nonexistent_$(t)_$(i)")
-                            if info !== nothing
-                                return false
-                            end
-                        end
-                        return true
-                    end
-                    push!(tasks, task)
-                end
-
-                for (i, task) in enumerate(tasks)
-                    results[i] = fetch(task)
-                end
-                @test all(results)
             end
 
             @testset "Extended Ownership Types" begin
@@ -610,23 +449,6 @@ using Test
                 post_tmpdirs = Set(readdir(tempdir()))
                 new_dirs = setdiff(post_tmpdirs, pre_tmpdirs)
                 # Filter for rust_code-related dirs only
-                rust_dirs = filter(d -> isdir(joinpath(tempdir(), d)) && isfile(joinpath(tempdir(), d, "rust_code.rs")), new_dirs)
-                @test isempty(rust_dirs)
-            end
-
-            @testset "Temp dir cleaned up on LLVM IR compilation error" begin
-                invalid_code = """
-                #[no_mangle]
-                pub extern "C" fn bad_syntax( -> i32 { 42 }
-                """
-                compiler = RustCall.RustCompiler(debug_mode=false)
-
-                pre_tmpdirs = Set(readdir(tempdir()))
-
-                @test_throws RustCall.CompilationError RustCall.compile_rust_to_llvm_ir(invalid_code; compiler=compiler)
-
-                post_tmpdirs = Set(readdir(tempdir()))
-                new_dirs = setdiff(post_tmpdirs, pre_tmpdirs)
                 rust_dirs = filter(d -> isdir(joinpath(tempdir(), d)) && isfile(joinpath(tempdir(), d, "rust_code.rs")), new_dirs)
                 @test isempty(rust_dirs)
             end

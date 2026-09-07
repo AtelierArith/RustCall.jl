@@ -1,5 +1,5 @@
 # Benchmarks for RustCall.jl
-# Phase 2: Performance comparison between @rust and @rust_llvm
+# Performance comparison between native Julia and @rust
 
 using RustCall
 using BenchmarkTools
@@ -55,22 +55,6 @@ pub extern "C" fn bench_sum_range(n: i64) -> i64 {
 }
 """
 
-# Register functions for @rust_llvm
-println("Registering functions for LLVM integration...")
-compile_and_register_rust_function("""
-#[no_mangle]
-pub extern "C" fn bench_add_i32(a: i32, b: i32) -> i32 {
-    a + b
-}
-""", "bench_add_i32")
-
-compile_and_register_rust_function("""
-#[no_mangle]
-pub extern "C" fn bench_add_f64(a: f64, b: f64) -> f64 {
-    a + b
-}
-""", "bench_add_f64")
-
 # Julia native functions for comparison
 julia_add_i32(a::Int32, b::Int32) = a + b
 julia_add_i64(a::Int64, b::Int64) = a + b
@@ -111,10 +95,6 @@ println("\n@rust macro:")
 suite["add_i32"]["rust"] = @benchmark @rust bench_add_i32(Int32(100), Int32(200))::Int32
 display(suite["add_i32"]["rust"])
 
-println("\n@rust_llvm macro:")
-suite["add_i32"]["rust_llvm"] = @benchmark @rust_llvm bench_add_i32(Int32(100), Int32(200))
-display(suite["add_i32"]["rust_llvm"])
-
 # ============================================================================
 # Float Addition Benchmarks
 # ============================================================================
@@ -130,10 +110,6 @@ display(suite["add_f64"]["julia"])
 println("\n@rust macro:")
 suite["add_f64"]["rust"] = @benchmark @rust bench_add_f64(100.0, 200.0)::Float64
 display(suite["add_f64"]["rust"])
-
-println("\n@rust_llvm macro:")
-suite["add_f64"]["rust_llvm"] = @benchmark @rust_llvm bench_add_f64(100.0, 200.0)
-display(suite["add_f64"]["rust_llvm"])
 
 # ============================================================================
 # Fibonacci Benchmarks (more complex computation)
@@ -178,12 +154,10 @@ println("="^60)
 println("\nInteger Addition (i32):")
 println("  Julia:     $(minimum(suite["add_i32"]["julia"]).time) ns")
 println("  @rust:     $(minimum(suite["add_i32"]["rust"]).time) ns")
-println("  @rust_llvm:$(minimum(suite["add_i32"]["rust_llvm"]).time) ns")
 
 println("\nFloat Addition (f64):")
 println("  Julia:     $(minimum(suite["add_f64"]["julia"]).time) ns")
 println("  @rust:     $(minimum(suite["add_f64"]["rust"]).time) ns")
-println("  @rust_llvm:$(minimum(suite["add_f64"]["rust_llvm"]).time) ns")
 
 println("\nFibonacci (n=20):")
 println("  Julia:     $(minimum(suite["fib"]["julia"]).time) ns")

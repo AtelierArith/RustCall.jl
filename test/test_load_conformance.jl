@@ -37,8 +37,6 @@ function _conformance_registry_rows(lib_name)
                 count(v -> v.lib_name == lib_name, values(RustCall.MONOMORPHIZED_FUNCTIONS)),
             :IRUST_FUNCTIONS =>
                 count(v -> first(v) == lib_name, values(RustCall.IRUST_FUNCTIONS)),
-            :RUST_MODULE_REGISTRY =>
-                Int(haskey(RustCall.RUST_MODULE_REGISTRY, lib_name)),
             :PANIC_CHANNELS =>
                 count(k -> first(k) == lib_name, keys(RustCall.PANIC_CHANNELS)),
             :ARTIFACT_ALIVE =>
