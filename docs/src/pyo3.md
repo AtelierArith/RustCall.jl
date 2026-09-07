@@ -378,10 +378,12 @@ plan.reason                      # why this mode was chosen
 ### What a `:link_libpython` build needs from the machine
 
 A `:link_libpython` wrapper is only as portable as the Python it links. The
-build needs a library directory that holds a **linkable** `libpython3.x`
-(`libpython3.x.so` / `.dylib`, or `python3xy.dll` plus its import library on
-Windows); RustCall adds that directory as `-L` and as an rpath (on Windows the
-interpreter's `python3xy.dll` is preloaded before the wrapper instead). Where
+build needs a library directory that holds a **linkable** libpython —
+`libpython3.x.so` / `.dylib` on Unix, the import library `python3xy.lib` on
+Windows; RustCall adds that directory as `-L` and, on Unix, as an rpath. On
+Windows the runtime `python3xy.dll` is a separate concern: it lives beside the
+interpreter, not in the import-library directory, and the generated module
+preloads it before the wrapper (see "Which Python" below). Where
 the directory comes from is decided by `python_link_source()`, in the order
 the "Which Python" section below spells out: the `RUSTCALL_PYTHON_LIBDIR`
 override, then pyo3's own configuration when it names one (`PYO3_CROSS_LIB_DIR`,
