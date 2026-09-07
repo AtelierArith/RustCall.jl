@@ -378,18 +378,21 @@ plan.reason                      # why this mode was chosen
 ### What a `:link_libpython` build needs from the machine
 
 A `:link_libpython` wrapper is only as portable as the Python it links. The
-build needs a library directory that holds a **linkable** libpython —
-`libpython3.x.so` / `.dylib` on Unix, the import library `python3xy.lib` on
+build needs a library directory that holds something **linkable**:
+`libpython3.x.so` on Linux, `libpython3.x.dylib` or — for a framework Python —
+the `Python3.framework` bundle on macOS (the directory is then the framework
+prefix, `PYTHONFRAMEWORKPREFIX`), and the import library `python3xy.lib` on
 Windows; RustCall adds that directory as `-L` and, on Unix, as an rpath. On
 Windows the runtime `python3xy.dll` is a separate concern: it lives beside the
 interpreter, not in the import-library directory, and the generated module
-preloads it before the wrapper (see "Which Python" below). Where
-the directory comes from is decided by `python_link_source()`, in the order
-the "Which Python" section below spells out: the `RUSTCALL_PYTHON_LIBDIR`
-override, then pyo3's own configuration when it names one (`PYO3_CROSS_LIB_DIR`,
-the `lib_dir` of a `PYO3_CONFIG_FILE` — a configured cross-build consults no
-interpreter at all), then the interpreter `PYO3_PYTHON` pins, then a loaded
-CondaPkg environment, and only then the `python3` on `PATH`. A `python3` whose
+preloads it before the wrapper (see "Which Python" below). Where the directory
+comes from is decided by `python_link_source()`, in the order the "Which
+Python" section below spells out: the `RUSTCALL_PYTHON_LIBDIR` override, then
+pyo3's own configuration when it names one (`PYO3_CROSS_LIB_DIR`, the `lib_dir`
+of a `PYO3_CONFIG_FILE` — pyo3 then links without discovering an interpreter,
+and RustCall consults only the interpreter `PYO3_PYTHON` explicitly pins, if
+any, for the Windows runtime DLL), then the interpreter `PYO3_PYTHON` pins, then
+a loaded CondaPkg environment, and only then the `python3` on `PATH`. A `python3` whose
 package ships the shared library only in `python3-dev` / `python3-devel`, or no
 interpreter at all, makes the build refuse with a message naming the directory
 it looked in; install the development package, or point `PYO3_PYTHON` (or
