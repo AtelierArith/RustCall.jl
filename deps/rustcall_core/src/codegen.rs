@@ -84,7 +84,7 @@ use crate::model::{MethodModel, StructModel};
 use crate::types::{
     extract_option_type, extract_result_type, is_ffi_compatible_type,
     is_inline_accessible_field_type, is_non_ffi_type, is_self_type, is_str_ref_type,
-    is_string_type, is_vec_type, needs_clone_for_getter, unparen,
+    is_string_type, is_vec_type, last_ident, needs_clone_for_getter, unparen,
 };
 
 // ============================================================================
@@ -1416,17 +1416,33 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String
     }
 }
 
+/// The module path the proc-macro takes the struct of `#[julia] impl <self_ty>`
+/// to live at, given the `#[julia]` modules `module_path` around the block:
+/// the header read literally (`crate::a::C` is `a::C`, `super::C` one level up,
+/// a bare `C` the block's own path), see
+/// `PathQualifier::macro_target_path` (#315). Every symbol of the block's
+/// methods hangs off this path, and crate extraction refuses a block whose
+/// header names a struct that lives somewhere else.
+pub fn impl_target_module_path(module_path: &[String], self_ty: &Type) -> Vec<String> {
+    crate::paths::type_path_qualifier(self_ty).macro_target_path(module_path)
+}
+
 /// Transform a `#[julia]` impl block (crate flavour): wrap `#[julia]` methods.
+///
+/// The block may sit in another module than its struct (`impl crate::Gauge`
+/// from `ops.rs`, `impl super::Gauge` from a child module, #315); the method
+/// symbols follow the struct the header names, [`impl_target_module_path`].
 pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> TokenStream2 {
-    let struct_name = match item_impl.self_ty.as_ref() {
-        Type::Path(type_path) => type_path.path.segments.last().map(|s| s.ident.clone()),
-        _ => None,
-    };
-    let Some(struct_name) = struct_name else {
+    if last_ident(&item_impl.self_ty).is_none() {
         return quote! {
             compile_error!("#[julia] on impl block requires a simple type path");
         };
-    };
+    }
+    let struct_path = impl_target_module_path(module_path, &item_impl.self_ty);
+    // The wrappers are emitted next to the block, in *its* module, so they
+    // name the struct the way the header does (`super::Gauge`): a bare
+    // `Gauge` need not be in scope there.
+    let self_ty = (*item_impl.self_ty).clone();
 
     // The block's own `#[cfg]` gates every wrapper it produces: inside a
     // `#[julia] mod` the module macro expands a gated impl before rustc
@@ -1447,8 +1463,8 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
                 let mut gated = method.clone();
                 gated.attrs.splice(0..0, block_cfgs.iter().cloned());
                 ffi_wrappers.extend(generate_method_wrapper_crate(
-                    &struct_name,
-                    module_path,
+                    &self_ty,
+                    &struct_path,
                     &gated,
                 ));
             }
@@ -1567,10 +1583,15 @@ pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bo
 /// `<Struct>_<method>_RustCallBorrowedString`. The method itself is left in the
 /// impl block untouched; the wrapper calls it (#279).
 pub fn generate_method_wrapper_crate(
-    struct_name: &Ident,
+    self_ty: &Type,
     module_path: &[String],
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
+    let (Type::Path(self_path), Some(struct_name)) = (unparen(self_ty), last_ident(self_ty)) else {
+        return quote! {
+            compile_error!("#[julia] on impl block requires a simple type path");
+        };
+    };
     // The origin is a manifest column; the wrapper's shape does not depend
     // on it.
     let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
@@ -1580,6 +1601,7 @@ pub fn generate_method_wrapper_crate(
     let owned_free = format_ident!("{}_free_rust_string", owner);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", owner);
     generate_wrapper(method_spec(
+        &self_path.path,
         struct_name,
         &stem,
         &model,
@@ -1795,8 +1817,14 @@ pub fn inline_struct_wrappers(
 /// The [`WrapperSpec`] of a struct method, shared by the inline and the crate
 /// flavour: `declare` says whether the string buffer helpers are emitted by
 /// this wrapper (crate flavour, per method) or already exist next to the struct
-/// (inline flavour, per struct).
+/// (inline flavour, per struct). `self_path` is how the wrapper spells the
+/// struct where it is emitted — the bare name next to the struct (inline), the
+/// impl header's own path (`super::Gauge`) next to the block (crate, #315) —
+/// and `struct_name` the struct's identifier, which a `-> Self` / `-> Gauge`
+/// constructor return is recognised by.
+#[allow(clippy::too_many_arguments)]
 fn method_spec(
+    self_path: &syn::Path,
     struct_name: &Ident,
     stem: &Ident,
     m: &MethodModel,
@@ -1809,12 +1837,12 @@ fn method_spec(
     let method_name_str = method_name.to_string();
     let symbol = format_ident!("{}", method_symbol_of(&stem.to_string(), &method_name_str));
     let receiver = (!m.is_static).then(|| WrapperReceiver {
-        ty: struct_name.clone().into(),
+        ty: self_path.clone(),
         mutable: m.is_mutable,
     });
     let target = if m.is_static {
         CallTarget::Assoc {
-            ty: struct_name.clone().into(),
+            ty: self_path.clone(),
             method: method_name,
         }
     } else {
@@ -1823,7 +1851,7 @@ fn method_spec(
     let ret = if inline_method_is_ctor(struct_name, m) {
         // `new`, or any method returning `Self` / the struct type, hands Julia
         // an owning pointer. The string helpers are not involved.
-        WrapperReturn::Boxed(struct_name.clone().into())
+        WrapperReturn::Boxed(self_path.clone())
     } else if let Some(r) = method_result_return(m) {
         // A `Result` method is lowered exactly like a free function (#268):
         // `CResult_<Struct>_<method>`, with a `String` payload composed onto
@@ -1877,6 +1905,7 @@ fn inline_method_wrapper(
     borrowed_helper: &Ident,
 ) -> TokenStream2 {
     generate_wrapper(method_spec(
+        &syn::Path::from(struct_name.clone()),
         struct_name,
         stem,
         m,

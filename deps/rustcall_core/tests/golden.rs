@@ -92,6 +92,10 @@ fn corpus_matches_golden_files() {
     }
 }
 
+/// The expanded inline flavour of the corpus sources that exercise the struct
+/// wrappers must be Rust that `rustc` accepts as a `cdylib`: `struct_wrappers`
+/// for the `Result` / `Option` / string shapes, `cross_module_impl` for method
+/// wrappers whose impl block sits in another module than the struct (#315).
 #[test]
 fn compilable_wrappers_build_as_cdylib() {
     if Command::new("rustc").arg("--version").output().is_err() {
@@ -99,38 +103,40 @@ fn compilable_wrappers_build_as_cdylib() {
         return;
     }
 
-    let source_path = corpus_dir().join("struct_wrappers.rs");
-    let source = fs::read_to_string(&source_path).expect("failed to read compilation corpus");
-    let expanded = rustcall_core::expand::expand(&source).expect("failed to expand corpus");
+    for stem in ["struct_wrappers", "cross_module_impl"] {
+        let source_path = corpus_dir().join(format!("{stem}.rs"));
+        let source = fs::read_to_string(&source_path).expect("failed to read compilation corpus");
+        let expanded = rustcall_core::expand::expand(&source).expect("failed to expand corpus");
 
-    let temp_dir = std::env::temp_dir().join(format!(
-        "rustcall_core_golden_{}_{}",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
-    ));
-    fs::create_dir_all(&temp_dir).expect("failed to create rustc output directory");
-    let expanded_path = temp_dir.join("struct_wrappers.rs");
-    fs::write(&expanded_path, expanded.source).expect("failed to write expanded Rust source");
-    let library_path = temp_dir.join("rustcall_golden_cdylib");
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustcall_core_golden_{}_{}_{stem}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        fs::create_dir_all(&temp_dir).expect("failed to create rustc output directory");
+        let expanded_path = temp_dir.join(format!("{stem}.rs"));
+        fs::write(&expanded_path, expanded.source).expect("failed to write expanded Rust source");
+        let library_path = temp_dir.join("rustcall_golden_cdylib");
 
-    let output = Command::new("rustc")
-        .arg("--edition=2021")
-        .arg("--crate-name=rustcall_golden")
-        .arg("--crate-type=cdylib")
-        .arg(&expanded_path)
-        .arg("-o")
-        .arg(&library_path)
-        .output()
-        .expect("failed to invoke rustc");
+        let output = Command::new("rustc")
+            .arg("--edition=2021")
+            .arg("--crate-name=rustcall_golden")
+            .arg("--crate-type=cdylib")
+            .arg(&expanded_path)
+            .arg("-o")
+            .arg(&library_path)
+            .output()
+            .expect("failed to invoke rustc");
 
-    if let Err(error) = fs::remove_dir_all(&temp_dir) {
-        eprintln!("failed to remove {}: {error}", temp_dir.display());
+        if let Err(error) = fs::remove_dir_all(&temp_dir) {
+            eprintln!("failed to remove {}: {error}", temp_dir.display());
+        }
+        assert!(
+            output.status.success(),
+            "rustc rejected the expanded wrappers of {stem}.rs:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
-    assert!(
-        output.status.success(),
-        "rustc rejected expanded struct/Result/Option wrappers:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 /// The #275 Phase-2 wrapper crate of every corpus source that has PyO3 items:

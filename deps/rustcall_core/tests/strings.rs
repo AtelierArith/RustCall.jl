@@ -334,7 +334,7 @@ impl Greeter {
 "#,
     )
     .unwrap();
-    let struct_name: syn::Ident = syn::parse_str("Greeter").unwrap();
+    let struct_name: syn::Type = syn::parse_str("Greeter").unwrap();
     let mut out = proc_macro2::TokenStream::new();
     for i in &item.items {
         if let syn::ImplItem::Fn(m) = i {

@@ -1,8 +1,8 @@
 //! `rustcall-extract`: command-line front end over `rustcall_core`.
 //!
 //! ```text
-//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
-//! rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
+//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+//! rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
 //! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract schema-version
@@ -27,8 +27,8 @@ use rustcall_core::extract::ExtractError;
 use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 
 const USAGE: &str = "usage:
-  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
-  rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
+  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+  rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
   rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract schema-version
@@ -44,10 +44,12 @@ wrap: generate the `src/lib.rs` of a wrapper crate for the PyO3 items of the cra
 scanned from FILE... (#275 Phase 2), and write it, together with the manifest that
 describes what it exports, as one TOML document to --out or stdout. Always crate
 mode; --crate-name is the dependency's package name.
---crate-root: crate-mode only. Scan PyO3 items (#275) by following the crate's
-module tree from this file (src/lib.rs) instead of treating every FILE as a root,
-so each item's module_path and the visibility of its enclosing modules are real.
-The FILE list still drives #[julia] extraction.";
+--crate-root: crate-mode only. Scan the crate by following its module tree from
+this file (src/lib.rs) instead of treating every FILE as a root, so each item's
+module_path and the visibility of its enclosing modules are real (#275) and a
+#[julia] impl block finds its struct in another file (#315). The tree is the file
+list: FILE arguments are not accepted with it, and a file no `mod` reaches is not
+compiled by rustc, so it exports nothing.";
 
 /// One command-line argument: either an option/value that must be UTF-8, or a
 /// path that may not be.
@@ -156,44 +158,41 @@ struct ScanOptions {
 /// Run the scan `opts` describes and return the merged manifest.
 fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
     let mut merged = Manifest::new(opts.mode);
-    // With --crate-root the PyO3 scan runs once over the module tree below, so
-    // the per-file pass must not report the same items again as crate-root ones.
-    let per_file_pyo3_scan = opts.crate_root.is_none();
-    // Every exported symbol seen so far and the file:item that claims it, so a
-    // second claimant is reported with both locations (#300).
-    let mut claimed: Vec<(String, String)> = Vec::new();
-    for f in &opts.files {
-        let src = read_source(f)?;
-        let extracted = match opts.mode {
-            Mode::Crate => rustcall_core::extract::extract_crate_with_cfg_scan(
-                &src,
-                opts.cfg.as_ref(),
-                per_file_pyo3_scan,
-            ),
-            Mode::Inline => {
-                rustcall_core::extract::extract_with_cfg(&src, opts.mode, opts.cfg.as_ref())
-            }
-        };
-        match extracted {
-            Ok(m) => {
-                if opts.mode == Mode::Crate {
-                    claim_symbols(&mut claimed, &m, f)?;
+    match (opts.mode, &opts.crate_root) {
+        (Mode::Inline, _) => {
+            for f in &opts.files {
+                let src = read_source(f)?;
+                match rustcall_core::extract::extract_with_cfg(&src, opts.mode, opts.cfg.as_ref()) {
+                    Ok(m) => merged.merge(m),
+                    Err(e) => skip_or_fail(e, f, opts.skip_unparsable)?,
                 }
-                merged.merge(m);
             }
-            // Only a file that is not a Rust module is skippable (an
-            // `include!()` fragment); an item RustCall refuses fails the scan.
-            Err(ExtractError::Parse(e)) if opts.skip_unparsable => {
-                eprintln!(
-                    "rustcall-extract: skipping {}: not a complete Rust module ({e})",
-                    f.display()
-                );
-            }
-            Err(e) => return Err(format!("{}: {e}", f.display())),
         }
-    }
-    if let Some(root) = &opts.crate_root {
-        scan_pyo3_tree(root, opts.cfg.as_ref(), opts.skip_unparsable, &mut merged)?;
+        (Mode::Crate, Some(root)) => {
+            scan_crate_tree(root, opts.cfg.as_ref(), opts.skip_unparsable, &mut merged)?;
+        }
+        // No root: every FILE is its own module root. Structs and impl blocks
+        // are still married across the files (#315) and exported symbols
+        // checked crate-wide (#300).
+        (Mode::Crate, None) => {
+            let mut scan = rustcall_core::extract::TreeScan::new();
+            for f in &opts.files {
+                let src = read_source(f)?;
+                let scanned = scan.file(
+                    &src,
+                    opts.cfg.as_ref(),
+                    &[],
+                    true,
+                    &[],
+                    &mut merged,
+                    &f.display().to_string(),
+                );
+                if let Err(e) = scanned {
+                    skip_or_fail(e, f, opts.skip_unparsable)?;
+                }
+            }
+            scan.finish(&mut merged).map_err(|e| e.to_string())?;
+        }
     }
     if opts.files.len() > 1 || opts.crate_root.is_some() {
         merged.sort();
@@ -201,33 +200,19 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
     Ok(merged)
 }
 
-/// Record the exported symbols of one file's manifest, failing on the first
-/// one another file (or another item of this file) already claims (#300).
-///
-/// The symbol scheme keeps items of different modules apart, so a duplicate
-/// here is either two file modules — transparent to the scheme — defining the
-/// same `#[julia]` item, or a crate-root name that spells a qualified one. The
-/// `cdylib` could not export both, and a wrong binding is worse than no
-/// binding, so the scan fails closed and names the fix.
-fn claim_symbols(
-    claimed: &mut Vec<(String, String)>,
-    manifest: &Manifest,
-    file: &Path,
-) -> Result<(), String> {
-    for (symbol, owner) in manifest.symbol_owners() {
-        let here = format!("{} in {}", owner, file.display());
-        if let Some((_, first)) = claimed.iter().find(|(s, _)| *s == symbol) {
-            return Err(format!(
-                "duplicate exported symbol `{symbol}`: claimed by {first} and by {here}. \
-                 Two #[julia] items of one crate export the same symbol; only inline modules \
-                 marked `#[julia]` (`#[julia] pub mod name {{ ... }}`) qualify a symbol by \
-                 their name, while file modules (`mod name;`) do not. Wrap one of the items in \
-                 a `#[julia]` module block or rename it (#300)."
-            ));
+/// Only a file that is not a Rust module is skippable (an `include!()`
+/// fragment); an item RustCall refuses fails the scan.
+fn skip_or_fail(e: ExtractError, file: &Path, skip_unparsable: bool) -> Result<(), String> {
+    match e {
+        ExtractError::Parse(e) if skip_unparsable => {
+            eprintln!(
+                "rustcall-extract: skipping {}: not a complete Rust module ({e})",
+                file.display()
+            );
+            Ok(())
         }
-        claimed.push((symbol, here));
+        e => Err(format!("{}: {e}", file.display())),
     }
-    Ok(())
 }
 
 /// Generate the wrapper crate of a PyO3 crate (#275 Phase 2).
@@ -262,9 +247,7 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
         i += 1;
     }
     let crate_name = crate_name.ok_or("--crate-name is required")?;
-    if files.is_empty() {
-        return Err("at least one FILE is required".into());
-    }
+    check_inputs(&files, crate_root.as_deref())?;
     let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient)?;
     // Whether the scan decided every `#[cfg]` predicate. When it did not,
     // `wrapper_crate` refuses a `#[cfg]`-carrying item rather than generating
@@ -323,9 +306,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
         i += 1;
     }
     let mode = mode.ok_or("--mode is required")?;
-    if files.is_empty() {
-        return Err("at least one FILE is required".into());
-    }
+    check_inputs(&files, crate_root.as_deref())?;
     if crate_root.is_some() && mode != Mode::Crate {
         return Err("--crate-root is only meaningful with --mode crate".into());
     }
@@ -340,16 +321,15 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     write_manifest(&merged, out.as_deref())
 }
 
-/// Scan the PyO3 items of a whole crate by following its module tree from
-/// `root` (#275).
+/// Scan a whole crate by following its module tree from `root` (#275, #315).
 ///
 /// Only this layer touches the filesystem: `rustcall_core` hands back the
 /// out-of-line `mod` declarations of each file and this resolves them the way
 /// rustc does — `#[path = "..."]` first, then `<dir>/<name>.rs`, then
 /// `<dir>/<name>/mod.rs`. A declaration whose file does not exist (a `mod`
-/// behind a `#[cfg]` that was pruned, or a generated file) is skipped rather
-/// than failing the run: the scan describes what it can see.
-fn scan_pyo3_tree(
+/// behind a `#[cfg]` that was pruned, or a generated file) is noted on stderr
+/// and skipped rather than failing the run: the scan describes what it can see.
+fn scan_crate_tree(
     root: &Path,
     cfg: Option<&CfgSet>,
     skip_unparsable: bool,
@@ -370,7 +350,7 @@ fn scan_pyo3_tree(
     // the manifest — under their own module paths, and colliding with each
     // other on the wrapper symbols.
     let mut visited: Vec<(PathBuf, Vec<String>)> = Vec::new();
-    let mut scan = rustcall_core::pyo3::Pyo3Scan::new();
+    let mut scan = rustcall_core::extract::TreeScan::new();
 
     while let Some((file, dir, module_path, reachable, enclosing_cfg)) = queue.pop() {
         let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
@@ -381,28 +361,31 @@ fn scan_pyo3_tree(
         visited.push(key);
 
         let src = read_source(&file)?;
-        let pending = match rustcall_core::extract::extract_pyo3_file(
+        let scanned = scan.file(
             &src,
             cfg,
             &module_path,
             reachable,
             &enclosing_cfg,
-            &mut scan,
             manifest,
-        ) {
+            &file.display().to_string(),
+        );
+        let pending = match scanned {
             Ok(v) => v,
-            Err(e) if skip_unparsable => {
-                eprintln!(
-                    "rustcall-extract: skipping {}: not a complete Rust module ({e})",
-                    file.display()
-                );
+            Err(e) => {
+                skip_or_fail(e, &file, skip_unparsable)?;
                 continue;
             }
-            Err(e) => return Err(format!("{}: {e}", file.display())),
         };
 
         for m in pending {
             let Some((child_file, child_dir)) = resolve_module_file(&dir, &m) else {
+                eprintln!(
+                    "rustcall-extract: `mod {};` in {} names no file under {}; skipping it",
+                    m.name,
+                    file.display(),
+                    dir.display()
+                );
                 continue;
             };
             queue.push((
@@ -414,11 +397,10 @@ fn scan_pyo3_tree(
             ));
         }
     }
-    // `#[pyclass]` structs and their `#[pymethods]` blocks may live in
-    // different files, so the classes are only emitted once every file of the
+    // Structs and their impl blocks — `#[julia]` and PyO3 alike — may live in
+    // different files, so the structs are only emitted once every file of the
     // tree has been seen.
-    scan.finish(manifest);
-    Ok(())
+    scan.finish(manifest).map_err(|e| e.to_string())
 }
 
 /// Where a `mod name;` declaration's file lives, and the directory its own
@@ -453,6 +435,20 @@ fn resolve_module_file(
         return Some((nested, base.join(&m.name)));
     }
     None
+}
+
+/// A scan reads either the module tree below `--crate-root` or the FILEs
+/// given, never both: a file the tree does not reach is not compiled by rustc
+/// and exports nothing, so listing it would describe items that do not exist.
+fn check_inputs(files: &[PathBuf], crate_root: Option<&Path>) -> Result<(), String> {
+    match (files.is_empty(), crate_root) {
+        (true, None) => Err("at least one FILE or --crate-root is required".into()),
+        (false, Some(_)) => Err(
+            "--crate-root scans the crate's module tree; FILE arguments are not accepted with it"
+                .into(),
+        ),
+        _ => Ok(()),
+    }
 }
 
 fn single_file(file: &mut Option<PathBuf>, arg: &Arg, cmd: &str) -> Result<(), String> {

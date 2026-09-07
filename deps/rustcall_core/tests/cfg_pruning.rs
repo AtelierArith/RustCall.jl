@@ -599,24 +599,34 @@ fn enclosing_module_cfg_is_inherited() {
     assert_eq!(m.structs[0].cfg, "feature = \"x\"");
     // ... and a file reached through a gated `mod a;` declaration, whose
     // predicate the tree walk hands to the file's scan.
-    let root: syn::File = syn::parse_str("#[cfg(feature = \"x\")] pub mod a;").unwrap();
-    let mut scan = rustcall_core::pyo3::Pyo3Scan::new();
+    let mut scan = rustcall_core::extract::TreeScan::new();
     let mut manifest = rustcall_core::Manifest::new(Mode::Crate);
-    let pending = scan.file(&root.items, &[], true, &[], &mut manifest);
+    let pending = scan
+        .file(
+            "#[cfg(feature = \"x\")] pub mod a;",
+            None,
+            &[],
+            true,
+            &[],
+            &mut manifest,
+            "src/lib.rs",
+        )
+        .unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].cfg.len(), 1);
-    let more = rustcall_core::extract::extract_pyo3_file(
-        "#[pyfunction] pub fn run() -> i32 { 1 }",
-        None,
-        &pending[0].module_path,
-        pending[0].reachable,
-        &pending[0].cfg,
-        &mut scan,
-        &mut manifest,
-    )
-    .unwrap();
+    let more = scan
+        .file(
+            "#[pyfunction] pub fn run() -> i32 { 1 }",
+            None,
+            &pending[0].module_path,
+            pending[0].reachable,
+            &pending[0].cfg,
+            &mut manifest,
+            "src/a.rs",
+        )
+        .unwrap();
     assert!(more.is_empty());
-    scan.finish(&mut manifest);
+    scan.finish(&mut manifest).unwrap();
     assert_eq!(manifest.functions[0].module_path, vec!["a"]);
     assert_eq!(manifest.functions[0].cfg, "feature = \"x\"");
     assert_eq!(manifest.functions[0].cfg_features, vec!["x"]);

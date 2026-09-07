@@ -20,7 +20,7 @@ use crate::cfg::{predicate_string, CfgSet};
 use crate::codegen::{inline_generic_wrappers, inline_struct_wrappers, transform_function};
 use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
-use crate::model::{collect_struct_models_in, StructModel};
+use crate::model::{ModelTree, StructModel};
 use crate::types::{
     const_param_names, generics_to_type_params, has_impl_trait, has_type_params,
     is_inline_accessible_field_type, return_type_to_string, type_to_string,
@@ -65,7 +65,11 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
         crate::cfg::prune_file_or_error(set, &mut file)?;
     }
     let mut manifest = Manifest::new(Mode::Inline);
-    let out = expand_items(&file.items, &mut manifest, &[], &[])?;
+    // Structs and their impl blocks are matched across the whole block first
+    // (#315), so an `impl super::Gauge` inside `mod ops` wraps `Gauge`'s
+    // methods next to the struct.
+    let tree = ModelTree::collect(&file.items, Mode::Inline);
+    let out = expand_items(&file.items, &mut manifest, &[], &[], &tree)?;
 
     Ok(Expanded {
         // Crate-level inner attributes (`#![allow(...)]`, `//!` docs) are kept;
@@ -88,8 +92,8 @@ fn expand_items(
     manifest: &mut Manifest,
     module_path: &[String],
     enclosing_cfg: &[syn::Attribute],
+    tree: &ModelTree,
 ) -> Result<Vec<Item>, syn::Error> {
-    let models = collect_struct_models_in(items, Mode::Inline);
     let mut out: Vec<Item> = Vec::new();
     let push_fn = |manifest: &mut Manifest, entry: crate::manifest::Function| {
         manifest.functions.push(entry);
@@ -151,7 +155,7 @@ fn expand_items(
                 }
             }
             Item::Struct(s) => {
-                let Some(model) = models.iter().find(|m| s.ident == m.name()) else {
+                let Some(model) = tree.find(module_path, &s.ident.to_string()) else {
                     out.push(item.clone());
                     continue;
                 };
@@ -197,7 +201,7 @@ fn expand_items(
                     let mut path = module_path.to_vec();
                     path.push(m.ident.to_string());
                     let cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs);
-                    m.content = Some((*brace, expand_items(inner, manifest, &path, &cfg)?));
+                    m.content = Some((*brace, expand_items(inner, manifest, &path, &cfg, tree)?));
                     out.push(Item::Mod(m));
                 }
                 None => out.push(item.clone()),
@@ -314,7 +318,12 @@ fn methods_of(model: &StructModel, symbols: bool, stem: &str) -> Vec<Method> {
                 return_type: return_type_to_string(&m.func.sig.output),
                 return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
                 generic_wrapper: String::new(),
-                cfg: crate::cfg::predicate_string(&m.func.attrs),
+                // The block's and its modules' predicates gate the method as
+                // much as its own do (#300 review, #315).
+                cfg: crate::cfg::predicate_string(&crate::cfg::effective_cfg_attrs(
+                    &m.enclosing_cfg,
+                    &m.func.attrs,
+                )),
             }
         })
         .collect()

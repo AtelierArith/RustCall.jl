@@ -179,7 +179,7 @@ fn cfg_is_propagated_to_every_generated_item() {
         #[cfg_attr(feature = "x", cfg(target_pointer_width = "64"))]
         pub fn describe(&self, unit: String) -> Result<String, String> { Ok(unit) }
     };
-    let ty: syn::Ident = syn::parse_quote!(Div);
+    let ty: syn::Type = syn::parse_quote!(Div);
     let src = flatten(&prettyplease::unparse(
         &syn::parse2(generate_method_wrapper_crate(&ty, &[], &method)).unwrap(),
     ));

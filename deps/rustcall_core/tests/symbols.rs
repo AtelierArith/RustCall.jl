@@ -261,7 +261,6 @@ fn symbol_owners_feed_the_duplicate_check() {
     let m = extract(
         r#"
             #[julia] pub mod a { #[julia] pub fn run() -> i32 { 1 } }
-            #[julia] pub fn a__run() -> i32 { 2 }
             #[cfg(unix)] #[julia] pub fn portable() -> i32 { 1 }
             #[cfg(windows)] #[julia] pub fn portable() -> i32 { 2 }
             #[julia] pub struct C { pub v: i32 }
@@ -272,17 +271,37 @@ fn symbol_owners_feed_the_duplicate_check() {
     .unwrap();
     let owners = m.symbol_owners();
     let claims = |symbol: &str| owners.iter().filter(|(s, _)| s == symbol).count();
-    assert_eq!(claims("rustcall_a__run"), 2, "{owners:?}");
+    assert_eq!(claims("rustcall_a__run"), 1, "{owners:?}");
     assert_eq!(claims("rustcall_portable"), 0, "cfg variants are left out");
     assert_eq!(claims("C_free"), 1);
     assert_eq!(claims("C_get_v"), 1);
     assert_eq!(claims("C_set_v"), 1);
     assert_eq!(claims("rustcall_C_get"), 1);
     let (_, who) = owners.iter().find(|(s, _)| s == "rustcall_a__run").unwrap();
+    assert!(who.contains("`a::run`"), "{who}");
+}
+
+/// A crate-root `fn a__run` spells the symbol of `a::run`: the one coincidence
+/// the encoding cannot exclude. The scan refuses it with both owners instead
+/// of describing a `cdylib` that could not be linked — within one file as
+/// much as across files (#300, #315).
+#[test]
+fn a_duplicate_symbol_fails_extraction_with_both_owners() {
+    let err = extract(
+        r#"
+            #[julia] pub mod a { #[julia] pub fn run() -> i32 { 1 } }
+            #[julia] pub fn a__run() -> i32 { 2 }
+        "#,
+        Mode::Crate,
+    )
+    .expect_err("a duplicate exported symbol must fail the scan")
+    .to_string();
     assert!(
-        who.contains("`a::run`") || who.contains("`a__run`"),
-        "{who}"
+        err.contains("duplicate exported symbol `rustcall_a__run`"),
+        "{err}"
     );
+    assert!(err.contains("`a::run` (line 2)"), "{err}");
+    assert!(err.contains("`a__run` (line 3)"), "{err}");
 }
 
 /// The PyO3 wrapper generator names the destructor and the string helpers
@@ -331,11 +350,13 @@ fn pyo3_wrapper_flavour() {
         .any(|m| m.skip_reason.starts_with("symbol_collision"))),);
 }
 
-/// A `#[julia] impl C` away from its `#[julia] struct C` would take the
-/// symbol of the module it sits in, not the struct's; crate extraction refuses
-/// it instead of dropping the methods silently (#300 review).
+/// A bare `#[julia] impl C` at the crate root for a struct in `#[julia] mod a`:
+/// the proc-macro would export `rustcall_C_run` while the struct's symbols
+/// are `a__C`'s, so crate extraction refuses it and spells the header that
+/// agrees (`impl crate::a::C`); next to the struct, and through that header,
+/// the method is wrapped under the struct's stem (#300 review, #315).
 #[test]
-fn an_impl_outside_its_structs_module_is_refused() {
+fn an_impl_the_macro_would_qualify_differently_is_refused() {
     let src = r#"
         #[julia] pub mod a { #[julia] pub struct C { pub v: i32 } }
         use a::C;
@@ -344,12 +365,25 @@ fn an_impl_outside_its_structs_module_is_refused() {
     let err = extract(src, Mode::Crate).unwrap_err();
     assert!(matches!(err, ExtractError::Unsupported(_)), "{err}");
     let msg = err.to_string();
-    assert!(msg.contains("#[julia] impl `C` at the crate root"), "{msg}");
-    assert!(msg.contains("move the impl next to the struct"), "{msg}");
-    // Next to the struct it is wrapped under the struct's stem.
+    assert!(msg.contains("`impl C` (line 4)"), "{msg}");
+    assert!(msg.contains("`rustcall_C_<method>`"), "{msg}");
+    assert!(msg.contains("has the FFI name `a__C`"), "{msg}");
+    assert!(
+        msg.contains("write the header as `impl crate::a::C`"),
+        "{msg}"
+    );
+    // Next to the struct it is wrapped under the struct's stem ...
     let ok = extract(
         "#[julia] pub mod a { #[julia] pub struct C { pub v: i32 } \
          #[julia] impl C { #[julia] pub fn run(&self) -> i32 { self.v } } }",
+        Mode::Crate,
+    )
+    .unwrap();
+    assert_eq!(ok.structs[0].methods[0].symbol, "rustcall_a__C_run");
+    // ... and so is a block anywhere else whose header spells the path.
+    let ok = extract(
+        "#[julia] pub mod a { #[julia] pub struct C { pub v: i32 } } \
+         #[julia] impl crate::a::C { #[julia] pub fn run(&self) -> i32 { self.v } }",
         Mode::Crate,
     )
     .unwrap();
