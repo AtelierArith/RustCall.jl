@@ -32,6 +32,14 @@ RustCall of this checkout from the repository root:
 julia --project=examples/MyExample.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 julia --project=examples/SampleCrate.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
 julia --project=examples/SampleCratePyO3.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'
+```
+
+The Pluto notebook activates the repository root itself, so instantiate and build
+the root project before running it headlessly (Pluto comes from
+`examples/pluto/Project.toml`):
+
+```bash
+julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.build("RustCall")'
 julia --project=examples/pluto -e 'using Pkg; Pkg.instantiate()'
 julia --project=examples/pluto examples/pluto/run_notebook.jl
 ```
