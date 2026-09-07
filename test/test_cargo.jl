@@ -854,23 +854,30 @@ end
         @test RustCall._claim_lockfile!(claim)
         @test !RustCall._claim_lockfile!(claim)
         # A held claim with nothing published behind it: the loser waits for
-        # the publisher, and gives up loudly rather than hanging.
+        # the publisher, and gives up loudly rather than hanging. A claim is
+        # never expired by age — a dead publisher is reported, with the file
+        # to delete, not taken over on this machine's reading of the clock.
         rm(stored; force = true)
         mktempdir() do c
             waiting = joinpath(c, "Cargo.lock")
             write(waiting, "# resolution C\n")
             err = try
-                RustCall._publish_lockfile!(stored, waiting; wait = 0.3, stale_after = 60.0)
+                RustCall._publish_lockfile!(stored, waiting; wait = 0.3)
                 nothing
             catch e
                 e
             end
             @test err isa RustCall.CargoBuildError
-            @test occursin("resolving the same dependency set", sprint(showerror, err))
+            msg = sprint(showerror, err)
+            @test occursin("holds the claim", msg)
+            @test occursin(claim, msg)
+            @test occursin("clear_lockfiles", msg)
             @test !isfile(stored)
-            # ... unless the claim is stale — the publisher died — in which
-            # case the next comer takes it over and publishes.
-            digest = RustCall._publish_lockfile!(stored, waiting; wait = 0.3, stale_after = 0.0)
+            @test isfile(claim)
+            # Recovery is the documented one: remove the claim (here, as
+            # `clear_lockfiles` would) and publish again.
+            rm(claim)
+            digest = RustCall._publish_lockfile!(stored, waiting; wait = 0.3)
             @test read(stored, String) == "# resolution C\n"
             @test digest == RustCall._file_content_digest(stored)
             @test !isfile(claim)

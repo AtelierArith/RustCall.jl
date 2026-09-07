@@ -198,7 +198,7 @@ function ensure_cargo_lockfile!(project::CargoProject;
 end
 
 """
-    _publish_lockfile!(stored, target; wait = 10.0, stale_after = 60.0) -> String
+    _publish_lockfile!(stored, target; wait = 10.0) -> String
 
 Publish the lockfile a project just resolved (`target`) to the store (`stored`)
 so that exactly one resolution wins, and return the digest of the file the
@@ -212,15 +212,21 @@ it stages the content beside the entry and renames it into place (a whole file
 or none), then removes the claim. Every other process is a loser: it waits up
 to `wait` seconds for the published file to appear, discards its own
 resolution, copies the published file into its project and returns *that*
-digest — so every racer builds the published graph (#313 review). A claim older
-than `stale_after` seconds with no published file behind it is a publisher that
-died; the next comer removes it and claims for itself.
+digest — so every racer builds the published graph (#313 review).
 
-Throws `CargoBuildError` when the claim is held and nothing is published within
-`wait` seconds.
+A claim is never expired by age. Deciding that a publisher is dead from a
+file's mtime against this process's clock is wrong across machines sharing the
+store (their clocks need not agree), and a takeover of a *live* claim is
+precisely the two-publisher race the claim exists to prevent. A claim that
+outlives `wait` with nothing published behind it therefore fails loudly, naming
+the file: if no other RustCall process is resolving the set, a previous one
+died holding the claim — delete that file (or run `clear_lockfiles()`) and
+build again.
+
+Throws `CargoBuildError` in that case.
 """
 function _publish_lockfile!(stored::AbstractString, target::AbstractString;
-                            wait::Real = 10.0, stale_after::Real = 60.0)
+                            wait::Real = 10.0)
     stored = String(stored)
     target = String(target)
     mkpath(dirname(stored))
@@ -239,16 +245,13 @@ function _publish_lockfile!(stored::AbstractString, target::AbstractString;
     else
         deadline = time() + Float64(wait)
         while !isfile(stored) && time() < deadline
-            if isfile(claim) && time() - mtime(claim) > Float64(stale_after)
-                # The publisher died holding the claim: take it over.
-                rm(claim; force = true)
-                return _publish_lockfile!(stored, target; wait = wait, stale_after = stale_after)
-            end
             sleep(0.05)
         end
         isfile(stored) || throw(CargoBuildError(
-            "Another process is resolving the same dependency set and has not published " *
-            "its Cargo.lock within $(wait)s",
+            "Another RustCall process holds the claim on this dependency set's Cargo.lock " *
+            "and published nothing within $(wait)s. If no other process is resolving it, " *
+            "a previous one died holding the claim: delete `$(claim)` (or run " *
+            "`RustCall.clear_lockfiles()`) and build again",
             "claim: $(claim)", dirname(target)))
     end
     # Whoever published, the project builds the published file.

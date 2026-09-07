@@ -98,6 +98,13 @@ persists one `Cargo.lock` per dependency set and builds against it (issue #256):
   another machine; delete it to resolve afresh. `clear_cache` leaves lockfiles
   alone — they are inputs of a build, not outputs — and
   `RustCall.clear_lockfiles()` is the one operation that discards them all.
+- **One resolution wins.** Two processes (or machines sharing the store) that
+  both find it empty publish through an exclusive-create claim file beside the
+  entry: the first to claim publishes, the other waits and replays the
+  published file, so both build one graph. A claim is never expired by age; if
+  a build ever reports that another process holds the claim and nothing was
+  published, and no other process is resolving that set, a previous one died
+  holding it — delete the named `.claim` file (or run `clear_lockfiles()`).
 - **Offline.** `RUSTCALL_OFFLINE=1` adds `--offline` to every Cargo invocation.
   With a warm registry cache the pinned build succeeds without the network; with
   a cold one Cargo fails at once with its own message (surfaced as a
