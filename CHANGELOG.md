@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     cross-module `symbol_collision` skip reason of #294 is unreachable; the
     reason survives only for same-module coincidences (an item whose own name
     spells another item's generated symbol).
+  - A module name Julia cannot define next to a parent binding — Rust keeps
+    `fn a` and `mod a` in separate namespaces, Julia does not — is refused when
+    the bindings are laid out, naming both sides and the fix.
+  - **A module's `#[cfg]` now gates the items inside it** in every scan: an
+    entry's `cfg` / `cfg_features` include the predicates of its enclosing
+    modules (`#[cfg(feature = "x")] mod a { fn f }` reports `f` under
+    `feature = "x"`), for `#[julia]` items in crate and inline mode and for
+    PyO3-scanned items, including files reached through a gated `mod a;`. A
+    lenient scan used to report such items as unconditional and bind them in a
+    build without the feature.
 
 ### Added
 - **`examples/SampleCratePyO3Only.jl`**, a third example package: a Julia

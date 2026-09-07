@@ -156,12 +156,18 @@ fn item_fn_source(func: &ItemFn) -> String {
 ///
 /// `wrapped` says whether RustCall codegen (`transform_function`) is applied,
 /// which decides the `Result`/`Option` return kinds and the exported flag.
+///
+/// `enclosing_cfg` is the `#[cfg]` of every enclosing inline module: the
+/// entry's `cfg` / `cfg_features` describe when the item exists, not only
+/// what it wrote on itself (#300 review).
 pub fn function_entry(
     func: &ItemFn,
     attribute: Attribute,
     wrapped: bool,
     module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
 ) -> Function {
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &func.attrs);
     let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
     let return_type = return_type_to_string(&func.sig.output);
     let mut ok_type = String::new();
@@ -233,8 +239,8 @@ pub fn function_entry(
         skip_reason: String::new(),
         python_name: String::new(),
         exported,
-        cfg: predicate_string(&func.attrs),
-        cfg_features: crate::cfg::predicate_features(&func.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
         args: fn_args(&func.sig),
@@ -325,7 +331,7 @@ pub fn extract_crate_with_cfg_scan(
         crate::cfg::prune_file_or_error(set, &mut file)?;
     }
     let mut manifest = Manifest::new(Mode::Crate);
-    extract_crate_items(&file.items, &mut manifest, &[], &[], true)?;
+    extract_crate_items(&file.items, &mut manifest, &[], &[], &[], true)?;
     // Items that carry only PyO3 attributes (#275). Reported with a PyO3
     // origin, `exported = false` and the symbol a Phase-2 wrapper crate will
     // emit; an item that also carries `#[julia]` is owned by `#[julia]` and is
@@ -355,6 +361,7 @@ pub fn extract_pyo3_file(
     cfg: Option<&CfgSet>,
     module_path: &[String],
     reachable: bool,
+    enclosing_cfg: &[syn::Attribute],
     scan: &mut crate::pyo3::Pyo3Scan,
     manifest: &mut Manifest,
 ) -> Result<Vec<crate::pyo3::PendingModule>, syn::Error> {
@@ -362,7 +369,7 @@ pub fn extract_pyo3_file(
     if let Some(set) = cfg {
         crate::cfg::prune_file_or_error(set, &mut file)?;
     }
-    Ok(scan.file(&file.items, module_path, reachable, manifest))
+    Ok(scan.file(&file.items, module_path, reachable, enclosing_cfg, manifest))
 }
 
 /// The error for a `#[julia]` item inside an inline module that is not itself
@@ -382,8 +389,10 @@ fn unmarked_module_error(kind: &str, name: &str, full_path: &[String]) -> Extrac
 /// One level of items; inline modules are visited recursively.
 ///
 /// `module_path` is the chain of `#[julia]`-marked inline modules leading here
-/// — the path the proc-macro folds into the symbols — and `full_path` every
-/// inline module, for diagnostics. `marked` says whether *this* level is a
+/// — the path the proc-macro folds into the symbols — `full_path` every
+/// inline module, for diagnostics, and `enclosing_cfg` the `#[cfg]` attributes
+/// of every enclosing module, which every entry below inherits (an item in a
+/// gated module is itself gated). `marked` says whether *this* level is a
 /// marked one (the crate root counts as marked): a `#[julia]` item at an
 /// unmarked level is refused, see [`unmarked_module_error`]. An unmarked module
 /// below a marked one resets nothing — its items are simply refused — and a
@@ -395,6 +404,7 @@ fn extract_crate_items(
     manifest: &mut Manifest,
     module_path: &[String],
     full_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
     marked: bool,
 ) -> Result<(), ExtractError> {
     for item in items {
@@ -409,21 +419,26 @@ fn extract_crate_items(
                     ));
                 }
                 if attribute == Attribute::Julia {
-                    manifest
-                        .functions
-                        .push(function_entry(f, attribute, true, module_path));
+                    manifest.functions.push(function_entry(
+                        f,
+                        attribute,
+                        true,
+                        module_path,
+                        enclosing_cfg,
+                    ));
                 }
             }
             Item::Mod(m) => {
                 if let Some((_, inner)) = &m.content {
                     let mut full = full_path.to_vec();
                     full.push(m.ident.to_string());
+                    let cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs);
                     if crate::codegen::is_marked_module(m) {
                         let mut path = module_path.to_vec();
                         path.push(m.ident.to_string());
-                        extract_crate_items(inner, manifest, &path, &full, true)?;
+                        extract_crate_items(inner, manifest, &path, &full, &cfg, true)?;
                     } else {
-                        extract_crate_items(inner, manifest, module_path, &full, false)?;
+                        extract_crate_items(inner, manifest, module_path, &full, &cfg, false)?;
                     }
                 }
             }
@@ -437,13 +452,18 @@ fn extract_crate_items(
         }
         manifest
             .structs
-            .push(crate_struct_entry(&model, module_path));
+            .push(crate_struct_entry(&model, module_path, enclosing_cfg));
     }
     Ok(())
 }
 
-fn crate_struct_entry(model: &StructModel, module_path: &[String]) -> Struct {
+fn crate_struct_entry(
+    model: &StructModel,
+    module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
+) -> Struct {
     let struct_name = &model.item.ident;
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &model.item.attrs);
     let stem = crate::codegen::symbol_stem(module_path, &struct_name.to_string());
     let fields = model
         .named_fields()
@@ -512,8 +532,8 @@ fn crate_struct_entry(model: &StructModel, module_path: &[String]) -> Struct {
         })
         .collect();
     Struct {
-        cfg: predicate_string(&model.item.attrs),
-        cfg_features: crate::cfg::predicate_features(&model.item.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         name: model.name(),
         ffi_name: stem,
         attribute: model.attribute,

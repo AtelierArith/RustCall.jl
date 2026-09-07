@@ -355,9 +355,16 @@ fn scan_pyo3_tree(
     skip_unparsable: bool,
     manifest: &mut Manifest,
 ) -> Result<(), String> {
-    // (file, directory its child modules live in, module path, reachable)
+    // (file, directory its child modules live in, module path, reachable,
+    // the `#[cfg]` attributes of the enclosing `mod` declarations)
     let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let mut queue = vec![(root.to_path_buf(), root_dir, Vec::<String>::new(), true)];
+    let mut queue = vec![(
+        root.to_path_buf(),
+        root_dir,
+        Vec::<String>::new(),
+        true,
+        Vec::new(),
+    )];
     // Keyed by (file, module path): `#[path = "shared.rs"] pub mod a;` and the
     // same for `b` compile one file as two distinct modules, and both belong in
     // the manifest — under their own module paths, and colliding with each
@@ -365,7 +372,7 @@ fn scan_pyo3_tree(
     let mut visited: Vec<(PathBuf, Vec<String>)> = Vec::new();
     let mut scan = rustcall_core::pyo3::Pyo3Scan::new();
 
-    while let Some((file, dir, module_path, reachable)) = queue.pop() {
+    while let Some((file, dir, module_path, reachable, enclosing_cfg)) = queue.pop() {
         let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
         let key = (canonical, module_path.clone());
         if visited.contains(&key) {
@@ -379,6 +386,7 @@ fn scan_pyo3_tree(
             cfg,
             &module_path,
             reachable,
+            &enclosing_cfg,
             &mut scan,
             manifest,
         ) {
@@ -397,7 +405,13 @@ fn scan_pyo3_tree(
             let Some((child_file, child_dir)) = resolve_module_file(&dir, &m) else {
                 continue;
             };
-            queue.push((child_file, child_dir, m.module_path.clone(), m.reachable));
+            queue.push((
+                child_file,
+                child_dir,
+                m.module_path.clone(),
+                m.reachable,
+                m.cfg.clone(),
+            ));
         }
     }
     // `#[pyclass]` structs and their `#[pymethods]` blocks may live in

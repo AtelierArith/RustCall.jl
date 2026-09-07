@@ -539,3 +539,85 @@ pub fn r() -> Result<i32, i32> { Ok(1) }
         e.source
     );
 }
+
+/// A module's `#[cfg]` gates everything inside it, so every entry inherits the
+/// predicates of its enclosing modules in `cfg` / `cfg_features` — otherwise a
+/// lenient crate scan reports `a::run` as unconditional and a consumer binds
+/// it in a build without the feature (#300 review). Checked on every walk that
+/// records entries: crate extraction, inline expansion, and the PyO3 scan of an
+/// inline module and of a file reached through a gated `mod` declaration.
+#[test]
+fn enclosing_module_cfg_is_inherited() {
+    let src = r#"
+        #[cfg(feature = "x")]
+        #[julia]
+        pub mod a {
+            #[julia]
+            pub fn run() -> i32 { 1 }
+            #[cfg(unix)]
+            #[julia]
+            pub fn nix() -> i32 { 2 }
+            #[julia]
+            pub struct C { pub v: i32 }
+            #[cfg(feature = "y")]
+            #[julia]
+            pub mod deep {
+                #[julia]
+                pub fn d() -> i32 { 3 }
+            }
+        }
+        #[julia]
+        pub fn root() -> i32 { 0 }
+    "#;
+    let check = |m: &rustcall_core::Manifest| {
+        let f = |name: &str| m.functions.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(f("root").cfg, "");
+        assert_eq!(f("run").cfg, "feature = \"x\"");
+        assert_eq!(f("run").cfg_features, vec!["x"]);
+        assert_eq!(f("nix").cfg, "all(feature = \"x\", unix)");
+        assert_eq!(f("nix").cfg_features, vec!["x"]);
+        assert_eq!(f("d").cfg, "all(feature = \"x\", feature = \"y\")");
+        assert_eq!(f("d").cfg_features, vec!["x", "y"]);
+        let c = m.structs.iter().find(|s| s.name == "C").unwrap();
+        assert_eq!(c.cfg, "feature = \"x\"");
+        assert_eq!(c.cfg_features, vec!["x"]);
+    };
+    check(&extract_with_cfg(src, Mode::Crate, None).unwrap());
+    check(&expand_with_cfg(src, None).unwrap().manifest);
+
+    // PyO3 items: an inline gated module ...
+    let py = r#"
+        #[cfg(feature = "x")]
+        pub mod a {
+            #[pyfunction] pub fn run() -> i32 { 1 }
+            #[pyclass] pub struct C { #[pyo3(get)] pub v: i32 }
+        }
+    "#;
+    let m = extract_with_cfg(py, Mode::Crate, None).unwrap();
+    assert_eq!(m.functions[0].cfg, "feature = \"x\"");
+    assert_eq!(m.functions[0].cfg_features, vec!["x"]);
+    assert_eq!(m.structs[0].cfg, "feature = \"x\"");
+    // ... and a file reached through a gated `mod a;` declaration, whose
+    // predicate the tree walk hands to the file's scan.
+    let root: syn::File = syn::parse_str("#[cfg(feature = \"x\")] pub mod a;").unwrap();
+    let mut scan = rustcall_core::pyo3::Pyo3Scan::new();
+    let mut manifest = rustcall_core::Manifest::new(Mode::Crate);
+    let pending = scan.file(&root.items, &[], true, &[], &mut manifest);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].cfg.len(), 1);
+    let more = rustcall_core::extract::extract_pyo3_file(
+        "#[pyfunction] pub fn run() -> i32 { 1 }",
+        None,
+        &pending[0].module_path,
+        pending[0].reachable,
+        &pending[0].cfg,
+        &mut scan,
+        &mut manifest,
+    )
+    .unwrap();
+    assert!(more.is_empty());
+    scan.finish(&mut manifest);
+    assert_eq!(manifest.functions[0].module_path, vec!["a"]);
+    assert_eq!(manifest.functions[0].cfg, "feature = \"x\"");
+    assert_eq!(manifest.functions[0].cfg_features, vec!["x"]);
+}

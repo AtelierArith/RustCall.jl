@@ -431,10 +431,12 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         Symbol(snake_to_pascal(info.name))
     end
 
-    # Generate function wrappers
+    # The crate root's items; items inside modules go into the submodules
+    # below (#300). A module name Julia cannot define next to a root binding
+    # is refused up front.
+    tree = _module_tree(info)
+    _check_module_names(tree)
     func_defs = generate_crate_function_wrappers(info, lib_path)
-
-    # Generate struct definitions and wrappers
     struct_defs = generate_crate_struct_wrappers(info, lib_path)
 
     # The registry name of this crate's library. `@rust_crate` used to keep its
@@ -579,7 +581,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         $struct_defs
         # One Julia submodule per Rust module: `bindings.a.run()` for
         # `a::run` (#300). Each imports the helpers above from its parent.
-        $(_submodule_exprs(_module_tree(info))...)
+        $(_submodule_exprs(tree)...)
     end
 
     # Return a clean module expression (not wrapped in a block)
@@ -676,6 +678,53 @@ function _module_tree(functions, structs)
         push!(node_at(s.module_path).structs, s)
     end
     return root
+end
+
+"""
+    _check_module_names(tree::ModuleNode)
+
+Refuse a layout Julia cannot define. Rust keeps values, types and modules in
+separate namespaces, so a crate may have both `#[julia] fn a()` and `#[julia]
+mod a { ... }`; Julia has one namespace per module, and the generated parent
+would define function `a` and then module `a` — a constant-redefinition error
+that takes the whole bindings module down (#300 review). Every child module
+name is therefore checked against what its parent defines: free functions,
+struct types, static-method names, and the helpers every generated module
+defines (`_call_target`, `_LIB_GEN`, ...). The error names both sides and the
+fix.
+"""
+function _check_module_names(tree::ModuleNode)
+    taken = Dict{String, String}()
+    for name in _CRATE_MODULE_HELPERS
+        taken[String(name)] = "a helper every generated module defines"
+    end
+    taken["_LIB_PATH"] = "a helper every generated module defines"
+    taken["_SYMBOLS"] = "a helper every generated module defines"
+    taken["_SYMBOL_LOCK"] = "a helper every generated module defines"
+    taken["_PRELOAD_LIBRARIES"] = "a helper every generated module defines"
+    for f in tree.functions
+        f.is_generic && continue
+        get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
+    end
+    for s in tree.structs
+        get!(taken, s.name, "the struct `$(qualified_name(s.module_path, s.name))`")
+        for m in s.methods
+            (m.is_static && !m.is_constructor && isempty(m.skip_reason)) || continue
+            get!(taken, m.name, "the static method `$(qualified_name(s.module_path, s.name))::$(m.name)`")
+        end
+    end
+    for child in tree.children
+        name = last(child.path)
+        if haskey(taken, name)
+            where_ = isempty(tree.path) ? "the crate root" : "module `$(join(tree.path, "::"))`"
+            error("cannot lay out the bindings of module `$(join(child.path, "::"))`: " *
+                  "$where_ already binds `$name` as $(taken[name]), and Julia keeps " *
+                  "functions, types and modules in one namespace, so the submodule " *
+                  "`$name` would redefine it. Rename the module or the item (#300).")
+        end
+        _check_module_names(child)
+    end
+    return nothing
 end
 
 """
@@ -2730,6 +2779,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # Generate function wrappers of the crate root; items inside modules go
     # into the submodules below (#300).
     tree = _module_tree(info)
+    _check_module_names(tree)
     for func in tree.functions
         if func.is_generic
             continue

@@ -193,6 +193,36 @@ end
         end
     end
 
+    @testset "a module named like a parent binding is refused" begin
+        # Rust keeps `fn a` and `mod a` in separate namespaces; Julia does not,
+        # so the generated parent would define `a` twice. Checked on the layout,
+        # with hand-built signatures — no crate needed.
+        sig(name, path) = RustCall.RustFunctionSignature(name, String[], String[], "i32", false,
+                                                          String[]; module_path = path)
+        ok = RustCall._module_tree([sig("run", String[]), sig("run", ["a"])], RustCall.RustStructInfo[])
+        @test RustCall._check_module_names(ok) === nothing
+        clash = RustCall._module_tree([sig("a", String[]), sig("run", ["a"])], RustCall.RustStructInfo[])
+        err = try
+            RustCall._check_module_names(clash)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("module `a`", err.msg)
+        @test occursin("the function `a`", err.msg)
+        @test occursin("Rename the module or the item", err.msg)
+        # A struct named like a nested module, one level down.
+        st = RustCall.RustStructInfo("deep", String[], RustCall.RustMethod[], "",
+                                     Tuple{String, String}[], true, Dict{String, Bool}();
+                                     module_path = ["a"])
+        nested = RustCall._module_tree([sig("f", ["a", "deep"])], [st])
+        @test_throws ErrorException RustCall._check_module_names(nested)
+        # A module named like a generated helper.
+        helper = RustCall._module_tree([sig("f", ["_call_target"])], RustCall.RustStructInfo[])
+        @test_throws ErrorException RustCall._check_module_names(helper)
+    end
+
     @testset "a #[julia] item in an unmarked inline module is refused" begin
         mktempdir() do dir
             _ms_write_two_module_crate(dir)

@@ -61,7 +61,7 @@ use crate::types::{
 /// a crate-root item and miss a private parent module entirely (#275).
 pub fn extract_pyo3_items(items: &[Item], manifest: &mut Manifest) -> Vec<PendingModule> {
     let mut scan = Pyo3Scan::new();
-    let pending = scan.file(items, &[], true, manifest);
+    let pending = scan.file(items, &[], true, &[], manifest);
     scan.finish(manifest);
     pending
 }
@@ -87,6 +87,9 @@ pub struct PendingModule {
     /// directory to the search path of its out-of-line children. Empty when the
     /// declaration is at the top level of its file.
     pub dir_components: Vec<String>,
+    /// The `#[cfg]` attributes of the declaration and of every module enclosing
+    /// it, which every item in the module's file inherits (#300 review).
+    pub cfg: Vec<syn::Attribute>,
 }
 
 /// Crate-wide state of a PyO3 scan.
@@ -269,11 +272,17 @@ impl Pyo3Scan {
     ///
     /// Free functions go straight into `manifest`; classes and `#[pymethods]`
     /// blocks are held until [`Pyo3Scan::finish`].
+    ///
+    /// `enclosing_cfg` is the `#[cfg]` of every module on the way to this
+    /// file; every item found inherits it in its `cfg` / `cfg_features`, so a
+    /// wrapper generated from a lenient scan refuses an item whose *module* is
+    /// gated exactly as it refuses one gated itself (#300 review).
     pub fn file(
         &mut self,
         items: &[Item],
         module_path: &[String],
         reachable: bool,
+        enclosing_cfg: &[syn::Attribute],
         manifest: &mut Manifest,
     ) -> Vec<PendingModule> {
         let mut path = module_path.to_vec();
@@ -284,18 +293,21 @@ impl Pyo3Scan {
             &mut path,
             &mut dirs,
             reachable,
+            enclosing_cfg,
             manifest,
             &mut pending,
         );
         pending
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn level(
         &mut self,
         items: &[Item],
         module_path: &mut Vec<String>,
         dir_components: &mut Vec<String>,
         reachable: bool,
+        enclosing_cfg: &[syn::Attribute],
         manifest: &mut Manifest,
         pending: &mut Vec<PendingModule>,
     ) {
@@ -315,6 +327,7 @@ impl Pyo3Scan {
                                 Attribute::PyFunction,
                                 reachable,
                                 module_path,
+                                enclosing_cfg,
                             ));
                         }
                         Some(Pyo3Marker::Module) => {
@@ -323,6 +336,7 @@ impl Pyo3Scan {
                                 Attribute::PyModule,
                                 reachable,
                                 module_path,
+                                enclosing_cfg,
                             ));
                         }
                         _ => {}
@@ -335,7 +349,7 @@ impl Pyo3Scan {
                     if pyo3_marker(&s.attrs) == Some(Pyo3Marker::Class) {
                         self.classes.push(ScannedClass {
                             module_path: module_path.clone(),
-                            entry: class_entry(s, reachable, module_path),
+                            entry: class_entry(s, reachable, module_path, enclosing_cfg),
                         });
                     }
                 }
@@ -389,6 +403,7 @@ impl Pyo3Scan {
                 }
                 Item::Mod(m) => {
                     let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
+                    let inner_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs);
                     module_path.push(m.ident.to_string());
                     match &m.content {
                         Some((_, inner)) => {
@@ -398,6 +413,7 @@ impl Pyo3Scan {
                                 module_path,
                                 dir_components,
                                 inner_reachable,
+                                &inner_cfg,
                                 manifest,
                                 pending,
                             );
@@ -411,6 +427,7 @@ impl Pyo3Scan {
                             name: m.ident.to_string(),
                             path_attr: path_attribute(&m.attrs),
                             dir_components: dir_components.clone(),
+                            cfg: inner_cfg,
                         }),
                     }
                     module_path.pop();
@@ -906,7 +923,7 @@ fn struct_symbols(s: &Struct) -> Vec<String> {
         }
     }
     if s.has_owned_string_helper {
-        out.extend(string_helper_symbols(&s.name));
+        out.extend(string_helper_symbols(&s.ffi_name));
     }
     for f in &s.fields {
         if !f.getter.is_empty() {
@@ -950,8 +967,10 @@ fn function_entry(
     attribute: Attribute,
     reachable: bool,
     module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
 ) -> Function {
     let name = func.sig.ident.to_string();
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &func.attrs);
     let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
     let return_type = return_type_to_string(&func.sig.output);
 
@@ -974,8 +993,8 @@ fn function_entry(
         skip_reason: reason,
         python_name: pyo3_name(&func.attrs),
         exported: false,
-        cfg: predicate_string(&func.attrs),
-        cfg_features: crate::cfg::predicate_features(&func.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
         args: fn_args(&func.sig),
@@ -1004,7 +1023,13 @@ fn function_entry(
 /// Manifest entry of a `#[pyclass]` struct: an opaque handle. A `#[pyclass]` is
 /// never `#[repr(C)]` (pyo3 owns its layout), so fields are only reachable
 /// through the accessors pyo3 itself declares with `#[pyo3(get, set)]`.
-fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> Struct {
+fn class_entry(
+    item: &ItemStruct,
+    reachable: bool,
+    module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
+) -> Struct {
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &item.attrs);
     let is_generic = has_type_params(&item.generics);
     let reason = item_skip_reason(&item.vis, reachable, is_generic).unwrap_or_default();
     let name = item.ident.to_string();
@@ -1075,8 +1100,8 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
         vis: visibility_string(&item.vis),
         skip_reason: reason,
         python_name: pyo3_name(&item.attrs),
-        cfg: predicate_string(&item.attrs),
-        cfg_features: crate::cfg::predicate_features(&item.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         type_params: generics_to_type_params(&item.generics),
         fields,
         methods: Vec::new(),

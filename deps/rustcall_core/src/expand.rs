@@ -65,7 +65,7 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
         crate::cfg::prune_file_or_error(set, &mut file)?;
     }
     let mut manifest = Manifest::new(Mode::Inline);
-    let out = expand_items(&file.items, &mut manifest, &[])?;
+    let out = expand_items(&file.items, &mut manifest, &[], &[])?;
 
     Ok(Expanded {
         // Crate-level inner attributes (`#![allow(...)]`, `//!` docs) are kept;
@@ -80,10 +80,14 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
 /// and every exported symbol is qualified by the module path (#300): the
 /// expander sees the whole block, so — unlike the proc-macro — it needs no
 /// `#[julia]` marker on the module (one is accepted and stripped).
+///
+/// `enclosing_cfg` is the `#[cfg]` of every enclosing module, folded into each
+/// entry's `cfg` / `cfg_features` (#300 review).
 fn expand_items(
     items: &[Item],
     manifest: &mut Manifest,
     module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
 ) -> Result<Vec<Item>, syn::Error> {
     let models = collect_struct_models_in(items, Mode::Inline);
     let mut out: Vec<Item> = Vec::new();
@@ -117,21 +121,30 @@ fn expand_items(
                             };
                             out.push(syn::parse_quote! { compile_error!(#msg); });
                             f.vis = Visibility::Public(Default::default());
-                            push_fn(manifest, function_entry(&f, attribute, false, module_path));
+                            push_fn(
+                                manifest,
+                                function_entry(&f, attribute, false, module_path, enclosing_cfg),
+                            );
                             out.push(Item::Fn(f));
                         } else if has_type_params(&f.sig.generics) {
                             f.vis = Visibility::Public(Default::default());
-                            push_fn(manifest, function_entry(&f, attribute, false, module_path));
+                            push_fn(
+                                manifest,
+                                function_entry(&f, attribute, false, module_path, enclosing_cfg),
+                            );
                             out.push(Item::Fn(f));
                         } else {
-                            push_fn(manifest, function_entry(&f, attribute, true, module_path));
+                            push_fn(
+                                manifest,
+                                function_entry(&f, attribute, true, module_path, enclosing_cfg),
+                            );
                             out.extend(items_of(transform_function(f, module_path))?);
                         }
                     }
                     _ => {
                         push_fn(
                             manifest,
-                            function_entry(f, Attribute::None, false, module_path),
+                            function_entry(f, Attribute::None, false, module_path, enclosing_cfg),
                         );
                         out.push(item.clone());
                     }
@@ -149,7 +162,7 @@ fn expand_items(
                 out.push(Item::Struct(s.clone()));
 
                 if model.is_generic() {
-                    let entry = generic_struct_entry(model, &s, module_path);
+                    let entry = generic_struct_entry(model, &s, module_path, enclosing_cfg);
                     // Emit the generic wrappers (not exported) next to the struct so
                     // `specialize` can instantiate them in place, with every
                     // module-scoped name in reach.
@@ -161,7 +174,7 @@ fn expand_items(
                 } else {
                     let (tokens, meta) = inline_struct_wrappers(model, module_path);
                     out.extend(items_of(tokens)?);
-                    let entry = concrete_struct_entry(model, &meta, module_path);
+                    let entry = concrete_struct_entry(model, &meta, module_path, enclosing_cfg);
                     manifest.structs.push(entry);
                 }
             }
@@ -183,7 +196,8 @@ fn expand_items(
                     strip_rustcall_attrs(&mut m.attrs);
                     let mut path = module_path.to_vec();
                     path.push(m.ident.to_string());
-                    m.content = Some((*brace, expand_items(inner, manifest, &path)?));
+                    let cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs);
+                    m.content = Some((*brace, expand_items(inner, manifest, &path, &cfg)?));
                     out.push(Item::Mod(m));
                 }
                 None => out.push(item.clone()),
@@ -331,11 +345,13 @@ fn concrete_struct_entry(
     model: &StructModel,
     meta: &crate::codegen::InlineStructMeta,
     module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
 ) -> Struct {
     let stem = crate::codegen::symbol_stem(module_path, &model.name());
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &model.item.attrs);
     Struct {
-        cfg: predicate_string(&model.item.attrs),
-        cfg_features: crate::cfg::predicate_features(&model.item.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         name: model.name(),
         attribute: model.attribute,
         vis: crate::attrs::visibility_string(&model.item.vis),
@@ -360,7 +376,9 @@ fn generic_struct_entry(
     model: &StructModel,
     stripped_struct: &syn::ItemStruct,
     module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
 ) -> Struct {
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &model.item.attrs);
     let wrappers = inline_generic_wrappers(model);
     let wrapper_names: Vec<&str> = wrappers.iter().map(|w| w.name.as_str()).collect();
     let accessors: Vec<(String, String, String)> = model
@@ -404,8 +422,8 @@ fn generic_struct_entry(
     }
 
     Struct {
-        cfg: predicate_string(&model.item.attrs),
-        cfg_features: crate::cfg::predicate_features(&model.item.attrs),
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
         name: model.name(),
         ffi_name: stem,
         attribute: model.attribute,

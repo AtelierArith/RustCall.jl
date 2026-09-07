@@ -237,8 +237,15 @@ A module written by `write_bindings_to_file` has the same shape
 (`module a ... end` inside the generated module), and the static-method
 rule above is decided per module.
 
-Two things to know:
+Three things to know:
 
+- A module's `#[cfg]` gates everything inside it: the manifest reports an item
+  in `#[cfg(feature = "x")] #[julia] pub mod a { ... }` under `feature = "x"`,
+  so a build without the feature binds nothing from `a`.
+- Julia keeps functions, types and modules in one namespace where Rust keeps
+  three, so a crate with both `#[julia] fn a()` and `#[julia] mod a { ... }`
+  at the same level is refused when the bindings are laid out (the message
+  names both sides); rename one of them.
 - A `#[julia]` item inside an inline module that is **not** marked `#[julia]`
   is refused by the scan, with the fix in the message: the proc-macro would
   have exported it under the crate-root symbol, which the manifest cannot

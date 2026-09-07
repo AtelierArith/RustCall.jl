@@ -108,8 +108,8 @@ vis = "pub"
 skip_reason = ""
 python_name = ""
 exported = true
-cfg = ""
-cfg_features = []
+cfg = 'feature = "extra"'
+cfg_features = ["extra"]
 is_generic = false
 type_params = []
 args = []
