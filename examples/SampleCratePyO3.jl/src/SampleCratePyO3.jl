@@ -32,7 +32,9 @@ if !isfile(_BINDINGS_FILE)
     include(joinpath(@__DIR__, "..", "deps", "build.jl"))
 end
 include(_BINDINGS_FILE)
-using .Bindings
+# Explicit list: exactly the names this module re-exports.
+using .Bindings: add, fibonacci, shout, shout_twice,
+                 Point, distance_from_origin, translate, scaled
 
 export add, fibonacci, shout, shout_twice
 export Point, distance_from_origin, translate, scaled

@@ -30,7 +30,17 @@ if !isfile(_BINDINGS_FILE)
     include(joinpath(@__DIR__, "..", "deps", "build.jl"))
 end
 include(_BINDINGS_FILE)
-using .Bindings
+# Only the names this module re-exports unchanged are imported. The ones
+# wrapped below (`safe_divide`, `safe_sqrt`, …) are *not*: they are new
+# functions of this module that call `Bindings.<name>` explicitly, so nothing
+# here shadows or extends an imported binding.
+using .Bindings: add, multiply, fibonacci, is_prime,
+                 shout, join_repeat, char_count, crate_greeting, identity_str,
+                 Point, Counter, Labeler, Rectangle,
+                 distance_from_origin, distance_to, translate,
+                 increment, decrement,
+                 label, byte_len, kind, echo,
+                 area, perimeter, is_square, scale
 
 # Names the Rust crate exports through `#[julia]`, re-exported unchanged.
 export add, multiply, fibonacci, is_prime
