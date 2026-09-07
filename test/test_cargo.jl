@@ -731,13 +731,26 @@ end
                 # Offline: with the registry warm from the build above, the same
                 # set builds again — `--locked --offline` — after the cache is
                 # cleared; the lockfile survives `clear_cargo_cache`, being an
-                # input and not an output.
+                # input and not an output. The block's library is unloaded
+                # first and the disk cache emptied, so neither the in-memory
+                # fast path nor a cached binary can answer: the only way to a
+                # working `lib3` is a Cargo build, which is what leaves exactly
+                # one fresh entry in the cleared cache (#313 review).
+                RustCall.unload_library(lib2)
                 RustCall.clear_cargo_cache()
                 @test isfile(lockfile)
+                lib_ext = RustCall.get_library_extension()
+                @test isempty(filter(f -> endswith(f, lib_ext),
+                                     readdir(RustCall.get_cargo_cache_dir())))
                 lib3 = withenv("RUSTCALL_OFFLINE" => "1") do
                     RustCall._compile_and_load_rust(second, "pinned-offline", 0)
                 end
                 @test ccall(RustCall.get_function_pointer(lib3, "rc256_again"), Int32, ()) == 257
+                @test length(filter(f -> endswith(f, lib_ext),
+                                    readdir(RustCall.get_cargo_cache_dir()))) == 1
+                # ... and it was the pinned graph that was built: the lockfile
+                # is untouched by the rebuild.
+                @test read(lockfile, String) == content
                 for name in unique([lib, lib2, lib3])
                     try
                         RustCall.unload_library(name)
