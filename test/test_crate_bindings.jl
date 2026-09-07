@@ -979,8 +979,12 @@ end
             # image it maps is a private generation copy, so the next
             # `cargo build` of the crate — hot reload, another binding path —
             # can still overwrite the file, which Windows refuses for a mapped
-            # DLL (#309). Deleting and restoring the file is the same check
-            # Cargo's own rewrite makes.
+            # DLL (#309). Only *observed* here: `_LIB_PATH` is the shared
+            # `examples/sample_crate` output that other workers of the
+            # parallel phase build and load at the same time, so it is never
+            # removed or rewritten by this test. The overwrite itself is
+            # exercised in "write_bindings_to_file with relative path", on a
+            # library that lives in that test's own temporary directory.
             sandbox = Module(:WrittenSandbox)
             Base.include(sandbox, output_path)
             mod = Base.invokelatest(getfield, sandbox, :TestBindings)
@@ -993,13 +997,6 @@ end
             # `<lib>.<pid>.<generation>.<ext>`: the process id keeps two
             # processes that load the same crate from choosing one copy name.
             @test occursin(Regex("\\.$(getpid())\\.\\d+\\.[A-Za-z]+\$"), basename(loaded))
-            backup = joinpath(output_dir, basename(built))
-            cp(built, backup; force = true)
-            @test (rm(built); !isfile(built))
-            cp(backup, built; force = true)
-            @test isfile(built)
-            # The module still works through its copy after the file went away
-            # and came back.
             @test Base.invokelatest(Base.invokelatest(getfield, mod, :add), 2, 3) == 5
             try
                 RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
@@ -1037,6 +1034,37 @@ end
             content = read(output_path, String)
             @test occursin("joinpath(@__DIR__", content)
             @test occursin(lib_rel_path, content)
+
+            # The written module maps a private generation copy, never
+            # `_LIB_PATH` itself, so the file it was written against can be
+            # deleted and rewritten while the module is loaded — the operation
+            # a `cargo build` or a regeneration needs and Windows refuses for
+            # a mapped DLL (#309). `_LIB_PATH` here is the copy under this
+            # test's own temporary directory, so no other worker sees the
+            # removal.
+            sandbox = Module(:RelativeSandbox)
+            Base.include(sandbox, output_path)
+            mod = Base.invokelatest(getfield, sandbox, :RelativeBindings)
+            lib_path = Base.invokelatest(getfield, mod, :_LIB_PATH)
+            gen = Base.invokelatest(getindex, Base.invokelatest(getfield, mod, :_LIB_GEN))
+            loaded = Libdl.dlpath(gen.handle)
+            @test isfile(lib_path)
+            @test dirname(realpath(lib_path)) == realpath(lib_dir)
+            @test realpath(loaded) != realpath(lib_path)
+            @test dirname(realpath(loaded)) == realpath(lib_dir)
+            @test occursin(Regex("\\.$(getpid())\\.\\d+\\.[A-Za-z]+\$"), basename(loaded))
+            backup = joinpath(output_dir, basename(lib_path))
+            cp(lib_path, backup; force = true)
+            @test (rm(lib_path); !isfile(lib_path))
+            cp(backup, lib_path; force = true)
+            @test isfile(lib_path)
+            # The module still works through its copy after the file went away
+            # and came back.
+            @test Base.invokelatest(Base.invokelatest(getfield, mod, :add), 2, 3) == 5
+            try
+                RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
+            catch
+            end
         finally
             rm(output_dir, recursive=true, force=true)
         end
