@@ -747,15 +747,31 @@ function _check_module_names(tree::ModuleNode)
         f.is_generic && continue
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
     end
-    for s in tree.structs
+    # A method or an accessor is emitted *after* its struct, so it only clashes
+    # with a type name a **later** struct of this node defines: `function C(...)`
+    # before `mutable struct C` is a constant redefinition, the other order is
+    # an outer constructor. A method that repeats its own struct's name is
+    # therefore fine, and so is one that repeats a free function's — that adds a
+    # method to it (#341 review).
+    struct_position = Dict{String, Int}()
+    for (i, s) in enumerate(tree.structs)
+        get!(struct_position, s.name, i)
+    end
+    later_struct(name, i) = get(struct_position, name, typemax(Int)) > i
+    for (i, s) in enumerate(tree.structs)
         owner = qualified_name(s.module_path, s.name)
         for m in s.methods
             (isempty(m.skip_reason) && !m.is_constructor) || continue
+            later_struct(m.name, i) || continue
             get!(taken, m.name, "the method `$owner::$(m.name)`")
         end
         for (field, _) in s.fields
-            field_is_accessible(s, field) && get!(taken, "get_$field", "the accessor of `$owner.$field`")
-            field_is_writable(s, field) && get!(taken, "set_$(field)!", "the accessor of `$owner.$field`")
+            if field_is_accessible(s, field) && later_struct("get_$field", i)
+                get!(taken, "get_$field", "the accessor of `$owner.$field`")
+            end
+            if field_is_writable(s, field) && later_struct("set_$(field)!", i)
+                get!(taken, "set_$(field)!", "the accessor of `$owner.$field`")
+            end
         end
     end
     # A struct is a Julia type *and* its constructor: Rust keeps `fn C` and

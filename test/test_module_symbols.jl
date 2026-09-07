@@ -242,8 +242,21 @@ end
         named_like_struct = RustCall.RustStructInfo("D", String[],
             [RustCall.RustMethod("C", false, false, String[], String[], "i32")], "",
             Tuple{String, String}[], true, Dict{String, Bool}())
+        # A method binds its name where its struct is emitted, so it clashes
+        # only with a type name a *later* struct defines (#341 review):
+        # `function C(self::D)` before `mutable struct C` is a redefinition…
         @test_throws ErrorException RustCall._check_module_names(
-            RustCall._module_tree(RustCall.RustFunctionSignature[], [plain, named_like_struct]))
+            RustCall._module_tree(RustCall.RustFunctionSignature[], [named_like_struct, plain]))
+        # …the other order is an outer constructor of `C`, which Julia allows.
+        @test RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[],
+                                  [plain, named_like_struct])) === nothing
+        # A method that repeats its own struct's name is that same overload.
+        self_named = RustCall.RustStructInfo("E", String[],
+            [RustCall.RustMethod("E", false, false, String[], String[], "i32")], "",
+            Tuple{String, String}[], true, Dict{String, Bool}())
+        @test RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[], [self_named])) === nothing
         @test_throws ErrorException RustCall._check_module_names(
             RustCall._module_tree(RustCall.RustFunctionSignature[],
                 [RustCall.RustStructInfo("String", String[], RustCall.RustMethod[], "",
