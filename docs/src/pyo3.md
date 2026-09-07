@@ -260,7 +260,7 @@ nothing emits it yet. The manifest describes what Phase 2 will generate.
 | `pymodule` | a `#[pymodule]` initializer: it exists to be called by Python's import machinery |
 | `generic` | a generic item; monomorphizing PyO3 items is out of scope |
 | `owner_skipped:<reason>` | a method whose `#[pyclass]` is itself skipped for `<reason>` |
-| `symbol_collision:<owner>` | another item already claims the symbol this one would get. The scheme is `rustcall_<name>` (#279) and carries no module path, so two `pub fn run` in different modules both want `rustcall_run`; `#[julia]` has the identical collision, so the scheme changes for both kinds at once — tracked in [#300](https://github.com/AtelierArith/RustCall.jl/issues/300) |
+| `symbol_collision:<owner>` | another item already claims the symbol this one would get. Symbols carry the module path since [#300](https://github.com/AtelierArith/RustCall.jl/issues/300) (`a::run` → `rustcall_a__run`), so two `pub fn run` in different modules no longer meet; what remains is a same-module coincidence — an item whose own name spells another item's generated symbol, such as a `#[pyfunction] fn P_get_v` next to a `#[pyclass] P` with a `v` getter |
 
 `not_public` is the reason you will see most often, and it is worth knowing why:
 pyo3 does not require `pub` anywhere. `#[pyfunction] fn add(...)` and a
@@ -317,7 +317,9 @@ scan.
 
 `#[path = "shared.rs"] pub mod a;` and the same for `b` compile one file as two
 distinct modules, and both are reported — under their own module paths, and
-colliding with each other on the wrapper symbols, which the scan says.
+under their own symbols (`rustcall_a__shared_0fn` / `rustcall_b__shared_0fn`),
+because the module path is part of every symbol (#300). The generated Julia
+module mirrors that: `bindings.a.shared_fn()` and `bindings.b.shared_fn()`.
 
 ### `#[pymethods]` is matched crate-wide
 

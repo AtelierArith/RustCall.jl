@@ -181,6 +181,12 @@ struct RustStructInfo
     python_name::String
     # See `RustFunctionSignature.cfg_features`.
     cfg_features::Vector{String}
+    # Manifest schema 7 (#300): the stem every exported symbol of the struct
+    # hangs off — `<ffi_name>_free`, `<ffi_name>_get_<field>`,
+    # `rustcall_<ffi_name>_<method>`, `<ffi_name>_free_rust_string`. Equal to
+    # `name` for a crate-root struct; module-qualified inside modules
+    # (`a::C` -> `a__C`). `name` stays the Julia type name.
+    ffi_name::String
 end
 
 function RustStructInfo(name::String, type_params::Vector{String}, methods::Vector{RustMethod},
@@ -197,12 +203,14 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         module_path::Vector{String} = String[],
                         attribute::Symbol = :julia, vis::String = "pub",
                         skip_reason::String = "", python_name::String = "",
-                        cfg_features::Vector{String} = String[])
+                        cfg_features::Vector{String} = String[],
+                        ffi_name::String = name)
     RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
                    has_derive_julia_struct,
                    derive_options, field_getters, field_setters, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
-                   module_path, attribute, vis, skip_reason, python_name, cfg_features)
+                   module_path, attribute, vis, skip_reason, python_name, cfg_features,
+                   isempty(ffi_name) ? name : ffi_name)
 end
 
 """
@@ -292,6 +300,11 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
     end
 
     struct_name_str = info.name
+    # Exported symbols hang off the FFI name, which carries the module path
+    # (#300); `struct_name_str` stays the Julia type name and the label in
+    # diagnostics. A generic struct exports nothing itself — its wrappers are
+    # instantiated under names Julia chooses — so its branch keeps `name`.
+    struct_stem = info.ffi_name
     esc_struct = esc(Symbol(struct_name_str))
 
     # Handle Generics
@@ -496,7 +509,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             # a hand-built object in a test, say. It takes its own snapshot,
             # which is the best it can do.
             function $esc_struct(ptr::Ptr{Cvoid}, lib::String)
-                gen = RustCall.artifact_generation_snapshot(lib, $struct_name_str)
+                gen = RustCall.artifact_generation_snapshot(lib, $struct_stem)
                 return $esc_struct(ptr, lib, gen.free_ptr, gen.alive)
             end
         end
@@ -506,8 +519,9 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
     for m in info.methods
         fname = esc(Symbol(m.name))
         # Exported symbol of the method wrapper, `rustcall_<Struct>_<method>`
-        # (#279); derived when a hand-built `RustMethod` carries none.
-        wrapper_name = method_wrapper_symbol(struct_name_str, m)
+        # (#279, module-qualified since #300); derived when a hand-built
+        # `RustMethod` carries none.
+        wrapper_name = method_wrapper_symbol(struct_stem, m)
 
         is_ctor = m.is_constructor
 
@@ -529,7 +543,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         # One snapshot for the whole construction: the wrapper
                         # that allocates, its panic channel, and the destructor
                         # and liveness flag the object will carry (#277).
-                        ptr, tgt = GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_name_str, $(expanded_call_args...))
+                        ptr, tgt = GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...))
                         return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)
                     end
                 end)
@@ -539,7 +553,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     expanded_call_args; self = nothing, static_type = esc_struct))
             else
                 mc = ffi_return_contract(m.return_type; abi = m.return_abi,
-                                         owner = struct_name_str)
+                                         owner = struct_stem)
                 if ffi_owned_string_return(mc)
                     free_fn = mc.free_symbol
                     push!(exprs, quote
@@ -588,7 +602,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 info, m, fname, wrapper_name, esc_args, bindings, preserved,
                 expanded_call_args; self = esc_struct))
         else
-            mc = ffi_return_contract(m.return_type; abi = m.return_abi, owner = struct_name_str)
+            mc = ffi_return_contract(m.return_type; abi = m.return_abi, owner = struct_stem)
             if ffi_owned_string_return(mc)
                 free_fn = mc.free_symbol
                 push!(exprs, quote
@@ -618,7 +632,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                             # A `Self`-returning method allocates, so its result
                             # is bound to the generation that ran it, exactly
                             # like a constructor (#277).
-                            res, tgt = GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_name_str, self.ptr, $(expanded_call_args...))
+                            res, tgt = GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...))
                             return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive)
                         else
                             return GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...))
@@ -729,13 +743,13 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
     # 4. Add trait implementations if requested
     if info.has_derive_julia_struct
         if info.has_clone
-            clone_name = struct_name_str * "_clone"
+            clone_name = struct_stem * "_clone"
             push!(exprs, quote
                 function Base.copy(self::$esc_struct)
                     # `clone` allocates, so the copy belongs to the generation
                     # that cloned it (#277).
                     ptr, tgt = GC.@preserve self _call_rust_constructor(
-                        self.lib_name, $clone_name, $struct_name_str, self.ptr)
+                        self.lib_name, $clone_name, $struct_stem, self.ptr)
                     return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)
                 end
             end)
@@ -771,13 +785,13 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
         ok_t, ok_slot = ffi_payload_symbols(m.ok_type, m.ok_abi, ctx)
         err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx)
         aggregate = :(RustCall.CResultType{$ok_slot, $err_slot})
-        free_sym = _payload_free_symbol(info.name, (m.ok_abi, m.err_abi))
+        free_sym = _payload_free_symbol(info.ffi_name, (m.ok_abi, m.err_abi))
         decode = (c, tgt) ->
             :(RustCall.convert_c_result_to_rust_result($c, $ok_t, $err_t, $tgt.free_ptr))
     else
         inner_t, inner_slot = ffi_payload_symbols(m.inner_type, m.inner_abi, ctx)
         aggregate = :(RustCall.COptionType{$inner_slot})
-        free_sym = _payload_free_symbol(info.name, (m.inner_abi,))
+        free_sym = _payload_free_symbol(info.ffi_name, (m.inner_abi,))
         decode = (c, tgt) ->
             :(RustCall.convert_c_option_to_rust_option($c, $inner_t, $tgt.free_ptr))
     end

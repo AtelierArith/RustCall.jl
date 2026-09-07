@@ -178,6 +178,78 @@ and as a hard error when a module written by `write_bindings_to_file` is
 precompiled — so in that case only the typed form exists and the free function
 keeps the bare name (#323).
 
+### Modules
+
+Every exported symbol hangs off the item's **FFI name**: the item's own name at
+the crate root, and its module path folded in otherwise
+(`rustcall_core::codegen::symbol_stem`, #300). A proc-macro cannot see the
+module an item sits in, so the module carries the marker too:
+
+```rust
+#[julia]
+pub mod a {
+    use juliacall_macros::julia;
+
+    #[julia]
+    pub fn run() -> i32 { 1 }          // exported as `rustcall_a__run`
+
+    #[julia]
+    pub struct C { pub v: i32 }        // `a__C_free`, `a__C_get_v`, `a__C_set_v`
+
+    #[julia]
+    impl C {
+        #[julia]
+        pub fn new(v: i32) -> Self { Self { v } }   // `rustcall_a__C_new`
+    }
+}
+
+#[julia]
+pub mod b {
+    use juliacall_macros::julia;
+
+    #[julia]
+    pub fn run() -> i32 { 2 }          // exported as `rustcall_b__run`
+}
+
+#[julia]
+pub fn run() -> i32 { 0 }              // crate root: `rustcall_run`, as before
+```
+
+`#[julia]` on an inline `mod` expands the `#[julia]` items inside it with the
+module path; nested marked modules accumulate (`a::deep::run` →
+`rustcall_a__deep__run`). Segments are joined with `__` and every `_` inside a
+segment is spelled `_0`, so `a_b::c` (`a_0b__c`) and `a::b_c` (`a__b_0c`) can
+never meet; a crate-root item keeps its bare name.
+
+On the Julia side the generated module mirrors the Rust module tree — one
+submodule per Rust module, root items where they always were:
+
+```julia
+bindings = @rust_crate "/path/to/two_modules"
+bindings.run()              # 0
+bindings.a.run()            # 1
+bindings.b.run()            # 2
+c = bindings.a.C(Int32(4))  # a distinct type from bindings.b.C
+bindings.a.get(c)
+```
+
+A module written by `write_bindings_to_file` has the same shape
+(`module a ... end` inside the generated module), and the static-method
+rule above is decided per module.
+
+Two things to know:
+
+- A `#[julia]` item inside an inline module that is **not** marked `#[julia]`
+  is refused by the scan, with the fix in the message: the proc-macro would
+  have exported it under the crate-root symbol, which the manifest cannot
+  describe honestly.
+- File modules (`mod a;`) cannot carry an attribute macro (rustc's E0658) and
+  are transparent: their items keep crate-root symbols, exactly as if they
+  were written in `lib.rs`. Two file modules that both define `#[julia] pub fn
+  run` therefore still want one `rustcall_run`; the scan reports the duplicate
+  with both locations instead of describing a library that cannot be built.
+  Wrap the items in a `#[julia] pub mod` block inside the file, or rename one.
+
 ## Property Access Syntax
 
 Generated struct wrappers support Julia's property access syntax for natural field access:
@@ -549,7 +621,12 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 6`). Regenerate after upgrading RustCall.
+(`# Bindings format: 7`). Regenerate after upgrading RustCall.
+
+Format `7` (#300) names every symbol module-qualified (`a__C_free`,
+`rustcall_a__run`) and puts items inside Rust modules into Julia submodules.
+A file emitted before it names symbols that a library built with the current
+proc-macro no longer exports for any item inside a module.
 
 Since format `6` (#309) the module's `__init__` opens a **private generation
 copy** of the library rather than the file `_LIB_PATH` names, exactly as

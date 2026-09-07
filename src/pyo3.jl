@@ -32,8 +32,9 @@ const PYO3_SKIP_REASONS = Dict{String, String}(
                               "constructor), or a module-level function another free function " *
                               "or class static method of the same name and arity already " *
                               "defines; the later definition would silently replace the earlier",
-    "symbol_collision" => "another item already claims the symbol a wrapper would give this one; " *
-                          "module-qualified symbols are tracked in #300",
+    "symbol_collision" => "another item already claims the symbol a wrapper would give this one. " *
+                          "Symbols carry the module path (#300), so this is a same-module clash — " *
+                          "an item whose own name spells another item's generated symbol",
     # Reasons the Phase-2 *generator* refuses an item (#275 Phase 2).
     "unsupported_arg" => "an argument type the wrapper cannot lower: neither FFI-compatible " *
                          "nor a `String`/`&str`",
@@ -1423,7 +1424,7 @@ function _pyo3_wrapper_items(manifest::Dict)
             generic_wrappers = st.generic_wrappers, constraints = st.constraints,
             module_path = st.module_path, attribute = st.attribute, vis = st.vis,
             skip_reason = st.skip_reason, python_name = st.python_name,
-            cfg_features = st.cfg_features))
+            cfg_features = st.cfg_features, ffi_name = st.ffi_name))
     end
     return functions, structs, skipped, pyo3_exports
 end
@@ -1827,7 +1828,7 @@ end
 # of its own -- it is a handle its methods and accessors hang off.
 _pyo3_symbol_suffix(f::RustFunctionSignature) = isempty(f.symbol) ? "" : " -> $(f.symbol)"
 _pyo3_symbol_suffix(m::RustMethod) = isempty(m.symbol) ? "" : " -> $(m.symbol)"
-_pyo3_symbol_suffix(s::RustStructInfo) = " -> $(ffi_struct_free_symbol(s.name))"
+_pyo3_symbol_suffix(s::RustStructInfo) = " -> $(ffi_struct_free_symbol(s.ffi_name))"
 
 _pyo3_item_label(f::RustFunctionSignature) =
     "fn $(qualified_name(f.module_path, f.name)) -> $(f.return_type) [$(f.attribute)]"
