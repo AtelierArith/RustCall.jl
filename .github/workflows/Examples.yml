@@ -1,0 +1,54 @@
+name: Examples
+
+# `Pkg.test()` of every Julia package under examples/, against the RustCall of
+# this checkout. The example packages are what a user copies first, so a
+# change that breaks `rust"""` in a package, `@rust_crate` from a package, or
+# the written-bindings workflow (`write_bindings_to_file` + `deps/build.jl`)
+# must fail CI here rather than be found by a reader.
+#
+# One job per package (the matrix), Ubuntu only: the platform matrix lives in
+# CI.yml, and an example package exercises the front doors, not the platform.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: examples-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  example:
+    name: Example - ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Directory names under examples/ that are Julia packages (a
+        # Project.toml with `name`). Add a new example package here.
+        package:
+          - MyExample.jl
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+          arch: x64
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: julia-actions/cache@v2
+      - name: Develop this checkout's RustCall into the example and run its tests
+        # `Pkg.develop(path=".")` makes the example use the RustCall of this
+        # checkout (its compat allows it) and builds RustCall's helper library;
+        # `Pkg.build()` runs the example's own deps/build.jl when it has one
+        # (the written-bindings workflow); `Pkg.test()` is the check.
+        run: >
+          julia --color=yes --project=examples/${{ matrix.package }} -e '
+            using Pkg
+            Pkg.develop(path = ".")
+            Pkg.build()
+            Pkg.test()
+          '
