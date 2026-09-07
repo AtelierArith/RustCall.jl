@@ -808,6 +808,36 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "the cfg probe runs under the plan's interpreter (#307 review)" begin
+        # The wrapper build pins `PYO3_PYTHON` to the plan's interpreter and
+        # `pyo3-build-config` derives `Py_3_x` cfgs from it; a probe that
+        # inherited the environment asked whatever Python pyo3 finds on its
+        # own — the system one while the plan had chosen CondaPkg's.
+        python = joinpath(@__DIR__, "conda-env", "bin", "python")
+        pinned = withenv("PYO3_PYTHON" => nothing) do
+            RustCall._wrapper_probe_env(@__DIR__, true, python)
+        end
+        @test pinned["PYO3_PYTHON"] == python
+        @test pinned["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"
+        @test pinned["CARGO_TARGET_DIR"] ==
+              joinpath(@__DIR__, "target", "rustcall-pyo3-probe", "target")
+        # No interpreter to pin (a `:python_free` build, or none found): the
+        # environment is left as it is, so pyo3's own lookup still applies.
+        unpinned = withenv("PYO3_PYTHON" => nothing) do
+            RustCall._wrapper_probe_env(@__DIR__, false, "")
+        end
+        @test !haskey(unpinned, "PYO3_PYTHON")
+        @test unpinned["CARGO_PROFILE_DEV_PANIC"] == "unwind"
+        # ... and the pinned interpreter is a memo input, since it need not be
+        # in `ENV` for `_pyo3_env_key` to see.
+        crate = joinpath(@__DIR__, "..", "examples", "sample_crate_pyo3_optional")
+        plain = RustCall._wrapper_probe_memo_key(crate, String[], true, true)
+        @test RustCall._wrapper_probe_memo_key(crate, String[], true, true; interpreter = python) !=
+              plain
+        @test RustCall._wrapper_probe_memo_key(crate, String[], true, true; interpreter = "") ==
+              plain
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`

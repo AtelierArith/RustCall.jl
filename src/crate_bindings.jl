@@ -1518,7 +1518,9 @@ function generate_bindings(crate_path::String;
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
 
     # A crate that carries only PyO3 attributes gets a generated wrapper crate
-    # (#275 Phase 2); everything else takes the pre-#275 path unchanged.
+    # (#275 Phase 2); everything else takes the pre-#275 path — under the
+    # configuration this build compiles with (`_plain_scan_info`).
+    plain = true
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release)
@@ -1535,6 +1537,7 @@ function generate_bindings(crate_path::String;
             # (#307 review).
             @info "No PyO3 item is exposed by this build; binding the crate as before"
             info = _resolved_plain_info(crate_path, info, plan)
+            plain = false
         else
             @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
                   "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
@@ -1545,6 +1548,7 @@ function generate_bindings(crate_path::String;
                                      preload = wrapper.plan.runtime_libraries)
         end
     end
+    plain && (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
 
     # Check cache. The feature set is part of the identity on this path too:
     # a build the caller asked for with `features` / `default_features` is
@@ -1614,6 +1618,37 @@ function generate_bindings(crate_path::String;
                              lib_name=crate_library_name(info; release = build_release,
                                                          features = features,
                                                          default_features = default_features))
+end
+
+"""
+    _plain_scan_info(crate_path, info, features, default_features, release) -> CrateInfo
+
+The scan the plain (`#[julia]`) path emits bindings from: `info` rescanned under
+the configuration the crate is **built** with — `rustc --print cfg` of the crate
+as its own Cargo root, under the requested profile and feature flags
+(`_crate_build_cfg_text`) — so every `#[cfg]` is decided the way the build
+decides it.
+
+The lenient scan lists every feature variant of an item; the build has exactly
+one of them. Emitting the lenient list produced a module that named symbols the
+library does not export (a `#[cfg(feature = "x")] #[julia] fn` with `x` off),
+or the wrong one of two mutually exclusive signatures, and the mismatch
+surfaced as a `dlsym` failure on the first call. Hot reload has always
+rescanned this way after a rebuild (`_scan_crate_signatures`); the first load now
+does too, and the feature set a caller asks for (`features`,
+`default_features`) is what the probe runs under, as it is what the build
+runs under (#307 review; #277 Phase B).
+
+`info` is returned unchanged when Cargo will not answer (no cargo, an
+unresolvable crate); the build then fails on its own terms.
+"""
+function _plain_scan_info(crate_path::AbstractString, info::CrateInfo,
+                          features::Vector{String}, default_features::Bool, release::Bool)
+    cfg_text = _crate_build_cfg_text(String(crate_path);
+                                     profile = release ? "release" : "debug",
+                                     features = _cargo_feature_args(features, default_features))
+    isempty(cfg_text) && return info
+    return scan_crate(String(crate_path); cfg = :cargo, cfg_text = cfg_text)
 end
 
 """
@@ -2119,6 +2154,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     lib_name = nothing
     wrapper_lib_path = ""
     preload = String[]
+    plain = true
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release)
@@ -2136,7 +2172,10 @@ function write_bindings_to_file(crate_path::String, output_path::String;
             wrapper_lib_path = wrapper.lib_path
             preload = wrapper.plan.runtime_libraries
         end
+        plain = false
     end
+    # The plain path scans under the configuration it builds (#307 review).
+    plain && (info = _plain_scan_info(crate_path, info, features, default_features, build_release))
 
     # Build the crate. On the plain path the feature set travels with the
     # build and with the registry name, as it does for a wrapper build.

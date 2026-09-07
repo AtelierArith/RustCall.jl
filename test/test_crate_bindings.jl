@@ -633,6 +633,57 @@ end
         @test !occursin("Libdl.dlopen", code_preload)
     end
 
+    @testset "the plain path scans under the build's configuration (#307 review)" begin
+        # A `#[cfg(feature = "x")] #[julia] fn` is in the lenient scan whether
+        # or not `x` is on; the build has it only when `x` is on. The bindings
+        # are emitted from a scan under the same cfg the build compiles with —
+        # the requested feature set included — so the module never names a
+        # symbol the library does not export.
+        if !RustCall.check_rustc_available()
+            @test_skip "cargo is required to probe a crate's configuration"
+        else
+            mktempdir() do dir
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "Cargo.toml"), """
+                    [package]
+                    name = "gated"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [features]
+                    default = []
+                    extra = []
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [workspace]
+                    """)
+                write(joinpath(dir, "src", "lib.rs"), """
+                    #[julia]
+                    pub fn base() -> i32 { 0 }
+
+                    #[cfg(feature = "extra")]
+                    #[julia]
+                    pub fn extra() -> i32 { 1 }
+                    """)
+                lenient = RustCall.scan_crate(dir)
+                names(info) = sort([f.name for f in info.julia_functions])
+                @test names(lenient) == ["base", "extra"]
+                # Default build: `extra` is off, and the scan says so.
+                default = RustCall._plain_scan_info(dir, lenient, String[], true, true)
+                @test names(default) == ["base"]
+                # The requested build: `extra` is on, and the scan says so.
+                with_extra = RustCall._plain_scan_info(dir, lenient, ["extra"], true, true)
+                @test names(with_extra) == ["base", "extra"]
+                # `--no-default-features` alone changes nothing here, and the
+                # debug profile is probed as debug.
+                @test names(RustCall._plain_scan_info(dir, lenient, String[], false, false)) ==
+                      ["base"]
+            end
+        end
+    end
+
     @testset "_emit_function_code" begin
         # Create a simple function signature
         func = RustCall.RustFunctionSignature(

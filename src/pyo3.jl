@@ -339,8 +339,18 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
     resolved = _cargo_resolved_features(crate_path, flags)
     resolved === nothing && return nothing
     crate_features, pyo3_features, pyo3_active = resolved
+    # The interpreter is decided *before* the probe, because the probe runs
+    # under it: the wrapper build pins `PYO3_PYTHON` to the plan's interpreter,
+    # and the crate's `pyo3-build-config` derives `Py_3_x` cfgs from it, so a
+    # probe under another Python describes a build the wrapper never makes
+    # (#307 review). Only a build that links libpython has one to pin.
+    links_python = pyo3_active &&
+                   !("extension-module" in pyo3_features && !extension_module_is_linkable())
+    rpath, interpreter, interpreter_config =
+        links_python ? _python_link_source_or_empty() : ("", "", "")
     cfg_text = _wrapper_probe_cfg_text(crate_path; features = features,
-                                       default_features = default_features, release = release)
+                                       default_features = default_features, release = release,
+                                       interpreter = interpreter)
     # `cargo tree` answered but `cargo rustc -- --print cfg` did not: the plan
     # knows the feature graph and nothing about the configuration the build
     # compiles under, so the scan cannot be run in strict mode. Saying
@@ -374,7 +384,6 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                             cfg_text = cfg_text, resolved = true)
     end
 
-    rpath, interpreter, interpreter_config = _python_link_source_or_empty()
     detail = isempty(rpath) ?
         " — and the interpreter's library directory could not be located (tried " *
         "RUSTCALL_PYTHON_LIBDIR, python3-config --ldflags and sysconfig LIBDIR)" :
@@ -421,14 +430,22 @@ describe a build the wrapper never makes. Then
 `<crate>/target/rustcall-pyo3-probe/target`, so repeated plans do not rebuild
 the dependency graph. Memoized like `_crate_build_cfg_text`, on the same
 inputs; `""` when Cargo will not answer.
+
+`interpreter`, when given, is pinned in `PYO3_PYTHON` for the probe exactly as
+the wrapper build pins it (`_wrapper_probe_env`), so a crate whose build script
+derives `Py_3_x` cfgs through `pyo3-build-config` is probed for the Python the
+wrapper is built against, not the one pyo3 would find on its own; it is part of
+the memo key.
 """
 function _wrapper_probe_cfg_text(crate_path::AbstractString;
                                  features::Vector{String} = String[],
-                                 default_features::Bool = true, release::Bool = true)
+                                 default_features::Bool = true, release::Bool = true,
+                                 interpreter::AbstractString = "")
     path = abspath(String(crate_path))
     package = _cargo_package_name(path)
     isempty(package) && return ""
-    key = _wrapper_probe_memo_key(path, features, default_features, release)
+    key = _wrapper_probe_memo_key(path, features, default_features, release;
+                                  interpreter = interpreter)
     probe = () -> begin
         try
             # Under the crate's `target/`, with its lockfile and `[patch]`, so
@@ -445,8 +462,7 @@ function _wrapper_probe_cfg_text(crate_path::AbstractString;
                 # `CARGO_PROFILE_RELEASE_PANIC=abort` must not reach the probe
                 # either — a `#[cfg(panic = "...")]` item would be scanned for
                 # the opposite build (#307 review).
-                env = _cargo_panic_env(crate_wrapper_policy(), Dict{String, String}(ENV), release)
-                env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe", "target")
+                env = _wrapper_probe_env(path, release, interpreter)
                 cmd = `$(cargo()) rustc -q $flag -p $package --lib -- --print cfg`
                 out = read(setenv(cmd, env; dir = dir), String)
                 join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l),
@@ -467,6 +483,21 @@ end
 # Memo of `_wrapper_probe_cfg_text`, keyed like `_CRATE_CFG_TEXT`.
 const _WRAPPER_CFG_TEXT = Dict{String, String}()
 
+# The environment the probe runs under — the one the real wrapper build runs
+# under: the wrapper policy's panic pin (`_cargo_panic_env`), the probe's own
+# build cache, and the plan's interpreter in `PYO3_PYTHON` when the plan has
+# one. The wrapper build pins that interpreter (`_build_pyo3_wrapper_project`),
+# and `pyo3-build-config` turns it into `Py_3_x` cfgs; a probe that inherited
+# the environment instead asked whatever Python `pyo3` would find on its own —
+# the system one, while the plan had chosen CondaPkg's — and scanned the crate
+# for a Python the wrapper is not built against (#307 review).
+function _wrapper_probe_env(path::AbstractString, release::Bool, interpreter::AbstractString)
+    env = _cargo_panic_env(crate_wrapper_policy(), Dict{String, String}(ENV), release)
+    env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe", "target")
+    isempty(interpreter) || (env["PYO3_PYTHON"] = String(interpreter))
+    return env
+end
+
 # The memo key of one probe: everything that decides its answer. On top of
 # `_crate_cfg_inputs_digest` (the crate's manifest, `build.rs` and Cargo
 # config), the inputs the probe takes from the crate's Cargo root — its
@@ -476,12 +507,15 @@ const _WRAPPER_CFG_TEXT = Dict{String, String}()
 # review). When the crate is its own root these are its own files. pyo3's own
 # configuration (`_pyo3_env_key`) is an input too: `pyo3-build-config` turns
 # `PYO3_PYTHON` or a `PYO3_CONFIG_FILE` into `Py_3_x` cfgs, so a changed
-# Python is a new probe as it is a new artifact.
+# Python is a new probe as it is a new artifact — including the one the plan
+# pins for the probe itself (`interpreter`), which need not be in `ENV`.
 function _wrapper_probe_memo_key(path::AbstractString, features::Vector{String},
-                                 default_features::Bool, release::Bool)
+                                 default_features::Bool, release::Bool;
+                                 interpreter::AbstractString = "")
     root = _cargo_root_dir(path)
     return join(["wrapper-root", String(path), string(release), join(features, ","),
                  string(default_features), _cargo_cfg_env_key(), _pyo3_env_key(),
+                 "pyo3-python=" * String(interpreter),
                  _crate_cfg_inputs_digest(path),
                  _file_content_digest(joinpath(root, "Cargo.toml")),
                  _file_content_digest(joinpath(root, "Cargo.lock"))], "\n")

@@ -99,7 +99,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rlib` (a `["cdylib"]`-only PyO3 extension) is refused before the build with
   the one-line fix, instead of failing inside the generated wrapper; a package
   a workspace lists in `members` stays a member even under an `exclude`d
-  directory, as Cargo has it; and
+  directory, as Cargo has it; the plain `#[julia]` path scans the crate under
+  the configuration it builds — profile and requested feature set — so a
+  feature-gated item is bound exactly when the library exports it (hot reload
+  already rescanned this way); and the cfg probe runs under the plan's
+  interpreter (`PYO3_PYTHON`), as the wrapper build does; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,
