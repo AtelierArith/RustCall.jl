@@ -990,7 +990,9 @@ end
             @test isfile(built)
             @test realpath(loaded) != realpath(built)
             @test dirname(realpath(loaded)) == dirname(realpath(built))
-            @test occursin(r"\.\d+\.[A-Za-z]+$", basename(loaded))
+            # `<lib>.<pid>.<generation>.<ext>`: the process id keeps two
+            # processes that load the same crate from choosing one copy name.
+            @test occursin(Regex("\\.$(getpid())\\.\\d+\\.[A-Za-z]+\$"), basename(loaded))
             backup = joinpath(output_dir, basename(built))
             cp(built, backup; force = true)
             @test (rm(built); !isfile(built))

@@ -227,6 +227,23 @@ end
         @test fresh.generation == 0
         @test RustCall.next_reload_generation() > b
         @test occursin("loadable_library_copy", _src_loadpolicy())
+        # The copy name carries the process id: the counter is per process,
+        # so two processes loading one built library would otherwise both pick
+        # `.1.`, and on Windows the second could not overwrite the first's
+        # mapped copy and would fall back to mapping Cargo's output (#309).
+        @test basename(RustCall.process_generation_path(joinpath("a", "foo.dll"), 7)) ==
+              "foo.$(getpid()).7.dll"
+        mktempdir() do dir
+            built = joinpath(dir, "libfoo.so")
+            write(built, "not a library")
+            expected = RustCall.RELOAD_GENERATION[] + 1
+            copied = RustCall.loadable_library_copy(built)
+            @test copied == joinpath(dir, "libfoo.$(getpid()).$(expected).so")
+            @test isfile(copied) && isfile(built)
+            @test read(copied) == read(built)
+        end
+        @test occursin("process_generation_path(built, next_reload_generation())",
+                       _src_loadpolicy())
         # The previous image is RETIRED after the swap, never closed under a
         # call that may still be inside it (#277).
         @test !occursin("on_replace = :dlclose", _HRT_SRC)

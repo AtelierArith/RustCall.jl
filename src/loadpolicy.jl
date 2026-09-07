@@ -1382,12 +1382,34 @@ next_reload_generation() = Threads.atomic_add!(RELOAD_GENERATION, 1) + 1
 
 Living beside the original rather than in a temporary directory matters on
 Windows: a DLL resolves its dependencies relative to its own location.
+
+`generation` is an integer or a ready-made tag such as `"<pid>.<n>"`
+(`process_generation_path`).
 """
-function generation_path(lib_path::AbstractString, generation::Integer)
+function generation_path(lib_path::AbstractString,
+                         generation::Union{Integer, AbstractString})
     dir = dirname(lib_path)
     stem, ext = splitext(basename(lib_path))
     return joinpath(dir, "$(stem).$(generation)$(ext)")
 end
+
+"""
+    process_generation_path(lib_path, generation) -> String
+
+`libfoo.dylib` → `libfoo.<pid>.<generation>.dylib`: the copy name
+`loadable_library_copy` uses.
+
+`RELOAD_GENERATION` is per process, so two Julia processes that load the same
+built library — two workers of a test run, two sessions using one crate — would
+both pick `libfoo.1.dylib`. On Windows the second cannot overwrite the copy the
+first has mapped, and a copy that fails would fall back to mapping Cargo's
+output in place, which is the very failure the copy exists to prevent (#309).
+With the process id in the name, the copies of two live processes never share
+a path; a leftover of a dead process with a reused id is not mapped by anyone
+and can be overwritten.
+"""
+process_generation_path(lib_path::AbstractString, generation::Integer) =
+    generation_path(lib_path, "$(getpid()).$(generation)")
 
 """
     loadable_library_copy(built_path) -> String
@@ -1403,8 +1425,9 @@ already mapped hands back the **old** image, so a rebuild silently has no
 effect while objects allocated by the old library start being freed by code
 from the new one.
 
-Copying to `<lib>.<generation>.<ext>` and opening that leaves Cargo's output
-untouched, and makes every load a genuinely distinct file (#255, #277).
+Copying to `<lib>.<pid>.<generation>.<ext>` and opening that leaves Cargo's
+output untouched, and makes every load a genuinely distinct file — across
+processes too, since the counter alone is per process (#255, #277, #309).
 
 Returns the original path when the copy cannot be made, so a platform or a
 filesystem that will not take one degrades to the previous behaviour rather
@@ -1413,7 +1436,7 @@ than failing the load.
 function loadable_library_copy(built_path::AbstractString)
     built = String(built_path)
     isfile(built) || return built
-    copy_path = generation_path(built, next_reload_generation())
+    copy_path = process_generation_path(built, next_reload_generation())
     try
         cp(built, copy_path; force = true)
         return copy_path
