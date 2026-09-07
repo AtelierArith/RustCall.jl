@@ -231,6 +231,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `__init__` warning explains that `rustc` is resolved through RustToolChain.jl
   (a `PATH` binary first, then the Artifacts toolchain) and how to diagnose a
   failure.
+- **A module written by `write_bindings_to_file` no longer maps Cargo's output
+  in place** ([#309](https://github.com/AtelierArith/RustCall.jl/issues/309)).
+  Its `__init__` opens a private generation copy
+  (`RustCall.loadable_library_copy`), as the in-memory `@rust_crate` path has
+  since #289, so the next `cargo build` of the crate — hot reload, another
+  binding path, a regeneration of the file — can overwrite the library, which
+  Windows refuses for a mapped DLL ("Access is denied"; the order-dependent
+  Windows CI failure in `test_hot_reload.jl`). The bindings format marker is
+  `6`; regenerate written files after upgrading.
 - **`test_cargo.jl`'s Cargo-cache assertions no longer race the parallel runner**
   ([#306](https://github.com/AtelierArith/RustCall.jl/issues/306)). The Cargo
   cache is a depot-level directory shared by every worker, and two testsets

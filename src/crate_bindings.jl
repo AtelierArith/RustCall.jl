@@ -1838,12 +1838,18 @@ older RustCall produced.
   exist in an older RustCall. The same import carries the release of an owned
   `String` payload, so a file emitted here must not be loaded against a
   RustCall that would leak it.
+- `6` (#309): `__init__` opens a private generation copy of the library
+  (`RustCall.loadable_library_copy`, #289) rather than mapping `_LIB_PATH` —
+  Cargo's output, or the copy `write_bindings_to_file` made — in place. A
+  mapped image cannot be overwritten on Windows, so a module emitted before
+  this made the crate unbuildable (and the file unregenerable) for the rest
+  of the session. The name does not exist in a RustCall older than #289.
 
 A file emitted by an older version still *works* — it only uses public API that
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 5
+const BINDINGS_FORMAT_VERSION = 6
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
@@ -2473,7 +2479,13 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    # after `load_artifact!` would overwrite a newer generation that a")
     push!(lines, "    # concurrent reload had already published.")
     push!(lines, "    RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)")
-    push!(lines, "    RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;")
+    push!(lines, "    # A private generation copy, never `_LIB_PATH` itself: that file is")
+    push!(lines, "    # Cargo's output (or the copy `write_bindings_to_file` made of it), and")
+    push!(lines, "    # an image mapped in place cannot be overwritten on Windows -- the next")
+    push!(lines, "    # `cargo build` of the crate, and the next regeneration, would fail")
+    push!(lines, "    # (#309). The in-memory `@rust_crate` path does the same.")
+    push!(lines, "    RustCall.load_artifact!(RustCall.crate_direct_policy(),")
+    push!(lines, "                            RustCall.loadable_library_copy(_LIB_PATH);")
     if isempty(preload)
         push!(lines, "                            lib_name = _LIB_NAME)")
     else

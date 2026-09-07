@@ -3,6 +3,7 @@
 using Test
 using RustCall
 using RustToolChain: cargo
+using Libdl
 
 # Path to the sample crate
 const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
@@ -593,6 +594,11 @@ end
         @test occursin("RustCall.load_artifact!", code)
         @test !occursin("Libdl.dlopen", code)
         @test occursin("const _LIB_NAME = ", code)
+        # ... and it opens a private generation copy, never `_LIB_PATH` itself:
+        # that file is Cargo's output (or a copy of it), and a mapped image
+        # cannot be overwritten on Windows (#309).
+        @test occursin("RustCall.loadable_library_copy(_LIB_PATH)", code)
+        @test !occursin("crate_direct_policy(), _LIB_PATH", code)
         # The module's state is ONE immutable record — handle, liveness flag
         # and generation published together — read once per call. Two `Ref`s
         # written under two different locks were not a snapshot (#277).
@@ -968,6 +974,35 @@ end
             @test occursin("# Auto-generated bindings", content)
             @test occursin("function __init__()", content)
             @test occursin("export", content)
+
+            # Loading the written module leaves Cargo's output untouched: the
+            # image it maps is a private generation copy, so the next
+            # `cargo build` of the crate — hot reload, another binding path —
+            # can still overwrite the file, which Windows refuses for a mapped
+            # DLL (#309). Deleting and restoring the file is the same check
+            # Cargo's own rewrite makes.
+            sandbox = Module(:WrittenSandbox)
+            Base.include(sandbox, output_path)
+            mod = Base.invokelatest(getfield, sandbox, :TestBindings)
+            built = Base.invokelatest(getfield, mod, :_LIB_PATH)
+            gen = Base.invokelatest(getindex, Base.invokelatest(getfield, mod, :_LIB_GEN))
+            loaded = Libdl.dlpath(gen.handle)
+            @test isfile(built)
+            @test realpath(loaded) != realpath(built)
+            @test dirname(realpath(loaded)) == dirname(realpath(built))
+            @test occursin(r"\.\d+\.[A-Za-z]+$", basename(loaded))
+            backup = joinpath(output_dir, basename(built))
+            cp(built, backup; force = true)
+            @test (rm(built); !isfile(built))
+            cp(backup, built; force = true)
+            @test isfile(built)
+            # The module still works through its copy after the file went away
+            # and came back.
+            @test Base.invokelatest(Base.invokelatest(getfield, mod, :add), 2, 3) == 5
+            try
+                RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
+            catch
+            end
         finally
             rm(output_dir, recursive=true, force=true)
         end
