@@ -18,11 +18,11 @@ print("Testing sample_crate_pyo3 from Python")
 print("=" * 60)
 
 # ============================================================================
-# Test basic functions (#[julia_pyo3] generates #[pyfunction])
+# Test basic functions (#[pyfunction] next to #[julia])
 # ============================================================================
 
 print("\n" + "=" * 60)
-print("Testing basic functions (#[julia_pyo3] bindings)")
+print("Testing basic functions (#[pyfunction] bindings)")
 print("=" * 60)
 
 # Test add function
@@ -39,14 +39,19 @@ fib20 = m.fibonacci(20)
 print(f"fibonacci(20) = {fib20}")
 assert fib20 == 6765
 
+# A String signature: PyO3 sees `fn shout(String) -> String` as written.
+shouted = m.shout("hello")
+print(f'shout("hello") = {shouted}')
+assert shouted == "HELLO"
+
 print("\n✅ Basic functions work!\n")
 
 # ============================================================================
-# Test Point class (#[julia_pyo3] bindings)
+# Test Point class (#[pyclass] + #[pymethods] next to #[julia])
 # ============================================================================
 
 print("=" * 60)
-print("Testing Point class (#[julia_pyo3] bindings)")
+print("Testing Point class (#[pyclass] bindings)")
 print("=" * 60)
 
 # Create a Point using the constructor
@@ -96,11 +101,12 @@ print("=" * 60)
 print("All tests passed! 🎉")
 print("=" * 60)
 print("""
-Summary of available Python bindings (all from #[julia_pyo3]):
+Summary of available Python bindings (PyO3's own attributes, next to #[julia]):
 
   Functions:
     - add(a: int, b: int) -> int
     - fibonacci(n: int) -> int
+    - shout(s: str) -> str
 
   Point class:
     - Point(x: float, y: float)

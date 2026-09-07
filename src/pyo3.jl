@@ -1791,7 +1791,10 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             plan.resolved ? "" : " (Cargo could not resolve it; every #[cfg] item is reported)")
     println(io, "  RustCall items (wrapped today): $(length(julia_items))")
     for item in julia_items
-        println(io, "    $(_pyo3_item_label(item))")
+        # `#[julia_pyo3]` still works and is still reported, but it is
+        # deprecated (#275 Phase 3): say so next to each item it produced.
+        note = item.attribute === :julia_pyo3 ? "  [#[julia_pyo3] is deprecated; see docs/src/pyo3.md]" : ""
+        println(io, "    $(_pyo3_item_label(item))$(note)")
     end
     println(io, "  PyO3 items the scan can name: $(length(wrappable))")
     for item in wrappable

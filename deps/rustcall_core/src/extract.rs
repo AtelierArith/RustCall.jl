@@ -333,9 +333,10 @@ fn extract_crate_items(items: &[Item], manifest: &mut Manifest) {
                 match attribute {
                     Attribute::Julia => manifest.functions.push(function_entry(f, attribute, true)),
                     // `#[julia_pyo3]` exports the signature as written: no
-                    // Result/Option wrapping and no string conversion (the
-                    // attribute is not extended pending #275), so the manifest
-                    // must not advertise the `(ptr, len)` string ABI either.
+                    // Result/Option wrapping and no string conversion, so the
+                    // manifest must not advertise the `(ptr, len)` string ABI
+                    // either. The attribute is deprecated (#275 Phase 3) and
+                    // its lowering frozen until it is removed.
                     Attribute::JuliaPyo3 => {
                         let mut entry = function_entry(f, attribute, false);
                         entry.exported = !entry.is_generic;
