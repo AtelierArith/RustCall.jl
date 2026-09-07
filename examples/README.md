@@ -186,15 +186,21 @@ A [Pluto](https://plutojl.org/) notebook that compiles a `rust"""..."""` block w
 `// cargo-deps:` dependency (`ndarray`) and calls it. Its first cell activates the
 repository root, so it uses the RustCall of this checkout.
 
+Pluto is not a dependency of RustCall; it lives in the driver environment
+`examples/pluto/Project.toml`. Both recipes below run from the repository root and
+start by instantiating the root checkout (the notebook's environment) and that driver
+environment.
+
 **How to run interactively:**
-```julia
-using Pluto
-Pluto.run(notebook = "examples/pluto/hello.jl")
+```bash
+julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.build("RustCall")'
+julia --project=examples/pluto -e 'using Pkg; Pkg.instantiate()'
+julia --project=examples/pluto -e 'using Pluto; Pluto.run(notebook = "examples/pluto/hello.jl")'
 ```
 
 **How it is tested:** the `Pluto - hello.jl` job of `.github/workflows/Examples.yml`
 runs the notebook headlessly with `examples/pluto/run_notebook.jl` and fails when any
-cell errors. The same check locally, from the repository root:
+cell errors. The same check locally:
 ```bash
 julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.build("RustCall")'
 julia --project=examples/pluto -e 'using Pkg; Pkg.instantiate()'
