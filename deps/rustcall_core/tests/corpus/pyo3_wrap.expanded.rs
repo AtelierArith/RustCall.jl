@@ -5,7 +5,7 @@
 //! `.wrap.toml` is the manifest that describes it — `exported = true` and a
 //! filled-in `return_abi` for what was emitted, a `skip_reason` for what was
 //! not. Nothing here is compiled: `test/test_pyo3_wrapper.jl` builds a real
-//! wrapper crate against `examples/sample_crate_pyo3_only`.
+//! wrapper crate against `test/fixtures/sample_crate_pyo3_only`.
 use pyo3::prelude::*;
 /// Scalars: passed through as written.
 #[pyfunction]

@@ -543,8 +543,8 @@ _manifest(text::AbstractString) = TOML.parse(text)
     # ------------------------------------------------------------------
     # The resolved path. Needs cargo and a resolvable crate.
     # ------------------------------------------------------------------
-    mandatory_crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
-    optional_crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3")
+    mandatory_crate = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_only")
+    optional_crate = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3")
     probe = try
         RustCall.pyo3_link_plan(mandatory_crate)
     catch
@@ -582,7 +582,7 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
 
         @testset "resolved: the feature set is the caller's choice" begin
-            # `examples/sample_crate_pyo3` has
+            # `test/fixtures/sample_crate_pyo3` has
             # `pyo3 = { optional = true, features = ["extension-module"] }` behind
             # `python = [...]` with `default = []`. Different feature sets are
             # genuinely different builds, and the plan answers for the one asked
@@ -830,7 +830,7 @@ _manifest(text::AbstractString) = TOML.parse(text)
         @test unpinned["CARGO_PROFILE_DEV_PANIC"] == "unwind"
         # ... and the pinned interpreter is a memo input, since it need not be
         # in `ENV` for `_pyo3_env_key` to see.
-        crate = joinpath(@__DIR__, "..", "examples", "sample_crate_pyo3_optional")
+        crate = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_optional")
         plain = RustCall._wrapper_probe_memo_key(crate, String[], true, true)
         @test RustCall._wrapper_probe_memo_key(crate, String[], true, true; interpreter = python) !=
               plain

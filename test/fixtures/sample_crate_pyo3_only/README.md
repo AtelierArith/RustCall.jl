@@ -1,4 +1,6 @@
-# sample_crate_pyo3_only
+# sample_crate_pyo3_only (test fixture)
+
+A test fixture of RustCall.jl, used by `test/test_manifest.jl`, `test/test_pyo3_link_plan.jl` and `test/test_pyo3_wrapper.jl`; it is not an example to copy. The runnable examples are the packages under `examples/`.
 
 A crate written for [PyO3](https://pyo3.rs) and nothing else: it carries no
 RustCall attribute anywhere. RustCall scans it, generates a wrapper crate that
@@ -7,7 +9,7 @@ depends on it, builds that, and binds the result
 
 ```julia
 using RustCall
-Sample = @rust_crate "examples/sample_crate_pyo3_only"
+Sample = @rust_crate "test/fixtures/sample_crate_pyo3_only"
 
 Sample.add(Int32(2), Int32(3))     # 5
 Sample.shout("hello")              # "HELLO!"
@@ -22,7 +24,7 @@ Sample.label(p)                    # a String method
 Sample.scaled(p, 2.0)              # a PyResult method
 ```
 
-`RustCall.scan_report("examples/sample_crate_pyo3_only")` lists what the
+`RustCall.scan_report("test/fixtures/sample_crate_pyo3_only")` lists what the
 wrapper exports and what it cannot, with a reason:
 
 * `private_add` — not `pub`, so a wrapper crate cannot name it (rustc `E0603`);
@@ -35,7 +37,7 @@ optional would need `#[cfg_attr(feature = "python", …)]`, and that does not wo
 for pyo3's inner attributes (`new`, `staticmethod`, `getter`, `setter`,
 `pyo3(get, set)`). So the link plan for this crate is `:link_libpython`: the
 wrapper cdylib links libpython and needs the interpreter's library directory at
-build and load time. `examples/sample_crate_pyo3_optional` is the
+build and load time. `test/fixtures/sample_crate_pyo3_optional` is the
 `:python_free` counterpart. See [the PyO3 page](../../docs/src/pyo3.md) for the
 three modes.
 

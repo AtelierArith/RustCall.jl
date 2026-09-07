@@ -1,4 +1,6 @@
-# sample_crate_pyo3_optional
+# sample_crate_pyo3_optional (test fixture)
+
+A test fixture of RustCall.jl, used by `test/test_manifest.jl`, `test/test_pyo3_link_plan.jl` and `test/test_pyo3_wrapper.jl`; it is not an example to copy. The runnable examples are the packages under `examples/`.
 
 A [PyO3](https://pyo3.rs) crate whose **pyo3 dependency is optional**. RustCall
 wraps it with Python entirely out of the picture — the generated wrapper cdylib
@@ -7,7 +9,7 @@ fixture CI exercises on every platform.
 
 ```julia
 using RustCall
-Sample = @rust_crate "examples/sample_crate_pyo3_optional"
+Sample = @rust_crate "test/fixtures/sample_crate_pyo3_optional"
 
 Sample.add(Int32(2), Int32(3))   # 5
 Sample.shout("hello")            # "HELLO!"
@@ -41,7 +43,7 @@ pyo3's *inner* attributes — `new`, `staticmethod`, `getter`, `setter`,
 scope`. A crate with an optional pyo3 dependency can therefore expose free
 functions to Python behind a feature, but not a `#[pyclass]` with methods.
 
-`examples/sample_crate_pyo3_only` is the other shape — pyo3 mandatory,
+`test/fixtures/sample_crate_pyo3_only` is the other shape — pyo3 mandatory,
 `:link_libpython`, with a full `#[pyclass]` — and is where the class,
 accessor, `PyResult` and destructor coverage lives. See
 [the PyO3 page](../../docs/src/pyo3.md) for both.

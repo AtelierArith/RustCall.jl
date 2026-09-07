@@ -1,4 +1,6 @@
-# sample_crate_pyo3_mixed
+# sample_crate_pyo3_mixed (test fixture)
+
+A test fixture of RustCall.jl, used by `test/test_manifest.jl`, `test/test_pyo3_link_plan.jl` and `test/test_pyo3_wrapper.jl`; it is not an example to copy. The runnable examples are the packages under `examples/`.
 
 A crate that carries **both** kinds of marker: RustCall's own `#[julia]` and
 PyO3's `#[pyfunction]` / `#[pyclass]`. It exists so the two are proved to
@@ -7,7 +9,7 @@ Phase 2).
 
 ```julia
 using RustCall
-Mixed = @rust_crate "examples/sample_crate_pyo3_mixed"
+Mixed = @rust_crate "test/fixtures/sample_crate_pyo3_mixed"
 
 Mixed.julia_double(Int32(21))          # 42   -- #[julia]
 Mixed.julia_shout("hey")               # HEY! -- #[julia], string ABI

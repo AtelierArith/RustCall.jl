@@ -13,7 +13,7 @@ using Test
 using RustCall
 using RustToolChain: cargo
 
-const SM_SAMPLE_CRATE = joinpath(dirname(@__DIR__), "examples", "sample_crate")
+const SM_SAMPLE_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
 
 const _SM_HAVE_CARGO = try
     success(run(pipeline(`$(cargo()) --version`, devnull, devnull); wait = true))

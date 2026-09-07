@@ -286,10 +286,9 @@ end
             @test_skip "cargo is required for the @rust_crate conformance test"
         else
             @testset "@rust_crate reaches the same boundary" begin
-                crate = joinpath(dirname(dirname(pathof(RustCall))),
-                                 "examples", "sample_crate")
+                crate = joinpath(@__DIR__, "fixtures", "sample_crate")
                 if !isdir(crate)
-                    @test_skip "examples/sample_crate not found"
+                    @test_skip "test/fixtures/sample_crate not found"
                 else
                     bindings = @rust_crate crate name="ConformanceCrate"
 
@@ -376,10 +375,9 @@ end
             # resolution happens before the Rust call.
             # --------------------------------------------------------------
             @testset "concurrent first calls into a fresh crate module" begin
-                crate = joinpath(dirname(dirname(pathof(RustCall))),
-                                 "examples", "sample_crate")
+                crate = joinpath(@__DIR__, "fixtures", "sample_crate")
                 if !isdir(crate)
-                    @test_skip "examples/sample_crate not found"
+                    @test_skip "test/fixtures/sample_crate not found"
                 elseif Threads.nthreads() < 2
                     @test_skip "needs ≥2 threads; the CI matrix has a " *
                                "multithreaded Julia entry"

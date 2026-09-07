@@ -25,7 +25,7 @@ using TOML
     _lf(x) = x
 
     @testset "schema 5: PyO3 scan of a crate with no RustCall attribute (#275)" begin
-        crate = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3_only")
+        crate = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_only")
         @test isdir(crate)
         info = RustCall.scan_crate(crate)
 

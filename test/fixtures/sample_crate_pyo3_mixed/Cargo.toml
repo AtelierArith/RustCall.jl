@@ -20,5 +20,5 @@ name = "mixed_pyo3_sample"
 crate-type = ["rlib"]
 
 [dependencies]
-juliacall_macros = { path = "../../deps/juliacall_macros" }
+juliacall_macros = { path = "../../../deps/juliacall_macros" }
 pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
