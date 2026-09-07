@@ -201,6 +201,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RustCall._result_payload`, which older RustCall versions do not define.
   Regenerate after upgrading.
 
+- **The API reference is one page per group of source files**
+  ([#288](https://github.com/AtelierArith/RustCall.jl/issues/288)).
+  `docs/src/api.md` rendered every docstring in the package on one page, which
+  hit Documenter's `size_threshold` twice and left 58 docstrings out of the
+  manual altogether. It is now an index over `docs/src/reference/` — artifact
+  identity and caching, the FFI type contract, compilation and codegen, the FFI
+  manifest, Cargo projects and dependencies, external crates and hot reload,
+  PyO3 crates, types/memory/ownership, generics and `#[julia]` functions,
+  errors and load policy, and the deprecated LLVM path — each an
+  `@autodocs` block per source file with an explicit `Pages` filter, so every
+  `src/*.jl` is rendered on exactly one page and no docstring is left out.
+  `size_threshold` is back near Documenter's default. Deep links into `api.md`
+  itself still resolve; links to individual docstrings now point at the
+  reference page of the defining file.
+
 ### Fixed
 - **`test_cargo.jl`'s Cargo-cache assertions no longer race the parallel runner**
   ([#306](https://github.com/AtelierArith/RustCall.jl/issues/306)). The Cargo
