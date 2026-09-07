@@ -42,9 +42,10 @@ use crate::extract::fn_args;
 use crate::manifest::{
     skip_reason, Attribute, Field, Function, Manifest, Method, ReturnKind, Struct,
 };
+use crate::paths::{imports_of_use, locate, ImplHeader, Located, ScannedImport};
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
-    has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type, last_ident,
+    has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type,
     return_type_to_string, type_to_string, unparen,
 };
 
@@ -115,13 +116,11 @@ struct ScannedClass {
 
 #[derive(Debug)]
 struct ScannedImpl {
-    module_path: Vec<String>,
-    /// The module qualifier written in front of the type: `impl a::C` gives a
-    /// relative `["a"]`, a bare `impl C` gives an empty one. It names the class
-    /// exactly when several modules define one of that name, so it is kept
-    /// rather than collapsed to the final identifier.
-    qualifier: PathQualifier,
-    target: syn::Ident,
+    /// The type the block is for, the qualifier written in front of it
+    /// (`impl a::C` names the class exactly when several modules define a
+    /// `C`) and the module the block sits in — what the shared resolver in
+    /// `crate::paths` matches on.
+    header: ImplHeader,
     line: usize,
     funcs: Vec<ImplItemFn>,
     /// The `#[cfg]` of the block itself and of every module enclosing it: a
@@ -130,138 +129,13 @@ struct ScannedImpl {
     cfg: Vec<syn::Attribute>,
 }
 
-/// Where a written path is rooted, which decides what a qualifier may match.
-///
-/// `crate::a::C` and `a::C` are **not** the same class when the enclosing
-/// module `m` also has an `a`: the first is `a::C` at the crate root, the
-/// second is `m::a::C` (2018 paths) or, through a `use`, whatever brought `a`
-/// into scope. Collapsing the two attached a `#[pymethods]` block to the wrong
-/// class, which Phase 2 then compiled into a call to the wrong type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PathAnchor {
-    /// `crate::…` — the crate root, and nothing else.
-    Crate,
-    /// `self::…` — the module the path was written in, and nothing else.
-    SelfModule,
-    /// A bare path: the enclosing module first, then the crate root.
-    Relative,
-    /// `super::…` (repeated `n` times): the module `n` levels above the one
-    /// the path was written in, and nothing else. Treating it as
-    /// uninformative sent `impl super::C` to a same-named `C` in the impl's
-    /// own module (#307 review).
-    Super(usize),
-    /// A path this matcher cannot follow: `super` after another segment,
-    /// which Rust itself rejects. Nothing is matched on the qualifier at all.
-    Unknown,
-}
-
-/// A path qualifier: where it is rooted and the module segments it names,
-/// without the type's own name (`a::b::C` -> `["a", "b"]`).
-#[derive(Debug, Clone)]
-struct PathQualifier {
-    anchor: PathAnchor,
-    segments: Vec<String>,
-}
-
-impl PathQualifier {
-    fn relative(segments: Vec<String>) -> Self {
-        PathQualifier {
-            anchor: PathAnchor::Relative,
-            segments,
-        }
+impl Located for ScannedClass {
+    fn name(&self) -> &str {
+        &self.entry.name
     }
 
-    /// Whether the qualifier says nothing (a bare `impl C`, or a path this
-    /// matcher cannot follow).
-    fn is_uninformative(&self) -> bool {
-        self.anchor == PathAnchor::Unknown
-            || (self.anchor == PathAnchor::Relative && self.segments.is_empty())
-    }
-
-    /// Whether the qualifier names one place and one place only, so that when
-    /// no class is found there the block must be dropped rather than matched
-    /// by its bare name: `super::C` is never the impl's own module's `C`.
-    fn forbids_fallback(&self) -> bool {
-        matches!(self.anchor, PathAnchor::Super(_))
-    }
-
-    /// The module paths this qualifier can name, from inside `module_path`,
-    /// nearest first. A `super::` that walks past the crate root names
-    /// nothing.
-    fn candidates(&self, module_path: &[String]) -> Vec<Vec<String>> {
-        let mut nested = module_path.to_vec();
-        nested.extend(self.segments.iter().cloned());
-        match self.anchor {
-            PathAnchor::Unknown => Vec::new(),
-            PathAnchor::Crate => vec![self.segments.clone()],
-            PathAnchor::SelfModule => vec![nested],
-            PathAnchor::Relative => vec![nested, self.segments.clone()],
-            PathAnchor::Super(levels) => {
-                if levels > module_path.len() {
-                    return Vec::new();
-                }
-                let mut base = module_path[..module_path.len() - levels].to_vec();
-                base.extend(self.segments.iter().cloned());
-                vec![base]
-            }
-        }
-    }
-}
-
-/// The qualifier of a path type, anchor included.
-fn type_path_qualifier(ty: &Type) -> PathQualifier {
-    let Type::Path(p) = unparen(ty) else {
-        return PathQualifier::relative(Vec::new());
-    };
-    path_qualifier(p.path.segments.iter().map(|s| s.ident.to_string()))
-}
-
-/// Split a written path into its anchor and its module segments, dropping the
-/// final segment (the item's own name).
-fn path_qualifier(segments: impl IntoIterator<Item = String>) -> PathQualifier {
-    let all: Vec<String> = segments.into_iter().collect();
-    let mut anchor = PathAnchor::Relative;
-    let mut out = Vec::new();
-    let mut levels = 0usize;
-    let count = all.len();
-    for (i, name) in all.into_iter().enumerate() {
-        if i == 0 {
-            match name.as_str() {
-                "crate" => {
-                    anchor = PathAnchor::Crate;
-                    continue;
-                }
-                "self" => {
-                    anchor = PathAnchor::SelfModule;
-                    continue;
-                }
-                "super" => {
-                    levels = 1;
-                    anchor = PathAnchor::Super(levels);
-                    continue;
-                }
-                _ => {}
-            }
-        } else if name == "super" {
-            // A run of leading `super`s walks up one level each; a `super`
-            // after a named segment is not a path Rust accepts.
-            if matches!(anchor, PathAnchor::Super(_)) && out.is_empty() {
-                levels += 1;
-                anchor = PathAnchor::Super(levels);
-                continue;
-            }
-            return PathQualifier {
-                anchor: PathAnchor::Unknown,
-                segments: Vec::new(),
-            };
-        }
-        if i + 1 < count {
-            out.push(name);
-        }
-    }
-    PathQualifier {
-        anchor,
-        segments: out,
+    fn module_path(&self) -> &[String] {
+        &self.module_path
     }
 }
 
@@ -361,18 +235,11 @@ impl Pyo3Scan {
                     if pyo3_marker(&imp.attrs) != Some(Pyo3Marker::Methods) {
                         continue;
                     }
-                    let Some(target) = last_ident(&imp.self_ty).cloned() else {
+                    let Some(header) = ImplHeader::of(imp, module_path) else {
                         continue;
                     };
-                    if imp.trait_.is_some() {
-                        continue;
-                    }
                     self.impls.push(ScannedImpl {
-                        module_path: module_path.clone(),
-                        // The qualifier of an explicit `impl a::C`, which names
-                        // the class exactly when several modules define a `C`.
-                        qualifier: type_path_qualifier(&imp.self_ty),
-                        target,
+                        header,
                         line: imp.span().start().line,
                         cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs),
                         funcs: imp
@@ -387,24 +254,7 @@ impl Pyo3Scan {
                 }
                 Item::Use(u) => {
                     // What a bare `impl C` in this module could be referring to.
-                    let mut bindings = Vec::new();
-                    let mut prefix = Vec::new();
-                    flatten_use_tree(&u.tree, &mut prefix, &mut bindings);
-                    for (alias, anchored) in bindings {
-                        let qualifier = path_qualifier(anchored.iter().cloned());
-                        // The anchor segments are not part of the module path;
-                        // the qualifier keeps what they meant.
-                        let path: Vec<String> = anchored
-                            .into_iter()
-                            .filter(|s| s != "crate" && s != "self" && s != "super")
-                            .collect();
-                        self.imports.push(ScannedImport {
-                            module_path: module_path.clone(),
-                            alias,
-                            path,
-                            qualifier,
-                        });
-                    }
+                    self.imports.extend(imports_of_use(u, module_path));
                 }
                 Item::Mod(m) => {
                     let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
@@ -455,11 +305,18 @@ impl Pyo3Scan {
     /// Order is by (module path, line) so the result does not depend on the
     /// order the caller happened to visit files in.
     pub fn finish(mut self, manifest: &mut Manifest) {
-        self.impls
-            .sort_by(|a, b| a.module_path.cmp(&b.module_path).then(a.line.cmp(&b.line)));
+        self.impls.sort_by(|a, b| {
+            a.header
+                .module_path
+                .cmp(&b.header.module_path)
+                .then(a.line.cmp(&b.line))
+        });
 
         for imp in &self.impls {
-            let Some(index) = self.locate_class(imp) else {
+            // A block that names no class, or an ambiguous one, is dropped: the
+            // PyO3 scan describes what a wrapper crate could wrap, and a wrong
+            // `Struct::method` would not compile in Phase 2.
+            let Ok(index) = locate(&self.classes, &imp.header, &self.imports) else {
                 continue;
             };
             let owner_skip = self.classes[index].entry.skip_reason.clone();
@@ -467,7 +324,8 @@ impl Pyo3Scan {
             // still wraps `a::C`'s methods (#300).
             let class_path = self.classes[index].module_path.clone();
             for func in &imp.funcs {
-                let entry = method_entry(&imp.target, &class_path, func, &owner_skip, &imp.cfg);
+                let entry =
+                    method_entry(&imp.header.target, &class_path, func, &owner_skip, &imp.cfg);
                 self.classes[index].entry.methods.push(entry);
             }
         }
@@ -480,122 +338,6 @@ impl Pyo3Scan {
         // class its `String` getters' helper (#307 review).
         mark_julia_surface_collisions(manifest);
         mark_symbol_collisions(manifest);
-    }
-
-    fn locate_class(&self, imp: &ScannedImpl) -> Option<usize> {
-        let name = imp.target.to_string();
-        let named = |c: &ScannedClass| c.entry.name == name;
-
-        if !imp.qualifier.is_uninformative() {
-            // `impl a::C` inside module `m` means `m::a::C`, or `a::C` from the
-            // crate root — try both, nearest first. `impl crate::a::C` means
-            // only the second, and `impl self::a::C` only the first.
-            for candidate in imp.qualifier.candidates(&imp.module_path) {
-                if let Some(i) = self
-                    .classes
-                    .iter()
-                    .position(|c| named(c) && c.module_path == candidate)
-                {
-                    return Some(i);
-                }
-            }
-            // `impl super::C` names the parent module's `C` and nothing else:
-            // with none there, attaching to a `C` in the impl's own module —
-            // or to the one `C` anywhere — would be exactly the wrong class
-            // (#307 review).
-            if imp.qualifier.forbids_fallback() {
-                return None;
-            }
-        }
-
-        if let Some(i) = self
-            .classes
-            .iter()
-            .position(|c| named(c) && c.module_path == imp.module_path)
-        {
-            return Some(i);
-        }
-
-        // A bare `impl C` is disambiguated by whatever brought `C` into scope:
-        // `use crate::a::C;` in the impl's module names `a::C` exactly, even
-        // though the impl itself writes no qualifier.
-        for import in &self.imports {
-            if import.module_path != imp.module_path || import.alias != name {
-                continue;
-            }
-            let target = import.path.last().map(String::as_str).unwrap_or(&name);
-            for candidate in import.qualifier.candidates(&imp.module_path) {
-                if let Some(i) = self
-                    .classes
-                    .iter()
-                    .position(|c| c.entry.name == target && c.module_path == candidate)
-                {
-                    return Some(i);
-                }
-            }
-        }
-
-        let mut matching = self.classes.iter().enumerate().filter(|(_, c)| named(c));
-        match (matching.next(), matching.next()) {
-            (Some((i, _)), None) => Some(i),
-            // No class of that name, or an ambiguous one.
-            _ => None,
-        }
-    }
-}
-
-/// One `use` path in scope: where it was written, the name it binds, and the
-/// module path it names.
-#[derive(Debug)]
-struct ScannedImport {
-    module_path: Vec<String>,
-    /// The name the import binds — the last segment, or the `as` alias.
-    alias: String,
-    /// The full path it names, anchor stripped: `crate::a::C` -> `["a", "C"]`.
-    path: Vec<String>,
-    /// Where that path is rooted, so `use crate::a::C;` and `use a::C;` are
-    /// not confused when the enclosing module also has an `a`.
-    qualifier: PathQualifier,
-}
-
-/// Flatten a `use` tree into the names it binds and the paths they name,
-/// **anchor included**.
-///
-/// `use crate::a::{C, D as E};` yields `("C", ["crate", "a", "C"])` and
-/// `("E", ["crate", "a", "D"])`; the caller splits the anchor off with
-/// [`path_qualifier`], so `use crate::a::C;` and `use a::C;` stay distinct.
-/// A glob (`use a::*;`) binds no name it can be matched on and is skipped.
-/// `super::` is kept: [`path_qualifier`] resolves it against the module the
-/// `use` was written in, like any other anchor (#307 review).
-fn flatten_use_tree(
-    tree: &syn::UseTree,
-    prefix: &mut Vec<String>,
-    out: &mut Vec<(String, Vec<String>)>,
-) {
-    match tree {
-        syn::UseTree::Path(path) => {
-            let segment = path.ident.to_string();
-            prefix.push(segment);
-            flatten_use_tree(&path.tree, prefix, out);
-            prefix.pop();
-        }
-        syn::UseTree::Name(name) => {
-            let mut full = prefix.clone();
-            full.push(name.ident.to_string());
-            out.push((name.ident.to_string(), full));
-        }
-        syn::UseTree::Rename(rename) => {
-            let mut full = prefix.clone();
-            full.push(rename.ident.to_string());
-            out.push((rename.rename.to_string(), full));
-        }
-        syn::UseTree::Group(group) => {
-            for item in &group.items {
-                flatten_use_tree(item, prefix, out);
-            }
-        }
-        // A glob binds no name this matcher can key on.
-        syn::UseTree::Glob(_) => {}
     }
 }
 
