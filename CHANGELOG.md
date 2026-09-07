@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`// cargo-deps:` builds are pinned and reproducible**
+  ([#256](https://github.com/AtelierArith/RustCall.jl/issues/256)). The first
+  build of a dependency set resolves it once (`cargo generate-lockfile`) and
+  persists the `Cargo.lock` under `<cache dir>/lockfiles/`, named by the
+  declared set alone (`RustCall.lockfile_path`, `cargo_lockfile_id`); every
+  later build — of any block with the same dependencies, on any machine that
+  has the file — replays it with `cargo build --locked`. The lockfile's content
+  is part of the block's artifact identity, so a changed resolution is a new
+  artifact rather than a stale cache hit. `RUSTCALL_OFFLINE=1` adds `--offline`
+  to every Cargo invocation and fails loudly without a warm registry cache. The
+  generated project's package name is now the constant
+  `RustCall.CARGO_BLOCK_PACKAGE`, so one lockfile fits every block.
 - **`@rust_crate` binds a PyO3 crate that carries no RustCall attribute**
   ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275), Phase 2).
   RustCall generates a *second* crate that depends on the target, emits one
