@@ -238,7 +238,7 @@ Manifest schema 5 adds, for every function, struct and method:
 
 | column | meaning |
 | --- | --- |
-| `attribute` | the *origin* of the entry: `julia` / `julia_pyo3` for a RustCall attribute, `py_function` / `py_class` / `py_methods` / `py_module` for the PyO3 scan |
+| `attribute` | the *origin* of the entry: `julia` / `julia_pyo3` for a RustCall attribute, `py_function` / `py_class` / `py_methods` / `py_module` for the PyO3 scan. On a **method** it is the attribute of the impl block the method came from (`julia`, the deprecated `julia_pyo3`, `py_methods`; omitted for an inline-mode impl), which need not be the struct's own |
 | `vis` | visibility as written: `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or empty for a private item |
 | `skip_reason` | why the item cannot be wrapped, empty when it can |
 | `python_name` | the name PyO3 exposes it under, when `#[pyo3(name = "...")]` renames it |

@@ -1384,7 +1384,9 @@ pub fn generate_method_wrapper_crate(
     struct_name: &Ident,
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
-    let model = MethodModel::from_fn(method);
+    // The origin is a manifest column; the wrapper's shape does not depend
+    // on it.
+    let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
     let owner = format_ident!("{}_{}", struct_name, method.sig.ident);
     let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
     let owned_free = format_ident!("{}_free_rust_string", owner);

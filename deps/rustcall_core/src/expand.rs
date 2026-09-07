@@ -281,6 +281,7 @@ fn methods_of(model: &StructModel, symbols: bool) -> Vec<Method> {
                 skip_reason: String::new(),
                 python_name: String::new(),
                 accessor: String::new(),
+                attribute: m.attribute,
                 return_kind: shape.kind,
                 ok_type: shape.ok_type,
                 err_type: shape.err_type,

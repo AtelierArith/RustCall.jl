@@ -641,11 +641,35 @@ end
             pub struct Knob { pub level: i32 }
             #[julia]
             pub fn plain(x: i32) -> i32 { x }
+            // A partially migrated struct: `#[julia]` on the struct, the
+            // deprecated attribute only on its impl block.
+            #[julia]
+            pub struct Gauge { pub value: i32 }
+            #[julia_pyo3]
+            impl Gauge {
+                pub fn read(&self) -> i32 { self.value }
+            }
+            #[julia]
+            pub struct Clean { pub v: i32 }
+            #[julia]
+            impl Clean {
+                #[julia]
+                pub fn get(&self) -> i32 { self.v }
+            }
             """)
         info = RustCall.scan_crate(dir)
         @test Set(f.name for f in info.julia_functions) == Set(["dual", "plain"])
-        @test_logs (:warn, r"#\[julia_pyo3\]` is deprecated.*2 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(info)
-        @test RustCall._warn_deprecated_attributes(info) == 2
+        by_name = Dict(s.name => s for s in info.julia_structs)
+        # The impl block's attribute travels with each method, so the struct
+        # that is `#[julia]` itself still shows where the deprecated macro is.
+        @test by_name["Gauge"].attribute === :julia
+        @test only(by_name["Gauge"].methods).attribute === :julia_pyo3
+        @test only(by_name["Clean"].methods).attribute === :julia
+        @test RustCall._uses_julia_pyo3(by_name["Knob"])
+        @test RustCall._uses_julia_pyo3(by_name["Gauge"])
+        @test !RustCall._uses_julia_pyo3(by_name["Clean"])
+        @test_logs (:warn, r"#\[julia_pyo3\]` is deprecated.*3 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(info)
+        @test RustCall._warn_deprecated_attributes(info) == 3
         # A crate without the attribute says nothing.
         write(joinpath(dir, "src", "lib.rs"), "#[julia]\npub fn plain(x: i32) -> i32 { x }\n")
         clean = RustCall.scan_crate(dir)

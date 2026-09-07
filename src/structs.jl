@@ -18,6 +18,12 @@ A method of a `#[julia]` struct as recorded in the manifest.
   (manifest `Method.returns_boxed_struct`, schema 4). Julia used to re-derive
   this by comparing `return_type` against `"Self"` (#276)
 - `generic_wrapper`: generic wrapper source registered for monomorphization
+- `attribute`: the attribute of the **impl block** the method came from —
+  `:julia`, the deprecated `:julia_pyo3`, `:py_methods` for a scanned
+  `#[pymethods]` block, `:none` for an inline-mode impl (which carries none) or
+  a hand-built method. It need not be the struct's own: a `#[julia]` struct may
+  still have a `#[julia_pyo3] impl`, and the deprecation notice has to see it
+  (#275 Phase 3)
 """
 struct RustMethod
     name::String
@@ -57,6 +63,9 @@ struct RustMethod
     ok_abi::String
     err_abi::String
     inner_abi::String
+    # The impl block's attribute (`Method.attribute`, additive within schema
+    # 6, #275 Phase 3): `:julia`, `:julia_pyo3`, `:py_methods`, or `:none`.
+    attribute::Symbol
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -73,11 +82,13 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     inner_type::String = "",
                     ok_abi::String = _default_payload_abi(ok_type),
                     err_abi::String = _default_payload_abi(err_type),
-                    inner_abi::String = _default_payload_abi(inner_type))
+                    inner_abi::String = _default_payload_abi(inner_type),
+                    attribute::Symbol = :none)
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
-               return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi)
+               return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
+               attribute)
 end
 
 """

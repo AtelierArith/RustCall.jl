@@ -13,10 +13,16 @@ pub struct MethodModel {
     pub func: ImplItemFn,
     pub is_static: bool,
     pub is_mutable: bool,
+    /// The RustCall attribute of the impl block the method was collected from
+    /// (`Julia`, the deprecated `JuliaPyo3`, or `None` for an inline-mode impl
+    /// that carries none). Recorded on the manifest entry so a consumer can
+    /// tell a `#[julia_pyo3] impl` apart even when the struct itself is
+    /// `#[julia]` (#275 Phase 3).
+    pub attribute: Attribute,
 }
 
 impl MethodModel {
-    pub fn from_fn(func: &ImplItemFn) -> Self {
+    pub fn from_fn(func: &ImplItemFn, attribute: Attribute) -> Self {
         let receiver = func.sig.inputs.iter().find_map(|a| match a {
             FnArg::Receiver(r) => Some(r),
             _ => None,
@@ -25,6 +31,7 @@ impl MethodModel {
             func: func.clone(),
             is_static: receiver.is_none(),
             is_mutable: receiver.map(|r| r.mutability.is_some()).unwrap_or(false),
+            attribute,
         }
     }
 
@@ -122,6 +129,15 @@ pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> 
 
         let impl_has_julia = imp.attrs.iter().any(is_julia_attr);
         let impl_has_pyo3 = imp.attrs.iter().any(is_julia_pyo3_attr);
+        // What the manifest records as the method's origin: the impl block's
+        // attribute, which an inline-mode impl does not have.
+        let impl_attribute = if impl_has_pyo3 {
+            Attribute::JuliaPyo3
+        } else if impl_has_julia {
+            Attribute::Julia
+        } else {
+            Attribute::None
+        };
 
         for ii in &imp.items {
             let ImplItem::Fn(func) = ii else { continue };
@@ -135,7 +151,9 @@ pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> 
                 }
             };
             if wrap && !model.methods.iter().any(|m| func.sig.ident == m.name()) {
-                model.methods.push(MethodModel::from_fn(func));
+                model
+                    .methods
+                    .push(MethodModel::from_fn(func, impl_attribute));
             }
         }
     }

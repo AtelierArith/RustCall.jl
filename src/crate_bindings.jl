@@ -247,8 +247,11 @@ bound exactly as before; the warning is the Julia-side counterpart of the
 ever see the build through `@rust_crate`. Returns the number of such items.
 """
 function _warn_deprecated_attributes(info::CrateInfo)
+    # A struct counts once whether the attribute sits on the struct itself or
+    # only on one of its impl blocks (`RustMethod.attribute`): a `#[julia]
+    # struct` with a `#[julia_pyo3] impl` is a use of the deprecated macro too.
     deprecated = count(f -> f.attribute === :julia_pyo3, info.julia_functions) +
-                 count(s -> s.attribute === :julia_pyo3, info.julia_structs)
+                 count(s -> _uses_julia_pyo3(s), info.julia_structs)
     deprecated == 0 && return 0
     @warn "`#[julia_pyo3]` is deprecated (#275 Phase 3) and will be removed in the next " *
           "breaking release: $(deprecated) item(s) of $(info.name) use it. Write `#[julia]` next " *
@@ -257,6 +260,19 @@ function _warn_deprecated_attributes(info::CrateInfo)
         "julia_pyo3_deprecated:", info.path)
     return deprecated
 end
+
+"""
+    _uses_julia_pyo3(item) -> Bool
+
+Whether a manifest item was produced by the deprecated `#[julia_pyo3]`: a
+function or struct carrying the attribute itself, or a struct any of whose
+methods came from a `#[julia_pyo3] impl` (the impl block's attribute is recorded
+per method, `RustMethod.attribute`, precisely because it need not match the
+struct's).
+"""
+_uses_julia_pyo3(item::RustFunctionSignature) = item.attribute === :julia_pyo3
+_uses_julia_pyo3(item::RustStructInfo) =
+    item.attribute === :julia_pyo3 || any(m -> m.attribute === :julia_pyo3, item.methods)
 
 """
     find_rust_sources(crate_path::String) -> Vector{String}

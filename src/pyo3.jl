@@ -1793,7 +1793,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     for item in julia_items
         # `#[julia_pyo3]` still works and is still reported, but it is
         # deprecated (#275 Phase 3): say so next to each item it produced.
-        note = item.attribute === :julia_pyo3 ? "  [#[julia_pyo3] is deprecated; see docs/src/pyo3.md]" : ""
+        note = _uses_julia_pyo3(item) ? "  [#[julia_pyo3] is deprecated; see docs/src/pyo3.md]" : ""
         println(io, "    $(_pyo3_item_label(item))$(note)")
     end
     println(io, "  PyO3 items the scan can name: $(length(wrappable))")

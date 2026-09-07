@@ -411,6 +411,7 @@ fn crate_struct_entry(model: &StructModel) -> Struct {
             skip_reason: String::new(),
             python_name: String::new(),
             accessor: String::new(),
+            attribute: m.attribute,
             return_kind: shapes[i].kind,
             ok_type: shapes[i].ok_type.clone(),
             err_type: shapes[i].err_type.clone(),

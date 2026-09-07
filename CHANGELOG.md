@@ -20,9 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the manifest still reports its items under the `julia_pyo3` origin, so
   existing crates keep building; rustc now reports `use of deprecated macro`
   at every use site, `@rust_crate` / `write_bindings_to_file` warn once per
-  crate, and `scan_report` marks each item. Removal comes with the next
-  breaking release. `examples/sample_crate_pyo3` is migrated to the new shape
-  and `docs/src/pyo3.md` gains "Migrating from `#[julia_pyo3]`".
+  crate, and `scan_report` marks each item — a `#[julia]` struct whose impl
+  block is the deprecated one included, since a method's manifest entry now
+  records the attribute of the impl block it came from (`Method.attribute`,
+  additive within schema 6). Removal comes with the next breaking release.
+  `examples/sample_crate_pyo3` is migrated to the new shape and
+  `docs/src/pyo3.md` gains "Migrating from `#[julia_pyo3]`".
 
 ### Added
 - **`@rust_crate` binds a PyO3 crate that carries no RustCall attribute**
