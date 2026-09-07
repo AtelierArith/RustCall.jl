@@ -150,10 +150,10 @@ function scan_crate(crate_path::String; cfg = :lenient,
     # `cfg = :cargo`, and then every `#[cfg]` is decided, which is what lets
     # mutually exclusive feature variants of one `#[julia] fn` collapse to the
     # one that exists (#277 Phase B).
-    # The PyO3 scan (#275) needs the crate's module tree, not a bag of files:
-    # `src/api.rs` is `api`, and a `mod api;` that is not `pub` puts everything
-    # below it out of a wrapper crate's reach. The `#[julia]` extraction stays
-    # per file.
+    # Both scans need the crate's module tree, not a bag of files: `src/api.rs`
+    # is `api`, a `mod api;` that is not `pub` puts everything below it out of
+    # a wrapper crate's reach (#275), and a `#[julia] impl crate::Gauge` in
+    # `ops.rs` has to find the `Gauge` declared in `lib.rs` (#315).
     lib_root, tree_files = _crate_scan_inputs(crate_path, cargo_toml, source_files)
     manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
                                 cfg = cfg, cfg_text = cfg_text,

@@ -161,6 +161,18 @@ The generated Julia bindings keep the Rust names (`Counter(1)`, `get(c)`);
 they resolve the exported symbol through the manifest, so nothing in the Julia
 API changes.
 
+The impl block may live in any module of the crate, not only next to the
+struct: `#[julia] impl crate::Counter { ... }` in `src/ops.rs`, `impl
+super::Counter` from a child module, or `use crate::Counter; #[julia] impl
+Counter` all bind their methods to `Counter` (#315). The method symbols follow
+the struct the header names (`rustcall_Counter_get`), never the module the
+block was written in, so the header has to spell the struct's path the way the
+proc-macro reads it: `crate::…` and `super::…` as written, a bare name as the
+block's own `#[julia]` module path. A block whose header names no `#[julia]`
+struct — or one whose symbols the proc-macro would qualify differently, such
+as a bare `impl Counter` inside a `#[julia] mod` for a struct at the crate root
+— fails the scan with the header to write instead of silently binding nothing.
+
 ### Static methods
 
 A method without `self` (other than a constructor) is called with the type as

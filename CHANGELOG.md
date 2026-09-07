@@ -159,6 +159,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Documentation that pointed `@rust_crate` at `examples/sample_crate*` now
   names the embedded crate or the fixture.
 
+### Fixed
+- **A `#[julia] impl` block in another module than its struct binds its methods**
+  ([#315](https://github.com/AtelierArith/RustCall.jl/issues/315)). The crate
+  scan matched an impl block only to a struct at the same file / module level,
+  so for `struct Gauge` in `lib.rs` and `impl crate::Gauge` in `ops.rs` the
+  proc-macro emitted `rustcall_Gauge_read` while the manifest listed `Gauge`
+  with no methods and the Julia module had no `read`. `rustcall-extract` now
+  scans the crate's module tree once for both `#[julia]` and PyO3 items
+  (`--crate-root`, which no longer takes FILE arguments), collects structs and
+  `#[julia] impl` blocks crate-wide and marries them through the resolver the
+  PyO3 scan already had (`crate::`, `super::`, `self::`, a `use`, a bare name);
+  the inline expander does the same within a `rust"""` block. The method
+  symbols follow the struct the header names, so the proc-macro now reads the
+  header (`impl super::Gauge` inside `#[julia] mod ops` is `rustcall_Gauge_read`,
+  not `rustcall_ops__Gauge_read`) and spells the struct in the wrapper the way
+  the header does, so nothing needs to be in scope next to the block. A block
+  whose header names no `#[julia]` struct, an ambiguous one, or one the
+  proc-macro would qualify differently from the struct fails the scan with the
+  header to write instead of being dropped; the crate-wide duplicate-symbol
+  check of #300 now runs inside the scan, within one file as much as across
+  files. The `#[julia_pyo3]` half of the issue is moot: that macro was removed
+  in v0.3.0 (#330).
+
 ## [0.2.1] - 2026-09-07
 
 ### Added
