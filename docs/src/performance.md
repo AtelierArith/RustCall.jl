@@ -73,6 +73,40 @@ The compiler in the key is the compiler that runs: versions come from
 toolchain that cannot be identified raises a `RustError` on any path about to
 compile, rather than caching everything under the string `"unknown"`.
 
+### Pinned, lockfile-driven dependency builds
+
+A `// cargo-deps:` block names version *ranges*; what Cargo resolves them to is
+a separate fact, and it is the fact that decides the binary. RustCall therefore
+persists one `Cargo.lock` per dependency set and builds against it (issue #256):
+
+- **Where.** `RustCall.lockfile_path(deps)` — or `lockfile_path(source)` for a
+  block's source text — is `<cache dir>/lockfiles/<key>.lock`, where the key is
+  `artifact_key(cargo_lockfile_id(deps))`: the declared dependency set and
+  nothing else (no toolchain), so the same set on any machine looks in the same
+  place. The generated project's package is always named
+  `RustCall.CARGO_BLOCK_PACKAGE`, so one lockfile fits every block declaring the
+  set.
+- **First build.** With no persisted lockfile, `cargo generate-lockfile`
+  resolves the set once and the result is stored. Every later build — of this
+  block or any other with the same dependencies — copies the file in and runs
+  `cargo build --locked`, so Cargo builds exactly the pinned graph or fails; it
+  never re-resolves behind the cache key.
+- **Identity.** The lockfile's *content* is part of the block's `ArtifactId`
+  (`cargo-lock`). A changed resolution is a different artifact; a cache hit can
+  never answer for another graph.
+- **Sharing and refreshing.** Copy or commit the file to reproduce a build on
+  another machine; delete it to resolve afresh. `clear_cache` leaves lockfiles
+  alone — they are inputs of a build, not outputs.
+- **Offline.** `RUSTCALL_OFFLINE=1` adds `--offline` to every Cargo invocation.
+  With a warm registry cache the pinned build succeeds without the network; with
+  a cold one Cargo fails at once with its own message (surfaced as a
+  `CargoBuildError`), rather than hanging on a download.
+
+`@rust_crate` wrapper crates depend on your crate by path and are built as their
+own Cargo root; a PyO3 wrapper carries your crate's `Cargo.lock` and `[patch]`
+table (see [PyO3 crates](pyo3.md)). Persisting *their* resolution is not covered
+here.
+
 ### Cache Management
 
 ```julia

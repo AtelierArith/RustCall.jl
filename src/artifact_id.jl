@@ -373,11 +373,15 @@ distinct specs can never collapse onto the same string.
 
 # How each kind of dependency is identified
 
-- **Registry** dependencies: name, version requirement and feature set. The
-  *resolved* version from `Cargo.lock` is deliberately out of scope (see #256);
-  folding lockfile resolution into the key is tracked there.
+- **Registry** dependencies: name, version requirement and feature set — the
+  *requested* range. The *resolved* version is not in the string on purpose:
+  the strings name a dependency set, and `cargo_lockfile_id` uses exactly them
+  to name the `Cargo.lock` persisted for that set, which must be the same file
+  on every machine. The resolution reaches a **build's** key as the content
+  digest of that lockfile (`_cargo_block_id`'s `cargo_lock`, #256).
 - **Git** dependencies: name and the git URL (plus rev/branch/tag when the spec
-  carries them). Resolving a floating branch to a commit is likewise #256.
+  carries them). A floating branch is resolved to a commit in the same
+  lockfile.
 - **Local path** dependencies: a content digest of the crate's inputs (see
   `artifact_path_dependency_digest`), **not** the path text. Editing a
   local dependency's sources therefore changes the key, while moving the
@@ -410,6 +414,32 @@ function artifact_dependency_strings(deps)::Vector{String}
         push!(out, String(take!(io)))
     end
     return sort!(out)
+end
+
+"""
+    cargo_lockfile_id(deps) -> ArtifactId
+
+The identity of the **resolution** of a dependency set: what names the
+`Cargo.lock` RustCall persists for a `// cargo-deps:` block (`lockfile_path`,
+#256). Deliberately narrower than a build's identity — the dependency strings
+of `artifact_dependency_strings` and nothing else, with the toolchain and
+compiler fields empty — because the point of the persisted lockfile is to be
+the same file on every machine that declares the same dependencies, whatever
+`rustc` each of them runs; the *build* key then folds the lockfile's content
+in (`_cargo_block_id`'s `cargo_lock`), so the resolved versions, not the
+requested ranges, decide a cache hit.
+
+A `path =` dependency contributes its content digest, as in every dependency
+string, so editing a local crate re-resolves rather than replaying a lockfile
+that pins the old graph.
+"""
+function cargo_lockfile_id(deps)::ArtifactId
+    return ArtifactId(
+        kind = "cargo-lockfile",
+        dependencies = artifact_dependency_strings(deps),
+        toolchain = "",
+        compiler = "",
+    )
 end
 
 # ----------------------------------------------------------------------------

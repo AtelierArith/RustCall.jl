@@ -637,68 +637,112 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # that is the directory whose chain reaches the build, and it is knowable
     # before the project exists — which is what lets this be computed once.
     cargo_config = _cargo_config_digest(ENV; dir = tempdir())
-    cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
-                               cargo_config = cargo_config)
-    # THE key for this block: the in-memory name, the project name, the disk
-    # lookup, the build and the save all use this one value (#278, #287). If a
-    # second formula ever appears downstream, `build_cargo_project_cached`
-    # refuses the build rather than silently caching under two keys.
-    code_hash = artifact_key(cargo_id)
 
-    # Project and library names. `artifact_short_id` is the only truncation in
-    # the design and is never a lookup key (#278).
-    project_name = "rustcall_$(artifact_short_id(code_hash, 12))"
-    lib_name = "rust_cargo_$(artifact_short_id(code_hash, 16))"
-
-    # Check if already compiled and loaded in memory
-    is_in_memory = lock(REGISTRY_LOCK) do
-        haskey(RUST_LIBRARIES, lib_name)
-    end
-    # As in the rustc path: the re-check happens inside `_register_manifest`'s
-    # critical section, so a concurrent unload sends us down the build path
-    # rather than leaving metadata for a library that is gone.
-    policy = inline_cargo_policy()
-    if is_in_memory &&
-       _register_manifest(expanded, lib_name; cargo_backed = true, policy,
-                          snapshot_env = build_env, require_loaded = true)
-        @debug "Using cached Cargo library from memory" lib_name=lib_name
-        return lib_name
-    end
-
-    # The block identity *is* the cache key: re-mixing already-mixed material
-    # under a second, hand-rolled formula (and truncating it to 32 characters)
-    # was the Cargo half of #278, and deriving a *richer* key inside the builder
-    # while looking up with the base one was #287 — same bug, other direction.
-    cache_key = code_hash
-
-    cached_lib = get_cargo_cached_library(cache_key)
-    if !isnothing(cached_lib) && isfile(cached_lib)
-        # Load from cache through the one loader (#277 Phase B). A failure to
-        # open the cached file is not fatal: fall through and rebuild.
-        loaded = try
-            _register_manifest(expanded, lib_name; cargo_backed = true, policy,
-                               load_path = cached_lib, snapshot_env = build_env)
-        catch e
-            @debug "Failed to load the cached Cargo library; rebuilding" exception = e
-            false
-        end
-        if loaded
-            @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=artifact_short_id(cache_key, 8)
-
-            return lib_name
+    # The resolved dependency graph is part of the identity, not only the
+    # requested ranges: `ndarray = "0.15"` resolves to one set of versions today
+    # and another after an upstream patch release, and a key over the range
+    # alone served the old binary for the new graph — or built a new graph
+    # behind an unchanged key (#256). The graph lives in a `Cargo.lock`
+    # persisted per dependency set (`lockfile_path`): when it exists, its
+    # content is known before any project does; when it does not, the set is
+    # resolved once, in the project that will be built, and persisted. The
+    # project's root package has one fixed name (`CARGO_BLOCK_PACKAGE`) so the
+    # lockfile fits every block declaring the set.
+    project = nothing
+    compiler = get_default_compiler()
+    cleanup = () -> begin
+        project === nothing && return
+        # Clean up the temporary project (kept for debugging in debug mode).
+        if !compiler.debug_mode
+            try
+                cleanup_cargo_project(project)
+            catch e
+                @debug "Failed to cleanup Cargo project: $e"
+            end
+        else
+            @info "Debug mode: keeping Cargo project at $(project.path)"
         end
     end
-
-    # Build necessary if not in cache or cache load failed
-    @info "Building Rust code with external dependencies..." dependencies=length(dependencies) project=project_name
-
-    project = create_cargo_project(project_name, dependencies)
 
     try
+        stored_lock = lockfile_path(dependencies)
+        cargo_lock = if isfile(stored_lock)
+            _file_content_digest(stored_lock)
+        else
+            project = create_cargo_project(CARGO_BLOCK_PACKAGE, dependencies)
+            something(ensure_cargo_lockfile!(project; env = build_env), "")
+        end
+        cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
+                                   cargo_config = cargo_config, cargo_lock = cargo_lock)
+        # THE key for this block: the in-memory name, the disk lookup, the build
+        # and the save all use this one value (#278, #287). If a second formula
+        # ever appears downstream, `build_cargo_project_cached` refuses the build
+        # rather than silently caching under two keys.
+        code_hash = artifact_key(cargo_id)
+
+        # The library name. `artifact_short_id` is the only truncation in the
+        # design and is never a lookup key (#278).
+        lib_name = "rust_cargo_$(artifact_short_id(code_hash, 16))"
+
+        # Check if already compiled and loaded in memory
+        is_in_memory = lock(REGISTRY_LOCK) do
+            haskey(RUST_LIBRARIES, lib_name)
+        end
+        # As in the rustc path: the re-check happens inside `_register_manifest`'s
+        # critical section, so a concurrent unload sends us down the build path
+        # rather than leaving metadata for a library that is gone.
+        policy = inline_cargo_policy()
+        if is_in_memory &&
+           _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+                              snapshot_env = build_env, require_loaded = true)
+            @debug "Using cached Cargo library from memory" lib_name=lib_name
+            return lib_name
+        end
+
+        # The block identity *is* the cache key: re-mixing already-mixed material
+        # under a second, hand-rolled formula (and truncating it to 32 characters)
+        # was the Cargo half of #278, and deriving a *richer* key inside the builder
+        # while looking up with the base one was #287 — same bug, other direction.
+        cache_key = code_hash
+
+        cached_lib = get_cargo_cached_library(cache_key)
+        if !isnothing(cached_lib) && isfile(cached_lib)
+            # Load from cache through the one loader (#277 Phase B). A failure to
+            # open the cached file is not fatal: fall through and rebuild.
+            loaded = try
+                _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+                                   load_path = cached_lib, snapshot_env = build_env)
+            catch e
+                @debug "Failed to load the cached Cargo library; rebuilding" exception = e
+                false
+            end
+            if loaded
+                @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=artifact_short_id(cache_key, 8)
+                return lib_name
+            end
+        end
+
+        # Build necessary if not in cache or cache load failed
+        @info "Building Rust code with external dependencies..." dependencies=length(dependencies) lib_name=lib_name
+
+        if project === nothing
+            project = create_cargo_project(CARGO_BLOCK_PACKAGE, dependencies)
+            # The store had a lockfile when the identity was computed; the
+            # build must be of exactly that graph. A file that changed in
+            # between would make the key describe another build — refuse.
+            replayed = something(ensure_cargo_lockfile!(project; env = build_env), "")
+            replayed == cargo_lock || throw(CargoBuildError(
+                "The persisted Cargo.lock changed while this block was being prepared",
+                "lockfile: $(stored_lock)", project.path))
+        end
+
         # Ensure the code with wrappers is written to the project
         write_rust_code_to_project(project, augmented_code)
 
-        lib_path = build_cargo_project_cached(project, cargo_id, release=true, env=build_env)
+        # `--locked`: the project's lockfile is authoritative, so Cargo builds
+        # the graph the key describes or fails; it never re-resolves silently.
+        lib_path = build_cargo_project_cached(project, cargo_id, release=true, env=build_env,
+                                              locked = !isempty(cargo_lock))
 
         # Cache the built library (if it wasn't already in cache)
         try
@@ -713,21 +757,10 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
                            load_path = lib_path, snapshot_env = build_env)
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
+        return lib_name
     finally
-        # Clean up temporary project (keep for debugging if debug mode is enabled)
-        compiler = get_default_compiler()
-        if !compiler.debug_mode
-            try
-                cleanup_cargo_project(project)
-            catch e
-                @debug "Failed to cleanup Cargo project: $e"
-            end
-        else
-            @info "Debug mode: keeping Cargo project at $(project.path)"
-        end
+        cleanup()
     end
-
-    return lib_name
 end
 
 
@@ -745,10 +778,15 @@ fingerprint and the identity of the compiler that runs, both defaulted by
 `cargo_config` is the digest of the effective `.cargo/config.toml` chain above
 the directory the build will run in (`_cargo_config_digest`); the caller passes
 it because it must be the *same* digest the whole evaluation uses.
+`cargo_lock` is the content digest of the `Cargo.lock` the build is made with —
+the resolved graph, persisted per dependency set (`lockfile_path`,
+`ensure_cargo_lockfile!`, #256) — so two builds of one source and one requested
+range that resolve differently are two artifacts.
 
-`artifact_key` of this record is the in-memory library name, the temporary
-project name, the disk cache key, the build key and the save key — one value
-per block evaluation. The Cargo path used to hash the block once and then
+`artifact_key` of this record is the in-memory library name, the disk cache
+key, the build key and the save key — one value per block evaluation (the
+generated project's package name is the constant `CARGO_BLOCK_PACKAGE`, so a
+persisted lockfile fits every block). The Cargo path used to hash the block once and then
 re-mix that digest under a second formula for the cache key (#278); the first
 fix then left `build_cargo_project_cached` deriving a *richer* key than the one
 the outer lookup used, so a Cargo-config change still hit the old binary
@@ -757,7 +795,12 @@ the outer lookup used, so a Cargo-config change still hit the old binary
 function _cargo_block_id(expanded_source::AbstractString, dependencies,
                          cargo_env::AbstractString = "";
                          cargo_config::AbstractString = "",
+                         cargo_lock::AbstractString = "",
                          release::Bool = true)
+    # `cargo_lock` is the content digest of the `Cargo.lock` the build is made
+    # with (`ensure_cargo_lockfile!`): the *resolved* graph, where
+    # `dependencies` names only the requested ranges (#256). "" when the block
+    # has none — a set with no dependency to resolve.
     return ArtifactId(
         kind = "cargo",
         source = String(expanded_source),
@@ -767,6 +810,7 @@ function _cargo_block_id(expanded_source::AbstractString, dependencies,
             "cargo-env" => String(cargo_env),
             "cargo-config" => String(cargo_config),
         ],
+        extra = Pair{String, String}["cargo-lock" => String(cargo_lock)],
     )
 end
 

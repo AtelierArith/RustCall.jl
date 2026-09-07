@@ -432,8 +432,11 @@ end
         expanded = RustCall.expand_inline(block; cfg = :cargo)
         deps = RustCall.parse_dependencies_from_code(block)
         _, build_env_key = RustCall._cargo_build_env_for(nothing)
+        # ... including the resolved graph: the lockfile the build persisted
+        # for this dependency set is part of the identity (#256).
         id = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
-            cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()))
+            cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()),
+            cargo_lock = RustCall._file_content_digest(RustCall.lockfile_path(deps)))
         key = RustCall.artifact_key(id)
         # Named by this block's own key, whatever else is in the directory:
         # the assertion the testset is really making is "this block produced
@@ -598,5 +601,177 @@ end
         @test !isdir(foreign)
         @test !isdir(joinpath(project_dir, "config-elsewhere"))
         rm(sandbox; recursive = true, force = true)
+    end
+end
+
+@testset "Pinned, lockfile-driven dependency builds (#256)" begin
+    # A `// cargo-deps:` block used to be resolved afresh on every build, with
+    # no lockfile and a cache key over the *requested* ranges: two machines
+    # (or one machine a week apart) built different graphs for the same
+    # source, and a cache hit could serve a binary built from a graph that no
+    # longer resolves. The resolution is now persisted per dependency set and
+    # its content is part of the build's identity.
+    deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    same = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    other = [RustCall.DependencySpec("itoa"; version = "1.0.11")]
+
+    @testset "the lockfile is named by the dependency set alone" begin
+        with_isolated_cargo_cache() do
+            path = RustCall.lockfile_path(deps)
+            @test startswith(path, RustCall.lockfile_dir())
+            @test endswith(path, ".lock")
+            @test RustCall.lockfile_path(same) == path
+            @test RustCall.lockfile_path(other) != path
+            # The block's own comments name the same file.
+            @test RustCall.lockfile_path("// cargo-deps: itoa=\"1.0\"\n") == path
+            # Not the toolchain: the same declared set on another machine, with
+            # another rustc, looks in the same place — that is what sharing the
+            # file between machines means.
+            id = RustCall.cargo_lockfile_id(deps)
+            @test id.kind == "cargo-lockfile"
+            @test id.toolchain == "" && id.compiler == ""
+            @test id.dependencies == RustCall.artifact_dependency_strings(deps)
+        end
+    end
+
+    @testset "the resolved graph is in the build key" begin
+        # Same source, same requested ranges, different resolution: different
+        # artifact — the cache describes what was built, not what was asked.
+        base = RustCall._cargo_block_id("fn f() {}", deps, "env"; cargo_lock = "aaaa")
+        @test RustCall.artifact_key(base) !=
+              RustCall.artifact_key(RustCall._cargo_block_id("fn f() {}", deps, "env";
+                                                             cargo_lock = "bbbb"))
+        @test RustCall.artifact_key(base) !=
+              RustCall.artifact_key(RustCall._cargo_block_id("fn f() {}", deps, "env"))
+        @test any(p -> p == ("cargo-lock" => "aaaa"), base.extra)
+    end
+
+    @testset "--locked and --offline reach cargo" begin
+        args = RustCall._cargo_build_args(true, String[], true; locked = true)
+        @test "--locked" in args
+        @test !("--locked" in RustCall._cargo_build_args(true, String[], true))
+        withenv("RUSTCALL_OFFLINE" => nothing) do
+            @test !RustCall.cargo_offline()
+            @test !("--offline" in RustCall._cargo_build_args(true, String[], true))
+        end
+        for v in ("1", "true", "YES")
+            withenv("RUSTCALL_OFFLINE" => v) do
+                @test RustCall.cargo_offline()
+                @test "--offline" in RustCall._cargo_build_args(true, String[], true)
+            end
+        end
+        withenv("RUSTCALL_OFFLINE" => "0") do
+            @test !RustCall.cargo_offline()
+        end
+    end
+
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc/cargo are required for a Cargo-backed block"
+    else
+        @testset "one resolution, replayed byte for byte" begin
+            with_isolated_cargo_cache() do
+                block = """
+                // cargo-deps: itoa="1.0"
+
+                #[no_mangle]
+                pub extern "C" fn rc256_pinned() -> i32 { 256 }
+                """
+                lockfile = RustCall.lockfile_path(block)
+                @test !isfile(lockfile)
+                lib = RustCall._compile_and_load_rust(block, "pinned", 0)
+                @test ccall(RustCall.get_function_pointer(lib, "rc256_pinned"), Int32, ()) == 256
+                # The first build resolved and persisted the set.
+                @test isfile(lockfile)
+                content = read(lockfile, String)
+                @test occursin("name = \"itoa\"", content)
+                @test occursin("name = \"$(RustCall.CARGO_BLOCK_PACKAGE)\"", content)
+                # The block's cache entry is keyed with that file's content.
+                expanded = RustCall.expand_inline(block; cfg = :cargo)
+                _, build_env_key = RustCall._cargo_build_env_for(nothing)
+                id = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
+                    cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()),
+                    cargo_lock = RustCall._file_content_digest(lockfile))
+                @test RustCall.get_cargo_cached_library(RustCall.artifact_key(id)) !== nothing
+
+                # A second block declaring the same set — another machine, or
+                # this one later — replays the file: no re-resolution (the file
+                # is untouched) and a project seeded from it carries the
+                # identical bytes, which is what `--locked` then enforces.
+                stamp = mtime(lockfile)
+                second = replace(block, "rc256_pinned() -> i32 { 256 }" =>
+                                        "rc256_again() -> i32 { 257 }")
+                lib2 = RustCall._compile_and_load_rust(second, "pinned-again", 0)
+                @test ccall(RustCall.get_function_pointer(lib2, "rc256_again"), Int32, ()) == 257
+                @test mtime(lockfile) == stamp
+                @test read(lockfile, String) == content
+                project = RustCall.create_cargo_project(RustCall.CARGO_BLOCK_PACKAGE, deps)
+                try
+                    digest = RustCall.ensure_cargo_lockfile!(project)
+                    @test digest == RustCall._file_content_digest(lockfile)
+                    @test read(joinpath(project.path, "Cargo.lock"), String) == content
+                finally
+                    RustCall.cleanup_cargo_project(project)
+                end
+                # A project with no dependencies of its own has no store entry.
+                bare = RustCall.create_cargo_project("rc256_bare", RustCall.DependencySpec[])
+                try
+                    @test RustCall.ensure_cargo_lockfile!(bare) === nothing
+                finally
+                    RustCall.cleanup_cargo_project(bare)
+                end
+
+                # A changed resolution is a different artifact: rewrite the
+                # persisted file and the key moves, so a cache hit can never
+                # answer for another graph.
+                moved = RustCall._cargo_block_id(expanded.source, deps, build_env_key;
+                    cargo_config = RustCall._cargo_config_digest(ENV; dir = tempdir()),
+                    cargo_lock = RustCall._file_content_digest(lockfile) * "-other")
+                @test RustCall.artifact_key(moved) != RustCall.artifact_key(id)
+
+                # Offline: with the registry warm from the build above, the same
+                # set builds again — `--locked --offline` — after the cache is
+                # cleared; the lockfile survives `clear_cargo_cache`, being an
+                # input and not an output.
+                RustCall.clear_cargo_cache()
+                @test isfile(lockfile)
+                lib3 = withenv("RUSTCALL_OFFLINE" => "1") do
+                    RustCall._compile_and_load_rust(second, "pinned-offline", 0)
+                end
+                @test ccall(RustCall.get_function_pointer(lib3, "rc256_again"), Int32, ()) == 257
+                for name in unique([lib, lib2, lib3])
+                    try
+                        RustCall.unload_library(name)
+                    catch
+                    end
+                end
+            end
+        end
+
+        @testset "offline without a registry cache fails loudly, not slowly" begin
+            with_isolated_cargo_cache() do
+                # A package no registry has: offline resolution must come back
+                # with Cargo's error at once, not hang on a download.
+                missing = [RustCall.DependencySpec("rustcall-no-such-package-ever";
+                                                   version = "=99.99.99")]
+                project = RustCall.create_cargo_project(RustCall.CARGO_BLOCK_PACKAGE, missing)
+                try
+                    started = time()
+                    err = withenv("RUSTCALL_OFFLINE" => "1") do
+                        try
+                            RustCall.ensure_cargo_lockfile!(project)
+                            nothing
+                        catch e
+                            e
+                        end
+                    end
+                    @test err isa RustCall.CargoBuildError
+                    @test occursin("RUSTCALL_OFFLINE", sprint(showerror, err))
+                    @test time() - started < 60
+                    @test !isfile(RustCall.lockfile_path(missing))
+                finally
+                    RustCall.cleanup_cargo_project(project)
+                end
+            end
+        end
     end
 end

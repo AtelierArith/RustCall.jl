@@ -39,6 +39,20 @@ struct CargoProject
 end
 
 """
+    CARGO_BLOCK_PACKAGE
+
+The `[package] name` of every Cargo project RustCall generates for a
+`// cargo-deps:` block. It is a constant, not derived from the block's key,
+because the root package appears in `Cargo.lock` by name: a lockfile persisted
+for one dependency set (`lockfile_path`) must fit every block that declares
+that set, or it could not be shared between blocks — or between machines
+(#256). The project directory, not the package name, is what keeps concurrent
+builds apart (`create_cargo_project` makes a fresh temporary directory each
+time), and the built library is copied into the cache under the block's key.
+"""
+const CARGO_BLOCK_PACKAGE = "rustcall_block"
+
+"""
     create_cargo_project(name::String, dependencies::Vector{DependencySpec}; kwargs...) -> CargoProject
 
 Create a temporary Cargo project with the specified dependencies.
