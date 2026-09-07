@@ -1,4 +1,4 @@
-# Test cases converted from examples/julia_to_rust_generic.jl
+# Originally derived from the deleted `examples/julia_to_rust_generic.jl` (removed in #9); the tests below are the reference.
 using RustCall
 using Test
 

@@ -1,4 +1,4 @@
-# Test cases converted from examples/generic_struct_test.jl
+# Originally derived from the deleted `examples/generic_struct_test.jl` (removed in #9); the tests below are the reference.
 using RustCall
 using Test
 
