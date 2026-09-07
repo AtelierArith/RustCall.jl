@@ -5,8 +5,9 @@ through PyO3 — from one definition of each item, with pyo3 as an *optional*
 dependency.
 
 > This example used to be written with RustCall's own `#[julia_pyo3]` macro.
-> That macro is **deprecated** (#275 Phase 3); the crate now shows the shape it
-> is deprecated in favour of. See "Migrating from `#[julia_pyo3]`" below.
+> That macro was deprecated in 0.2.0 (#275 Phase 3) and **removed in 0.3.0**
+> (#312); the crate shows the shape that replaced it. See "Migrating from
+> `#[julia_pyo3]`" below.
 
 ## Overview
 
@@ -216,9 +217,9 @@ in. (RustCall can also bind a crate that has *only* PyO3 attributes and no
 | `#[julia_pyo3] pub struct Point {...}` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))] pub struct Point {...}` |
 | `#[julia_pyo3] impl Point {...}` | `#[julia] impl Point { #[julia] pub fn ... }` plus a `#[cfg(feature = "python")] #[pyo3::pymethods] impl Point { ... }` as above |
 
-`#[julia_pyo3]` still compiles (with a `use of deprecated macro` warning) until
-the next breaking release. The full write-up is in `docs/src/pyo3.md`,
-"Migrating from `#[julia_pyo3]`".
+`#[julia_pyo3]` no longer exists: a crate that still uses it fails to build
+with ``cannot find attribute `julia_pyo3` ``. The full write-up is in
+`docs/src/pyo3.md`, "Migrating from `#[julia_pyo3]`".
 
 ## Files
 
