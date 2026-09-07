@@ -71,10 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `juliacall_macros` path dependency, because the proc-macro crate is not on
   crates.io yet. The fixtures moved to `test/fixtures/sample_crate`,
   `test/fixtures/sample_crate_pyo3`, `test/fixtures/sample_crate_pyo3_only`,
-  `_mixed` and `_optional`, and their `cargo test` passes again (the
-  `Result` / `Option` unit tests of `sample_crate` still read the pre-#279
-  `CResult` fields). Documentation that pointed `@rust_crate` at
-  `examples/sample_crate*` now names the embedded crate or the fixture.
+  `_mixed` and `_optional`, and `cargo test` passes again in `sample_crate`:
+  its `Result` / `Option` unit tests read the pre-#279 `CResult` fields
+  (`result.is_ok`, `ok_value`) and did not compile; they now compare the plain
+  `Result` / `Option` values, in the fixture and in the embedded copy.
+  Documentation that pointed `@rust_crate` at `examples/sample_crate*` now
+  names the embedded crate or the fixture.
 
 ## [0.2.1] - 2026-09-07
 
