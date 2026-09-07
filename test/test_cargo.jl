@@ -775,3 +775,30 @@ end
         end
     end
 end
+
+@testset "clear_cache keeps the lockfiles; clear_lockfiles removes them (#256 review)" begin
+    # A lockfile is an input of a build, not compiled output: clearing the
+    # compiled cache must not silently re-resolve every dependency set. The
+    # store lives under the cache directory, so `clear_cache` removes the
+    # directory entry by entry and skips it.
+    with_isolated_cargo_cache() do
+        deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+        lockfile = RustCall.lockfile_path(deps)
+        write(lockfile, "# a pinned resolution\n")
+        # Something to clear next to it.
+        cargo_dir = RustCall.get_cargo_cache_dir()
+        write(joinpath(cargo_dir, "stale.bin"), "x")
+        RustCall.clear_cache()
+        @test isfile(lockfile)
+        @test read(lockfile, String) == "# a pinned resolution\n"
+        @test !isfile(joinpath(cargo_dir, "stale.bin"))
+        # ... and a cleared cache reads as empty: the size is that of the
+        # compiled cache, not of the inputs kept beside it.
+        @test RustCall.get_cache_size() == 0
+        # The explicit operation is the one that discards resolutions.
+        RustCall.clear_lockfiles()
+        @test !isfile(lockfile)
+        @test isdir(RustCall.lockfile_dir())
+        @test "lockfiles" in RustCall.CACHE_INPUT_DIRS
+    end
+end

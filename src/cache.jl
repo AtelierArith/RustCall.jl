@@ -754,6 +754,11 @@ The pre-#252 tree under `_legacy_cache_root()` is removed only with
 RustCall (see the warning there), so removing it is opt-in even though every
 name matched is exact.
 
+The persisted `Cargo.lock` files (`lockfile_dir`, #256) are **kept**: they are
+inputs of a build — the resolution a `// cargo-deps:` block is pinned to — not
+compiled output, and clearing compiled artifacts must not silently re-resolve
+every dependency set. `clear_lockfiles()` removes them on request.
+
 On Windows, some files may be locked and cannot be deleted immediately.
 """
 function clear_cache(; sweep_legacy::Bool = false)
@@ -762,44 +767,34 @@ function clear_cache(; sweep_legacy::Bool = false)
     end
 end
 
+"""
+    CACHE_INPUT_DIRS
+
+Entries directly under the cache directory that `clear_cache` leaves in place:
+they hold build *inputs* RustCall persisted, not compiled output. Today the
+`lockfiles` store (#256).
+"""
+const CACHE_INPUT_DIRS = ("lockfiles",)
+
 function _clear_cache_unlocked(; sweep_legacy::Bool = false)
     # Clearing "the cache" means every format this RustCall is responsible for,
     # not just the current one, or a `clear_cache()` would leave older scratch
     # spaces on disk forever.
     sweep_stale_cache_formats(; legacy = sweep_legacy)
     cache_dir = get_cache_dir()
-    if isdir(cache_dir)
+    isdir(cache_dir) || return nothing
+    # Entry by entry, never the directory as a whole: the `lockfiles` store is
+    # an input and stays (#256), and on Windows a still-mapped library refuses
+    # to be deleted — the rest of the cache is cleared around it rather than
+    # the whole operation failing.
+    for entry in readdir(cache_dir)
+        entry in CACHE_INPUT_DIRS && continue
+        path = joinpath(cache_dir, entry)
         try
-            # Try to remove the directory recursively
-            rm(cache_dir, recursive=true, force=true)
+            rm(path, recursive = true, force = true)
         catch e
-            # On Windows, files may be locked (e.g., by Julia's compiled modules)
-            # Check if it's a directory not empty or busy error
-            if isa(e, Base.IOError)
-                error_msg = string(e)
-                if occursin("not empty", error_msg) || occursin("ENOTEMPTY", error_msg) ||
-                   occursin("busy", error_msg) || occursin("EBUSY", error_msg)
-                    # Try to remove files individually, ignoring errors for locked files
-                    for file in readdir(cache_dir)
-                        file_path = joinpath(cache_dir, file)
-                        try
-                            if isfile(file_path)
-                                rm(file_path, force=true)
-                            elseif isdir(file_path)
-                                rm(file_path, recursive=true, force=true)
-                            end
-                        catch
-                            # Ignore errors for individual files (may be locked)
-                        end
-                    end
-                else
-                    # Re-throw if it's a different error
-                    rethrow(e)
-                end
-            else
-                # Re-throw if it's not an IOError
-                rethrow(e)
-            end
+            e isa Base.IOError || rethrow(e)
+            @debug "Could not remove a cache entry (file may be in use)" path exception = e
         end
     end
     return nothing
@@ -818,6 +813,10 @@ function get_cache_size()
 
     total_size = Int64(0)
     for (root, dirs, files) in walkdir(cache_dir)
+        # The size of the *compiled* cache: the persisted lockfiles are inputs
+        # (`CACHE_INPUT_DIRS`), survive `clear_cache`, and are not counted —
+        # otherwise a cleared cache would never read as empty (#256).
+        root == cache_dir && filter!(d -> !(d in CACHE_INPUT_DIRS), dirs)
         for file in files
             file_path = joinpath(root, file)
             if isfile(file_path)

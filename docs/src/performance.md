@@ -96,7 +96,8 @@ persists one `Cargo.lock` per dependency set and builds against it (issue #256):
   never answer for another graph.
 - **Sharing and refreshing.** Copy or commit the file to reproduce a build on
   another machine; delete it to resolve afresh. `clear_cache` leaves lockfiles
-  alone — they are inputs of a build, not outputs.
+  alone — they are inputs of a build, not outputs — and
+  `RustCall.clear_lockfiles()` is the one operation that discards them all.
 - **Offline.** `RUSTCALL_OFFLINE=1` adds `--offline` to every Cargo invocation.
   With a warm registry cache the pinned build succeeds without the network; with
   a cold one Cargo fails at once with its own message (surfaced as a

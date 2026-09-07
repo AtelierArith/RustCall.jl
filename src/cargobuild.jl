@@ -99,6 +99,29 @@ function lockfile_dir()
 end
 
 """
+    clear_lockfiles()
+
+Remove every persisted `Cargo.lock` (`lockfile_dir`), so the next build of each
+`// cargo-deps:` dependency set resolves it afresh. This is the one operation
+that discards resolutions: `clear_cache` keeps them, because they are inputs of
+a build and not compiled output (#256). To re-resolve a single set, delete
+`lockfile_path(deps)` instead.
+"""
+function clear_lockfiles()
+    dir = joinpath(get_cache_dir(), "lockfiles")
+    isdir(dir) || return nothing
+    for entry in readdir(dir; join = true)
+        try
+            rm(entry; force = true)
+        catch e
+            e isa Base.IOError || rethrow(e)
+            @debug "Could not remove a lockfile" entry exception = e
+        end
+    end
+    return nothing
+end
+
+"""
     lockfile_path(deps::Vector{DependencySpec}) -> String
     lockfile_path(code::AbstractString) -> String
 
