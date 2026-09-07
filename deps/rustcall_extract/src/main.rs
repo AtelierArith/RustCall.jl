@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
+//! rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
 //! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract schema-version
@@ -26,6 +27,7 @@ use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 
 const USAGE: &str = "usage:
   rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
+  rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] [--crate-root FILE] FILE...
   rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract schema-version
@@ -37,6 +39,10 @@ from the manifest and the expanded source. Without it every item is reported.
 target_*); feature/profile predicates are unknown and keep their items (Cargo builds).
 --skip-unparsable: files that are not a complete Rust module (e.g. include!() fragments)
 are skipped with a warning instead of failing the run.
+wrap: generate the `src/lib.rs` of a wrapper crate for the PyO3 items of the crate
+scanned from FILE... (#275 Phase 2), and write it, together with the manifest that
+describes what it exports, as one TOML document to --out or stdout. Always crate
+mode; --crate-name is the dependency's package name.
 --crate-root: crate-mode only. Scan PyO3 items (#275) by following the crate's
 module tree from this file (src/lib.rs) instead of treating every FILE as a root,
 so each item's module_path and the visibility of its enclosing modules are real.
@@ -136,6 +142,115 @@ fn token(arg: &Arg) -> Token<'_> {
     }
 }
 
+/// What every scan needs, so `manifest` and `wrap` cannot drift apart: the two
+/// commands must describe the same items for the same inputs.
+struct ScanOptions {
+    mode: Mode,
+    cfg: Option<CfgSet>,
+    skip_unparsable: bool,
+    crate_root: Option<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+/// Run the scan `opts` describes and return the merged manifest.
+fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
+    let mut merged = Manifest::new(opts.mode);
+    // With --crate-root the PyO3 scan runs once over the module tree below, so
+    // the per-file pass must not report the same items again as crate-root ones.
+    let per_file_pyo3_scan = opts.crate_root.is_none();
+    for f in &opts.files {
+        let src = read_source(f)?;
+        let extracted = match opts.mode {
+            Mode::Crate => rustcall_core::extract::extract_crate_with_cfg_scan(
+                &src,
+                opts.cfg.as_ref(),
+                per_file_pyo3_scan,
+            ),
+            Mode::Inline => {
+                rustcall_core::extract::extract_with_cfg(&src, opts.mode, opts.cfg.as_ref())
+            }
+        };
+        match extracted {
+            Ok(m) => merged.merge(m),
+            Err(e) if opts.skip_unparsable => {
+                eprintln!(
+                    "rustcall-extract: skipping {}: not a complete Rust module ({e})",
+                    f.display()
+                );
+            }
+            Err(e) => return Err(format!("{}: {e}", f.display())),
+        }
+    }
+    if let Some(root) = &opts.crate_root {
+        scan_pyo3_tree(root, opts.cfg.as_ref(), opts.skip_unparsable, &mut merged)?;
+    }
+    if opts.files.len() > 1 || opts.crate_root.is_some() {
+        merged.sort();
+    }
+    Ok(merged)
+}
+
+/// Generate the wrapper crate of a PyO3 crate (#275 Phase 2).
+fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
+    let mut crate_name: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut cfg_file: Option<PathBuf> = None;
+    let mut cfg_lenient = false;
+    let mut skip_unparsable = false;
+    let mut crate_root: Option<PathBuf> = None;
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match token(&args[i]) {
+            Token::Option("--skip-unparsable") => skip_unparsable = true,
+            Token::Option("--crate-name") => {
+                crate_name = Some(take_value(args, &mut i, "--crate-name")?)
+            }
+            Token::Option("--out") => out = Some(take_path(args, &mut i, "--out")?),
+            Token::Option("--cfg-file") => cfg_file = Some(take_path(args, &mut i, "--cfg-file")?),
+            Token::Option("--cfg-lenient") => cfg_lenient = true,
+            Token::Option("--crate-root") => {
+                crate_root = Some(take_path(args, &mut i, "--crate-root")?)
+            }
+            Token::Option("--") => {
+                files.extend(args[i + 1..].iter().map(Arg::path));
+                break;
+            }
+            Token::Option(f) => return Err(format!("unknown option `{f}`\n{USAGE}")),
+            Token::File(f) => files.push(f.path()),
+        }
+        i += 1;
+    }
+    let crate_name = crate_name.ok_or("--crate-name is required")?;
+    if files.is_empty() {
+        return Err("at least one FILE is required".into());
+    }
+    let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient)?;
+    // Whether the scan decided every `#[cfg]` predicate. When it did not,
+    // `wrapper_crate` refuses a `#[cfg]`-carrying item rather than generating
+    // a call to something the build may not have.
+    let cfg_resolved = cfg.is_some() && !cfg_lenient;
+    let scanned = scan(&ScanOptions {
+        mode: Mode::Crate,
+        cfg,
+        skip_unparsable,
+        crate_root,
+        files,
+    })?;
+    let wrapper = rustcall_core::wrap::wrapper_crate(&scanned, &crate_name, cfg_resolved);
+    let text = wrapper
+        .to_toml()
+        .map_err(|e| format!("failed to serialize wrapper crate: {e}"))?;
+    match out {
+        Some(path) => {
+            fs::write(&path, text).map_err(|e| format!("failed to write {}: {e}", path.display()))
+        }
+        None => io::stdout()
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("failed to write stdout: {e}")),
+    }
+}
+
 fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     let mut mode: Option<Mode> = None;
     let mut out: Option<PathBuf> = None;
@@ -175,37 +290,13 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
         return Err("--crate-root is only meaningful with --mode crate".into());
     }
     let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient)?;
-    let mut merged = Manifest::new(mode);
-    // With --crate-root the PyO3 scan runs once over the module tree below, so
-    // the per-file pass must not report the same items again as crate-root ones.
-    let per_file_pyo3_scan = crate_root.is_none();
-    for f in &files {
-        let src = read_source(f)?;
-        let extracted = match mode {
-            Mode::Crate => rustcall_core::extract::extract_crate_with_cfg_scan(
-                &src,
-                cfg.as_ref(),
-                per_file_pyo3_scan,
-            ),
-            Mode::Inline => rustcall_core::extract::extract_with_cfg(&src, mode, cfg.as_ref()),
-        };
-        match extracted {
-            Ok(m) => merged.merge(m),
-            Err(e) if skip_unparsable => {
-                eprintln!(
-                    "rustcall-extract: skipping {}: not a complete Rust module ({e})",
-                    f.display()
-                );
-            }
-            Err(e) => return Err(format!("{}: {e}", f.display())),
-        }
-    }
-    if let Some(root) = &crate_root {
-        scan_pyo3_tree(root, cfg.as_ref(), skip_unparsable, &mut merged)?;
-    }
-    if files.len() > 1 || crate_root.is_some() {
-        merged.sort();
-    }
+    let merged = scan(&ScanOptions {
+        mode,
+        cfg,
+        skip_unparsable,
+        crate_root,
+        files,
+    })?;
     write_manifest(&merged, out.as_deref())
 }
 
@@ -397,6 +488,7 @@ fn run() -> Result<(), String> {
     let rest = &args[1..];
     match cmd.as_utf8() {
         Some("manifest") => cmd_manifest(rest),
+        Some("wrap") => cmd_wrap(rest),
         Some("expand") => cmd_expand(rest),
         Some("specialize") => cmd_specialize(rest),
         Some("schema-version") => {

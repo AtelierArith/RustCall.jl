@@ -20,6 +20,7 @@ pub mod model;
 pub mod pyo3;
 pub mod specialize;
 pub mod types;
+pub mod wrap;
 
 pub use manifest::{Manifest, Mode, SCHEMA_VERSION};
 

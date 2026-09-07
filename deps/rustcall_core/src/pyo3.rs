@@ -44,7 +44,7 @@ use crate::manifest::{
 };
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
-    has_type_params, is_ffi_compatible_type, last_ident, needs_clone_for_getter,
+    has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type, last_ident,
     return_type_to_string, type_to_string, unparen,
 };
 
@@ -113,41 +113,149 @@ struct ScannedClass {
 #[derive(Debug)]
 struct ScannedImpl {
     module_path: Vec<String>,
-    /// The module qualifier written in front of the type, if any: `impl a::C`
-    /// gives `["a"]`, a bare `impl C` gives `[]`. It names the class exactly
-    /// when several modules define one of that name, so it is kept rather than
-    /// collapsed to the final identifier.
-    qualifier: Vec<String>,
+    /// The module qualifier written in front of the type: `impl a::C` gives a
+    /// relative `["a"]`, a bare `impl C` gives an empty one. It names the class
+    /// exactly when several modules define one of that name, so it is kept
+    /// rather than collapsed to the final identifier.
+    qualifier: PathQualifier,
     target: syn::Ident,
     line: usize,
     funcs: Vec<ImplItemFn>,
 }
 
-/// The leading segments of a path type, without the type's own name:
-/// `a::b::C` -> `["a", "b"]`, a bare `C` -> `[]`.
+/// Where a written path is rooted, which decides what a qualifier may match.
 ///
-/// `crate` and `self` are dropped: they name the crate root, which the module
-/// path is already relative to. A `super` qualifier walks *up* an unknown
-/// number of levels for the purposes of this matcher, so the whole qualifier is
-/// discarded rather than misread — the caller then falls back to matching on
-/// the name alone, which is the pre-existing behaviour.
-fn type_path_qualifier(ty: &Type) -> Vec<String> {
-    let Type::Path(p) = unparen(ty) else {
-        return Vec::new();
-    };
-    let count = p.path.segments.len();
-    let mut out = Vec::new();
-    for segment in p.path.segments.iter().take(count.saturating_sub(1)) {
-        let name = segment.ident.to_string();
-        if name == "super" {
-            return Vec::new();
+/// `crate::a::C` and `a::C` are **not** the same class when the enclosing
+/// module `m` also has an `a`: the first is `a::C` at the crate root, the
+/// second is `m::a::C` (2018 paths) or, through a `use`, whatever brought `a`
+/// into scope. Collapsing the two attached a `#[pymethods]` block to the wrong
+/// class, which Phase 2 then compiled into a call to the wrong type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PathAnchor {
+    /// `crate::…` — the crate root, and nothing else.
+    Crate,
+    /// `self::…` — the module the path was written in, and nothing else.
+    SelfModule,
+    /// A bare path: the enclosing module first, then the crate root.
+    Relative,
+    /// `super::…` (repeated `n` times): the module `n` levels above the one
+    /// the path was written in, and nothing else. Treating it as
+    /// uninformative sent `impl super::C` to a same-named `C` in the impl's
+    /// own module (#307 review).
+    Super(usize),
+    /// A path this matcher cannot follow: `super` after another segment,
+    /// which Rust itself rejects. Nothing is matched on the qualifier at all.
+    Unknown,
+}
+
+/// A path qualifier: where it is rooted and the module segments it names,
+/// without the type's own name (`a::b::C` -> `["a", "b"]`).
+#[derive(Debug, Clone)]
+struct PathQualifier {
+    anchor: PathAnchor,
+    segments: Vec<String>,
+}
+
+impl PathQualifier {
+    fn relative(segments: Vec<String>) -> Self {
+        PathQualifier {
+            anchor: PathAnchor::Relative,
+            segments,
         }
-        if name == "crate" || name == "self" {
-            continue;
-        }
-        out.push(name);
     }
-    out
+
+    /// Whether the qualifier says nothing (a bare `impl C`, or a path this
+    /// matcher cannot follow).
+    fn is_uninformative(&self) -> bool {
+        self.anchor == PathAnchor::Unknown
+            || (self.anchor == PathAnchor::Relative && self.segments.is_empty())
+    }
+
+    /// Whether the qualifier names one place and one place only, so that when
+    /// no class is found there the block must be dropped rather than matched
+    /// by its bare name: `super::C` is never the impl's own module's `C`.
+    fn forbids_fallback(&self) -> bool {
+        matches!(self.anchor, PathAnchor::Super(_))
+    }
+
+    /// The module paths this qualifier can name, from inside `module_path`,
+    /// nearest first. A `super::` that walks past the crate root names
+    /// nothing.
+    fn candidates(&self, module_path: &[String]) -> Vec<Vec<String>> {
+        let mut nested = module_path.to_vec();
+        nested.extend(self.segments.iter().cloned());
+        match self.anchor {
+            PathAnchor::Unknown => Vec::new(),
+            PathAnchor::Crate => vec![self.segments.clone()],
+            PathAnchor::SelfModule => vec![nested],
+            PathAnchor::Relative => vec![nested, self.segments.clone()],
+            PathAnchor::Super(levels) => {
+                if levels > module_path.len() {
+                    return Vec::new();
+                }
+                let mut base = module_path[..module_path.len() - levels].to_vec();
+                base.extend(self.segments.iter().cloned());
+                vec![base]
+            }
+        }
+    }
+}
+
+/// The qualifier of a path type, anchor included.
+fn type_path_qualifier(ty: &Type) -> PathQualifier {
+    let Type::Path(p) = unparen(ty) else {
+        return PathQualifier::relative(Vec::new());
+    };
+    path_qualifier(p.path.segments.iter().map(|s| s.ident.to_string()))
+}
+
+/// Split a written path into its anchor and its module segments, dropping the
+/// final segment (the item's own name).
+fn path_qualifier(segments: impl IntoIterator<Item = String>) -> PathQualifier {
+    let all: Vec<String> = segments.into_iter().collect();
+    let mut anchor = PathAnchor::Relative;
+    let mut out = Vec::new();
+    let mut levels = 0usize;
+    let count = all.len();
+    for (i, name) in all.into_iter().enumerate() {
+        if i == 0 {
+            match name.as_str() {
+                "crate" => {
+                    anchor = PathAnchor::Crate;
+                    continue;
+                }
+                "self" => {
+                    anchor = PathAnchor::SelfModule;
+                    continue;
+                }
+                "super" => {
+                    levels = 1;
+                    anchor = PathAnchor::Super(levels);
+                    continue;
+                }
+                _ => {}
+            }
+        } else if name == "super" {
+            // A run of leading `super`s walks up one level each; a `super`
+            // after a named segment is not a path Rust accepts.
+            if matches!(anchor, PathAnchor::Super(_)) && out.is_empty() {
+                levels += 1;
+                anchor = PathAnchor::Super(levels);
+                continue;
+            }
+            return PathQualifier {
+                anchor: PathAnchor::Unknown,
+                segments: Vec::new(),
+            };
+        }
+        if i + 1 < count {
+            out.push(name);
+        }
+    }
+    PathQualifier {
+        anchor,
+        segments: out,
+    }
 }
 
 impl Pyo3Scan {
@@ -263,11 +371,19 @@ impl Pyo3Scan {
                     let mut bindings = Vec::new();
                     let mut prefix = Vec::new();
                     flatten_use_tree(&u.tree, &mut prefix, &mut bindings);
-                    for (alias, path) in bindings {
+                    for (alias, anchored) in bindings {
+                        let qualifier = path_qualifier(anchored.iter().cloned());
+                        // The anchor segments are not part of the module path;
+                        // the qualifier keeps what they meant.
+                        let path: Vec<String> = anchored
+                            .into_iter()
+                            .filter(|s| s != "crate" && s != "self" && s != "super")
+                            .collect();
                         self.imports.push(ScannedImport {
                             module_path: module_path.clone(),
                             alias,
                             path,
+                            qualifier,
                         });
                     }
                 }
@@ -334,6 +450,10 @@ impl Pyo3Scan {
         manifest
             .structs
             .extend(self.classes.into_iter().map(|c| c.entry));
+        // The Julia surface first: an item it refuses claims no symbol, so a
+        // `fn User()` refused for the class `User`'s name does not also cost the
+        // class its `String` getters' helper (#307 review).
+        mark_julia_surface_collisions(manifest);
         mark_symbol_collisions(manifest);
     }
 
@@ -341,12 +461,11 @@ impl Pyo3Scan {
         let name = imp.target.to_string();
         let named = |c: &ScannedClass| c.entry.name == name;
 
-        if !imp.qualifier.is_empty() {
+        if !imp.qualifier.is_uninformative() {
             // `impl a::C` inside module `m` means `m::a::C`, or `a::C` from the
-            // crate root — try both, nearest first.
-            let mut nested = imp.module_path.clone();
-            nested.extend(imp.qualifier.iter().cloned());
-            for candidate in [nested, imp.qualifier.clone()] {
+            // crate root — try both, nearest first. `impl crate::a::C` means
+            // only the second, and `impl self::a::C` only the first.
+            for candidate in imp.qualifier.candidates(&imp.module_path) {
                 if let Some(i) = self
                     .classes
                     .iter()
@@ -354,6 +473,13 @@ impl Pyo3Scan {
                 {
                     return Some(i);
                 }
+            }
+            // `impl super::C` names the parent module's `C` and nothing else:
+            // with none there, attaching to a `C` in the impl's own module —
+            // or to the one `C` anywhere — would be exactly the wrong class
+            // (#307 review).
+            if imp.qualifier.forbids_fallback() {
+                return None;
             }
         }
 
@@ -372,11 +498,8 @@ impl Pyo3Scan {
             if import.module_path != imp.module_path || import.alias != name {
                 continue;
             }
-            let qualifier = &import.path[..import.path.len().saturating_sub(1)];
             let target = import.path.last().map(String::as_str).unwrap_or(&name);
-            let mut nested = imp.module_path.clone();
-            nested.extend(qualifier.iter().cloned());
-            for candidate in [nested, qualifier.to_vec()] {
+            for candidate in import.qualifier.candidates(&imp.module_path) {
                 if let Some(i) = self
                     .classes
                     .iter()
@@ -403,16 +526,22 @@ struct ScannedImport {
     module_path: Vec<String>,
     /// The name the import binds — the last segment, or the `as` alias.
     alias: String,
-    /// The full path it names, `crate` / `self` stripped: `a::C` -> `["a", "C"]`.
+    /// The full path it names, anchor stripped: `crate::a::C` -> `["a", "C"]`.
     path: Vec<String>,
+    /// Where that path is rooted, so `use crate::a::C;` and `use a::C;` are
+    /// not confused when the enclosing module also has an `a`.
+    qualifier: PathQualifier,
 }
 
-/// Flatten a `use` tree into the names it binds and the paths they name.
+/// Flatten a `use` tree into the names it binds and the paths they name,
+/// **anchor included**.
 ///
-/// `use crate::a::{C, D as E};` yields `("C", ["a", "C"])` and
-/// `("E", ["a", "D"])`. A glob (`use a::*;`) binds no name it can be matched
-/// on and is skipped; `super::` is dropped for the same reason
-/// [`type_path_qualifier`] drops it.
+/// `use crate::a::{C, D as E};` yields `("C", ["crate", "a", "C"])` and
+/// `("E", ["crate", "a", "D"])`; the caller splits the anchor off with
+/// [`path_qualifier`], so `use crate::a::C;` and `use a::C;` stay distinct.
+/// A glob (`use a::*;`) binds no name it can be matched on and is skipped.
+/// `super::` is kept: [`path_qualifier`] resolves it against the module the
+/// `use` was written in, like any other anchor (#307 review).
 fn flatten_use_tree(
     tree: &syn::UseTree,
     prefix: &mut Vec<String>,
@@ -421,17 +550,9 @@ fn flatten_use_tree(
     match tree {
         syn::UseTree::Path(path) => {
             let segment = path.ident.to_string();
-            let skip = segment == "crate" || segment == "self";
-            if segment == "super" {
-                return;
-            }
-            if !skip {
-                prefix.push(segment);
-            }
+            prefix.push(segment);
             flatten_use_tree(&path.tree, prefix, out);
-            if !skip {
-                prefix.pop();
-            }
+            prefix.pop();
         }
         syn::UseTree::Name(name) => {
             let mut full = prefix.clone();
@@ -450,6 +571,73 @@ fn flatten_use_tree(
         }
         // A glob binds no name this matcher can key on.
         syn::UseTree::Glob(_) => {}
+    }
+}
+
+/// The Julia surface a wrapper is bound to has a namespace of its own, apart
+/// from the exported symbols, and the scan refuses what that namespace cannot
+/// hold twice (`julia_name_collision:<earlier>`, #307 review):
+///
+/// * a class is a Julia type *and* its constructor function, so its name is
+///   taken for every arity — a free function or a static method of that name
+///   would redefine the constant (`function User()` before `mutable struct
+///   User`) or graft an extra constructor onto the type. Classes claim first;
+/// * a `#[staticmethod]` becomes a module-level Julia function named after the
+///   method, with one untyped argument per Rust argument (`crate_bindings.jl`),
+///   exactly as a `#[pyfunction]` does, so two classes with a `parse(s)` each,
+///   or a class `parse(s)` next to a free `parse(s)`, define one Julia method
+///   twice and the later silently replaces the earlier. Free functions claim
+///   their name and arity next (a caller writing `parse(s)` means the free
+///   function), then classes in manifest order.
+///
+/// The Rust symbols of all of these are distinct — class-qualified, or in
+/// different modules — so [`mark_symbol_collisions`] lets them through.
+/// Constructors are named after their class and instance methods dispatch on
+/// `self::Class`; neither can collide this way.
+fn mark_julia_surface_collisions(manifest: &mut Manifest) {
+    let class_names: Vec<(String, String)> = manifest
+        .structs
+        .iter()
+        .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
+        .map(|s| (s.name.clone(), qualified(&s.module_path, &s.name)))
+        .collect();
+    let class_named = |name: &str| class_names.iter().find(|(n, _)| n == name);
+
+    let mut taken: Vec<((String, usize), String)> = Vec::new();
+    for f in &mut manifest.functions {
+        if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
+            continue;
+        }
+        if let Some((_, class)) = class_named(&f.name) {
+            f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
+            continue;
+        }
+        taken.push((
+            (f.name.clone(), f.args.len()),
+            qualified(&f.module_path, &f.name),
+        ));
+    }
+    for s in &mut manifest.structs {
+        if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
+            continue;
+        }
+        let owner = qualified(&s.module_path, &s.name);
+        for m in &mut s.methods {
+            if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
+                continue;
+            }
+            if let Some((_, class)) = class_named(&m.name) {
+                m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
+                continue;
+            }
+            let key = (m.name.clone(), m.args.len());
+            match taken.iter().find(|(k, _)| *k == key) {
+                Some((_, other)) => {
+                    m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, other);
+                }
+                None => taken.push((key, format!("{owner}::{}", m.name))),
+            }
+        }
     }
 }
 
@@ -482,7 +670,14 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         .filter(|f| !f.attribute.is_pyo3_scan())
     {
         if f.exported && !f.symbol.is_empty() {
-            taken.push((f.symbol.clone(), qualified(&f.module_path, &f.name)));
+            for symbol in wrapper_symbols(&f.symbol) {
+                taken.push((symbol, qualified(&f.module_path, &f.name)));
+            }
+            if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
+                for symbol in string_helper_symbols(&f.name) {
+                    taken.push((symbol, qualified(&f.module_path, &f.name)));
+                }
+            }
         }
     }
     for s in manifest
@@ -509,14 +704,19 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() || f.symbol.is_empty() {
             continue;
         }
-        let symbol = f.symbol.clone();
-        if let Some((_, owner)) = taken.iter().find(|(s, _)| *s == symbol) {
+        let mut symbols = wrapper_symbols(&f.symbol).to_vec();
+        if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
+            symbols.extend(string_helper_symbols(&f.name));
+        }
+        if let Some((_, owner)) = taken.iter().find(|(s, _)| symbols.contains(s)) {
             let owner = owner.clone();
             manifest.functions[i].skip_reason =
                 skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner);
         } else {
             let owner = qualified(&f.module_path, &f.name);
-            taken.push((symbol, owner));
+            for symbol in symbols {
+                taken.push((symbol, owner.clone()));
+            }
         }
     }
 
@@ -570,15 +770,51 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         // accessor, rather than taking the whole class down.
         let owner = qualified(&s.module_path, &s.name);
         let s = &mut manifest.structs[i];
+        let class_name = s.name.clone();
         for m in &mut s.methods {
             if !m.skip_reason.is_empty() || m.symbol.is_empty() {
                 continue;
             }
-            match taken.iter().find(|(t, _)| *t == m.symbol) {
+            let mut symbols = wrapper_symbols(&m.symbol).to_vec();
+            if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
+                symbols.extend(string_helper_symbols(&format!("{}_{}", class_name, m.name)));
+            }
+            match taken.iter().find(|(t, _)| symbols.contains(t)) {
                 Some((_, other)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, other);
                 }
-                None => taken.push((m.symbol.clone(), owner.clone())),
+                None => {
+                    for symbol in symbols {
+                        taken.push((symbol, owner.clone()));
+                    }
+                }
+            }
+        }
+        // The struct-level owned-string helper every `String` field getter of
+        // the class shares (`<Class>_RustCallOwnedString`, `class_wrappers`)
+        // is a declaration like any other: when another item already made it,
+        // the `String` getters are what give way, and the rest of the class
+        // stays wrappable (#307 review). A `#[pyfunction] fn User() -> String`
+        // next to a `#[pyclass] User` used to be the case; it is now refused on
+        // the Julia surface first (`mark_julia_surface_collisions`), so what
+        // reaches this is an item whose own symbols spell a helper's name.
+        if s.fields
+            .iter()
+            .any(|f| !f.getter.is_empty() && is_string_spelling(&f.rust_type))
+        {
+            let helpers = string_helper_symbols(&class_name);
+            if taken.iter().any(|(t, _)| helpers.contains(t)) {
+                for f in &mut s.fields {
+                    if is_string_spelling(&f.rust_type) {
+                        f.ffi_compatible = false;
+                        f.getter.clear();
+                        f.setter.clear();
+                    }
+                }
+            } else {
+                for symbol in helpers {
+                    taken.push((symbol, owner.clone()));
+                }
             }
         }
         for f in &mut s.fields {
@@ -599,14 +835,73 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
     }
 }
 
-/// Every symbol a struct entry claims: its wrappable methods and its field
-/// accessors.
+/// The string helpers a wrapper declares next to an item whose result — or
+/// `Result` / `Option` payload — is a string: `<owner>_RustCallOwnedString` and
+/// `<owner>_free_rust_string` for an owned buffer, `<owner>_RustCallBorrowedString`
+/// for a view. The owner is the function's name, the class's name (for its
+/// field getters) or `<Class>_<method>`, so two items with one owner declare
+/// the same helpers twice and the generated crate does not compile; all three
+/// names are reserved whenever the item may declare any of them (#307 review).
+fn string_helper_symbols(owner: &str) -> [String; 3] {
+    [
+        format!("{owner}_RustCallOwnedString"),
+        format!("{owner}_free_rust_string"),
+        format!("{owner}_RustCallBorrowedString"),
+    ]
+}
+
+/// Whether a wrapper for an item with these manifest types declares a string
+/// helper: a `String` / `&str` result, or such a payload.
+fn declares_string_helpers(
+    return_type: &str,
+    ok_type: &str,
+    err_type: &str,
+    inner_type: &str,
+) -> bool {
+    [return_type, ok_type, err_type, inner_type]
+        .iter()
+        .any(|spelling| is_string_spelling(spelling))
+}
+
+fn is_string_spelling(spelling: &str) -> bool {
+    !spelling.is_empty()
+        && syn::parse_str::<Type>(spelling)
+            .map(|ty| is_string_type(&ty) || is_str_ref_type(&ty))
+            .unwrap_or(false)
+}
+
+/// Every name a wrapper derives from one manifest symbol: the entry point
+/// itself, its panic-channel reader (`<symbol>_take_panic`,
+/// `codegen::PANIC_SYMBOL_SUFFIX`), and the private thread-local slot that
+/// reader drains — `__RUSTCALL_PANIC_<SYMBOL>`, the symbol upper-cased, which
+/// `foo` and `FOO` would therefore share. A clash on any of them is a duplicate
+/// definition in the generated crate — `foo` and `foo_take_panic` as two
+/// `#[pyfunction]`s both want `rustcall_foo_take_panic` — so all are reserved
+/// and all are checked (#307 review). Field accessors have no reader and
+/// derive nothing.
+fn wrapper_symbols(symbol: &str) -> [String; 3] {
+    [
+        symbol.to_string(),
+        format!("{symbol}{}", crate::codegen::PANIC_SYMBOL_SUFFIX),
+        format!("__RUSTCALL_PANIC_{}", symbol.to_uppercase()),
+    ]
+}
+
+/// Every symbol a struct entry claims: its wrappable methods (with their
+/// panic readers and string helpers), its field accessors, and the
+/// struct-level owned-string helper its `String` getters share.
 fn struct_symbols(s: &Struct) -> Vec<String> {
     let mut out = Vec::new();
     for m in &s.methods {
         if m.skip_reason.is_empty() && !m.symbol.is_empty() {
-            out.push(m.symbol.clone());
+            out.extend(wrapper_symbols(&m.symbol));
+            if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
+                out.extend(string_helper_symbols(&format!("{}_{}", s.name, m.name)));
+            }
         }
+    }
+    if s.has_owned_string_helper {
+        out.extend(string_helper_symbols(&s.name));
     }
     for f in &s.fields {
         if !f.getter.is_empty() {
@@ -733,10 +1028,14 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
             // only a `pub` field gets accessors. A skipped class has no handle
             // type, so its fields have none either, whatever their visibility.
             let field_is_public = matches!(f.vis, syn::Visibility::Public(_));
+            // A `String` field crosses as the owned-string ABI; a `Vec<T>`
+            // has no ABI on the Julia side yet, so advertising an accessor for
+            // it would make the whole binding fail after the wrapper built
+            // (#307 review; #303 owns an owned-vector ABI).
             let usable = reason.is_empty()
                 && field_is_public
                 && pyo3_type_in(&f.ty).is_none()
-                && (is_ffi_compatible_type(&f.ty) || needs_clone_for_getter(&f.ty));
+                && (is_ffi_compatible_type(&f.ty) || is_string_type(&f.ty));
             fields.push(Field {
                 name: ident.to_string(),
                 rust_type: type_to_string(&f.ty),
@@ -754,6 +1053,10 @@ fn class_entry(item: &ItemStruct, reachable: bool, module_path: &[String]) -> St
                 },
                 python_name: access.python_name,
                 vis: visibility_string(&f.vis),
+                // Whatever `#[cfg]` survived pruning is one the scan could not
+                // decide; the generator refuses the accessors under a lenient
+                // scan (#307 review).
+                cfg: predicate_string(&f.attrs),
             });
         }
     }
@@ -834,14 +1137,51 @@ fn method_entry(struct_ident: &syn::Ident, func: &ImplItemFn, owner_skip: &str) 
         ok_abi: String::new(),
         err_abi: String::new(),
         inner_abi: String::new(),
-        // A `#[new]`, and any other method returning `Self`, hands back the
-        // class itself — an opaque handle a wrapper boxes (`#[pyclass]` is
-        // never `repr(C)`), decided by the same rule the `#[julia]` path uses.
-        returns_boxed_struct: crate::codegen::returns_boxed_struct(struct_ident, func),
+        // A `#[new]`, and any other method returning `Self` / the class, hands
+        // back the class itself — an opaque handle a wrapper boxes
+        // (`#[pyclass]` is never `repr(C)`). Decided from the PyO3 marker and
+        // the return type, never from the method's name: a
+        // `#[staticmethod] fn new() -> i32` is an ordinary method, and boxing
+        // its `i32` as a `*mut Class` would not compile (#307 review).
+        returns_boxed_struct: is_constructor
+            || matches!(
+                &func.sig.output,
+                syn::ReturnType::Type(_, ty) if returns_class(ty, struct_ident)
+            ),
         args: fn_args(&func.sig),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
         generic_wrapper: String::new(),
+        cfg: predicate_string(&func.attrs),
+    }
+}
+
+/// Whether a method's return type names the class itself: `Self`, the bare
+/// class name, or a `crate::` / `self::` / `super::`-anchored path ending in
+/// it. A path anchored elsewhere — `std::string::String` on a `#[pyclass]
+/// struct String` — is some other type that happens to share the last
+/// segment, and boxing it as the class would not compile (#307 review).
+/// `codegen::returns_boxed_struct`'s last-segment rule stays with the
+/// `#[julia]` path, whose items live in the crate that defines the struct.
+fn returns_class(ty: &Type, class: &syn::Ident) -> bool {
+    let Type::Path(path) = unparen(ty) else {
+        return false;
+    };
+    if path.qself.is_some() {
+        return false;
+    }
+    let segments: Vec<String> = path
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    match segments.as_slice() {
+        [only] => only == "Self" || class == only.as_str(),
+        [first, .., last] => {
+            matches!(first.as_str(), "crate" | "self" | "super") && class == last.as_str()
+        }
+        [] => false,
     }
 }
 
@@ -864,7 +1204,17 @@ fn item_skip_reason(vis: &syn::Visibility, reachable: bool, is_generic: bool) ->
 ///
 /// A `PyResult<T>` return is exempt — the error is opaque, never rendered — but
 /// its `Ok` type is still checked, so `PyResult<PyObject>` is skipped.
+///
+/// An `async fn` is refused outright: its declared output is what the future
+/// *resolves to*, and a wrapper that called it would hand back the future
+/// itself — a type error in the generated crate, which no `extern "C"` can
+/// return anyway. pyo3 lets a `#[pyfunction]` be `async` (with its
+/// `experimental-async` feature); the wrapper has no executor to drive it
+/// (#307 review).
 fn signature_skip_reason(sig: &syn::Signature, return_kind: ReturnKind) -> Option<String> {
+    if sig.asyncness.is_some() {
+        return Some(skip_reason::ASYNC_FN.to_string());
+    }
     for input in &sig.inputs {
         let FnArg::Typed(pt) = input else { continue };
         if let Some(found) = pyo3_type_in(&pt.ty) {

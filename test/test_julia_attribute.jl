@@ -172,10 +172,13 @@ using Libdl
         # (#279), schema 3 predates the contract columns
         # (`Function.return_abi`, `Field.abi`, `Method.returns_boxed_struct`,
         # #276) and schema 4 predates the PyO3 scan columns (`attribute`
-        # origins, `vis`, `skip_reason`, `py_result`, #275) and schema 5
-        # predates `Result`/`Option` on struct methods, which changes the ABI
-        # of a method wrapper rather than only describing it (#268); a consumer
-        # must not fall back to any of them.
+        # origins, `vis`, `skip_reason`, `py_result`, #275). Schema 5 predates
+        # everything schema 6 bundles together: `Result`/`Option` on struct
+        # methods, which changes the ABI of a method wrapper rather than only
+        # describing it (#268), and the PyO3 *wrapper* columns (an exported
+        # `py_*` entry with a `return_abi`, the `i32` `err_type` of a lowered
+        # `PyResult`, and the generator's own skip reasons, #275 Phase 2); a
+        # consumer must not fall back to any of them.
         err = try
             RustCall._parse_manifest("schema_version = 1\nmode = \"inline\"\n")
             nothing

@@ -204,6 +204,16 @@ Whether the manifest recorded an exported getter for the field.
 field_is_accessible(info::RustStructInfo, field_name::AbstractString) = haskey(info.field_getters, String(field_name))
 
 """
+    field_is_writable(info::RustStructInfo, field_name) -> Bool
+
+Whether the manifest recorded an exported setter for the field. Independent of
+`field_is_accessible`: a `#[pyclass]` field marked `#[pyo3(set)]` alone is
+writable and not readable, and the crate emitters give it a `setproperty!`
+branch and no `getproperty` one (#307 review).
+"""
+field_is_writable(info::RustStructInfo, field_name::AbstractString) = haskey(info.field_setters, String(field_name))
+
+"""
     register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String)
 
 Register the generic wrapper functions of a generic `#[julia]` struct for
