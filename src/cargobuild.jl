@@ -157,6 +157,13 @@ something — and the result is persisted for every later build of the same set
 (#256). The generated project's root package is `CARGO_BLOCK_PACKAGE` for every
 block, which is what makes one lockfile fit them all.
 
+Two processes — or two machines sharing the store — that both find it empty
+resolve independently, possibly from different registry snapshots. Publication
+is therefore **no-clobber** (`_publish_lockfile!`): the first file to land is
+the resolution of the set, and whoever loses discards its own, replays the
+published file into its project and returns *that* digest — so both builds are
+of one graph, which is the point of the store (#313 review).
+
 Throws `CargoBuildError` with Cargo's own message when resolution fails.
 """
 function ensure_cargo_lockfile!(project::CargoProject;
@@ -187,12 +194,52 @@ function ensure_cargo_lockfile!(project::CargoProject;
         String(take!(stderr_io)), project.path))
     isfile(target) || throw(CargoBuildError("cargo generate-lockfile produced no Cargo.lock",
                                             "", project.path))
-    # Persist atomically: a concurrent build of the same set must see a whole
-    # file or none.
+    return _publish_lockfile!(stored, target)
+end
+
+"""
+    _publish_lockfile!(stored, target) -> String
+
+Publish the lockfile a project just resolved (`target`) to the store (`stored`)
+without clobbering, and return the digest of the file the project ends up with.
+
+A whole file or none: the content is staged next to `stored` and linked into
+place with `hardlink`, which fails with `EEXIST` when another process published
+first (a plain rename would silently replace the winner). When that happens —
+or when `hardlink` is unavailable and `stored` appeared in between — the
+project's own resolution is discarded, the published file is copied into the
+project, and its digest is returned: every racer builds the published graph.
+"""
+function _publish_lockfile!(stored::AbstractString, target::AbstractString)
+    stored = String(stored)
+    target = String(target)
     mkpath(dirname(stored))
     tmp = stored * ".tmp-$(getpid())-$(rand(UInt32))"
     cp(target, tmp; force = true)
-    mv(tmp, stored; force = true)
+    published = try
+        if isfile(stored)
+            false
+        else
+            try
+                hardlink(tmp, stored)
+                true
+            catch e
+                e isa Base.IOError || rethrow(e)
+                # `EEXIST`: somebody else landed first. Any other failure
+                # (a filesystem without hardlinks) falls back to a rename that
+                # is no-clobber up to a check.
+                if isfile(stored)
+                    false
+                else
+                    mv(tmp, stored; force = false)
+                    true
+                end
+            end
+        end
+    finally
+        rm(tmp; force = true)
+    end
+    published || cp(stored, target; force = true)
     return _file_content_digest(target)
 end
 

@@ -815,3 +815,38 @@ end
         @test "lockfiles" in RustCall.CACHE_INPUT_DIRS
     end
 end
+
+@testset "the first resolution is published once; a racing loser replays the winner (#313 review)" begin
+    # Two processes (or machines sharing the store) that both find the store
+    # empty resolve independently, from possibly different registry snapshots.
+    # Publication is no-clobber: the first file to land is the resolution, and
+    # whoever loses replays *that* file into its project and digests it — so
+    # both builds are of one graph, never each of its own.
+    with_isolated_cargo_cache() do
+        deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+        stored = RustCall.lockfile_path(deps)
+        mktempdir() do a
+            # No file in the store yet: this project's resolution is published.
+            mine = joinpath(a, "Cargo.lock")
+            write(mine, "# resolution A\n")
+            digest = RustCall._publish_lockfile!(stored, mine)
+            @test isfile(stored)
+            @test read(stored, String) == "# resolution A\n"
+            @test digest == RustCall._file_content_digest(stored)
+            @test read(mine, String) == "# resolution A\n"
+        end
+        mktempdir() do b
+            # The store was filled in between: the loser's own resolution is
+            # discarded, the published one is replayed into its project, and
+            # the digest is the published file's.
+            theirs = joinpath(b, "Cargo.lock")
+            write(theirs, "# resolution B\n")
+            digest = RustCall._publish_lockfile!(stored, theirs)
+            @test read(stored, String) == "# resolution A\n"
+            @test read(theirs, String) == "# resolution A\n"
+            @test digest == RustCall._file_content_digest(stored)
+        end
+        # No temporary file is left behind either way.
+        @test all(f -> !occursin(".tmp-", f), readdir(RustCall.lockfile_dir()))
+    end
+end
