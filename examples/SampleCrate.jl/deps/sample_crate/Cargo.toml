@@ -1,0 +1,14 @@
+[package]
+name = "sample_crate"
+version = "0.1.0"
+edition = "2021"
+description = "The Rust half of examples/SampleCrate.jl: #[julia] functions and structs bound by RustCall.jl"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# `juliacall_macros` (the `#[julia]` attribute) is not on crates.io yet, so
+# this is a path dependency into the RustCall.jl checkout. It is the only
+# reference this example makes outside its own directory.
+juliacall_macros = { path = "../../../../deps/juliacall_macros" }

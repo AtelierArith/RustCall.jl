@@ -1,22 +1,22 @@
 """
     SampleCratePyO3
 
-The Julia package around `examples/sample_crate_pyo3`, a Rust crate with
-**dual bindings**: `#[julia]` for Julia and PyO3's own attributes for Python,
+A Julia package with the Rust crate `deps/sample_crate_pyo3` embedded in it: a
+crate with **dual bindings**: `#[julia]` for Julia and PyO3's own attributes for Python,
 on one definition of each item.
 
 The two halves live in separate files:
 
-- **Rust**: `../sample_crate_pyo3/src/lib.rs` — the implementation, with
-  `#[julia]` next to `#[cfg_attr(feature = "python", pyo3::...)]`. Nothing in
-  this package contains Rust source, and the Julia build never enables the
-  `python` feature (the wrapper links no Python).
+- **Rust**: `deps/sample_crate_pyo3/src/lib.rs` — the implementation, with
+  `#[julia]` next to `#[cfg_attr(feature = "python", pyo3::...)]`. No Julia
+  file contains Rust source, and the Julia build never enables the `python`
+  feature (the wrapper links no Python).
 - **Julia**: this file and `src/generated/Bindings.jl`, which `deps/build.jl`
   writes with `RustCall.write_bindings_to_file` (run
   `Pkg.build("SampleCratePyO3")`).
 
 Every exported name here is the Julia binding of the same-named Rust item; the
-Python module exposes the same names (see `../sample_crate_pyo3/README.md`).
+Python module exposes the same names (see `deps/sample_crate_pyo3/README.md`).
 """
 module SampleCratePyO3
 

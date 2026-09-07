@@ -2,5 +2,8 @@
 # bindings module and the compiled library it loads.
 /src/generated/
 /deps/lib/
+# Cargo's output for the embedded crate.
+/deps/sample_crate_pyo3/target/
+/deps/sample_crate_pyo3/Cargo.lock
 /deps/build.log
 /Manifest.toml

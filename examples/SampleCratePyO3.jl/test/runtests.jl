@@ -1,7 +1,7 @@
 using SampleCratePyO3
 using Test
 
-# The same checks as ../../sample_crate_pyo3/main.py makes on the Python side:
+# The same checks as ../deps/sample_crate_pyo3/main.py makes on the Python side:
 # one Rust definition, the same names and results in both languages.
 @testset "SampleCratePyO3.jl" begin
     @testset "Functions (#[julia] + #[pyfunction] on one item)" begin

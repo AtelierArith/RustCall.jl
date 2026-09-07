@@ -1,30 +1,38 @@
 # SampleCrate.jl
 
-A Julia **package** around the Rust crate [`../sample_crate`](../sample_crate/),
+A Julia **package** with a Rust crate embedded under `deps/sample_crate/`,
 built and tested with `Pkg` like any other Julia package. It is the
-package-shaped counterpart of loading the crate ad hoc with `@rust_crate`, and
-it follows RustCall's documented workflow for packages
+package-shaped counterpart of loading a crate ad hoc with `@rust_crate`, and it
+follows RustCall's documented workflow for packages
 ([Precompilation Support](https://atelierarith.github.io/RustCall.jl/precompilation/)).
+
+The example is **self-contained**: everything it builds and tests is inside
+this directory. The one reference outside it is the `juliacall_macros` path
+dependency in `deps/sample_crate/Cargo.toml` (`../../../../deps/juliacall_macros`,
+the proc-macro crate of this checkout), because `juliacall_macros` is not on
+crates.io yet.
 
 ## Layout: Rust and Julia in separate files
 
 ```
-examples/
-├── sample_crate/                 # Rust: the implementation
-│   ├── Cargo.toml
-│   └── src/lib.rs                #   #[julia] fns, structs and impl blocks
-└── SampleCrate.jl/               # Julia: the package
-    ├── Project.toml
-    ├── deps/build.jl             #   Pkg.build: cargo build + write the bindings
-    ├── src/
-    │   ├── SampleCrate.jl        #   hand-written Julia (wrappers, docstrings, exports)
-    │   └── generated/Bindings.jl #   written by deps/build.jl (git-ignored)
-    └── test/runtests.jl          #   Pkg.test
+SampleCrate.jl/
+├── Project.toml
+├── deps/
+│   ├── build.jl                  # Pkg.build: cargo build + write the bindings
+│   ├── sample_crate/             # Rust: the implementation
+│   │   ├── Cargo.toml
+│   │   └── src/lib.rs            #   #[julia] fns, structs and impl blocks
+│   └── lib/                      # the compiled library (git-ignored)
+├── src/
+│   ├── SampleCrate.jl            # hand-written Julia (wrappers, docstrings, exports)
+│   └── generated/Bindings.jl     # written by deps/build.jl (git-ignored)
+└── test/runtests.jl              # Pkg.test
 ```
 
-No file contains both languages: `lib.rs` is plain Rust with `#[julia]`
-attributes, `SampleCrate.jl` is plain Julia. The bridge is the generated module
-`SampleCrate.Bindings`, produced from the crate by
+This is the layout the documentation prescribes (`deps/<crate>/`, `deps/lib/`,
+`src/generated/`). No file contains both languages: `lib.rs` is plain Rust with
+`#[julia]` attributes, `SampleCrate.jl` is plain Julia. The bridge is the
+generated module `SampleCrate.Bindings`, produced from the crate by
 `RustCall.write_bindings_to_file` together with a copy of the compiled library
 under `deps/lib/`. Both are build outputs and are not committed.
 
@@ -36,6 +44,8 @@ From this directory, with the RustCall of this checkout:
 cd examples/SampleCrate.jl
 julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
+
+or from the repository root, `julia --project=examples/SampleCrate.jl -e 'using Pkg; Pkg.develop(path="."); Pkg.test()'`.
 
 With a registered RustCall (`Pkg.add("RustCall")`) the `Pkg.develop` step is
 unnecessary: `Pkg.instantiate()` resolves it.
@@ -93,5 +103,6 @@ The raw `RustResult` / `RustOption` values stay reachable through
 ## Notes
 
 - `deps/build.jl` is `RustCall.write_bindings_to_file(crate, "src/generated/Bindings.jl"; relative_lib_path = "../../deps/lib")`. The generated module loads the library relative to its own location, so the built package is self-contained and precompiles normally; the module opens a private copy of the library, never the file in `deps/lib` itself, so a rebuild can always overwrite it (also on Windows).
-- The crate is also RustCall's own test fixture (`test/test_crate_bindings.jl` and others), so it carries more `#[julia]` items than this package exports (`panicky_*`, `Divider`, `PanicCounter`, `shadow_*`); they are all available as `SampleCrate.Bindings.<name>`.
+- `deps/sample_crate` is a trimmed twin of RustCall's own test fixture `test/fixtures/sample_crate`: the fixture carries extra `#[julia]` items the test suite needs (`panicky_*`, `Divider`, `PanicCounter`, `shadow_*`); this crate has exactly what the package exports.
+- The crate builds and tests on its own: `cd deps/sample_crate && cargo test`.
 - A static method (no `self`) is called with the type first: `shout(Labeler, "hi")` for `Labeler::shout`. The crate also has a free `fn shout`, which keeps the bare `shout("hi")`; the two never collide (#323).
