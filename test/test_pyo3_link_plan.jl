@@ -891,6 +891,52 @@ _manifest(text::AbstractString) = TOML.parse(text)
         @test default.dependency_default_features
     end
 
+    @testset "a library root outside the package is part of the identity (#307 review)" begin
+        # `[lib] path = "../shared/lib.rs"` is followed by the scan but lies
+        # outside the directory `crate_content_digest` hashes; an edit there
+        # left the key unchanged and the cache answered with the old wrapper.
+        mktempdir() do top
+            shared = joinpath(top, "shared")
+            mkpath(shared)
+            write(joinpath(shared, "lib.rs"), "pub mod part;\n#[pyfunction] pub fn f() -> i32 { 1 }\n")
+            write(joinpath(shared, "part.rs"), "pub fn g() -> i32 { 2 }\n")
+            write(joinpath(shared, "notes.txt"), "not source\n")
+            crate = _write_crate(joinpath(top, "pkg"), """
+                [package]
+                name = "pkg"
+                version = "0.1.0"
+                edition = "2021"
+                [lib]
+                path = "../shared/lib.rs"
+                """)
+            rm(joinpath(crate, "src"); recursive = true, force = true)
+            lib_root = RustCall.crate_lib_root(crate, RustCall.parse_cargo_toml(joinpath(crate, "Cargo.toml")))
+            @test lib_root == normpath(joinpath(shared, "lib.rs"))
+            digest = RustCall.external_lib_tree_digest(crate, lib_root)
+            @test digest isa String
+            # The root and its module tree count; other files beside them do not.
+            write(joinpath(shared, "part.rs"), "pub fn g() -> i32 { 3 }\n")
+            changed = RustCall.external_lib_tree_digest(crate, lib_root)
+            @test changed != digest
+            write(joinpath(shared, "notes.txt"), "still not source\n")
+            @test RustCall.external_lib_tree_digest(crate, lib_root) == changed
+            # An in-tree root is already covered by the package digest.
+            @test RustCall.external_lib_tree_digest(crate, joinpath(crate, "src", "lib.rs")) === nothing
+            @test RustCall.external_lib_tree_digest(crate, nothing) === nothing
+            # ... and it reaches the artifact key of a crate bound this way.
+            if !RustCall.check_rustc_available()
+                @test_skip "the extractor is required to scan a crate"
+            else
+                info = RustCall.scan_crate(crate)
+                before = RustCall.compute_crate_hash(info)
+                write(joinpath(shared, "lib.rs"),
+                      "pub mod part;\n#[pyfunction] pub fn f() -> i32 { 10 }\n")
+                RustCall._artifact_reset_digest_caches!()
+                @test RustCall.compute_crate_hash(info) != before
+            end
+        end
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`

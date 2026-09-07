@@ -112,7 +112,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `set_<field>!` helpers check the object is live, as `getproperty` /
   `setproperty!` do; and the conservative plan (Cargo could not resolve the
   crate) keeps the requested `features` / `default_features`, so the wrapper's
-  dependency entry is the configuration asked for; and
+  dependency entry is the configuration asked for; a library root outside the
+  package directory (`[lib] path = "../shared/lib.rs"`) and the module tree
+  beside it are part of the artifact identity; and
   `PYO3_CROSS_LIB_DIR` or a `PYO3_CONFIG_FILE`'s `lib_dir` names the link
   directory ahead of any interpreter. Anything the generator cannot
   lower is reported with a reason (`unsupported_arg`, `unsupported_return`,

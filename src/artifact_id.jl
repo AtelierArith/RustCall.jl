@@ -761,6 +761,51 @@ function crate_content_digest(dir::AbstractString)::String
 end
 
 """
+    external_lib_tree_digest(crate_dir, lib_root) -> Union{String, Nothing}
+
+The digest of a library root that lives **outside** its package directory —
+`[lib] path = "../shared/lib.rs"`, a layout Cargo allows and the crate scan
+follows (`crate_lib_root`) — and of the module tree beside it: every `.rs` file
+under the root's directory, by sorted relative path and content digest,
+netstring-framed like `crate_content_digest`. `nothing` when `lib_root` is
+`nothing` or lies inside `crate_dir`, where `crate_content_digest` already
+covers it.
+
+`crate_content_digest` hashes the package directory, so an edit to such an
+external root — or to a `mod foo;` file next to it — left the artifact key
+unchanged and the cache answered with the previous wrapper while the fresh
+manifest described the new source (#307 review). Only `.rs` files are read: the
+directory may be a shared tree (or the repository root), and its other contents
+are not this crate's source.
+"""
+function external_lib_tree_digest(crate_dir::AbstractString, lib_root)
+    lib_root === nothing && return nothing
+    root = normpath(abspath(String(lib_root)))
+    inside = normpath(abspath(String(crate_dir)))
+    (root == inside || startswith(root, joinpath(inside, ""))) && return nothing
+    tree = dirname(root)
+    files = String[]
+    for (dir, dirs, names) in walkdir(tree)
+        filter!(d -> !(d in CRATE_INPUT_VCS_DIRS_ANY_LEVEL) && d != "target", dirs)
+        for n in names
+            endswith(n, ".rs") && push!(files, relpath(joinpath(dir, n), tree))
+        end
+    end
+    files = String[replace(f, '\\' => '/') for f in files]
+    unique!(files)
+    sort!(files)
+    io = IOBuffer()
+    _netstring!(io, "external-lib-root")
+    _netstring!(io, _hashed_relative_path(relpath(root, tree)))
+    _netstring!(io, string(length(files)))
+    for rel in files
+        _netstring!(io, _hashed_relative_path(rel))
+        _netstring!(io, _file_content_digest(joinpath(tree, rel)))
+    end
+    return bytes2hex(sha256(take!(io)))
+end
+
+"""
     CRATE_INPUT_VCS_DIRS_ANY_LEVEL
 
 Version-control metadata directories, never a crate input at any depth.

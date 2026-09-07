@@ -1845,6 +1845,14 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
         push!(extra, "workspace-root-manifest" => _file_content_digest(joinpath(root, "Cargo.toml")))
         push!(extra, "workspace-root-lock" => _file_content_digest(joinpath(root, "Cargo.lock")))
     end
+    # So is a library root outside the package directory (`[lib] path =
+    # "../shared/lib.rs"`), which the scan follows and `source` — the package
+    # directory's content — does not see (#307 review).
+    manifest_path = joinpath(info.path, "Cargo.toml")
+    lib_root = isfile(manifest_path) ? crate_lib_root(info.path, parse_cargo_toml(manifest_path)) :
+                                       nothing
+    external = external_lib_tree_digest(info.path, lib_root)
+    external === nothing || push!(extra, "external-lib-tree" => external)
     return artifact_key(ArtifactId(
         kind = String(kind),
         source = crate_content_digest(info.path),
