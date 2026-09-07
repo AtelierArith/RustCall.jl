@@ -130,6 +130,7 @@ A replaced image is **retired, not closed**, so a call already inside one stays 
 - `test/test_regressions.jl` holds regression tests for fixed issues
 - Proc-macro tests: `deps/juliacall_macros/tests/`
 - Many tests require `rustc` and skip gracefully if unavailable
+- **PyO3 wrapper tests that link libpython skip without a linkable Python.** A crate whose pyo3 dependency is mandatory is wrapped as a `:link_libpython` build (`docs/src/pyo3.md`), so the testsets that *build and load* such a wrapper (`test/test_pyo3_wrapper.jl`'s `:link_libpython` testsets, and the PyO3 cross-module case `#300` adds to `test/test_module_symbols.jl`) first try the build through `_link_libpython_wrapper` and skip with `@info "skipping the :link_libpython wrapper testset"` when the interpreter `python_link_source()` finds has no linkable `libpython3.x` (a `python3` without the shared-library symlink, or none at all). A skipped testset is not a pass: on a machine with `python3-dev` (or `PYO3_PYTHON` pointing at an interpreter whose library directory holds `libpython3.x.so`/`.dylib`) they run in full, and the Ubuntu CI jobs do run them. `test/test_pyo3_link_plan.jl` and `test/test_manifest.jl` only *compute* the plan (`plan.mode === :link_libpython`) and always run; so do the scan-level assertions and every `:python_free` case (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`), which need no Python at all.
 
 ## CI
 
