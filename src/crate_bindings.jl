@@ -713,12 +713,17 @@ that takes the whole bindings module down (#300 review). Every child module
 name is therefore checked against everything its parent binds: free functions,
 struct types, every method name (static or instance — both become functions of
 the parent), field accessors (`get_<f>`, `set_<f>!`), the helpers every
-generated module defines (`_call_target`, `_LIB_GEN`, ...) and the names it
-imports (`RustCall`, `Libdl`, the `import RustCall: ...` prelude). Module segments
-must also spell a Julia identifier (`_julia_module_name`). The error names both
-sides and the fix.
+generated module defines (`_call_target`, `_LIB_GEN`, ...), the names it
+imports (`RustCall`, `Libdl`, the `import RustCall: ...` prelude) and the
+exports of `Base` / `Core` it implicitly uses. Within one node a struct's type
+name must not repeat a function-like binding either (`fn C` + `struct C`).
+Module segments must also spell a Julia identifier (`_julia_module_name`). The
+error names both sides and the fix.
 """
 function _check_module_names(tree::ModuleNode)
+    where_ = isempty(tree.path) ? "the crate root" : "module `$(join(tree.path, "::"))`"
+    # Every function-like binding of this node: what a struct's type name and a
+    # child module's name must not repeat.
     taken = Dict{String, String}()
     for name in _CRATE_MODULE_HELPERS
         taken[String(name)] = "a helper every generated module defines"
@@ -732,26 +737,59 @@ function _check_module_names(tree::ModuleNode)
     for name in _CRATE_MODULE_IMPORTED_MODULES
         taken[String(name)] = "a module every generated module imports"
     end
+    # Every generated module implicitly `using Base`, and the wrappers name
+    # `String`, `Int32`, `convert`, ...: a module or type of such a name would
+    # replace the binding they resolve (#300 review).
+    for base_name in _BASE_EXPORTED_NAMES
+        get!(taken, base_name, "a name exported by Base")
+    end
     for f in tree.functions
         f.is_generic && continue
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
     end
-    for s in tree.structs
+    # A method or an accessor is emitted *after* its struct, so it only clashes
+    # with a type name a **later** struct of this node defines: `function C(...)`
+    # before `mutable struct C` is a constant redefinition, the other order is
+    # an outer constructor. A method that repeats its own struct's name is
+    # therefore fine, and so is one that repeats a free function's — that adds a
+    # method to it (#341 review).
+    struct_position = Dict{String, Int}()
+    for (i, s) in enumerate(tree.structs)
+        get!(struct_position, s.name, i)
+    end
+    later_struct(name, i) = get(struct_position, name, typemax(Int)) > i
+    for (i, s) in enumerate(tree.structs)
         owner = qualified_name(s.module_path, s.name)
-        get!(taken, s.name, "the struct `$owner`")
         for m in s.methods
             (isempty(m.skip_reason) && !m.is_constructor) || continue
+            later_struct(m.name, i) || continue
             get!(taken, m.name, "the method `$owner::$(m.name)`")
         end
         for (field, _) in s.fields
-            field_is_accessible(s, field) && get!(taken, "get_$field", "the accessor of `$owner.$field`")
-            field_is_writable(s, field) && get!(taken, "set_$(field)!", "the accessor of `$owner.$field`")
+            if field_is_accessible(s, field) && later_struct("get_$field", i)
+                get!(taken, "get_$field", "the accessor of `$owner.$field`")
+            end
+            if field_is_writable(s, field) && later_struct("set_$(field)!", i)
+                get!(taken, "set_$(field)!", "the accessor of `$owner.$field`")
+            end
         end
+    end
+    # A struct is a Julia type *and* its constructor: Rust keeps `fn C` and
+    # `struct C` in separate namespaces, Julia does not, so `function C` followed
+    # by `mutable struct C` is a constant redefinition (#300 review). Two
+    # methods of one name on different structs are fine — that is dispatch.
+    for s in tree.structs
+        owner = qualified_name(s.module_path, s.name)
+        if haskey(taken, s.name)
+            error("cannot lay out the bindings of $where_: the struct `$owner` and " *
+                  "$(taken[s.name]) both bind `$(s.name)`, and Julia keeps functions and types " *
+                  "in one namespace. Rename one of them (#300).")
+        end
+        taken[s.name] = "the struct `$owner`"
     end
     for child in tree.children
         name = _julia_module_name(last(child.path))
         if haskey(taken, name)
-            where_ = isempty(tree.path) ? "the crate root" : "module `$(join(tree.path, "::"))`"
             error("cannot lay out the bindings of module `$(join(child.path, "::"))`: " *
                   "$where_ already binds `$name` as $(taken[name]), and Julia keeps " *
                   "functions, types and modules in one namespace, so the submodule " *
@@ -792,6 +830,10 @@ const _CRATE_MODULE_PRELUDE = (:call_rust_function, :get_function_pointer_from_l
                                :_call_rust_borrowed_string_ptr, :convert_return, :_result_payload,
                                :FFIByValue)
 const _CRATE_MODULE_IMPORTED_MODULES = (:RustCall, :Libdl, :Base, :Core)
+# What the implicit `using Base` of every generated module brings into scope
+# (plus `Core`'s exports), computed once: a child module or struct of such a
+# name would shadow the binding the wrappers themselves use (#300 review).
+const _BASE_EXPORTED_NAMES = Set{String}(String(n) for n in vcat(names(Base), names(Core)))
 const _CRATE_MODULE_PRELUDE_NAMES = "call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,\n" *
     "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,\n" *
     "                 _result_payload, FFIByValue"

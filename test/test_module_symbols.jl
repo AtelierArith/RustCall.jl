@@ -222,10 +222,51 @@ end
         # prelude import.
         helper = RustCall._module_tree([sig("f", ["_call_target"])], RustCall.RustStructInfo[])
         @test_throws ErrorException RustCall._check_module_names(helper)
-        for reserved in ("RustCall", "Libdl", "call_rust_function", "RustResult", "FFIByValue")
+        for reserved in ("RustCall", "Libdl", "call_rust_function", "RustResult", "FFIByValue",
+                         "String", "sum", "Int32", "convert")   # Base exports too
             @test_throws ErrorException RustCall._check_module_names(
                 RustCall._module_tree([sig("f", [reserved])], RustCall.RustStructInfo[]))
         end
+        # Rust keeps `fn C` and `struct C` apart; Julia does not: the struct's
+        # type name must not repeat a function-like binding of its own module.
+        plain = RustCall.RustStructInfo("C", String[], RustCall.RustMethod[], "",
+                                        Tuple{String, String}[], true, Dict{String, Bool}())
+        err = try
+            RustCall._check_module_names(RustCall._module_tree([sig("C", String[])], [plain]))
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        @test occursin("the struct `C`", err.msg) && occursin("the function `C`", err.msg)
+        named_like_struct = RustCall.RustStructInfo("D", String[],
+            [RustCall.RustMethod("C", false, false, String[], String[], "i32")], "",
+            Tuple{String, String}[], true, Dict{String, Bool}())
+        # A method binds its name where its struct is emitted, so it clashes
+        # only with a type name a *later* struct defines (#341 review):
+        # `function C(self::D)` before `mutable struct C` is a redefinition…
+        @test_throws ErrorException RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[], [named_like_struct, plain]))
+        # …the other order is an outer constructor of `C`, which Julia allows.
+        @test RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[],
+                                  [plain, named_like_struct])) === nothing
+        # A method that repeats its own struct's name is that same overload.
+        self_named = RustCall.RustStructInfo("E", String[],
+            [RustCall.RustMethod("E", false, false, String[], String[], "i32")], "",
+            Tuple{String, String}[], true, Dict{String, Bool}())
+        @test RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[], [self_named])) === nothing
+        @test_throws ErrorException RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[],
+                [RustCall.RustStructInfo("String", String[], RustCall.RustMethod[], "",
+                                         Tuple{String, String}[], true, Dict{String, Bool}())]))
+        # Two structs with a method of one name are ordinary dispatch, not a clash.
+        m_get = RustCall.RustMethod("get", false, false, String[], String[], "i32")
+        a_ = RustCall.RustStructInfo("A", String[], [m_get], "", Tuple{String, String}[], true, Dict{String, Bool}())
+        b_ = RustCall.RustStructInfo("B", String[], [m_get], "", Tuple{String, String}[], true, Dict{String, Bool}())
+        @test RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[], [a_, b_])) === nothing
         # Instance methods and field accessors are parent bindings too: `run(self::C)`
         # and `get_v(self::C)` would each be redefined by a submodule of that name.
         meth = RustCall.RustMethod("run", false, false, String[], String[], "i32")

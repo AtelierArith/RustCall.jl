@@ -53,8 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A module name Julia cannot define next to a parent binding — Rust keeps
     `fn a` and `mod a` in separate namespaces, Julia does not — is refused when
     the bindings are laid out (functions, structs, methods, field accessors and
-    the generated helpers and the imported names all count), naming both sides
-    and the fix. A raw identifier module (`r#type`) is bound as `type`; a
+    the generated helpers, the imported names and the exports of `Base` all
+    count), naming both sides and the fix; a struct whose type name repeats a
+    function-like binding of its own module (`fn C` + `struct C`, legal in
+    Rust) is refused the same way. A raw identifier module (`r#type`) is bound as `type`; a
     module whose name is a Julia keyword (`end`, `function`, `macro`, …) is
     refused rather than written into a file Julia cannot parse.
   - A `#[julia] impl C` must sit in the same module as its `#[julia] struct
