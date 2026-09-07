@@ -72,5 +72,5 @@ assertions.
 
 ## Notes
 
-- How the two attribute sets compose on one item, and how to migrate from the deprecated `#[julia_pyo3]`, is documented in [`../sample_crate_pyo3/README.md`](../sample_crate_pyo3/README.md) and in RustCall's `docs/src/pyo3.md`.
+- How the two attribute sets compose on one item is documented in [`../sample_crate_pyo3/README.md`](../sample_crate_pyo3/README.md) and in RustCall's `docs/src/pyo3.md`.
 - `deps/build.jl` is `RustCall.write_bindings_to_file(crate, "src/generated/Bindings.jl"; relative_lib_path = "../../deps/lib")`; see `../SampleCrate.jl/README.md` for the workflow.

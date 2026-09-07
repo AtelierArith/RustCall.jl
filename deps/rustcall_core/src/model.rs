@@ -4,7 +4,7 @@
 use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemImpl, ItemStruct, Type, Visibility};
 
-use crate::attrs::{derive_list, is_julia_attr, is_julia_pyo3_attr, rustcall_attribute};
+use crate::attrs::{derive_list, is_julia_attr, rustcall_attribute};
 use crate::manifest::{Attribute, Mode};
 use crate::types::last_ident;
 
@@ -14,10 +14,8 @@ pub struct MethodModel {
     pub is_static: bool,
     pub is_mutable: bool,
     /// The RustCall attribute of the impl block the method was collected from
-    /// (`Julia`, the deprecated `JuliaPyo3`, or `None` for an inline-mode impl
-    /// that carries none). Recorded on the manifest entry so a consumer can
-    /// tell a `#[julia_pyo3] impl` apart even when the struct itself is
-    /// `#[julia]` (#275 Phase 3).
+    /// (`Julia`, or `None` for an inline-mode impl that carries none).
+    /// Recorded on the manifest entry (`Method.attribute`, #275 Phase 3).
     pub attribute: Attribute,
 }
 
@@ -96,9 +94,7 @@ pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> 
             let attribute = rustcall_attribute(&s.attrs);
             let selected = matches!(
                 (mode, attribute),
-                (_, Attribute::Julia)
-                    | (_, Attribute::JuliaPyo3)
-                    | (Mode::Inline, Attribute::DeriveJuliaStruct)
+                (_, Attribute::Julia) | (Mode::Inline, Attribute::DeriveJuliaStruct)
             );
             if !selected {
                 continue;
@@ -128,12 +124,9 @@ pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> 
         model.impls.push(imp.clone());
 
         let impl_has_julia = imp.attrs.iter().any(is_julia_attr);
-        let impl_has_pyo3 = imp.attrs.iter().any(is_julia_pyo3_attr);
         // What the manifest records as the method's origin: the impl block's
         // attribute, which an inline-mode impl does not have.
-        let impl_attribute = if impl_has_pyo3 {
-            Attribute::JuliaPyo3
-        } else if impl_has_julia {
+        let impl_attribute = if impl_has_julia {
             Attribute::Julia
         } else {
             Attribute::None
@@ -144,11 +137,8 @@ pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> 
             let wrap = match mode {
                 // Historical inline rule: every `pub fn` of an inherent impl.
                 Mode::Inline => matches!(func.vis, Visibility::Public(_)),
-                // Proc-macro rule: `#[julia]` methods inside a `#[julia] impl`,
-                // or every method of a `#[julia_pyo3] impl`.
-                Mode::Crate => {
-                    (impl_has_julia && func.attrs.iter().any(is_julia_attr)) || impl_has_pyo3
-                }
+                // Proc-macro rule: `#[julia]` methods inside a `#[julia] impl`.
+                Mode::Crate => impl_has_julia && func.attrs.iter().any(is_julia_attr),
             };
             if wrap && !model.methods.iter().any(|m| func.sig.ident == m.name()) {
                 model

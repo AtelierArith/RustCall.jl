@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **`#[julia_pyo3]`** ([#312](https://github.com/AtelierArith/RustCall.jl/issues/312)),
+  deprecated in 0.2.0 (#275 Phase 3). The proc-macro is gone from
+  `juliacall_macros`, so a crate that still uses it fails to build with
+  ``cannot find attribute `julia_pyo3` `` at every use site, and with it goes
+  everything that existed only for it: the frozen lowering
+  (`transform_function_julia_pyo3` / `transform_struct_julia_pyo3` /
+  `transform_impl_julia_pyo3`, the either/or `cfg(feature = "python")` shape
+  and the as-written signature of #269, `FreeFnOptions::extra_cfg` and the
+  `lower_strings` knob of the wrapper generator, which nothing else ever turned
+  off), the `julia_pyo3` value of the manifest's `attribute` origin
+  (**manifest schema 6 → 7**, `RustCall.MANIFEST_SCHEMA_VERSION` /
+  `rustcall_core::manifest::SCHEMA_VERSION`, so a stale extractor is rejected
+  as before), the inert `python` feature of `juliacall_macros`
+  (`examples/sample_crate_pyo3` enables `pyo3` alone now), and the Julia-side
+  deprecation notice — the `@rust_crate` / `write_bindings_to_file` warning and
+  the `scan_report` marker — together with its fixtures. Write `#[julia]` next
+  to PyO3's own attributes instead; the migration table stays in
+  `docs/src/pyo3.md`, "Migrating from `#[julia_pyo3]`", for this release.
+
 ## [0.2.1] - 2026-09-07
 
 ### Added

@@ -75,9 +75,13 @@ use serde::{Deserialize, Serialize};
 ///   item; no consumer reads the column, only the generator (#307 review).
 ///   Also additive within version 6: [`Method::attribute`], the attribute of
 ///   the impl block a method came from (serialized only when there is one),
-///   so the deprecated `#[julia_pyo3]` is reported even on a `#[julia] struct`
-///   (#275 Phase 3).
-pub const SCHEMA_VERSION: u32 = 6;
+///   so the dual-binding attribute deprecated by #275 Phase 3 was reported
+///   even on a `#[julia] struct`.
+/// * **6 → 7**: that proc-macro is removed (#312), and with it its value of
+///   the [`Attribute`] vocabulary. A version-6 consumer could still meet that
+///   origin — and bind the item under its as-written, non-lowered signature —
+///   so the two must not read each other's manifests.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -172,7 +176,6 @@ impl Mode {
 #[serde(rename_all = "snake_case")]
 pub enum Attribute {
     Julia,
-    JuliaPyo3,
     /// `#[derive(JuliaStruct)]` on a struct (inline mode only).
     DeriveJuliaStruct,
     /// `#[pyfunction]` with no RustCall attribute (#275). The item is reported
@@ -452,13 +455,10 @@ pub struct Method {
     #[serde(default)]
     pub accessor: String,
     /// The attribute of the **impl block** the method came from — `julia` for
-    /// a `#[julia] impl`, `julia_pyo3` for a (deprecated) `#[julia_pyo3] impl`,
-    /// `py_methods` for a scanned `#[pymethods]` block — which need not be the
-    /// struct's own: a `#[julia] struct` may still have a `#[julia_pyo3] impl`,
-    /// and a consumer that reports the deprecated attribute has to see it
-    /// there (#275 Phase 3). `None` — and then omitted — for an inline-mode
-    /// impl, which carries no attribute. Additive within schema 6, like
-    /// [`Method::cfg`].
+    /// a `#[julia] impl`, `py_methods` for a scanned `#[pymethods]` block —
+    /// which need not be the struct's own (#275 Phase 3). `None` — and then
+    /// omitted — for an inline-mode impl, which carries no attribute. Additive
+    /// within schema 6, like [`Method::cfg`].
     #[serde(default, skip_serializing_if = "Attribute::is_none")]
     pub attribute: Attribute,
     /// Shape of the return value, as for a free function. A `#[julia]` method

@@ -238,7 +238,7 @@ Manifest schema 5 adds, for every function, struct and method:
 
 | column | meaning |
 | --- | --- |
-| `attribute` | the *origin* of the entry: `julia` / `julia_pyo3` for a RustCall attribute, `py_function` / `py_class` / `py_methods` / `py_module` for the PyO3 scan. On a **method** it is the attribute of the impl block the method came from (`julia`, the deprecated `julia_pyo3`, `py_methods`; omitted for an inline-mode impl), which need not be the struct's own |
+| `attribute` | the *origin* of the entry: `julia` for a RustCall attribute, `py_function` / `py_class` / `py_methods` / `py_module` for the PyO3 scan. On a **method** it is the attribute of the impl block the method came from (`julia`, `py_methods`; omitted for an inline-mode impl), which need not be the struct's own |
 | `vis` | visibility as written: `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or empty for a private item |
 | `skip_reason` | why the item cannot be wrapped, empty when it can |
 | `python_name` | the name PyO3 exposes it under, when `#[pyo3(name = "...")]` renames it |
@@ -601,9 +601,8 @@ nothing to PyO3, so nothing is wrapped; with `features = ["python"]` the same
 crate is wrapped in full.
 
 `examples/sample_crate_pyo3_mixed` carries `#[julia]` and PyO3 markers together,
-one item marked both ways, one item still marked with the deprecated
-`#[julia_pyo3]` (so the deprecation notice is exercised on the wrapper path), and
-a `[lib] name` that differs from its package name.
+one item marked both ways, and a `[lib] name` that differs from its package
+name.
 
 Note that a class needs **one** `#[pymethods]` block unless the crate enables
 pyo3's `multiple-pymethods` feature; the scan matches every block it finds, but
@@ -616,12 +615,14 @@ to.
 
 ## Migrating from `#[julia_pyo3]`
 
-`#[julia_pyo3]` is **deprecated** ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)
-Phase 3) and will be removed in the next breaking release. It still expands as
-it always did, the manifest still reports its items under the `julia_pyo3`
-origin, `@rust_crate` still binds them, and `RustCall.scan_report` marks each
-of them — but rustc now reports `use of deprecated macro `julia_pyo3`` at every
-use site, and `@rust_crate` / `write_bindings_to_file` warn once per crate.
+`#[julia_pyo3]` was deprecated in 0.2.0
+([#275](https://github.com/AtelierArith/RustCall.jl/issues/275) Phase 3) and
+**removed in 0.3.0** ([#312](https://github.com/AtelierArith/RustCall.jl/issues/312)).
+The proc-macro is gone from `juliacall_macros`, so a crate that still uses it
+fails to build with ``cannot find attribute `julia_pyo3` `` at every use site;
+the extractor no longer knows the attribute either (manifest schema 7), so
+nothing binds such an item. This section stays for one release to say what to
+write instead.
 
 The reason is #279: `#[julia]` is **additive**. It keeps the annotated item
 exactly as written and emits the `extern "C"` entry point next to it under a
@@ -659,7 +660,7 @@ both export `rustcall_add`, and the struct helpers (`Point_free`,
 written** (a `String` argument arrived as a Rust `String` the caller could not
 produce), while `#[julia]` lowers them to the `(ptr, len)` / `CResult_*` ABI
 like everywhere else — which is the ABI divergence #269 described, and the
-reason this attribute is going away rather than being extended.
+reason the attribute was removed rather than extended.
 
 `examples/sample_crate_pyo3` shows the migrated shape end to end, including the
 Python-side impl block; `examples/sample_crate_pyo3/README.md` walks through it.

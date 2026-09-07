@@ -1,6 +1,5 @@
-//! Attribute inspection helpers (`#[julia]`, `#[julia_pyo3]`,
-//! `#[derive(JuliaStruct)]`, and the PyO3 entry-point attributes scanned by
-//! #275).
+//! Attribute inspection helpers (`#[julia]`, `#[derive(JuliaStruct)]`, and the
+//! PyO3 entry-point attributes scanned by #275).
 
 use syn::punctuated::Punctuated;
 use syn::{Attribute, Expr, Lit, Meta, Token, Visibility};
@@ -11,12 +10,8 @@ pub fn is_julia_attr(attr: &Attribute) -> bool {
     attr.path().is_ident("julia")
 }
 
-pub fn is_julia_pyo3_attr(attr: &Attribute) -> bool {
-    attr.path().is_ident("julia_pyo3")
-}
-
 pub fn is_rustcall_attr(attr: &Attribute) -> bool {
-    is_julia_attr(attr) || is_julia_pyo3_attr(attr)
+    is_julia_attr(attr)
 }
 
 /// A PyO3 entry-point attribute on an item.
@@ -203,8 +198,8 @@ pub struct Pyo3ClassOptions {
 ///
 /// `get_all` / `set_all` expose fields *without* a per-field `#[pyo3(get, set)]`,
 /// so a scan that only looked at field attributes would drop them — including
-/// for structs this repository generates itself in
-/// `codegen::transform_struct_julia_pyo3`.
+/// for the dual-binding shape `docs/src/pyo3.md` recommends (`#[julia]`
+/// stacked with `#[pyclass(get_all, set_all)]`).
 pub fn pyo3_class_options(attrs: &[Attribute]) -> Pyo3ClassOptions {
     let mut options = Pyo3ClassOptions::default();
     for meta in effective_metas(attrs) {
@@ -309,8 +304,6 @@ pub fn pyo3_scan_selects(attrs: &[Attribute]) -> bool {
 pub fn rustcall_attribute(attrs: &[Attribute]) -> ManifestAttribute {
     if attrs.iter().any(is_julia_attr) {
         ManifestAttribute::Julia
-    } else if attrs.iter().any(is_julia_pyo3_attr) {
-        ManifestAttribute::JuliaPyo3
     } else if derive_list(attrs).iter().any(|d| d == "JuliaStruct") {
         ManifestAttribute::DeriveJuliaStruct
     } else {
@@ -337,7 +330,7 @@ pub fn derive_list(attrs: &[Attribute]) -> Vec<String> {
     out
 }
 
-/// Remove `#[julia]` / `#[julia_pyo3]` attributes.
+/// Remove `#[julia]` attributes.
 pub fn strip_rustcall_attrs(attrs: &mut Vec<Attribute>) {
     attrs.retain(|a| !is_rustcall_attr(a));
 }

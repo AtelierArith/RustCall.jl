@@ -165,8 +165,8 @@ using Libdl
     end
 
     @testset "manifest: schema version guard" begin
-        @test RustCall.MANIFEST_SCHEMA_VERSION == 6
-        @test RustCall._parse_manifest("schema_version = 6\nmode = \"inline\"\n")["schema_version"] == 6
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 7
+        @test RustCall._parse_manifest("schema_version = 7\nmode = \"inline\"\n")["schema_version"] == 7
         # Schema 1 predates the string ABI columns (`abi`, `return_abi`, the
         # helper flags), schema 2 predates the additive `symbol` semantics
         # (#279), schema 3 predates the contract columns
@@ -177,7 +177,9 @@ using Libdl
         # methods, which changes the ABI of a method wrapper rather than only
         # describing it (#268), and the PyO3 *wrapper* columns (an exported
         # `py_*` entry with a `return_abi`, the `i32` `err_type` of a lowered
-        # `PyResult`, and the generator's own skip reasons, #275 Phase 2); a
+        # `PyResult`, and the generator's own skip reasons, #275 Phase 2).
+        # Schema 6 still has the `julia_pyo3` attribute origin, whose items
+        # were bound under their as-written, non-lowered signature (#312); a
         # consumer must not fall back to any of them.
         err = try
             RustCall._parse_manifest("schema_version = 1\nmode = \"inline\"\n")
@@ -187,11 +189,12 @@ using Libdl
         end
         @test err isa RustCall.ExtractorError
         @test occursin("schema 1", sprint(showerror, err))
-        @test occursin("expects 6", sprint(showerror, err))
+        @test occursin("expects 7", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 3\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 4\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 5\nmode = \"inline\"\n")
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 6\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 999\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("mode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("not = [valid toml")
@@ -574,7 +577,7 @@ end
     end
 end
 
-@testset "#[julia] parenthesized types and #[julia_pyo3] string ABI (#242 review)" begin
+@testset "#[julia] parenthesized types (#242 review)" begin
     # `(String)` and `&(str)` are Type::Paren to syn; they name the same types.
     code = """
     #[julia]
@@ -606,106 +609,105 @@ end
         @test paren_ref("日本語") == 3
         @test paren_ret("abc") == "ABC"
     end
+end
 
-    # `#[julia_pyo3]` free functions are exported as written (no string
-    # conversion, pending #275): the crate manifest reports an empty ABI so
-    # the Julia wrapper does not pass (ptr, len) to a function taking `String`.
-    pyo3 = RustCall.extract_manifest("""
-    #[julia_pyo3]
-    pub fn py_len(s: String) -> usize { s.len() }
-    #[julia_pyo3]
-    pub fn py_plain(x: i32) -> i32 { x }
-    """; mode = "crate")
-    py = Dict(s.name => s for s in RustCall.manifest_function_signatures(pyo3))
-    @test py["py_len"].arg_types == ["String"]
-    @test py["py_len"].arg_abis == [""]
-    @test !py["py_len"].has_owned_string_helper
-    @test !RustCall._uses_string_ffi(py["py_len"])
-    @test py["py_plain"].arg_abis == [""]
+# `#[julia_pyo3]` was deprecated in 0.2.0 (#275 Phase 3) and removed in 0.3.0
+# (#312). Nothing of it may survive: not the proc-macro, not the attribute in
+# the extractor, not the manifest origin. A crate that still uses it must fail
+# to build, loudly, rather than be silently bound as it was.
+@testset "#[julia_pyo3] is removed (#312)" begin
+    macros_dir = joinpath(pkgdir(RustCall), "deps", "juliacall_macros")
+    @test !occursin("julia_pyo3", read(joinpath(macros_dir, "src", "lib.rs"), String))
+    @test !occursin("julia_pyo3", read(joinpath(macros_dir, "Cargo.toml"), String))
+    @test "julia_pyo3" ∉ RustCall.RUSTCALL_ATTRIBUTE_ORIGINS
 
-    # `#[julia_pyo3]` is deprecated (#275 Phase 3): still scanned and bound
-    # exactly as above, but `@rust_crate` / `write_bindings_to_file` warn once
-    # per crate, and `scan_report` marks each item it produced.
-    mktempdir() do dir
-        mkpath(joinpath(dir, "src"))
-        write(joinpath(dir, "Cargo.toml"), """
-            [package]
-            name = "still_dual"
-            version = "0.1.0"
-            edition = "2021"
-            """)
-        write(joinpath(dir, "src", "lib.rs"), """
-            #[julia_pyo3]
-            pub fn dual(x: i32) -> i32 { x }
-            #[julia_pyo3]
-            pub struct Knob { pub level: i32 }
-            #[julia]
-            pub fn plain(x: i32) -> i32 { x }
-            // A partially migrated struct: `#[julia]` on the struct, the
-            // deprecated attribute only on its impl block.
-            #[julia]
-            pub struct Gauge { pub value: i32 }
-            #[julia_pyo3]
-            impl Gauge {
-                pub fn read(&self) -> i32 { self.value }
-            }
-            #[julia]
-            pub struct Clean { pub v: i32 }
-            #[julia]
-            impl Clean {
-                #[julia]
-                pub fn get(&self) -> i32 { self.v }
-            }
-            """)
-        info = RustCall.scan_crate(dir)
-        @test Set(f.name for f in info.julia_functions) == Set(["dual", "plain"])
-        by_name = Dict(s.name => s for s in info.julia_structs)
-        # The impl block's attribute travels with each method, so the struct
-        # that is `#[julia]` itself still shows where the deprecated macro is.
-        @test by_name["Gauge"].attribute === :julia
-        @test only(by_name["Gauge"].methods).attribute === :julia_pyo3
-        @test only(by_name["Clean"].methods).attribute === :julia
-        @test RustCall._uses_julia_pyo3(by_name["Knob"])
-        @test RustCall._uses_julia_pyo3(by_name["Gauge"])
-        @test !RustCall._uses_julia_pyo3(by_name["Clean"])
-        @test_logs (:warn, r"#\[julia_pyo3\]` is deprecated.*3 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(info)
-        @test RustCall._warn_deprecated_attributes(info) == 3
-        # A crate without the attribute says nothing.
-        write(joinpath(dir, "src", "lib.rs"), "#[julia]\npub fn plain(x: i32) -> i32 { x }\n")
-        clean = RustCall.scan_crate(dir)
-        @test_logs RustCall._warn_deprecated_attributes(clean)
-        @test RustCall._warn_deprecated_attributes(clean) == 0
+    # The extractor does not know the attribute any more: an item carrying it
+    # is an item with an attribute the scan ignores, in both modes, on every
+    # shape the macro used to accept — and the `#[julia]` items next to it
+    # are unaffected.
+    stale = """
+        #[julia_pyo3]
+        pub fn dual(x: i32) -> i32 { x }
+        #[julia_pyo3]
+        pub struct Knob { pub level: i32 }
+        #[julia_pyo3]
+        impl Knob {
+            pub fn level(&self) -> i32 { self.level }
+        }
+        #[julia]
+        pub struct Gauge { pub value: i32 }
+        #[julia_pyo3]
+        impl Gauge {
+            pub fn read(&self) -> i32 { self.value }
+        }
+        #[julia]
+        pub fn plain(x: i32) -> i32 { x }
+        """
+    for mode in ("crate", "inline")
+        manifest = RustCall.extract_manifest(stale; mode = mode)
+        @test [f.name for f in RustCall.manifest_function_signatures(manifest)] == ["plain"]
+        @test all(f.attribute === :julia for f in RustCall.manifest_function_signatures(manifest))
+        structs = RustCall.manifest_struct_infos(manifest)
+        @test [s.name for s in structs] == ["Gauge"]
+        # The `#[julia_pyo3] impl` is no impl block the crate rule wraps.
+        if mode == "crate"
+            @test isempty(only(structs).methods)
+        end
+        @test !occursin("julia_pyo3", sprint(RustCall.TOML.print, manifest))
+    end
 
-        # The attribute may sit behind a feature: `#[cfg_attr(feature =
-        # "legacy", julia_pyo3)]` is an attribute only under a build that
-        # enables it, so the warning is decided on the *resolved* scan the
-        # bindings are emitted from, not on the lenient one (#314 review).
-        if !RustCall.check_rustc_available()
-            @test_skip "cargo is required to probe the crate"
-        else
+    # A crate that still uses the attribute does not compile: with the
+    # proc-macro gone, rustc reports the attribute as unknown at every use
+    # site. The nested `cargo check` gets a target directory of its own so it
+    # never contends for the lock of a build another test is running.
+    if !RustCall.check_rustc_available()
+        @test_skip "cargo is required to build the crate"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
             write(joinpath(dir, "Cargo.toml"), """
                 [package]
-                name = "still_dual"
+                name = "uses_julia_pyo3"
                 version = "0.1.0"
                 edition = "2021"
-                [features]
-                legacy = []
+                publish = false
+
+                [dependencies]
+                juliacall_macros = { path = $(repr(macros_dir)) }
+
+                [workspace]
                 """)
             write(joinpath(dir, "src", "lib.rs"), """
-                #[cfg_attr(feature = "legacy", julia_pyo3)]
-                #[cfg_attr(not(feature = "legacy"), julia)]
-                pub fn old(x: i32) -> i32 { x }
+                use juliacall_macros::julia;
+
+                #[julia_pyo3]
+                pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+                #[julia_pyo3]
+                pub struct Counter { pub value: i32 }
+
+                #[julia_pyo3]
+                impl Counter {
+                    pub fn bump(&mut self) -> i32 { self.value += 1; self.value }
+                }
+
+                #[julia]
+                pub fn fine(x: i32) -> i32 { x }
                 """)
-            lenient = RustCall.scan_crate(dir)
-            off = RustCall._plain_scan_info(dir, lenient, String[], true, true)
-            @test [f.name for f in off.julia_functions] == ["old"]
-            @test only(off.julia_functions).attribute === :julia
-            @test RustCall._warn_deprecated_attributes(off) == 0
-            on = RustCall._plain_scan_info(dir, lenient, ["legacy"], true, true)
-            @test only(on.julia_functions).attribute === :julia_pyo3
-            @test_logs (:warn, r"1 item\(s\) of still_dual") match_mode=:any RustCall._warn_deprecated_attributes(on)
+            log = joinpath(dir, "cargo-check.log")
+            cmd = addenv(Cmd(`$(RustCall.cargo()) check --quiet --message-format=short`; dir = dir),
+                         "CARGO_TARGET_DIR" => joinpath(dir, "target"))
+            ok = success(pipeline(cmd; stdout = log, stderr = log))
+            output = read(log, String)
+            @test !ok
+            @test count("cannot find attribute `julia_pyo3` in this scope", output) == 3
+            # Nothing else is wrong with the crate: the `#[julia]` item is fine.
+            @test !occursin("cannot find attribute `julia`", output)
         end
     end
+end
+
+@testset "additive #[julia] (#279)" begin
 
     # #279: `#[julia]` is additive. The compiled block exports the wrapper
     # `rustcall_<fn>`; the Rust name is *not* a C symbol any more, while the
