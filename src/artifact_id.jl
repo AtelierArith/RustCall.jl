@@ -432,6 +432,13 @@ requested ranges, decide a cache hit.
 A `path =` dependency contributes its content digest, as in every dependency
 string, so editing a local crate re-resolves rather than replaying a lockfile
 that pins the old graph.
+
+The root package's naming scheme (`CARGO_BLOCK_PACKAGE_PREFIX`) is in the key
+too: the root appears in `Cargo.lock` by name, so a lockfile written under one
+scheme does not fit a project named under another. A scheme change therefore
+names a new store entry rather than replaying a file `--locked` would reject —
+which is what a CI cache that carries the scratch space across runs would
+otherwise do (#313 review).
 """
 function cargo_lockfile_id(deps)::ArtifactId
     return ArtifactId(
@@ -439,6 +446,7 @@ function cargo_lockfile_id(deps)::ArtifactId
         dependencies = artifact_dependency_strings(deps),
         toolchain = "",
         compiler = "",
+        extra = Pair{String, String}["root-package-prefix" => CARGO_BLOCK_PACKAGE_PREFIX],
     )
 end
 

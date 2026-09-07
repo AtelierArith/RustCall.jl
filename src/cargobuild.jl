@@ -172,10 +172,16 @@ function ensure_cargo_lockfile!(project::CargoProject;
     isempty(project.dependencies) && return nothing
     stored = lockfile_path(project.dependencies)
     target = joinpath(project.path, "Cargo.lock")
-    if isfile(stored)
+    if isfile(stored) && _lockfile_names_root(stored, project.name)
         cp(stored, target; force = true)
         return _file_content_digest(target)
     end
+    # Either no resolution yet, or a file that is not this set's resolution: it
+    # does not name the project's root package (a stale scheme, a hand-edited
+    # file), and `--locked` would reject it. Resolve afresh and publish over
+    # it (`replace`), rather than fail every build of the set until someone
+    # deletes the file by hand.
+    replace_stale = isfile(stored)
     args = ["generate-lockfile"]
     append!(args, _cargo_network_args())
     cmd = setenv(`$(cargo()) $args`, Dict{String, String}(env === nothing ? ENV : env);
@@ -195,7 +201,15 @@ function ensure_cargo_lockfile!(project::CargoProject;
         String(take!(stderr_io)), project.path))
     isfile(target) || throw(CargoBuildError("cargo generate-lockfile produced no Cargo.lock",
                                             "", project.path))
-    return _publish_lockfile!(stored, target)
+    return _publish_lockfile!(stored, target; replace = replace_stale)
+end
+
+# Whether the lockfile at `path` carries a `[[package]]` entry for `root` — the
+# generated project's own package, which every lockfile Cargo writes for it
+# names. A stored file that does not is not this project's resolution.
+function _lockfile_names_root(path::AbstractString, root::AbstractString)
+    needle = "name = \"$(root)\""
+    return any(l -> strip(l) == needle, eachline(String(path)))
 end
 
 """
@@ -224,17 +238,21 @@ the file: if no other RustCall process is resolving the set, a previous one
 died holding the claim — delete that file (or run `clear_lockfiles()`) and
 build again.
 
+With `replace = true` the claim holder publishes over an existing file: the
+caller has established that the stored file is not this set's resolution
+(`_lockfile_names_root`), and the claim still serialises the writers.
+
 Throws `CargoBuildError` in that case.
 """
 function _publish_lockfile!(stored::AbstractString, target::AbstractString;
-                            wait::Real = 10.0)
+                            wait::Real = 10.0, replace::Bool = false)
     stored = String(stored)
     target = String(target)
     mkpath(dirname(stored))
     claim = stored * ".claim"
     if _claim_lockfile!(claim)
         try
-            if !isfile(stored)
+            if replace || !isfile(stored)
                 tmp = stored * ".tmp-$(getpid())-$(rand(UInt32))"
                 cp(target, tmp; force = true)
                 # Only the claim holder renames, so this replaces nothing.
@@ -341,8 +359,16 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
                 close(stderr_io)
                 close(stdout_io)
 
+                message = "Cargo build failed"
+                if locked && occursin("lock file", stderr_str)
+                    # The pinned resolution no longer fits the manifest: the
+                    # persisted lockfile is the input to change (#256).
+                    message *= ": the persisted Cargo.lock no longer matches this dependency " *
+                               "set. Delete it to resolve afresh — `RustCall.lockfile_path(deps)` " *
+                               "names the file, `RustCall.clear_lockfiles()` removes them all"
+                end
                 throw(CargoBuildError(
-                    "Cargo build failed",
+                    message,
                     stderr_str,
                     project.path
                 ))

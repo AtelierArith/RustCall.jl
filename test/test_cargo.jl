@@ -947,3 +947,67 @@ end
         end
     end
 end
+
+@testset "a stored lockfile that does not name this set's root is not replayed (#313 CI)" begin
+    # CI carries the scratch space across runs (julia-actions/cache), so a
+    # store written under an older root-package scheme met a project named
+    # under the new one, and `--locked` refused every build of the set. Two
+    # defences: the scheme is in the lockfile key, so a new scheme is a new
+    # entry; and a stored file that does not name the project's root is
+    # re-resolved and replaced rather than replayed.
+    deps = [RustCall.DependencySpec("itoa"; version = "1.0")]
+    id = RustCall.cargo_lockfile_id(deps)
+    @test ("root-package-prefix" => RustCall.CARGO_BLOCK_PACKAGE_PREFIX) in id.extra
+    if !RustCall.check_rustc_available()
+        @test_skip "cargo is required to resolve a dependency set"
+    else
+        with_isolated_cargo_cache() do
+            stored = RustCall.lockfile_path(deps)
+            root = RustCall.cargo_block_package(deps)
+            mktempdir() do dir
+                write(joinpath(dir, "Cargo.lock"), """
+                    version = 4
+
+                    [[package]]
+                    name = "rustcall_block"
+                    version = "0.1.0"
+                    """)
+                @test RustCall._lockfile_names_root(joinpath(dir, "Cargo.lock"), "rustcall_block")
+                @test !RustCall._lockfile_names_root(joinpath(dir, "Cargo.lock"), root)
+                # Seed the store with the stale file.
+                mkpath(dirname(stored))
+                cp(joinpath(dir, "Cargo.lock"), stored; force = true)
+            end
+            project = RustCall.create_cargo_project(root, deps)
+            try
+                digest = RustCall.ensure_cargo_lockfile!(project)
+                # Re-resolved and published over the stale file: the store now
+                # names this root, and the project carries the same bytes.
+                @test RustCall._lockfile_names_root(stored, root)
+                @test occursin("name = \"itoa\"", read(stored, String))
+                @test read(joinpath(project.path, "Cargo.lock"), String) == read(stored, String)
+                @test digest == RustCall._file_content_digest(stored)
+                @test !isfile(stored * ".claim")
+                # A build against a lockfile that no longer fits says which
+                # file to delete, rather than only quoting Cargo.
+                # (The CI shape: a valid lockfile whose root is the old
+                # scheme's name, which Cargo would have to rewrite.)
+                doctored = replace(read(stored, String), "name = \"$(root)\"" => "name = \"rustcall_block\"")
+                @test doctored != read(stored, String)
+                write(joinpath(project.path, "Cargo.lock"), doctored)
+                RustCall.write_rust_code_to_project(project, "pub fn f() -> i32 { 1 }\n")
+                err = try
+                    RustCall.build_cargo_project(project; release = true, locked = true)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa RustCall.CargoBuildError
+                @test occursin("lockfile_path", sprint(showerror, err))
+                @test occursin("clear_lockfiles", sprint(showerror, err))
+            finally
+                RustCall.cleanup_cargo_project(project)
+            end
+        end
+    end
+end
