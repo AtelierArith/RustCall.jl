@@ -1,0 +1,24 @@
+# A crate that carries **both** kinds of marker: RustCall's own `#[julia]` and
+# PyO3's `#[pyfunction]` / `#[pyclass]`.
+#
+# It exists because the two have to survive together (#275 Phase 2): the
+# wrapper crate generates entry points for the PyO3 items and *links* the
+# `#[julia]` ones, whose `rustcall_*` symbols this crate's own object code
+# already provides, and the module `@rust_crate` hands back must expose both.
+#
+# `[lib] name` deliberately differs from the package name: Rust code refers to
+# a dependency by its **library target** name, so a generated
+# `sample_crate_pyo3_mixed::add` would not compile. The wrapper must emit
+# `mixed_pyo3_sample::add`.
+[package]
+name = "sample_crate_pyo3_mixed"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "mixed_pyo3_sample"
+crate-type = ["rlib"]
+
+[dependencies]
+juliacall_macros = { path = "../../deps/juliacall_macros" }
+pyo3 = { version = "0.29", default-features = false, features = ["macros"] }

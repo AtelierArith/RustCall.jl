@@ -208,3 +208,4 @@ args = []
 return_type = "i32"
 return_abi = ""
 generic_wrapper = ""
+cfg = 'target_os = "linux"'

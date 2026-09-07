@@ -306,6 +306,60 @@ end
         end
     end
 
+    # A library an artifact imports by name, that the loader would not find on
+    # its own, is opened first through the same door — a PyO3 wrapper's Python
+    # DLL on Windows, where there is no rpath (#307 review). Any library stands
+    # in for the DLL here: the mechanism is the same on every platform.
+    @testset "preload: a dependency is opened before the image, once, for good" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to build a library to load"
+        else
+            dependency = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_preload_dependency() -> i32 { 1 }
+                """)
+            lib = RustCall.compile_rust_to_shared_lib("""
+                #[no_mangle]
+                pub extern "C" fn rustcall_preload_image() -> i32 { 2 }
+                """)
+            name = "loadpolicy_preload_$(getpid())"
+            policy = RustCall.inline_rustc_policy()
+            @test !(dependency in RustCall.preloaded_libraries())
+            try
+                a = RustCall.load_artifact!(policy, lib; lib_name = name, preload = [dependency])
+                @test dependency in RustCall.preloaded_libraries()
+                @test Libdl.dlsym(a.handle, "rustcall_preload_image") != C_NULL
+                # Opened once: a second artifact naming the same dependency gets
+                # the handle already held, and the table does not grow.
+                handle = RustCall.preload_dependency!(policy, dependency)
+                @test handle != C_NULL
+                @test RustCall.preload_dependency!(policy, dependency) == handle
+                @test count(==(dependency), RustCall.preloaded_libraries()) == 1
+            finally
+                RustCall.unload_artifact!(policy, name; close = true)
+            end
+            # Retiring the artifact does not close what it depended on: the
+            # dependency stays open for the life of the process.
+            @test dependency in RustCall.preloaded_libraries()
+
+            # A dependency that cannot be opened is the error — named — and
+            # the image is not loaded or registered behind it.
+            missing = joinpath(@__DIR__, "no_such_dependency_$(getpid()).so")
+            err = try
+                RustCall.load_artifact!(policy, lib; lib_name = name * "_missing",
+                                        preload = [missing])
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.RustError
+            @test occursin(missing, sprint(showerror, err))
+            @test !(missing in RustCall.preloaded_libraries())
+            @test !lock(() -> haskey(RustCall.RUST_LIBRARIES, name * "_missing"),
+                        RustCall.REGISTRY_LOCK)
+        end
+    end
+
     # -----------------------------------------------------------------
     # #244: one panic strategy, and a boundary that catches.
     #
@@ -362,7 +416,7 @@ end
         @test occursin("cargo_profile_panic_line(crate_wrapper_policy())",
                        _src("crate_bindings.jl"))
         @test occursin("_cargo_panic_env", _src("cargobuild.jl"))
-        @test occursin("build_env === nothing || (cmd = setenv(cmd, build_env))",
+        @test occursin("cmd = setenv(`\$cargo_cmd \$build_args`, build_env)",
                        _src("cargobuild.jl"))
         env = RustCall._cargo_panic_env(cargo_policy, Dict("A" => "b"), true)
         @test env["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"

@@ -242,18 +242,32 @@ fn string_arg_conversion(
 /// The receiver of a method wrapper: the wrapper takes `*const` / `*mut Struct`
 /// and dereferences it into `self_obj`.
 pub(crate) struct WrapperReceiver {
-    pub ty: Ident,
+    /// Path of the receiver type. An in-crate flavour passes the bare struct
+    /// name; the PyO3 wrapper crate of #275 passes `user_crate::module::Class`,
+    /// because the type lives in a dependency.
+    pub ty: syn::Path,
     pub mutable: bool,
 }
 
 /// The item the wrapper calls. Always the original, under its own name.
 pub(crate) enum CallTarget {
-    /// `f(args)`
-    Free(Ident),
+    /// `f(args)` — a path, so the PyO3 wrapper crate of #275 can name
+    /// `user_crate::module::f` while the in-crate flavours pass a bare name.
+    Free(syn::Path),
     /// `Struct::m(args)`
-    Assoc { ty: Ident, method: Ident },
+    Assoc { ty: syn::Path, method: Ident },
     /// `self_obj.m(args)`
     Instance(Ident),
+}
+
+/// The last segment of a path, which is the name a human reads: the panic
+/// message of a wrapper for `user_crate::geometry::Point::area` says
+/// `Point::area`, not the whole path.
+fn path_tail(path: &syn::Path) -> String {
+    path.segments
+        .last()
+        .map(|s| s.ident.to_string())
+        .unwrap_or_default()
 }
 
 /// How the wrapper hands the value back across the C ABI.
@@ -267,8 +281,8 @@ pub(crate) enum WrapperReturn {
     /// Returned as written.
     Plain(Type),
     /// The value is boxed and returned as `*mut Struct` (constructors and
-    /// anything returning `Self`).
-    Boxed(Ident),
+    /// anything returning `Self`). A path, see [`CallTarget::Free`].
+    Boxed(syn::Path),
     /// `<helper> { ptr, len, cap }`, released through `<free>`.
     OwnedString {
         helper: Ident,
@@ -382,6 +396,12 @@ pub(crate) struct WrapperSpec {
     pub lower_strings: bool,
     pub ret: WrapperReturn,
     pub target: CallTarget,
+    /// Tokens appended to the call expression before the return lowering sees
+    /// its value. Empty for every in-crate flavour; the PyO3 wrapper crate of
+    /// #275 uses it to turn a `PyResult<T>` into a `Result<T, i32>` by
+    /// **dropping** the `PyErr` — rendering one panics inside pyo3 without an
+    /// interpreter, and that panic crossing `extern "C"` aborts the process.
+    pub call_suffix: TokenStream2,
 }
 
 /// Suffix of the panic-channel reader a wrapper exports next to itself.
@@ -544,6 +564,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         lower_strings,
         ret,
         target,
+        call_suffix,
     } = spec;
 
     let taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
@@ -583,6 +604,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         CallTarget::Assoc { ty, method } => quote! { #ty::#method(#(#call_args),*) },
         CallTarget::Instance(method) => quote! { #self_obj.#method(#(#call_args),*) },
     };
+    let call = quote! { #call #call_suffix };
     let prologue = quote! { #(#conversions)* #self_binding };
 
     // The Julia-facing name this wrapper stands for, used in the panic
@@ -590,10 +612,10 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
     // the message reads `Point::area panicked: ...` and not
     // `rustcall_Point_area panicked: ...`.
     let julia_name = match &target {
-        CallTarget::Free(name) => name.to_string(),
-        CallTarget::Assoc { ty, method } => format!("{ty}::{method}"),
+        CallTarget::Free(name) => path_tail(name),
+        CallTarget::Assoc { ty, method } => format!("{}::{}", path_tail(ty), method),
         CallTarget::Instance(method) => match &receiver {
-            Some(r) => format!("{}::{}", r.ty, method),
+            Some(r) => format!("{}::{}", path_tail(&r.ty), method),
             None => method.to_string(),
         },
     };
@@ -794,6 +816,13 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
     };
     out.extend(wrapper);
     out
+}
+
+/// [`owned_string_helper`] with no `#[cfg]` attributes, for a generator that
+/// emits the buffer next to a struct rather than next to a function: the PyO3
+/// wrapper crate of #275 shares one buffer type per `#[pyclass]`.
+pub(crate) fn owned_string_helper_items(helper: &Ident, free: &Ident) -> TokenStream2 {
+    owned_string_helper(&[], helper, free)
 }
 
 /// The string buffer types the payloads of one `Result` / `Option` wrapper
@@ -1008,7 +1037,8 @@ fn free_function_wrapper(func: &ItemFn, options: &FreeFnOptions) -> TokenStream2
         args: arg_pairs(&func.sig),
         lower_strings: options.lower_strings,
         ret,
-        target: CallTarget::Free(name),
+        target: CallTarget::Free(name.into()),
+        call_suffix: TokenStream2::new(),
     })
 }
 
@@ -1700,12 +1730,12 @@ fn method_spec(
         method_symbol(&struct_name.to_string(), &method_name_str)
     );
     let receiver = (!m.is_static).then(|| WrapperReceiver {
-        ty: struct_name.clone(),
+        ty: struct_name.clone().into(),
         mutable: m.is_mutable,
     });
     let target = if m.is_static {
         CallTarget::Assoc {
-            ty: struct_name.clone(),
+            ty: struct_name.clone().into(),
             method: method_name,
         }
     } else {
@@ -1714,7 +1744,7 @@ fn method_spec(
     let ret = if inline_method_is_ctor(struct_name, m) {
         // `new`, or any method returning `Self` / the struct type, hands Julia
         // an owning pointer. The string helpers are not involved.
-        WrapperReturn::Boxed(struct_name.clone())
+        WrapperReturn::Boxed(struct_name.clone().into())
     } else if let Some(r) = method_result_return(m) {
         // A `Result` method is lowered exactly like a free function (#268):
         // `CResult_<Struct>_<method>`, with a `String` payload composed onto
@@ -1754,6 +1784,7 @@ fn method_spec(
         lower_strings: true,
         ret,
         target,
+        call_suffix: TokenStream2::new(),
     }
 }
 

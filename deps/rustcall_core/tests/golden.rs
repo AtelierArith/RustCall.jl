@@ -31,10 +31,13 @@ fn corpus_sources() -> Vec<PathBuf> {
         .expect("failed to read golden corpus directory")
         .map(|entry| entry.expect("failed to read corpus entry").path())
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        // `<stem>.expanded.rs` and `<stem>.wrap.rs` are golden *outputs* that
+        // happen to be Rust; they are not corpus inputs.
         .filter(|path| {
-            !path
-                .file_stem()
-                .is_some_and(|stem| stem.to_string_lossy().ends_with(".expanded"))
+            !path.file_stem().is_some_and(|stem| {
+                let stem = stem.to_string_lossy();
+                stem.ends_with(".expanded") || stem.ends_with(".wrap")
+            })
         })
         .collect();
     sources.sort();
@@ -128,4 +131,50 @@ fn compilable_wrappers_build_as_cdylib() {
         "rustc rejected expanded struct/Result/Option wrappers:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// The #275 Phase-2 wrapper crate of every corpus source that has PyO3 items:
+/// the `lib.rs` it generates (`<stem>.wrap.rs`) and the manifest that
+/// describes it (`<stem>.wrap.toml`).
+///
+/// A source with no PyO3 item produces no goldens, so the corpus does not grow
+/// two dead files per entry.
+#[test]
+fn pyo3_wrapper_crates_match_golden_files() {
+    for source_path in corpus_sources() {
+        let source = fs::read_to_string(&source_path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", source_path.display()));
+        let stem = source_path
+            .file_stem()
+            .expect("corpus source must have a file stem")
+            .to_string_lossy()
+            .into_owned();
+
+        let scanned = rustcall_core::extract::extract(&source, Mode::Crate)
+            .unwrap_or_else(|error| panic!("failed to extract {}: {error}", source_path.display()));
+        let has_pyo3 = scanned.functions.iter().any(|f| f.attribute.is_pyo3_scan())
+            || scanned.structs.iter().any(|s| s.attribute.is_pyo3_scan());
+        if !has_pyo3 {
+            continue;
+        }
+
+        // The corpus is scanned without a cfg file, so `cfg_resolved` is false
+        // and a `#[cfg]`-carrying item is refused -- the shape a lenient scan
+        // produces, which is the one `@rust_crate` uses.
+        let wrapper = rustcall_core::wrap::wrapper_crate(&scanned, "user_crate", false);
+        let again = rustcall_core::wrap::wrapper_crate(&scanned, "user_crate", false);
+        assert_eq!(wrapper, again, "wrapper generation is not deterministic");
+
+        assert_or_update(
+            &source_path.with_file_name(format!("{stem}.wrap.rs")),
+            &wrapper.lib_rs,
+        );
+        assert_or_update(
+            &source_path.with_file_name(format!("{stem}.wrap.toml")),
+            &wrapper
+                .manifest
+                .to_toml()
+                .expect("failed to serialize wrapper manifest"),
+        );
+    }
 }

@@ -1564,12 +1564,23 @@ and come back as a `LoadedArtifact` with a liveness flag of their own.
 only to resolve `assumed_unwind`.  Pass the captured snapshot for a cached or
 reloaded artifact, never the live `ENV` (see `effective_panic_strategy`).
 
+`preload` names shared libraries the image imports **by name** that the
+platform's loader would not find on its own, each as a full path; they are
+opened first (`preload_dependency!`), under the same flag set, and stay open for
+the life of the process. This is how a PyO3 wrapper finds its `python3xy.dll`
+on Windows, where there is no rpath and the interpreter's directory need not be
+on `PATH` (`PyO3LinkPlan.runtime_libraries`, #307 review).
+
 Throws if the load fails, leaving the registry untouched.
 """
 function load_artifact!(policy::LoadPolicy, path::AbstractString;
                         lib_name::AbstractString,
+                        preload = (),
                         kwargs...)
     lib_path = String(path)
+    for dependency in preload
+        preload_dependency!(policy, dependency)
+    end
     handle = Libdl.dlopen(lib_path, dlopen_flags(policy))
     if handle == C_NULL
         throw(RustError("Failed to load $(policy.name) library: $(lib_path)"))
@@ -1587,6 +1598,52 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     return adopt_artifact!(policy, handle; lib_name, path = lib_path,
                            close_duplicate = true, kwargs...)
 end
+
+"""
+    PRELOADED_LIBRARIES
+
+The libraries `preload_dependency!` has opened, by path, with their handles.
+
+An entry is a dependency some artifact imports by name — a Python runtime DLL —
+that RustCall opened so the loader could resolve that import. It is never
+closed: the artifacts that import it may outlive any one of them being
+retired, and a runtime like Python cannot be unloaded and reloaded within one
+process anyway. Guarded by `REGISTRY_LOCK`.
+"""
+const PRELOADED_LIBRARIES = Dict{String, Ptr{Cvoid}}()
+
+"""
+    preload_dependency!(policy::LoadPolicy, path) -> Ptr{Cvoid}
+
+Open `path` — a library some artifact of `policy` imports by name — under the
+policy's flag set, once per path, and keep it open for the life of the process
+(`PRELOADED_LIBRARIES`). The `dlopen` runs outside `REGISTRY_LOCK`, like every
+other; two tasks racing on one path both open it (the loader refcounts, so the
+duplicate open is harmless) and the table keeps the first handle.
+
+Throws a `RustError` naming the path when it cannot be opened, so a wrapper
+that would fail with a bare "module not found" fails with the dependency that
+is missing instead.
+"""
+function preload_dependency!(policy::LoadPolicy, path::AbstractString)
+    dependency = String(path)
+    known = lock(() -> get(PRELOADED_LIBRARIES, dependency, C_NULL), REGISTRY_LOCK)
+    known == C_NULL || return known
+    handle = Libdl.dlopen(dependency, dlopen_flags(policy); throw_error = false)
+    handle === nothing &&
+        throw(RustError("Failed to load a library the $(policy.name) library depends on: " *
+                        "$(dependency)"))
+    return lock(REGISTRY_LOCK) do
+        get!(PRELOADED_LIBRARIES, dependency, handle)
+    end
+end
+
+"""
+    preloaded_libraries() -> Vector{String}
+
+The paths `preload_dependency!` has opened in this process, sorted.
+"""
+preloaded_libraries() = lock(() -> sort!(collect(keys(PRELOADED_LIBRARIES))), REGISTRY_LOCK)
 
 """
     adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};

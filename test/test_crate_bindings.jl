@@ -194,10 +194,13 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
         # A lookup key is the full digest: truncation is for names only (#278).
         @test length(hash1) == 64
         deps_digest = RustCall.artifact_path_dependency_digest(info.path)
+        # The feature set is in the key of every kind, the plain build's
+        # included — a `--no-default-features` build is a different binary
+        # from the default one (#307 review).
         @test hash1 == RustCall.artifact_key(RustCall.ArtifactId(
             kind = "crate",
             source = RustCall.crate_content_digest(info.path),
-            codegen = ["profile" => "release"],
+            codegen = ["profile" => "release", "features" => "", "default-features" => "true"],
             dependencies = [deps_digest],
             build_env = ["cargo-config" => RustCall._cargo_config_digest(ENV; dir = info.path)],
             extra = ["name" => info.name, "version" => info.version]))
@@ -615,6 +618,109 @@ end
         # Test with custom module name
         code_named = RustCall.emit_crate_module_code(info, "/tmp/lib.so", module_name="CustomModule")
         @test occursin("module CustomModule", code_named)
+
+        # A library the image imports by name that the loader would not find
+        # (a PyO3 wrapper's Python DLL on Windows) is opened before it, through
+        # `load_artifact!`; a file that needs none says nothing about it, so it
+        # still reads under a RustCall without the option (#307 review).
+        @test !occursin("_PRELOAD_LIBRARIES", code)
+        @test !occursin("preload", code)
+        code_preload = RustCall.emit_crate_module_code(info, "/tmp/lib.so";
+            preload = ["C:\\\\Python312\\\\python312.dll"])
+        @test occursin("const _PRELOAD_LIBRARIES = $(repr(["C:\\\\Python312\\\\python312.dll"]))",
+                       code_preload)
+        @test occursin("lib_name = _LIB_NAME, preload = _PRELOAD_LIBRARIES)", code_preload)
+        @test !occursin("Libdl.dlopen", code_preload)
+    end
+
+    @testset "the plain path scans under the build's configuration (#307 review)" begin
+        # A `#[cfg(feature = "x")] #[julia] fn` is in the lenient scan whether
+        # or not `x` is on; the build has it only when `x` is on. The bindings
+        # are emitted from a scan under the same cfg the build compiles with —
+        # the requested feature set included — so the module never names a
+        # symbol the library does not export.
+        if !RustCall.check_rustc_available()
+            @test_skip "cargo is required to probe a crate's configuration"
+        else
+            fn_names(info) = sort([f.name for f in info.julia_functions])
+            mktempdir() do dir
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "Cargo.toml"), """
+                    [package]
+                    name = "gated"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [features]
+                    default = []
+                    extra = []
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [workspace]
+                    """)
+                write(joinpath(dir, "src", "lib.rs"), """
+                    #[julia]
+                    pub fn base() -> i32 { 0 }
+
+                    #[cfg(feature = "extra")]
+                    #[julia]
+                    pub fn extra() -> i32 { 1 }
+                    """)
+                lenient = RustCall.scan_crate(dir)
+                @test fn_names(lenient) == ["base", "extra"]
+                # Default build: `extra` is off, and the scan says so.
+                default = RustCall._plain_scan_info(dir, lenient, String[], true, true)
+                @test fn_names(default) == ["base"]
+                # The requested build: `extra` is on, and the scan says so.
+                with_extra = RustCall._plain_scan_info(dir, lenient, ["extra"], true, true)
+                @test fn_names(with_extra) == ["base", "extra"]
+                # `--no-default-features` alone changes nothing here, and the
+                # debug profile is probed as debug.
+                @test fn_names(RustCall._plain_scan_info(dir, lenient, String[], false, false)) ==
+                      ["base"]
+            end
+
+            # The probe has the shape of the build. A crate *without* a cdylib is
+            # built as the dependency of a generated `_julia_wrapper` root, whose
+            # release profile replaces the crate's own — so the crate's
+            # `[profile.release] debug-assertions = true` does not reach the
+            # build, and a `#[cfg(debug_assertions)]` item is not bound. The
+            # same crate with a cdylib is built as the root, its profile
+            # applies, and the item is (#307 review).
+            for (cdylib, expected) in ((false, ["base"]), (true, ["base", "checked"]))
+                mktempdir() do dir
+                    mkpath(joinpath(dir, "src"))
+                    lib_table = cdylib ? "[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n" : ""
+                    write(joinpath(dir, "Cargo.toml"), """
+                        [package]
+                        name = "profiled"
+                        version = "0.1.0"
+                        edition = "2021"
+
+                        $lib_table
+                        [profile.release]
+                        debug-assertions = true
+
+                        [workspace]
+                        """)
+                    write(joinpath(dir, "src", "lib.rs"), """
+                        #[julia]
+                        pub fn base() -> i32 { 0 }
+
+                        #[cfg(debug_assertions)]
+                        #[julia]
+                        pub fn checked() -> i32 { 1 }
+                        """)
+                    lenient = RustCall.scan_crate(dir)
+                    @test fn_names(lenient) == ["base", "checked"]
+                    @test RustCall.crate_has_cdylib(dir) == cdylib
+                    @test fn_names(RustCall._plain_scan_info(dir, lenient, String[], true, true)) ==
+                          expected
+                end
+            end
+        end
     end
 
     @testset "_emit_function_code" begin

@@ -532,6 +532,11 @@ function _workspace_root_dir(dir::AbstractString)
         if isfile(manifest)
             parsed = _parse_manifest_or_nothing(manifest)
             if parsed isa AbstractDict && get(parsed, "workspace", nothing) isa AbstractDict
+                # The nearest `[workspace]` is Cargo's one candidate. A package
+                # it lists in `exclude` is not a member and is its own root —
+                # Cargo does not keep searching upwards, and gives it none of
+                # the root's inputs (#307 review).
+                _workspace_excludes(parsed["workspace"], current, start) && return nothing
                 return current
             end
         end
@@ -539,6 +544,36 @@ function _workspace_root_dir(dir::AbstractString)
         (isempty(parent) || parent == current) && return nothing
         current = parent
     end
+end
+
+# Whether the `[workspace]` table at `root` excludes `dir`, with Cargo's own
+# rule (`WorkspaceRootConfig::is_excluded`): an `exclude` entry naming `dir`
+# itself or a directory it lies under excludes it — *unless* a `members` entry
+# names `dir` or a directory it lies under, in which case the explicit listing
+# wins and the package stays a member (`members = ["crates/foo/bar"]` next to
+# `exclude = ["crates/foo"]`, #307 review). Only a literal `members` entry
+# counts: Cargo compares the raw list, so a glob (`crates/*`) rescues nothing.
+function _workspace_excludes(workspace::AbstractDict, root::AbstractString, dir::AbstractString)
+    target = abspath(String(dir))
+    _workspace_lists(get(workspace, "exclude", nothing), root, target) || return false
+    return !_workspace_lists(get(workspace, "members", nothing), root, target)
+end
+
+# Whether one of `entries` (paths relative to `root`) is `target` or a
+# directory `target` lies under. Entries that are not strings, or that do not
+# resolve, are skipped.
+function _workspace_lists(entries, root::AbstractString, target::AbstractString)
+    entries isa AbstractVector || return false
+    for entry in entries
+        entry isa AbstractString || continue
+        path = try
+            abspath(joinpath(String(root), String(entry)))
+        catch
+            continue
+        end
+        (target == path || startswith(target, joinpath(path, ""))) && return true
+    end
+    return false
 end
 
 # `[package] workspace = "../ws"` in this crate's own manifest, resolved against
@@ -715,6 +750,52 @@ function crate_content_digest(dir::AbstractString)::String
         # returning the real relative names, which is what callers read.
         _netstring!(io, _hashed_relative_path(rel))
         f = joinpath(dir, rel)
+        if isfile(f)
+            _netstring!(io, "content")
+            _netstring!(io, _file_content_digest(f))
+        else
+            _netstring!(io, "not-on-disk")
+        end
+    end
+    return bytes2hex(sha256(take!(io)))
+end
+
+"""
+    external_lib_tree_digest(crate_dir, lib_root) -> Union{String, Nothing}
+
+The digest of a library root that lives **outside** its package directory —
+`[lib] path = "../shared/lib.rs"`, a layout Cargo allows and the crate scan
+follows (`crate_lib_root`) — and of everything beside it: every file under the
+root's directory that `crate_input_files` reports (the same walk and the same
+exclusions as the package directory), by sorted relative path and content
+digest, netstring-framed like `crate_content_digest`. `nothing` when `lib_root`
+is `nothing` or lies inside `crate_dir`, where `crate_content_digest` already
+covers it.
+
+`crate_content_digest` hashes the package directory, so an edit to such an
+external root — or to a `mod foo;` file next to it — left the artifact key
+unchanged and the cache answered with the previous wrapper while the fresh
+manifest described the new source (#307 review). Every file counts, not only
+`.rs`: an `include_str!` / `include_bytes!` of a data file beside the root
+compiles different bytes when that file changes, exactly as inside the package
+directory.
+"""
+function external_lib_tree_digest(crate_dir::AbstractString, lib_root)
+    lib_root === nothing && return nothing
+    root = normpath(abspath(String(lib_root)))
+    inside = normpath(abspath(String(crate_dir)))
+    (root == inside || startswith(root, joinpath(inside, ""))) && return nothing
+    tree = dirname(root)
+    strategy, files = crate_input_files(tree)
+    io = IOBuffer()
+    _netstring!(io, "external-lib-root")
+    _netstring!(io, _hashed_relative_path(relpath(root, tree)))
+    _netstring!(io, "file-strategy")
+    _netstring!(io, strategy)
+    _netstring!(io, string(length(files)))
+    for rel in files
+        _netstring!(io, _hashed_relative_path(rel))
+        f = joinpath(tree, rel)
         if isfile(f)
             _netstring!(io, "content")
             _netstring!(io, _file_content_digest(f))
@@ -1092,6 +1173,12 @@ const ARTIFACT_BUILD_ENV_PREFIXES = String[
     "CARGO_CFG_",
     "CARGO_ENCODED_RUSTFLAGS",
     "CARGO_PROFILE_",
+    # pyo3's build-script namespace (`PYO3_PYTHON`, `PYO3_CONFIG_FILE`,
+    # `PYO3_CROSS_LIB_DIR`, `PYO3_NO_PYTHON`, …): every one of them changes
+    # which Python a wrapper cdylib is configured for and links against
+    # (#307 review). The *contents* of `PYO3_CONFIG_FILE` are hashed by the
+    # wrapper build on top of this (`_pyo3_wrapper_build_env`).
+    "PYO3_",
 ]
 
 "See `ARTIFACT_BUILD_ENV_PREFIXES`."

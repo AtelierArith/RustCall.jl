@@ -21,7 +21,11 @@ attribute origin, `vis`, `skip_reason` and the `py_result` return kind, #275;
 6: `Result`/`Option` on struct methods — a method wrapper now returns
 `CResult_<Struct>_<method>` / `COption_<Struct>_<method>` where it used to
 return the type as written, and `ok_abi`/`err_abi`/`inner_abi` say whether a
-payload travels as an owned string buffer, #268).
+payload travels as an owned string buffer, #268 — bumped together with the
+PyO3 wrapper crate, since neither shipped on its own: a `py_*` entry can now be
+`exported` with a `return_abi`, a lowered `PyResult` reports the `i32` code in
+`err_type`, and the skip-reason vocabulary gains the four the *generator*
+uses, #275 Phase 2).
 """
 const MANIFEST_SCHEMA_VERSION = 6
 
@@ -569,8 +573,12 @@ caller today has just built the crate anyway.
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
                                memo::Bool = true, features::Vector{String} = String[])
     path = abspath(String(crate_path))
+    # pyo3's configuration is an input too: a crate that depends on pyo3 gets
+    # `Py_3_x` cfgs from `pyo3-build-config`, which reads `PYO3_*` (#307
+    # review; `_cargo_cfg_env_key` excludes that namespace on purpose).
     key = path * "\n" * String(profile) * "\n" * join(features, " ") * "\n" *
-          _cargo_cfg_env_key() * "\n" * _crate_cfg_inputs_digest(path)
+          _cargo_cfg_env_key() * "\n" * _pyo3_env_key() * "\n" *
+          _crate_cfg_inputs_digest(path)
     probe = () -> begin
             try
                 flag = profile == "release" ? `--release` : ``
@@ -749,6 +757,80 @@ function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::
     end
     text = _run_extractor(vcat(args, files))
     return _parse_manifest(text)
+end
+
+"""
+    WrapperCrateSource
+
+The `src/lib.rs` of a generated PyO3 wrapper crate and the manifest describing
+what it exports (#275 Phase 2).
+
+`manifest` is **not** the scan that went in: every emitted item is `exported`
+with its `return_abi` filled in, and every item the generator refused carries a
+`skip_reason` from the `unsupported_arg` / `unsupported_return` /
+`py_result_payload` / `cfg_undecided` vocabulary. Binding the wrapper from this
+manifest is what keeps the Julia definitions and the exported symbols from
+drifting apart.
+"""
+struct WrapperCrateSource
+    crate_name::String
+    lib_rs::String
+    manifest::Dict{String, Any}
+end
+
+"""
+    wrap_crate(files; crate_name, cfg=:strict, cfg_text=nothing,
+               crate_root=nothing, skip_unparsable=false) -> WrapperCrateSource
+
+Generate the wrapper crate for the PyO3 items of the crate scanned from `files`
+(#275 Phase 2). The arguments mirror `extract_manifest` in crate mode, because
+the extractor runs the *same* scan and then generates from it: what `scan_crate`
+reports and what the wrapper exports cannot disagree.
+
+`cfg` / `cfg_text` decide more than which items are reported. When the
+configuration is fully resolved, an item carrying a `#[cfg]` predicate is known
+to exist in the build the wrapper links against; when it is not, such an item is
+refused with `cfg_undecided` rather than compiled into a call to something that
+may not be there. An item marked only through
+`#[cfg_attr(feature = "python", pyfunction)]` has no predicate of its own and is
+unaffected — the marker is conditional, the item is not, which is what makes a
+Python-free wrapper build possible at all.
+"""
+function wrap_crate(files::Vector{String}; crate_name::AbstractString,
+                    cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
+                    crate_root::Union{Nothing, AbstractString} = nothing,
+                    skip_unparsable::Bool = false)
+    isempty(files) && throw(ArgumentError("wrap_crate needs at least one source file"))
+    args = ["wrap", "--crate-name", String(crate_name)]
+    skip_unparsable && push!(args, "--skip-unparsable")
+    if crate_root !== nothing
+        push!(args, "--crate-root")
+        push!(args, String(crate_root))
+    end
+    if cfg_text === nothing
+        append!(args, _cfg_file_args(cfg))
+    else
+        append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
+    end
+    text = _run_extractor(vcat(args, files))
+    doc = try
+        TOML.parse(text)
+    catch e
+        throw(ExtractorError("failed to parse wrapper crate TOML: $e"))
+    end
+    version = get(doc, "schema_version", nothing)
+    if version != MANIFEST_SCHEMA_VERSION
+        throw(ExtractorError(
+            "wrapper crate schema version mismatch: the rustcall-extract binary produced " *
+            "schema $(version) but this RustCall.jl expects $(MANIFEST_SCHEMA_VERSION). " *
+            "Rebuild with `Pkg.build(\"RustCall\")`."))
+    end
+    manifest = get(doc, "manifest", nothing)
+    manifest isa AbstractDict ||
+        throw(ExtractorError("wrapper crate output has no [manifest] table"))
+    return WrapperCrateSource(String(get(doc, "crate_name", String(crate_name))),
+                              String(get(doc, "lib_rs", "")),
+                              Dict{String, Any}(manifest))
 end
 
 """
@@ -992,8 +1074,12 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             name = _mstr(f, "name")
             push!(fields, (name, _mstr(f, "rust_type")))
             field_abis[name] = _mstr(f, "abi")
-            if _mbool(f, "ffi_compatible") && !isempty(_mstr(f, "getter"))
-                getters[name] = _mstr(f, "getter")
+            # Each accessor on its own: a `#[julia]` struct carries both, a
+            # `#[pyclass]` field carries what `#[pyo3(get)]` / `#[pyo3(set)]`
+            # declared, and a `set`-only field is a setter with no getter
+            # rather than nothing (#307 review).
+            if _mbool(f, "ffi_compatible")
+                isempty(_mstr(f, "getter")) || (getters[name] = _mstr(f, "getter"))
                 isempty(_mstr(f, "setter")) || (setters[name] = _mstr(f, "setter"))
             end
         end
