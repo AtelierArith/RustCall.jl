@@ -4,7 +4,7 @@ main.py - Demo of using sample_crate_pyo3 from Python
 
 Before running, build and install the module:
     pip install maturin
-    cd examples/sample_crate_pyo3
+    cd examples/SampleCratePyO3.jl/deps/sample_crate_pyo3
     maturin develop --features python
 
 Then run:

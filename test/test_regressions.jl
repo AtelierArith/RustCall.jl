@@ -1546,7 +1546,7 @@ end
         @test occursin("`ffi_string_argument`", sprint(showerror, err5))
 
         # And the same for the source-text emitter, checked on the text.
-        let info = RustCall.scan_crate(joinpath(pkgdir(RustCall), "examples", "sample_crate")),
+        let info = RustCall.scan_crate(joinpath(@__DIR__, "fixtures", "sample_crate")),
             code = RustCall.emit_crate_module_code(info, "/tmp/libsample_rc246.so")
             @test occursin("RustCall.ffi_string_argument(", code)
             # No unqualified call is left for a parameter to shadow.

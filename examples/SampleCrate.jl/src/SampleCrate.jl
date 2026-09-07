@@ -1,13 +1,13 @@
 """
     SampleCrate
 
-The Julia package around the Rust crate `examples/sample_crate`.
+A Julia package with its Rust crate embedded under `deps/sample_crate/`.
 
 The two halves live in separate files:
 
-- **Rust**: `../sample_crate/src/lib.rs` — the implementation, marked with
-  `#[julia]` where it should be callable from Julia. Nothing in this package
-  contains Rust source.
+- **Rust**: `deps/sample_crate/src/lib.rs` — the implementation, marked with
+  `#[julia]` where it should be callable from Julia. No Julia file contains
+  Rust source.
 - **Julia**: this file — idiomatic wrappers over the generated bindings — and
   `src/generated/Bindings.jl`, which `deps/build.jl` writes with
   `RustCall.write_bindings_to_file` (run `Pkg.build("SampleCrate")`).

@@ -6,8 +6,8 @@ using RustToolChain: cargo
 using Libdl
 
 # Path to the sample crate
-const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
-const SAMPLE_CRATE_PYO3_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate_pyo3")
+const SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
+const SAMPLE_CRATE_PYO3_PATH = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3")
 # Where the shared finalizer implementation lives, for the #249 assertions.
 const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
@@ -485,7 +485,7 @@ end
     @test use_bindings_in_function(SAMPLE_CRATE_PATH) == (Int32(5), 5.0, 3.0, 10.0)
 end
 
-# The Julia demo of `examples/sample_crate_pyo3` is the package
+# The Julia demo of `test/fixtures/sample_crate_pyo3` is the package
 # `examples/SampleCratePyO3.jl`, whose `Pkg.test()` the Examples workflow runs
 # in CI; it is no longer run from inside this suite.
 
@@ -965,7 +965,7 @@ end
             # `cargo build` of the crate — hot reload, another binding path —
             # can still overwrite the file, which Windows refuses for a mapped
             # DLL (#309). Only *observed* here: `_LIB_PATH` is the shared
-            # `examples/sample_crate` output that other workers of the
+            # `test/fixtures/sample_crate` output that other workers of the
             # parallel phase build and load at the same time, so it is never
             # removed or rewritten by this test. The overwrite itself is
             # exercised in "write_bindings_to_file with relative path", on a

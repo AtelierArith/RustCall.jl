@@ -1,8 +1,10 @@
 # sample_crate_pyo3
 
-A demo Rust crate with **dual bindings** — Julia through RustCall.jl, Python
-through PyO3 — from one definition of each item, with pyo3 as an *optional*
-dependency.
+The Rust crate embedded in [`examples/SampleCratePyO3.jl`](../../): **dual
+bindings** — Julia through RustCall.jl, Python through PyO3 — from one
+definition of each item, with pyo3 as an *optional* dependency. The Julia
+package two directories up is its Julia consumer; `main.py` here is its Python
+consumer.
 
 > This example used to be written with RustCall's own `#[julia_pyo3]` macro.
 > That macro was deprecated in 0.2.0 (#275 Phase 3) and **removed in 0.3.0**
@@ -98,15 +100,18 @@ impl Point {
 
 ### For Julia
 
+`Pkg.build("SampleCratePyO3")` of the package does this (its `deps/build.jl`);
+by hand:
+
 ```bash
-cd examples/sample_crate_pyo3
+cd examples/SampleCratePyO3.jl/deps/sample_crate_pyo3
 cargo build --release
 ```
 
 ### For Python
 
 ```bash
-cd examples/sample_crate_pyo3
+cd examples/SampleCratePyO3.jl/deps/sample_crate_pyo3
 
 # Create virtual environment
 python3 -m venv .venv
@@ -124,7 +129,7 @@ maturin develop --features python
 ```julia
 using RustCall
 
-const SampleCratePyo3 = @rust_crate "/path/to/sample_crate_pyo3"
+const SampleCratePyo3 = @rust_crate "/path/to/examples/SampleCratePyO3.jl/deps/sample_crate_pyo3"
 
 SampleCratePyo3.add(2, 3)           # => 5
 SampleCratePyo3.fibonacci(10)        # => 55
@@ -138,12 +143,12 @@ SampleCratePyo3.translate(p, 1.0, 2.0)
 SampleCratePyo3.scaled(p, 2.0)       # => new Point
 ```
 
-Or use the Julia **package** around this crate,
-[`../SampleCratePyO3.jl`](../SampleCratePyO3.jl/), whose `Pkg.test()` makes the
-same assertions as `main.py` below:
+Or use the Julia **package** this crate is embedded in,
+[`SampleCratePyO3.jl`](../../), whose `Pkg.test()` makes the same assertions as
+`main.py` below:
 
 ```bash
-cd ../SampleCratePyO3.jl
+cd examples/SampleCratePyO3.jl
 julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
 
@@ -189,13 +194,17 @@ python main.py
 
 ```toml
 [dependencies]
-juliacall_macros = { path = "../../deps/juliacall_macros" }
+juliacall_macros = { path = "../../../../deps/juliacall_macros" }
 pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
 
 [features]
 default = []
 python = ["pyo3"]
 ```
+
+`juliacall_macros` (the `#[julia]` attribute) is not on crates.io yet, so it is
+a path dependency into the RustCall.jl checkout — the only reference this
+example makes outside `examples/SampleCratePyO3.jl/`.
 
 ## Why the feature flag?
 
@@ -206,8 +215,8 @@ python = ["pyo3"]
 
 The same source produces both; only the feature decides which half is compiled
 in. (RustCall can also bind a crate that has *only* PyO3 attributes and no
-`#[julia]` at all — see `examples/sample_crate_pyo3_only` and
-`docs/src/pyo3.md`.)
+`#[julia]` at all — see RustCall's test fixture
+`test/fixtures/sample_crate_pyo3_only` and `docs/src/pyo3.md`.)
 
 ## Migrating from `#[julia_pyo3]`
 
@@ -224,13 +233,12 @@ with ``cannot find attribute `julia_pyo3` ``. The full write-up is in
 ## Files
 
 ```
-sample_crate_pyo3/
-├── Cargo.toml      # Crate config with the `python` feature
-├── src/
-│   └── lib.rs      # Rust code: #[julia] + PyO3 attributes
-├── main.py         # Python demo
-└── README.md       # This file
-
-../SampleCratePyO3.jl/   # The Julia package: Project.toml, deps/build.jl,
-                         # src/SampleCratePyO3.jl, test/runtests.jl
+examples/SampleCratePyO3.jl/          # The Julia package: Project.toml, deps/build.jl,
+│                                     # src/SampleCratePyO3.jl, test/runtests.jl
+└── deps/sample_crate_pyo3/           # This crate
+    ├── Cargo.toml                    # Crate config with the `python` feature
+    ├── src/
+    │   └── lib.rs                    # Rust code: #[julia] + PyO3 attributes
+    ├── main.py                       # Python demo
+    └── README.md                     # This file
 ```

@@ -5,11 +5,11 @@
 # Two fixtures, because there are two link plans and only one of them can run
 # everywhere:
 #
-#   * `examples/sample_crate_pyo3_optional` — pyo3 is optional and only the
+#   * `test/fixtures/sample_crate_pyo3_optional` — pyo3 is optional and only the
 #     `#[pyfunction]` *markers* are behind a feature, so the wrapper builds with
 #     pyo3 out of the graph entirely (`:python_free`). No Python is needed, so
 #     this is the fixture CI exercises on every platform.
-#   * `examples/sample_crate_pyo3_only` — pyo3 is a mandatory dependency, which
+#   * `test/fixtures/sample_crate_pyo3_only` — pyo3 is a mandatory dependency, which
 #     is the common shape; the wrapper cdylib hard-links libpython
 #     (`:link_libpython`) and only builds and loads where an interpreter's
 #     library directory can be found. That testset skips itself otherwise.
@@ -21,9 +21,9 @@
 using RustCall
 using Test
 
-const PYO3_OPTIONAL_CRATE = joinpath(@__DIR__, "..", "examples", "sample_crate_pyo3_optional")
-const PYO3_ONLY_CRATE = joinpath(@__DIR__, "..", "examples", "sample_crate_pyo3_only")
-const PYO3_MIXED_CRATE = joinpath(@__DIR__, "..", "examples", "sample_crate_pyo3_mixed")
+const PYO3_OPTIONAL_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_optional")
+const PYO3_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_only")
+const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed")
 
 # Whether a `:link_libpython` wrapper can actually be built here.
 #
@@ -759,7 +759,7 @@ end
     @testset "a crate with no wrappable PyO3 item takes the pre-#275 path" begin
         # `sample_crate` carries `#[julia]` attributes and no PyO3 ones, so
         # nothing here changes how it is bound.
-        info = RustCall.scan_crate(joinpath(@__DIR__, "..", "examples", "sample_crate"))
+        info = RustCall.scan_crate(joinpath(@__DIR__, "fixtures", "sample_crate"))
         @test !RustCall.crate_needs_pyo3_wrapper(info)
     end
 end

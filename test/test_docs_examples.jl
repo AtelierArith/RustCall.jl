@@ -7,7 +7,7 @@
 using Test
 using RustCall
 
-const DOCS_SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
+const DOCS_SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
 const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
 
 @testset "Documentation Examples" begin
@@ -507,7 +507,7 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
                 @test !isdefined(Main, :DocsSampleCrateInjected)
             end
         else
-            @test_skip "examples/sample_crate not available"
+            @test_skip "test/fixtures/sample_crate not available"
         end
     end
 end

@@ -24,7 +24,8 @@ This page describes what is available today:
 
 ```julia
 using RustCall
-Sample = @rust_crate "examples/sample_crate_pyo3_only"
+# a crate written for PyO3 only; this one is RustCall's test fixture
+Sample = @rust_crate "test/fixtures/sample_crate_pyo3_only"
 
 Sample.add(Int32(2), Int32(3))          # 5
 Sample.shout("hello")                   # "HELLO!"
@@ -53,7 +54,7 @@ and exports `rustcall_<name>` from the crate itself, so the wrapper generates
 entry points for the PyO3 items and *links* the `#[julia]` ones; one
 `@rust_crate` module exposes both. An item marked both ways belongs to
 `#[julia]`, which already owns that symbol.
-`examples/sample_crate_pyo3_mixed` is that shape — and its `[lib] name`
+`test/fixtures/sample_crate_pyo3_mixed` is that shape — and its `[lib] name`
 deliberately differs from its package name, because Rust code names a
 dependency by its **library target**, which is what the generated calls use.
 
@@ -133,7 +134,7 @@ one. The generator then refuses what it could not *lower*:
 item is exported under:
 
 ```julia
-RustCall.scan_report("examples/sample_crate_pyo3_only")
+RustCall.scan_report("test/fixtures/sample_crate_pyo3_only")
 ```
 
 Nothing is guessed: an item that is not listed under "Wrapper crate exports" has
@@ -190,17 +191,17 @@ because activating pyo3 is what puts it in the graph.
 
 `:python_free` therefore means "this build has no pyo3, and so no PyO3 items";
 it is an answer the plan gives, not a mode in which wrappers get built.
-`examples/sample_crate_pyo3_optional` demonstrates both halves.
+`test/fixtures/sample_crate_pyo3_optional` demonstrates both halves.
 
 ## Scanning a crate
 
 ```julia
 using RustCall
-RustCall.scan_report("examples/sample_crate_pyo3_only")
+RustCall.scan_report("test/fixtures/sample_crate_pyo3_only")
 ```
 
 ```text
-Crate sample_crate_pyo3_only v0.1.0 (…/examples/sample_crate_pyo3_only)
+Crate sample_crate_pyo3_only v0.1.0 (…/test/fixtures/sample_crate_pyo3_only)
   Build scanned: default features
   RustCall items (wrapped today): 0
   PyO3 items the scan can name: 13
@@ -586,7 +587,10 @@ wrappers, and a class always arrives through a `:link_libpython` build.
 
 ## Example
 
-`examples/sample_crate_pyo3_only` is a crate that carries only PyO3 attributes:
+The crates below are RustCall's test fixtures under `test/fixtures/`; the
+runnable example package is `examples/SampleCratePyO3.jl`, described last.
+
+`test/fixtures/sample_crate_pyo3_only` is a crate that carries only PyO3 attributes:
 a mandatory pyo3 dependency with `default-features = false, features =
 ["macros"]`, wrappable and skipped functions, a `#[pyclass]` with `#[new]`,
 `#[staticmethod]`, `#[getter]`, `#[setter]`, a `String` method, a `PyResult`
@@ -594,13 +598,13 @@ method and `#[pyo3(get, set)]` fields, and a `#[pymodule]`. Its link plan is
 `:link_libpython`. It is what `test/test_manifest.jl`,
 `test/test_pyo3_link_plan.jl` and `test/test_pyo3_wrapper.jl` use.
 
-`examples/sample_crate_pyo3_optional` is the optional-pyo3 counterpart: pyo3 is
+`test/fixtures/sample_crate_pyo3_optional` is the optional-pyo3 counterpart: pyo3 is
 an optional dependency and only the `#[pyfunction]` markers are behind a
 feature. With the feature off its plan is `:python_free` and the build exposes
 nothing to PyO3, so nothing is wrapped; with `features = ["python"]` the same
 crate is wrapped in full.
 
-`examples/sample_crate_pyo3_mixed` carries `#[julia]` and PyO3 markers together,
+`test/fixtures/sample_crate_pyo3_mixed` carries `#[julia]` and PyO3 markers together,
 one item marked both ways, and a `[lib] name` that differs from its package
 name.
 
@@ -608,10 +612,11 @@ Note that a class needs **one** `#[pymethods]` block unless the crate enables
 pyo3's `multiple-pymethods` feature; the scan matches every block it finds, but
 the crate has to compile for a wrapper to be built against it.
 
-`examples/sample_crate_pyo3` is the dual-binding example: one crate that serves
+`examples/SampleCratePyO3.jl` is the dual-binding example: a Julia package
+with the crate `deps/sample_crate_pyo3` embedded in it, one crate that serves
 Julia through `#[julia]` and Python through PyO3's own attributes, with pyo3
 behind an optional `python` feature. It is the shape the section below migrates
-to.
+to (the test suite keeps its own copy as `test/fixtures/sample_crate_pyo3`).
 
 ## Migrating from `#[julia_pyo3]`
 
@@ -662,5 +667,6 @@ produce), while `#[julia]` lowers them to the `(ptr, len)` / `CResult_*` ABI
 like everywhere else — which is the ABI divergence #269 described, and the
 reason the attribute was removed rather than extended.
 
-`examples/sample_crate_pyo3` shows the migrated shape end to end, including the
-Python-side impl block; `examples/sample_crate_pyo3/README.md` walks through it.
+`examples/SampleCratePyO3.jl/deps/sample_crate_pyo3` shows the migrated shape
+end to end, including the Python-side impl block; its `README.md` walks through
+it.

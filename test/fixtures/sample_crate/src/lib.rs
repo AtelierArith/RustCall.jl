@@ -397,57 +397,27 @@ mod tests {
 
     #[test]
     fn test_safe_divide() {
-        // Success case
-        let result = safe_divide(10.0, 2.0);
-        assert_eq!(result.is_ok, 1);
-        assert!((result.ok_value - 5.0).abs() < 1e-10);
-
-        // Error case
-        let err_result = safe_divide(10.0, 0.0);
-        assert_eq!(err_result.is_ok, 0);
-        assert_eq!(err_result.err_value, -1);
+        assert_eq!(safe_divide(10.0, 2.0), Ok(5.0));
+        assert_eq!(safe_divide(10.0, 0.0), Err(-1));
     }
 
     #[test]
     fn test_parse_positive() {
-        // Success case
-        let result = parse_positive(42);
-        assert_eq!(result.is_ok, 1);
-        assert_eq!(result.ok_value, 42);
-
-        // Error case
-        let err_result = parse_positive(-5);
-        assert_eq!(err_result.is_ok, 0);
-        assert_eq!(err_result.err_value, -5);
+        assert_eq!(parse_positive(42), Ok(42));
+        assert_eq!(parse_positive(-5), Err(-5));
     }
 
     #[test]
     fn test_safe_sqrt() {
-        // Some case
-        let result = safe_sqrt(4.0);
-        assert_eq!(result.is_some, 1);
-        assert!((result.value - 2.0).abs() < 1e-10);
-
-        // None case
-        let none_result = safe_sqrt(-1.0);
-        assert_eq!(none_result.is_some, 0);
+        assert_eq!(safe_sqrt(4.0), Some(2.0));
+        assert_eq!(safe_sqrt(-1.0), None);
     }
 
     #[test]
     fn test_find_positive() {
-        // First positive
-        let result = find_positive(5, -3);
-        assert_eq!(result.is_some, 1);
-        assert_eq!(result.value, 5);
-
-        // Second positive
-        let result2 = find_positive(-1, 10);
-        assert_eq!(result2.is_some, 1);
-        assert_eq!(result2.value, 10);
-
-        // None case
-        let none_result = find_positive(-1, -2);
-        assert_eq!(none_result.is_some, 0);
+        assert_eq!(find_positive(5, -3), Some(5));
+        assert_eq!(find_positive(-1, 10), Some(10));
+        assert_eq!(find_positive(-1, -2), None);
     }
 }
 

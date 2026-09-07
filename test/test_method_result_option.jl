@@ -11,7 +11,7 @@
 using Test
 using RustCall
 
-const MRO_SAMPLE_CRATE = joinpath(dirname(@__DIR__), "examples", "sample_crate")
+const MRO_SAMPLE_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
 
 # ---------------------------------------------------------------------------
 # Manifest: the columns that used to be empty for methods
@@ -365,7 +365,7 @@ end
         finally
             # Since #309 a written bindings file opens a private generation
             # copy, so Cargo's own output is never mapped and the next
-            # `cargo build` of `examples/sample_crate` elsewhere in the test
+            # `cargo build` of `test/fixtures/sample_crate` elsewhere in the test
             # run is safe either way. Closing the image is still the tidy
             # thing to do (#289 made it safe: the objects it produced went
             # inert when it was retired), as `test_load_conformance.jl` does.

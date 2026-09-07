@@ -5,7 +5,7 @@ using RustCall
 using RustToolChain: cargo
 
 # Path to the sample crate
-const SAMPLE_CRATE_PATH = joinpath(dirname(@__DIR__), "examples", "sample_crate")
+const SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
 
 @testset "Hot Reload" begin
 
