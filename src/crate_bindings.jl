@@ -456,6 +456,23 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
         # still worth declaring.
         @debug "Could not resolve path dependencies for precompile tracking" crate_path exception = e
     end
+    # The resolved graph is the default build's. A `features = [...]` build can
+    # activate an *optional* `path` dependency that `cargo tree` did not list,
+    # so every local dependency a manifest in the graph declares is tracked
+    # too — conservatively, optional or not: an edit to a crate the build can
+    # pull in must invalidate the image (#339 review).
+    for dir in copy(dirs)
+        manifest = joinpath(dir, "Cargo.toml")
+        isfile(manifest) || continue
+        try
+            for rel in _declared_path_dependencies(manifest)
+                d = abspath(joinpath(dir, rel))
+                isdir(d) && push!(dirs, d)
+            end
+        catch e
+            @debug "Could not read declared path dependencies" manifest exception = e
+        end
+    end
     for dir in unique(abspath.(dirs))
         isdir(dir) || continue
         try
@@ -564,8 +581,44 @@ function _recorded_build_env(; python::Bool = false)
             value = get(ENV, name, nothing)
             value === nothing || push!(env, name => String(value))
         end
+        push!(env, "<python selection>" => _python_selection())
     end
     return env
+end
+
+"""
+    _python_selection() -> String
+
+Which interpreter `python_link_source()` would pin, decided the way it decides
+it but without running anything: `PYO3_PYTHON` when set, else CondaPkg's when
+that package is loaded, else the first `python3` / `python` on `PATH`
+(`Sys.which`). "" when there is none.
+
+Recorded for a PyO3 wrapper module so `__init__` can tell that the *selection*
+moved — `PYO3_PYTHON` unset and `PATH` now finding a different interpreter —
+which tracking the selected interpreter's files cannot see, because the old
+one is still there, unchanged (#339 review). A selection, not a fingerprint:
+the interpreter itself is tracked as a file, and running it at every load is
+what this avoids.
+"""
+function _python_selection()
+    pinned = get(ENV, "PYO3_PYTHON", "")
+    isempty(pinned) || return String(pinned)
+    for (id, mod) in Base.loaded_modules
+        id.name == "CondaPkg" || continue
+        try
+            env = String(Base.invokelatest(getfield(mod, :envdir)))
+            exe = Sys.iswindows() ? joinpath(env, "python.exe") : joinpath(env, "bin", "python")
+            isfile(exe) && return exe
+        catch
+        end
+        break
+    end
+    for exe in ("python3", "python")
+        found = Sys.which(exe)
+        found === nothing || return String(found)
+    end
+    return ""
 end
 
 """

@@ -388,6 +388,38 @@ end
 # artifact key (`_cargo_config_digest`), so an edit to it changes the binary
 # without touching a file of the crate. It has to be tracked as well, or the
 # package's image stays valid over a build it no longer describes (#339 review).
+# A `features = [...]` build can activate an optional `path` dependency that the
+# default `cargo tree` graph never lists; every local dependency a manifest
+# declares is tracked, optional or not (#339 review).
+@testset "Optional path dependencies are precompile dependencies (#339 review)" begin
+    mktempdir() do root
+        mkpath(joinpath(root, "main", "src")); mkpath(joinpath(root, "extra", "src"))
+        write(joinpath(root, "extra", "Cargo.toml"), """
+            [package]
+            name = "extra"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+        write(joinpath(root, "extra", "src", "lib.rs"), "pub fn e() -> i32 { 1 }\n")
+        write(joinpath(root, "main", "Cargo.toml"), """
+            [package]
+            name = "main"
+            version = "0.1.0"
+            edition = "2021"
+
+            [features]
+            with_extra = ["dep:extra"]
+
+            [dependencies]
+            extra = { path = "../extra", optional = true }
+            """)
+        write(joinpath(root, "main", "src", "lib.rs"), "pub fn m() -> i32 { 1 }\n")
+        deps = RustCall._crate_precompile_dependencies(joinpath(root, "main"))
+        @test joinpath(root, "extra", "src", "lib.rs") in deps
+        @test joinpath(root, "extra", "Cargo.toml") in deps
+    end
+end
+
 @testset "Cargo configuration files are precompile dependencies (#339 review)" begin
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"
@@ -502,6 +534,26 @@ end
             @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
                 recorded, "/crate", "lib"; python = true)
         end
+        # The implicit selection moves with `PATH` when nothing pins it: the
+        # old interpreter is still there and unchanged, so only the recorded
+        # selection can say so (#339 review).
+        mktempdir() do fake
+            exe = joinpath(fake, "python3")
+            write(exe, "#!/bin/sh\nexit 0\n"); chmod(exe, 0o755)
+            withenv("PYO3_PYTHON" => nothing) do
+                before = RustCall._python_selection()
+                withenv("PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                    @test RustCall._python_selection() == exe
+                    @test RustCall._python_selection() != before
+                end
+            end
+            withenv("PYO3_PYTHON" => "/pinned/python3") do
+                @test RustCall._python_selection() == "/pinned/python3"
+                recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                @test any(p -> first(p) == "<python selection>", recorded)
+            end
+        end
+
         # A plain crate's build never consults it: not recorded, not compared,
         # so configuring Python for another package warns about nothing here.
         plain = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()]
