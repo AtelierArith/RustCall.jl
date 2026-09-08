@@ -1133,7 +1133,38 @@ function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
             end
         end
     end
+    # `[patch.<source>] name = { path = "../local" }` replaces a registry or
+    # git dependency with a local crate — the dependency table itself still
+    # says `version = "..."`, so harvesting it alone never sees the directory.
+    # When the patched dependency is optional and a feature activates it, the
+    # default `cargo tree` graph omits it too, and an edit to the local crate
+    # changed neither the key nor the declared inputs (#339 review). Cargo
+    # honours `[patch]` in the workspace root's manifest (or a crate's own
+    # when it is its own root), and the paths are relative to the manifest
+    # that declares them.
+    _harvest_patch_paths!(out, parsed, dir)
+    root = _workspace_root_dir(dir)
+    if root !== nothing && _canonical_dir(root) != _canonical_dir(dir)
+        root_manifest = _parse_manifest_or_nothing(joinpath(root, "Cargo.toml"))
+        root_manifest isa AbstractDict && _harvest_patch_paths!(out, root_manifest, root)
+    end
     return sort!(unique!(out))
+end
+
+# Every `path` a `[patch.<source>]` table of `parsed` names, made absolute
+# against `dir`, the directory of the manifest that declares it.
+function _harvest_patch_paths!(out::Vector{String}, parsed::AbstractDict, dir::AbstractString)
+    patches = get(parsed, "patch", nothing)
+    patches isa AbstractDict || return nothing
+    for (_, per_source) in patches
+        per_source isa AbstractDict || continue
+        for (_, spec) in per_source
+            spec isa AbstractDict || continue
+            p = get(spec, "path", nothing)
+            p isa AbstractString && push!(out, abspath(joinpath(String(dir), String(p))))
+        end
+    end
+    return nothing
 end
 
 # `[workspace.dependencies]` of this manifest, of the workspace its

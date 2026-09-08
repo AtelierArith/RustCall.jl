@@ -470,6 +470,89 @@ end
     end
 end
 
+# `[patch.crates-io] extra = { path = "../local" }` swaps a registry dependency
+# for a local crate. The dependency table still says `version = "..."`, so
+# harvesting it never names the directory, and when the dependency is optional
+# the default `cargo tree` graph omits it as well: an edit to the local crate
+# changed neither the artifact key nor the declared inputs, and a
+# feature-enabled rebuild found the old library (#339 review). Patch tables are
+# harvested too — the crate's own and, for a workspace member, the root's,
+# which is the one Cargo honours.
+@testset "Patched-in local crates are precompile dependencies (#339 review)" begin
+    mktempdir() do root
+        mkpath(joinpath(root, "main", "src")); mkpath(joinpath(root, "local_extra", "src"))
+        write(joinpath(root, "local_extra", "Cargo.toml"), """
+            [package]
+            name = "extra"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+        write(joinpath(root, "local_extra", "src", "lib.rs"), "pub fn e() -> i32 { 1 }\n")
+        write(joinpath(root, "main", "Cargo.toml"), """
+            [package]
+            name = "main"
+            version = "0.1.0"
+            edition = "2021"
+
+            [features]
+            with_extra = ["dep:extra"]
+
+            [dependencies]
+            extra = { version = "0.1", optional = true }
+
+            [patch.crates-io]
+            extra = { path = "../local_extra" }
+            """)
+        write(joinpath(root, "main", "src", "lib.rs"), "pub fn m() -> i32 { 1 }\n")
+        @test any(p -> RustCall._canonical_dir(p) == RustCall._canonical_dir(joinpath(root, "local_extra")),
+                  RustCall._declared_path_dependencies(joinpath(root, "main", "Cargo.toml")))
+        deps = RustCall._crate_precompile_dependencies(joinpath(root, "main"))
+        @test joinpath(root, "local_extra", "src", "lib.rs") in deps
+        @test joinpath(root, "local_extra", "Cargo.toml") in deps
+        _, dirs = RustCall.local_path_dependency_dirs(joinpath(root, "main"))
+        @test any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(joinpath(root, "local_extra")), dirs)
+        before = RustCall.artifact_path_dependency_digest(joinpath(root, "main"))
+        write(joinpath(root, "local_extra", "src", "lib.rs"), "pub fn e() -> i32 { 2 }\n")
+        @test RustCall.artifact_path_dependency_digest(joinpath(root, "main")) != before
+
+        # A workspace member's `[patch]` lives in the root manifest, and the
+        # path there is relative to the root, not to the member.
+        mkpath(joinpath(root, "ws", "member", "src")); mkpath(joinpath(root, "ws", "vendored", "src"))
+        write(joinpath(root, "ws", "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+
+            [patch.crates-io]
+            extra = { path = "vendored" }
+            """)
+        write(joinpath(root, "ws", "vendored", "Cargo.toml"), """
+            [package]
+            name = "extra"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+        write(joinpath(root, "ws", "vendored", "src", "lib.rs"), "pub fn v() -> i32 { 1 }\n")
+        write(joinpath(root, "ws", "member", "Cargo.toml"), """
+            [package]
+            name = "member"
+            version = "0.1.0"
+            edition = "2021"
+
+            [features]
+            with_extra = ["dep:extra"]
+
+            [dependencies]
+            extra = { version = "0.1", optional = true }
+            """)
+        write(joinpath(root, "ws", "member", "src", "lib.rs"), "pub fn m() -> i32 { 1 }\n")
+        @test joinpath(root, "ws", "vendored", "src", "lib.rs") in
+              RustCall._crate_precompile_dependencies(joinpath(root, "ws", "member"))
+        before = RustCall.artifact_path_dependency_digest(joinpath(root, "ws", "member"))
+        write(joinpath(root, "ws", "vendored", "src", "lib.rs"), "pub fn v() -> i32 { 2 }\n")
+        @test RustCall.artifact_path_dependency_digest(joinpath(root, "ws", "member")) != before
+    end
+end
+
 @testset "Cargo configuration files are precompile dependencies (#339 review)" begin
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"
