@@ -95,12 +95,19 @@ use serde::{Deserialize, Serialize};
 ///   `<owner>_free_rust_string` from the bare name and release a buffer through
 ///   a symbol that no longer exists.
 ///
-///   Additive within 7: [`Method::string_owner`] (#342) — serialized only for
-///   a method that has a wrapper — because an inline manifest can now hold
-///   both buffer shapes, a method sharing its struct's and one carrying its
-///   own. A consumer that does not read it falls back to its old derivation,
-///   which is still right for every method whose block sits beside its struct.
-pub const SCHEMA_VERSION: u32 = 7;
+/// * **8** adds [`Method::string_owner`] (#342), the stem a method's string
+///   buffers hang off, and it is a *breaking* addition rather than an additive
+///   one. Since #342 an inline manifest can hold both buffer shapes at once —
+///   a method sharing its struct's buffers, and a cross-module method carrying
+///   its own — so a consumer that does not read the column falls back to
+///   deriving `<Struct>_free_rust_string` by flavour. For a cross-module
+///   method returning an owned `String`, the expanded library exports only
+///   `<Struct>_<method>_free_rust_string`, and where the struct has no local
+///   string helper at all that derived symbol does not exist: the buffer is
+///   never released and leaks, silently. `src/manifest.jl` validates exact
+///   equality, so bumping the version is what makes such a consumer refuse the
+///   manifest instead of using the wrong owner (#342 review).
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.

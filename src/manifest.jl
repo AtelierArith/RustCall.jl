@@ -36,12 +36,15 @@ as-written, non-lowered signature, #312; (b) module-qualified symbols, #300 —
 hangs off (`a::run` -> `a__run`), `symbol` and the field accessors are
 qualified by it, and crate mode records `module_path` for `#[julia]` items; a
 schema-6 consumer would derive `<Struct>_free` / `<owner>_free_rust_string`
-from the bare name). Additive within 7: `Method.string_owner`, the stem a
-method's string buffers hang off — serialized only for a method that has a
-wrapper — because since #342 one inline manifest can hold both shapes, a method
-sharing the struct's buffers and one carrying its own.
+from the bare name). Schema 8 adds `Method.string_owner`, the stem a method's
+string buffers hang off: since #342 one inline manifest can hold both shapes —
+a method sharing its struct's buffers and a cross-module method carrying its
+own — so a schema-7 consumer, which derives the owner from the flavour, would
+release a cross-module method's `String` through a symbol the library does not
+export, and leak it. The version is what makes such a consumer refuse the
+manifest rather than get the owner wrong (#342 review).
 """
-const MANIFEST_SCHEMA_VERSION = 7
+const MANIFEST_SCHEMA_VERSION = 8
 
 """
     ExtractorError <: Exception
