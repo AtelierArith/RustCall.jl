@@ -449,6 +449,9 @@ end
         @test gauge_exports("CmiInlineGauge_free_rust_string")
         @test gauge_exports("CmiInlineGauge_cmi_cross_label_free_rust_string")
         @test gauge_exports("CmiInlineGauge_cmi_cross_split_free_rust_string")
+    end
+end
+
 # rustc resolves a `mod` written inside an `include!`d fragment against the
 # **fragment's own** directory, not the including file's module directory:
 # `include!("frag/api.rs")` in `src/lib.rs` with `mod nested;` in `api.rs`
