@@ -389,11 +389,18 @@ end
                 policy; env = Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) === :unwind
         end
         for policy in owned
-            policy.name == "irust" && continue
             @test policy.boundary_catches_panics
             @test !RustCall.requires_catch_unwind_boundary(policy)
             @test !RustCall.must_assume_unwind(policy)
         end
+        # `@irust` joined them in #346: its snippet is a `#[julia]` item now,
+        # so the generated wrapper carries the boundary. Before that this
+        # policy honestly reported an unwinding artifact with no boundary —
+        # the undefined behaviour of #244, which aborted the process.
+        @test RustCall.irust_policy().panic_strategy === :unwind
+        @test RustCall.irust_policy().boundary_catches_panics
+        @test !RustCall.requires_catch_unwind_boundary(RustCall.irust_policy())
+        @test !RustCall.must_assume_unwind(RustCall.irust_policy())
 
         # PARITY: the two inline doors agree, which is the acceptance criterion
         # "panic behavior is identical regardless of which compile path

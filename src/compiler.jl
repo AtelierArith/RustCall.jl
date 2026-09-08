@@ -332,6 +332,314 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
 end
 
 """
+    RustTypeProbe
+
+The answer of `probe_rust_expression_type`: the Rust type of an expression as
+**rustc** named it, and rustc's own rendered diagnostics.
+
+`rust_type` is `nothing` when the probe could not name one type for the whole
+snippet. `conflict` says which of the two reasons it was: empty means the
+snippet does not type-check for a reason of its own and `rendered` is the
+diagnosis; non-empty lists the types the snippet's several return sites
+required, which no single `extern "C"` signature can satisfy.
+"""
+struct RustTypeProbe
+    rust_type::Union{Nothing, String}
+    rendered::String
+    conflict::Vector{String}
+
+    RustTypeProbe(rust_type, rendered, conflict = String[]) =
+        new(rust_type === nothing ? nothing : String(rust_type), String(rendered),
+            String[String(c) for c in conflict])
+end
+
+"""
+    probe_rust_expression_type(snippet, params; compiler) -> RustTypeProbe
+
+Ask rustc what type a Rust snippet evaluates to.
+
+The snippet is compiled — metadata only, no codegen and no linking — bound to a
+local whose type rustc infers, and *then* compared to `()`:
+
+```rust
+fn __rustcall_irust_probe(arg1: i64) {
+    let __rustcall_probe_value = {
+        <snippet>
+    };
+    let _: () = __rustcall_probe_value;
+}
+```
+
+so rustc reports the snippet's own type against `()` as `E0308`, with the
+primary span labelled ``expected `()`, found `i64` ``. If it compiles cleanly,
+the snippet's value really is `()`.
+
+The two statements are deliberate. Writing `let _: () = { <snippet> };` instead
+pushes the expected `()` *into* the block, which pins the snippet's own
+inference before it is finished: in
+`loop { if flag { break 1; } break x; }` the loop unifies with `()` at the first
+`break`, and the later `break x` — the one that knows the type is `i32` — is
+never reported at all (Codex review of PR #354). Letting the block infer on its
+own first and comparing afterwards reports the answer the snippet actually has.
+
+Reading the type out of the compiler instead of guessing it from the source is
+the whole point (#348): the guess it replaces called anything containing `->`,
+`=>` or a comparison a `bool`, which is most of the ways to write more than one
+line of Rust. The diagnostics are read as **data** — `rustc --error-format=json`
+objects, through `rustc_diagnostics` — never as rendered text; the `rendered`
+field is kept only to show the user.
+
+Two labels name no concrete type: an unconstrained integer literal is reported
+as `integer` and an unconstrained float literal as `floating-point number`.
+Those are inference variables that unify with any integer / float type, so they
+are answered with `i64` and `f64` — Julia's `Int` and `Float64`, and `f64` is
+Rust's own default as well.
+
+**Every** return site is read, not the first. A snippet with more than one —
+`if flag { return 0; } x` — produces one diagnostic per site, and the probe's
+`()` return type keeps them from unifying with each other the way they would in
+the real function: the literal `0` reads as `integer` while `x` reads as its own
+type. Taking the first would have generated `-> i64` for an `i32` snippet and
+failed the build it was meant to make possible (Codex review of PR #354). The
+sites are reconciled instead, by `_reconcile_probe_types`.
+
+The probe is compiled with `_cfg_rustc_flags(compiler)` — the same target,
+opt-level and panic flags the real build uses — because those decide `#[cfg]`
+predicates: `debug_assertions` is on at opt-level 0 and off above it, so a probe
+without them can see a different snippet from the one that gets built.
+
+A probe that fails for any *other* reason (a syntax error, an unknown method, a
+genuine type error) yields `rust_type === nothing` with an empty `conflict`: the
+caller raises and shows `rendered`, because that output is the diagnosis.
+
+The answer is a *lower bound*, and `confirm_rust_return_type` is what turns it
+into a decision. A path that already produces `()` raises no diagnostic at all —
+it matches the probe's declared return type — so `if flag { return 1i64; }`
+reports `i64` and says nothing about the fallthrough that is unit (Codex review
+of PR #354). No reading of these diagnostics can recover a constraint rustc
+never emitted; asking rustc a second question can.
+"""
+function probe_rust_expression_type(snippet::AbstractString, params::AbstractString;
+                                    compiler::RustCompiler = get_default_compiler())
+    ok, diagnostics, text = _run_type_probe(_probe_body(snippet), params, ""; compiler)
+    rendered = _rendered_errors(diagnostics)
+    # A clean probe means the body really does evaluate to `()`.
+    ok && return RustTypeProbe("()", rendered)
+
+    # Only diagnostics with a span are real; "aborting due to N previous
+    # errors" is an error-level summary with none.
+    errors = [d for d in diagnostics
+              if diagnostic_level(d) == "error" && !isempty(diagnostic_spans(d))]
+    isempty(errors) && return RustTypeProbe(nothing, isempty(rendered) ? text : rendered)
+
+    constraints = Union{String, Symbol}[]
+    for d in errors
+        c = _probe_constraint_from_diagnostic(d)
+        c === nothing && return RustTypeProbe(nothing, rendered)  # a real error
+        push!(constraints, c)
+    end
+    resolved = _reconcile_probe_types(constraints)
+    resolved === nothing &&
+        return RustTypeProbe(nothing, rendered, _probe_constraint_names(constraints))
+    return RustTypeProbe(resolved, rendered)
+end
+
+"""
+    RustTypeConfirmation
+
+The answer of `confirm_rust_return_type`: whether the snippet type-checks as
+the body of a function returning the declared type, rustc's rendered
+diagnostics when it does not, and `suggested` — the concrete type an `E0308`
+named *instead*, when there is one.
+
+`suggested` is the compiler answering the question a second time. A declared
+type that is merely rustc's default for an unconstrained literal can be wrong
+where a later site knows better, and the mismatch then reads
+``expected `i64`, found `i32` ``: that `i32` is the answer.
+"""
+struct RustTypeConfirmation
+    ok::Bool
+    rendered::String
+    suggested::Union{Nothing, String}
+end
+
+"""
+    confirm_rust_return_type(snippet, params, rust_type; compiler) -> RustTypeConfirmation
+
+Whether the snippet type-checks as the body of a function returning
+`rust_type`, with rustc's rendered diagnostics for **that** question when it
+does not.
+
+The second half of the type probe. `probe_rust_expression_type` learns the type
+from the mismatches a `()`-returning function reports, and a path that already
+produces `()` reports nothing — so `if flag { return 1i64; }` comes back as
+`i64` with no hint that the fallthrough is unit. Declaring the answer and
+type-checking again is the only way to see that, and it costs one more
+`--emit=metadata` run on a snippet that is about to be compiled anyway.
+
+The payoff is the message as much as the check: a failure here is rustc talking
+about **the user's snippet** ("expected `i64`, found `()`"), where the same
+failure discovered during the real build talks about generated source the user
+never wrote.
+"""
+function confirm_rust_return_type(snippet::AbstractString, params::AbstractString,
+                                  rust_type::AbstractString;
+                                  compiler::RustCompiler = get_default_compiler())
+    # The *snippet as written*, in the shape the generated function will have —
+    # not the `let`-bound form the first question uses.
+    ok, diagnostics, text = _run_type_probe(snippet, params, rust_type; compiler)
+    ok && return RustTypeConfirmation(true, "", nothing)
+    rendered = _rendered_errors(diagnostics)
+    isempty(rendered) && (rendered = text)
+    return RustTypeConfirmation(false, rendered, _suggested_type(diagnostics, rust_type))
+end
+
+# The concrete type an `E0308` named where `declared` was expected — rustc
+# telling us what the snippet really is. `nothing` when no diagnostic names one
+# (or names only an unconstrained literal, which `declared` already satisfies).
+function _suggested_type(diagnostics, declared::AbstractString)
+    prefix = string("expected `", declared, "`, found ")
+    for d in diagnostics
+        diagnostic_level(d) == "error" || continue
+        diagnostic_code(d) == "E0308" || continue
+        label = primary_span_label(d)
+        startswith(label, prefix) || continue
+        rest = strip(SubString(label, ncodeunits(prefix) + 1))
+        (length(rest) > 2 && startswith(rest, '`') && endswith(rest, '`')) || continue
+        found = String(chop(rest; head = 1, tail = 1))
+        found == declared || return found
+    end
+    return nothing
+end
+
+# The body of the type-learning probe: bind the snippet to a local so rustc
+# infers its type without `()` leaning on it, then compare that local to `()`.
+_probe_body(snippet::AbstractString) =
+    string("let __rustcall_probe_value = {\n", snippet,
+           "\n};\nlet _: () = __rustcall_probe_value;")
+
+# One rustc type-check of `body` inside `__rustcall_irust_probe`, declared to
+# return `rust_type` (`""` meaning `()`), with the flags that decide `#[cfg]`.
+# Metadata only: no codegen, no linking.
+function _run_type_probe(body::AbstractString, params::AbstractString,
+                         rust_type::AbstractString;
+                         compiler::RustCompiler = get_default_compiler())
+    return mktempdir() do dir
+        src = joinpath(dir, "probe.rs")
+        out = joinpath(dir, "probe.rmeta")
+        ret = isempty(rust_type) ? "" : " -> $(rust_type)"
+        write(src, string("#![allow(unused)]\nfn __rustcall_irust_probe(", params, ")",
+                          ret, " {\n", body, "\n}\n"))
+        cmd_args = [
+            string(rustc().exec[1]),
+            "--crate-type=lib",
+            "--emit=metadata",
+            "--error-format=json",
+            # The flags that decide `#[cfg]`: the probe must see the same
+            # snippet the build will (`_cfg_rustc_flags`, src/manifest.jl).
+            _cfg_rustc_flags(compiler)...,
+            "-o", out,
+            src,
+        ]
+        stderr_io = IOBuffer()
+        ok = try
+            proc = run(pipeline(Cmd(cmd_args), stderr = stderr_io), wait = false)
+            wait(proc)
+            Base.success(proc)
+        catch e
+            @debug "The @irust type probe could not run rustc" exception = e
+            false
+        end
+        text = String(take!(stderr_io))
+        return (ok, rustc_diagnostics(text), text)
+    end
+end
+
+# The prefix rustc's E0308 label carries when the mismatch is the probe's own
+# `()` return type. Matched with plain string operations on a *diagnostic*
+# (`scripts/lint_rust_syntax_regex.sh` is about Rust source, which this is not;
+# and it is a field of a JSON object, not rendered text).
+const _PROBE_LABEL_PREFIX = "expected `()`, found "
+
+# The two labels that name an inference variable rather than a type, and the
+# spellings each of them unifies with.
+const _PROBE_INTEGER_TYPES = Set(["i8", "i16", "i32", "i64", "i128", "isize",
+                                  "u8", "u16", "u32", "u64", "u128", "usize"])
+const _PROBE_FLOAT_TYPES = Set(["f32", "f64"])
+
+"""
+    _probe_constraint_from_diagnostic(d) -> Union{String, Symbol, Nothing}
+
+What one return site of the probe requires: the Rust type it names, or
+`:integer` / `:float` when rustc reported an unconstrained literal, or `nothing`
+when the diagnostic is not the probe's own `()` mismatch at all — in which case
+the snippet has a real problem and the caller shows rustc's message.
+"""
+function _probe_constraint_from_diagnostic(d::AbstractDict)
+    diagnostic_code(d) == "E0308" || return nothing
+    label = primary_span_label(d)
+    startswith(label, _PROBE_LABEL_PREFIX) || return nothing
+    rest = strip(SubString(label, ncodeunits(_PROBE_LABEL_PREFIX) + 1))
+    rest == "integer" && return :integer
+    rest == "floating-point number" && return :float
+    (length(rest) > 2 && startswith(rest, '`') && endswith(rest, '`')) &&
+        return String(chop(rest; head = 1, tail = 1))
+    return nothing
+end
+
+"""
+    _reconcile_probe_types(constraints) -> Union{String, Nothing}
+
+The one Rust type that satisfies every return site of a probe, or `nothing`
+when no single type does.
+
+A concrete type wins over an inference variable, because the variable is a
+literal that will unify with it once the real function declares a return type:
+`if flag { return 0; } x` with an `i32` `x` is `i32`, not `i64`. Two *different*
+concrete types, or an integer variable against a float type (and vice versa),
+cannot be reconciled — an `extern "C"` function has one return type, so the
+caller refuses rather than picking one and failing the build.
+
+With nothing but variables, Julia's own defaults answer: `i64` for an integer,
+`f64` as soon as any site is a float.
+"""
+function _reconcile_probe_types(constraints)
+    concrete = unique(String[c for c in constraints if c isa String])
+    length(concrete) > 1 && return nothing
+    wants(kind) = any(c -> c === kind, constraints)
+    if length(concrete) == 1
+        t = only(concrete)
+        wants(:integer) && !(t in _PROBE_INTEGER_TYPES) && return nothing
+        wants(:float) && !(t in _PROBE_FLOAT_TYPES) && return nothing
+        return t
+    end
+    wants(:integer) && wants(:float) && return nothing
+    wants(:float) && return "f64"
+    wants(:integer) && return "i64"
+    return nothing
+end
+
+# The constraints as a user would read them, for the "return sites disagree"
+# message. `:integer` / `:float` are rustc's own words for the two variables.
+_probe_constraint_names(constraints) =
+    unique(String[c isa String ? c :
+                  c === :integer ? "an unconstrained integer literal" :
+                  "an unconstrained floating-point literal"
+                  for c in constraints])
+
+# rustc's own rendering of the error-level diagnostics, for a message a human
+# reads. Never parsed.
+function _rendered_errors(diagnostics)
+    parts = String[]
+    for d in diagnostics
+        diagnostic_level(d) == "error" || continue
+        rendered = get(d, "rendered", "")
+        rendered isa String && !isempty(rendered) && push!(parts, rendered)
+    end
+    return join(parts)
+end
+
+"""
     wrap_rust_code(code::String) -> String
 
 Wrap Rust code to ensure it has the necessary FFI exports.
