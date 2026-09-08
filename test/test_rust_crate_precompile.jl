@@ -451,6 +451,39 @@ end
                 recorded, "/crate", "lib")
         end
     end
+
+    # `CARGO_HOME` selects the effective Cargo configuration and is *not* an
+    # allowlisted variable — the file's contents go into the artifact identity
+    # instead of its path — so pointing it elsewhere changes the flags a build
+    # runs under while every recorded variable, and every tracked file, stays
+    # as it was. The recorded digest is what notices (#339 review).
+    mktempdir() do home
+        mkpath(joinpath(home, "a"))
+        mkpath(joinpath(home, "b"))
+        write(joinpath(home, "a", "config.toml"), "[build]\nrustflags = [\"-C\", \"opt-level=1\"]\n")
+        write(joinpath(home, "b", "config.toml"), "[build]\nrustflags = [\"-C\", \"opt-level=3\"]\n")
+        crate = joinpath(home, "crate"); mkpath(crate)
+        digest_a = withenv("CARGO_HOME" => joinpath(home, "a")) do
+            RustCall._cargo_config_digest(ENV; dir = crate)
+        end
+        digest_b = withenv("CARGO_HOME" => joinpath(home, "b")) do
+            RustCall._cargo_config_digest(ENV; dir = crate)
+        end
+        @test digest_a != digest_b
+
+        # No allowlisted variable moves between the two, so only the digest
+        # can tell them apart.
+        env_a = withenv("CARGO_HOME" => joinpath(home, "a")) do
+            Any[String(k) => String(v) for (k, v) in RustCall.artifact_build_env()]
+        end
+        withenv("CARGO_HOME" => joinpath(home, "a")) do
+            @test_logs RustCall._warn_if_build_env_changed(env_a, crate, "lib", digest_a)
+        end
+        withenv("CARGO_HOME" => joinpath(home, "b")) do
+            @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                env_a, crate, "lib", digest_a)
+        end
+    end
 end
 
 # The plain-crate cache key covers the captured build environment, as the PyO3

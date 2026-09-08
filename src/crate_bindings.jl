@@ -564,7 +564,8 @@ time, which is cheap — the allowlist is read from `ENV`, no probe, no build.
 The fix it names is the one that works: force the package to be precompiled
 again.
 """
-function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString)
+function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
+                                    recorded_cargo_config::AbstractString = "")
     current = try
         artifact_build_env()
     catch e
@@ -575,6 +576,22 @@ function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_na
     now = Dict{String, String}(String(k) => String(v) for (k, v) in current)
     changed = sort!(collect(union(keys(was), keys(now))))
     filter!(k -> get(was, k, nothing) != get(now, k, nothing), changed)
+    # The *effective* Cargo configuration is selected by `CARGO_HOME`, which
+    # the allowlist deliberately does not capture — the file's contents go into
+    # the artifact identity instead of its path. So pointing `CARGO_HOME`
+    # somewhere else changes the flags a build runs under while every variable
+    # above, and every file `_CRATE_INPUTS` names, stays exactly as it was
+    # (#339 review). Comparing the digest catches that, and any other way the
+    # effective configuration differs.
+    if !isempty(recorded_cargo_config)
+        now_config = try
+            _cargo_config_digest(ENV; dir = crate_path)
+        catch e
+            @debug "Could not read the Cargo configuration" exception = e
+            recorded_cargo_config
+        end
+        now_config == recorded_cargo_config || push!(changed, "<effective Cargo configuration>")
+    end
     isempty(changed) && return nothing
     @warn """
           RustCall: the build environment changed since `$(lib_name)` was compiled into this \
@@ -653,6 +670,15 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     end
     recorded_env = Any[String(k) => String(v) for (k, v) in build_env]
     crate_dir = abspath(String(info.path))
+    # The effective Cargo configuration is chosen by `CARGO_HOME`, which is not
+    # an allowlisted variable: its digest is what says whether the same build
+    # would run under the same flags (#339 review).
+    cargo_config_digest = try
+        _cargo_config_digest(ENV; dir = crate_dir)
+    catch e
+        @debug "Could not record the Cargo configuration" exception = e
+        ""
+    end
 
     # Build the module body as a block
     module_body = quote
@@ -702,6 +728,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # and `__init__` says when they no longer match (#339 review).
         const _BUILD_ENV = $recorded_env
         const _CRATE_DIR = $crate_dir
+        const _CARGO_CONFIG = $cargo_config_digest
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -725,7 +752,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # assignment after it would overwrite a newer generation that a
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
-            RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME)
+            RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG)
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
