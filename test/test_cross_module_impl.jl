@@ -642,3 +642,51 @@ end
         end
     end
 end
+
+# Two mutually exclusive `#[cfg]` modules of one name, each including the same
+# fragment, are one file at one module path under two predicates. The walk
+# keyed the files it had seen by (file, module path), so the second was
+# dropped and the surviving entry carried whichever predicate the walk reached
+# last — the *off* branch, for a build that enables the feature (#357).
+@testset "cfg-exclusive modules including one fragment are both scanned (#357)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the cfg-exclusive fragment test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub fn run() -> i32 { 1 }
+                """)
+            lib = joinpath(dir, "src", "lib.rs")
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                """)
+            # A lenient scan, as `scan_crate` runs for an external crate: the
+            # host's cfg decides target predicates, feature predicates are
+            # left undecided and their items kept.
+            manifest = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                 cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            runs = filter(f -> f["name"] == "run", manifest["functions"])
+            @test length(runs) == 2
+            @test sort([f["cfg"] for f in runs]) == ["feature = \"x\"", "not(feature = \"x\")"]
+            @test all(f -> f["symbol"] == "rustcall_api__run", runs)
+
+            # One fragment included twice at the *same* position is still one
+            # scan — the duplicate-symbol case of #343.
+            write(lib, """
+                use juliacall_macros::julia;
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                """)
+            once = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib)
+            @test count(f -> f["name"] == "run", once["functions"]) == 1
+        end
+    end
+end

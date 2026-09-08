@@ -199,7 +199,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             // fragment `include!`d under two different modules is compiled
             // twice by rustc and belongs in the manifest twice, under each
             // module's own path (#343 review).
-            let mut seen: Vec<(PathBuf, Vec<String>)> = Vec::new();
+            let mut seen: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
             // What the caller listed. A file it named is scanned as its own
             // root, and following a fragment into it as well would scan it
             // twice under two module paths — a `#[julia]` item would then
@@ -220,7 +220,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             }) = queue.pop()
             {
                 let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
-                let key = (canonical, position.module_path.clone());
+                let key = (canonical, position.clone());
                 if seen.contains(&key) {
                     continue;
                 }
@@ -522,12 +522,17 @@ fn scan_crate_tree(
         follow_modules: true,
         fragment: false,
     }];
-    // Keyed by (file, module path): `#[path = "shared.rs"] pub mod a;` and the
+    // Keyed by (file, **position**): `#[path = "shared.rs"] pub mod a;` and the
     // same for `b` compile one file as two distinct modules, and both belong in
     // the manifest — under their own module paths, and colliding with each
-    // other on the wrapper symbols. An `include!`d fragment is keyed the same
-    // way, under the module that includes it.
-    let mut visited: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    // other on the wrapper symbols. The position, not only the module path:
+    // `#[cfg(feature = "x")] mod api { include!("frag.rs"); }` beside
+    // `#[cfg(not(feature = "x"))] mod api { include!("frag.rs"); }` is one file
+    // at one module path under two predicates, and a lenient scan must report
+    // both — keyed by module path alone the second was dropped and the item
+    // kept whichever predicate the walk reached last (#357). One fragment
+    // included twice at the *same* position is still one scan.
+    let mut visited: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
     let mut scan = rustcall_core::extract::TreeScan::new();
 
     while let Some(QueuedFile {
@@ -539,7 +544,7 @@ fn scan_crate_tree(
     }) = queue.pop()
     {
         let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
-        let key = (canonical, position.module_path.clone());
+        let key = (canonical, position.clone());
         if visited.contains(&key) {
             continue;
         }
