@@ -1195,9 +1195,9 @@ See "Limitations of `@irust`" in the manual. In short:
   literals too, and `\\\$obj.field` interpolates `obj` only;
 - `@irust` is **not type-stable**: the return type is decided at run time from
   the snippet;
-- each new snippet costs two `rustc` invocations (the type probe and the
-  build), memoized afterwards. `@irust` is for exploration; a package should
-  use `rust\"\"\"...\"\"\"` with `@rust`.
+- each new snippet costs a few `rustc` invocations (the type probe, the
+  confirmation of its answer, and the build), memoized afterwards. `@irust` is
+  for exploration; a package should use `rust\"\"\"...\"\"\"` with `@rust`.
 
 A Rust panic inside the snippet is a catchable `RustPanicError`, as it is on
 every other RustCall path (#346).
@@ -1400,8 +1400,12 @@ function _compile_and_call_irust(code::String, args...)
 
         # Ask rustc what the snippet evaluates to (#348). This is the only
         # decision the old code took by pattern-matching the Rust source, and
-        # the one it got wrong for most real snippets.
+        # the one it got wrong for most real snippets. The answer is then
+        # *confirmed* with the type declared, which is what catches a path the
+        # first question could not provoke a diagnostic for — a fallthrough
+        # that is `()`.
         rust_ret_type = _probe_irust_return_type(code, rust_arg_types, compiler)
+        _confirm_irust_return_type(code, rust_arg_types, rust_ret_type, compiler)
 
         # Generate the `#[julia]` item and expand it: `expanded.source` is the
         # snippet's function plus the generated wrapper with the panic
@@ -1528,6 +1532,45 @@ function _probe_irust_return_type(code::String, rust_arg_types::Vector{String},
         expression is its value, and `arg1`, `arg2`, … are the interpolated
         variables. Use rust\"\"\"...\"\"\" with `@rust` for anything that needs
         more than one expression's worth of context.
+        """)
+end
+
+"""
+    _confirm_irust_return_type(code, rust_arg_types, rust_ret_type, compiler)
+
+Type-check the snippet once more with the probed type **declared**, and raise
+with rustc's own diagnostics if it does not hold.
+
+The `()`-returning probe learns the type from the mismatches it provokes, and a
+path that already produces `()` provokes none: `if \\\$flag { return 1i64; }`
+comes back as `i64` with nothing said about the fallthrough, which is unit
+(Codex review of PR #354). Declaring `-> i64` and asking again is what sees it,
+and the error is then rustc's about *the snippet* — "expected `i64`, found
+`()`" — rather than the same failure discovered later, in generated source the
+user never wrote.
+
+Skipped when the snippet's value is `()`: a clean `()`-probe already checked
+every path against `()`.
+"""
+function _confirm_irust_return_type(code::String, rust_arg_types::Vector{String},
+                                    rust_ret_type::String, compiler::RustCompiler)
+    rust_ret_type == "()" && return nothing
+    params = join(("arg$(i): $(t)" for (i, t) in enumerate(rust_arg_types)), ", ")
+    rendered = confirm_rust_return_type(code, params, rust_ret_type; compiler)
+    isempty(rendered) && return nothing
+    error("""
+        @irust cannot give this snippet one return type.
+
+        Code: $code
+
+        rustc typed its value as `$(rust_ret_type)`, but the snippet does not
+        type-check as a function returning it:
+
+        $(rendered)
+        Tip: every path has to produce the same value. An `if` with no `else`
+        falls through to `()`, so `if cond { return x; }` needs an `else` (or a
+        trailing expression). Use rust\"\"\"...\"\"\" with `@rust` for anything
+        that needs more than one expression's worth of context.
         """)
 end
 

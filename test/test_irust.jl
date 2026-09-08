@@ -347,6 +347,26 @@ const _IRUST_RUSTC_AVAILABLE = RustCall.check_rustc_available()
             @test occursin("i32", sprint(showerror, err))
             @test_throws ErrorException @irust("if \$flag { return 1.5; } \$x")
 
+            # A path that already produces `()` provokes no diagnostic at all
+            # from the `()`-returning probe — it matches — so the probe reports
+            # only the scalar site. Declaring the answer and type-checking
+            # again is what sees the unit fallthrough (Codex review of PR #354).
+            err = try
+                @irust("if \$flag { return 1i64; }")
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            msg = sprint(showerror, err)
+            @test occursin("one return type", msg)
+            # rustc's own diagnostic, about the snippet rather than generated
+            # source: `if` without `else` evaluates to `()`.
+            @test occursin("E0317", msg) || occursin("found `()`", msg)
+            @test !occursin("irust_func_", msg)
+            # ...and the same shape with an `else` is fine.
+            @test @irust("if \$flag { 1i64 } else { 0i64 }") === Int64(1)
+
             # The probe is compiled with the flags that decide `#[cfg]`
             # predicates, so it sees the same snippet the build does
             # (`debug_assertions` is on at opt-level 0 and off above it). If

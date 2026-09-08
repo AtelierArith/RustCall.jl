@@ -45,8 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the sites of `if flag { return 0; } x` from unifying with each other the way
   they will in the real function, so a concrete type wins over an unconstrained
   literal and genuinely disagreeing sites are named rather than guessed
-  between. The probe is compiled with the same target, opt-level and panic
-  flags as the build (`_cfg_rustc_flags`), because those decide `#[cfg]`
+  between. A path that already produces `()` provokes no diagnostic — it
+  matches the probe's own return type — so the answer is *confirmed* by
+  type-checking the snippet once more with that type declared, which is what
+  catches `if flag { return 1i64; }` and reports rustc's own "`if` may be
+  missing an `else` clause" about the snippet instead of a later error in
+  generated source. The probe is compiled with the same target, opt-level and
+  panic flags as the build (`_cfg_rustc_flags`), because those decide `#[cfg]`
   predicates — `debug_assertions` is on at opt-level 0 and off above it. The
   scalar set (`IRUST_SCALAR_TYPES`) is checked on the **result** as well as on
   the arguments, so a snippet whose value is an `i128`/`u128` is refused rather

@@ -227,9 +227,10 @@ about generated source.
   too, and `$obj.field` interpolates `obj` only. Use `$$` for a literal `$`.
 - **Not type-stable.** The return type is decided at run time from the snippet,
   so a function containing `@irust` cannot be inferred through.
-- **A compiler invocation per new snippet.** The first use of a snippet costs
-  two `rustc` runs — the type probe and the build — and is memoized afterwards
-  for the rest of the session, keyed by the snippet *and* its argument types.
+- **Compiler invocations per new snippet.** The first use of a snippet costs a
+  few `rustc` runs — the type probe, a confirmation of its answer, and the
+  build — and is memoized afterwards for the rest of the session, keyed by the
+  snippet *and* its argument types.
 
 #### The same computation, both ways
 

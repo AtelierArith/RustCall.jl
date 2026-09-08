@@ -400,14 +400,78 @@ without them can see a different snippet from the one that gets built.
 A probe that fails for any *other* reason (a syntax error, an unknown method, a
 genuine type error) yields `rust_type === nothing` with an empty `conflict`: the
 caller raises and shows `rendered`, because that output is the diagnosis.
+
+The answer is a *lower bound*, and `confirm_rust_return_type` is what turns it
+into a decision. A path that already produces `()` raises no diagnostic at all —
+it matches the probe's declared return type — so `if flag { return 1i64; }`
+reports `i64` and says nothing about the fallthrough that is unit (Codex review
+of PR #354). No reading of these diagnostics can recover a constraint rustc
+never emitted; asking rustc a second question can.
 """
 function probe_rust_expression_type(snippet::AbstractString, params::AbstractString;
                                     compiler::RustCompiler = get_default_compiler())
+    ok, diagnostics, text = _run_type_probe(snippet, params, ""; compiler)
+    rendered = _rendered_errors(diagnostics)
+    # A clean probe means the body really does evaluate to `()`.
+    ok && return RustTypeProbe("()", rendered)
+
+    # Only diagnostics with a span are real; "aborting due to N previous
+    # errors" is an error-level summary with none.
+    errors = [d for d in diagnostics
+              if diagnostic_level(d) == "error" && !isempty(diagnostic_spans(d))]
+    isempty(errors) && return RustTypeProbe(nothing, isempty(rendered) ? text : rendered)
+
+    constraints = Union{String, Symbol}[]
+    for d in errors
+        c = _probe_constraint_from_diagnostic(d)
+        c === nothing && return RustTypeProbe(nothing, rendered)  # a real error
+        push!(constraints, c)
+    end
+    resolved = _reconcile_probe_types(constraints)
+    resolved === nothing &&
+        return RustTypeProbe(nothing, rendered, _probe_constraint_names(constraints))
+    return RustTypeProbe(resolved, rendered)
+end
+
+"""
+    confirm_rust_return_type(snippet, params, rust_type; compiler) -> String
+
+`""` when the snippet type-checks as the body of a function returning
+`rust_type`; otherwise rustc's rendered diagnostics for **that** question.
+
+The second half of the type probe. `probe_rust_expression_type` learns the type
+from the mismatches a `()`-returning function reports, and a path that already
+produces `()` reports nothing — so `if flag { return 1i64; }` comes back as
+`i64` with no hint that the fallthrough is unit. Declaring the answer and
+type-checking again is the only way to see that, and it costs one more
+`--emit=metadata` run on a snippet that is about to be compiled anyway.
+
+The payoff is the message as much as the check: a failure here is rustc talking
+about **the user's snippet** ("expected `i64`, found `()`"), where the same
+failure discovered during the real build talks about generated source the user
+never wrote.
+"""
+function confirm_rust_return_type(snippet::AbstractString, params::AbstractString,
+                                  rust_type::AbstractString;
+                                  compiler::RustCompiler = get_default_compiler())
+    ok, diagnostics, text = _run_type_probe(snippet, params, rust_type; compiler)
+    ok && return ""
+    rendered = _rendered_errors(diagnostics)
+    return isempty(rendered) ? text : rendered
+end
+
+# One rustc type-check of `snippet` as the body of `__rustcall_irust_probe`,
+# declared to return `rust_type` (`""` meaning `()`), with the flags that decide
+# `#[cfg]`. Metadata only: no codegen, no linking.
+function _run_type_probe(snippet::AbstractString, params::AbstractString,
+                         rust_type::AbstractString;
+                         compiler::RustCompiler = get_default_compiler())
     return mktempdir() do dir
         src = joinpath(dir, "probe.rs")
         out = joinpath(dir, "probe.rmeta")
-        write(src, string("#![allow(unused)]\nfn __rustcall_irust_probe(", params, ") {\n",
-                          snippet, "\n}\n"))
+        ret = isempty(rust_type) ? "" : " -> $(rust_type)"
+        write(src, string("#![allow(unused)]\nfn __rustcall_irust_probe(", params, ")",
+                          ret, " {\n", snippet, "\n}\n"))
         cmd_args = [
             string(rustc().exec[1]),
             "--crate-type=lib",
@@ -429,27 +493,7 @@ function probe_rust_expression_type(snippet::AbstractString, params::AbstractStr
             false
         end
         text = String(take!(stderr_io))
-        diagnostics = rustc_diagnostics(text)
-        rendered = _rendered_errors(diagnostics)
-        # A clean probe means the body really does evaluate to `()`.
-        ok && return RustTypeProbe("()", rendered)
-
-        # Only diagnostics with a span are real; "aborting due to N previous
-        # errors" is an error-level summary with none.
-        errors = [d for d in diagnostics
-                  if diagnostic_level(d) == "error" && !isempty(diagnostic_spans(d))]
-        isempty(errors) && return RustTypeProbe(nothing, isempty(rendered) ? text : rendered)
-
-        constraints = Union{String, Symbol}[]
-        for d in errors
-            c = _probe_constraint_from_diagnostic(d)
-            c === nothing && return RustTypeProbe(nothing, rendered)  # a real error
-            push!(constraints, c)
-        end
-        resolved = _reconcile_probe_types(constraints)
-        resolved === nothing &&
-            return RustTypeProbe(nothing, rendered, _probe_constraint_names(constraints))
-        return RustTypeProbe(resolved, rendered)
+        return (ok, rustc_diagnostics(text), text)
     end
 end
 

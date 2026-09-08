@@ -89,8 +89,9 @@ small:
   literals too, and `$obj.field` interpolates `obj` only;
 - **not type-stable** — the return type is decided at run time from the
   snippet;
-- **a compiler invocation per new snippet** (two on first use: the type probe
-  and the build), memoized for the rest of the session.
+- **compiler invocations per new snippet** (on first use: the type probe, a
+  confirmation of its answer, and the build), memoized for the rest of the
+  session.
 
 Anything beyond a small scalar expression belongs in `rust"""..."""` with
 `@rust`: it takes its types from the Rust side, generates the wrapper once, is

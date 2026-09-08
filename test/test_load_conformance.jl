@@ -35,8 +35,13 @@ function _conformance_registry_rows(lib_name)
                 count(v -> v.lib_name == lib_name, values(RustCall.FUNCTION_REGISTRY)),
             :MONOMORPHIZED_FUNCTIONS =>
                 count(v -> v.lib_name == lib_name, values(RustCall.MONOMORPHIZED_FUNCTIONS)),
+            # An `IrustSnippet` since #346, like the records above: read the
+            # field rather than `first` of a tuple. `count` never calls its
+            # predicate on an empty collection, so the old spelling only threw
+            # when this worker had already run an `@irust` — a scheduling
+            # accident, not a property of this file.
             :IRUST_FUNCTIONS =>
-                count(v -> first(v) == lib_name, values(RustCall.IRUST_FUNCTIONS)),
+                count(v -> v.lib_name == lib_name, values(RustCall.IRUST_FUNCTIONS)),
             :PANIC_CHANNELS =>
                 count(k -> first(k) == lib_name, keys(RustCall.PANIC_CHANNELS)),
             :ARTIFACT_ALIVE =>
@@ -145,7 +150,17 @@ end
             RustCall.register_function("conformance_unload", lib, Int32, Type[Int32])
             RustCall.panic_channel_pointer(lib, "rustcall_conformance_unload")
 
+            # Put a row in `IRUST_FUNCTIONS` as well, so the count above runs
+            # its predicate instead of short-circuiting on an empty
+            # collection. Without this the row was only ever exercised when
+            # some *other* file had already run an `@irust` in this worker.
+            # The snippet gets a library of its own, so it must not be counted
+            # against `lib`.
+            @test RustCall._compile_and_call_irust("40i64 + 2") == Int64(42)
+            @test !isempty(RustCall.IRUST_FUNCTIONS)
+
             before = _conformance_registry_rows(lib)
+            @test before[:IRUST_FUNCTIONS] == 0
             @test before[:RUST_LIBRARIES] == 1
             @test before[:FUNCTION_SYMBOLS_BY_LIB] > 0
             @test before[:ARTIFACT_ALIVE] == 1
