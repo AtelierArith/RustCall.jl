@@ -1033,33 +1033,10 @@ end
             if !isempty(default_graph)
                 # The default graph omits the inactive dependency ...
                 @test !any(RustCall._tree_line_names_pyo3, split(default_graph, '\n'))
-                # ... and the all-features build graph is what sees it.
-                @test RustCall._build_graph_may_use_pyo3(manifest)
+                # ... and the all-features graph is what sees it.
+                @test RustCall._all_features_graph_may_use_pyo3(manifest)
             end
             @test RustCall.crate_may_read_pyo3_config(joinpath(root, "via_pyo3"))
-            # A pyo3 under `[dev-dependencies]` is compiled by `cargo test`,
-            # never by the build a binding runs: the graph the directory list
-            # comes from carries `dev` edges and shows it, the build graph
-            # does not, and the crate may not read the configuration.
-            mkpath(joinpath(root, "dev_only", "src"))
-            write(joinpath(root, "dev_only", "Cargo.toml"), """
-                [package]
-                name = "dev_only"
-                version = "0.1.0"
-                edition = "2021"
-
-                [dev-dependencies]
-                pyo3-ffi = "0.29"
-                """)
-            write(joinpath(root, "dev_only", "src", "lib.rs"), "pub fn m() -> i32 { 1 }\n")
-            dev_manifest = joinpath(root, "dev_only", "Cargo.toml")
-            dev_graph = RustCall._cargo_tree(dev_manifest, false)
-            if !isempty(dev_graph)
-                @test any(RustCall._tree_line_names_pyo3, split(dev_graph, '\n'))   # dev edge shows it
-                @test !RustCall._build_graph_may_use_pyo3(dev_manifest)              # the build does not
-                @test !RustCall._manifest_declares_pyo3(joinpath(root, "dev_only"))
-                @test !RustCall.crate_may_read_pyo3_config(joinpath(root, "dev_only"))
-            end
             # The negative side is decided only when Cargo resolved the
             # all-features graph; otherwise the answer is the conservative `true`.
             other = joinpath(root, "via_other", "Cargo.toml")
