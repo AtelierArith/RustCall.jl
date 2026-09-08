@@ -903,6 +903,32 @@ end
 # library in the cache and handed it back — and the load-time warning's advice
 # was then wrong, because re-precompiling the package rebuilt the bindings
 # around the same stale artifact (#339 review).
+# When pyo3's own configuration decides the link directory, pyo3 consults no
+# interpreter: the plan's fingerprint is "" and the wrapper's identity keys
+# nothing by what `PYO3_PYTHON` resolves to. The record is empty there too —
+# a `PYTHONHOME` change or a retargeted shim must not warn about a library the
+# same environment would select again (#339 review).
+@testset "Interpreter records follow the link plan (#339 review)" begin
+    mktempdir() do dir
+        config = joinpath(dir, "pyo3-build-config.txt")
+        write(config, "implementation=CPython\nversion=3.12\nshared=true\nlib_dir=$dir\n")
+        withenv("PYO3_CONFIG_FILE" => config, "PYO3_CROSS_LIB_DIR" => nothing,
+                "PYO3_PYTHON" => "/pinned/python3", "RUSTCALL_PYTHON_LIBDIR" => nothing) do
+            recorded = Dict(String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true))
+            @test recorded["<python selection>"] == "/pinned/python3"
+            @test recorded["<python resolved>"] == ""
+            @test recorded["<python fingerprint>"] == ""
+            @test recorded["<python fingerprint>"] == RustCall.python_link_source()[3]
+            @test recorded["<python link dir>"] == dir
+        end
+        # Off that branch the fingerprint is the plan's, whatever it is here.
+        withenv("PYO3_CONFIG_FILE" => nothing, "PYO3_CROSS_LIB_DIR" => nothing) do
+            recorded = Dict(String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true))
+            @test recorded["<python fingerprint>"] == RustCall.python_link_source()[3]
+        end
+    end
+end
+
 @testset "The plain crate key covers the build environment (#339 review)" begin
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"

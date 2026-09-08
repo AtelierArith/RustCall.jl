@@ -583,18 +583,29 @@ function _recorded_build_env(; python::Bool = false)
         end
         selection = _python_selection()
         push!(env, "<python selection>" => selection)
+        # The plan itself, computed once: `(libdir, interpreter, fingerprint)`
+        # exactly as `python_link_source()` decides it for a build.
+        source = _python_link_source_or_empty()
+        # When pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, the `lib_dir`
+        # of a `PYO3_CONFIG_FILE`) decides, pyo3 consults no interpreter: the
+        # plan's fingerprint is "" and `_pyo3_wrapper_build_env` keys nothing
+        # by what `PYO3_PYTHON` resolves to. Recording it anyway warned about
+        # a `PYTHONHOME` or shim change that selects the same artifact (#339
+        # review). So the two interpreter records below are empty on that
+        # branch, the way the plan's are.
+        configured = !isempty(_pyo3_configured_lib_dir())
         # What that selection *is*: `PYO3_PYTHON` may be a bare `python3` or a
         # pyenv/asdf shim whose target moves under the same name, and
         # `python_link_source()` runs the command and hashes what it reports.
         # The resolved `sys.executable` is recorded beside the raw selection
         # (one short subprocess, only for a PyO3 wrapper module; #339 review).
-        push!(env, "<python resolved>" => _python_resolved(selection))
+        push!(env, "<python resolved>" => (configured ? "" : _python_resolved(selection)))
         # And what it *reports*: the same executable can describe a different
         # Python after `PYTHONHOME` or its sysconfig metadata changes, and
         # `_pyo3_wrapper_build_env` hashes exactly that description
-        # (`plan.interpreter_config`). Recorded the way the plan records it
-        # (#339 review).
-        push!(env, "<python fingerprint>" => _python_fingerprint(selection))
+        # (`plan.interpreter_config`). Recorded as the plan records it — the
+        # plan's own value, "" on the configured branch (#339 review).
+        push!(env, "<python fingerprint>" => source[3])
         # The link directory is not the interpreter's alone: for the implicit
         # case `python_link_source()` asks a bare `python3-config --ldflags`,
         # falling back to `python-config`, and `PATH` may resolve either to
@@ -618,7 +629,7 @@ function _recorded_build_env(; python::Bool = false)
         # that is a shim can still answer with another directory once the
         # environment or metadata it reads moves, and only the answer itself
         # says so. Recorded the way the flags are computed (#339 review).
-        push!(env, "<python link dir>" => _python_link_source_or_empty()[1])
+        push!(env, "<python link dir>" => source[1])
     end
     return env
 end
@@ -658,23 +669,6 @@ function _python_config_consulted()
         return !(Sys.isapple() && !isempty(_python_framework_prefix(exe)))
     end
     return false
-end
-
-"""
-    _python_fingerprint(selection) -> String
-
-What the selected interpreter reports about itself — `_python_interpreter_fingerprint`,
-the same call `python_link_source()` makes for the plan — or "" when nothing
-is selected or it cannot be run. One short subprocess, for a PyO3 wrapper
-module only (#339 review).
-"""
-function _python_fingerprint(selection::AbstractString)
-    isempty(selection) && return ""
-    return try
-        String(_python_interpreter_fingerprint(selection))
-    catch
-        ""
-    end
 end
 
 """
