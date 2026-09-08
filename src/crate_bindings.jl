@@ -553,11 +553,17 @@ artifact without being in that allowlist — `RUSTCALL_PYTHON_LIBDIR`, which
 a wrapper's identity and rpath (#339 review). One function for both sides, so
 what is recorded and what is compared cannot drift.
 """
-function _recorded_build_env()
+function _recorded_build_env(; python::Bool = false)
     env = Pair{String, String}[String(k) => String(v) for (k, v) in artifact_build_env()]
-    for name in ("RUSTCALL_PYTHON_LIBDIR",)
-        value = get(ENV, name, nothing)
-        value === nothing || push!(env, name => String(value))
+    # Only for a module that binds a PyO3 wrapper: a plain crate's build never
+    # consults `python_link_source()`, so for it this selector is not an input
+    # and comparing it would warn about a library nothing changed (#339
+    # review).
+    if python
+        for name in ("RUSTCALL_PYTHON_LIBDIR",)
+            value = get(ENV, name, nothing)
+            value === nothing || push!(env, name => String(value))
+        end
     end
     return env
 end
@@ -585,9 +591,10 @@ again.
 """
 function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
                                     recorded_cargo_config::AbstractString = "",
-                                    recorded_toolchain::AbstractString = "")
+                                    recorded_toolchain::AbstractString = "";
+                                    python::Bool = false)
     current = try
-        _recorded_build_env()
+        _recorded_build_env(; python = python)
     catch e
         @debug "Could not read the build environment" exception = e
         return nothing
@@ -659,7 +666,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                            build_release::Bool = true,
                            lib_name::Union{String, Nothing} = nothing,
                            preload::Vector{String} = String[],
-                           extra_inputs::Vector{String} = String[])
+                           extra_inputs::Vector{String} = String[],
+                           python::Bool = false)
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -697,7 +705,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).
     build_env = try
-        _recorded_build_env()
+        _recorded_build_env(; python = python)
     catch e
         @debug "Could not record the build environment" exception = e
         Pair{String, String}[]
@@ -770,6 +778,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         const _CRATE_DIR = $crate_dir
         const _CARGO_CONFIG = $cargo_config_digest
         const _TOOLCHAIN = $toolchain
+        const _RECORDS_PYTHON = $python
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -794,7 +803,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
             RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG,
-                                                _TOOLCHAIN)
+                                                _TOOLCHAIN; python = _RECORDS_PYTHON)
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
@@ -2192,6 +2201,29 @@ end
 # ============================================================================
 
 """
+    _uncached_library_home(built) -> String
+
+A copy of `built` in a directory that outlives the process that made it, for
+a build that is not entered into the cache (`cache = false`, or a cache write
+that failed).
+
+Not `mktempdir()`: that cleans up at process exit, and the process that
+generates a module is not always the one that loads it. A package precompiled
+with `cache = false` records this path as its `_LIB_PATH`; the precompile
+worker then exits, the directory goes with it, and the session that triggered
+the precompilation loads an image whose library is already gone (#339
+review). The copy lives under the Cargo cache directory instead, under a name
+the cache lookup never returns, so `RustCall.clear_cache()` is what removes
+it.
+"""
+function _uncached_library_home(built::AbstractString)
+    home = mktempdir(get_cargo_cache_dir(); prefix = "uncached_", cleanup = false)
+    kept = joinpath(home, basename(built))
+    cp(built, kept; force = true)
+    return kept
+end
+
+"""
     _cache_built_library(cache_key, built, cache_enabled) -> String
 
 The path a generated module should name for a library that was just built:
@@ -2299,7 +2331,8 @@ function generate_bindings(crate_path::String;
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
                                      extra_inputs = String[wrapper.plan.interpreter;
-                                                           wrapper.plan.runtime_libraries])
+                                                           wrapper.plan.runtime_libraries],
+                                     python = true)
         end
     end
     info = _plain_scan_info(crate_path, info, features, default_features, build_release)
@@ -2368,9 +2401,7 @@ function generate_bindings(crate_path::String;
                 # crate that needs a wrapper failed to open its own library.
                 kept = _cache_built_library(cache_key, built, cache_enabled)
                 if kept == built
-                    kept = joinpath(mktempdir(prefix = "rustcall_wrapper_lib_"),
-                                    basename(built))
-                    cp(built, kept; force = true)
+                    kept = _uncached_library_home(built)
                 end
                 kept
             finally

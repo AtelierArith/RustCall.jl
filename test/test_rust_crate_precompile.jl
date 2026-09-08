@@ -179,6 +179,12 @@ end
         bindings = @rust_crate PRECOMP_WRAPPED_CRATE cache=false
         generated = bindings.module_ref
         @test isfile(generated._LIB_PATH)
+        # And the copy outlives this process: not a `mktempdir()` that is
+        # cleaned at exit, but a directory under the Cargo cache that only
+        # `clear_cache()` removes — a package precompiled with `cache = false`
+        # is loaded by a process other than the one that made the copy.
+        @test startswith(generated._LIB_PATH, RustCall.get_cargo_cache_dir())
+        @test occursin("uncached_", generated._LIB_PATH)
         # The library is open, so the path named a real file at load time as
         # well as now.
         @test generated._LIB_GEN[].handle != C_NULL
@@ -489,12 +495,19 @@ end
     # allowlist, and it decides a PyO3 wrapper's rpath and identity: it is
     # recorded and compared like the rest (#339 review).
     withenv("RUSTCALL_PYTHON_LIBDIR" => "/opt/py-a/lib") do
-        recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()]
+        recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
         @test any(p -> first(p) == "RUSTCALL_PYTHON_LIBDIR", recorded)
-        @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib")
+        @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib"; python = true)
         withenv("RUSTCALL_PYTHON_LIBDIR" => "/opt/py-b/lib") do
             @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
-                recorded, "/crate", "lib")
+                recorded, "/crate", "lib"; python = true)
+        end
+        # A plain crate's build never consults it: not recorded, not compared,
+        # so configuring Python for another package warns about nothing here.
+        plain = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()]
+        @test !any(p -> first(p) == "RUSTCALL_PYTHON_LIBDIR", plain)
+        withenv("RUSTCALL_PYTHON_LIBDIR" => "/opt/py-b/lib") do
+            @test_logs RustCall._warn_if_build_env_changed(plain, "/crate", "lib")
         end
     end
 

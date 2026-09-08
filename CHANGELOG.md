@@ -213,8 +213,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer existed and loading it failed with `could not load library
   ".../rustcall_wrapper_XXXXXX/target/release/..."`. The library is now taken
   out of the wrapper project before the cleanup — into the cache, or into a
-  directory of its own — as `_build_pyo3_wrapper_project` already did for the
-  PyO3 wrapper path. `cache = false` is still not the shape to use inside a
+  directory of its own under the Cargo cache that outlives the process (a
+  package precompiled with `cache = false` is loaded by a *later* process, and
+  a `mktempdir()` cleaned at exit would have taken the recorded `_LIB_PATH`
+  with it; the PyO3 wrapper path had the same `mktempdir()` and uses the same
+  home now). `cache = false` is still not the shape to use inside a
   package: `docs/src/crate_bindings.md` says which path the module then carries
   and what makes its precompile cache stale.
 

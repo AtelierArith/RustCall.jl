@@ -555,10 +555,14 @@ longer match, naming the variables; the fix is to precompile the package again
 
 `cache=false` is not the shape to use in a package. The library is then not
 the cache copy but whatever the build produced: Cargo's own output under the
-crate's `target/` for a crate that is already a `cdylib`, and a directory of
-its own — one that does not survive the process — for a crate RustCall has to
-wrap. In the first case the next `cargo build` of the crate invalidates the
-package's cache; in the second the package is re-precompiled at every session.
+crate's `target/` for a crate that is already a `cdylib`, and a copy in a
+directory of its own under RustCall's Cargo cache — one the cache lookup never
+returns, and that only `RustCall.clear_cache()` removes — for a crate RustCall
+has to wrap. The copy outlives the process that made it on purpose: a package
+precompiled with `cache=false` is loaded by another process, which must still
+find the file. In the first case the next `cargo build` of the crate
+invalidates the package's cache; in the second every precompilation leaves a
+copy behind until the cache is cleared.
 
 The naming rule: **`submodule="Bindings"` is what defines** the module as
 `MyPackage.Bindings`, which is what `using .Bindings: ...` needs. Without it
