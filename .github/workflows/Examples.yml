@@ -38,16 +38,18 @@ jobs:
           - SampleCrate.jl
           - SampleCratePyO3.jl
           - SampleCratePyO3Only.jl
+          - RustCrateMacroPyO3Only.jl
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
-        # SampleCratePyO3Only.jl binds a PyO3-only crate through RustCall's
-        # generated wrapper crate, and pyo3 is a mandatory dependency of that
-        # crate, so the wrapper links libpython (link plan `:link_libpython`):
-        # its build needs an interpreter whose library directory RustCall can
-        # find. Install one before Julia runs and pin it with PYO3_PYTHON
-        # below, rather than trusting whatever `python3` the runner image has.
-        # Harmless for the other packages: their crates never link Python.
+        # SampleCratePyO3Only.jl and RustCrateMacroPyO3Only.jl bind a PyO3-only
+        # crate through RustCall's generated wrapper crate, and pyo3 is a
+        # mandatory dependency of those crates, so the wrapper links libpython
+        # (link plan `:link_libpython`): its build needs an interpreter whose
+        # library directory RustCall can find. Install one before Julia runs
+        # and pin it with PYO3_PYTHON below, rather than trusting whatever
+        # `python3` the runner image has. Harmless for the other packages:
+        # their crates never link Python.
         id: python
         with:
           python-version: '3.x'
@@ -67,7 +69,8 @@ jobs:
         env:
           # The interpreter pyo3 configures itself for and whose library
           # directory the wrapper links against (docs/src/pyo3.md, "Which
-          # Python"). Only SampleCratePyO3Only.jl reads it.
+          # Python"). Only SampleCratePyO3Only.jl and
+          # RustCrateMacroPyO3Only.jl read it.
           PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
         run: >
           julia --color=yes --project=examples/${{ matrix.package }} -e '
