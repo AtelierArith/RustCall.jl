@@ -23,6 +23,7 @@ Before running the examples, ensure you have:
 | [SampleCrate.jl](./SampleCrate.jl/) | Julia package with a Rust crate using `#[julia]` embedded under `deps/sample_crate/` | Intermediate | `#[julia]`, `@rust_crate`, `write_bindings_to_file`, Rust and Julia in separate files |
 | [SampleCratePyO3.jl](./SampleCratePyO3.jl/) | Julia package with a dual Julia/Python crate embedded under `deps/sample_crate_pyo3/` | Advanced | PyO3 integration, feature flags |
 | [SampleCratePyO3Only.jl](./SampleCratePyO3Only.jl/) | Julia package with a **PyO3-only** crate (no RustCall attribute) embedded under `deps/sample_crate_pyo3_only/`, bound through RustCall's generated wrapper crate | Advanced | `#[pyfunction]` / `#[pyclass]` without `#[julia]`, `PyResult` → `RustResult`, `:link_libpython` (needs a Python interpreter to build) |
+| [RustCrateMacroPyO3Only.jl](./RustCrateMacroPyO3Only.jl/) | The same **PyO3-only** shape, embedded under `deps/macro_pyo3_only/`, bound with the **`@rust_crate` macro** at the package's top level instead of a `deps/build.jl` | Advanced | `@rust_crate ... submodule="Bindings"` in a package, bindings generated while the package is precompiled, nothing generated in the repository, `:link_libpython` |
 | [pluto/hello.jl](./pluto/hello.jl) | Pluto notebook with a `// cargo-deps:` block | Beginner | Inline Rust in Pluto, run headlessly in CI |
 
 Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
@@ -32,13 +33,15 @@ Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
 guide prescribes), and no Julia file contains Rust source. The only reference an
 example makes outside its own directory is the `juliacall_macros` path
 dependency in its `Cargo.toml`, because the proc-macro crate is not on crates.io
-yet — and `SampleCratePyO3Only.jl` makes none at all: its crate depends on pyo3
-alone, and the wrapper crate RustCall generates for it is what depends on
+yet — and the two PyO3-only packages, `SampleCratePyO3Only.jl` and
+`RustCrateMacroPyO3Only.jl`, make none at all: their crates depend on pyo3
+alone, and the wrapper crate RustCall generates for each is what depends on
 `juliacall_macros`. (RustCall's own test suite uses separate fixture crates
 under `test/fixtures/`, not the examples.)
 
 ```bash
-# any of MyExample.jl, SampleCrate.jl, SampleCratePyO3.jl, SampleCratePyO3Only.jl
+# any of MyExample.jl, SampleCrate.jl, SampleCratePyO3.jl, SampleCratePyO3Only.jl,
+# RustCrateMacroPyO3Only.jl
 cd examples/SampleCrate.jl
 julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
@@ -231,6 +234,40 @@ SampleCratePyO3Only.Bindings.parse("x").value == RustCall.PYO3_OPAQUE_ERROR   # 
 prints what the wrapper exports and what it skips (only the `#[pymodule]`
 initializer), and the link plan.
 
+### RustCrateMacroPyO3Only.jl
+
+The same PyO3-only crate shape as above — `deps/macro_pyo3_only/` carries no
+RustCall attribute and no `juliacall_macros` dependency — bound through the
+**other front door**: `@rust_crate ... submodule="Bindings"` at the package's
+top level, which
+[#339](https://github.com/AtelierArith/RustCall.jl/issues/339) made
+precompilable. Read it next to `SampleCratePyO3Only.jl`: the two crates are
+interchangeable, and the whole difference is in `src/`.
+
+**Features demonstrated:**
+- `@rust_crate` in a package's `src/`, with `submodule="Bindings"` defining the generated module as `RustCrateMacroPyO3Only.Bindings` so `using .Bindings: ...` works (`name=` only renames the otherwise hidden module and defines nothing)
+- No `deps/build.jl` and no `src/generated/`: the crate is built and the bindings module generated while the package is *precompiled*, straight into its precompile image
+- The library is a `Base.include_dependency` of the package, so `RustCall.clear_cache()` or an edit to the crate makes the cache stale and the next `using` rebuilds
+- The generated module reaches `Libdl` through RustCall, so the package needs `RustCall` alone among its dependencies
+- The same `PyResult` → `RustResult` lowering with `RustCall.PYO3_OPAQUE_ERROR`, and a Julia layer (`safe_div`) that turns it into a `DivideError`
+
+**The Python requirement** is the same as `SampleCratePyO3Only.jl`'s: pyo3 is a
+mandatory dependency of the crate, so the wrapper links libpython
+(`:link_libpython`) and *precompiling* the package needs an interpreter whose
+library directory RustCall can find.
+
+**How to use from Julia:**
+```bash
+cd examples/RustCrateMacroPyO3Only.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
+```
+```julia
+using RustCrateMacroPyO3Only
+scale(Int32(3), Int32(4))       # 12
+c = Counter(Int64(10), Int64(2)); bump(c)   # 12
+safe_div(7, 2)                  # 3; safe_div(1, 0) throws DivideError
+```
+
 ### pluto/hello.jl
 
 A [Pluto](https://plutojl.org/) notebook that compiles a `rust"""..."""` block with a
@@ -284,7 +321,13 @@ We recommend learning RustCall.jl in this order:
    - See what `PyResult<T>` becomes, and why its error is opaque
    - Understand the link plan and the Python requirement of `:link_libpython`
 
-5. **Read the documentation**
+5. **Compare RustCrateMacroPyO3Only.jl** (optional)
+   - The same crate shape bound with `@rust_crate ... submodule="Bindings"` in
+     a package's `src/`, instead of `write_bindings_to_file` in a `deps/build.jl`
+   - See what a package that generates nothing looks like, and when to prefer
+     each of the two front doors
+
+6. **Read the documentation**
    - [Tutorial](../docs/src/tutorial.md)
    - [Crate Bindings (Phase 6)](../docs/src/crate_bindings.md)
    - [Troubleshooting](../docs/src/troubleshooting.md)

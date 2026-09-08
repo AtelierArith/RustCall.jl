@@ -1,0 +1,6 @@
+# Cargo's output for the embedded crate (the generated wrapper crate is built
+# under it too). This example writes nothing into the package: the bindings
+# module exists only in the package's precompile image.
+/deps/macro_pyo3_only/target/
+/deps/macro_pyo3_only/Cargo.lock
+/Manifest.toml

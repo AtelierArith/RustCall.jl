@@ -1,0 +1,22 @@
+name = "RustCrateMacroPyO3Only"
+uuid = "6457296d-690f-447e-9e8b-2dc409aa65de"
+version = "0.1.0"
+authors = ["Satoshi Terasaki <terasakisatoshi.math@gmail.com>"]
+
+# No `Libdl`: the module `@rust_crate` generates reaches it through RustCall
+# (`import RustCall.Libdl`), so a package that uses the macro needs RustCall
+# alone.
+[deps]
+RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
+
+# 0.3.1 is the first release whose `@rust_crate` has `submodule=` (#339); 0.3.0
+# would not define `Bindings`, and `using .Bindings` below would fail.
+[compat]
+julia = "1.12"
+RustCall = "0.3.1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
