@@ -194,6 +194,24 @@ end
     end
 end
 
+# A run-time `@rust_crate` — a function called in a loop, a REPL line evaluated
+# again — must not grow the caller: a child module defined in the caller can
+# never be removed, so outside precompilation the module stays under an
+# anonymous `Main`-rooted module, as it always did (#339 review).
+@testset "A run-time @rust_crate leaves nothing in the caller (#339 review)" begin
+    if !isdir(PRECOMP_SAMPLE_CRATE) || !_precomp_cargo_available()
+        @test_skip "cargo and test/fixtures/sample_crate are required"
+    else
+        load_twice() = (@rust_crate PRECOMP_SAMPLE_CRATE), (@rust_crate PRECOMP_SAMPLE_CRATE)
+        before = Set(Base.invokelatest(names, @__MODULE__; all = true))
+        a, b = load_twice()
+        @test a.add(Int32(1), Int32(1)) == 2 && b.add(Int32(2), Int32(2)) == 4
+        @test Set(Base.invokelatest(names, @__MODULE__; all = true)) == before
+        @test parentmodule(parentmodule(a.module_ref)) === Main
+        @test a.module_ref !== b.module_ref
+    end
+end
+
 # `const X = @rust_crate <crate> name="X"` is the form the macro's docstring has
 # always shown. It must keep working, and that is why `name=` names the
 # generated module without defining it in the caller: a version that defined

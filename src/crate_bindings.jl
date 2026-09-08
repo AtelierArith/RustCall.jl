@@ -2473,18 +2473,27 @@ function generate_bindings(crate_path::String;
             # `wrapper.lib_path` is the cache copy (or, with caching off, a copy
             # of Cargo's output); the module copies it per process in
             # `__init__`.
+            # Python is an input of this module only when the wrapper links
+            # libpython. A `:python_free` build has pyo3 out of the graph and
+            # consults no interpreter, so recording one would warn on a
+            # routine `PATH` change and tracking `python3-config` would
+            # rebuild for nothing (#339 review).
+            links_python = wrapper.plan.mode === :link_libpython
+            python_inputs = if links_python
+                String[wrapper.plan.interpreter;
+                       _python_resolved(wrapper.plan.interpreter);
+                       wrapper.plan.runtime_libraries;
+                       (_python_link_is_implicit() ? last.(_python_config_selections()) : String[])]
+            else
+                String[]
+            end
             return emit_crate_module(wrapper.info, wrapper.lib_path;
                                      module_name = output_module_name,
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
-                                     extra_inputs = String[wrapper.plan.interpreter;
-                                                           _python_resolved(wrapper.plan.interpreter);
-                                                           wrapper.plan.runtime_libraries;
-                                                           (_python_link_is_implicit() ?
-                                                            last.(_python_config_selections()) :
-                                                            String[])],
-                                     python = true)
+                                     extra_inputs = python_inputs,
+                                     python = links_python)
         end
     end
     info = _plain_scan_info(crate_path, info, features, default_features, build_release)
@@ -2970,14 +2979,16 @@ Where it is evaluated decides whether the caller can be precompiled (#339):
   from a function with no expanding module: a fresh anonymous `Module` under
   `Main`, as before. Nothing rooted in `Main` can be part of a package's
   precompile image, and nothing that calls this way is being precompiled.
-- `target_module` given (the `@rust_crate` macro passes `__module__`): the
-  module is evaluated **inside the caller**, so it belongs to the module tree
-  Julia is precompiling. `visible = true` defines it directly as
-  `target_module.<name>` — the `submodule=` form, for `using .Name: ...`.
-  Otherwise it goes into a hidden child namespace
-  `target_module.var"##RustCallCrateRuntime#N"`, unique per call, so nothing
-  the caller did not name appears in its namespace and a repeated call never
-  replaces anything (the #222 contract).
+- `target_module` given (the `@rust_crate` macro passes `__module__`):
+  `visible = true` defines the module directly as `target_module.<name>` —
+  the `submodule=` form, for `using .Name: ...`. Otherwise, **while the caller
+  is being precompiled** (`Base.generating_output()`), it goes into a hidden
+  child namespace `target_module.var"##RustCallCrateRuntime#N"`, unique per
+  call, so it belongs to the module tree Julia is serializing and nothing the
+  caller did not name appears in its namespace (the #222 contract). Outside
+  precompilation the anonymous `Main`-rooted module is used exactly as
+  before: a child module defined in the caller can never be removed, and a
+  run-time `@rust_crate` may be evaluated any number of times.
 
 Only `submodule=` makes it visible, never `name=`, and that separation is not
 cosmetic: `const B = @rust_crate path name="B"` is a documented form, and
@@ -2989,7 +3000,16 @@ anything the caller did not ask for.
 function _instantiate_runtime_bindings(bindings_expr::Expr;
                                        target_module::Union{Module, Nothing} = nothing,
                                        visible::Bool = false)
-    if target_module === nothing
+    # The caller-owned namespace exists for one reason: a module rooted in
+    # `Main` cannot be part of a precompile image. Outside precompilation that
+    # reason is absent, and a hidden child module defined in the caller on
+    # every call can never be removed again — a function-scope `@rust_crate`
+    # called in a loop, or a REPL evaluated repeatedly, would grow the caller's
+    # binding table for the life of the session. So the anonymous module is
+    # kept for run-time calls, and only a caller that is *being precompiled*
+    # (`Base.generating_output()`) gets the child namespace (#339 review).
+    # `submodule=` is a name the caller asked for, and is defined either way.
+    if target_module === nothing || (!visible && !Base.generating_output())
         runtime_namespace = Module(gensym(:RustCallCrateRuntime))
         return Base.invokelatest(Core.eval, runtime_namespace, bindings_expr)
     end
