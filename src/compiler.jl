@@ -358,18 +358,29 @@ end
 
 Ask rustc what type a Rust snippet evaluates to.
 
-The snippet is compiled — metadata only, no codegen and no linking — as the
-body of a function declared to return `()`:
+The snippet is compiled — metadata only, no codegen and no linking — bound to a
+local whose type rustc infers, and *then* compared to `()`:
 
 ```rust
 fn __rustcall_irust_probe(arg1: i64) {
-    <snippet>
+    let __rustcall_probe_value = {
+        <snippet>
+    };
+    let _: () = __rustcall_probe_value;
 }
 ```
 
 so rustc reports the snippet's own type against `()` as `E0308`, with the
 primary span labelled ``expected `()`, found `i64` ``. If it compiles cleanly,
 the snippet's value really is `()`.
+
+The two statements are deliberate. Writing `let _: () = { <snippet> };` instead
+pushes the expected `()` *into* the block, which pins the snippet's own
+inference before it is finished: in
+`loop { if flag { break 1; } break x; }` the loop unifies with `()` at the first
+`break`, and the later `break x` — the one that knows the type is `i32` — is
+never reported at all (Codex review of PR #354). Letting the block infer on its
+own first and comparing afterwards reports the answer the snippet actually has.
 
 Reading the type out of the compiler instead of guessing it from the source is
 the whole point (#348): the guess it replaces called anything containing `->`,
@@ -410,7 +421,7 @@ never emitted; asking rustc a second question can.
 """
 function probe_rust_expression_type(snippet::AbstractString, params::AbstractString;
                                     compiler::RustCompiler = get_default_compiler())
-    ok, diagnostics, text = _run_type_probe(snippet, params, ""; compiler)
+    ok, diagnostics, text = _run_type_probe(_probe_body(snippet), params, ""; compiler)
     rendered = _rendered_errors(diagnostics)
     # A clean probe means the body really does evaluate to `()`.
     ok && return RustTypeProbe("()", rendered)
@@ -434,10 +445,30 @@ function probe_rust_expression_type(snippet::AbstractString, params::AbstractStr
 end
 
 """
-    confirm_rust_return_type(snippet, params, rust_type; compiler) -> String
+    RustTypeConfirmation
 
-`""` when the snippet type-checks as the body of a function returning
-`rust_type`; otherwise rustc's rendered diagnostics for **that** question.
+The answer of `confirm_rust_return_type`: whether the snippet type-checks as
+the body of a function returning the declared type, rustc's rendered
+diagnostics when it does not, and `suggested` — the concrete type an `E0308`
+named *instead*, when there is one.
+
+`suggested` is the compiler answering the question a second time. A declared
+type that is merely rustc's default for an unconstrained literal can be wrong
+where a later site knows better, and the mismatch then reads
+``expected `i64`, found `i32` ``: that `i32` is the answer.
+"""
+struct RustTypeConfirmation
+    ok::Bool
+    rendered::String
+    suggested::Union{Nothing, String}
+end
+
+"""
+    confirm_rust_return_type(snippet, params, rust_type; compiler) -> RustTypeConfirmation
+
+Whether the snippet type-checks as the body of a function returning
+`rust_type`, with rustc's rendered diagnostics for **that** question when it
+does not.
 
 The second half of the type probe. `probe_rust_expression_type` learns the type
 from the mismatches a `()`-returning function reports, and a path that already
@@ -454,16 +485,43 @@ never wrote.
 function confirm_rust_return_type(snippet::AbstractString, params::AbstractString,
                                   rust_type::AbstractString;
                                   compiler::RustCompiler = get_default_compiler())
+    # The *snippet as written*, in the shape the generated function will have —
+    # not the `let`-bound form the first question uses.
     ok, diagnostics, text = _run_type_probe(snippet, params, rust_type; compiler)
-    ok && return ""
+    ok && return RustTypeConfirmation(true, "", nothing)
     rendered = _rendered_errors(diagnostics)
-    return isempty(rendered) ? text : rendered
+    isempty(rendered) && (rendered = text)
+    return RustTypeConfirmation(false, rendered, _suggested_type(diagnostics, rust_type))
 end
 
-# One rustc type-check of `snippet` as the body of `__rustcall_irust_probe`,
-# declared to return `rust_type` (`""` meaning `()`), with the flags that decide
-# `#[cfg]`. Metadata only: no codegen, no linking.
-function _run_type_probe(snippet::AbstractString, params::AbstractString,
+# The concrete type an `E0308` named where `declared` was expected — rustc
+# telling us what the snippet really is. `nothing` when no diagnostic names one
+# (or names only an unconstrained literal, which `declared` already satisfies).
+function _suggested_type(diagnostics, declared::AbstractString)
+    prefix = string("expected `", declared, "`, found ")
+    for d in diagnostics
+        diagnostic_level(d) == "error" || continue
+        diagnostic_code(d) == "E0308" || continue
+        label = primary_span_label(d)
+        startswith(label, prefix) || continue
+        rest = strip(SubString(label, ncodeunits(prefix) + 1))
+        (length(rest) > 2 && startswith(rest, '`') && endswith(rest, '`')) || continue
+        found = String(chop(rest; head = 1, tail = 1))
+        found == declared || return found
+    end
+    return nothing
+end
+
+# The body of the type-learning probe: bind the snippet to a local so rustc
+# infers its type without `()` leaning on it, then compare that local to `()`.
+_probe_body(snippet::AbstractString) =
+    string("let __rustcall_probe_value = {\n", snippet,
+           "\n};\nlet _: () = __rustcall_probe_value;")
+
+# One rustc type-check of `body` inside `__rustcall_irust_probe`, declared to
+# return `rust_type` (`""` meaning `()`), with the flags that decide `#[cfg]`.
+# Metadata only: no codegen, no linking.
+function _run_type_probe(body::AbstractString, params::AbstractString,
                          rust_type::AbstractString;
                          compiler::RustCompiler = get_default_compiler())
     return mktempdir() do dir
@@ -471,7 +529,7 @@ function _run_type_probe(snippet::AbstractString, params::AbstractString,
         out = joinpath(dir, "probe.rmeta")
         ret = isempty(rust_type) ? "" : " -> $(rust_type)"
         write(src, string("#![allow(unused)]\nfn __rustcall_irust_probe(", params, ")",
-                          ret, " {\n", snippet, "\n}\n"))
+                          ret, " {\n", body, "\n}\n"))
         cmd_args = [
             string(rustc().exec[1]),
             "--crate-type=lib",

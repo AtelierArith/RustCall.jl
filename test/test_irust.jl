@@ -110,6 +110,21 @@ const _IRUST_RUSTC_AVAILABLE = RustCall.check_rustc_available()
             "spans" => Any[Dict{String, Any}("is_primary" => true,
                                              "label" => "method not found in `i64`")])
         @test RustCall._probe_constraint_from_diagnostic(other) === nothing
+
+        # The confirmation reads a *different* concrete type out of its own
+        # E0308 — the compiler naming the answer when the first question could
+        # only default (Codex review of PR #354).
+        mismatch(expected, found) = Dict{String, Any}(
+            "code" => Dict{String, Any}("code" => "E0308"), "level" => "error",
+            "spans" => Any[Dict{String, Any}("is_primary" => true,
+                                             "label" => "expected `$(expected)`, found $(found)")])
+        @test RustCall._suggested_type(Any[mismatch("i64", "`i32`")], "i64") == "i32"
+        # An unconstrained literal is no suggestion: `i64` already satisfies it.
+        @test RustCall._suggested_type(Any[mismatch("i64", "integer")], "i64") === nothing
+        # Nor is the declared type itself, nor a diagnostic about something else.
+        @test RustCall._suggested_type(Any[mismatch("i64", "`i64`")], "i64") === nothing
+        @test RustCall._suggested_type(Any[other], "i64") === nothing
+        @test RustCall._suggested_type(Any[], "i64") === nothing
     end
 
     # A snippet with several return sites produces one diagnostic each, and the
@@ -366,6 +381,26 @@ const _IRUST_RUSTC_AVAILABLE = RustCall.check_rustc_available()
             @test !occursin("irust_func_", msg)
             # ...and the same shape with an `else` is fine.
             @test @irust("if \$flag { 1i64 } else { 0i64 }") === Int64(1)
+
+            # The snippet's own inference has to finish before `()` is applied
+            # to it (Codex review of PR #354). `let _: () = { <snippet> }`
+            # pushes the expected type *into* the block, so a `loop` unifies
+            # with `()` at its first `break` and the later `break` — the one
+            # that knows the type — is never reported. Binding the block to a
+            # local first and comparing afterwards reports `i32`.
+            @test RustCall._compile_and_call_irust(
+                "loop { if arg2 { break 1; } break arg1; }", Int32(2), false) === Int32(2)
+            @test RustCall._compile_and_call_irust(
+                "loop { if arg2 { break 1; } break arg1; }", Int32(2), true) === Int32(1)
+            # A `loop` whose type only the *later* break knows, again with an
+            # argument type the default would never have reached.
+            @test RustCall._compile_and_call_irust(
+                "loop { if arg2 { break 1; } break arg1; }", UInt8(9), false) === UInt8(9)
+
+            # And when no single type holds, the answer is a clear error rather
+            # than a guess: the retry is bounded at one, and a wrong default is
+            # the class of bug #348 is about.
+            @test_throws ErrorException @irust("if \$flag { return 1i64; } \$x32")
 
             # The probe is compiled with the flags that decide `#[cfg]`
             # predicates, so it sees the same snippet the build does

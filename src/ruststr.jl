@@ -1405,7 +1405,8 @@ function _compile_and_call_irust(code::String, args...)
         # first question could not provoke a diagnostic for — a fallthrough
         # that is `()`.
         rust_ret_type = _probe_irust_return_type(code, rust_arg_types, compiler)
-        _confirm_irust_return_type(code, rust_arg_types, rust_ret_type, compiler)
+        rust_ret_type = _confirm_irust_return_type(code, rust_arg_types,
+                                                   rust_ret_type, compiler)
 
         # Generate the `#[julia]` item and expand it: `expanded.source` is the
         # snippet's function plus the generated wrapper with the panic
@@ -1549,15 +1550,36 @@ and the error is then rustc's about *the snippet* — "expected `i64`, found
 `()`" — rather than the same failure discovered later, in generated source the
 user never wrote.
 
+When the declared type is rejected and rustc's diagnostic names a different
+concrete one — ``expected `i64`, found `i32` `` — that named type is tried
+**once**. The first answer can be rustc's default for an unconstrained literal,
+and a site the `()` comparison could not reach may know better; the compiler is
+the one that knows, so it is asked rather than guessed at. Bounded at a single
+retry, and a type that still does not hold raises: a wrong default is the class
+of bug #348 is about, and a clear error naming `rust\"\"\"...\"\"\"`
+is the documented outcome.
+
 Skipped when the snippet's value is `()`: a clean `()`-probe already checked
 every path against `()`.
+
+Returns the Rust type to generate with — `rust_ret_type` unless the retry
+replaced it.
 """
 function _confirm_irust_return_type(code::String, rust_arg_types::Vector{String},
                                     rust_ret_type::String, compiler::RustCompiler)
-    rust_ret_type == "()" && return nothing
+    rust_ret_type == "()" && return rust_ret_type
     params = join(("arg$(i): $(t)" for (i, t) in enumerate(rust_arg_types)), ", ")
-    rendered = confirm_rust_return_type(code, params, rust_ret_type; compiler)
-    isempty(rendered) && return nothing
+    confirmation = confirm_rust_return_type(code, params, rust_ret_type; compiler)
+    confirmation.ok && return rust_ret_type
+
+    suggested = confirmation.suggested
+    if suggested !== nothing && suggested != rust_ret_type
+        retry = confirm_rust_return_type(code, params, suggested; compiler)
+        retry.ok && return suggested
+        confirmation = retry
+        rust_ret_type = suggested
+    end
+
     error("""
         @irust cannot give this snippet one return type.
 
@@ -1566,7 +1588,7 @@ function _confirm_irust_return_type(code::String, rust_arg_types::Vector{String}
         rustc typed its value as `$(rust_ret_type)`, but the snippet does not
         type-check as a function returning it:
 
-        $(rendered)
+        $(confirmation.rendered)
         Tip: every path has to produce the same value. An `if` with no `else`
         falls through to `()`, so `if cond { return x; }` needs an `else` (or a
         trailing expression). Use rust\"\"\"...\"\"\" with `@rust` for anything
