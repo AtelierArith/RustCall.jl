@@ -532,14 +532,6 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     catch e
         @debug "Could not resolve out-of-directory crate inputs" crate_path exception = e
     end
-    # `PYO3_CONFIG_FILE` names a file whose *contents* decide the wrapper's
-    # Python version, ABI and library directory, and `_pyo3_wrapper_build_env`
-    # hashes those contents into the artifact. It usually lives outside the
-    # crate tree, so nothing above would have caught an edit to it (#339
-    # review).
-    let config = get(ENV, "PYO3_CONFIG_FILE", "")
-        isempty(config) || (isfile(config) && push!(deps, abspath(config)))
-    end
     # The directories that hold those files, so a file *appearing* is seen too:
     # `include_dependency` tracks a directory by its entry list. `CARGO_HOME`
     # is left out on purpose — its top level holds the registry and git caches,
@@ -554,6 +546,16 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
         isdir(dir) || continue
         abspath(dir) == cargo_home && continue
         push!(deps, dir)
+    end
+    # `PYO3_CONFIG_FILE` names a file whose *contents* decide the wrapper's
+    # Python version, ABI and library directory, and both build paths hash
+    # those contents into the artifact. It usually lives outside the crate
+    # tree, so nothing above would have caught an edit to it (#339 review).
+    # Added *after* the holder loop on purpose: the selected file is the input,
+    # not its directory — a sibling appearing next to it changes nothing the
+    # build reads, and must not invalidate the image (#339 review).
+    let config = get(ENV, "PYO3_CONFIG_FILE", "")
+        isempty(config) || (isfile(config) && push!(deps, abspath(config)))
     end
     return unique!(map(normpath, deps))
 end
@@ -606,6 +608,14 @@ function _recorded_build_env(; python::Bool = false)
                 push!(env, "<$name selection>" => path)
             end
         end
+        # And the directory all of that *resolves to*: `pyo3_link_rustflags`
+        # builds the wrapper's `-L` and rpath from `python_link_source()[1]`,
+        # and `_pyo3_wrapper_build_env` keys the artifact by those flags. The
+        # selections above name the commands; an unchanged `python3-config`
+        # that is a shim can still answer with another directory once the
+        # environment or metadata it reads moves, and only the answer itself
+        # says so. Recorded the way the flags are computed (#339 review).
+        push!(env, "<python link dir>" => _python_link_source_or_empty()[1])
     end
     return env
 end

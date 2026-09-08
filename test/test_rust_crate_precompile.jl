@@ -511,6 +511,29 @@ end
     end
 end
 
+# `PYO3_CONFIG_FILE` is an input by content, so the file is declared; its
+# directory is not — an unrelated sibling appearing beside a configuration that
+# lives outside the crate tree changes nothing the build reads, and tracking
+# the directory would re-precompile the package for it (#339 review).
+@testset "PYO3_CONFIG_FILE is tracked as a file, not with its directory (#339 review)" begin
+    if !isdir(PRECOMP_SAMPLE_CRATE)
+        @test_skip "test/fixtures/sample_crate is required"
+    else
+        mktempdir() do dir
+            config = joinpath(dir, "pyo3-build-config.txt")
+            write(config, "implementation=CPython\nversion=3.12\nshared=true\n")
+            deps = withenv("PYO3_CONFIG_FILE" => config) do
+                RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+            end
+            @test normpath(config) in deps
+            @test normpath(dir) ∉ deps
+            @test normpath(config) ∉ withenv("PYO3_CONFIG_FILE" => nothing) do
+                RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+            end
+        end
+    end
+end
+
 # Part of the artifact identity is not a file — `RUSTFLAGS`, `PYO3_PYTHON`, a
 # `PYO3_CONFIG_FILE` pointing somewhere else — and Julia invalidates a
 # precompile image from files alone. The module cannot make the image stale, so
@@ -643,6 +666,38 @@ end
                         recorded, "/crate", "lib"; python = true)
                 end
             end
+            # The *answer* is recorded, not only the command: an unchanged
+            # `python3-config` that is a shim can name another directory once
+            # what it reads moves, and the wrapper's `-L`/rpath follow that
+            # answer (`pyo3_link_rustflags`). Same executable, same `PATH`,
+            # different `-L` → a warning; same answer → none (#339 review).
+            lib_a = mkpath(joinpath(fake, "lib-a"))
+            lib_b = mkpath(joinpath(fake, "lib-b"))
+            write(cfgexe, "#!/bin/sh\necho -L\$RUSTCALL_TEST_PY_LIBDIR\n"); chmod(cfgexe, 0o755)
+            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing,
+                    "PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                recorded = withenv("RUSTCALL_TEST_PY_LIBDIR" => lib_a) do
+                    Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                end
+                @test Dict(recorded)["<python link dir>"] == lib_a
+                @test Dict(recorded)["<python link dir>"] == withenv("RUSTCALL_TEST_PY_LIBDIR" => lib_a) do
+                    RustCall.python_link_source()[1]
+                end
+                withenv("RUSTCALL_TEST_PY_LIBDIR" => lib_a) do
+                    @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib"; python = true)
+                end
+                withenv("RUSTCALL_TEST_PY_LIBDIR" => lib_b) do
+                    @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                        recorded, "/crate", "lib"; python = true)
+                end
+            end
+            # `RUSTCALL_PYTHON_LIBDIR` is the directory whatever else says, and
+            # the record follows the same precedence (#339 review).
+            withenv("RUSTCALL_PYTHON_LIBDIR" => lib_b, "PYO3_PYTHON" => nothing) do
+                recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                @test Dict(recorded)["<python link dir>"] == lib_b
+            end
+            write(cfgexe, "#!/bin/sh\necho -L$fake\n"); chmod(cfgexe, 0o755)
             # The `python-config` fallback is a selector of its own: it is what
             # answers when `python3-config` is absent or names no library
             # directory, and `PATH` may move it alone (#339 review).
