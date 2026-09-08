@@ -584,6 +584,33 @@ end
                 recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
                 @test any(p -> first(p) == "<python selection>", recorded)
             end
+            # The selector follows `python_link_source()` step for step, and
+            # the contract is that the two agree — here, and under the two
+            # precedences that differ from "pinned, else PATH": pyo3's own
+            # configuration leaves the interpreter to `PYO3_PYTHON` alone, and
+            # `RUSTCALL_PYTHON_LIBDIR` hands it to `PATH` before CondaPkg
+            # (#339 review).
+            agree() = RustCall._python_selection() == RustCall.python_link_source()[2]
+            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing,
+                    "PYO3_CONFIG_FILE" => nothing, "PYO3_CROSS_LIB_DIR" => nothing) do
+                @test agree()
+            end
+            config = joinpath(fake, "pyo3-config.txt")
+            write(config, "implementation=CPython\nversion=3.12\nlib_dir=$fake\n")
+            withenv("PYO3_CONFIG_FILE" => config, "PYO3_PYTHON" => nothing) do
+                @test RustCall._python_selection() == ""
+                @test agree()
+            end
+            withenv("PYO3_CONFIG_FILE" => config, "PYO3_PYTHON" => "/pinned/python3") do
+                @test RustCall._python_selection() == "/pinned/python3"
+                @test agree()
+            end
+            withenv("RUSTCALL_PYTHON_LIBDIR" => fake, "PYO3_PYTHON" => nothing,
+                    "PYO3_CONFIG_FILE" => nothing,
+                    "PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                @test RustCall._python_selection() == exe
+                @test agree()
+            end
         end
 
         # A plain crate's build never consults it: not recorded, not compared,

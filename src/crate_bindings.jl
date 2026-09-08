@@ -593,18 +593,24 @@ only `sys.executable` says which one that is. One short subprocess per load of
 a PyO3 wrapper module; a plain module never runs it.
 """
 function _python_selection()
+    # The same order as `python_link_source()`, step for step — a selector that
+    # disagrees with it records the wrong interpreter and then never notices
+    # the real one moving (#339 review). The contract test asserts the two
+    # agree in the running environment.
+    #
+    # 1. pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, `PYO3_CONFIG_FILE`):
+    #    the interpreter is `PYO3_PYTHON` if set, else none.
+    isempty(_pyo3_configured_lib_dir()) || return String(get(ENV, "PYO3_PYTHON", ""))
+    # 2. an explicit `PYO3_PYTHON`.
     pinned = get(ENV, "PYO3_PYTHON", "")
     isempty(pinned) || return String(pinned)
-    for (id, mod) in Base.loaded_modules
-        id.name == "CondaPkg" || continue
-        try
-            env = String(Base.invokelatest(getfield(mod, :envdir)))
-            exe = Sys.iswindows() ? joinpath(env, "python.exe") : joinpath(env, "bin", "python")
-            isfile(exe) && return exe
-        catch
-        end
-        break
-    end
+    # 3. `RUSTCALL_PYTHON_LIBDIR` alone leaves the interpreter to `PATH`, and
+    #    that comes *before* CondaPkg.
+    isempty(get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")) || return _python_executable_on_path()
+    # 4. CondaPkg's environment, when the package is loaded and has one.
+    conda = _condapkg_link_source()
+    conda === nothing || return String(conda[2])
+    # 5. the first `python3` / `python` on `PATH`, as it reports itself.
     return _python_executable_on_path()
 end
 
