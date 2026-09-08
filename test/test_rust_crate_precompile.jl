@@ -484,6 +484,28 @@ end
                 env_a, crate, "lib", digest_a)
         end
     end
+
+    # `RUSTCALL_PYTHON_LIBDIR` is RustCall's own selector, outside the
+    # allowlist, and it decides a PyO3 wrapper's rpath and identity: it is
+    # recorded and compared like the rest (#339 review).
+    withenv("RUSTCALL_PYTHON_LIBDIR" => "/opt/py-a/lib") do
+        recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()]
+        @test any(p -> first(p) == "RUSTCALL_PYTHON_LIBDIR", recorded)
+        @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib")
+        withenv("RUSTCALL_PYTHON_LIBDIR" => "/opt/py-b/lib") do
+            @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                recorded, "/crate", "lib")
+        end
+    end
+
+    # And the toolchain: the fingerprint is in the artifact identity, and a
+    # `rustup update` moves no file the image tracks (#339 review).
+    let recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()],
+        now = RustCall.toolchain_fingerprint()
+        @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib", "", now)
+        @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+            recorded, "/crate", "lib", "", "not-" * now)
+    end
 end
 
 # The plain-crate cache key covers the captured build environment, as the PyO3

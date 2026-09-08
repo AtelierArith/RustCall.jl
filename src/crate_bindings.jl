@@ -544,6 +544,25 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
 end
 
 """
+    _recorded_build_env() -> Vector{Pair{String, String}}
+
+The environment a generated module records and compares at load time: the
+`artifact_build_env` allowlist, plus RustCall's own selectors that decide the
+artifact without being in that allowlist — `RUSTCALL_PYTHON_LIBDIR`, which
+`python_link_source()` gives precedence and `pyo3_link_rustflags()` folds into
+a wrapper's identity and rpath (#339 review). One function for both sides, so
+what is recorded and what is compared cannot drift.
+"""
+function _recorded_build_env()
+    env = Pair{String, String}[String(k) => String(v) for (k, v) in artifact_build_env()]
+    for name in ("RUSTCALL_PYTHON_LIBDIR",)
+        value = get(ENV, name, nothing)
+        value === nothing || push!(env, name => String(value))
+    end
+    return env
+end
+
+"""
     _warn_if_build_env_changed(recorded, crate_path, lib_name)
 
 Warn when the environment that decides this crate's artifact is not the one it
@@ -565,9 +584,10 @@ The fix it names is the one that works: force the package to be precompiled
 again.
 """
 function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
-                                    recorded_cargo_config::AbstractString = "")
+                                    recorded_cargo_config::AbstractString = "",
+                                    recorded_toolchain::AbstractString = "")
     current = try
-        artifact_build_env()
+        _recorded_build_env()
     catch e
         @debug "Could not read the build environment" exception = e
         return nothing
@@ -591,6 +611,20 @@ function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_na
             recorded_cargo_config
         end
         now_config == recorded_cargo_config || push!(changed, "<effective Cargo configuration>")
+    end
+    # The toolchain is in the artifact identity too (`toolchain_fingerprint`:
+    # compiler identity, extractor, core sources) and is not a file the image
+    # tracks — `rustup update stable` replaces the binaries behind a proxy
+    # whose path and content do not move (#339 review). Memoized per session,
+    # so this is one `rustc -vV` per process at most.
+    if !isempty(recorded_toolchain)
+        now_toolchain = try
+            toolchain_fingerprint()
+        catch e
+            @debug "Could not fingerprint the toolchain" exception = e
+            recorded_toolchain
+        end
+        now_toolchain == recorded_toolchain || push!(changed, "<Rust toolchain>")
     end
     isempty(changed) && return nothing
     @warn """
@@ -663,12 +697,18 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).
     build_env = try
-        artifact_build_env()
+        _recorded_build_env()
     catch e
         @debug "Could not record the build environment" exception = e
         Pair{String, String}[]
     end
     recorded_env = Any[String(k) => String(v) for (k, v) in build_env]
+    toolchain = try
+        toolchain_fingerprint()
+    catch e
+        @debug "Could not record the toolchain fingerprint" exception = e
+        ""
+    end
     crate_dir = abspath(String(info.path))
     # The effective Cargo configuration is chosen by `CARGO_HOME`, which is not
     # an allowlisted variable: its digest is what says whether the same build
@@ -729,6 +769,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         const _BUILD_ENV = $recorded_env
         const _CRATE_DIR = $crate_dir
         const _CARGO_CONFIG = $cargo_config_digest
+        const _TOOLCHAIN = $toolchain
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -752,7 +793,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # assignment after it would overwrite a newer generation that a
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
-            RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG)
+            RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG,
+                                                _TOOLCHAIN)
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
