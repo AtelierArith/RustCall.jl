@@ -574,6 +574,57 @@ fn a_renamed_import_keeps_the_resolved_structs_symbols() {
     compiles_as_cdylib(&expanded.source, "cross_module_renamed_import");
 }
 
+/// A wrapper emitted at its block declares string buffers named
+/// `<Struct>_<method>`, so a struct literally called `Foo_bar` next to a
+/// `Foo::bar` that hands back an owned string wants one
+/// `Foo_bar_free_rust_string` twice — the coincidence the symbol scheme cannot
+/// exclude (#300). Both flavours claim the release function now, so the block
+/// is refused with both items named rather than compiling to a rustc
+/// duplicate-symbol error inside generated code (#342 review).
+#[test]
+fn two_items_wanting_one_string_buffer_are_refused() {
+    let src = r#"
+        #[julia] pub struct Foo { pub v: i32 }
+        #[julia] pub struct Foo_bar { pub s: String }
+        pub mod ops {
+            #[julia] impl super::Foo {
+                #[julia] pub fn bar(&self) -> String { format!("{}", self.v) }
+            }
+        }
+    "#;
+    let inline = rustcall_core::expand::expand(src).unwrap();
+    assert!(
+        inline
+            .source
+            .contains("would export the symbol `Foo_bar_free_rust_string` twice"),
+        "{}",
+        inline.source
+    );
+    assert!(
+        inline.source.contains("`Foo` (line 2)"),
+        "{}",
+        inline.source
+    );
+    assert!(
+        inline.source.contains("`Foo_bar` (line 3)"),
+        "{}",
+        inline.source
+    );
+
+    let err = extract_crate(&src.replace("pub mod ops", "#[julia] pub mod ops"))
+        .expect_err("two items claiming one release function must fail the scan")
+        .to_string();
+    assert!(
+        err.contains("duplicate exported symbol `Foo_bar_free_rust_string`"),
+        "{err}"
+    );
+
+    // Renaming one of them is the fix the message asks for, and it expands.
+    let fixed = rustcall_core::expand::expand(&src.replace("Foo_bar", "FooBar")).unwrap();
+    assert!(!fixed.source.contains("compile_error"), "{}", fixed.source);
+    compiles_as_cdylib(&fixed.source, "cross_module_buffer_clash_fixed");
+}
+
 /// The crate flavour is untouched: the proc-macro already emits every wrapper
 /// at the impl site with per-method buffers, and the manifest now says so.
 #[test]

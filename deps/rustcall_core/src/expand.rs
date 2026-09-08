@@ -69,7 +69,25 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
     // (#315), so an `impl super::Gauge` inside `mod ops` wraps `Gauge`'s
     // methods next to the struct.
     let tree = ModelTree::collect(&file.items, Mode::Inline);
-    let out = expand_items(&file.items, &mut manifest, &[], &[], &tree)?;
+    let mut out = expand_items(&file.items, &mut manifest, &[], &[], &tree)?;
+
+    // Two generated `#[no_mangle]` items of one block wanting the same symbol
+    // (#342 review). The scheme keeps items in different modules apart by
+    // construction, so what is left is a coincidence it cannot exclude — a
+    // struct `Foo_bar` next to a `Foo::bar` that hands back an owned string,
+    // both wanting `Foo_bar_free_rust_string`. rustc would report it inside
+    // generated code; say which two items collide instead.
+    for (symbol, first, second) in manifest.duplicate_symbols() {
+        let msg = format!(
+            "RustCall would export the symbol `{symbol}` twice in this block: for {first} and \
+             for {second}. The scheme derives every symbol from the item's name and module \
+             path (`rustcall_<fn>`, `rustcall_<Struct>_<method>`, `<Struct>_free`, \
+             `<Struct>_get_<field>`, `<owner>_free_rust_string`, ... — #300), so two items \
+             whose names differ only where the scheme joins them meet here. Rename one of \
+             them."
+        );
+        out.insert(0, syn::parse_quote! { compile_error!(#msg); });
+    }
 
     Ok(Expanded {
         // Crate-level inner attributes (`#![allow(...)]`, `//!` docs) are kept;

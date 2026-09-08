@@ -660,10 +660,19 @@ fn symbol_owner(path: &[String], name: &str, line: usize) -> String {
     format!("`{}` (line {line})", segments.join("::"))
 }
 
+/// The `#[no_mangle]` release function of an owned-string buffer owned by
+/// `owner`. The buffer *types* are not symbols; this is the only exported item
+/// the string ABI adds (`crate::codegen::owned_string_helper`).
+fn owned_string_free_symbol(owner: &str) -> String {
+    format!("{owner}_free_rust_string")
+}
+
 impl Function {
-    /// The exported symbol this `#[julia]` function claims, with the owner
-    /// label of [`Manifest::symbol_owners`]; empty when it claims none (a PyO3
-    /// item, an unexported or generic one, an undecided `#[cfg]`).
+    /// The exported symbols this `#[julia]` function claims — its wrapper and,
+    /// when it returns an owned string, the release function of its buffer —
+    /// with the owner label of [`Manifest::symbol_owners`]; empty when it
+    /// claims none (a PyO3 item, an unexported or generic one, an undecided
+    /// `#[cfg]`).
     pub fn claimed_symbols(&self) -> Vec<(String, String)> {
         if self.attribute.is_pyo3_scan()
             || !self.exported
@@ -672,17 +681,38 @@ impl Function {
         {
             return Vec::new();
         }
-        vec![(
-            self.symbol.clone(),
-            symbol_owner(&self.module_path, &self.name, self.line),
-        )]
+        let who = symbol_owner(&self.module_path, &self.name, self.line);
+        let mut out = vec![(self.symbol.clone(), who.clone())];
+        if self.has_owned_string_helper && !self.ffi_name.is_empty() {
+            out.push((owned_string_free_symbol(&self.ffi_name), who));
+        }
+        out
+    }
+}
+
+impl Method {
+    /// Whether this method's wrapper hands back an owned string buffer — as a
+    /// result or as a `Result` / `Option` payload — and so needs the
+    /// `<string_owner>_free_rust_string` release function. A borrowed `&str`
+    /// (`return_abi == "str"`) travels through a *type* and exports nothing.
+    pub fn declares_owned_string(&self) -> bool {
+        self.return_abi == "string"
+            || self.ok_abi == "string"
+            || self.err_abi == "string"
+            || self.inner_abi == "string"
     }
 }
 
 impl Struct {
     /// The exported symbols this `#[julia]` struct claims — `free`, the field
-    /// accessors and the method wrappers — with the owner label of
+    /// accessors, the method wrappers and the release functions of the
+    /// owned-string buffers they use — with the owner label of
     /// [`Manifest::symbol_owners`].
+    ///
+    /// A buffer's release function is claimed once however many items share
+    /// it: an inline method wrapped next to its struct shares the struct's
+    /// (`string_owner == ffi_name`), one wrapped at a `#[julia] impl` block in
+    /// another module declares its own (#342).
     pub fn claimed_symbols(&self) -> Vec<(String, String)> {
         if self.attribute.is_pyo3_scan() || !self.cfg.is_empty() || self.ffi_name.is_empty() {
             return Vec::new();
@@ -700,10 +730,25 @@ impl Struct {
                 }
             }
         }
+        let mut buffers: Vec<String> = Vec::new();
+        if self.has_owned_string_helper {
+            buffers.push(self.ffi_name.clone());
+        }
         for m in &self.methods {
-            if !m.symbol.is_empty() && m.cfg.is_empty() {
-                out.push((m.symbol.clone(), who.clone()));
+            if m.cfg.is_empty() {
+                if !m.symbol.is_empty() {
+                    out.push((m.symbol.clone(), who.clone()));
+                }
+                if m.declares_owned_string()
+                    && !m.string_owner.is_empty()
+                    && !buffers.contains(&m.string_owner)
+                {
+                    buffers.push(m.string_owner.clone());
+                }
             }
+        }
+        for owner in buffers {
+            out.push((owned_string_free_symbol(&owner), who.clone()));
         }
         out
     }
@@ -770,6 +815,27 @@ impl Manifest {
         }
         for s in &self.structs {
             out.extend(s.claimed_symbols());
+        }
+        out
+    }
+
+    /// Symbols [`Manifest::symbol_owners`] lists twice, as
+    /// `(symbol, first owner, second owner)` in the order they were claimed.
+    ///
+    /// The crate scan claims incrementally as it walks files, so it reports a
+    /// duplicate itself (`crate::extract::CrateScan`). Inline expansion builds
+    /// one manifest for one block and asks this instead, so a `rust"""` block
+    /// whose generated symbols collide fails with a `compile_error!` naming
+    /// both items rather than with rustc's duplicate-symbol diagnostic
+    /// pointing into generated code (#342 review).
+    pub fn duplicate_symbols(&self) -> Vec<(String, String, String)> {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut out = Vec::new();
+        for (symbol, who) in self.symbol_owners() {
+            match seen.iter().find(|(s, _)| *s == symbol) {
+                Some((_, first)) => out.push((symbol, first.clone(), who)),
+                None => seen.push((symbol, who)),
+            }
         }
         out
     }
