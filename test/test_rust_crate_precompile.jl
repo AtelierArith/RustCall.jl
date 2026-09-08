@@ -353,3 +353,48 @@ end
         end
     end
 end
+
+# `.cargo/config.toml` decides the flags a build runs under and is part of the
+# artifact key (`_cargo_config_digest`), so an edit to it changes the binary
+# without touching a file of the crate. It has to be tracked as well, or the
+# package's image stays valid over a build it no longer describes (#339 review).
+@testset "Cargo configuration files are precompile dependencies (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        root = mktempdir()
+        crate = joinpath(root, "configured_crate")
+        mkpath(joinpath(crate, "src", ""))
+        mkpath(joinpath(crate, ".cargo"))
+        config = joinpath(crate, ".cargo", "config.toml")
+        write(config, "# empty\n")
+        macros = replace(joinpath(dirname(@__DIR__), "deps", "juliacall_macros"), "\\" => "/")
+        write(joinpath(crate, "Cargo.toml"), """
+            [package]
+            name = "configured_crate"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [dependencies]
+            juliacall_macros = { path = "$macros" }
+            """)
+        write(joinpath(crate, "src", "lib.rs"), """
+            use juliacall_macros::julia;
+            #[julia]
+            pub fn one() -> i32 { 1 }
+            """)
+        try
+            # The list the generated module declares, and the digest that
+            # decides the artifact key, must name the same file.
+            deps = RustCall._crate_precompile_dependencies(crate)
+            @test config in deps
+            @test joinpath(crate, "src", "lib.rs") in deps
+            @test config in RustCall._cargo_config_files(ENV; dir = crate)
+        finally
+            rm(root; recursive = true, force = true)
+        end
+    end
+end

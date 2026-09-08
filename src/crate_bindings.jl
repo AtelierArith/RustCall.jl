@@ -453,6 +453,15 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
             @debug "Could not list crate input files for precompile tracking" dir exception = e
         end
     end
+    # Cargo's own configuration decides the flags a build runs under, and is
+    # in the artifact key through `_cargo_config_digest` — an edit to
+    # `.cargo/config.toml` changes the binary without touching a file of the
+    # crate, so it belongs here too (#339 review).
+    try
+        append!(deps, _cargo_config_files(ENV; dir = root))
+    catch e
+        @debug "Could not list Cargo configuration files for precompile tracking" root exception = e
+    end
     # A workspace member is decided by files outside its directory, and a
     # library root may live outside it too — both are in the artifact key.
     try
