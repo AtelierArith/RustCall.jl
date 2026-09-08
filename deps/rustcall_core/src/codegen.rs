@@ -164,6 +164,22 @@ pub fn struct_free_symbol(struct_stem: &str) -> String {
     format!("{struct_stem}_free")
 }
 
+/// The stem a method's string buffers hang off when the wrapper **declares**
+/// them itself: `<struct stem>_<method>`, giving
+/// `<owner>_RustCallOwnedString`, `<owner>_free_rust_string` and
+/// `<owner>_RustCallBorrowedString`.
+///
+/// That is every crate-flavour method — the proc-macro sees one impl block at
+/// a time and cannot share a buffer per struct — and, since #342, an inline
+/// method whose `#[julia] impl` block sits in another module than its struct,
+/// whose wrapper is emitted at the block. An inline method emitted next to its
+/// struct shares the struct's buffers, whose owner is the struct stem itself.
+/// The manifest states which of the two a method uses (`Method.string_owner`)
+/// rather than leaving Julia to infer it from the flavour.
+pub fn method_string_owner(struct_stem: &str, method: &str) -> String {
+    format!("{struct_stem}_{method}")
+}
+
 /// The field accessors of a struct with FFI name `struct_stem`:
 /// `<stem>_get_<field>` and `<stem>_set_<field>`.
 pub fn field_getter_symbol(struct_stem: &str, field: &str) -> String {
@@ -1587,16 +1603,36 @@ pub fn generate_method_wrapper_crate(
     module_path: &[String],
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
+    // The origin is a manifest column; the wrapper's shape does not depend
+    // on it.
+    let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
+    method_wrapper_at_impl_site(self_ty, module_path, &model)
+}
+
+/// The FFI wrapper of a method emitted **at its impl block** rather than next
+/// to its struct: `self_ty` is the impl header as written (`super::Gauge`), so
+/// the struct need not be in scope under its bare name, and the string buffers
+/// are declared per method ([`method_string_owner`]) so two blocks of one
+/// struct cannot both claim the struct-level `#[no_mangle]` helpers.
+///
+/// `struct_module_path` is the module the **struct** lives in: every exported
+/// symbol hangs off that, wherever the wrapper itself is emitted.
+///
+/// Used by the proc-macro for every `#[julia] impl` block
+/// ([`generate_method_wrapper_crate`]) and by the inline expander for a block
+/// that sits in another module than its struct (#342).
+pub fn method_wrapper_at_impl_site(
+    self_ty: &Type,
+    struct_module_path: &[String],
+    m: &MethodModel,
+) -> TokenStream2 {
     let (Type::Path(self_path), Some(struct_name)) = (unparen(self_ty), last_ident(self_ty)) else {
         return quote! {
             compile_error!("#[julia] on impl block requires a simple type path");
         };
     };
-    // The origin is a manifest column; the wrapper's shape does not depend
-    // on it.
-    let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
-    let stem = struct_stem(module_path, struct_name);
-    let owner = format_ident!("{}_{}", stem, method.sig.ident);
+    let stem = struct_stem(struct_module_path, struct_name);
+    let owner = format_ident!("{}", method_string_owner(&stem.to_string(), &m.name()));
     let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
     let owned_free = format_ident!("{}_free_rust_string", owner);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", owner);
@@ -1604,12 +1640,32 @@ pub fn generate_method_wrapper_crate(
         &self_path.path,
         struct_name,
         &stem,
-        &model,
+        m,
         &owned_helper,
         &owned_free,
         &borrowed_helper,
         true,
     ))
+}
+
+/// The wrapper of an **inline** method whose `#[julia] impl` block sits in
+/// another module than its struct (#342), emitted into the block's module.
+///
+/// The block's own `#[cfg]` — and that of the modules around it — gates the
+/// wrapper as much as the method's own does, exactly as
+/// [`transform_impl_crate`] splices the block's predicates onto the crate
+/// flavour's wrapper.
+pub fn inline_foreign_method_wrapper(
+    self_ty: &Type,
+    struct_module_path: &[String],
+    m: &MethodModel,
+) -> TokenStream2 {
+    let mut gated = m.clone();
+    gated
+        .func
+        .attrs
+        .splice(0..0, m.enclosing_cfg.iter().cloned());
+    method_wrapper_at_impl_site(self_ty, struct_module_path, &gated)
 }
 
 // ============================================================================
@@ -1682,7 +1738,15 @@ fn inline_method_is_ctor(struct_name: &Ident, m: &MethodModel) -> bool {
         || matches!(&m.func.sig.output, ReturnType::Type(_, ty) if is_self_type(ty, struct_name))
 }
 
-/// Generate the `extern "C"` wrappers for a non-generic inline struct.
+/// Generate the `extern "C"` wrappers for a non-generic inline struct: the
+/// destructor, the field accessors, the shared string buffers and the wrappers
+/// of the methods whose `#[julia] impl` block sits in `module_path` — the
+/// struct's own module.
+///
+/// A method from a block in *another* module is not wrapped here: its wrapper
+/// is emitted at the block by `expand::expand_items` through
+/// [`inline_foreign_method_wrapper`], because its signature is written in the
+/// block's scope (#342).
 pub fn inline_struct_wrappers(
     model: &StructModel,
     module_path: &[String],
@@ -1708,13 +1772,22 @@ pub fn inline_struct_wrappers(
         .filter(|(_, ty)| is_inline_accessible_field_type(ty))
         .collect();
 
+    // Only the methods whose `#[julia] impl` block sits beside the struct are
+    // wrapped here. One in another module has its wrapper emitted at the block
+    // (`inline_foreign_method_wrapper`, #342), where the types its signature
+    // names are in scope, with string buffers of its own — so it neither needs
+    // nor may use the struct-level helpers, and does not make them exist.
+    let local: Vec<&MethodModel> = model
+        .methods
+        .iter()
+        .filter(|m| m.is_local_to(module_path))
+        .collect();
+
     let needs_owned = accessible.iter().any(|(_, ty)| is_string_type(ty))
-        || model
-            .methods
+        || local
             .iter()
             .any(|m| method_needs_owned_string(m) && !inline_method_is_ctor(struct_name, m));
-    let needs_borrowed = model
-        .methods
+    let needs_borrowed = local
         .iter()
         .any(|m| method_returns_borrowed_str(m) && !inline_method_is_ctor(struct_name, m));
 
@@ -1800,7 +1873,7 @@ pub fn inline_struct_wrappers(
         });
     }
 
-    for m in &model.methods {
+    for m in &local {
         out.extend(inline_method_wrapper(
             struct_name,
             &stem,

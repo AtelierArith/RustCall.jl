@@ -210,6 +210,19 @@ fn expand_items(
         }
     }
 
+    // The wrappers of `#[julia] impl` blocks that sit in *this* module while
+    // their struct lives elsewhere (#342). They are emitted here, where the
+    // types their signatures name are in scope, spelling the struct the way
+    // the header does; the exported symbol still follows the struct, so this
+    // changes nothing a caller can see.
+    for foreign in tree.foreign_methods(module_path) {
+        out.extend(items_of(crate::codegen::inline_foreign_method_wrapper(
+            foreign.self_ty,
+            foreign.struct_module_path,
+            foreign.method,
+        ))?);
+    }
+
     for name in symbol_collisions(items, &out) {
         let msg = format!(
             "RustCall generates an item named `{name}` in this module, but the block already \
@@ -280,7 +293,18 @@ fn symbol_collisions(original: &[Item], expanded: &[Item]) -> Vec<String> {
 /// struct gets `extern "C"` wrappers with exported symbols, a generic one gets
 /// generic wrappers registered for monomorphization instead. Only the former
 /// lower `Result` / `Option` (#268).
-fn methods_of(model: &StructModel, symbols: bool, stem: &str) -> Vec<Method> {
+///
+/// `module_path` is the struct's own module: a method whose block sits there
+/// is wrapped next to the struct and shares its string buffers, one from a
+/// block elsewhere carries buffers of its own (#342). The manifest states
+/// which (`Method.string_owner`) instead of leaving Julia to derive it from
+/// the flavour.
+fn methods_of(
+    model: &StructModel,
+    symbols: bool,
+    stem: &str,
+    module_path: &[String],
+) -> Vec<Method> {
     let struct_name = &model.item.ident;
     model
         .methods
@@ -297,6 +321,11 @@ fn methods_of(model: &StructModel, symbols: bool, stem: &str) -> Vec<Method> {
                     crate::codegen::method_symbol_of(stem, &m.name())
                 } else {
                     String::new()
+                },
+                string_owner: match (symbols, m.is_local_to(module_path)) {
+                    (false, _) => String::new(),
+                    (true, true) => stem.to_string(),
+                    (true, false) => crate::codegen::method_string_owner(stem, &m.name()),
                 },
                 is_static: m.is_static,
                 is_mutable: m.is_mutable,
@@ -368,7 +397,7 @@ fn concrete_struct_entry(
         python_name: String::new(),
         type_params: Vec::new(),
         fields: fields_of(model, &meta.accessors),
-        methods: methods_of(model, true, &stem),
+        methods: methods_of(model, true, &stem, module_path),
         ffi_name: stem,
         derives: model.derives.clone(),
         has_clone: meta.has_clone,
@@ -422,7 +451,7 @@ fn generic_struct_entry(
     // by `specialize` under names Julia chooses, so the stem is recorded for
     // the consumer and never spelled into a symbol here.
     let stem = crate::codegen::symbol_stem(module_path, &model.name());
-    let mut methods = methods_of(model, false, &stem);
+    let mut methods = methods_of(model, false, &stem, module_path);
     for m in &mut methods {
         let wrapper_name = format!("{}_{}", model.name(), m.name);
         if let Some(w) = wrappers.iter().find(|w| w.name == wrapper_name) {

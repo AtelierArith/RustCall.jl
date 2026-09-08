@@ -860,9 +860,12 @@ impl CrateScan {
                 Err(why) => return Err(self.unresolved_impl(imp, why)),
             };
             self.check_symbol_path(imp, index)?;
-            self.structs[index]
-                .model
-                .attach_impl(&imp.item, Mode::Crate, &imp.cfg);
+            self.structs[index].model.attach_impl(
+                &imp.item,
+                Mode::Crate,
+                &imp.cfg,
+                Some(&imp.header.module_path),
+            );
         }
 
         for scanned in std::mem::take(&mut self.structs) {
@@ -1043,6 +1046,10 @@ fn crate_struct_entry(
             python_name: String::new(),
             accessor: String::new(),
             attribute: m.attribute,
+            // The proc-macro emits every method's wrapper at its impl block,
+            // with string buffers of its own (`method_wrapper_at_impl_site`),
+            // wherever the block sits.
+            string_owner: crate::codegen::method_string_owner(&stem, &m.name()),
             return_kind: shapes[i].kind,
             ok_type: shapes[i].ok_type.clone(),
             err_type: shapes[i].err_type.clone(),

@@ -934,6 +934,10 @@ fn method_entry(
         python_name: pyo3_name(&func.attrs),
         accessor: accessor.to_string(),
         attribute: Attribute::PyMethods,
+        // A scanned `#[pymethods]` method has no wrapper and so no string
+        // buffers; the Phase-2 wrapper crate names the ones it declares when
+        // it generates them (`crate::wrap::method_wrapper`).
+        string_owner: String::new(),
         return_kind,
         ok_type,
         err_type,

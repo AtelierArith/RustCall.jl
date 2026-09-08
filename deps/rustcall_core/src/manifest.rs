@@ -94,6 +94,12 @@ use serde::{Deserialize, Serialize};
 ///   A version-6 consumer would derive `<Struct>_free` and
 ///   `<owner>_free_rust_string` from the bare name and release a buffer through
 ///   a symbol that no longer exists.
+///
+///   Additive within 7: [`Method::string_owner`] (#342) — serialized only for
+///   a method that has a wrapper — because an inline manifest can now hold
+///   both buffer shapes, a method sharing its struct's and one carrying its
+///   own. A consumer that does not read it falls back to its old derivation,
+///   which is still right for every method whose block sits beside its struct.
 pub const SCHEMA_VERSION: u32 = 7;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
@@ -506,12 +512,31 @@ pub struct Method {
     /// `T` of an `Option<T>` return, empty otherwise (#275).
     #[serde(default)]
     pub inner_type: String,
+    /// The stem this method's string buffers hang off:
+    /// `<owner>_RustCallOwnedString`, `<owner>_free_rust_string` and
+    /// `<owner>_RustCallBorrowedString` — for a string return
+    /// ([`Method::return_abi`]) as much as for a string `Result` / `Option`
+    /// payload ([`Method::ok_abi`]).
+    ///
+    /// The struct's own [`Struct::ffi_name`] when the wrapper is emitted next
+    /// to the struct and shares its buffers; `<ffi_name>_<method>`
+    /// (`crate::codegen::method_string_owner`) when the wrapper declares its
+    /// own — every crate-flavour method, and since #342 an inline method whose
+    /// `#[julia] impl` block sits in another module than its struct, whose
+    /// wrapper is emitted at the block. One inline manifest can hold both
+    /// shapes, so the manifest **states** the owner rather than leaving a
+    /// consumer to infer it from the flavour, exactly as schema 6 states the
+    /// payload ABIs instead of leaving them to be read off the spelling
+    /// (#268). Empty when no `#[julia]` wrapper exists (a scanned
+    /// `#[pymethods]` entry, a generic struct's methods, whose wrappers are
+    /// monomorphized under names Julia chooses); a consumer then falls back to
+    /// its flavour's derivation. Additive within schema 7.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub string_owner: String,
     /// How each `Result` / `Option` payload travels: `""` as written,
     /// `"string"` for an owned `<owner>_RustCallOwnedString` buffer released
-    /// through `<owner>_free_rust_string` (schema 6, #268). The owner is the
-    /// struct for an inline method and `<Struct>_<method>` for a crate one,
-    /// which is the same buffer a string-returning method of the same flavour
-    /// uses.
+    /// through `<owner>_free_rust_string` (schema 6, #268), the owner being
+    /// [`Method::string_owner`].
     #[serde(default)]
     pub ok_abi: String,
     #[serde(default)]
@@ -528,9 +553,10 @@ pub struct Method {
     pub args: Vec<Arg>,
     pub return_type: String,
     /// How the wrapper returns the value: `""` as written, `"string"` for an
-    /// owned `<Struct>_RustCallOwnedString` (a `String`, or a `&str` copied
+    /// owned `<owner>_RustCallOwnedString` (a `String`, or a `&str` copied
     /// because it may borrow from a converted argument), `"str"` for a
-    /// borrowed `<Struct>_RustCallBorrowedString`.
+    /// borrowed `<owner>_RustCallBorrowedString`, the owner being
+    /// [`Method::string_owner`].
     #[serde(default)]
     pub return_abi: String,
     /// For generic structs: the generic wrapper source registered for

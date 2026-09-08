@@ -8,6 +8,22 @@ use crate::attrs::{derive_list, is_julia_attr, rustcall_attribute};
 use crate::manifest::{Attribute, Mode};
 use crate::types::last_ident;
 
+/// Where a method's `#[julia] impl` block was written: the module the block
+/// sits in, and the path its header spells the struct with (`super::Gauge`).
+///
+/// A block may sit in another module than its struct (#315). The inline
+/// expander emits such a block's wrappers **at the block** (#342), where the
+/// types its signatures name are in scope, spelling the struct exactly as the
+/// header does — which is what the proc-macro already does for the crate
+/// flavour (`transform_impl_crate`).
+#[derive(Debug, Clone)]
+pub struct ImplSite {
+    /// The module the block sits in, as a path from the crate root.
+    pub module_path: Vec<String>,
+    /// The impl header's own type path (`super::Gauge`, `crate::a::C`).
+    pub self_ty: Type,
+}
+
 #[derive(Debug, Clone)]
 pub struct MethodModel {
     pub func: ImplItemFn,
@@ -21,6 +37,11 @@ pub struct MethodModel {
     /// method exists only under those predicates as much as under its own
     /// (#300 review, #315). Empty for a wrapper generated from a lone method.
     pub enclosing_cfg: Vec<syn::Attribute>,
+    /// Where the block that declared the method was written (#342). `None`
+    /// for a method not collected from a block ([`MethodModel::from_fn`]) and
+    /// for a scan that matches blocks within one level only, where a block is
+    /// its struct's neighbour by construction.
+    pub site: Option<ImplSite>,
 }
 
 impl MethodModel {
@@ -35,11 +56,21 @@ impl MethodModel {
             is_mutable: receiver.map(|r| r.mutability.is_some()).unwrap_or(false),
             attribute,
             enclosing_cfg: Vec::new(),
+            site: None,
         }
     }
 
     pub fn name(&self) -> String {
         self.func.sig.ident.to_string()
+    }
+
+    /// Whether the method's block sits in the same module as its struct, which
+    /// is where `struct_module_path` points. A method with no recorded site is
+    /// its struct's neighbour (#342).
+    pub fn is_local_to(&self, struct_module_path: &[String]) -> bool {
+        self.site
+            .as_ref()
+            .is_none_or(|site| site.module_path == struct_module_path)
     }
 }
 
@@ -104,9 +135,26 @@ impl StructModel {
     /// struct's (by name at one level, or by resolved path across modules,
     /// #315); a method already seen under the same name is not added twice.
     /// `enclosing_cfg` is the `#[cfg]` of every module enclosing the block.
-    pub fn attach_impl(&mut self, imp: &ItemImpl, mode: Mode, enclosing_cfg: &[syn::Attribute]) {
+    ///
+    /// `block_module` is the module the block sits in, for a caller that
+    /// matched across the module tree; `None` from a caller that matches
+    /// within one level, where the block is the struct's neighbour by
+    /// construction. It is recorded on every method as [`MethodModel::site`],
+    /// which is what decides where the inline expander emits the wrapper
+    /// (#342).
+    pub fn attach_impl(
+        &mut self,
+        imp: &ItemImpl,
+        mode: Mode,
+        enclosing_cfg: &[syn::Attribute],
+        block_module: Option<&[String]>,
+    ) {
         self.impls.push(imp.clone());
-        for m in wrapped_methods(imp, mode, enclosing_cfg) {
+        for mut m in wrapped_methods(imp, mode, enclosing_cfg) {
+            m.site = block_module.map(|path| ImplSite {
+                module_path: path.to_vec(),
+                self_ty: (*imp.self_ty).clone(),
+            });
             if !self.methods.iter().any(|seen| seen.name() == m.name()) {
                 self.methods.push(m);
             }
@@ -221,9 +269,12 @@ impl ModelTree {
         tree.walk(items, mode, &mut path, &[], &mut impls, &mut imports);
         for block in &impls {
             if let Ok(index) = crate::paths::locate(&tree.entries, &block.header, &imports) {
-                tree.entries[index]
-                    .model
-                    .attach_impl(&block.item, mode, &block.enclosing_cfg);
+                tree.entries[index].model.attach_impl(
+                    &block.item,
+                    mode,
+                    &block.enclosing_cfg,
+                    Some(&block.header.module_path),
+                );
             }
         }
         tree
@@ -279,6 +330,51 @@ impl ModelTree {
             .find(|e| e.module_path == module_path && e.name == name)
             .map(|e| &e.model)
     }
+
+    /// Every wrapped method whose `#[julia] impl` block sits in `module_path`
+    /// while its struct lives somewhere else (#342).
+    ///
+    /// The inline expander emits these wrappers there, at the block, because a
+    /// method signature is written in the block's scope: a module-local `type
+    /// Count = i32;` is not in scope next to the struct. The exported symbol is
+    /// crate-global and keeps following the struct, so where the wrapper is
+    /// emitted changes nothing a caller can see.
+    ///
+    /// Generic structs are excluded: they export no wrapper at all, their
+    /// generic wrappers are instantiated by `specialize` next to the struct.
+    pub fn foreign_methods(&self, module_path: &[String]) -> Vec<ForeignMethod<'_>> {
+        let mut out = Vec::new();
+        for entry in &self.entries {
+            if entry.model.is_generic() {
+                continue;
+            }
+            for method in &entry.model.methods {
+                let Some(site) = &method.site else { continue };
+                if site.module_path != module_path || site.module_path == entry.module_path {
+                    continue;
+                }
+                out.push(ForeignMethod {
+                    struct_module_path: &entry.module_path,
+                    self_ty: &site.self_ty,
+                    method,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// A method whose `#[julia] impl` block sits in another module than its struct
+/// (#342), as reported by [`ModelTree::foreign_methods`].
+#[derive(Debug)]
+pub struct ForeignMethod<'a> {
+    /// The module path of the **struct**, which every exported symbol of the
+    /// method hangs off.
+    pub struct_module_path: &'a [String],
+    /// The impl header's own path — how the wrapper spells the struct in the
+    /// module it is emitted into.
+    pub self_ty: &'a Type,
+    pub method: &'a MethodModel,
 }
 
 /// Same as [`collect_struct_models`] for one level of items (a file or the body
@@ -300,7 +396,7 @@ pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> 
             continue;
         };
         if let Some(model) = models.iter_mut().find(|m| m.name() == target) {
-            model.attach_impl(imp, mode, &[]);
+            model.attach_impl(imp, mode, &[], None);
         }
     }
 

@@ -421,7 +421,10 @@ fn method_wrapper(
     let method = symbol_ident(&m.name)?;
     // The crate flavour names a method's string buffers after the method, so
     // `RustCall._emit_method_code`'s `<Struct>_<method>` owner matches.
-    let owner = format_ident!("{}_{}", class_name, m.name);
+    let owner = format_ident!(
+        "{}",
+        crate::codegen::method_string_owner(class_name, &m.name)
+    );
     let boxed = m.returns_boxed_struct.then(|| class.clone());
     let plan = return_plan(
         &owner,
@@ -456,6 +459,9 @@ fn method_wrapper(
         call_suffix: plan.call_suffix,
     });
     m.return_abi = plan.return_abi.to_string();
+    // The wrapper this crate generates declares its own buffers, so the
+    // manifest it hands Julia states their owner (#342).
+    m.string_owner = owner.to_string();
     if plan.err_slot {
         m.err_type = PYERR_SLOT.to_string();
     }
