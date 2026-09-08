@@ -498,7 +498,7 @@ const _ARTIFACT_DIGEST_LOCK = ReentrantLock()
 
 # canonical crate dir => (manifest stamps of every crate in the graph,
 #                          (strategy, dirs))
-const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}()
+const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{String}, Bool}}}()
 
 """
     CARGO_TREE_INVOCATIONS
@@ -937,7 +937,7 @@ function crate_input_dirs(dir::AbstractString)
 end
 
 """
-    local_path_dependency_dirs(root::AbstractString) -> (strategy::String, dirs::Vector{String})
+    local_path_dependency_dirs(root::AbstractString) -> (strategy::String, dirs::Vector{String}, pyo3::Bool)
 
 Directories of every local (path) crate reachable from the crate at `root`,
 including `root` itself.
@@ -961,6 +961,12 @@ workspace-inherited `{ workspace = true }` entries — at any depth:
 
 The strategy name is returned and hashed by callers, so a set found one way can
 never collide with one found the other.
+
+The third value says whether the build *may* read pyo3's configuration
+(`PYO3_CONFIG_FILE`): `pyo3` / `pyo3-ffi` / `pyo3-build-config` in the resolved
+graph, or declared — optional or not, a feature may activate it — by any
+manifest in `dirs`. `true` whenever Cargo could not resolve the graph: a
+missing input is a stale library, an extra one a rebuild (#339 review).
 """
 function local_path_dependency_dirs(root::AbstractString)
     root = String(root)
@@ -998,7 +1004,9 @@ function _local_path_dependency_dirs_uncached(root::String)
         listed = _cargo_tree(manifest, true)
         isempty(listed) && (listed = _cargo_tree(manifest, false))
         found = String[]
+        resolved_pyo3 = false
         for line in split(listed, '\n')
+            resolved_pyo3 |= _tree_line_names_pyo3(line)
             d = _crate_dir_from_tree_line(line)
             d === nothing || push!(found, d)
         end
@@ -1018,14 +1026,63 @@ function _local_path_dependency_dirs_uncached(root::String)
                 _collect_manifest_path_deps!(dirs, dir, seen)
             end
             unique!(dirs)
-            return "cargo-tree", dirs
+            return "cargo-tree", dirs, resolved_pyo3 || any(_manifest_declares_pyo3, dirs)
         end
     end
 
     _collect_manifest_path_deps!(dirs, root, Set{String}())
     unique!(dirs)
-    return "manifest-toml", dirs
+    # No resolved graph: a registry crate that pulls `pyo3-ffi` in cannot be
+    # ruled out, so the configuration stays an input.
+    return "manifest-toml", dirs, true
 end
+
+# The crates that read `PYO3_CONFIG_FILE` at build time. `pyo3-build-config`
+# is the one that does; `pyo3-ffi` and `pyo3` depend on it.
+const _PYO3_CONFIG_READERS = ("pyo3", "pyo3-ffi", "pyo3-build-config")
+
+# `cargo tree --prefix none --format {p}` prints `name vX.Y.Z (...)`: the
+# first token is the package name.
+function _tree_line_names_pyo3(line::AbstractString)
+    name = first(split(strip(line), ' '; limit = 2))
+    return name in _PYO3_CONFIG_READERS
+end
+
+# Whether the manifest in `dir` declares one of `_PYO3_CONFIG_READERS` in a
+# table a `cargo build` resolves — `[dependencies]` and `[build-dependencies]`,
+# optional or not, under any target. The default graph `cargo tree` resolves
+# omits an optional dependency a feature activates. `[dev-dependencies]` are
+# left out: a build never compiles them (`juliacall_macros` keeps pyo3 there
+# for an example `cargo test` compiles, and every `#[julia]` crate depends on
+# `juliacall_macros`).
+function _manifest_declares_pyo3(dir::AbstractString)
+    parsed = _parse_manifest_or_nothing(joinpath(String(dir), "Cargo.toml"))
+    parsed isa AbstractDict || return false
+    declares(table) = table isa AbstractDict && any(table) do (name, spec)
+        package = spec isa AbstractDict ? String(get(spec, "package", name)) : String(name)
+        package in _PYO3_CONFIG_READERS
+    end
+    sections = ("dependencies", "build-dependencies")
+    any(section -> declares(get(parsed, section, nothing)), sections) && return true
+    targets = get(parsed, "target", nothing)
+    targets isa AbstractDict || return false
+    return any(targets) do (_, per_target)
+        per_target isa AbstractDict &&
+            any(section -> declares(get(per_target, section, nothing)), sections)
+    end
+end
+
+"""
+    crate_may_read_pyo3_config(root) -> Bool
+
+Whether a build of the crate at `root` may read `PYO3_CONFIG_FILE` — the third
+value of `local_path_dependency_dirs`, memoized with it. Decides whether the
+file's contents are part of the artifact identity and of a generated module's
+declared inputs: for a crate whose graph has no pyo3 they are not, and an edit
+to an unrelated Python configuration must neither rebuild it nor invalidate
+the image (#339 review).
+"""
+crate_may_read_pyo3_config(root::AbstractString) = local_path_dependency_dirs(root)[3]
 
 function _cargo_tree(manifest::AbstractString, locked::Bool)::String
     fmt = "{p}"   # a Cmd literal cannot carry braces unquoted

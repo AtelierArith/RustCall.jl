@@ -554,8 +554,13 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     # Added *after* the holder loop on purpose: the selected file is the input,
     # not its directory — a sibling appearing next to it changes nothing the
     # build reads, and must not invalidate the image (#339 review).
+    # And only for a crate whose build may read it: with no pyo3 anywhere in
+    # the graph, an edit to an unrelated Python configuration is not an input
+    # (`crate_may_read_pyo3_config`, #339 review).
     let config = get(ENV, "PYO3_CONFIG_FILE", "")
-        isempty(config) || (isfile(config) && push!(deps, abspath(config)))
+        if !isempty(config) && isfile(config) && crate_may_read_pyo3_config(root)
+            push!(deps, abspath(config))
+        end
     end
     return unique!(map(normpath, deps))
 end
@@ -2430,21 +2435,24 @@ function _cache_built_library(cache_key::String, built::String, cache_enabled::B
 end
 
 """
-    _plain_crate_build_env() -> Vector{Pair{String, String}}
+    _plain_crate_build_env(crate_path) -> Vector{Pair{String, String}}
 
 The environment a **plain** `@rust_crate` build (no PyO3 wrapper) is keyed by:
 `artifact_build_env()` — the #282 allowlist, `PYO3_*` included by prefix — plus
-the *contents* of `PYO3_CONFIG_FILE` when it is set. The allowlist records that
-variable's value, which is a path; a crate that depends on pyo3 and takes this
-path (a `cdylib` exposing `#[julia]` items, say) reads the file itself at build
-time, so an edit to it — another Python version, ABI or library directory — is
-a different binary under the same path. The wrapper path already hashes the
+the *contents* of `PYO3_CONFIG_FILE` when it is set and the crate's build may
+read it (`crate_may_read_pyo3_config`). The allowlist records that variable's
+value, which is a path; a crate that depends on pyo3 and takes this path (a
+`cdylib` exposing `#[julia]` items, say) reads the file itself at build time,
+so an edit to it — another Python version, ABI or library directory — is a
+different binary under the same path. The wrapper path already hashes the
 contents (`_pyo3_wrapper_build_env`); without this the plain key did not, and
 `get_cargo_cached_library` answered the edited configuration with the old
-library (#339 review).
+library. A crate with no pyo3 in its graph reads nothing of it, and an edit
+to an unrelated configuration must not rebuild that crate (#339 review).
 """
-function _plain_crate_build_env()
+function _plain_crate_build_env(crate_path::AbstractString)
     build_env = artifact_build_env()
+    crate_may_read_pyo3_config(crate_path) || return build_env
     digest = _pyo3_config_file_digest()
     isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
     return build_env
@@ -2561,7 +2569,7 @@ function generate_bindings(crate_path::String;
     # previous library in the cache and handed it back — which also made the
     # load-time warning's advice wrong, since re-precompiling the package
     # rebuilt the bindings around the same stale artifact (#339 review).
-    build_env_snapshot = _plain_crate_build_env()
+    build_env_snapshot = _plain_crate_build_env(info.path)
     cache_key = compute_crate_hash(info; release = build_release,
                                    features = features, default_features = default_features,
                                    build_env = build_env_snapshot)

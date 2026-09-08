@@ -598,20 +598,32 @@ end
 # directory is not — an unrelated sibling appearing beside a configuration that
 # lives outside the crate tree changes nothing the build reads, and tracking
 # the directory would re-precompile the package for it (#339 review).
+# And only a crate whose build may read the file declares it: for one with no
+# pyo3 anywhere in its graph an unrelated Python configuration is not an input
+# (`crate_may_read_pyo3_config`, #339 review).
 @testset "PYO3_CONFIG_FILE is tracked as a file, not with its directory (#339 review)" begin
-    if !isdir(PRECOMP_SAMPLE_CRATE)
-        @test_skip "test/fixtures/sample_crate is required"
+    if !isdir(PRECOMP_SAMPLE_CRATE) || !isdir(PRECOMP_WRAPPED_CRATE)
+        @test_skip "test/fixtures/sample_crate and sample_crate_pyo3_optional are required"
     else
+        @test RustCall.crate_may_read_pyo3_config(PRECOMP_WRAPPED_CRATE)   # optional pyo3: declared
         mktempdir() do dir
             config = joinpath(dir, "pyo3-build-config.txt")
             write(config, "implementation=CPython\nversion=3.12\nshared=true\n")
             deps = withenv("PYO3_CONFIG_FILE" => config) do
-                RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+                RustCall._crate_precompile_dependencies(PRECOMP_WRAPPED_CRATE)
             end
             @test normpath(config) in deps
             @test normpath(dir) ∉ deps
             @test normpath(config) ∉ withenv("PYO3_CONFIG_FILE" => nothing) do
-                RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+                RustCall._crate_precompile_dependencies(PRECOMP_WRAPPED_CRATE)
+            end
+            # A crate with no pyo3 in its graph, when Cargo could resolve it,
+            # does not declare the file at all.
+            if RustCall.local_path_dependency_dirs(PRECOMP_SAMPLE_CRATE)[1] == "cargo-tree"
+                @test !RustCall.crate_may_read_pyo3_config(PRECOMP_SAMPLE_CRATE)
+                @test normpath(config) ∉ withenv("PYO3_CONFIG_FILE" => config) do
+                    RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+                end
             end
         end
     end
@@ -936,7 +948,7 @@ end
         info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
         keys_of(flags) = withenv("RUSTFLAGS" => flags) do
             RustCall.compute_crate_hash(info; release = true,
-                                        build_env = RustCall._plain_crate_build_env())
+                                        build_env = RustCall._plain_crate_build_env(PRECOMP_SAMPLE_CRATE))
         end
         a = keys_of("-C target-cpu=native")
         b = keys_of("-C opt-level=1")
@@ -954,14 +966,14 @@ end
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"
     else
-        info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
+        info = RustCall.scan_crate(PRECOMP_WRAPPED_CRATE)      # declares (optional) pyo3
         mktempdir() do dir
             config = joinpath(dir, "pyo3-build-config.txt")
             key_with(contents) = begin
                 write(config, contents)
                 withenv("PYO3_CONFIG_FILE" => config) do
                     RustCall.compute_crate_hash(info; release = true,
-                                                build_env = RustCall._plain_crate_build_env())
+                                                build_env = RustCall._plain_crate_build_env(info.path))
                 end
             end
             a = key_with("implementation=CPython\nversion=3.12\nshared=true\n")
@@ -970,15 +982,20 @@ end
             @test a == key_with("implementation=CPython\nversion=3.12\nshared=true\n")
             unset = withenv("PYO3_CONFIG_FILE" => nothing) do
                 RustCall.compute_crate_hash(info; release = true,
-                                            build_env = RustCall._plain_crate_build_env())
+                                            build_env = RustCall._plain_crate_build_env(info.path))
             end
             @test unset != a
             # Unset, the helper is exactly the allowlist: no digest entry.
             withenv("PYO3_CONFIG_FILE" => nothing) do
-                @test RustCall._plain_crate_build_env() == RustCall.artifact_build_env()
+                @test RustCall._plain_crate_build_env(info.path) == RustCall.artifact_build_env()
             end
             withenv("PYO3_CONFIG_FILE" => config) do
-                @test any(p -> first(p) == "pyo3-config-file-digest", RustCall._plain_crate_build_env())
+                @test any(p -> first(p) == "pyo3-config-file-digest", RustCall._plain_crate_build_env(info.path))
+                # A crate with no pyo3 in its resolved graph reads nothing of
+                # the file: the allowlist alone, and an edit is no new key.
+                if RustCall.local_path_dependency_dirs(PRECOMP_SAMPLE_CRATE)[1] == "cargo-tree"
+                    @test RustCall._plain_crate_build_env(PRECOMP_SAMPLE_CRATE) == RustCall.artifact_build_env()
+                end
             end
         end
     end
@@ -994,7 +1011,7 @@ end
     else
         info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
         pair(flags) = withenv("RUSTFLAGS" => flags) do
-            env = RustCall._plain_crate_build_env()
+            env = RustCall._plain_crate_build_env(PRECOMP_SAMPLE_CRATE)
             (RustCall.compute_crate_hash(info; release = true, build_env = env),
              RustCall.crate_library_name(info; release = true, build_env = env))
         end
