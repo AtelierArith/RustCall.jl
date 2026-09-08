@@ -968,6 +968,13 @@ impl CrateScan {
                 },
                 Err(why) => return Err(self.unresolved_impl(imp, why)),
             };
+            // Two `#[julia]` structs of one name at one module path are cfg
+            // variants of each other — a fragment included under
+            // `#[cfg(feature = "x")]` and `#[cfg(not(feature = "x"))]`, both
+            // scanned since #357. `locate` sees one name and lands on the
+            // first; the block belongs to the variant under its own predicate,
+            // or the other one ends up without the method (#357 review).
+            let index = self.cfg_variant_for(index, &imp.cfg);
             self.check_symbol_path(imp, index)?;
             self.structs[index].model.attach_impl(
                 &imp.item,
@@ -985,6 +992,26 @@ impl CrateScan {
             manifest.structs.push(entry);
         }
         Ok(())
+    }
+
+    /// The `#[julia]` struct at `index`, or the same-named struct at the same
+    /// module path whose `#[cfg]` is `cfg` when there is one: cfg-exclusive
+    /// copies of one declaration are distinct structs to the scan, and an
+    /// impl block written under one predicate attaches to that copy.
+    fn cfg_variant_for(&self, index: usize, cfg: &[syn::Attribute]) -> usize {
+        let want = predicate_string(cfg);
+        let here = &self.structs[index];
+        if predicate_string(&here.cfg) == want {
+            return index;
+        }
+        self.structs
+            .iter()
+            .position(|s| {
+                s.name == here.name
+                    && s.module_path == here.module_path
+                    && predicate_string(&s.cfg) == want
+            })
+            .unwrap_or(index)
     }
 
     fn unresolved_impl(&self, imp: &ScannedImpl, why: Unresolved) -> ExtractError {

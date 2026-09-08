@@ -678,6 +678,34 @@ end
             @test sort([f["cfg"] for f in runs]) == ["feature = \"x\"", "not(feature = \"x\")"]
             @test all(f -> f["symbol"] == "rustcall_api__run", runs)
 
+            # A struct and its impl block inside the fragment: both copies are
+            # distinct structs to the scan, and the block written under one
+            # predicate attaches to that copy — not to whichever `locate` saw
+            # first, leaving the other without the method (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                #[julia]
+                impl Gauge {
+                    #[julia]
+                    pub fn read(&self) -> i32 { self.value }
+                }
+                """)
+            with_struct = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                    cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            gauges = filter(s -> s["name"] == "Gauge", with_struct["structs"])
+            @test length(gauges) == 2
+            @test sort([g["cfg"] for g in gauges]) == ["feature = \"x\"", "not(feature = \"x\")"]
+            for g in gauges
+                methods = get(g, "methods", Any[])
+                @test [m["name"] for m in methods] == ["read"]
+                @test all(m -> m["cfg"] == g["cfg"], methods)
+            end
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub fn run() -> i32 { 1 }
+                """)
+
             # One fragment included twice at the *same* position is still one
             # scan — the duplicate-symbol case of #343.
             write(lib, """
