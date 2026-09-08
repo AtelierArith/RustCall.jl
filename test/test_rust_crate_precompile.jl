@@ -738,12 +738,51 @@ end
         info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
         keys_of(flags) = withenv("RUSTFLAGS" => flags) do
             RustCall.compute_crate_hash(info; release = true,
-                                        build_env = RustCall.artifact_build_env())
+                                        build_env = RustCall._plain_crate_build_env())
         end
         a = keys_of("-C target-cpu=native")
         b = keys_of("-C opt-level=1")
         @test a != b
         @test a == keys_of("-C target-cpu=native")
+    end
+end
+
+# `PYO3_CONFIG_FILE` is on the allowlist by prefix, but what it *names* is a
+# path, and a crate that depends on pyo3 reads the file's contents at build time.
+# The wrapper path hashed those contents; the plain path keyed the path alone,
+# so editing the configuration in place — another Python version, ABI or
+# library directory — found the previous library in the cache (#339 review).
+@testset "The plain crate key covers the contents of PYO3_CONFIG_FILE (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
+        mktempdir() do dir
+            config = joinpath(dir, "pyo3-build-config.txt")
+            key_with(contents) = begin
+                write(config, contents)
+                withenv("PYO3_CONFIG_FILE" => config) do
+                    RustCall.compute_crate_hash(info; release = true,
+                                                build_env = RustCall._plain_crate_build_env())
+                end
+            end
+            a = key_with("implementation=CPython\nversion=3.12\nshared=true\n")
+            b = key_with("implementation=CPython\nversion=3.13\nshared=true\n")
+            @test a != b                        # same path, edited contents
+            @test a == key_with("implementation=CPython\nversion=3.12\nshared=true\n")
+            unset = withenv("PYO3_CONFIG_FILE" => nothing) do
+                RustCall.compute_crate_hash(info; release = true,
+                                            build_env = RustCall._plain_crate_build_env())
+            end
+            @test unset != a
+            # Unset, the helper is exactly the allowlist: no digest entry.
+            withenv("PYO3_CONFIG_FILE" => nothing) do
+                @test RustCall._plain_crate_build_env() == RustCall.artifact_build_env()
+            end
+            withenv("PYO3_CONFIG_FILE" => config) do
+                @test any(p -> first(p) == "pyo3-config-file-digest", RustCall._plain_crate_build_env())
+            end
+        end
     end
 end
 
@@ -757,7 +796,7 @@ end
     else
         info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
         pair(flags) = withenv("RUSTFLAGS" => flags) do
-            env = RustCall.artifact_build_env()
+            env = RustCall._plain_crate_build_env()
             (RustCall.compute_crate_hash(info; release = true, build_env = env),
              RustCall.crate_library_name(info; release = true, build_env = env))
         end

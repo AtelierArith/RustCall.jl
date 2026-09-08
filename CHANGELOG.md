@@ -200,7 +200,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two `cargo build`s under different `RUSTFLAGS` — or a different `CC` a build
   script reads, or anything else in the #282 allowlist — shared one cache entry
   and the second was handed the first one's library. The PyO3 wrapper path
-  already folded `artifact_build_env()` in; the plain path does now too. One
+  already folded `artifact_build_env()` in; the plain path does now too, and
+  like the wrapper it hashes the *contents* of `PYO3_CONFIG_FILE` on top —
+  the allowlist records the path, and a plain build of a crate that depends on
+  pyo3 reads the file, so an in-place edit of the configuration is a different
+  binary under the same key (`_plain_crate_build_env`). One
   consequence is that the load-time warning above can be acted on: forcing the
   package to be precompiled again really does rebuild the artifact, instead of
   finding the stale one under the same key.

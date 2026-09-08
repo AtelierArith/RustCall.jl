@@ -422,8 +422,9 @@ through `@rust_crate`.
 
 The list is deliberately the same set `compute_crate_hash` reads: the crate
 directory's own input files, every local `path` dependency's, the effective
-Cargo configuration, the contents of `PYO3_CONFIG_FILE` when the PyO3 wrapper
-path uses one, the workspace root's manifest and lockfile when the crate is a
+Cargo configuration, the contents of `PYO3_CONFIG_FILE` when one is set (both
+the wrapper path and a plain build of a crate that depends on pyo3 read it),
+the workspace root's manifest and lockfile when the crate is a
 workspace member, and a library root that lives outside the package directory
 (`[lib] path = "../shared/lib.rs"`).
 
@@ -2400,6 +2401,27 @@ function _cache_built_library(cache_key::String, built::String, cache_enabled::B
 end
 
 """
+    _plain_crate_build_env() -> Vector{Pair{String, String}}
+
+The environment a **plain** `@rust_crate` build (no PyO3 wrapper) is keyed by:
+`artifact_build_env()` — the #282 allowlist, `PYO3_*` included by prefix — plus
+the *contents* of `PYO3_CONFIG_FILE` when it is set. The allowlist records that
+variable's value, which is a path; a crate that depends on pyo3 and takes this
+path (a `cdylib` exposing `#[julia]` items, say) reads the file itself at build
+time, so an edit to it — another Python version, ABI or library directory — is
+a different binary under the same path. The wrapper path already hashes the
+contents (`_pyo3_wrapper_build_env`); without this the plain key did not, and
+`get_cargo_cached_library` answered the edited configuration with the old
+library (#339 review).
+"""
+function _plain_crate_build_env()
+    build_env = artifact_build_env()
+    digest = _pyo3_config_file_digest()
+    isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
+    return build_env
+end
+
+"""
     generate_bindings(crate_path::String; kwargs...) -> Expr
 
 Generate Julia bindings for an external Rust crate.
@@ -2510,7 +2532,7 @@ function generate_bindings(crate_path::String;
     # previous library in the cache and handed it back — which also made the
     # load-time warning's advice wrong, since re-precompiling the package
     # rebuilt the bindings around the same stale artifact (#339 review).
-    build_env_snapshot = artifact_build_env()
+    build_env_snapshot = _plain_crate_build_env()
     cache_key = compute_crate_hash(info; release = build_release,
                                    features = features, default_features = default_features,
                                    build_env = build_env_snapshot)
