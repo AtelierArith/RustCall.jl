@@ -193,13 +193,18 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                     )
                 })
                 .collect();
-            let mut seen: Vec<PathBuf> = Vec::new();
+            // Keyed by (file, module path) as the crate-root walk is: one
+            // fragment `include!`d under two different modules is compiled
+            // twice by rustc and belongs in the manifest twice, under each
+            // module's own path (#343 review).
+            let mut seen: Vec<(PathBuf, Vec<String>)> = Vec::new();
             while let Some((f, position, fragment)) = queue.pop() {
                 let canonical = fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
-                if seen.contains(&canonical) {
+                let key = (canonical, position.module_path.clone());
+                if seen.contains(&key) {
                     continue;
                 }
-                seen.push(canonical);
+                seen.push(key);
                 let src = read_source(&f)?;
                 let scanned = scan.file(
                     &src,
@@ -212,10 +217,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                     Ok(v) => v,
                     Err(e) => {
                         if fragment {
-                            eprintln!(
-                                "rustcall-extract: {} is not a list of items ({e}); skipping it",
-                                f.display()
-                            );
+                            skip_fragment_or_fail(e, &f)?;
                         } else {
                             skip_or_fail(e, &f, opts.skip_unparsable)?;
                         }
@@ -247,6 +249,28 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
 
 /// Only a file that is not a Rust module is skippable (an `include!()`
 /// fragment); an item RustCall refuses fails the scan.
+/// A fragment that does not parse is not a fragment of items — an
+/// `include!("table.rs")` holding `[1, 2, 3]` is an expression — so it is left
+/// to the compiler whatever `--skip-unparsable` says about the crate's own
+/// files. An `ExtractError::Unsupported` is a different thing entirely: the
+/// fragment *is* items, and one of them is something RustCall refuses (a
+/// `#[julia]` item in an unmarked inline module, a crate-wide duplicate
+/// symbol). Swallowing that would hand back a manifest missing an item the
+/// proc-macro still wraps, so it fails closed exactly as it would in a file of
+/// the module tree (#343 review).
+fn skip_fragment_or_fail(e: ExtractError, file: &Path) -> Result<(), String> {
+    match e {
+        ExtractError::Parse(e) => {
+            eprintln!(
+                "rustcall-extract: {} is not a list of items ({e}); skipping it",
+                file.display()
+            );
+            Ok(())
+        }
+        e => Err(format!("{}: {e}", file.display())),
+    }
+}
+
 fn skip_or_fail(e: ExtractError, file: &Path, skip_unparsable: bool) -> Result<(), String> {
     match e {
         ExtractError::Parse(e) if skip_unparsable => {
@@ -437,10 +461,7 @@ fn scan_crate_tree(
             Ok(v) => v,
             Err(e) => {
                 if fragment {
-                    eprintln!(
-                        "rustcall-extract: {} is not a list of items ({e}); skipping it",
-                        file.display()
-                    );
+                    skip_fragment_or_fail(e, &file)?;
                 } else {
                     skip_or_fail(e, &file, skip_unparsable)?;
                 }

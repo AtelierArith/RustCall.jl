@@ -269,3 +269,74 @@ fn a_non_literal_include_is_not_reported() {
     );
     assert!(pulled.includes.is_empty());
 }
+
+/// The `include!` item's own `#[cfg]` gates the fragment's items as much as
+/// the enclosing modules' do. Dropping it made a lenient scan describe them as
+/// unconditional, and a wrapper generated from that would call items the
+/// dependency's feature set may not have (#343 review).
+#[test]
+fn an_include_carries_its_own_cfg_into_the_fragment() {
+    let mut scan = TreeScan::new();
+    let mut manifest = Manifest::new(Mode::Crate);
+    let pulled = pull_ins(
+        &mut scan,
+        &mut manifest,
+        "#[cfg(feature = \"python\")] include!(\"api.rs\");",
+        &FilePosition::module(&[], true, &[]),
+        "src/lib.rs",
+    );
+    assert_eq!(pulled.includes.len(), 1);
+    assert_eq!(pulled.includes[0].position.enclosing_cfg.len(), 1);
+
+    // And it reaches the items, so a consumer sees the predicate.
+    pull_ins(
+        &mut scan,
+        &mut manifest,
+        "#[julia] pub fn gated() -> i32 { 1 }\n#[pyfunction] pub fn py_gated() -> i32 { 2 }",
+        &pulled.includes[0].position,
+        "src/api.rs",
+    );
+    scan.finish(&mut manifest).unwrap();
+    for name in ["gated", "py_gated"] {
+        let f = manifest
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no `{name}` in {manifest:?}"));
+        assert_eq!(
+            f.cfg, "feature = \"python\"",
+            "{name} lost the include's cfg"
+        );
+        assert_eq!(f.cfg_features, vec!["python".to_string()], "{name}");
+    }
+}
+
+/// A fragment that parses as items but holds something RustCall refuses must
+/// fail the scan, not be skipped: the proc-macro still wraps the item, so a
+/// manifest without it is a wrong answer rather than a partial one. Only a
+/// *parse* failure is a "this was never a list of items" skip (#343 review).
+#[test]
+fn an_unsupported_item_in_a_fragment_is_an_error_not_a_skip() {
+    let mut scan = TreeScan::new();
+    let mut manifest = Manifest::new(Mode::Crate);
+    let pulled = pull_ins(
+        &mut scan,
+        &mut manifest,
+        "pub mod ops { include!(\"api.rs\"); }",
+        &FilePosition::module(&[], true, &[]),
+        "src/lib.rs",
+    );
+    let err = scan
+        .file(
+            "#[julia] pub fn run() -> i32 { 1 }",
+            None,
+            &pulled.includes[0].position,
+            &mut manifest,
+            "src/api.rs",
+        )
+        .expect_err("a #[julia] item in an unmarked module is refused");
+    assert!(
+        matches!(err, rustcall_core::extract::ExtractError::Unsupported(_)),
+        "expected Unsupported, got {err:?}"
+    );
+}

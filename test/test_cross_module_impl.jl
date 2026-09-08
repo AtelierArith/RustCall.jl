@@ -552,3 +552,39 @@ end
         end
     end
 end
+
+# One fragment `include!`d under two different modules is compiled twice by
+# rustc and belongs in the manifest twice, under each module's own path. The
+# walk that has no crate root keyed the files it had seen by path alone, so the
+# second position was dropped and one module's binding went missing (#343
+# review).
+@testset "A fragment included under two modules is scanned twice (#343 review)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the twice-included fragment test"
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "frag.rs"), """
+                #[julia]
+                pub fn run() -> i32 { 1 }
+                """)
+            lib = joinpath(dir, "lib.rs")
+            write(lib, """
+                use juliacall_macros::julia;
+                #[julia]
+                pub mod a { include!("frag.rs"); }
+                #[julia]
+                pub mod b { include!("frag.rs"); }
+                """)
+
+            # The no-crate-root walk: every file argument is its own root.
+            manifest = RustCall.extract_manifest([lib]; mode = "crate")
+            symbols = sort([f["symbol"] for f in manifest["functions"]])
+            @test symbols == ["rustcall_a__run", "rustcall_b__run"]
+
+            # And the same through the crate-root walk, which keyed correctly
+            # already — the two paths must agree.
+            rooted = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib)
+            @test sort([f["symbol"] for f in rooted["functions"]]) == symbols
+        end
+    end
+end

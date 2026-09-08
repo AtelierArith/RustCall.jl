@@ -832,7 +832,15 @@ impl CrateScan {
                         position: FilePosition {
                             module_path: module_path.clone(),
                             reachable,
-                            enclosing_cfg: enclosing_cfg.to_vec(),
+                            // The `include!` item carries `#[cfg]` of its own
+                            // (`#[cfg(feature = "python")] include!("api.rs")`),
+                            // and the fragment's items exist only under it as
+                            // much as under the enclosing modules'. Dropping it
+                            // left a lenient scan describing them as
+                            // unconditional, so a generated wrapper would call
+                            // items the dependency's feature set may not have
+                            // (#343 review).
+                            enclosing_cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs),
                             symbol_path: symbol_path.to_vec(),
                             marked,
                         },
