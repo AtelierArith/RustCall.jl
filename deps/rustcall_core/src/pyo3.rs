@@ -135,6 +135,43 @@ struct ScannedImpl {
     enclosing_cfg: Vec<syn::Attribute>,
 }
 
+/// The classes a `#[pymethods]` block resolved to `index` attaches to, among
+/// the cfg-exclusive copies of that class at that module path: the copy whose
+/// enclosing `#[cfg]` is `enclosing` when there is one; every copy when the
+/// block is unconditional (empty `enclosing`) — it applies to whichever copy
+/// rustc compiles; else the located one (#357 review).
+fn cfg_variants_of(
+    classes: &[ScannedClass],
+    index: usize,
+    enclosing: &[syn::Attribute],
+) -> Vec<usize> {
+    let want = crate::cfg::predicate_string(enclosing);
+    let here = &classes[index];
+    let same =
+        |c: &ScannedClass| c.entry.name == here.entry.name && c.module_path == here.module_path;
+    if crate::cfg::predicate_string(&here.cfg) == want {
+        return vec![index];
+    }
+    if let Some(exact) = classes
+        .iter()
+        .position(|c| same(c) && crate::cfg::predicate_string(&c.cfg) == want)
+    {
+        return vec![exact];
+    }
+    if want.is_empty() {
+        let all: Vec<usize> = classes
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| same(c))
+            .map(|(i, _)| i)
+            .collect();
+        if !all.is_empty() {
+            return all;
+        }
+    }
+    vec![index]
+}
+
 impl Located for ScannedClass {
     fn name(&self) -> &str {
         &self.entry.name
@@ -328,32 +365,22 @@ impl Pyo3Scan {
                 continue;
             };
             // Cfg-exclusive copies of one class: the block written beside one
-            // copy belongs to that copy, not to the first `locate` saw (#357
-            // review). Same rule as `CrateScan::cfg_variant_for`.
-            let index = {
-                let want = crate::cfg::predicate_string(&imp.enclosing_cfg);
-                let here = &self.classes[index];
-                if crate::cfg::predicate_string(&here.cfg) == want {
-                    index
-                } else {
-                    self.classes
-                        .iter()
-                        .position(|c| {
-                            c.entry.name == here.entry.name
-                                && c.module_path == here.module_path
-                                && crate::cfg::predicate_string(&c.cfg) == want
-                        })
-                        .unwrap_or(index)
+            // copy belongs to that copy, not to the first `locate` saw; a block
+            // written *outside* both — an unconditional `impl api::Gauge` at
+            // the root — applies to whichever copy rustc compiles, so it
+            // attaches to every one (#357 review). Same rule as
+            // `CrateScan::cfg_variants_for`.
+            let targets = cfg_variants_of(&self.classes, index, &imp.enclosing_cfg);
+            for index in targets {
+                let owner_skip = self.classes[index].entry.skip_reason.clone();
+                // The symbol is the *class's*: an `impl a::C` written elsewhere
+                // still wraps `a::C`'s methods (#300).
+                let class_path = self.classes[index].module_path.clone();
+                for func in &imp.funcs {
+                    let entry =
+                        method_entry(&imp.header.target, &class_path, func, &owner_skip, &imp.cfg);
+                    self.classes[index].entry.methods.push(entry);
                 }
-            };
-            let owner_skip = self.classes[index].entry.skip_reason.clone();
-            // The symbol is the *class's*: an `impl a::C` written elsewhere
-            // still wraps `a::C`'s methods (#300).
-            let class_path = self.classes[index].module_path.clone();
-            for func in &imp.funcs {
-                let entry =
-                    method_entry(&imp.header.target, &class_path, func, &owner_skip, &imp.cfg);
-                self.classes[index].entry.methods.push(entry);
             }
         }
 
@@ -394,9 +421,12 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
     // below carries the module path: `a::parse` and `b::parse` live in
     // `bindings.a` and `bindings.b` and never meet.
     // (module path, name) -> qualified owner; (module path, name, arity) -> owner.
+    // Every key also carries the claimant's `#[cfg]`: cfg-exclusive copies of
+    // one fragment name the same things and rustc never compiles them
+    // together, so they do not take the name from each other (#357 review).
     type Scoped = (Vec<String>, String);
     type ScopedArity = (Vec<String>, String, usize);
-    let class_names: Vec<(Scoped, String)> = manifest
+    let class_names: Vec<(Scoped, String, String)> = manifest
         .structs
         .iter()
         .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
@@ -404,27 +434,29 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             (
                 (s.module_path.clone(), s.name.clone()),
                 qualified(&s.module_path, &s.name),
+                s.cfg.clone(),
             )
         })
         .collect();
-    let class_named = |path: &[String], name: &str| {
+    let class_named = |path: &[String], name: &str, cfg: &str| {
         class_names
             .iter()
-            .find(|((p, n), _)| p == path && n == name)
+            .find(|((p, n), _, c)| p == path && n == name && cfg_clash(c, cfg))
     };
 
-    let mut taken: Vec<(ScopedArity, String)> = Vec::new();
+    let mut taken: Vec<(ScopedArity, String, String)> = Vec::new();
     for f in &mut manifest.functions {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
             continue;
         }
-        if let Some((_, class)) = class_named(&f.module_path, &f.name) {
+        if let Some((_, class, _)) = class_named(&f.module_path, &f.name, &f.cfg) {
             f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
             continue;
         }
         taken.push((
             (f.module_path.clone(), f.name.clone(), f.args.len()),
             qualified(&f.module_path, &f.name),
+            f.cfg.clone(),
         ));
     }
     for s in &mut manifest.structs {
@@ -432,20 +464,24 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             continue;
         }
         let owner = qualified(&s.module_path, &s.name);
+        let s_cfg = s.cfg.clone();
         for m in &mut s.methods {
             if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
                 continue;
             }
-            if let Some((_, class)) = class_named(&s.module_path, &m.name) {
+            if let Some((_, class, _)) = class_named(&s.module_path, &m.name, &s_cfg) {
                 m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
                 continue;
             }
             let key = (s.module_path.clone(), m.name.clone(), m.args.len());
-            match taken.iter().find(|(k, _)| *k == key) {
-                Some((_, other)) => {
+            match taken
+                .iter()
+                .find(|(k, _, c)| *k == key && cfg_clash(c, &s_cfg))
+            {
+                Some((_, other, _)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, other);
                 }
-                None => taken.push((key, format!("{owner}::{}", m.name))),
+                None => taken.push((key, format!("{owner}::{}", m.name), s_cfg.clone())),
             }
         }
     }
@@ -463,12 +499,51 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
 ///
 /// The first entry in manifest order keeps the symbol so the outcome does not
 /// depend on which file was visited first.
-/// Whether two items whose symbols coincide really clash: they do unless both
-/// are gated and gated *differently* — cfg-exclusive copies of one fragment
-/// under a lenient scan, which rustc never compiles together. The same
-/// exemption `claimed_symbols` applies on the `#[julia]` side (#357 review).
+/// The conjuncts of a predicate string: the arguments of a top-level
+/// `all(...)`, else the predicate itself.
+fn cfg_conjuncts(p: &str) -> Vec<&str> {
+    let Some(inner) = p.strip_prefix("all(").and_then(|r| r.strip_suffix(')')) else {
+        return vec![p];
+    };
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim());
+    out
+}
+
+/// Whether two predicates are **provably** mutually exclusive: one conjunct
+/// of the first is the exact negation of one conjunct of the second. That is
+/// the shape of cfg-exclusive copies of one fragment (`feature = "x"` against
+/// `not(feature = "x")`, or `all(feature = "x", feature = "y")` against
+/// `all(not(feature = "x"), feature = "y")`), and nothing else: `feature = "x"`
+/// and `feature = "y"` may both be on, and are *not* exclusive (#357 review).
+pub(crate) fn cfg_exclusive(a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let (ca, cb) = (cfg_conjuncts(a), cfg_conjuncts(b));
+    ca.iter().any(|x| {
+        cb.iter()
+            .any(|y| format!("not({x})") == *y || format!("not({y})") == *x)
+    })
+}
+
+/// Whether two items whose symbols coincide really clash: they do unless their
+/// predicates are provably exclusive — copies rustc never compiles together.
+/// The same exemption `claimed_symbols` applies on the `#[julia]` side.
 fn cfg_clash(a: &str, b: &str) -> bool {
-    a.is_empty() || b.is_empty() || a == b
+    !cfg_exclusive(a, b)
 }
 
 fn mark_symbol_collisions(manifest: &mut Manifest) {

@@ -750,6 +750,89 @@ end
                 @test [m["name"] for m in methods] == ["read"]
                 @test all(m -> m["skip_reason"] == "" && m["cfg"] == c["cfg"], methods)
             end
+            lenient() = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                  cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+
+            # A `#[staticmethod]` is a module-level Julia function, and the
+            # Julia-surface check used to key it by (module, name, arity)
+            # alone — the second copy's was refused as a name collision with
+            # the first's (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                #[pymethods]
+                impl Gauge {
+                    #[staticmethod]
+                    pub fn zero() -> i32 { 0 }
+                }
+                """)
+            statics = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(statics) == 2
+            for c in statics
+                zs = filter(m -> m["name"] == "zero", get(c, "methods", Any[]))
+                @test length(zs) == 1 && zs[1]["skip_reason"] == ""
+            end
+
+            # Only *provably* exclusive predicates are exempt from collision:
+            # `feature = "x"` and `feature = "y"` may both be on, so two
+            # `#[pyfunction] run`s gated that way still clash on one symbol
+            # (#357 review).
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(feature = "y")]
+                pub mod api { include!("frag.rs"); }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyfunction]
+                pub fn run() -> i32 { 1 }
+                """)
+            overlapping = filter(f -> f["name"] == "run", lenient()["functions"])
+            @test length(overlapping) == 2
+            @test count(f -> startswith(f["skip_reason"], "symbol_collision"), overlapping) == 1
+
+            # A block written *outside* both copies — an unconditional
+            # `impl api::Gauge` at the root — applies to whichever copy rustc
+            # compiles, so it attaches to every one, in both scans (#357
+            # review).
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[julia]
+                impl api::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                """)
+            external = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(external) == 2
+            @test all(g -> [m["name"] for m in get(g, "methods", Any[])] == ["read"], external)
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                pub mod api { include!("frag.rs"); }
+                #[pymethods]
+                impl api::Gauge { pub fn read(&self) -> i32 { self.value } }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                """)
+            external_py = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(external_py) == 2
+            @test all(external_py) do g
+                ms = get(g, "methods", Any[])
+                g["skip_reason"] == "" && [m["name"] for m in ms] == ["read"] &&
+                    all(m -> m["skip_reason"] == "", ms)
+            end
+
             write(lib, """
                 use juliacall_macros::julia;
                 #[cfg(feature = "x")]

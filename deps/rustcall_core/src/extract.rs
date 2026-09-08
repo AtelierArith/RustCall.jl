@@ -980,14 +980,15 @@ impl CrateScan {
             // scanned since #357. `locate` sees one name and lands on the
             // first; the block belongs to the variant under its own predicate,
             // or the other one ends up without the method (#357 review).
-            let index = self.cfg_variant_for(index, &imp.enclosing_cfg);
-            self.check_symbol_path(imp, index)?;
-            self.structs[index].model.attach_impl(
-                &imp.item,
-                Mode::Crate,
-                &imp.cfg,
-                Some(&imp.header.module_path),
-            );
+            for index in self.cfg_variants_for(index, &imp.enclosing_cfg) {
+                self.check_symbol_path(imp, index)?;
+                self.structs[index].model.attach_impl(
+                    &imp.item,
+                    Mode::Crate,
+                    &imp.cfg,
+                    Some(&imp.header.module_path),
+                );
+            }
         }
 
         for scanned in std::mem::take(&mut self.structs) {
@@ -1000,27 +1001,43 @@ impl CrateScan {
         Ok(())
     }
 
-    /// The `#[julia]` struct at `index`, or the same-named struct at the same
+    /// The `#[julia]` structs at `index` — or the same-named struct at the same
     /// module path whose enclosing `#[cfg]` is `cfg` when there is one:
     /// cfg-exclusive copies of one declaration are distinct structs to the
     /// scan, and an impl block written beside one copy attaches to that copy.
     /// `cfg` is the block's *enclosing* predicate, not its effective one — a
     /// block that adds `#[cfg(feature = "y")]` of its own still sits beside
     /// exactly one copy, and its own predicate is carried by its methods.
-    fn cfg_variant_for(&self, index: usize, cfg: &[syn::Attribute]) -> usize {
+    /// A block written *outside* every copy — an unconditional
+    /// `#[julia] impl api::Gauge` at the crate root, empty `cfg` — applies to
+    /// whichever copy rustc compiles, so it attaches to every one.
+    fn cfg_variants_for(&self, index: usize, cfg: &[syn::Attribute]) -> Vec<usize> {
         let want = predicate_string(cfg);
         let here = &self.structs[index];
+        let same = |s: &ScannedStruct| s.name == here.name && s.module_path == here.module_path;
         if predicate_string(&here.cfg) == want {
-            return index;
+            return vec![index];
         }
-        self.structs
+        if let Some(exact) = self
+            .structs
             .iter()
-            .position(|s| {
-                s.name == here.name
-                    && s.module_path == here.module_path
-                    && predicate_string(&s.cfg) == want
-            })
-            .unwrap_or(index)
+            .position(|s| same(s) && predicate_string(&s.cfg) == want)
+        {
+            return vec![exact];
+        }
+        if want.is_empty() {
+            let all: Vec<usize> = self
+                .structs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| same(s))
+                .map(|(i, _)| i)
+                .collect();
+            if !all.is_empty() {
+                return all;
+            }
+        }
+        vec![index]
     }
 
     fn unresolved_impl(&self, imp: &ScannedImpl, why: Unresolved) -> ExtractError {
