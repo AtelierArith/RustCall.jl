@@ -520,6 +520,60 @@ fn a_struct_whose_only_string_method_is_foreign_gets_no_shared_buffer() {
     );
 }
 
+/// A renamed import in a cross-module header: the wrapper is emitted at the
+/// block and must spell the struct the way the block can see it (`Meter`),
+/// while every exported symbol keeps following the **resolved** struct
+/// (`rustcall_Gauge_label`, `Gauge_label_free_rust_string`) — which is what
+/// the manifest advertises. Deriving the stem from the header's last segment
+/// exported `rustcall_Meter_label` and left Julia resolving nothing
+/// (#342 review).
+///
+/// The inline flavour resolves the import itself, so this form is valid there;
+/// the crate scan refuses it instead, because the proc-macro cannot resolve a
+/// name (`a_renamed_import_in_an_impl_header_is_refused`).
+#[test]
+fn a_renamed_import_keeps_the_resolved_structs_symbols() {
+    let src = r#"
+        #[julia] pub struct Gauge { pub value: i32 }
+        pub mod ops {
+            use super::Gauge as Meter;
+            #[julia] impl Meter {
+                #[julia] pub fn label(&self) -> String { format!("{}", self.value) }
+                #[julia] pub fn read(&self) -> i32 { self.value }
+            }
+        }
+    "#;
+    let expanded = rustcall_core::expand::expand(src).unwrap();
+    let gauge = the_struct(&expanded.manifest, "Gauge");
+    assert_eq!(
+        method_symbols(gauge),
+        vec!["rustcall_Gauge_label", "rustcall_Gauge_read"]
+    );
+    let label = gauge.methods.iter().find(|m| m.name == "label").unwrap();
+    assert_eq!(label.string_owner, "Gauge_label");
+
+    let body = module_body(&expanded.source, "ops");
+    // The symbol is the resolved struct's; the receiver is spelled with the
+    // only name in scope at the block.
+    assert!(
+        body.contains("pub extern \"C\" fn rustcall_Gauge_read(ptr: *const Meter) -> i32"),
+        "{body}"
+    );
+    assert!(body.contains("fn rustcall_Gauge_label("), "{body}");
+    assert!(body.contains("ptr: *const Meter"), "{body}");
+    assert!(
+        body.contains("pub extern \"C\" fn Gauge_label_free_rust_string("),
+        "{body}"
+    );
+    // No exported symbol is named after the alias.
+    assert!(
+        !expanded.source.contains("Meter_label") && !expanded.source.contains("Meter_read"),
+        "{}",
+        expanded.source
+    );
+    compiles_as_cdylib(&expanded.source, "cross_module_renamed_import");
+}
+
 /// The crate flavour is untouched: the proc-macro already emits every wrapper
 /// at the impl site with per-method buffers, and the manifest now says so.
 #[test]

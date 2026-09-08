@@ -218,6 +218,7 @@ fn expand_items(
     for foreign in tree.foreign_methods(module_path) {
         out.extend(items_of(crate::codegen::inline_foreign_method_wrapper(
             foreign.self_ty,
+            foreign.struct_name,
             foreign.struct_module_path,
             foreign.method,
         ))?);

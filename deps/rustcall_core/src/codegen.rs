@@ -1606,7 +1606,16 @@ pub fn generate_method_wrapper_crate(
     // The origin is a manifest column; the wrapper's shape does not depend
     // on it.
     let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
-    method_wrapper_at_impl_site(self_ty, module_path, &model)
+    // The proc-macro sees one block and cannot resolve a name: the header's
+    // last segment *is* the struct as far as it knows. Crate extraction
+    // refuses a header the macro would read differently from the struct it
+    // resolves to — a renamed import among them (#315).
+    let Some(struct_name) = last_ident(self_ty) else {
+        return quote! {
+            compile_error!("#[julia] on impl block requires a simple type path");
+        };
+    };
+    method_wrapper_at_impl_site(self_ty, struct_name, module_path, &model)
 }
 
 /// The FFI wrapper of a method emitted **at its impl block** rather than next
@@ -1615,18 +1624,24 @@ pub fn generate_method_wrapper_crate(
 /// are declared per method ([`method_string_owner`]) so two blocks of one
 /// struct cannot both claim the struct-level `#[no_mangle]` helpers.
 ///
-/// `struct_module_path` is the module the **struct** lives in: every exported
-/// symbol hangs off that, wherever the wrapper itself is emitted.
+/// `struct_name` is the struct's **own** identifier and `struct_module_path`
+/// the module it lives in: every exported symbol hangs off those, wherever the
+/// wrapper is emitted and however the header spells the type. The two are not
+/// the same thing — `use super::Gauge as Meter; impl Meter` must still export
+/// `rustcall_Gauge_<method>`, which is what the manifest advertises, while the
+/// wrapper's own code says `Meter` because that is the name in scope there
+/// (#342 review).
 ///
 /// Used by the proc-macro for every `#[julia] impl` block
 /// ([`generate_method_wrapper_crate`]) and by the inline expander for a block
 /// that sits in another module than its struct (#342).
 pub fn method_wrapper_at_impl_site(
     self_ty: &Type,
+    struct_name: &Ident,
     struct_module_path: &[String],
     m: &MethodModel,
 ) -> TokenStream2 {
-    let (Type::Path(self_path), Some(struct_name)) = (unparen(self_ty), last_ident(self_ty)) else {
+    let Type::Path(self_path) = unparen(self_ty) else {
         return quote! {
             compile_error!("#[julia] on impl block requires a simple type path");
         };
@@ -1651,12 +1666,19 @@ pub fn method_wrapper_at_impl_site(
 /// The wrapper of an **inline** method whose `#[julia] impl` block sits in
 /// another module than its struct (#342), emitted into the block's module.
 ///
+/// The expander resolves the header itself, so `struct_name` /
+/// `struct_module_path` are the struct the block was married to — not the
+/// header's last segment, which a `use ... as` may have renamed — while
+/// `self_ty` stays the header as written, the only spelling in scope where the
+/// wrapper is emitted (#342 review).
+///
 /// The block's own `#[cfg]` — and that of the modules around it — gates the
 /// wrapper as much as the method's own does, exactly as
 /// [`transform_impl_crate`] splices the block's predicates onto the crate
 /// flavour's wrapper.
 pub fn inline_foreign_method_wrapper(
     self_ty: &Type,
+    struct_name: &Ident,
     struct_module_path: &[String],
     m: &MethodModel,
 ) -> TokenStream2 {
@@ -1665,7 +1687,7 @@ pub fn inline_foreign_method_wrapper(
         .func
         .attrs
         .splice(0..0, m.enclosing_cfg.iter().cloned());
-    method_wrapper_at_impl_site(self_ty, struct_module_path, &gated)
+    method_wrapper_at_impl_site(self_ty, struct_name, struct_module_path, &gated)
 }
 
 // ============================================================================

@@ -348,6 +348,26 @@ if RustCall.check_rustc_available()
             }
         }
     }
+
+    #[julia]
+    pub struct CmiAliased {
+        pub k: i32,
+    }
+
+    impl CmiAliased {
+        pub fn new(k: i32) -> Self { CmiAliased { k } }
+    }
+
+    // A renamed import: the wrapper is emitted here and can only spell the
+    // struct as `Dial`, but every exported symbol keeps following the
+    // resolved struct — which is what the manifest advertises (#342 review).
+    pub mod cmi_alias {
+        use super::CmiAliased as Dial;
+
+        impl Dial {
+            pub fn cmi_alias_name(&self) -> String { format!("dial({})", self.k) }
+        }
+    }
     """
 end
 
@@ -416,6 +436,16 @@ end
         # uses, and the per-method one of the block in `cmi_ops`.
         gauge_handle = first(RustCall.RUST_LIBRARIES[getfield(g, :lib_name)])
         gauge_exports(sym) = Libdl.dlsym(gauge_handle, sym; throw_error = false) !== nothing
+        # A renamed import in the header: the call resolves only because the
+        # symbols follow the resolved struct, not the alias (#342 review).
+        a = CmiAliased(Int32(5))
+        @test cmi_alias_name(a) == "dial(5)"
+        alias_handle = first(RustCall.RUST_LIBRARIES[getfield(a, :lib_name)])
+        alias_exports(sym) = Libdl.dlsym(alias_handle, sym; throw_error = false) !== nothing
+        @test alias_exports("rustcall_CmiAliased_cmi_alias_name")
+        @test alias_exports("CmiAliased_cmi_alias_name_free_rust_string")
+        @test !alias_exports("rustcall_Dial_cmi_alias_name")
+
         @test gauge_exports("CmiInlineGauge_free_rust_string")
         @test gauge_exports("CmiInlineGauge_cmi_cross_label_free_rust_string")
         @test gauge_exports("CmiInlineGauge_cmi_cross_split_free_rust_string")

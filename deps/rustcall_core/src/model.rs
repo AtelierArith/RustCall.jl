@@ -354,6 +354,7 @@ impl ModelTree {
                     continue;
                 }
                 out.push(ForeignMethod {
+                    struct_name: &entry.model.item.ident,
                     struct_module_path: &entry.module_path,
                     self_ty: &site.self_ty,
                     method,
@@ -368,11 +369,16 @@ impl ModelTree {
 /// (#342), as reported by [`ModelTree::foreign_methods`].
 #[derive(Debug)]
 pub struct ForeignMethod<'a> {
+    /// The **struct's own** identifier, which every exported symbol of the
+    /// method hangs off together with [`ForeignMethod::struct_module_path`].
+    /// Not the header's last segment: `use super::Gauge as Meter; impl Meter`
+    /// still exports `rustcall_Gauge_<method>` (#342 review).
+    pub struct_name: &'a syn::Ident,
     /// The module path of the **struct**, which every exported symbol of the
     /// method hangs off.
     pub struct_module_path: &'a [String],
     /// The impl header's own path — how the wrapper spells the struct in the
-    /// module it is emitted into.
+    /// module it is emitted into, which may be an alias.
     pub self_ty: &'a Type,
     pub method: &'a MethodModel,
 }
