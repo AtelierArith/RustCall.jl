@@ -80,7 +80,9 @@ Integer division in Rust through the crate's `checked_div`, a `#[pyfunction]`
 returning `PyResult<i32>`. The wrapper cannot render a `PyErr` without a Python
 interpreter, so the generated binding returns `RustResult{Int32, String}` whose
 `Err` payload is always the fixed sentence `RustCall.PYO3_OPAQUE_ERROR`; this
-wrapper turns that into a `DivideError` instead.
+wrapper turns that into a `DivideError` instead — for a zero divisor and for
+`typemin(Int32) ÷ -1`, whose quotient does not fit, exactly the two cases in
+which Julia's own `div` throws it.
 """
 function safe_div(a::Integer, b::Integer)::Int32
     r = checked_div(Int32(a), Int32(b))

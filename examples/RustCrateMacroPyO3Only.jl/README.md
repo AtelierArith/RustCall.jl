@@ -184,9 +184,13 @@ That is deliberate: creating and dropping a `PyErr` needs no interpreter, but
 in `src/RustCrateMacroPyO3Only.jl` turns it into something idiomatic:
 
 ```julia
-safe_div(7, 2)      # 3::Int32
-safe_div(1, 0)      # throws DivideError
+safe_div(7, 2)                    # 3::Int32
+safe_div(1, 0)                    # throws DivideError
+safe_div(typemin(Int32), -1)      # throws DivideError too: the quotient does not fit
 ```
+
+(The crate uses `i32::checked_div`, so that last case is an `Err` and not a
+Rust panic — `/` panics on it even in release builds.)
 
 The same lowering applies to a `PyResult` *method*: `advance(c, 3)` is
 `RustResult{Int64, String}`.

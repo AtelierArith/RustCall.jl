@@ -37,10 +37,19 @@ using Test
         @test bad.value == PYO3_OPAQUE_ERROR
         @test !occursin("division by zero", bad.value)
 
+        # The other way an i32 division fails: the quotient of
+        # `typemin(Int32) ÷ -1` does not fit. Rust's `/` panics on it even in
+        # release builds, so the crate uses `checked_div` and this is an `Err`
+        # like the zero divisor, not a panic.
+        overflow = checked_div(typemin(Int32), Int32(-1))
+        @test is_err(overflow)
+        @test overflow.value == PYO3_OPAQUE_ERROR
+
         # The Julia layer: a value, or a DivideError.
         @test safe_div(7, 2) == 3
         @test safe_div(7, 2) isa Int32
         @test_throws DivideError safe_div(1, 0)
+        @test_throws DivideError safe_div(typemin(Int32), -1)
     end
 
     @testset "#[pyclass(get_all, set_all)] Counter" begin

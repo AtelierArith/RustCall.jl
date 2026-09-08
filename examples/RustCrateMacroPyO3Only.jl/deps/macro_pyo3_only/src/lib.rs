@@ -38,15 +38,22 @@ pub fn join_words(a: String, b: String) -> String {
 /// error: creating and dropping a `PyErr` needs no interpreter, but rendering
 /// one does, so the generated code never looks at it and Julia reports
 /// `RustCall.PYO3_OPAQUE_ERROR` instead of this message.
+///
+/// Both ways an `i32` division can fail are errors, not panics: `b == 0`, and
+/// `i32::MIN / -1`, whose quotient does not fit — Rust's `/` panics on that
+/// one even in release builds, and a panic here would surface as a
+/// `RustCall.RuntimeError` instead of an `Err`. `checked_div` returns `None`
+/// for both.
 #[pyfunction]
 pub fn checked_div(a: i32, b: i32) -> PyResult<i32> {
     if b == 0 {
-        Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+        return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
             "division by zero",
-        ))
-    } else {
-        Ok(a / b)
+        ));
     }
+    a.checked_div(b).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("quotient does not fit in i32")
+    })
 }
 
 /// A class: an opaque handle in Julia, freed by the generated `Counter_free`,
