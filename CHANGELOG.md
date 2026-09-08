@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-09
+
 ### Fixed
 - **Two cfg-exclusive modules including one fragment are both scanned**
   ([#357](https://github.com/AtelierArith/RustCall.jl/issues/357)). Since #343
@@ -170,20 +172,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `__init__`, not from its own top level. The generated module imports `Libdl`
   through RustCall (`import RustCall.Libdl`), so the package does not need
   `Libdl` among its dependencies.
-
-### Added
-- **`@rust_crate ... submodule="Bindings"`**
-  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)) defines the
-  generated module in the calling module under that name, so a package can
-  `using .Bindings: f, T` from it — the idiom that pairs with the precompile
-  fix above, and the same shape as `include("generated/Bindings.jl")`. `name=`
-  is unchanged: it names the generated module and defines nothing, which is
-  what keeps the documented `const MyBindings = @rust_crate path name="MyBindings"`
-  working. The two are separate options on purpose: an earlier cut of this
-  change made `name=` define the module, and a package written that way
-  precompiled and then **segfaulted** on load, because the constant was bound
-  over the module binding the macro had just created (found in review of
-  [#351](https://github.com/AtelierArith/RustCall.jl/pull/351)).
 - **A changed build environment is reported rather than ignored**
   ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). `RUSTFLAGS`,
   `PYO3_PYTHON` and a `PYO3_CONFIG_FILE` pointing at another file decide the
@@ -225,6 +213,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package: `docs/src/crate_bindings.md` says which path the module then carries
   and what makes its precompile cache stale.
 
+### Added
+- **`@rust_crate ... submodule="Bindings"`**
+  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)) defines the
+  generated module in the calling module under that name, so a package can
+  `using .Bindings: f, T` from it — the idiom that pairs with the precompile
+  fix above, and the same shape as `include("generated/Bindings.jl")`. `name=`
+  is unchanged: it names the generated module and defines nothing, which is
+  what keeps the documented `const MyBindings = @rust_crate path name="MyBindings"`
+  working. The two are separate options on purpose: an earlier cut of this
+  change made `name=` define the module, and a package written that way
+  precompiled and then **segfaulted** on load, because the constant was bound
+  over the module binding the macro had just created (found in review of
+  [#351](https://github.com/AtelierArith/RustCall.jl/pull/351)).
+- **`examples/RustCrateMacroPyO3Only.jl`**, a Julia package that binds a
+  **PyO3-only** Rust crate with the **`@rust_crate` macro**. Its crate
+  `deps/macro_pyo3_only` carries no RustCall attribute and no
+  `juliacall_macros` dependency — `#[pyfunction] scale` / `join_words` /
+  `checked_div`, a `#[pyclass(get_all, set_all)] Counter` with `#[new]`, a
+  `#[staticmethod]`, `&self` / `&mut self` / `String` / `PyResult` methods, and
+  a `#[pymodule]` initializer the scan skips — so RustCall binds it through the
+  generated wrapper crate
+  ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275) Phase 2, link
+  plan `:link_libpython`). It is the sibling of
+  `examples/SampleCratePyO3Only.jl`: the same Rust, the other **front door**.
+  `@rust_crate joinpath(...) submodule="Bindings"` sits at the package's top
+  level, so there is no `deps/build.jl`, no `src/generated/` and nothing
+  generated in the repository — the crate is built and the bindings module
+  defined while the package is *precompiled*
+  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). Its
+  `Pkg.test()` runs in the `Examples` workflow (job
+  `Example - RustCrateMacroPyO3Only.jl`), which installs a Python interpreter
+  with `actions/setup-python` and pins it with `PYO3_PYTHON`, as it already did
+  for `SampleCratePyO3Only.jl`.
 
 ## [0.3.0] - 2026-09-08
 
@@ -1437,7 +1458,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/atelierarith/RustCall.jl/compare/6e98d5cb62c0a0ca8b2f894c6fe53af209d9d3ea...v0.2.0
