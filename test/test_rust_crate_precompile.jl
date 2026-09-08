@@ -729,7 +729,17 @@ end
             # its selection is recorded and compared too (#339 review).
             cfgexe = joinpath(fake, "python3-config")
             write(cfgexe, "#!/bin/sh\necho -L$fake\n"); chmod(cfgexe, 0o755)
-            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
+            # The machine's own `python3` may be a framework build (macOS),
+            # for which the commands are never consulted — see below — so the
+            # implicit interpreter here is a fake that is not one: a directory
+            # holding only it, ahead of `PATH`, and answering with the same
+            # `sys.executable` as `exe` so that only the config command moves
+            # between the record and the comparison.
+            plain = mkpath(joinpath(fake, "plain"))
+            write(joinpath(plain, "python3"), "#!/bin/sh\necho \"$fake/python3\"\n")
+            chmod(joinpath(plain, "python3"), 0o755)
+            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing,
+                    "PATH" => plain * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
                 recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
                 @test any(p -> first(p) == "<python3-config selection>", recorded)
                 @test any(p -> first(p) == "<python-config selection>", recorded)
@@ -742,6 +752,9 @@ end
                     @test !RustCall._python_link_is_implicit()
                 end
                 @test RustCall._python_link_is_implicit()
+                # The fake interpreter names a *file* as its framework prefix,
+                # so it is no framework build and the commands are consulted.
+                @test RustCall._python_config_consulted()
                 @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib"; python = true)
                 withenv("PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
                     @test Dict(RustCall._python_config_selections())["python3-config"] == cfgexe
@@ -772,6 +785,27 @@ end
                 withenv("RUSTCALL_TEST_PY_LIBDIR" => lib_b) do
                     @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
                         recorded, "/crate", "lib"; python = true)
+                end
+            end
+            # A framework build of Python (macOS) answers with its framework
+            # prefix, and `python_link_source()` never runs `python3-config`
+            # for it: the commands are not inputs, so neither is recorded nor
+            # tracked, and a changed `python3-config` on `PATH` cannot warn
+            # (#339 review). The fake prints an existing *directory* for every
+            # probe, which is what the framework-prefix question sees.
+            framework = joinpath(fake, "framework")
+            mkpath(joinpath(framework, "bin"))
+            write(joinpath(framework, "bin", "python3"), "#!/bin/sh\necho \"$framework\"\n")
+            chmod(joinpath(framework, "bin", "python3"), 0o755)
+            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing,
+                    "PATH" => joinpath(framework, "bin") * (Sys.iswindows() ? ";" : ":") * fake *
+                              (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                @test RustCall._python_link_is_implicit()
+                @test RustCall._python_config_consulted() == !Sys.isapple()
+                recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                @test any(p -> occursin("-config selection", first(p)), recorded) == !Sys.isapple()
+                if Sys.isapple()
+                    @test Dict(recorded)["<python link dir>"] == framework
                 end
             end
             # `RUSTCALL_PYTHON_LIBDIR` is the directory whatever else says, and

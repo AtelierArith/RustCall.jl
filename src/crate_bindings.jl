@@ -603,7 +603,10 @@ function _recorded_build_env(; python::Bool = false)
         # only on that implicit branch: with `PYO3_PYTHON`, a configured
         # library directory, `RUSTCALL_PYTHON_LIBDIR` or CondaPkg deciding,
         # neither command is consulted and neither is an input (#339 review).
-        if _python_link_is_implicit()
+        # Nor on macOS when the implicit interpreter is a framework build:
+        # `python_link_source()` takes the framework prefix and never asks
+        # either command (`_python_config_consulted`).
+        if _python_config_consulted()
             for (name, path) in _python_config_selections()
                 push!(env, "<$name selection>" => path)
             end
@@ -633,6 +636,28 @@ function _python_link_is_implicit()
     isempty(get(ENV, "PYO3_PYTHON", "")) || return false
     isempty(get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")) || return false
     return _condapkg_link_source() === nothing
+end
+
+"""
+    _python_config_consulted() -> Bool
+
+Whether `python_link_source()` actually asks `python3-config` / `python-config`
+for the link directory: the implicit case (`_python_link_is_implicit`), minus
+the one step it takes before either command — on macOS a framework build of
+the interpreter answers with its framework prefix, and neither command is run.
+For such a Python the commands are not inputs: recording them warned about a
+changed `python3-config` on `PATH`, and tracking its file rebuilt the package,
+while the wrapper's link directory and identity had not moved (#339 review).
+Mirrors the `python3` / `python` loop of `python_link_source()` step for step,
+and is `false` when no interpreter is found at all — then nothing is consulted.
+"""
+function _python_config_consulted()
+    _python_link_is_implicit() || return false
+    for exe in ("python3", "python")
+        isempty(_python_executable(exe)) && continue
+        return !(Sys.isapple() && !isempty(_python_framework_prefix(exe)))
+    end
+    return false
 end
 
 """
@@ -2515,7 +2540,7 @@ function generate_bindings(crate_path::String;
                 String[wrapper.plan.interpreter;
                        _python_resolved(wrapper.plan.interpreter);
                        wrapper.plan.runtime_libraries;
-                       (_python_link_is_implicit() ? last.(_python_config_selections()) : String[])]
+                       (_python_config_consulted() ? last.(_python_config_selections()) : String[])]
             else
                 String[]
             end
