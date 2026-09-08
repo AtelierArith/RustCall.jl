@@ -566,7 +566,12 @@ end
         # The implicit selection moves with `PATH` when nothing pins it: the
         # old interpreter is still there and unchanged, so only the recorded
         # selection can say so (#339 review).
-        mktempdir() do fake
+        # The fake interpreters and `python3-config`s below are shell scripts:
+        # on Windows `Sys.which` looks for `.exe`/PATHEXT and a script does
+        # not run, so this block — the precedence contract included, which
+        # puts a fake `python3` on `PATH` — is Unix-only. The recorded-set
+        # tests above run everywhere.
+        Sys.iswindows() || mktempdir() do fake
             # A shim that reports itself as `sys.executable` would: the
             # selection is what the interpreter *says* it is, not the command
             # found on `PATH`, so a pyenv/asdf shim whose target moved is seen.
@@ -592,11 +597,46 @@ end
             withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
                 recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
                 @test any(p -> first(p) == "<python3-config selection>", recorded)
+                @test any(p -> first(p) == "<python-config selection>", recorded)
                 @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib"; python = true)
                 withenv("PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
-                    @test RustCall._python_config_selection() == cfgexe
+                    @test Dict(RustCall._python_config_selections())["python3-config"] == cfgexe
                     @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
                         recorded, "/crate", "lib"; python = true)
+                end
+            end
+            # The `python-config` fallback is a selector of its own: it is what
+            # answers when `python3-config` is absent or names no library
+            # directory, and `PATH` may move it alone (#339 review).
+            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
+                recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                fallback = joinpath(fake, "python-config")
+                write(fallback, "#!/bin/sh\necho -L$fake\n"); chmod(fallback, 0o755)
+                withenv("PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                    @test Dict(RustCall._python_config_selections())["python-config"] == fallback
+                    @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                        recorded, "/crate", "lib"; python = true)
+                end
+                rm(fallback)
+            end
+            # `PYO3_PYTHON` given as a bare command or a shim: the raw value is
+            # the selection (it is what `python_link_source()` pins), and what
+            # it *resolves to* is recorded beside it, so the same name pointing
+            # at another interpreter is seen (#339 review).
+            withenv("PYO3_PYTHON" => "python3",
+                    "PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                @test RustCall._python_selection() == "python3"
+                @test RustCall._python_resolved("python3") == exe
+                recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                @test ("<python resolved>" => exe) in recorded
+                @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib"; python = true)
+                other = joinpath(fake, "other"); mkpath(other)
+                write(joinpath(other, "python3"), "#!/bin/sh\necho \"$other/python3\"\n")
+                chmod(joinpath(other, "python3"), 0o755)
+                withenv("PATH" => other * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                    @test RustCall._python_selection() == "python3"        # unchanged
+                    @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                        recorded, "/crate", "lib"; python = true)         # but resolved moved
                 end
             end
 

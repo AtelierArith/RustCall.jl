@@ -465,9 +465,13 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     for dir in unique(abspath.(dirs))
         isdir(dir) || continue
         try
+            # `crate_input_files` / `crate_input_dirs` report `/`-separated
+            # relative names on every platform; `normpath` makes the joined
+            # path a native one, so the list has one spelling per file and a
+            # caller comparing paths on Windows sees `\` throughout.
             _, files = crate_input_files(dir)
             for rel in files
-                f = joinpath(dir, rel)
+                f = normpath(joinpath(dir, rel))
                 isfile(f) && push!(deps, f)
             end
             # The directories of that same walk, including the ones holding no
@@ -476,7 +480,7 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
             # parent's entry list either, because the directory was already
             # there (#339 review).
             for rel in crate_input_dirs(dir)
-                d = rel == "." ? dir : joinpath(dir, rel)
+                d = rel == "." ? dir : normpath(joinpath(dir, rel))
                 isdir(d) && push!(deps, d)
             end
         catch e
@@ -510,7 +514,7 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
                 if !startswith(lib_dir * "/", root * "/") && isdir(lib_dir)
                     _, files = crate_input_files(lib_dir)
                     for rel in files
-                        f = joinpath(lib_dir, rel)
+                        f = normpath(joinpath(lib_dir, rel))
                         isfile(f) && push!(deps, f)
                     end
                     # And this tree's directories, for the same reason as the
@@ -518,7 +522,7 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
                     # list, so a first file appearing in a directory that was
                     # already there moves nothing else (#339 review).
                     for rel in crate_input_dirs(lib_dir)
-                        d = rel == "." ? lib_dir : joinpath(lib_dir, rel)
+                        d = rel == "." ? lib_dir : normpath(joinpath(lib_dir, rel))
                         isdir(d) && push!(deps, d)
                     end
                 end
@@ -546,7 +550,7 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
         abspath(dir) == cargo_home && continue
         push!(deps, dir)
     end
-    return unique!(deps)
+    return unique!(map(normpath, deps))
 end
 
 """
@@ -570,30 +574,58 @@ function _recorded_build_env(; python::Bool = false)
             value = get(ENV, name, nothing)
             value === nothing || push!(env, name => String(value))
         end
-        push!(env, "<python selection>" => _python_selection())
+        selection = _python_selection()
+        push!(env, "<python selection>" => selection)
+        # What that selection *is*: `PYO3_PYTHON` may be a bare `python3` or a
+        # pyenv/asdf shim whose target moves under the same name, and
+        # `python_link_source()` runs the command and hashes what it reports.
+        # The resolved `sys.executable` is recorded beside the raw selection
+        # (one short subprocess, only for a PyO3 wrapper module; #339 review).
+        push!(env, "<python resolved>" => _python_resolved(selection))
         # The link directory is not the interpreter's alone: for the implicit
         # case `python_link_source()` asks a bare `python3-config --ldflags`,
-        # and `PATH` may resolve that to another installation than the
-        # interpreter's. The command's identity is recorded here; its content
-        # is tracked as a file (`_python_config_selection`, #339 review).
-        push!(env, "<python3-config selection>" => _python_config_selection())
+        # falling back to `python-config`, and `PATH` may resolve either to
+        # another installation than the interpreter's. Both commands'
+        # identities are recorded; their content is tracked as files
+        # (`_python_config_selections`, #339 review).
+        for (name, path) in _python_config_selections()
+            push!(env, "<$name selection>" => path)
+        end
     end
     return env
 end
 
 """
-    _python_config_selection() -> String
+    _python_config_selections() -> Vector{Pair{String, String}}
 
-The `python3-config` that `python_link_source()` would run for the implicit
-link directory — the first on `PATH` — or "" when there is none. Recorded and
-compared for a PyO3 wrapper module, and its file tracked, because `PATH`
-resolving it to another installation changes the rpath the wrapper is linked
-with while the interpreter, and everything else recorded, stays the same
-(#339 review).
+The `python3-config` and `python-config` that `python_link_source()` would run
+for the implicit link directory — the first of each on `PATH`, "" when there is
+none — in the order `_python_config_libdir()` tries them. Both are recorded and
+compared for a PyO3 wrapper module, and both files tracked, because `PATH`
+resolving either to another installation changes the rpath the wrapper is
+linked with while the interpreter, and everything else recorded, stays the
+same. Recording the fallback even when the first command answers is
+deliberate: which one *answers* is only known by running them, and a load
+must not (#339 review).
 """
-function _python_config_selection()
-    found = Sys.which("python3-config")
-    return found === nothing ? "" : String(found)
+function _python_config_selections()
+    map(("python3-config", "python-config")) do name
+        found = Sys.which(name)
+        name => (found === nothing ? "" : String(found))
+    end
+end
+
+"""
+    _python_resolved(command) -> String
+
+The `sys.executable` that `command` reports, or `command` itself when it cannot
+be run; "" for "". A bare `python3` or a shim is one path on `PATH` and another
+underneath, and only the interpreter can say which (#339 review).
+"""
+function _python_resolved(command::AbstractString)
+    isempty(command) && return ""
+    resolved = _python_executable(command)
+    return isempty(resolved) ? String(command) : resolved
 end
 
 """
@@ -2398,8 +2430,9 @@ function generate_bindings(crate_path::String;
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
                                      extra_inputs = String[wrapper.plan.interpreter;
+                                                           _python_resolved(wrapper.plan.interpreter);
                                                            wrapper.plan.runtime_libraries;
-                                                           _python_config_selection()],
+                                                           last.(_python_config_selections())],
                                      python = true)
         end
     end
