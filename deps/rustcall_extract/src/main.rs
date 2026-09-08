@@ -200,6 +200,17 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             // twice by rustc and belongs in the manifest twice, under each
             // module's own path (#343 review).
             let mut seen: Vec<(PathBuf, Vec<String>)> = Vec::new();
+            // What the caller listed. A file it named is scanned as its own
+            // root, and following a fragment into it as well would scan it
+            // twice under two module paths — a `#[julia]` item would then
+            // claim its symbol twice and the run would fail with a
+            // duplicate-symbol error. In this mode the caller's list wins
+            // (#343 review).
+            let listed: Vec<PathBuf> = opts
+                .files
+                .iter()
+                .map(|f| fs::canonicalize(f).unwrap_or_else(|_| f.clone()))
+                .collect();
             while let Some(QueuedFile {
                 file,
                 dir,
@@ -233,7 +244,14 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                         continue;
                     }
                 };
-                queue.extend(pulled_in(&file, &dir, pending, follow_modules));
+                for next in pulled_in(&file, &dir, pending, follow_modules) {
+                    let canonical =
+                        fs::canonicalize(&next.file).unwrap_or_else(|_| next.file.clone());
+                    if listed.contains(&canonical) {
+                        continue;
+                    }
+                    queue.push(next);
+                }
             }
             scan.finish(&mut merged).map_err(|e| e.to_string())?;
         }

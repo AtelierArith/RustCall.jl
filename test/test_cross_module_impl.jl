@@ -626,6 +626,16 @@ end
             write(plain, "pub mod nested;\n")
             plain_manifest = RustCall.extract_manifest([plain]; mode = "crate")
             @test isempty(plain_manifest["functions"])
+
+            # And a caller that lists *both* the including file and the
+            # fragment's module file gets one scan of it, not two: scanning it
+            # as a root and again under `nested` would claim `rustcall_deep`
+            # twice and fail the run (#343 review).
+            both = RustCall.extract_manifest([lib, joinpath(dir, "frag", "nested.rs")];
+                                             mode = "crate")
+            @test sort([f["name"] for f in both["functions"]]) == ["deep", "from_api"]
+            @test sort([f["symbol"] for f in both["functions"]]) ==
+                  ["rustcall_deep", "rustcall_from_api"]
         end
     end
 end
