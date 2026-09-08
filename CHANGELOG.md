@@ -104,6 +104,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where the struct has no local string helper that symbol does not exist, so
   the buffer leaks in silence. `src/manifest.jl` validates exact equality, so
   the version is what makes such a consumer refuse the manifest.
+- **An out-of-line `mod` inside an `include!`d file is followed**
+  ([#343](https://github.com/AtelierArith/RustCall.jl/issues/343)). The crate
+  walk followed a literal `include!("api.rs")` since #315, but it did so inside
+  `rustcall_core`, which is not the layer that owns the filesystem: a
+  `mod nested;` written in the fragment was reported to nobody, so a `#[julia]`
+  item in `nested.rs` was missing from the manifest while the proc-macro still
+  wrapped it, and the PyO3 scan never saw a fragment's items at all. Both scans
+  are now fed by one walk. `TreeScan::file` returns a `PullIns` — the
+  out-of-line `mod` declarations *and* the `include!` fragments — and
+  `rustcall-extract`, the only layer that touches files, follows both: a
+  fragment is read and scanned as a file of its own at the *including* item's
+  position (same module path, same `#[julia] mod` chain, same `#[cfg]`), and a
+  `mod` declared inside it resolves against the **fragment's own directory**,
+  which is rustc's rule (`include!("frag/api.rs")` in `src/lib.rs` with
+  `mod nested;` inside wants `src/frag/nested.rs`, whether or not the
+  `include!` sits in an inline module). A fragment that does not exist, or that
+  is not a list of items (`include!("table.rs")` holding `[1, 2, 3]`), is noted
+  on stderr and skipped as a missing `mod` target already was — never a failed
+  scan.
 
 ## [0.3.0] - 2026-09-08
 

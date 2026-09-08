@@ -6,17 +6,54 @@
 //! walk the tree the way `rustcall-extract --crate-root` does, one
 //! `TreeScan::file` call per file with its real module path.
 
-use rustcall_core::extract::{extract_crate, TreeScan};
+use rustcall_core::extract::{extract_crate, FilePosition, TreeScan};
 use rustcall_core::manifest::{Manifest, Mode, Struct};
 
 /// Scan `files` — `(module path, label, source)` — as one crate.
+///
+/// The out-of-line `mod` declarations are *given* by the caller (each file
+/// comes with its module path), but `include!` fragments are followed the way
+/// `rustcall-extract` follows them: read from disk, relative to the including
+/// file's directory, and scanned at the including item's position (#343). A
+/// test that uses `include!` therefore writes real files and passes real
+/// paths as labels.
 fn scan_tree(files: &[(&[&str], &str, &str)]) -> Result<Manifest, String> {
     let mut manifest = Manifest::new(Mode::Crate);
     let mut scan = TreeScan::new();
     for (path, label, source) in files {
         let path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
-        scan.file(source, None, &path, true, &[], &mut manifest, label)
-            .map_err(|e| e.to_string())?;
+        let mut queue = vec![(
+            std::path::PathBuf::from(label),
+            source.to_string(),
+            FilePosition::module(&path, true, &[]),
+            false,
+        )];
+        while let Some((file, source, position, fragment)) = queue.pop() {
+            let pulled = match scan.file(
+                &source,
+                None,
+                &position,
+                &mut manifest,
+                &file.display().to_string(),
+            ) {
+                Ok(v) => v,
+                // A fragment that is not a list of items is left to the
+                // compiler, as `rustcall-extract` leaves it.
+                Err(_) if fragment => continue,
+                Err(e) => return Err(e.to_string()),
+            };
+            let here = file
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .to_path_buf();
+            for inc in pulled.includes {
+                let path = here.join(&inc.path);
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                queue.push((path, text, inc.position, true));
+            }
+        }
     }
     scan.finish(&mut manifest).map_err(|e| e.to_string())?;
     manifest.sort();

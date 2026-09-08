@@ -451,3 +451,194 @@ end
         @test gauge_exports("CmiInlineGauge_cmi_cross_split_free_rust_string")
     end
 end
+
+# rustc resolves a `mod` written inside an `include!`d fragment against the
+# **fragment's own** directory, not the including file's module directory:
+# `include!("frag/api.rs")` in `src/lib.rs` with `mod nested;` in `api.rs`
+# compiles `src/frag/nested.rs`. (Verified against rustc: with the file only at
+# `src/nested.rs` the build fails with "create file src/frag/nested.rs".) The
+# fragment's items still belong to the *including* module — `nested` is a child
+# of the crate root here, not of anything called `frag`.
+@testset "A mod declared inside an include! fragment is followed (#343)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the include!-plus-mod scan test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src", "frag"))
+            macros = replace(CMI_MACROS_PATH, "\\" => "/")
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "included_mod"
+                version = "0.1.0"
+                edition = "2021"
+
+                [lib]
+                crate-type = ["cdylib"]
+
+                [dependencies]
+                juliacall_macros = { path = "$macros" }
+                """)
+            write(joinpath(dir, "src", "frag", "api.rs"), """
+                pub mod nested;
+                #[julia]
+                pub fn from_api() -> i32 { nested::deep() }
+                """)
+            # Next to the fragment, which is where rustc looks. It is a
+            # module of its own, so it brings its own `use` — the fragment
+            # above inherits the crate root's, because it is compiled into it.
+            write(joinpath(dir, "src", "frag", "nested.rs"), """
+                use juliacall_macros::julia;
+                #[julia]
+                pub fn deep() -> i32 { 7 }
+                """)
+            write(joinpath(dir, "src", "lib.rs"), """
+                use juliacall_macros::julia;
+                include!("frag/api.rs");
+                #[julia]
+                pub fn root_one() -> i32 { 1 }
+                """)
+
+            info = RustCall.scan_crate(dir)
+            names = sort([f.name for f in info.julia_functions])
+            @test names == ["deep", "from_api", "root_one"]
+            symbols = Dict(f.name => f.symbol for f in info.julia_functions)
+            # A file module is transparent to the `#[julia]` symbol scheme
+            # (#300), so `deep` keeps the crate-root symbol; what #343 fixes is
+            # that it is in the manifest at all.
+            @test symbols["deep"] == "rustcall_deep"
+
+            # And the crate really does compile with this layout, so the
+            # manifest describes what rustc builds.
+            bindings = RustCall.@rust_crate dir
+            @test bindings.deep() == 7
+            @test bindings.from_api() == 7
+            @test bindings.root_one() == 1
+        end
+    end
+end
+
+# A `mod` inside a fragment whose file does not exist is noted and skipped, the
+# way a missing `mod` target has always been: the scan describes what it can
+# see rather than failing (#343).
+@testset "A mod inside a fragment that names no file is skipped (#343)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the missing-mod-in-fragment test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            macros = replace(CMI_MACROS_PATH, "\\" => "/")
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "missing_mod_in_fragment"
+                version = "0.1.0"
+                edition = "2021"
+
+                [lib]
+                crate-type = ["cdylib"]
+
+                [dependencies]
+                juliacall_macros = { path = "$macros" }
+                """)
+            write(joinpath(dir, "src", "api.rs"), """
+                #[cfg(feature = "never")]
+                pub mod absent;
+                #[julia]
+                pub fn present() -> i32 { 3 }
+                """)
+            write(joinpath(dir, "src", "lib.rs"), """
+                use juliacall_macros::julia;
+                include!("api.rs");
+                """)
+
+            info = RustCall.scan_crate(dir)
+            @test [f.name for f in info.julia_functions] == ["present"]
+        end
+    end
+end
+
+# One fragment `include!`d under two different modules is compiled twice by
+# rustc and belongs in the manifest twice, under each module's own path. The
+# walk that has no crate root keyed the files it had seen by path alone, so the
+# second position was dropped and one module's binding went missing (#343
+# review).
+@testset "A fragment included under two modules is scanned twice (#343 review)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the twice-included fragment test"
+    else
+        mktempdir() do dir
+            write(joinpath(dir, "frag.rs"), """
+                #[julia]
+                pub fn run() -> i32 { 1 }
+                """)
+            lib = joinpath(dir, "lib.rs")
+            write(lib, """
+                use juliacall_macros::julia;
+                #[julia]
+                pub mod a { include!("frag.rs"); }
+                #[julia]
+                pub mod b { include!("frag.rs"); }
+                """)
+
+            # The no-crate-root walk: every file argument is its own root.
+            manifest = RustCall.extract_manifest([lib]; mode = "crate")
+            symbols = sort([f["symbol"] for f in manifest["functions"]])
+            @test symbols == ["rustcall_a__run", "rustcall_b__run"]
+
+            # And the same through the crate-root walk, which keyed correctly
+            # already — the two paths must agree.
+            rooted = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib)
+            @test sort([f["symbol"] for f in rooted["functions"]]) == symbols
+        end
+    end
+end
+
+# The no-crate-root walk does not follow a listed file's own `mod` declarations
+# — the caller lists the files it wants — but a fragment's are not the caller's
+# to list: nothing outside the crate names them, and rustc compiles them. So
+# they are followed, resolved against the fragment's own directory (#343
+# review).
+@testset "A mod declared inside a fragment is followed without a crate root (#343 review)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the no-root fragment-module test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "frag"))
+            write(joinpath(dir, "frag", "api.rs"), """
+                pub mod nested;
+                #[julia]
+                pub fn from_api() -> i32 { 1 }
+                """)
+            write(joinpath(dir, "frag", "nested.rs"), """
+                use juliacall_macros::julia;
+                #[julia]
+                pub fn deep() -> i32 { 2 }
+                """)
+            lib = joinpath(dir, "lib.rs")
+            write(lib, """
+                use juliacall_macros::julia;
+                include!("frag/api.rs");
+                """)
+
+            manifest = RustCall.extract_manifest([lib]; mode = "crate")
+            names = sort([f["name"] for f in manifest["functions"]])
+            @test names == ["deep", "from_api"]
+
+            # A listed file's own `mod` is still the caller's to list: this
+            # walk has no module tree to place it in.
+            plain = joinpath(dir, "plain.rs")
+            write(plain, "pub mod nested;\n")
+            plain_manifest = RustCall.extract_manifest([plain]; mode = "crate")
+            @test isempty(plain_manifest["functions"])
+
+            # And a caller that lists *both* the including file and the
+            # fragment's module file gets one scan of it, not two: scanning it
+            # as a root and again under `nested` would claim `rustcall_deep`
+            # twice and fail the run (#343 review).
+            both = RustCall.extract_manifest([lib, joinpath(dir, "frag", "nested.rs")];
+                                             mode = "crate")
+            @test sort([f["name"] for f in both["functions"]]) == ["deep", "from_api"]
+            @test sort([f["symbol"] for f in both["functions"]]) ==
+                  ["rustcall_deep", "rustcall_from_api"]
+        end
+    end
+end
