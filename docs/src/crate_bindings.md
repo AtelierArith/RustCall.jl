@@ -544,6 +544,15 @@ precompile cache like any other submodule. What happens, and when:
   package, building the crate again. Deterministic, and never a failed
   `dlopen` of a path that is gone.
 
+One thing Julia's invalidation cannot see: **the environment**. `RUSTFLAGS`,
+`PYO3_PYTHON`, a `PYO3_CONFIG_FILE` pointing at a *different* file — all of them
+decide the artifact, and none of them is a file the image can track. Change one
+and every tracked file is still what it was, so the image stays valid and the
+package loads the library built under the previous values. The generated module
+records the values it was built under and `@warn`s at load time when they no
+longer match, naming the variables; the fix is to precompile the package again
+(`Pkg.precompile(; force = true)`, or touch a source file of the crate).
+
 `cache=false` is not the shape to use in a package. The library is then not
 the cache copy but whatever the build produced: Cargo's own output under the
 crate's `target/` for a crate that is already a `cdylib`, and a directory of

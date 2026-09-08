@@ -411,3 +411,33 @@ end
         end
     end
 end
+
+# Part of the artifact identity is not a file — `RUSTFLAGS`, `PYO3_PYTHON`, a
+# `PYO3_CONFIG_FILE` pointing somewhere else — and Julia invalidates a
+# precompile image from files alone. The module cannot make the image stale, so
+# it records the values it was built under and says so at load time rather than
+# loading a library built for another environment in silence (#339 review).
+@testset "A changed build environment is reported at load time (#339 review)" begin
+    # The recorded set is whatever `artifact_build_env` captured at generation,
+    # so it is taken from the same environment the comparison starts in.
+    withenv("RUSTFLAGS" => "-C target-cpu=native", "PYO3_PYTHON" => "/usr/bin/python3") do
+        recorded = Any[String(k) => String(v) for (k, v) in RustCall.artifact_build_env()]
+        @test any(p -> first(p) == "PYO3_PYTHON", recorded)
+
+        # Unchanged: nothing to say.
+        @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib")
+
+        # Pointing elsewhere: warned, which is the case Julia's file-based
+        # invalidation cannot see.
+        withenv("PYO3_PYTHON" => "/opt/py/bin/python3") do
+            @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                recorded, "/crate", "lib")
+        end
+
+        # Gone away: warned too.
+        withenv("PYO3_PYTHON" => nothing) do
+            @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                recorded, "/crate", "lib")
+        end
+    end
+end

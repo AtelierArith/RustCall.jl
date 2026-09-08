@@ -184,6 +184,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   precompiled and then **segfaulted** on load, because the constant was bound
   over the module binding the macro had just created (found in review of
   [#351](https://github.com/AtelierArith/RustCall.jl/pull/351)).
+- **A changed build environment is reported rather than ignored**
+  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). `RUSTFLAGS`,
+  `PYO3_PYTHON` and a `PYO3_CONFIG_FILE` pointing at another file decide the
+  artifact but are not files, so Julia — which invalidates a precompile image
+  from files — keeps the image and the package loads a library built under the
+  previous values. The generated module records the environment it was built
+  under (`artifact_build_env`) and `__init__` warns when it no longer matches,
+  naming the variables that changed and how to force a rebuild.
+  [#355](https://github.com/AtelierArith/RustCall.jl/issues/355) tracks
+  representing such inputs in the invalidation scheme itself.
 - **`@rust_crate <crate> cache=false` on a crate that RustCall has to wrap**
   ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). A crate
   whose `[lib]` is not a `cdylib` is bound through a generated wrapper project

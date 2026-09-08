@@ -527,6 +527,51 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
 end
 
 """
+    _warn_if_build_env_changed(recorded, crate_path, lib_name)
+
+Warn when the environment that decides this crate's artifact is not the one it
+was built under.
+
+Julia invalidates a precompile image from *files*, and
+`Base.include_dependency` is the only lever a generated module has. Part of the
+artifact identity is not a file: `RUSTFLAGS`, `PYO3_PYTHON`, a
+`PYO3_CONFIG_FILE` **pointing somewhere else**, and the rest of the allowlist
+`artifact_build_env` captures. Change one of those and every file the image
+tracks is still byte-for-byte what it was, so Julia keeps the image and the
+module loads a library built for the other environment — silently, and with a
+Python preload plan to match (#339 review).
+
+Nothing here can invalidate the image; what it can do is refuse to be silent.
+The module records the values it was generated under and compares them at load
+time, which is cheap — the allowlist is read from `ENV`, no probe, no build.
+The fix it names is the one that works: force the package to be precompiled
+again.
+"""
+function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString)
+    current = try
+        artifact_build_env()
+    catch e
+        @debug "Could not read the build environment" exception = e
+        return nothing
+    end
+    was = Dict{String, String}(String(k) => String(v) for (k, v) in recorded)
+    now = Dict{String, String}(String(k) => String(v) for (k, v) in current)
+    changed = sort!(collect(union(keys(was), keys(now))))
+    filter!(k -> get(was, k, nothing) != get(now, k, nothing), changed)
+    isempty(changed) && return nothing
+    @warn """
+          RustCall: the build environment changed since `$(lib_name)` was compiled into this \
+          package's precompile image, and Julia cannot see that — it invalidates an image from \
+          files, and these are not files. The library that is about to load was built under the \
+          previous values.
+
+          Force a rebuild with `Pkg.precompile(; force = true)`, or touch a source file of the \
+          crate.
+          """ crate = crate_path variables = changed
+    return nothing
+end
+
+"""
     emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing) -> Expr
 
 Generate a Julia module expression containing bindings for the crate.
@@ -571,6 +616,16 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # The files an edit to the crate would touch; see
     # `_crate_precompile_dependencies`.
     crate_inputs = _crate_precompile_dependencies(info.path)
+    # The part of the artifact identity that is *not* a file, recorded so the
+    # module can say so at load time (`_warn_if_build_env_changed`).
+    build_env = try
+        artifact_build_env()
+    catch e
+        @debug "Could not record the build environment" exception = e
+        Pair{String, String}[]
+    end
+    recorded_env = Any[String(k) => String(v) for (k, v) in build_env]
+    crate_dir = abspath(String(info.path))
 
     # Build the module body as a block
     module_body = quote
@@ -614,6 +669,12 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         for _input in _CRATE_INPUTS
             Base.include_dependency(_input)
         end
+        # The rest of the identity is environment, not files —
+        # `RUSTFLAGS`, `PYO3_PYTHON`, a `PYO3_CONFIG_FILE` pointing elsewhere.
+        # Julia cannot invalidate an image on those, so the values are recorded
+        # and `__init__` says when they no longer match (#339 review).
+        const _BUILD_ENV = $recorded_env
+        const _CRATE_DIR = $crate_dir
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -637,6 +698,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # assignment after it would overwrite a newer generation that a
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
+            RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME)
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
