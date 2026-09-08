@@ -571,8 +571,29 @@ function _recorded_build_env(; python::Bool = false)
             value === nothing || push!(env, name => String(value))
         end
         push!(env, "<python selection>" => _python_selection())
+        # The link directory is not the interpreter's alone: for the implicit
+        # case `python_link_source()` asks a bare `python3-config --ldflags`,
+        # and `PATH` may resolve that to another installation than the
+        # interpreter's. The command's identity is recorded here; its content
+        # is tracked as a file (`_python_config_selection`, #339 review).
+        push!(env, "<python3-config selection>" => _python_config_selection())
     end
     return env
+end
+
+"""
+    _python_config_selection() -> String
+
+The `python3-config` that `python_link_source()` would run for the implicit
+link directory — the first on `PATH` — or "" when there is none. Recorded and
+compared for a PyO3 wrapper module, and its file tracked, because `PATH`
+resolving it to another installation changes the rpath the wrapper is linked
+with while the interpreter, and everything else recorded, stays the same
+(#339 review).
+"""
+function _python_config_selection()
+    found = Sys.which("python3-config")
+    return found === nothing ? "" : String(found)
 end
 
 """
@@ -2377,7 +2398,8 @@ function generate_bindings(crate_path::String;
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
                                      extra_inputs = String[wrapper.plan.interpreter;
-                                                           wrapper.plan.runtime_libraries],
+                                                           wrapper.plan.runtime_libraries;
+                                                           _python_config_selection()],
                                      python = true)
         end
     end

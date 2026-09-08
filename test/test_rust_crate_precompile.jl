@@ -584,6 +584,22 @@ end
                 recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
                 @test any(p -> first(p) == "<python selection>", recorded)
             end
+            # `python3-config` decides the implicit link directory, and `PATH`
+            # may resolve it to another installation than the interpreter's:
+            # its selection is recorded and compared too (#339 review).
+            cfgexe = joinpath(fake, "python3-config")
+            write(cfgexe, "#!/bin/sh\necho -L$fake\n"); chmod(cfgexe, 0o755)
+            withenv("PYO3_PYTHON" => nothing, "RUSTCALL_PYTHON_LIBDIR" => nothing) do
+                recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                @test any(p -> first(p) == "<python3-config selection>", recorded)
+                @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib"; python = true)
+                withenv("PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
+                    @test RustCall._python_config_selection() == cfgexe
+                    @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
+                        recorded, "/crate", "lib"; python = true)
+                end
+            end
+
             # The selector follows `python_link_source()` step for step, and
             # the contract is that the two agree — here, and under the two
             # precedences that differ from "pinned, else PATH": pyo3's own
