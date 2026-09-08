@@ -453,20 +453,29 @@ generics_policy() = LoadPolicy("generics-monomorphization";
 key together with the `IRUST_FUNCTIONS` entry. Since #278 the snippet's identity
 is `artifact_key` of an `ArtifactId` over the source and the argument types it
 is compiled for; it used to be Julia's session-randomized `hash`.
+
+`boundary_catches_panics` is `true` since #346: the snippet is compiled as a
+`#[julia]` item and expanded by `rustcall-extract`, so it gets the same
+generated wrapper as every other RustCall-owned door — `catch_unwind` plus the
+thread-local panic channel. Until then `@irust` hand-wrote a bare
+`#[no_mangle] pub extern "C"` entry point, and this field said so: an unwinding
+artifact with no boundary, which is exactly the undefined behaviour #244 is
+about (it aborted the process).
 """
 irust_policy() = LoadPolicy("irust";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
     panic_strategy = :unwind,
-    boundary_catches_panics = false,
+    boundary_catches_panics = true,
     registry = :rust_libraries,
     registry_key_kind = :irust_hash,
     sets_current_lib = false,
     finalizer_frees = false,
     call_sites = ["src/ruststr.jl (_compile_and_call_irust)"],
-    issues = [250, 278],
+    issues = [250, 278, 346],
     notes = "IRUST_FUNCTIONS is dropped with the library by " *
             "unload_artifact! since B1, so an unloaded snippet leaves no memo " *
-            "behind.")
+            "behind. The snippet is a #[julia] item since #346, so the boundary " *
+            "catches.")
 
 """
     hot_reload_policy() -> LoadPolicy

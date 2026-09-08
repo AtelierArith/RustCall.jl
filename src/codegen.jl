@@ -415,8 +415,8 @@ function purge_library_state!(lib_name::AbstractString)
     for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
         info.lib_name == name && delete!(MONOMORPHIZED_FUNCTIONS, key)
     end
-    for (key, (lib, _)) in collect(IRUST_FUNCTIONS)
-        lib == name && delete!(IRUST_FUNCTIONS, key)
+    for (key, snippet) in collect(IRUST_FUNCTIONS)
+        snippet.lib_name == name && delete!(IRUST_FUNCTIONS, key)
     end
     return nothing
 end

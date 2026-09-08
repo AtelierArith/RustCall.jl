@@ -35,6 +35,9 @@ const REGISTRY_LOCK = ReentrantLock()
 include("types.jl")
 include("typetranslation.jl")
 include("ffi_contract.jl")
+# rustc's `--error-format=json` diagnostics, read as data rather than as text
+# (#348). Depends on nothing; must precede compiler.jl, which probes with it.
+include("rustc_json.jl")
 include("compiler.jl")
 include("codegen.jl")
 include("exceptions.jl")

@@ -332,6 +332,138 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
 end
 
 """
+    RustTypeProbe
+
+The answer of `probe_rust_expression_type`: the Rust type of an expression as
+**rustc** named it, and rustc's own rendered diagnostics.
+
+`rust_type` is `nothing` when the probe could not name a type — which always
+means the snippet does not type-check for a reason of its own, and `rendered`
+is then the diagnosis to show the user.
+"""
+struct RustTypeProbe
+    rust_type::Union{Nothing, String}
+    rendered::String
+end
+
+"""
+    probe_rust_expression_type(snippet, params; compiler) -> RustTypeProbe
+
+Ask rustc what type a Rust snippet evaluates to.
+
+The snippet is compiled — metadata only, no codegen and no linking — as the
+body of a function declared to return `()`:
+
+```rust
+fn __rustcall_irust_probe(arg1: i64) {
+    <snippet>
+}
+```
+
+so rustc reports the snippet's own type against `()` as `E0308`, with the
+primary span labelled ``expected `()`, found `i64` ``. If it compiles cleanly,
+the snippet's value really is `()`.
+
+Reading the type out of the compiler instead of guessing it from the source is
+the whole point (#348): the guess it replaces called anything containing `->`,
+`=>` or a comparison a `bool`, which is most of the ways to write more than one
+line of Rust. The diagnostics are read as **data** — `rustc --error-format=json`
+objects, through `rustc_diagnostics` — never as rendered text; the `rendered`
+field is kept only to show the user.
+
+Two labels name no concrete type: an unconstrained integer literal is reported
+as `integer` and an unconstrained float literal as `floating-point number`.
+Those are inference variables that unify with any integer / float type, so they
+are answered with `i64` and `f64` — Julia's `Int` and `Float64`, and `f64` is
+Rust's own default as well.
+
+A probe that fails for any *other* reason (a syntax error, an unknown method, a
+genuine type error) yields `rust_type === nothing`: the caller raises and shows
+`rendered`, because that output is the diagnosis.
+"""
+function probe_rust_expression_type(snippet::AbstractString, params::AbstractString;
+                                    compiler::RustCompiler = get_default_compiler())
+    return mktempdir() do dir
+        src = joinpath(dir, "probe.rs")
+        out = joinpath(dir, "probe.rmeta")
+        write(src, string("#![allow(unused)]\nfn __rustcall_irust_probe(", params, ") {\n",
+                          snippet, "\n}\n"))
+        cmd_args = [
+            string(rustc().exec[1]),
+            "--crate-type=lib",
+            "--emit=metadata",
+            "--error-format=json",
+            "--target=$(compiler.target_triple)",
+            "-o", out,
+            src,
+        ]
+        stderr_io = IOBuffer()
+        ok = try
+            proc = run(pipeline(Cmd(cmd_args), stderr = stderr_io), wait = false)
+            wait(proc)
+            Base.success(proc)
+        catch e
+            @debug "The @irust type probe could not run rustc" exception = e
+            false
+        end
+        text = String(take!(stderr_io))
+        diagnostics = rustc_diagnostics(text)
+        rendered = _rendered_errors(diagnostics)
+        # A clean probe means the body really does evaluate to `()`.
+        ok && return RustTypeProbe("()", rendered)
+
+        # Only diagnostics with a span are real; "aborting due to N previous
+        # errors" is an error-level summary with none.
+        errors = [d for d in diagnostics
+                  if diagnostic_level(d) == "error" && !isempty(diagnostic_spans(d))]
+        isempty(errors) && return RustTypeProbe(nothing, isempty(rendered) ? text : rendered)
+
+        found = String[]
+        for d in errors
+            t = _probe_type_from_diagnostic(d)
+            t === nothing && return RustTypeProbe(nothing, rendered)  # a real error
+            push!(found, t)
+        end
+        isempty(found) && return RustTypeProbe(nothing, rendered)
+        return RustTypeProbe(first(found), rendered)
+    end
+end
+
+# The prefix rustc's E0308 label carries when the mismatch is the probe's own
+# `()` return type. Matched with plain string operations on a *diagnostic*
+# (`scripts/lint_rust_syntax_regex.sh` is about Rust source, which this is not;
+# and it is a field of a JSON object, not rendered text).
+const _PROBE_LABEL_PREFIX = "expected `()`, found "
+
+# The Rust type one error diagnostic names, or `nothing` if that diagnostic is
+# not the probe's `()` mismatch — in which case the snippet has a real problem.
+function _probe_type_from_diagnostic(d::AbstractDict)
+    diagnostic_code(d) == "E0308" || return nothing
+    label = primary_span_label(d)
+    startswith(label, _PROBE_LABEL_PREFIX) || return nothing
+    rest = strip(SubString(label, ncodeunits(_PROBE_LABEL_PREFIX) + 1))
+    # An inference variable rustc could not pin down: any integer / float type
+    # satisfies it, so name the one Julia would.
+    rest == "integer" && return "i64"
+    rest == "floating-point number" && return "f64"
+    (length(rest) > 2 && startswith(rest, '`') && endswith(rest, '`')) &&
+        return String(chop(rest; head = 1, tail = 1))
+    return nothing
+end
+
+# rustc's own rendering of the error-level diagnostics, for a message a human
+# reads. Never parsed.
+function _rendered_errors(diagnostics)
+    parts = String[]
+    for d in diagnostics
+        diagnostic_level(d) == "error" || continue
+        rendered = get(d, "rendered", "")
+        rendered isa String && !isempty(rendered) && push!(parts, rendered)
+    end
+    return join(parts)
+end
+
+"""
     wrap_rust_code(code::String) -> String
 
 Wrap Rust code to ensure it has the necessary FFI exports.

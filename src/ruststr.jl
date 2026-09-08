@@ -1110,24 +1110,96 @@ end
 # irust"" string literal implementation
 
 """
-Registry for irust functions.
-Maps function hash to (library name, function name).
+    IrustSnippet
+
+What one compiled `@irust` snippet is, from the point of view of a later call:
+the library it was loaded into, the **exported symbol** of the generated
+wrapper (`rustcall_irust_func_<id>`, the one with the `catch_unwind` boundary),
+and the Julia type its result is read back as.
+
+All three are decided once, when the snippet is compiled, and stored together.
+The return type in particular is *not* re-derived on a cache hit: it is the type
+the Rust function was actually generated with, so a second route to it — a
+changed heuristic, a different Julia version — can never disagree with the ABI
+the compiled code has (#346).
 """
-const IRUST_FUNCTIONS = Dict{String, Tuple{String, String}}()
+struct IrustSnippet
+    lib_name::String
+    symbol::String
+    return_type::Type
+end
+
+"""
+Registry for irust snippets.
+Maps a snippet's artifact key to the `IrustSnippet` describing what was built.
+"""
+const IRUST_FUNCTIONS = Dict{String, IrustSnippet}()
 
 """
     @irust(code, args...)
     @irust(code)
 
-Execute Rust code at function scope.
+Compile one Rust **expression** into a throwaway function and call it.
 
-This macro compiles Rust code into a temporary function and calls it.
-Julia variables can be referenced using `\\\$var` syntax or passed as arguments.
+`@irust` is the small end of RustCall: a scalar expression typed at the REPL or
+in a notebook. For anything larger — several functions, a `String`, a
+`Result`/`Option`, a struct, or code you want to keep — use `rust\"\"\"...\"\"\"`
+with `@rust`, which takes its types from the Rust side instead of guessing them.
 
-# Features
-- Automatic variable binding with `\\\$var` syntax
-- Improved type inference from code
-- Better error messages
+# Interpolation
+
+`\\\$name` is replaced by the value of the Julia variable `name`, which is passed
+to the generated Rust function as an argument. The rules:
+
+- `\\\$name` matches an identifier: an ASCII letter or `_` followed by letters,
+  digits and `_`. `\\\$obj.field` therefore interpolates `obj` only, and
+  `.field` is left as Rust source.
+- The same variable used twice is passed once.
+- Substitution is **textual and unconditional**, so it happens inside Rust
+  string literals too: `"\\\$x"` becomes the *value* of `x`, not the text
+  `\\\$x`.
+- `\\\$\\\$` is an escape for a literal `\\\$`, consuming no variable. Write
+  `macro_rules!` metavariables as `\\\$\\\$name`.
+- A `\\\$` that is not followed by an identifier is left alone.
+- Julia itself interpolates a bare `\$` inside `"..."`, so a quoted argument has
+  to escape it with a backslash — that is why every example below reads
+  `@irust("\\\$x * 2")`. The string-literal form `irust"..."` is not
+  interpolated by Julia and needs no backslash at all.
+
+Variables may also be passed explicitly and referenced as `arg1`, `arg2`, …
+
+# Body
+
+The snippet is the **body** of the generated function, so a trailing expression
+is its value, an explicit `return` works, and statements, `let` bindings, loops
+and multi-line snippets need no special treatment.
+
+# Return type
+
+The return type is rustc's, not a guess: the snippet is type-checked on its own
+first, and the type it evaluates to becomes the generated function's return
+type (#348). An unsuffixed integer literal is an `i64` and an unsuffixed float
+literal an `f64`, as in Julia; write `1u8`, `2.0f32` and so on for the rest. A
+snippet whose value is `()` returns `nothing`. When the snippet does not
+type-check, the error carries rustc's own diagnostic.
+
+# Limitations
+
+See "Limitations of `@irust`" in the manual. In short:
+
+- arguments and results are **scalars only**: `Int8`…`Int64`, `UInt8`…`UInt64`,
+  `Float32`, `Float64`, `Bool`. No `String`, arrays, structs or `Int128` —
+  `rust\"\"\"...\"\"\"` handles those;
+- `\\\$name` substitution is **textual**, so it happens inside Rust string
+  literals too, and `\\\$obj.field` interpolates `obj` only;
+- `@irust` is **not type-stable**: the return type is decided at run time from
+  the snippet;
+- each new snippet costs two `rustc` invocations (the type probe and the
+  build), memoized afterwards. `@irust` is for exploration; a package should
+  use `rust\"\"\"...\"\"\"` with `@rust`.
+
+A Rust panic inside the snippet is a catchable `RustPanicError`, as it is on
+every other RustCall path (#346).
 
 # Examples
 ```julia
@@ -1141,67 +1213,85 @@ function myfunc(x)
     @irust("arg1 * 2", x)
 end
 
-# Multiple variables
-function add_and_multiply(a, b, c)
-    @irust("\\\$a + \\\$b * \\\$c")
-end
+# Statements and a trailing expression
+@irust("let t = 20i64; t + 22")
 ```
-
-For more complex cases, use `rust\"\"\"` to define functions explicitly.
 """
 macro irust(code, args...)
-    # Handle different input types
-    if isa(code, AbstractString)
-        # String literal: parse $var syntax
-        code_str = code
-        vars_from_code, processed_code = _parse_irust_variables(code_str)
-
-        # Combine variables from $var syntax and explicit arguments
-        # Note: args is a tuple from varargs, so we need to collect it
-        all_vars = vcat(vars_from_code, collect(args))
-
-        # Build the call expression
-        if isempty(all_vars)
-            return quote
-                _compile_and_call_irust($processed_code)
-            end
-        else
-            # Create escaped variable expressions
-            # Each variable needs to be escaped to be evaluated in the calling scope
-            var_exprs = [esc(var) for var in all_vars]
-
-            # Build the call expression with proper argument splatting
-            # We need to call RustCall._compile_and_call_irust with the escaped variables
-            return Expr(:call, GlobalRef(RustCall, :_compile_and_call_irust), processed_code, var_exprs...)
-        end
-    else
-        # Non-string: treat as expression (for future expansion)
-        error("@irust expects a string literal as the first argument. Got: $(typeof(code))")
-    end
+    return _irust_expansion(code, args, "@irust")
 end
 
 """
     @irust_str(code)
 
-String literal form of @irust. Use @irust("code", args...) for better syntax.
+String-literal form of `@irust`: `irust"\$x * 2"`.
+
+Julia does not interpolate inside a non-standard string literal, so `\$name`
+reaches the macro as written and needs no backslash. Everything else — the
+interpolation rules, the body rules, and the limitations — is `@irust`'s;
+read its docstring first, and reach for `rust\"\"\"...\"\"\"` for anything beyond
+a small scalar expression.
 
 # Example
 ```julia
-@irust_str("arg1 * 2")  # Note: arguments must be passed separately
+irust"40 + 2"          # => 42
+
+x = Int64(21)
+irust"\$x * 2"          # => 42
 ```
 """
 macro irust_str(code)
-    code_str = isa(code, AbstractString) ? code : string(code)
-    return quote
-        _compile_and_call_irust($code_str)
-    end
+    return _irust_expansion(code, (), "@irust_str")
+end
+
+"""
+    _irust_expansion(code, args, macro_name) -> Expr
+
+The shared expansion of `@irust` and `@irust_str`: parse `\\\$var`
+interpolation out of the snippet, then call `_compile_and_call_irust` with the
+referenced variables escaped into the caller's scope.
+
+Both macros go through it so the two forms cannot drift: `irust"\$x * 2"` and
+`@irust("\\\$x * 2")` are the same program. Before #347 the literal form passed
+no arguments at all and could not interpolate anything.
+"""
+function _irust_expansion(code, args, macro_name::String)
+    isa(code, AbstractString) ||
+        error("$(macro_name) expects a string literal as the first argument. Got: $(typeof(code))")
+    vars_from_code, processed_code = _parse_irust_variables(String(code))
+
+    # `$var` references first, then any explicitly passed arguments — the
+    # order the generated `arg1, arg2, …` parameters are numbered in.
+    all_vars = vcat(vars_from_code, collect(args))
+
+    isempty(all_vars) &&
+        return Expr(:call, GlobalRef(RustCall, :_compile_and_call_irust), processed_code)
+    # Each variable is escaped so it is evaluated in the calling scope.
+    var_exprs = Any[esc(var) for var in all_vars]
+    return Expr(:call, GlobalRef(RustCall, :_compile_and_call_irust), processed_code, var_exprs...)
 end
 
 """
     _parse_irust_variables(code::String) -> (Vector{Symbol}, String)
 
-Parse `\\\$var` syntax in irust code and extract variable names.
-Returns (list of variable symbols, processed code with `\\\$var` replaced by argN).
+Resolve `\\\$var` interpolation in an `@irust` snippet: return the variables it
+references, in order of first appearance, and the snippet with each reference
+rewritten to the `argN` the generated Rust function names that parameter.
+
+The rules, which the `@irust` docstring documents for users:
+
+- `\\\$name` matches an ASCII letter or `_` followed by letters, digits and `_`,
+  so `\\\$obj.field` interpolates `obj` and leaves `.field` alone;
+- the same variable used twice is one parameter;
+- `\\\$\\\$` is an escape producing a literal `\\\$` and consuming no variable —
+  which is how a `macro_rules!` metavariable is written (#350). The comment
+  here used to claim the escape existed while the pattern had no case for it,
+  so `\\\$\\\$x` substituted the *second* `\\\$` and emitted `\\\$arg1`;
+- a `\\\$` followed by anything else is left as written.
+
+Substitution is textual and unconditional — it happens inside Rust string
+literals too. That is deliberate (`"\\\$x"` is meant to read as the value), and
+`\\\$\\\$` is the way out of it.
 
 # Example
 ```julia
@@ -1211,42 +1301,54 @@ vars, code = _parse_irust_variables("\\\$x + \\\$y * 2")
 ```
 """
 function _parse_irust_variables(code::String)
-    # Pattern to match $variable (but not $$ which is escaped)
-    # Match $ followed by identifier (letter, underscore, or digit after first char)
-    pattern = r"\$([a-zA-Z_][a-zA-Z0-9_]*)"
+    # `$$` first, so it wins over `$` + identifier: the alternation is ordered.
+    pattern = r"\$\$|\$([a-zA-Z_][a-zA-Z0-9_]*)"
 
-    # Find all matches (in order of appearance)
-    matches = collect(eachmatch(pattern, code))
-
-    # Build ordered list of unique variables (in order of first appearance)
     vars = Symbol[]
     var_to_idx = Dict{Symbol, Int}()
-    for m in matches
-        var_name = Symbol(m.captures[1])
-        if !haskey(var_to_idx, var_name)
-            push!(vars, var_name)
-            var_to_idx[var_name] = length(vars)
+    out = IOBuffer()
+    pos = firstindex(code)
+    for m in eachmatch(pattern, code)
+        # Everything since the previous match, verbatim.
+        print(out, SubString(code, pos, prevind(code, m.offset)))
+        if m.captures[1] === nothing
+            print(out, '$')          # `$$` -> one literal `$`, no variable
+        else
+            name = Symbol(m.captures[1])
+            idx = get(var_to_idx, name, 0)
+            if idx == 0
+                push!(vars, name)
+                idx = length(vars)
+                var_to_idx[name] = idx
+            end
+            print(out, "arg", idx)
         end
+        pos = m.offset + ncodeunits(m.match)
     end
+    print(out, SubString(code, pos, lastindex(code)))
 
-    # Process from end to start to preserve positions
-    processed = code
-    for m in reverse(matches)
-        var_name = Symbol(m.captures[1])
-        var_idx = var_to_idx[var_name]
-
-        # Replace $var with argN
-        arg_ref = "arg$(var_idx)"
-        processed = processed[1:prevind(processed, m.offset)] * arg_ref * processed[nextind(processed, m.offset + length(m.match) - 1):end]
-    end
-
-    return (vars, processed)
+    return (vars, String(take!(out)))
 end
 
 """
     _compile_and_call_irust(code::String, args...)
 
-Internal function to compile and execute Rust code at function scope.
+Compile one `@irust` snippet — as a `#[julia]` function — load it, and call it.
+
+The snippet goes through the *same* machinery `rust\"\"\"` uses (#346): it is
+emitted as a `#[julia] pub fn`, expanded by `rustcall-extract`
+(`expand_inline`), and called through the exported symbol of the wrapper the
+expansion generates. That wrapper is what carries the `catch_unwind` boundary
+and the thread-local panic channel, so a panic inside a snippet is a
+`RustPanicError` instead of an abort. Until #346 this function hand-wrote a
+bare `#[no_mangle] pub extern \"C\"` entry point, which had neither: an unwind
+crossing it terminated the process, while `_call_irust_function` read a channel
+nothing ever wrote.
+
+What is decided here is decided *once* and stored in `IRUST_FUNCTIONS`: the
+symbol and the Julia return type come back from the manifest of the very
+expansion that was compiled, and a cache hit reuses them rather than deriving
+them again by a second route.
 
 # Error Handling
 This function provides improved error messages for:
@@ -1260,7 +1362,14 @@ function _compile_and_call_irust(code::String, args...)
         # being compiled for, through the one identity function (#278). Julia's
         # `hash` is randomized per session, so a name derived from it could
         # never be matched again — the rule at the top of src/cache.jl.
-        arg_types = collect(map(typeof, args))  # Vector{Type}
+        #
+        # The element types are named rather than inferred from the elements:
+        # `collect(map(typeof, ()))` is a `Vector{Union{}}`, which matches none
+        # of the `Vector{<:Type}` / `Vector{String}` methods below — that is
+        # why every argument-less `@irust`, and therefore every `irust"..."`,
+        # used to die with a `MethodError` (#347).
+        arg_types = Type[typeof(a) for a in args]
+        rust_arg_types = String[_julia_to_rust_type(t) for t in arg_types]
         compiler = get_default_compiler()
         code_hash = artifact_key(ArtifactId(
             kind = "irust",
@@ -1272,39 +1381,54 @@ function _compile_and_call_irust(code::String, args...)
         ))
         func_name = "irust_func_$(artifact_short_id(code_hash))"
 
-        # Infer Rust types from Julia types (needed for both cached and new functions)
-        rust_arg_types = collect(map(_julia_to_rust_type, arg_types))
-
         # Check if already compiled (protect IRUST_FUNCTIONS with REGISTRY_LOCK)
         cached = lock(REGISTRY_LOCK) do
-            if haskey(IRUST_FUNCTIONS, code_hash)
-                lib_name, cached_func_name = IRUST_FUNCTIONS[code_hash]
-                if haskey(RUST_LIBRARIES, lib_name)
-                    return (lib_name, cached_func_name, true)
-                else
-                    # Stale cache entry: library was unloaded, so recompile transparently.
-                    delete!(IRUST_FUNCTIONS, code_hash)
-                    return nothing
-                end
-            end
+            snippet = get(IRUST_FUNCTIONS, code_hash, nothing)
+            snippet === nothing && return nothing
+            haskey(RUST_LIBRARIES, snippet.lib_name) && return snippet
+            # Stale memo: the library was unloaded, so recompile transparently.
+            delete!(IRUST_FUNCTIONS, code_hash)
             return nothing
         end
         if cached !== nothing
-            lib_name, cached_func_name, _ = cached
-            # Re-infer return type for cached function (should match original)
-            rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
-            julia_ret_type = _rust_to_julia_type(rust_ret_type)
-            return _call_irust_function(lib_name, cached_func_name, julia_ret_type, args...)
+            # The symbol and the return type are the ones the compiled code was
+            # built with, not a fresh guess at them.
+            return _call_irust_function(cached.lib_name, cached.symbol,
+                                        cached.return_type, args...)
         end
 
-        # Infer return type from code (improved)
-        rust_ret_type = _infer_return_type_improved(code, arg_types, rust_arg_types)
+        # Ask rustc what the snippet evaluates to (#348). This is the only
+        # decision the old code took by pattern-matching the Rust source, and
+        # the one it got wrong for most real snippets.
+        rust_ret_type = _probe_irust_return_type(code, rust_arg_types, compiler)
 
-        # Generate Rust function code
+        # Generate the `#[julia]` item and expand it: `expanded.source` is the
+        # snippet's function plus the generated wrapper with the panic
+        # boundary, and `expanded.manifest` names the symbol that wrapper
+        # exports and the return type it was built for.
         rust_func_code = _generate_irust_function(func_name, code, rust_arg_types, rust_ret_type)
+        expanded = try
+            expand_inline(rust_func_code)
+        catch e
+            error("""
+            Failed to compile Rust code for @irust.
+
+            Code: $code
+            Generated Rust function:
+            $rust_func_code
+
+            Original error: $e
+
+            Tip: the snippet is the *body* of the generated function, so it must
+            be valid Rust there: a trailing expression, or statements ending in
+            one, or an explicit `return`.
+            """)
+        end
+        sig = _irust_signature(expanded, func_name)
+        julia_ret_type = _irust_return_type(sig, code)
 
         # Compile and load
-        wrapped_code = wrap_rust_code(rust_func_code)
+        wrapped_code = wrap_rust_code(expanded.source)
 
         local lib_path
         try
@@ -1320,6 +1444,10 @@ function _compile_and_call_irust(code::String, args...)
             Original error: $e
 
             Tip: Check that your Rust code is valid and uses arg1, arg2, etc. correctly.
+            The return type (`$rust_ret_type`) is the one rustc gave the snippet
+            when it was type-checked on its own, so a failure here is about the
+            FFI boundary rather than the snippet: @irust passes and returns
+            scalars only. Use rust\"\"\"...\"\"\" with `@rust` for anything else.
             """)
         end
 
@@ -1328,16 +1456,13 @@ function _compile_and_call_irust(code::String, args...)
         # handle: a concurrent `@irust` that finds the memo must find the
         # library it names.
         lib_name = "irust_$(artifact_short_id(code_hash))"
-        load_artifact!(irust_policy(), lib_path; lib_name, eager = (func_name,))
+        load_artifact!(irust_policy(), lib_path; lib_name, eager = (sig.symbol,))
         lock(REGISTRY_LOCK) do
-            IRUST_FUNCTIONS[code_hash] = (lib_name, func_name)
+            IRUST_FUNCTIONS[code_hash] = IrustSnippet(lib_name, sig.symbol, julia_ret_type)
         end
 
-        # Convert Rust return type to Julia type
-        julia_ret_type = _rust_to_julia_type(rust_ret_type)
-
         # Call the function with correct return type
-        return _call_irust_function(lib_name, func_name, julia_ret_type, args...)
+        return _call_irust_function(lib_name, sig.symbol, julia_ret_type, args...)
     catch e
         # Improve error messages
         if isa(e, MethodError)
@@ -1355,6 +1480,99 @@ function _compile_and_call_irust(code::String, args...)
             rethrow(e)
         end
     end
+end
+
+"""
+    _probe_irust_return_type(code, rust_arg_types, compiler) -> String
+
+The Rust return type of an `@irust` snippet, **as rustc names it**.
+
+A thin adapter over `probe_rust_expression_type`: build the parameter list the
+generated function will have, run the probe, and turn "the probe could not name
+a type" into an error that shows rustc's own diagnostics — because a probe that
+does not answer is a snippet that does not type-check, and rustc's message is
+the diagnosis.
+
+Until #348 this was `_infer_return_type_improved`, a list of ordered regexes
+over the snippet: a snippet containing `->` (an inner `fn`, a closure), `=>`
+(a `match` arm) or any comparison was called `bool`; `\\\$x as f64` with an
+integer argument was called `i64`; a `Float32` argument forced `f64`. Every
+miss surfaced as a rustc error in generated source the user never wrote.
+"""
+function _probe_irust_return_type(code::String, rust_arg_types::Vector{String},
+                                  compiler::RustCompiler)
+    params = join(("arg$(i): $(t)" for (i, t) in enumerate(rust_arg_types)), ", ")
+    probe = probe_rust_expression_type(code, params; compiler)
+    probe.rust_type === nothing && error("""
+        Failed to compile Rust code for @irust.
+
+        Code: $code
+
+        rustc could not type-check the snippet:
+
+        $(probe.rendered)
+        Tip: the snippet is the *body* of the generated function — a trailing
+        expression is its value, and `arg1`, `arg2`, … are the interpolated
+        variables. Use rust\"\"\"...\"\"\" with `@rust` for anything that needs
+        more than one expression's worth of context.
+        """)
+    return probe.rust_type
+end
+
+"""
+    _irust_signature(expanded, func_name) -> RustFunctionSignature
+
+The one signature an `@irust` expansion describes.
+
+`_generate_irust_function` emits exactly one `#[julia]` item, so the manifest
+must report exactly one exported, non-generic function, and its `symbol` is the
+wrapper the call goes through. Anything else means the snippet smuggled items
+of its own into the block — which `@irust` does not support — and is refused
+here rather than guessed at.
+"""
+function _irust_signature(expanded, func_name::String)
+    sigs = manifest_function_signatures(expanded.manifest)
+    matching = [sig for sig in sigs
+                if sig.name == func_name && sig.exported && !sig.is_generic]
+    length(matching) == 1 || error("""
+        @irust could not identify the function it generated.
+
+        The expansion reported $(length(matching)) exported functions named
+        `$(func_name)` (of $(length(sigs)) in total). @irust compiles a single
+        expression; define items of your own with rust\"\"\"...\"\"\" instead.
+        """)
+    return only(matching)
+end
+
+"""
+    _irust_return_type(sig, code) -> Type
+
+The Julia type an `@irust` result is read back as, taken from the manifest of
+the expansion that was compiled — never guessed a second time.
+
+`@irust` supports a single by-value scalar (or `()`); a `String`,
+`Result`/`Option` or aggregate return is refused here with a message that points
+at `rust\"\"\"`, because the generated wrapper for those returns a buffer or a
+`CResult_*` struct that `_call_irust_function` has no way to decode.
+"""
+function _irust_return_type(sig, code::String)
+    unsupported(what) = error("""
+        @irust cannot return $(what).
+
+        Code: $code
+        Rust return type: $(sig.return_type)
+
+        @irust handles one by-value scalar — Int8…Int64, UInt8…UInt64, Float32,
+        Float64, Bool — and `()`. Use rust\"\"\"...\"\"\" with `@rust` for a
+        String, a Result/Option or a struct: those get a generated wrapper that
+        knows how to decode them.
+        """)
+    sig.return_kind === :unit && return Nothing
+    sig.return_kind === :plain || unsupported("a $(sig.return_kind) value")
+    c = ffi_return_contract(sig.return_type; abi = sig.return_abi)
+    (c.known && (c.abi === :by_value || c.abi === :void)) ||
+        unsupported("`$(sig.return_type)`")
+    return rusttype_to_julia(sig.return_type)
 end
 
 """
@@ -1401,108 +1619,50 @@ function _rust_to_julia_type(rust_type::String)
 end
 
 """
-    _infer_return_type_improved(code::String, arg_types::Vector{Type}, rust_arg_types::Vector{String}) -> String
-
-Infer return type from Rust code with improved heuristics.
-
-# Strategy
-1. Look for explicit return statements with literals
-2. Analyze arithmetic operations (int vs float)
-3. Use argument types as hints
-4. Fall back to first argument type if available
-"""
-function _infer_return_type_improved(code::String, arg_types::Vector{<:Type}, rust_arg_types::Vector{String})
-    code_lower = lowercase(strip(code))
-
-    # 1. Check for explicit return statements with literals
-    if occursin(r"return\s+[0-9]+\s*;", code) || occursin(r"return\s+[0-9]+\s*$", code)
-        # Integer literal - check if it's a float by looking for decimal point
-        if occursin(r"return\s+[0-9]+\.[0-9]", code)
-            return "f64"
-        else
-            return "i32"
-        end
-    end
-
-    # 2. Check for boolean literals
-    if occursin(r"return\s+(true|false)\s*;", code) || occursin(r"return\s+(true|false)\s*$", code)
-        return "bool"
-    end
-
-    # 3. Analyze arithmetic operations
-    # If code contains division or multiplication with floats, likely returns float
-    if occursin(r"arg\d+\s*[*/]\s*[0-9]+\.[0-9]", code) ||
-       occursin(r"[0-9]+\.[0-9]\s*[*/]\s*arg\d+", code) ||
-       occursin(r"arg\d+\s*[*/]\s*arg\d+", code) && any(t -> t == Float32 || t == Float64, arg_types)
-        return "f64"
-    end
-
-    # 4. Check if any argument is float
-    if any(t -> t == Float32 || t == Float64, arg_types)
-        return "f64"
-    end
-
-    # 5. Check if any argument is bool (and operation is boolean)
-    if occursin(r"==|!=|<|>|<=|>=", code) || occursin(r"&&|\|\|", code)
-        return "bool"
-    end
-
-    # 6. Use first argument type if available
-    if !isempty(rust_arg_types)
-        return rust_arg_types[1]
-    end
-
-    # 7. Default fallback
-    return "i64"
-end
-
-"""
-    _infer_return_type(code::String) -> String
-
-Infer return type from Rust code (legacy function, kept for compatibility).
-"""
-function _infer_return_type(code::String)
-    return _infer_return_type_improved(code, Type[], String[])
-end
-
-"""
     _generate_irust_function(func_name::String, code::String, arg_types::Vector{String}, ret_type::String) -> String
 
-Generate a complete Rust function from the code snippet.
-The code should use arg1, arg2, etc. to reference arguments.
+The `#[julia]` item an `@irust` snippet becomes: the snippet **verbatim** as the
+body of a function taking `arg1`, `arg2`, … .
+
+Two things follow from that, and both were bugs before #346/#349:
+
+- the snippet is Rust's to interpret, so a trailing expression is the value, an
+  explicit `return` works, and `let` bindings, loops and multi-line snippets
+  need no special case. The old code closed the body by looking at the first
+  word — anything not starting with `return` was wrapped whole as
+  `return <snippet>;`, which turned `let t = …; t + 1` into non-Rust, while a
+  snippet that *did* start with `return` was emitted as-is and so had to be a
+  single statement (#349);
+- the item is `#[julia]`, not a hand-written `#[no_mangle] pub extern \"C\"`,
+  so `expand_inline` generates the wrapper around it: the `catch_unwind`
+  boundary and the thread-local panic channel every other RustCall entry point
+  has. Without them an unwind crossing the `extern \"C\"` frame aborted the
+  process (#346).
 """
 function _generate_irust_function(func_name::String, code::String, arg_types::Vector{String}, ret_type::String)
-    # Build function parameters
-    params = String[]
-    for (i, arg_type) in enumerate(arg_types)
-        push!(params, "arg$(i): $arg_type")
-    end
-
-    params_str = join(params, ", ")
-
-    # Ensure the code returns a value
-    final_code = strip(code)
-    if !startswith(final_code, "return")
-        # If no return statement, wrap in a return
-        final_code = "return $final_code;"
-    end
-
-    # Generate the function
-    rust_code = """
-    #[no_mangle]
-    pub extern "C" fn $func_name($params_str) -> $ret_type {
-        $final_code
-    }
-    """
-
-    return rust_code
+    params_str = join(("arg$(i): $(t)" for (i, t) in enumerate(arg_types)), ", ")
+    # Built by concatenation rather than a triple-quoted literal: the snippet
+    # goes in exactly as the user wrote it, indentation and all.
+    return string("#[julia]\npub fn ", func_name, "(", params_str, ") -> ", ret_type,
+                  " {\n", code, "\n}\n")
 end
 
 """
-    _call_irust_function(lib_name::String, func_name::String, ret_type::Type, args...)
-    _call_irust_function(lib_name::String, func_name::String, args...)
+    _call_irust_function(lib_name::String, symbol::String, ret_type::Type, args...)
 
-Call an irust function with Julia arguments.
+Call a compiled `@irust` snippet with Julia arguments.
+
+`symbol` is the **exported symbol of the generated wrapper**
+(`rustcall_irust_func_<id>`, from the manifest), not the Rust function name:
+that wrapper is the one with the `catch_unwind` boundary, and its thread-local
+panic channel is what `guard_rust_panic_ptr` reads here. Before #346 the symbol
+was a hand-written `extern \"C\"` entry point with no boundary at all, so the
+channel this always consulted was never written and a panic aborted the
+process instead.
+
+The pointer and the channel come from **one** `resolve_call_target` snapshot,
+and nothing that can yield sits between the call and the channel read — the
+channel is a thread-local (#244, #277).
 
 # Error Handling
 Provides improved error messages for function call failures.
