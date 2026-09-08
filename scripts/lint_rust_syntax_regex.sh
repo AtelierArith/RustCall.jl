@@ -7,7 +7,11 @@
 # regression of that design and must go through the manifest instead.
 #
 # Allowlist (RustCall's own syntax or best-effort diagnostics, not Rust grammar):
-#   src/ruststr.jl      `$var` interpolation in @irust and its return-type heuristic
+#   src/ruststr.jl      `$var` interpolation in @irust — and nothing else since
+#                       #348: the @irust return type is asked of rustc
+#                       (probe_rust_expression_type in src/compiler.jl, reading
+#                       --error-format=json diagnostics as data) instead of
+#                       being guessed from the snippet's text
 #   src/dependencies.jl `// cargo-deps:` / `//! ```cargo` dependency comment DSL
 #   src/exceptions.jl   brace counting for compile-error hints (diagnostics only)
 #

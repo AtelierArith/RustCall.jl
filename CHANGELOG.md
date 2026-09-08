@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A panic inside an `@irust` snippet is a catchable exception, not an abort**
+  ([#346](https://github.com/AtelierArith/RustCall.jl/issues/346)). `@irust`
+  hand-wrote a bare `#[no_mangle] pub extern "C"` entry point with no
+  `catch_unwind` boundary and no panic-channel write, so an unwind crossing it
+  terminated the Julia process — while `_call_irust_function` dutifully read a
+  channel nothing ever wrote. The snippet is now emitted as a `#[julia]` item
+  and expanded by `rustcall-extract`, exactly like a `rust"""` block, so it
+  gets the same generated wrapper: `@irust("\$x / \$z")` with `z == 0` raises
+  `RustCall.RustPanicError` and the session survives. The call goes through the
+  wrapper's exported symbol, and that symbol and the return type are memoized
+  with the snippet instead of being re-derived on a cache hit.
+- **`@irust` with no interpolated variable works, and so does `irust"..."`**
+  ([#347](https://github.com/AtelierArith/RustCall.jl/issues/347)). The
+  argument-type vectors were built with `collect(map(...))`, which is a
+  `Vector{Union{}}` for an empty tuple and matched none of the downstream
+  methods, so every argument-less `@irust` died with a `MethodError` before it
+  compiled anything. `irust"..."` shares `@irust`'s expansion now, so
+  `irust"$x * 2"` interpolates too — a non-standard string literal is not
+  interpolated by Julia, so it needs no backslash.
+- **`@irust`'s return type comes from rustc instead of a regex**
+  ([#348](https://github.com/AtelierArith/RustCall.jl/issues/348)). The type
+  was guessed by ordered heuristics over the snippet's text: anything
+  containing `->` (an inner `fn`, a closure), `=>` (a `match` arm) or a
+  comparison was called `bool`, `$x as f64` with an integer argument was called
+  `i64`, and a `Float32` argument forced `f64` — every miss surfacing as a
+  rustc error in generated source the user never wrote. The snippet is now
+  type-checked on its own first (`--emit=metadata`, no linking) and the type is
+  read out of rustc's `--error-format=json` diagnostics as **data**
+  (`RustCall.rustc_diagnostics`), so `@irust("$x as f64")`,
+  `@irust("if $x > 0 { 1 } else { -1 }")` and
+  `@irust("{ fn sq(v: i64) -> i64 { v * v }  sq($x) }")` simply work. A snippet
+  that does not type-check raises with rustc's own diagnostic about the
+  snippet; a snippet whose value is `()` returns `nothing`.
+  `_infer_return_type_improved` / `_infer_return_type` are gone, and with them
+  the last regex over Rust source in `src/` that decided anything (#264).
+- **An `@irust` snippet may contain statements**
+  ([#349](https://github.com/AtelierArith/RustCall.jl/issues/349)). The snippet
+  used to be closed by looking at its first word — wrapped whole as
+  `return <snippet>;` unless it already started with `return` — so
+  `let t = …; t + 1` became non-Rust and a `return`-first snippet had to be a
+  single statement. It is now the **body** of the generated function: a
+  trailing expression is the value, `return` works, and `let` bindings, loops,
+  early returns and multi-line snippets need no special case.
+- **`$$` is a literal `$` in an `@irust` snippet**
+  ([#350](https://github.com/AtelierArith/RustCall.jl/issues/350)). The escape
+  was documented in a comment but absent from the pattern, so `$$x` substituted
+  the *second* `$` and emitted `$arg1`; a snippet containing `macro_rules!`
+  with `$metavar` could not be written at all. The interpolation rules — what
+  `$name` matches, that substitution reaches inside Rust string literals, and
+  what the escape is — are now documented in the `@irust` docstring, in
+  `README.md` and in the manual, together with `@irust`'s remaining limitations
+  (scalars only, textual substitution, not type-stable, a compiler invocation
+  per new snippet) and the guidance to use `rust"""..."""` with `@rust` for
+  anything larger.
+
 ## [0.3.0] - 2026-09-08
 
 ### Breaking

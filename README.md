@@ -71,6 +71,47 @@ end
 affine(Int32(2), Int32(10), Int32(3)) # 23
 ```
 
+The snippet is the body of the generated function — a trailing expression is
+its value, `return` works, and statements and multi-line snippets are fine —
+and its return type is taken from rustc rather than guessed from the text.
+`$$` is a literal `$` (for a `macro_rules!` metavariable), and a Rust panic
+inside a snippet is a catchable `RustCall.RustPanicError`.
+
+### When not to use `@irust`
+
+`@irust` is for exploration at the REPL or in a notebook. It is deliberately
+small:
+
+- **scalars only** — arguments and results must be `Int8`…`Int64`,
+  `UInt8`…`UInt64`, `Float32`, `Float64` or `Bool`; no `String`, arrays,
+  structs or `Int128`;
+- **`$name` substitution is textual**, so it happens inside Rust string
+  literals too, and `$obj.field` interpolates `obj` only;
+- **not type-stable** — the return type is decided at run time from the
+  snippet;
+- **a compiler invocation per new snippet** (two on first use: the type probe
+  and the build), memoized for the rest of the session.
+
+Anything beyond a small scalar expression belongs in `rust"""..."""` with
+`@rust`: it takes its types from the Rust side, generates the wrapper once, is
+type-stable, and handles `String`, `Result`/`Option` and `#[julia]` structs.
+The same computation both ways:
+
+```julia
+# @irust — a one-off scalar expression
+hypot_irust(a, b) = @irust("(\$a * \$a + \$b * \$b).sqrt()")
+hypot_irust(3.0, 4.0)   # 5.0
+
+# rust""" — what a package should ship
+rust"""
+#[julia]
+fn hypot_rs(a: f64, b: f64) -> f64 {
+    (a * a + b * b).sqrt()
+}
+"""
+hypot_rs(3.0, 4.0)      # 5.0
+```
+
 ## Main APIs
 
 - `rust"""..."""` / `@rust_str`: compile Rust code, cache the build artifact, and make it available in the current Julia module
