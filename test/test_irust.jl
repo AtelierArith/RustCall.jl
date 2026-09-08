@@ -403,6 +403,30 @@ const _IRUST_RUSTC_AVAILABLE = RustCall.check_rustc_available()
             @test err isa ErrorException
             @test occursin("rust\"\"\"", sprint(showerror, err))
 
+            # 128-bit integers are refused on the *result* side too, not just
+            # as arguments (Codex review of PR #354). The FFI contract knows
+            # `i128`/`u128` as by-value types, but they do not round-trip on
+            # x86_64-pc-windows-msvc (rust-lang/rust#54341), and the promised
+            # scalar set stops at 64 bits.
+            @test !("i128" in RustCall.IRUST_SCALAR_RUST_TYPES)
+            @test !("u128" in RustCall.IRUST_SCALAR_RUST_TYPES)
+            for wide in ("1i128", "1u128")
+                err = try
+                    RustCall._compile_and_call_irust(wide)
+                    nothing
+                catch e
+                    e
+                end
+                @test err isa ErrorException
+                @test occursin("@irust cannot return", sprint(showerror, err))
+            end
+
+            # The two directions read one table, so they cannot drift.
+            @test Set(RustCall.IRUST_SCALAR_RUST_TYPES) ==
+                  Set(RustCall._julia_to_rust_type(T)
+                      for T in keys(RustCall.IRUST_SCALAR_TYPES))
+            @test_throws ErrorException RustCall._julia_to_rust_type(Int128)
+
             # `$obj.field` interpolates `obj` only — the documented rule, and
             # the reason a field access reads oddly.
             @test RustCall._parse_irust_variables("\$obj.field") == ([:obj], "arg1.field")

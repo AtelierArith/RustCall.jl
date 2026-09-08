@@ -217,10 +217,12 @@ about generated source.
 `@irust` is deliberately small. These are the edges, and `rust"""..."""` with
 `@rust` is the answer to every one of them:
 
-- **Scalars only.** Arguments and results must be `Int8`…`Int64`,
+- **Scalars only.** Arguments *and results* must be `Int8`…`Int64`,
   `UInt8`…`UInt64`, `Float32`, `Float64` or `Bool`. No `String`, no arrays, no
-  structs, no `Int128`. `@irust("\$s.len()")` with a `String` raises
-  `Unsupported Julia type for @irust: String`.
+  structs, no 128-bit integers (`i128`/`u128` do not round-trip on
+  `x86_64-pc-windows-msvc`). `@irust("\$s.len()")` with a `String` raises
+  `Unsupported Julia type for @irust: String`, and a snippet whose *value* is
+  outside the set is refused with a message that names `rust"""..."""`.
 - **`$name` substitution is textual.** It happens inside Rust string literals
   too, and `$obj.field` interpolates `obj` only. Use `$$` for a literal `$`.
 - **Not type-stable.** The return type is decided at run time from the snippet,

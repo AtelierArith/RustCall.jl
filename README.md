@@ -82,9 +82,9 @@ inside a snippet is a catchable `RustCall.RustPanicError`.
 `@irust` is for exploration at the REPL or in a notebook. It is deliberately
 small:
 
-- **scalars only** — arguments and results must be `Int8`…`Int64`,
+- **scalars only** — arguments *and results* must be `Int8`…`Int64`,
   `UInt8`…`UInt64`, `Float32`, `Float64` or `Bool`; no `String`, arrays,
-  structs or `Int128`;
+  structs or 128-bit integers;
 - **`$name` substitution is textual**, so it happens inside Rust string
   literals too, and `$obj.field` interpolates `obj` only;
 - **not type-stable** — the return type is decided at run time from the

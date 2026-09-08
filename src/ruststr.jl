@@ -1187,8 +1187,9 @@ type-check, the error carries rustc's own diagnostic.
 
 See "Limitations of `@irust`" in the manual. In short:
 
-- arguments and results are **scalars only**: `Int8`…`Int64`, `UInt8`…`UInt64`,
-  `Float32`, `Float64`, `Bool`. No `String`, arrays, structs or `Int128` —
+- arguments **and results** are **scalars only**: `Int8`…`Int64`,
+  `UInt8`…`UInt64`, `Float32`, `Float64`, `Bool` (`IRUST_SCALAR_TYPES`). No
+  `String`, arrays, structs or 128-bit integers —
   `rust\"\"\"...\"\"\"` handles those;
 - `\\\$name` substitution is **textual**, so it happens inside Rust string
   literals too, and `\\\$obj.field` interpolates `obj` only;
@@ -1565,6 +1566,13 @@ the expansion that was compiled — never guessed a second time.
 `Result`/`Option` or aggregate return is refused here with a message that points
 at `rust\"\"\"`, because the generated wrapper for those returns a buffer or a
 `CResult_*` struct that `_call_irust_function` has no way to decode.
+
+The accepted spellings are `IRUST_SCALAR_RUST_TYPES` — the exact set `@irust`
+accepts as *arguments*, and the set the documentation promises — not everything
+the FFI contract can pass by value. The difference is `i128` / `u128`: the
+contract knows them, but they do not round-trip on
+`x86_64-pc-windows-msvc` (rust-lang/rust#54341), and only the argument side
+refused them before (Codex review of PR #354).
 """
 function _irust_return_type(sig, code::String)
     unsupported(what) = error("""
@@ -1575,11 +1583,14 @@ function _irust_return_type(sig, code::String)
 
         @irust handles one by-value scalar — Int8…Int64, UInt8…UInt64, Float32,
         Float64, Bool — and `()`. Use rust\"\"\"...\"\"\" with `@rust` for a
-        String, a Result/Option or a struct: those get a generated wrapper that
-        knows how to decode them.
+        String, a Result/Option, a struct or a 128-bit integer: those get a
+        generated wrapper that knows how to decode them.
         """)
     sig.return_kind === :unit && return Nothing
     sig.return_kind === :plain || unsupported("a $(sig.return_kind) value")
+    sig.return_type in IRUST_SCALAR_RUST_TYPES || unsupported("`$(sig.return_type)`")
+    # Belt and braces: the spelling is in the table, so the contract must agree
+    # that it travels in one by-value slot.
     c = ffi_return_contract(sig.return_type; abi = sig.return_abi)
     (c.known && (c.abi === :by_value || c.abi === :void)) ||
         unsupported("`$(sig.return_type)`")
@@ -1600,25 +1611,49 @@ Convert Julia type to Rust type string.
 Unsupported types throw an error to prevent ABI mismatches.
 """
 function _julia_to_rust_type(julia_type::Type)
-    type_map = Dict(
-        Int8 => "i8",
-        Int16 => "i16",
-        Int32 => "i32",
-        Int64 => "i64",
-        UInt8 => "u8",
-        UInt16 => "u16",
-        UInt32 => "u32",
-        UInt64 => "u64",
-        Float32 => "f32",
-        Float64 => "f64",
-        Bool => "bool",
-    )
-
-    if haskey(type_map, julia_type)
-        return type_map[julia_type]
+    if haskey(IRUST_SCALAR_TYPES, julia_type)
+        return IRUST_SCALAR_TYPES[julia_type]
     end
     error("Unsupported Julia type for @irust: $julia_type")
 end
+
+"""
+    IRUST_SCALAR_TYPES :: Dict{Type, String}
+
+The scalars `@irust` passes and returns, Julia type to Rust spelling — the
+whole surface, and the same table for both directions so an argument type and a
+result type cannot drift apart.
+
+It stops at 64 bits deliberately. `i128` / `u128` *are* known by-value types in
+the FFI contract, but they do not round-trip on `x86_64-pc-windows-msvc`: MSVC
+has no native 128-bit integer, so Rust and Julia disagree on how `extern "C"`
+passes one (rust-lang/rust#54341, and the note above the primitives table in
+`src/ffi_contract.jl`). Nothing stopped a snippet like `@irust("1i128")` from
+reaching the `ccall` through the *return* path, since the probe would name
+`i128` and the contract would accept it — a platform ABI mismatch rather than a
+wrong answer (Codex review of PR #354).
+"""
+const IRUST_SCALAR_TYPES = Dict{Type, String}(
+    Int8 => "i8",
+    Int16 => "i16",
+    Int32 => "i32",
+    Int64 => "i64",
+    UInt8 => "u8",
+    UInt16 => "u16",
+    UInt32 => "u32",
+    UInt64 => "u64",
+    Float32 => "f32",
+    Float64 => "f64",
+    Bool => "bool",
+)
+
+"""
+    IRUST_SCALAR_RUST_TYPES :: Set{String}
+
+The Rust spellings `IRUST_SCALAR_TYPES` covers, for checking a *result*. `()`
+is accepted separately: a snippet whose value is unit returns `nothing`.
+"""
+const IRUST_SCALAR_RUST_TYPES = Set{String}(values(IRUST_SCALAR_TYPES))
 
 """
     _rust_to_julia_type(rust_type::String) -> Type

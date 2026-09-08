@@ -47,7 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   literal and genuinely disagreeing sites are named rather than guessed
   between. The probe is compiled with the same target, opt-level and panic
   flags as the build (`_cfg_rustc_flags`), because those decide `#[cfg]`
-  predicates — `debug_assertions` is on at opt-level 0 and off above it.
+  predicates — `debug_assertions` is on at opt-level 0 and off above it. The
+  scalar set (`IRUST_SCALAR_TYPES`) is checked on the **result** as well as on
+  the arguments, so a snippet whose value is an `i128`/`u128` is refused rather
+  than read back over an ABI Rust and Julia disagree about on
+  `x86_64-pc-windows-msvc`.
   `_infer_return_type_improved` / `_infer_return_type` are gone, and with them
   the last regex over Rust source in `src/` that decided anything (#264).
 - **An `@irust` snippet may contain statements**
