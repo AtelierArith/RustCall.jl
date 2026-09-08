@@ -96,9 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of its own (`<Struct>_<method>_RustCallOwnedString`) instead of sharing the
   struct's, and a struct whose only string-returning method is cross-module no
   longer grows shared buffers nothing would use. The manifest gained
-  `Method.string_owner` (additive within schema 7) so Julia reads which buffer
-  each method uses instead of deriving it from the flavour; a manifest that
-  states none keeps the previous derivation.
+  `Method.string_owner` so Julia reads which buffer each method uses instead
+  of deriving it from the flavour, and the **manifest schema goes to 8**: the
+  column is a breaking addition, not an additive one, because a consumer that
+  ignores it derives `<Struct>_free_rust_string` for a cross-module method
+  whose buffer is released through `<Struct>_<method>_free_rust_string` — and
+  where the struct has no local string helper that symbol does not exist, so
+  the buffer leaks in silence. `src/manifest.jl` validates exact equality, so
+  the version is what makes such a consumer refuse the manifest.
 
 ## [0.3.0] - 2026-09-08
 

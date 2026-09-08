@@ -64,7 +64,7 @@ struct RustMethod
     err_abi::String
     inner_abi::String
     # The stem the wrapper's string buffers hang off (`Method.string_owner`,
-    # additive within schema 7, #342). See `_method_string_owner`: the manifest
+    # schema 8, #342). See `_method_string_owner`: the manifest
     # states it, Julia never re-derives it from the flavour. Empty for a
     # hand-built method and for a manifest entry with no wrapper.
     string_owner::String
@@ -120,8 +120,10 @@ The stem `m`'s string buffers hang off: `<owner>_RustCallOwnedString` for an
 owned `String` result or payload, released through `<owner>_free_rust_string`,
 and `<owner>_RustCallBorrowedString` for a borrowed `&str`.
 
-The manifest **states** it per method (`Method.string_owner`, additive within
-schema 7, #342), because one inline manifest can hold both shapes: a method
+The manifest **states** it per method (`Method.string_owner`, schema 8, #342 —
+a breaking addition, because a consumer that ignores the column releases a
+cross-module method's buffer through a symbol the library does not export),
+because one inline manifest can hold both shapes: a method
 whose `#[julia] impl` block sits beside its struct shares the struct's buffers,
 one whose block sits in another module has its wrapper — and its buffers —
 emitted at the block. Deriving the owner from the flavour, as Julia did before
