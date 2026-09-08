@@ -792,6 +792,51 @@ fn item_attrs(item: &Item) -> &[Attribute] {
     }
 }
 
+/// The conjuncts of a predicate string as [`predicate_string`] renders it: the
+/// arguments of a top-level `all(...)`, else the predicate itself.
+fn cfg_conjuncts(p: &str) -> Vec<&str> {
+    let Some(inner) = p.strip_prefix("all(").and_then(|r| r.strip_suffix(')')) else {
+        return vec![p];
+    };
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0usize, 0usize);
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(inner[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(inner[start..].trim());
+    out
+}
+
+/// Whether two predicate strings are **provably** mutually exclusive: one
+/// conjunct of the first is the exact negation of one conjunct of the second.
+///
+/// That is the shape of cfg-exclusive copies of one fragment — `feature = "x"`
+/// against `not(feature = "x")`, or `all(feature = "x", feature = "y")`
+/// against `all(not(feature = "x"), feature = "y")` — and nothing else:
+/// `feature = "x"` and `feature = "y"` may both be on and are *not* exclusive,
+/// and neither is anything against the empty predicate. Two items whose
+/// symbols coincide clash unless this says otherwise, on the `#[julia]` side
+/// (`CrateScan::claim`, `Manifest::duplicate_symbols`) and on the PyO3 side
+/// (`mark_symbol_collisions`) alike (#357 review).
+pub fn cfg_exclusive(a: &str, b: &str) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let (ca, cb) = (cfg_conjuncts(a), cfg_conjuncts(b));
+    ca.iter().any(|x| {
+        cb.iter()
+            .any(|y| format!("not({x})") == *y || format!("not({y})") == *x)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

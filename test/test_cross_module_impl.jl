@@ -642,3 +642,288 @@ end
         end
     end
 end
+
+# Two mutually exclusive `#[cfg]` modules of one name, each including the same
+# fragment, are one file at one module path under two predicates. The walk
+# keyed the files it had seen by (file, module path), so the second was
+# dropped and the surviving entry carried whichever predicate the walk reached
+# last — the *off* branch, for a build that enables the feature (#357).
+@testset "cfg-exclusive modules including one fragment are both scanned (#357)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the cfg-exclusive fragment test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub fn run() -> i32 { 1 }
+                """)
+            lib = joinpath(dir, "src", "lib.rs")
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                """)
+            # A lenient scan, as `scan_crate` runs for an external crate: the
+            # host's cfg decides target predicates, feature predicates are
+            # left undecided and their items kept.
+            manifest = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                 cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            runs = filter(f -> f["name"] == "run", manifest["functions"])
+            @test length(runs) == 2
+            @test sort([f["cfg"] for f in runs]) == ["feature = \"x\"", "not(feature = \"x\")"]
+            @test all(f -> f["symbol"] == "rustcall_api__run", runs)
+
+            # A struct and its impl block inside the fragment: both copies are
+            # distinct structs to the scan, and the block written under one
+            # predicate attaches to that copy — not to whichever `locate` saw
+            # first, leaving the other without the method (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                #[julia]
+                impl Gauge {
+                    #[julia]
+                    pub fn read(&self) -> i32 { self.value }
+                }
+                """)
+            with_struct = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                    cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            gauges = filter(s -> s["name"] == "Gauge", with_struct["structs"])
+            @test length(gauges) == 2
+            @test sort([g["cfg"] for g in gauges]) == ["feature = \"x\"", "not(feature = \"x\")"]
+            for g in gauges
+                methods = get(g, "methods", Any[])
+                @test [m["name"] for m in methods] == ["read"]
+                @test all(m -> m["cfg"] == g["cfg"], methods)
+            end
+            # A block that adds a predicate of its own still sits beside
+            # exactly one copy: the match is on the *enclosing* cfg, and the
+            # block's own predicate travels with its methods (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                #[cfg(feature = "y")]
+                #[julia]
+                impl Gauge {
+                    #[julia]
+                    pub fn read(&self) -> i32 { self.value }
+                }
+                """)
+            own_cfg = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            gauges_y = filter(s -> s["name"] == "Gauge", own_cfg["structs"])
+            @test length(gauges_y) == 2
+            for g in gauges_y
+                methods = get(g, "methods", Any[])
+                @test [m["name"] for m in methods] == ["read"]
+                @test all(m -> occursin("feature = \"y\"", m["cfg"]) && occursin(g["cfg"], m["cfg"]),
+                          methods)
+            end
+
+            # The PyO3 scan follows the same rule, and cfg-exclusive copies of
+            # one class are not a symbol collision with each other — rustc
+            # never compiles them together (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                #[pymethods]
+                impl Gauge { pub fn read(&self) -> i32 { self.value } }
+                """)
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                pub mod api { include!("frag.rs"); }
+                """)
+            py = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                           cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            classes = filter(s -> s["name"] == "Gauge", py["structs"])
+            @test length(classes) == 2
+            @test all(c -> c["skip_reason"] == "", classes)
+            for c in classes
+                methods = get(c, "methods", Any[])
+                @test [m["name"] for m in methods] == ["read"]
+                @test all(m -> m["skip_reason"] == "" && m["cfg"] == c["cfg"], methods)
+            end
+            lenient() = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                  cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+
+            # A `#[staticmethod]` is a module-level Julia function, and the
+            # Julia-surface check used to key it by (module, name, arity)
+            # alone — the second copy's was refused as a name collision with
+            # the first's (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                #[pymethods]
+                impl Gauge {
+                    #[staticmethod]
+                    pub fn zero() -> i32 { 0 }
+                }
+                """)
+            statics = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(statics) == 2
+            for c in statics
+                zs = filter(m -> m["name"] == "zero", get(c, "methods", Any[]))
+                @test length(zs) == 1 && zs[1]["skip_reason"] == ""
+            end
+
+            # Only *provably* exclusive predicates are exempt from collision:
+            # `feature = "x"` and `feature = "y"` may both be on, so two
+            # `#[pyfunction] run`s gated that way still clash on one symbol
+            # (#357 review).
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(feature = "y")]
+                pub mod api { include!("frag.rs"); }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyfunction]
+                pub fn run() -> i32 { 1 }
+                """)
+            overlapping = filter(f -> f["name"] == "run", lenient()["functions"])
+            @test length(overlapping) == 2
+            @test count(f -> startswith(f["skip_reason"], "symbol_collision"), overlapping) == 1
+
+            # A block written *outside* both copies — an unconditional
+            # `impl api::Gauge` at the root — applies to whichever copy rustc
+            # compiles, so it attaches to every one, in both scans (#357
+            # review).
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[julia]
+                impl api::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                """)
+            external = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(external) == 2
+            @test all(g -> [m["name"] for m in get(g, "methods", Any[])] == ["read"], external)
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                pub mod api { include!("frag.rs"); }
+                #[pymethods]
+                impl api::Gauge { pub fn read(&self) -> i32 { self.value } }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                """)
+            external_py = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(external_py) == 2
+            @test all(external_py) do g
+                ms = get(g, "methods", Any[])
+                g["skip_reason"] == "" && [m["name"] for m in ms] == ["read"] &&
+                    all(m -> m["skip_reason"] == "", ms)
+            end
+
+            # A block gated on something *else* (`feature = "y"`) is outside
+            # both copies too: with `y` on, rustc applies it to whichever
+            # `Gauge` the `x` state compiles, so it attaches to every copy its
+            # predicate can coexist with — in both scans (#357 review).
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(feature = "y")]
+                mod ops {
+                    use juliacall_macros::julia;
+                    #[julia]
+                    impl crate::api::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }
+                }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                """)
+            gated = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(gated) == 2
+            @test all(g -> [m["name"] for m in get(g, "methods", Any[])] == ["read"], gated)
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(feature = "y")]
+                mod ops {
+                    #[pymethods]
+                    impl crate::api::Gauge { pub fn read(&self) -> i32 { self.value } }
+                }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                """)
+            gated_py = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(gated_py) == 2
+            @test all(g -> [m["name"] for m in get(g, "methods", Any[])] == ["read"], gated_py)
+
+            # A recursive `include!` behind an undecided feature is followed by
+            # a lenient scan; keying visited files by their full position let
+            # it grow the queue forever, since each pass added the predicate
+            # again. An include-ancestry guard stops the cycle and still lets
+            # two sibling positions of one fragment both be scanned (#357
+            # review). Bounded, so a regression fails instead of hanging.
+            write(lib, """
+                #[cfg(feature = "optional")]
+                include!("lib.rs");
+                #[pyfunction]
+                pub fn f() -> i32 { 1 }
+                """)
+            let cfg = RustCall._cfg_file_args(:lenient; cfg_text = RustCall._cargo_cfg_text()),
+                out = IOBuffer(),
+                proc = run(pipeline(`$(RustCall.extractor_path()) manifest --mode crate --skip-unparsable $cfg --crate-root $lib`;
+                                    stdout = out, stderr = devnull); wait = false)
+                finished = timedwait(() -> process_exited(proc), 120.0) === :ok
+                finished || kill(proc)
+                @test finished
+                @test finished && success(proc)
+                @test finished && occursin("name = \"f\"", String(take!(out)))
+            end
+
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub fn run() -> i32 { 1 }
+                """)
+
+            # One fragment included twice at the *same* position is still one
+            # scan — the duplicate-symbol case of #343.
+            write(lib, """
+                use juliacall_macros::julia;
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                """)
+            once = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib)
+            @test count(f -> f["name"] == "run", once["functions"]) == 1
+        end
+    end
+end

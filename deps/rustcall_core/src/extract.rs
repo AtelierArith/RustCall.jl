@@ -652,6 +652,11 @@ struct ScannedImpl {
     /// block may sit in a gated module far from its struct, and its methods
     /// exist only under that predicate (#300 review).
     cfg: Vec<syn::Attribute>,
+    /// The `#[cfg]` of the enclosing modules alone — the block's own
+    /// predicate left out. This is the provenance a block shares with the
+    /// struct copy it was written beside, and what tells cfg-exclusive copies
+    /// of one fragment apart (#357 review).
+    enclosing_cfg: Vec<syn::Attribute>,
     line: usize,
     file: String,
 }
@@ -805,6 +810,7 @@ impl CrateScan {
                         header,
                         symbol_path: symbol_path.to_vec(),
                         cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs),
+                        enclosing_cfg: enclosing_cfg.to_vec(),
                         line: imp.span().start().line,
                         file: file.to_string(),
                     });
@@ -968,13 +974,21 @@ impl CrateScan {
                 },
                 Err(why) => return Err(self.unresolved_impl(imp, why)),
             };
-            self.check_symbol_path(imp, index)?;
-            self.structs[index].model.attach_impl(
-                &imp.item,
-                Mode::Crate,
-                &imp.cfg,
-                Some(&imp.header.module_path),
-            );
+            // Two `#[julia]` structs of one name at one module path are cfg
+            // variants of each other — a fragment included under
+            // `#[cfg(feature = "x")]` and `#[cfg(not(feature = "x"))]`, both
+            // scanned since #357. `locate` sees one name and lands on the
+            // first; the block belongs to the variant under its own predicate,
+            // or the other one ends up without the method (#357 review).
+            for index in self.cfg_variants_for(index, &imp.enclosing_cfg) {
+                self.check_symbol_path(imp, index)?;
+                self.structs[index].model.attach_impl(
+                    &imp.item,
+                    Mode::Crate,
+                    &imp.cfg,
+                    Some(&imp.header.module_path),
+                );
+            }
         }
 
         for scanned in std::mem::take(&mut self.structs) {
@@ -985,6 +999,52 @@ impl CrateScan {
             manifest.structs.push(entry);
         }
         Ok(())
+    }
+
+    /// The `#[julia]` structs at `index` — or the same-named struct at the same
+    /// module path whose enclosing `#[cfg]` is `cfg` when there is one:
+    /// cfg-exclusive copies of one declaration are distinct structs to the
+    /// scan, and an impl block written beside one copy attaches to that copy.
+    /// `cfg` is the block's *enclosing* predicate, not its effective one — a
+    /// block that adds `#[cfg(feature = "y")]` of its own still sits beside
+    /// exactly one copy, and its own predicate is carried by its methods.
+    /// A block written *outside* every copy — at the crate root, or in a
+    /// module gated on something else — applies to whichever copy rustc
+    /// compiles, so it attaches to every copy its predicate can coexist with.
+    fn cfg_variants_for(&self, index: usize, cfg: &[syn::Attribute]) -> Vec<usize> {
+        let want = predicate_string(cfg);
+        let here = &self.structs[index];
+        let same = |s: &ScannedStruct| s.name == here.name && s.module_path == here.module_path;
+        if predicate_string(&here.cfg) == want {
+            return vec![index];
+        }
+        if let Some(exact) = self
+            .structs
+            .iter()
+            .position(|s| same(s) && predicate_string(&s.cfg) == want)
+        {
+            return vec![exact];
+        }
+        // No copy sits under exactly this predicate: the block was written
+        // outside them all — at the crate root, or in a module gated on
+        // something else (`#[cfg(feature = "y")] mod ops { impl
+        // crate::api::Gauge }`). rustc applies it to whichever copy it
+        // compiles, so it attaches to every copy whose predicate can hold
+        // together with the block's; only a copy *provably* exclusive with it
+        // is left out (#357 review).
+        let overlapping: Vec<usize> = self
+            .structs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                same(s) && !crate::pyo3::cfg_exclusive(&predicate_string(&s.cfg), &want)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !overlapping.is_empty() {
+            return overlapping;
+        }
+        vec![index]
     }
 
     fn unresolved_impl(&self, imp: &ScannedImpl, why: Unresolved) -> ExtractError {

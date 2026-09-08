@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Two cfg-exclusive modules including one fragment are both scanned**
+  ([#357](https://github.com/AtelierArith/RustCall.jl/issues/357)). Since #343
+  the crate walk keyed the files it had seen by (file, module path), so
+  `#[cfg(feature = "x")] mod api { include!("frag.rs"); }` beside
+  `#[cfg(not(feature = "x"))] mod api { include!("frag.rs"); }` scanned the
+  fragment once and recorded its items under whichever predicate the walk
+  reached last — the *off* branch for a build that enables the feature, so
+  the binding was dropped while the library exported the symbol. The key is
+  now the file and its full position (module path, `#[cfg]`, reachability,
+  `#[julia] mod` chain), so a lenient scan reports both entries; one fragment
+  included twice at the same position is still one scan.
 - **A panic inside an `@irust` snippet is a catchable exception, not an abort**
   ([#346](https://github.com/AtelierArith/RustCall.jl/issues/346)). `@irust`
   hand-wrote a bare `#[no_mangle] pub extern "C"` entry point with no
