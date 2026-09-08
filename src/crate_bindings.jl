@@ -2451,6 +2451,17 @@ library. A crate with no pyo3 in its graph reads nothing of it, and an edit
 to an unrelated configuration must not rebuild that crate (#339 review).
 """
 function _plain_crate_build_env(crate_path::AbstractString)
+    # The allowlist is taken whole, `PYO3_*` included, whether or not pyo3 is
+    # in the graph: Cargo hands every ambient variable to every build script,
+    # and a crate's own `build.rs` may read `PYO3_PYTHON` without depending on
+    # pyo3 — which crates are in the graph proves nothing about what a script
+    # reads. A variable's *value* is therefore always an input (the #282
+    # contract), and dropping it traded a spare rebuild for a stale library.
+    # The *contents* of the file `PYO3_CONFIG_FILE` names are another matter:
+    # the identity covers declared inputs, and the one crate that parses that
+    # file is `pyo3-build-config` — so the digest is gated on a graph that
+    # can reach it, as a path dependency's content is hashed because Cargo
+    # declares it, not because a script might `include_str!` it (#339 review).
     build_env = artifact_build_env()
     crate_may_read_pyo3_config(crate_path) || return build_env
     digest = _pyo3_config_file_digest()

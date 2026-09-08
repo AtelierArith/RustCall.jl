@@ -1115,6 +1115,29 @@ end
     end
 end
 
+# `PYO3_*` stays in a plain crate's key even with no pyo3 in the graph: Cargo
+# hands every ambient variable to every build script, and a crate's own
+# `build.rs` may read `PYO3_PYTHON` without depending on pyo3. The allowlist
+# captures a variable's *value* unconditionally (#282); only the *contents* of
+# the file `PYO3_CONFIG_FILE` names are gated on a graph that can parse them
+# (#339 review).
+@testset "PYO3_* values stay in the key of a crate without pyo3 (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
+        key_under(python) = withenv("PYO3_PYTHON" => python) do
+            RustCall.compute_crate_hash(info; release = true,
+                                        build_env = RustCall._plain_crate_build_env(info.path))
+        end
+        @test key_under("/one/python3") != key_under("/two/python3")
+        withenv("PYO3_PYTHON" => "/one/python3") do
+            @test any(p -> first(p) == "PYO3_PYTHON", RustCall._plain_crate_build_env(info.path))
+            @test any(p -> first(p) == "PYO3_PYTHON", RustCall._recorded_build_env())
+        end
+    end
+end
+
 # The registry name and the cache key must be decided by the *same* environment
 # snapshot. Keying only the cache gave two builds under different environments
 # distinct artifacts under one `_LIB_NAME`, and loading the second replaced the
