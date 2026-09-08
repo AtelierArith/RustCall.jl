@@ -2442,6 +2442,18 @@ a different binary under the same path. The wrapper path already hashes the
 contents (`_pyo3_wrapper_build_env`); without this the plain key did not, and
 `get_cargo_cached_library` answered the edited configuration with the old
 library (#339 review).
+
+**Neither depends on the dependency graph**, deliberately. Cargo hands every
+ambient variable to every build script, and a crate's own `build.rs` may read
+`PYO3_PYTHON`, or open the file `PYO3_CONFIG_FILE` names, without depending on
+pyo3 — which crates are in the graph proves nothing about what a script reads.
+So the value is an input of every build (the #282 contract) and so are the
+contents of the file it names, as `.cargo/config.toml`'s are: the price is a
+spare rebuild when Python is configured for another package while this
+variable is set and its file edited, and the alternative — a gate on pyo3
+being in the graph — was a stale library for the crate that read the file
+anyway (#339 review; an earlier round of this PR tried the gate and reverted
+it).
 """
 function _plain_crate_build_env()
     build_env = artifact_build_env()

@@ -984,6 +984,36 @@ end
     end
 end
 
+# Neither the `PYO3_*` values nor the contents of `PYO3_CONFIG_FILE` are gated
+# on pyo3 being in the graph: Cargo hands every ambient variable to every build
+# script, and a crate's own `build.rs` may read the variable, or open the file
+# it names, without depending on pyo3. The sample crate has no pyo3 anywhere in
+# its graph, and both stay inputs of its build (#339 review).
+@testset "PYO3_* and the config file are inputs of every plain build (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
+        key_under(python) = withenv("PYO3_PYTHON" => python) do
+            RustCall.compute_crate_hash(info; release = true,
+                                        build_env = RustCall._plain_crate_build_env())
+        end
+        @test key_under("/one/python3") != key_under("/two/python3")
+        withenv("PYO3_PYTHON" => "/one/python3") do
+            @test any(p -> first(p) == "PYO3_PYTHON", RustCall._plain_crate_build_env())
+            @test any(p -> first(p) == "PYO3_PYTHON", RustCall._recorded_build_env())
+        end
+        mktempdir() do dir
+            config = joinpath(dir, "pyo3-build-config.txt")
+            write(config, "implementation=CPython\nversion=3.12\nshared=true\n")
+            withenv("PYO3_CONFIG_FILE" => config) do
+                @test any(p -> first(p) == "pyo3-config-file-digest", RustCall._plain_crate_build_env())
+                @test normpath(config) in RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+            end
+        end
+    end
+end
+
 # The registry name and the cache key must be decided by the *same* environment
 # snapshot. Keying only the cache gave two builds under different environments
 # distinct artifacts under one `_LIB_NAME`, and loading the second replaced the
