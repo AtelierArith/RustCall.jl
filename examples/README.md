@@ -305,13 +305,15 @@ clear_cache()
 
 ### Module name confusion
 
-When using `@rust_crate`, the returned bindings object wraps a generated runtime module whose default name is the crate name converted to PascalCase.
+When using `@rust_crate`, the returned bindings object wraps a generated module whose default name is the crate name converted to PascalCase.
 
 Example: `sample_crate` → `SampleCrate`
 
-You can override that internal runtime module name with `name=`, while still using the value returned by `@rust_crate`:
+By default that module is hidden inside the calling module and is reached only through the returned value; `name=` chooses its name, and `submodule=` is what defines it in the calling module so a package can `using` from it (#339):
 ```julia
-const bindings = @rust_crate "/path/to/crate" name="MyCustomName"
+const bindings = @rust_crate "/path/to/crate" name="MyCustomName"        # nothing new is defined here
+@rust_crate "/path/to/crate" submodule="MyCustomName"                   # defines MyCustomName here
+using .MyCustomName: add
 ```
 
 ## Additional Resources

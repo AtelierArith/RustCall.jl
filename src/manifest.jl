@@ -410,6 +410,42 @@ function _cargo_config_digest(env = ENV; dir::Union{Nothing, AbstractString} = n
     return bytes2hex(sha256(take!(io)))
 end
 
+"""
+    _cargo_config_files(env = ENV; dir = nothing) -> Vector{String}
+
+The Cargo configuration files that are in effect for a build under `dir`, in
+the order `_cargo_config_digest` reads them: the nearest `.cargo/config.toml`
+(or `.cargo/config`) of `dir` and each ancestor, then `CARGO_HOME`'s.
+
+The same files, so a caller that must *track* them cannot drift from the
+digest that decides the artifact key. A generated crate module declares them as
+precompile dependencies (#339 review): they can change the compiler flags and
+therefore the binary, without any file of the crate changing.
+"""
+function _cargo_config_files(env = ENV; dir::Union{Nothing, AbstractString} = nothing)
+    files = String[]
+    if dir !== nothing
+        for d in _cargo_config_search_dirs(dir)
+            for name in ("config.toml", "config")
+                path = joinpath(d, ".cargo", name)
+                if isfile(path)
+                    push!(files, path)
+                    break
+                end
+            end
+        end
+    end
+    home = get(env, "CARGO_HOME", joinpath(homedir(), ".cargo"))
+    for name in ("config.toml", "config")
+        path = joinpath(home, name)
+        if isfile(path)
+            push!(files, path)
+            break
+        end
+    end
+    return files
+end
+
 # `dir` and each of its ancestors, nearest first — where Cargo looks for
 # `.cargo/config.toml`.
 function _cargo_config_search_dirs(dir::AbstractString)

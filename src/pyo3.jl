@@ -1501,10 +1501,10 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
                 @debug "Failed to cache PyO3 wrapper library: $e"
             end
         end
-        # No cache: keep the library somewhere the cleanup below does not reach.
-        keep = joinpath(mktempdir(prefix = "rustcall_pyo3_lib_"), basename(built))
-        cp(built, keep; force = true)
-        return keep
+        # No cache: keep the library somewhere the cleanup below does not
+        # reach — and that outlives this process, since the module that
+        # records the path may be loaded by a later one (#339 review).
+        return _uncached_library_home(built)
     finally
         cleanup_cargo_project(project)
     end

@@ -496,7 +496,11 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
 
     @testset "crate_bindings.md - Explicit Binding" begin
         if _DOCS_SAMPLE_CRATE_AVAILABLE
-            # @rust_crate should return a local bindings value, not inject a module into Main.
+            # @rust_crate returns a local bindings value and adds nothing
+            # visible to the caller's namespace (#222) — `name=` only names
+            # the generated module. `submodule=` is the option that defines it
+            # in the caller (#339), and it is exercised in
+            # test_rust_crate_precompile.jl.
             let DocsSampleCrate = @rust_crate DOCS_SAMPLE_CRATE_PATH name="DocsSampleCrateInjected"
                 @test DocsSampleCrate.add(Int32(1), Int32(2)) == Int32(3)
                 @test DocsSampleCrate.Point isa DataType
@@ -504,7 +508,23 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
                 @test point isa DocsSampleCrate.Point
                 @test DocsSampleCrate.distance_from_origin(point) == 5.0
                 @test Base.invokelatest(getproperty, point, :x) == 3.0
-                @test !isdefined(Main, :DocsSampleCrateInjected)
+                @test !isdefined(@__MODULE__, :DocsSampleCrateInjected)
+            end
+            # `names` reads the binding table in the *current* world age, and
+            # this testset body runs in the world it started in — so a
+            # binding created inside it is only visible through `invokelatest`.
+            # At run time — not precompiling — nothing at all is added to the
+            # caller: the module lives under an anonymous `Main`-rooted module,
+            # so a repeated call leaves no trace (#222, #339 review). The
+            # caller-owned namespace is used only while precompiling, which
+            # test_rust_crate_precompile.jl exercises in a subprocess.
+            let before = Set(Base.invokelatest(names, @__MODULE__; all = true)),
+                DocsAnonymous = @rust_crate DOCS_SAMPLE_CRATE_PATH
+                @test DocsAnonymous.add(Int32(1), Int32(2)) == Int32(3)
+                added = setdiff(Set(Base.invokelatest(names, @__MODULE__; all = true)), before)
+                @test isempty(added)
+                @test !isdefined(@__MODULE__, :SampleCrate)
+                @test parentmodule(parentmodule(DocsAnonymous.module_ref)) === Main
             end
         else
             @test_skip "test/fixtures/sample_crate not available"

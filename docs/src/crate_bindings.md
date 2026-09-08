@@ -503,7 +503,92 @@ MyMath.fibonacci(UInt32(20))  # => 6765
 
 ## Precompilation Support
 
-For package development, you can generate bindings to a file that will be precompiled with your package, improving startup time.
+A package can carry a crate's bindings in two ways, and both precompile: use
+`@rust_crate` at the package's top level, or write the bindings to a file with
+`write_bindings_to_file` and `include` it.
+
+### Using `@rust_crate` inside a package
+
+```julia
+module MyPackage
+using RustCall
+
+# Build the crate and generate its bindings; define them as `MyPackage.Bindings`.
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_rust_crate") submodule="Bindings"
+using .Bindings: add, multiply, MyStruct
+
+export add, multiply, MyStruct
+end
+```
+
+The generated module is evaluated **inside the module that expands the macro**
+(#339), so it is part of `MyPackage` and is compiled into `MyPackage`'s
+precompile cache like any other submodule. What happens, and when:
+
+- **When the package is precompiled** (the first `using`, or
+  `Pkg.precompile()`): `@rust_crate` scans the crate, builds it — the library
+  goes into RustCall's cache under the depot's scratch space — and generates the
+  module. Nothing is written into the package. The library is *not* opened at
+  this point: Julia defers the generated module's `__init__` to load time, so
+  the bindings are callable after `MyPackage.__init__`, not from the package's
+  own top level.
+- **When the package is loaded** from its cache: the generated module's
+  `__init__` opens the cached library (through a private per-process copy, so
+  Cargo's output and the cache copy stay free to be rebuilt, #309). No
+  scanning, no Cargo.
+- **After an edit to the crate, or `RustCall.clear_cache()`**: the module
+  declared the library *and the crate's own input files* — the set the artifact
+  identity is computed from, so a `path` dependency and a workspace root count
+  too — with `Base.include_dependency`, so the
+  package's precompile cache is stale and the next `using` re-precompiles the
+  package, building the crate again. Deterministic, and never a failed
+  `dlopen` of a path that is gone.
+
+One thing Julia's invalidation cannot see: **the environment**. `RUSTFLAGS`,
+`PYO3_PYTHON`, a `PYO3_CONFIG_FILE` pointing at a *different* file — all of them
+decide the artifact, and none of them is a file the image can track. Change one
+and every tracked file is still what it was, so the image stays valid and the
+package loads the library built under the previous values. The generated module
+records the values it was built under and `@warn`s at load time when they no
+longer match, naming the variables; the fix is to precompile the package again
+(`Pkg.precompile(; force = true)`, or touch a source file of the crate).
+
+`cache=false` is not the shape to use in a package. The library is then not
+the cache copy but whatever the build produced: Cargo's own output under the
+crate's `target/` for a crate that is already a `cdylib`, and a copy in a
+directory of its own under RustCall's Cargo cache — one the cache lookup never
+returns, and that only `RustCall.clear_cache()` removes — for a crate RustCall
+has to wrap. The copy outlives the process that made it on purpose: a package
+precompiled with `cache=false` is loaded by another process, which must still
+find the file. In the first case the next `cargo build` of the crate
+invalidates the package's cache; in the second every precompilation leaves a
+copy behind until the cache is cleared.
+
+The naming rule: **`submodule="Bindings"` is what defines** the module as
+`MyPackage.Bindings`, which is what `using .Bindings: ...` needs. Without it
+the module gets a hidden, per-call name (`MyPackage.var"##RustCallCrateRuntime#N"...`)
+and is reached only through the value the macro returns — nothing the caller
+did not name appears in its namespace. `name="Bindings"` chooses that hidden
+module's name and still defines nothing, which is why
+`const MyBindings = @rust_crate path name="MyBindings"` — the form the macro's
+docstring has always shown — keeps working: the constant is the only binding
+the caller gets.
+
+A second `@rust_crate ... submodule="Bindings"` in the same module replaces the
+module (Julia warns `replacing module Bindings`); values obtained earlier keep
+the module they hold. Do not write `const Bindings = @rust_crate path submodule="Bindings"`:
+that binds the returned value over the module the macro just defined. The
+return value is the same `CrateBindings` in every position — REPL, function
+body, package — so a package may also keep it: `const B = @rust_crate path`
+gives `B.add(...)`, world-age-safe, without any visible module. The generated
+module needs only `RustCall` among the package's dependencies (it reaches
+`Libdl` through RustCall).
+
+Prefer this shape when the machine that loads the package has a Rust toolchain
+and building the crate on first use is acceptable; the bindings can never be
+out of date with respect to the crate. Prefer the written file below when the
+package must load without Rust installed, or when the bindings and the library
+must be inspected, committed or shipped as files.
 
 ### Generating Bindings to a File
 
@@ -650,6 +735,13 @@ If you encounter precompilation issues:
 - Ensure the library path is correct (use `relative_lib_path` for portable packages)
 - Check that the library was copied to the correct location
 - Verify the generated code compiles without errors
+- With `@rust_crate` at a package's top level: the package must depend on
+  `RustCall`, the crate must build on the machine that precompiles the
+  package, and calls into the bindings belong after the package's `__init__`
+  (the library is not open while the package's top level runs during
+  precompilation). `Base.isprecompiled(Base.identify_package("MyPackage"))`
+  says whether the cache is currently valid; it turns `false` after
+  `RustCall.clear_cache()` until the next `using` rebuilds.
 
 ## Object lifetime
 

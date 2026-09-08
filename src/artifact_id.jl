@@ -905,6 +905,38 @@ function crate_input_files(dir::AbstractString)
 end
 
 """
+    crate_input_dirs(dir::AbstractString) -> Vector{String}
+
+Every directory `crate_input_files` walks, `dir` itself included, as
+paths relative to `dir` (`"."` for the root). Same walk, same exclusions —
+Cargo's `target/` at the package root, VCS metadata at any depth — so the two
+cannot drift.
+
+Separate from the file list because a *directory* is what tells a consumer that
+a file appeared. `crate_content_digest` hashes the list of files, so creating
+the first file in a directory that was empty changes the artifact; the parent's
+own entry list does not move (the directory was already there), and neither
+does any file. A caller that tracks directories therefore has to know about the
+empty ones too (#339 review).
+"""
+function crate_input_dirs(dir::AbstractString)
+    dir = String(dir)
+    dirs = String[]
+    for (root, subdirs, _) in walkdir(dir)
+        at_root = _canonical_dir(root) == _canonical_dir(dir)
+        filter!(subdirs) do d
+            d in CRATE_INPUT_VCS_DIRS_ANY_LEVEL && return false
+            at_root && d == "target" && return false
+            return true
+        end
+        push!(dirs, replace(relpath(root, dir), '\\' => '/'))
+    end
+    unique!(dirs)
+    sort!(dirs)
+    return dirs
+end
+
+"""
     local_path_dependency_dirs(root::AbstractString) -> (strategy::String, dirs::Vector{String})
 
 Directories of every local (path) crate reachable from the crate at `root`,
@@ -972,6 +1004,19 @@ function _local_path_dependency_dirs_uncached(root::String)
         end
         if !isempty(found)
             append!(dirs, found)
+            # `cargo tree` resolves the *default* build's graph, and this
+            # function is called with no feature set: an optional `path`
+            # dependency that only `features = [...]` activates is not in
+            # `found`. Every local crate any manifest in the graph declares is
+            # added, transitively, optional or not — a crate the build *can*
+            # pull in is an input of the artifact, and an edit to it must
+            # change the key whether the current feature set pulls it in or
+            # not. Over-approximating costs a rebuild; under-approximating
+            # handed a stale library back under an unchanged key (#339 review).
+            seen = Set{String}()
+            for dir in copy(dirs)
+                _collect_manifest_path_deps!(dirs, dir, seen)
+            end
             unique!(dirs)
             return "cargo-tree", dirs
         end
@@ -1088,7 +1133,38 @@ function _declared_path_dependencies(manifest::AbstractString)::Vector{String}
             end
         end
     end
+    # `[patch.<source>] name = { path = "../local" }` replaces a registry or
+    # git dependency with a local crate — the dependency table itself still
+    # says `version = "..."`, so harvesting it alone never sees the directory.
+    # When the patched dependency is optional and a feature activates it, the
+    # default `cargo tree` graph omits it too, and an edit to the local crate
+    # changed neither the key nor the declared inputs (#339 review). Cargo
+    # honours `[patch]` in the workspace root's manifest (or a crate's own
+    # when it is its own root), and the paths are relative to the manifest
+    # that declares them.
+    _harvest_patch_paths!(out, parsed, dir)
+    root = _workspace_root_dir(dir)
+    if root !== nothing && _canonical_dir(root) != _canonical_dir(dir)
+        root_manifest = _parse_manifest_or_nothing(joinpath(root, "Cargo.toml"))
+        root_manifest isa AbstractDict && _harvest_patch_paths!(out, root_manifest, root)
+    end
     return sort!(unique!(out))
+end
+
+# Every `path` a `[patch.<source>]` table of `parsed` names, made absolute
+# against `dir`, the directory of the manifest that declares it.
+function _harvest_patch_paths!(out::Vector{String}, parsed::AbstractDict, dir::AbstractString)
+    patches = get(parsed, "patch", nothing)
+    patches isa AbstractDict || return nothing
+    for (_, per_source) in patches
+        per_source isa AbstractDict || continue
+        for (_, spec) in per_source
+            spec isa AbstractDict || continue
+            p = get(spec, "path", nothing)
+            p isa AbstractString && push!(out, abspath(joinpath(String(dir), String(p))))
+        end
+    end
+    return nothing
 end
 
 # `[workspace.dependencies]` of this manifest, of the workspace its

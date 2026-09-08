@@ -17,16 +17,24 @@ When you use `@rust_crate` in a Julia package, the bindings can be precompiled a
 
 ### Runtime vs Precompile Time
 
-**Without precompilation** (using `@rust_crate` directly):
-1. Julia loads your package
-2. `@rust_crate` scans the Rust crate
-3. Rust code is compiled (if not cached)
-4. Bindings are generated and evaluated
+Two ways to put a crate's bindings in a package, both precompiled:
 
-**With precompilation** (using `write_bindings_to_file`):
+**`@rust_crate` at the package's top level** (`@rust_crate path submodule="Bindings"`
+followed by `using .Bindings: ...`; see "Using `@rust_crate` inside a package"
+in [Crate Bindings](crate_bindings.md)):
+1. During precompilation: `@rust_crate` scans the crate, builds it (into
+   RustCall's cache) and generates the module, which is compiled into the
+   package's cache; nothing is written into the package
+2. At runtime: the module's `__init__` opens the cached library
+3. After `RustCall.clear_cache()` or a rebuild of the crate: the package's
+   precompile cache is stale and the next `using` re-precompiles it
+
+**`write_bindings_to_file`** (a `deps/build.jl` writes the bindings and copies
+the library into the package):
 1. During development: Generate bindings file once
 2. During precompilation: Julia compiles the bindings module
-3. At runtime: Precompiled bindings load instantly
+3. At runtime: Precompiled bindings load instantly, from the library the
+   package carries — no Rust toolchain needed on the machine that loads it
 
 ### The Generation Process
 

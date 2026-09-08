@@ -388,6 +388,8 @@ function _run_top_level_explicit_binding_contract()
         @test !occursin("RustCallCrateRuntime", point_display)
         @test SampleCrateContract.distance_from_origin(point) == 5.0
         @test point.x == 3.0
+        # `name=` names the generated module and defines nothing in the
+        # caller (#222); `submodule=` is what defines it (#339).
         @test !isdefined(Main, :SampleCrateInjected)
         """)
     end

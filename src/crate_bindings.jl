@@ -405,6 +405,484 @@ end
 # ============================================================================
 
 """
+    _crate_precompile_dependencies(crate_path) -> Vector{String}
+
+Every path on disk that the crate's artifact identity is computed from — files
+**and the directories that hold them** — as absolute paths.
+
+A module generated in memory by `@rust_crate` may be compiled into a package's
+precompile image (#339), and Julia decides that image is stale from what the
+module declared with `Base.include_dependency`. Declaring only the built
+library is not enough: the library is content-addressed, so editing
+`src/lib.rs` produces a *different* cache path and leaves the old file
+untouched — the image would still be valid and the package would go on calling
+the previous build (#339 review). Declaring the inputs instead makes an edit to
+the crate invalidate the image, which is what sends the next `using` back
+through `@rust_crate`.
+
+The list is deliberately the same set `compute_crate_hash` reads: the crate
+directory's own input files, every local `path` dependency's, the effective
+Cargo configuration, the contents of `PYO3_CONFIG_FILE` when one is set (both
+the wrapper path and a plain build of a crate that depends on pyo3 read it),
+the workspace root's manifest and lockfile when the crate is a
+workspace member, and a library root that lives outside the package directory
+(`[lib] path = "../shared/lib.rs"`).
+
+**Directories are in the list because files alone cannot see an addition.**
+`include_dependency` tracks a directory by `join(readdir(path))`, so declaring
+each directory that holds an input catches a *new* file appearing beside the
+ones that were there — a source file a build script globs, or a
+`.cargo/config.toml` created where none existed — which changes
+`crate_content_digest` and therefore the artifact, while touching no file the
+image already knew (#339 review). Two gaps remain, both deliberate: a
+`.cargo/` created in an *ancestor* of the crate is not seen, and neither is one
+appearing in `CARGO_HOME`, because tracking those directories would mean
+tracking directories whose contents churn for unrelated reasons and
+re-precompiling the package for each.
+
+A path that is not on disk is dropped — `include_dependency` raises on an
+unreadable path, and a missing input already changes the digest through
+`crate_content_digest`.
+"""
+function _crate_precompile_dependencies(crate_path::AbstractString)
+    root = abspath(String(crate_path))
+    isdir(root) || return String[]
+    deps = String[]
+    dirs = String[root]
+    try
+        _, found = local_path_dependency_dirs(root)
+        append!(dirs, found)
+    catch e
+        # Resolving the graph needs Cargo; without it the crate's own files are
+        # still worth declaring.
+        @debug "Could not resolve path dependencies for precompile tracking" crate_path exception = e
+    end
+    # `local_path_dependency_dirs` already unions every local crate any
+    # manifest in the graph declares — optional ones included, transitively —
+    # so an optional dependency that only `features = [...]` activates is in
+    # this list *and* in the artifact key it feeds. The two must agree: a
+    # tracked file that changes the image but not the key would rebuild the
+    # bindings around the same stale library (#339 review).
+    for dir in unique(abspath.(dirs))
+        isdir(dir) || continue
+        try
+            # `crate_input_files` / `crate_input_dirs` report `/`-separated
+            # relative names on every platform; `normpath` makes the joined
+            # path a native one, so the list has one spelling per file and a
+            # caller comparing paths on Windows sees `\` throughout.
+            _, files = crate_input_files(dir)
+            for rel in files
+                f = normpath(joinpath(dir, rel))
+                isfile(f) && push!(deps, f)
+            end
+            # The directories of that same walk, including the ones holding no
+            # file: creating the first file in an empty `assets/` changes
+            # `crate_content_digest`, moves no file, and does not change its
+            # parent's entry list either, because the directory was already
+            # there (#339 review).
+            for rel in crate_input_dirs(dir)
+                d = rel == "." ? dir : normpath(joinpath(dir, rel))
+                isdir(d) && push!(deps, d)
+            end
+        catch e
+            @debug "Could not list crate input files for precompile tracking" dir exception = e
+        end
+    end
+    # Cargo's own configuration decides the flags a build runs under, and is
+    # in the artifact key through `_cargo_config_digest` — an edit to
+    # `.cargo/config.toml` changes the binary without touching a file of the
+    # crate, so it belongs here too (#339 review).
+    try
+        append!(deps, _cargo_config_files(ENV; dir = root))
+    catch e
+        @debug "Could not list Cargo configuration files for precompile tracking" root exception = e
+    end
+    # A workspace member is decided by files outside its directory, and a
+    # library root may live outside it too — both are in the artifact key.
+    try
+        workspace = _cargo_root_dir(root)
+        if abspath(workspace) != root
+            for name in ("Cargo.toml", "Cargo.lock")
+                f = joinpath(workspace, name)
+                isfile(f) && push!(deps, f)
+            end
+        end
+        manifest_path = joinpath(root, "Cargo.toml")
+        if isfile(manifest_path)
+            lib_root = crate_lib_root(root, parse_cargo_toml(manifest_path))
+            if lib_root !== nothing
+                lib_dir = dirname(abspath(lib_root))
+                if !startswith(lib_dir * "/", root * "/") && isdir(lib_dir)
+                    _, files = crate_input_files(lib_dir)
+                    for rel in files
+                        f = normpath(joinpath(lib_dir, rel))
+                        isfile(f) && push!(deps, f)
+                    end
+                    # And this tree's directories, for the same reason as the
+                    # crate's own: `external_lib_tree_digest` hashes the file
+                    # list, so a first file appearing in a directory that was
+                    # already there moves nothing else (#339 review).
+                    for rel in crate_input_dirs(lib_dir)
+                        d = rel == "." ? lib_dir : normpath(joinpath(lib_dir, rel))
+                        isdir(d) && push!(deps, d)
+                    end
+                end
+            end
+        end
+    catch e
+        @debug "Could not resolve out-of-directory crate inputs" crate_path exception = e
+    end
+    # The directories that hold those files, so a file *appearing* is seen too:
+    # `include_dependency` tracks a directory by its entry list. `CARGO_HOME`
+    # is left out on purpose — its top level holds the registry and git caches,
+    # and tracking it would re-precompile the package for reasons that have
+    # nothing to do with this crate.
+    # Only the holders of *files*: a directory in the list is an input in its
+    # own right and its parent is not — for the crate root that parent is the
+    # checkout, whose unrelated siblings must not invalidate the image (#339
+    # review).
+    cargo_home = abspath(get(ENV, "CARGO_HOME", joinpath(homedir(), ".cargo")))
+    for dir in unique(dirname.(filter(isfile, deps)))
+        isdir(dir) || continue
+        abspath(dir) == cargo_home && continue
+        push!(deps, dir)
+    end
+    # `PYO3_CONFIG_FILE` names a file whose *contents* decide the wrapper's
+    # Python version, ABI and library directory, and both build paths hash
+    # those contents into the artifact. It usually lives outside the crate
+    # tree, so nothing above would have caught an edit to it (#339 review).
+    # Added *after* the holder loop on purpose: the selected file is the input,
+    # not its directory — a sibling appearing next to it changes nothing the
+    # build reads, and must not invalidate the image (#339 review).
+    # A selected file that does not exist *yet* is tracked through its
+    # directory instead: a build script that tolerates the absence is built
+    # without it, and the file appearing is then the one event that changes
+    # the build — the entry list of the directory is what sees it. Once the
+    # file exists, it is the input and the directory is not (#339 review).
+    let config = get(ENV, "PYO3_CONFIG_FILE", "")
+        if !isempty(config)
+            if isfile(config)
+                push!(deps, abspath(config))
+            elseif isdir(dirname(abspath(config)))
+                push!(deps, dirname(abspath(config)))
+            end
+        end
+    end
+    return unique!(map(normpath, deps))
+end
+
+"""
+    _recorded_build_env() -> Vector{Pair{String, String}}
+
+The environment a generated module records and compares at load time: the
+`artifact_build_env` allowlist, plus RustCall's own selectors that decide the
+artifact without being in that allowlist — `RUSTCALL_PYTHON_LIBDIR`, which
+`python_link_source()` gives precedence and `pyo3_link_rustflags()` folds into
+a wrapper's identity and rpath (#339 review). One function for both sides, so
+what is recorded and what is compared cannot drift.
+"""
+function _recorded_build_env(; python::Bool = false)
+    env = Pair{String, String}[String(k) => String(v) for (k, v) in artifact_build_env()]
+    # The *contents* of `PYO3_CONFIG_FILE`, not only its path: the file is
+    # tracked when it exists, but one selected before it exists cannot be —
+    # its directory is — and a load after it appeared must still be told.
+    # "" when unset, `_file_content_digest`'s marker when absent (#339 review).
+    push!(env, "<PYO3_CONFIG_FILE digest>" => _pyo3_config_file_digest())
+    if !python
+        # A plain build's pyo3 — a `cdylib` with `#[julia]` items that also
+        # depends on pyo3 — runs pyo3's build script, which selects an
+        # interpreter (`PYO3_PYTHON`, else `python3` on `PATH`) and configures
+        # the library for *that* Python's ABI. The `PYO3_*` values above see a
+        # changed `PYO3_PYTHON`, not a `PATH` that now finds another Python or
+        # a shim retargeted under the same name; what the interpreter *is* does
+        # (#339 review). Recorded the way `_plain_crate_build_env` keys it.
+        interpreter, fingerprint = _pyo3_build_interpreter()
+        push!(env, "<pyo3 build interpreter>" => interpreter)
+        push!(env, "<pyo3 build fingerprint>" => fingerprint)
+    end
+    # Only for a module that binds a PyO3 wrapper: a plain crate's build never
+    # consults `python_link_source()`, so for it this selector is not an input
+    # and comparing it would warn about a library nothing changed (#339
+    # review).
+    if python
+        for name in ("RUSTCALL_PYTHON_LIBDIR",)
+            value = get(ENV, name, nothing)
+            value === nothing || push!(env, name => String(value))
+        end
+        selection = _python_selection()
+        push!(env, "<python selection>" => selection)
+        # The plan itself, computed once: `(libdir, interpreter, fingerprint)`
+        # exactly as `python_link_source()` decides it for a build.
+        source = _python_link_source_or_empty()
+        # When pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, the `lib_dir`
+        # of a `PYO3_CONFIG_FILE`) decides, pyo3 consults no interpreter: the
+        # plan's fingerprint is "" and `_pyo3_wrapper_build_env` keys nothing
+        # by what `PYO3_PYTHON` resolves to. Recording it anyway warned about
+        # a `PYTHONHOME` or shim change that selects the same artifact (#339
+        # review). So the two interpreter records below are empty on that
+        # branch, the way the plan's are.
+        configured = !isempty(_pyo3_configured_lib_dir())
+        # What that selection *is*: `PYO3_PYTHON` may be a bare `python3` or a
+        # pyenv/asdf shim whose target moves under the same name, and
+        # `python_link_source()` runs the command and hashes what it reports.
+        # The resolved `sys.executable` is recorded beside the raw selection
+        # (one short subprocess, only for a PyO3 wrapper module; #339 review).
+        push!(env, "<python resolved>" => (configured ? "" : _python_resolved(selection)))
+        # And what it *reports*: the same executable can describe a different
+        # Python after `PYTHONHOME` or its sysconfig metadata changes, and
+        # `_pyo3_wrapper_build_env` hashes exactly that description
+        # (`plan.interpreter_config`). Recorded as the plan records it — the
+        # plan's own value, "" on the configured branch (#339 review).
+        push!(env, "<python fingerprint>" => source[3])
+        # The link directory is not the interpreter's alone: for the implicit
+        # case `python_link_source()` asks a bare `python3-config --ldflags`,
+        # falling back to `python-config`, and `PATH` may resolve either to
+        # another installation than the interpreter's. Both commands'
+        # identities are recorded, and their content tracked as files — but
+        # only on that implicit branch: with `PYO3_PYTHON`, a configured
+        # library directory, `RUSTCALL_PYTHON_LIBDIR` or CondaPkg deciding,
+        # neither command is consulted and neither is an input (#339 review).
+        # Nor on macOS when the implicit interpreter is a framework build:
+        # `python_link_source()` takes the framework prefix and never asks
+        # either command (`_python_config_consulted`).
+        if _python_config_consulted()
+            for (name, path) in _python_config_selections()
+                push!(env, "<$name selection>" => path)
+            end
+        end
+        # And the directory all of that *resolves to*: `pyo3_link_rustflags`
+        # builds the wrapper's `-L` and rpath from `python_link_source()[1]`,
+        # and `_pyo3_wrapper_build_env` keys the artifact by those flags. The
+        # selections above name the commands; an unchanged `python3-config`
+        # that is a shim can still answer with another directory once the
+        # environment or metadata it reads moves, and only the answer itself
+        # says so. Recorded the way the flags are computed (#339 review).
+        push!(env, "<python link dir>" => source[1])
+    end
+    return env
+end
+
+"""
+    _pyo3_build_interpreter() -> (interpreter::String, fingerprint::String)
+
+The interpreter pyo3's **build script** selects when a crate that depends on
+pyo3 is built as it stands (the plain path, no wrapper), and what that
+interpreter reports about itself (`_python_interpreter_fingerprint`): `("", "")`
+when pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, the `lib_dir` of a
+`PYO3_CONFIG_FILE`) decides and no interpreter is consulted; else `PYO3_PYTHON`
+as given; else the `sys.executable` of the first `python3` / `python` on
+`PATH`. The same order pyo3 uses — RustCall's own selectors
+(`RUSTCALL_PYTHON_LIBDIR`, CondaPkg) play no part in a build RustCall does not
+wrap. Part of a plain build's key and of its module's load-time record, so a
+`PATH` that finds another Python, or a shim retargeted under one name, is a
+different artifact and a reported change rather than a library configured for
+the previous ABI (#339 review). One short subprocess; "" for both when no
+interpreter can be run.
+"""
+function _pyo3_build_interpreter()
+    isempty(_pyo3_configured_lib_dir()) || return ("", "")
+    pinned = get(ENV, "PYO3_PYTHON", "")
+    interpreter = isempty(pinned) ? _python_executable_on_path() : String(pinned)
+    isempty(interpreter) && return ("", "")
+    fingerprint = try
+        String(_python_interpreter_fingerprint(interpreter))
+    catch
+        ""
+    end
+    return (interpreter, fingerprint)
+end
+
+"""
+    _python_link_is_implicit() -> Bool
+
+Whether `python_link_source()` would reach its last step — the interpreter and
+`python3-config` / `python-config` found on `PATH` — rather than be decided by
+pyo3's own configuration, `PYO3_PYTHON`, `RUSTCALL_PYTHON_LIBDIR` or CondaPkg.
+Only then are the config commands inputs of the wrapper (#339 review).
+"""
+function _python_link_is_implicit()
+    isempty(_pyo3_configured_lib_dir()) || return false
+    isempty(get(ENV, "PYO3_PYTHON", "")) || return false
+    isempty(get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")) || return false
+    return _condapkg_link_source() === nothing
+end
+
+"""
+    _python_config_consulted() -> Bool
+
+Whether `python_link_source()` actually asks `python3-config` / `python-config`
+for the link directory: the implicit case (`_python_link_is_implicit`), minus
+the one step it takes before either command — on macOS a framework build of
+the interpreter answers with its framework prefix, and neither command is run.
+For such a Python the commands are not inputs: recording them warned about a
+changed `python3-config` on `PATH`, and tracking its file rebuilt the package,
+while the wrapper's link directory and identity had not moved (#339 review).
+Mirrors the `python3` / `python` loop of `python_link_source()` step for step,
+and is `false` when no interpreter is found at all — then nothing is consulted.
+"""
+function _python_config_consulted()
+    _python_link_is_implicit() || return false
+    for exe in ("python3", "python")
+        isempty(_python_executable(exe)) && continue
+        return !(Sys.isapple() && !isempty(_python_framework_prefix(exe)))
+    end
+    return false
+end
+
+"""
+    _python_config_selections() -> Vector{Pair{String, String}}
+
+The `python3-config` and `python-config` that `python_link_source()` would run
+for the implicit link directory — the first of each on `PATH`, "" when there is
+none — in the order `_python_config_libdir()` tries them. Both are recorded and
+compared for a PyO3 wrapper module, and both files tracked, because `PATH`
+resolving either to another installation changes the rpath the wrapper is
+linked with while the interpreter, and everything else recorded, stays the
+same. Recording the fallback even when the first command answers is
+deliberate: which one *answers* is only known by running them, and a load
+must not (#339 review).
+"""
+function _python_config_selections()
+    # A `Vector`, not a tuple: the wrapper path splices `last.(...)` of this
+    # into a `String[...]`, and a tuple there is one element that cannot be
+    # converted, not two strings.
+    map(["python3-config", "python-config"]) do name
+        found = Sys.which(name)
+        name => (found === nothing ? "" : String(found))
+    end
+end
+
+"""
+    _python_resolved(command) -> String
+
+The `sys.executable` that `command` reports, or `command` itself when it cannot
+be run; "" for "". A bare `python3` or a shim is one path on `PATH` and another
+underneath, and only the interpreter can say which (#339 review).
+"""
+function _python_resolved(command::AbstractString)
+    isempty(command) && return ""
+    resolved = _python_executable(command)
+    return isempty(resolved) ? String(command) : resolved
+end
+
+"""
+    _python_selection() -> String
+
+Which interpreter `python_link_source()` would pin, decided the way it decides
+it: `PYO3_PYTHON` when set, else CondaPkg's when that package is loaded, else
+the `sys.executable` the first `python3` / `python` on `PATH` reports
+(`_python_executable_on_path`). "" when there is none.
+
+Recorded for a PyO3 wrapper module so `__init__` can tell that the *selection*
+moved — `PYO3_PYTHON` unset and `PATH` now finding a different interpreter —
+which tracking the selected interpreter's files cannot see, because the old
+one is still there, unchanged (#339 review). The implicit case asks the
+interpreter rather than trusting `Sys.which`: a pyenv or asdf shim keeps one
+path on `PATH` while its project selection moves the real interpreter, and
+only `sys.executable` says which one that is. One short subprocess per load of
+a PyO3 wrapper module; a plain module never runs it.
+"""
+function _python_selection()
+    # The same order as `python_link_source()`, step for step — a selector that
+    # disagrees with it records the wrong interpreter and then never notices
+    # the real one moving (#339 review). The contract test asserts the two
+    # agree in the running environment.
+    #
+    # 1. pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, `PYO3_CONFIG_FILE`):
+    #    the interpreter is `PYO3_PYTHON` if set, else none.
+    isempty(_pyo3_configured_lib_dir()) || return String(get(ENV, "PYO3_PYTHON", ""))
+    # 2. an explicit `PYO3_PYTHON`.
+    pinned = get(ENV, "PYO3_PYTHON", "")
+    isempty(pinned) || return String(pinned)
+    # 3. `RUSTCALL_PYTHON_LIBDIR` alone leaves the interpreter to `PATH`, and
+    #    that comes *before* CondaPkg.
+    isempty(get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")) || return _python_executable_on_path()
+    # 4. CondaPkg's environment, when the package is loaded and has one.
+    conda = _condapkg_link_source()
+    conda === nothing || return String(conda[2])
+    # 5. the first `python3` / `python` on `PATH`, as it reports itself.
+    return _python_executable_on_path()
+end
+
+"""
+    _warn_if_build_env_changed(recorded, crate_path, lib_name)
+
+Warn when the environment that decides this crate's artifact is not the one it
+was built under.
+
+Julia invalidates a precompile image from *files*, and
+`Base.include_dependency` is the only lever a generated module has. Part of the
+artifact identity is not a file: `RUSTFLAGS`, `PYO3_PYTHON`, a
+`PYO3_CONFIG_FILE` **pointing somewhere else**, and the rest of the allowlist
+`artifact_build_env` captures. Change one of those and every file the image
+tracks is still byte-for-byte what it was, so Julia keeps the image and the
+module loads a library built for the other environment — silently, and with a
+Python preload plan to match (#339 review).
+
+Nothing here can invalidate the image; what it can do is refuse to be silent.
+The module records the values it was generated under and compares them at load
+time, which is cheap — the allowlist is read from `ENV`, no probe, no build.
+The fix it names is the one that works: force the package to be precompiled
+again.
+"""
+function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
+                                    recorded_cargo_config::AbstractString = "",
+                                    recorded_toolchain::AbstractString = "";
+                                    python::Bool = false)
+    current = try
+        _recorded_build_env(; python = python)
+    catch e
+        @debug "Could not read the build environment" exception = e
+        return nothing
+    end
+    was = Dict{String, String}(String(k) => String(v) for (k, v) in recorded)
+    now = Dict{String, String}(String(k) => String(v) for (k, v) in current)
+    changed = sort!(collect(union(keys(was), keys(now))))
+    filter!(k -> get(was, k, nothing) != get(now, k, nothing), changed)
+    # The *effective* Cargo configuration is selected by `CARGO_HOME`, which
+    # the allowlist deliberately does not capture — the file's contents go into
+    # the artifact identity instead of its path. So pointing `CARGO_HOME`
+    # somewhere else changes the flags a build runs under while every variable
+    # above, and every file `_CRATE_INPUTS` names, stays exactly as it was
+    # (#339 review). Comparing the digest catches that, and any other way the
+    # effective configuration differs.
+    if !isempty(recorded_cargo_config)
+        now_config = try
+            _cargo_config_digest(ENV; dir = crate_path)
+        catch e
+            @debug "Could not read the Cargo configuration" exception = e
+            recorded_cargo_config
+        end
+        now_config == recorded_cargo_config || push!(changed, "<effective Cargo configuration>")
+    end
+    # The toolchain is in the artifact identity too (`toolchain_fingerprint`:
+    # compiler identity, extractor, core sources) and is not a file the image
+    # tracks — `rustup update stable` replaces the binaries behind a proxy
+    # whose path and content do not move (#339 review). Memoized per session,
+    # so this is one `rustc -vV` per process at most.
+    if !isempty(recorded_toolchain)
+        now_toolchain = try
+            toolchain_fingerprint()
+        catch e
+            @debug "Could not fingerprint the toolchain" exception = e
+            recorded_toolchain
+        end
+        now_toolchain == recorded_toolchain || push!(changed, "<Rust toolchain>")
+    end
+    isempty(changed) && return nothing
+    @warn """
+          RustCall: the build environment changed since `$(lib_name)` was compiled into this \
+          package's precompile image, and Julia cannot see that — it invalidates an image from \
+          files, and these are not files. The library that is about to load was built under the \
+          previous values.
+
+          Force a rebuild with `Pkg.precompile(; force = true)`, or touch a source file of the \
+          crate.
+          """ crate = crate_path variables = changed
+    return nothing
+end
+
+"""
     emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing) -> Expr
 
 Generate a Julia module expression containing bindings for the crate.
@@ -423,7 +901,9 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                            module_name::Union{String, Nothing}=nothing,
                            build_release::Bool = true,
                            lib_name::Union{String, Nothing} = nothing,
-                           preload::Vector{String} = String[])
+                           preload::Vector{String} = String[],
+                           extra_inputs::Vector{String} = String[],
+                           python::Bool = false)
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -446,20 +926,95 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # the registry hold the same handle and the same liveness flag.
     lib_key = lib_name === nothing ? crate_library_name(info; release = build_release) : lib_name
 
+    # The files an edit to the crate would touch; see
+    # `_crate_precompile_dependencies`.
+    crate_inputs = _crate_precompile_dependencies(info.path)
+    # Inputs the caller knows about and the crate directory does not — the PyO3
+    # wrapper's interpreter and the libraries it preloads. An interpreter
+    # upgraded in place keeps its path, so only its *content* says it changed,
+    # and `plan.interpreter_config` is in the wrapper's artifact identity
+    # (#339 review).
+    for extra in extra_inputs
+        (isfile(extra) || isdir(extra)) && push!(crate_inputs, abspath(extra))
+    end
+    unique!(crate_inputs)
+    # The part of the artifact identity that is *not* a file, recorded so the
+    # module can say so at load time (`_warn_if_build_env_changed`).
+    build_env = try
+        _recorded_build_env(; python = python)
+    catch e
+        @debug "Could not record the build environment" exception = e
+        Pair{String, String}[]
+    end
+    recorded_env = Any[String(k) => String(v) for (k, v) in build_env]
+    toolchain = try
+        toolchain_fingerprint()
+    catch e
+        @debug "Could not record the toolchain fingerprint" exception = e
+        ""
+    end
+    crate_dir = abspath(String(info.path))
+    # The effective Cargo configuration is chosen by `CARGO_HOME`, which is not
+    # an allowlisted variable: its digest is what says whether the same build
+    # would run under the same flags (#339 review).
+    cargo_config_digest = try
+        _cargo_config_digest(ENV; dir = crate_dir)
+    catch e
+        @debug "Could not record the Cargo configuration" exception = e
+        ""
+    end
+
     # Build the module body as a block
     module_body = quote
         import RustCall
         import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
                          _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,
                          _result_payload, FFIByValue
-        import Libdl
+        # Through RustCall, not `import Libdl`: this module is evaluated inside
+        # the caller, and `import Libdl` would be resolved in the *caller's*
+        # environment — a package that uses `@rust_crate` would then need
+        # `Libdl` among its own dependencies to precompile (#339).
+        import RustCall.Libdl
 
+        # The *durable* library — RustCall's cache copy, or Cargo's output —
+        # never the per-process generation copy, which is swept once the
+        # process that made it is gone. This module may be precompiled as part
+        # of a package (`@rust_crate` at top level, #339): its `__init__` then
+        # runs in a later session, which must still find this file.
         const _LIB_PATH = $lib_path
         const _LIB_NAME = $lib_key
         # Libraries the image imports by name that the loader would not find on
         # its own — a PyO3 wrapper's `python3xy.dll` on Windows, where there is
         # no rpath — opened before it (`PyO3LinkPlan.runtime_libraries`).
         const _PRELOAD_LIBRARIES = $preload
+
+        # What makes a package that contains this module re-precompile, and so
+        # rebuild the crate, when it should (#339). Outside precompilation
+        # these record nothing.
+        #
+        # The library: removed by `RustCall.clear_cache()`, after which Julia
+        # sees the image as stale rather than letting `__init__` open a path
+        # that is gone.
+        Base.include_dependency(_LIB_PATH)
+        # And the crate's own inputs — the very files its artifact identity is
+        # computed from. Without them an edit to `src/lib.rs` would leave the
+        # image valid: the new build lands at a *different* content-addressed
+        # cache path and the old file is still there, unchanged, so nothing
+        # Julia tracks would have moved and the package would go on calling the
+        # previous build (#339 review).
+        const _CRATE_INPUTS = $crate_inputs
+        for _input in _CRATE_INPUTS
+            Base.include_dependency(_input)
+        end
+        # The rest of the identity is environment, not files —
+        # `RUSTFLAGS`, `PYO3_PYTHON`, a `PYO3_CONFIG_FILE` pointing elsewhere.
+        # Julia cannot invalidate an image on those, so the values are recorded
+        # and `__init__` says when they no longer match (#339 review).
+        const _BUILD_ENV = $recorded_env
+        const _CRATE_DIR = $crate_dir
+        const _CARGO_CONFIG = $cargo_config_digest
+        const _TOOLCHAIN = $toolchain
+        const _RECORDS_PYTHON = $python
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -483,8 +1038,17 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # assignment after it would overwrite a newer generation that a
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
+            RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG,
+                                                _TOOLCHAIN; python = _RECORDS_PYTHON)
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
-            RustCall.load_artifact!(RustCall.crate_direct_policy(), _LIB_PATH;
+            # A private generation copy, never `_LIB_PATH` itself: that file is
+            # Cargo's output or the cache copy, and an image mapped in place
+            # cannot be overwritten on Windows — the next `cargo build` of the
+            # crate would fail (#255, #277, #309). Copied *here*, not when the
+            # module was generated, because `__init__` may run in a later
+            # session than the one that generated this module (#339).
+            RustCall.load_artifact!(RustCall.crate_direct_policy(),
+                                    RustCall.loadable_library_copy(_LIB_PATH);
                                     lib_name = _LIB_NAME, preload = _PRELOAD_LIBRARIES)
         end
 
@@ -1873,6 +2437,100 @@ end
 # ============================================================================
 
 """
+    _uncached_library_home(built) -> String
+
+A copy of `built` in a directory that outlives the process that made it, for
+a build that is not entered into the cache (`cache = false`, or a cache write
+that failed).
+
+Not `mktempdir()`: that cleans up at process exit, and the process that
+generates a module is not always the one that loads it. A package precompiled
+with `cache = false` records this path as its `_LIB_PATH`; the precompile
+worker then exits, the directory goes with it, and the session that triggered
+the precompilation loads an image whose library is already gone (#339
+review). The copy lives under the Cargo cache directory instead, under a name
+the cache lookup never returns, so `RustCall.clear_cache()` is what removes
+it.
+"""
+function _uncached_library_home(built::AbstractString)
+    home = mktempdir(get_cargo_cache_dir(); prefix = "uncached_", cleanup = false)
+    kept = joinpath(home, basename(built))
+    cp(built, kept; force = true)
+    return kept
+end
+
+"""
+    _cache_built_library(cache_key, built, cache_enabled) -> String
+
+The path a generated module should name for a library that was just built:
+the cache copy when caching is on, and `built` itself when it is off or the
+cache could not be written.
+
+Caching is what makes the path *durable*. `built` is either Cargo's output
+under the crate's own `target/` — rewritten by the next build of the crate —
+or a file inside a wrapper project that is about to be deleted; the cache copy
+is neither, which is what a module compiled into a package's precompile image
+needs when its `__init__` runs in a later session (#339).
+
+Returning `built` unchanged is the caller's signal that nothing was copied, so
+a caller whose `built` is about to disappear can keep a copy of its own.
+"""
+function _cache_built_library(cache_key::String, built::String, cache_enabled::Bool)
+    cache_enabled || return built
+    try
+        save_cargo_cached_library(cache_key, built)
+        cached = get_cargo_cached_library(cache_key)
+        cached === nothing || return cached
+    catch e
+        @debug "Failed to cache library: $e"
+    end
+    return built
+end
+
+"""
+    _plain_crate_build_env() -> Vector{Pair{String, String}}
+
+The environment a **plain** `@rust_crate` build (no PyO3 wrapper) is keyed by:
+`artifact_build_env()` — the #282 allowlist, `PYO3_*` included by prefix — plus
+the *contents* of `PYO3_CONFIG_FILE` when it is set. The allowlist records that
+variable's value, which is a path; a crate that depends on pyo3 and takes this
+path (a `cdylib` exposing `#[julia]` items, say) reads the file itself at build
+time, so an edit to it — another Python version, ABI or library directory — is
+a different binary under the same path. The wrapper path already hashes the
+contents (`_pyo3_wrapper_build_env`); without this the plain key did not, and
+`get_cargo_cached_library` answered the edited configuration with the old
+library (#339 review).
+
+**Neither depends on the dependency graph**, deliberately. Cargo hands every
+ambient variable to every build script, and a crate's own `build.rs` may read
+`PYO3_PYTHON`, or open the file `PYO3_CONFIG_FILE` names, without depending on
+pyo3 — which crates are in the graph proves nothing about what a script reads.
+So the value is an input of every build (the #282 contract) and so are the
+contents of the file it names, as `.cargo/config.toml`'s are: the price is a
+spare rebuild when Python is configured for another package while this
+variable is set and its file edited, and the alternative — a gate on pyo3
+being in the graph — was a stale library for the crate that read the file
+anyway (#339 review; an earlier round of this PR tried the gate and reverted
+it).
+"""
+function _plain_crate_build_env()
+    build_env = artifact_build_env()
+    digest = _pyo3_config_file_digest()
+    isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
+    # And the interpreter pyo3's build script would configure the library for
+    # — under the names the wrapper's identity uses for its own
+    # (`_pyo3_wrapper_build_env`), since it is the same fact about the same
+    # Python. Empty, and absent, when pyo3's configuration names the library
+    # directory and no interpreter is consulted (#339 review).
+    interpreter, fingerprint = _pyo3_build_interpreter()
+    if !isempty(interpreter)
+        push!(build_env, "rustcall-pyo3-python" => interpreter)
+        push!(build_env, "rustcall-pyo3-python-config" => fingerprint)
+    end
+    return build_env
+end
+
+"""
     generate_bindings(crate_path::String; kwargs...) -> Expr
 
 Generate Julia bindings for an external Rust crate.
@@ -1943,11 +2601,30 @@ function generate_bindings(crate_path::String;
         else
             @info "Wrapped $(length(wrapper.info.julia_functions)) functions and " *
                   "$(length(wrapper.info.julia_structs)) types ($(wrapper.plan.mode))"
-            return emit_crate_module(wrapper.info, loadable_library_copy(wrapper.lib_path);
+            # `wrapper.lib_path` is the cache copy (or, with caching off, a copy
+            # of Cargo's output); the module copies it per process in
+            # `__init__`.
+            # Python is an input of this module only when the wrapper links
+            # libpython. A `:python_free` build has pyo3 out of the graph and
+            # consults no interpreter, so recording one would warn on a
+            # routine `PATH` change and tracking `python3-config` would
+            # rebuild for nothing (#339 review).
+            links_python = wrapper.plan.mode === :link_libpython
+            python_inputs = if links_python
+                String[wrapper.plan.interpreter;
+                       _python_resolved(wrapper.plan.interpreter);
+                       wrapper.plan.runtime_libraries;
+                       (_python_config_consulted() ? last.(_python_config_selections()) : String[])]
+            else
+                String[]
+            end
+            return emit_crate_module(wrapper.info, wrapper.lib_path;
                                      module_name = output_module_name,
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
-                                     preload = wrapper.plan.runtime_libraries)
+                                     preload = wrapper.plan.runtime_libraries,
+                                     extra_inputs = python_inputs,
+                                     python = links_python)
         end
     end
     info = _plain_scan_info(crate_path, info, features, default_features, build_release)
@@ -1956,8 +2633,18 @@ function generate_bindings(crate_path::String;
     # a build the caller asked for with `features` / `default_features` is
     # not the default build, and must neither answer its lookup nor be built
     # as it (#307 review).
+    # `artifact_build_env()` is in the key here as it already is for a PyO3
+    # wrapper build (`_pyo3_wrapper_build_env`): `RUSTFLAGS`, a build script's
+    # `CC`, and the rest of the #282 allowlist decide what `cargo build`
+    # produces, so two builds under different values are different binaries and
+    # must not share an entry. Without it a changed environment found the
+    # previous library in the cache and handed it back — which also made the
+    # load-time warning's advice wrong, since re-precompiling the package
+    # rebuilt the bindings around the same stale artifact (#339 review).
+    build_env_snapshot = _plain_crate_build_env()
     cache_key = compute_crate_hash(info; release = build_release,
-                                   features = features, default_features = default_features)
+                                   features = features, default_features = default_features,
+                                   build_env = build_env_snapshot)
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
 
     lib_path = if cached_lib !== nothing && isfile(cached_lib)
@@ -1968,9 +2655,15 @@ function generate_bindings(crate_path::String;
         if crate_has_cdylib(crate_path)
             # Build the crate directly
             @info "Building crate directly (already has cdylib crate-type)..."
-            lib_path = build_crate_directly(info, build_release;
-                                            features = features,
-                                            default_features = default_features)
+            built = build_crate_directly(info, build_release;
+                                         features = features,
+                                         default_features = default_features)
+            # Cargo's own output under the crate's `target/`: durable, but the
+            # next `cargo build` of the crate rewrites it, so with caching on
+            # the module names the cache copy instead — which is what a module
+            # precompiled into a package needs when its `__init__` runs in a
+            # later session (#339).
+            _cache_built_library(cache_key, built, cache_enabled)
         else
             # Create wrapper crate and build
             @info "Creating wrapper crate..."
@@ -1986,40 +2679,52 @@ function generate_bindings(crate_path::String;
             )
 
             try
-                lib_path = build_cargo_project(wrapper_project, release=build_release,
-                                               policy=crate_wrapper_policy())
+                built = build_cargo_project(wrapper_project, release=build_release,
+                                            policy=crate_wrapper_policy())
+                # The library must leave the wrapper project *here*: the
+                # `finally` below removes the whole project, the build output
+                # included, so anything that names a path inside it afterwards
+                # — the cache write, the module's `_LIB_PATH`, the per-process
+                # copy `__init__` makes — is naming a file that no longer
+                # exists. With caching on that is the cache copy; with
+                # `cache = false` it is a copy in a directory of its own, as
+                # `_build_pyo3_wrapper_project` already does for the PyO3
+                # wrapper. Before this, `@rust_crate <crate> cache=false` on a
+                # crate that needs a wrapper failed to open its own library.
+                kept = _cache_built_library(cache_key, built, cache_enabled)
+                if kept == built
+                    kept = _uncached_library_home(built)
+                end
+                kept
             finally
                 cleanup_cargo_project(wrapper_project)
             end
         end
-
-        # Cache the result
-        if cache_enabled
-            try
-                save_cargo_cached_library(cache_key, lib_path)
-            catch e
-                @debug "Failed to cache library: $e"
-            end
-        end
-
-        lib_path
     end
 
     # RustCall never maps the file Cargo writes: a later build of the same
     # crate rewrites its output in place, which on Windows *fails* against a
     # mapped DLL (`Access is denied`) and elsewhere silently hands the old
-    # image back to the next `dlopen`. Opening a private copy leaves Cargo's
-    # output free (#255, #277).
-    lib_path = loadable_library_copy(lib_path)
+    # image back to the next `dlopen`. The module's `__init__` opens a private
+    # generation copy of `_LIB_PATH` (#255, #277) — in `__init__`, not here,
+    # because that copy belongs to the process that loads the module, which
+    # after precompilation is not the one that generated it (#339).
 
     # Generate module. The registry name follows the key, feature set
     # included, so two feature sets of one crate are two entries.
     @info "Generating Julia module..."
+    # The **same** snapshot decides the registry name as decides the cache key.
+    # Passing it to one and not the other gave two builds under different
+    # environments distinct artifacts under one `_LIB_NAME`: loading the second
+    # replaced the entry and re-pointed the first module's mirror at it, so its
+    # wrappers called the other build — a wrong ABI or a missing symbol where
+    # the environment changed the cfg-selected exports (#339 review).
     return emit_crate_module(info, lib_path; module_name=output_module_name,
                              build_release=build_release,
                              lib_name=crate_library_name(info; release = build_release,
                                                          features = features,
-                                                         default_features = default_features))
+                                                         default_features = default_features,
+                                                         build_env = build_env_snapshot))
 end
 
 """
@@ -2394,13 +3099,59 @@ end
 Base.show(io::IO, proxy::CrateBindingObject) = _show_crate_binding_object(io, proxy)
 Base.show(io::IO, ::MIME"text/plain", proxy::CrateBindingObject) = _show_crate_binding_object(io, proxy)
 
-function _instantiate_runtime_bindings(bindings_expr::Expr)
-    runtime_namespace = Module(gensym(:RustCallCrateRuntime))
+"""
+    _instantiate_runtime_bindings(bindings_expr; target_module, visible) -> Module
+
+Evaluate the generated module expression and return the module.
+
+Where it is evaluated decides whether the caller can be precompiled (#339):
+
+- `target_module === nothing` — the run-time API, `load_crate_bindings` called
+  from a function with no expanding module: a fresh anonymous `Module` under
+  `Main`, as before. Nothing rooted in `Main` can be part of a package's
+  precompile image, and nothing that calls this way is being precompiled.
+- `target_module` given (the `@rust_crate` macro passes `__module__`):
+  `visible = true` defines the module directly as `target_module.<name>` —
+  the `submodule=` form, for `using .Name: ...`. Otherwise, **while the caller
+  is being precompiled** (`Base.generating_output()`), it goes into a hidden
+  child namespace `target_module.var"##RustCallCrateRuntime#N"`, unique per
+  call, so it belongs to the module tree Julia is serializing and nothing the
+  caller did not name appears in its namespace (the #222 contract). Outside
+  precompilation the anonymous `Main`-rooted module is used exactly as
+  before: a child module defined in the caller can never be removed, and a
+  run-time `@rust_crate` may be evaluated any number of times.
+
+Only `submodule=` makes it visible, never `name=`, and that separation is not
+cosmetic: `const B = @rust_crate path name="B"` is a documented form, and
+defining a module `B` in the caller and *then* binding the returned value to
+the same constant produced a package whose precompile image segfaults on load
+(#339 review). `name=` therefore keeps naming the module without defining
+anything the caller did not ask for.
+"""
+function _instantiate_runtime_bindings(bindings_expr::Expr;
+                                       target_module::Union{Module, Nothing} = nothing,
+                                       visible::Bool = false)
+    # The caller-owned namespace exists for one reason: a module rooted in
+    # `Main` cannot be part of a precompile image. Outside precompilation that
+    # reason is absent, and a hidden child module defined in the caller on
+    # every call can never be removed again — a function-scope `@rust_crate`
+    # called in a loop, or a REPL evaluated repeatedly, would grow the caller's
+    # binding table for the life of the session. So the anonymous module is
+    # kept for run-time calls, and only a caller that is *being precompiled*
+    # (`Base.generating_output()`) gets the child namespace (#339 review).
+    # `submodule=` is a name the caller asked for, and is defined either way.
+    if target_module === nothing || (!visible && !Base.generating_output())
+        runtime_namespace = Module(gensym(:RustCallCrateRuntime))
+        return Base.invokelatest(Core.eval, runtime_namespace, bindings_expr)
+    end
+    visible && return Base.invokelatest(Core.eval, target_module, bindings_expr)
+    namespace_expr = Expr(:module, true, gensym(:RustCallCrateRuntime), Expr(:block))
+    runtime_namespace = Base.invokelatest(Core.eval, target_module, namespace_expr)
     return Base.invokelatest(Core.eval, runtime_namespace, bindings_expr)
 end
 
 """
-    load_crate_bindings(crate_path::String; output_module_name=nothing, build_release=true, cache_enabled=true) -> CrateBindings
+    load_crate_bindings(crate_path::String; output_module_name=nothing, submodule_name=nothing, build_release=true, cache_enabled=true, target_module=nothing) -> CrateBindings
 
 Generate, load, and return explicit bindings for a Rust crate.
 
@@ -2413,26 +3164,50 @@ p = MyCrate.Point(3.0, 4.0)
 p isa MyCrate.Point
 ```
 
-`output_module_name` controls the generated runtime module name stored inside the
-returned bindings object; it does not inject a caller-visible module.
+`target_module` is where the generated module is defined. The `@rust_crate`
+macro passes the module that expands it, which is what lets a package that
+uses the macro at top level be precompiled (#339); called without it, the
+module lives in an anonymous namespace under `Main` and the caller cannot be
+precompiled.
+
+`output_module_name` names the generated module; it defines nothing in
+`target_module`, so the bindings are reached through the returned value.
+`submodule_name` is what defines it there — `target_module.Name`, so
+`using .Name: f` works — and it also names it, so the two are not given
+together.
 """
 function load_crate_bindings(crate_path::String;
     output_module_name::Union{String, Nothing} = nothing,
+    submodule_name::Union{String, Nothing} = nothing,
     build_release::Bool = true,
     cache_enabled::Bool = true,
     features::Vector{String} = String[],
     default_features::Bool = true,
+    target_module::Union{Module, Nothing} = nothing,
 )
+    if submodule_name !== nothing && output_module_name !== nothing &&
+       submodule_name != output_module_name
+        throw(ArgumentError(
+            "load_crate_bindings: `submodule_name` ($(repr(submodule_name))) and " *
+            "`output_module_name` ($(repr(output_module_name))) name the same module " *
+            "and must agree; pass only `submodule_name` to define it in the caller"))
+    end
+    module_name = submodule_name === nothing ? output_module_name : submodule_name
+
     bindings_expr = generate_bindings(
         crate_path;
-        output_module_name = output_module_name,
+        output_module_name = module_name,
         build_release = build_release,
         cache_enabled = cache_enabled,
         features = features,
         default_features = default_features,
     )
 
-    crate_module = _instantiate_runtime_bindings(bindings_expr)
+    crate_module = _instantiate_runtime_bindings(
+        bindings_expr;
+        target_module = target_module,
+        visible = submodule_name !== nothing,
+    )
     return CrateBindings(crate_module)
 end
 
@@ -2450,9 +3225,31 @@ Generate and load bindings for an external Rust crate.
 - `path`: Path to the Rust crate (string literal)
 
 # Options
-- `name="ModuleName"`: Override the generated runtime module name used inside the returned bindings object
+- `name="ModuleName"`: name the generated module. It defines nothing in the
+  calling module; the bindings are reached through the returned value.
+- `submodule="ModuleName"`: define the generated module under that name **in
+  the calling module**, so that `using .ModuleName: f, T` works — the shape a
+  package uses. Do not assign the result to the same name.
 - `release=true/false`: Build in release mode (default: true)
 - `cache=true/false`: Enable caching (default: true)
+
+# Where the module lives
+
+The generated module is evaluated inside the module that expands the macro, so
+a package that uses `@rust_crate` at top level can be precompiled (#339): the
+crate is built and the bindings generated when the package is precompiled, and
+the module's `__init__` opens the library — RustCall's cache copy — in the
+session that loads the package. If that copy has been rebuilt or removed
+(`RustCall.clear_cache()`), the package's precompile cache is stale and Julia
+re-precompiles it, building the crate again.
+
+Without `submodule=` the module has a hidden, per-call name inside the caller,
+so repeated calls never collide and nothing the caller did not name appears in
+its namespace. With `submodule="X"`, a second `@rust_crate ... submodule="X"`
+in the same module replaces `X` (Julia warns `replacing module X`); bindings
+obtained earlier keep the module they hold. `submodule="X"` defines `X`, so do
+not also write `const X = @rust_crate ... submodule="X"` — binding the returned
+value over the module it just defined is what `name=` deliberately avoids.
 
 # Example
 ```julia
@@ -2466,10 +3263,19 @@ const MyBindings = @rust_crate "/path/to/my_crate" name="MyBindings" release=tru
 MyCrate.add(Int32(1), Int32(2))
 p = MyCrate.Point(3.0, 4.0)
 MyCrate.distance(p)
+
+# In a package: define the module here and re-export from it
+module MyPkg
+using RustCall
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") submodule="Bindings"
+using .Bindings: add, Point
+export add, Point
+end
 ```
 """
 macro rust_crate(path, options...)
     module_name = nothing
+    submodule_name = nothing
     release = true
     cache = true
     features = :(String[])
@@ -2482,6 +3288,8 @@ macro rust_crate(path, options...)
 
             if key == :name
                 module_name = value
+            elseif key == :submodule
+                submodule_name = value
             elseif key == :release
                 release = value
             elseif key == :cache
@@ -2494,14 +3302,19 @@ macro rust_crate(path, options...)
         end
     end
 
+    # `__module__` is the module the macro expands in. The generated module is
+    # placed inside it — hidden unless `submodule=` names it — which is what a
+    # package precompiling this call site needs (#339).
     quote
         load_crate_bindings(
             $(esc(path));
             output_module_name = $module_name,
+            submodule_name = $submodule_name,
             build_release = $release,
             cache_enabled = $cache,
             features = String[$(esc(features))...],
             default_features = $(esc(default_features)),
+            target_module = $__module__,
         )
     end
 end
