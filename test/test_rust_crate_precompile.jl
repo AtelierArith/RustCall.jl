@@ -247,3 +247,109 @@ end
         end
     end
 end
+
+# Editing the crate must invalidate the package's precompile image. It does not
+# follow from tracking the library: the library is content-addressed, so a new
+# build lands at a *different* cache path and leaves the old file untouched —
+# nothing Julia tracks would have moved, and the package would go on calling the
+# previous build. The module therefore declares the crate's own input files, the
+# very set its artifact identity is computed from (#339 review).
+@testset "Editing the crate invalidates the package image (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        root = mktempdir()
+        crate = joinpath(root, "edited_crate")
+        mkpath(joinpath(crate, "src"))
+        macros = replace(joinpath(dirname(@__DIR__), "deps", "juliacall_macros"), "\\" => "/")
+        write(joinpath(crate, "Cargo.toml"), """
+            [package]
+            name = "edited_crate"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [dependencies]
+            juliacall_macros = { path = "$macros" }
+            """)
+        source(offset) = """
+            use juliacall_macros::julia;
+            #[julia]
+            pub fn total(a: i32, b: i32) -> i32 { a + b + $offset }
+            """
+        write(joinpath(crate, "src", "lib.rs"), source(0))
+
+        pkg_name = "RustCrateEdited339"
+        pkg_uuid = "9f3c1d70-4a52-4b86-9d13-7e2c5a8b6f04"
+        pkgdir_ = joinpath(root, pkg_name)
+        cache_dir = joinpath(root, "rustcall-cache")
+        mkpath(joinpath(pkgdir_, "src"))
+        mkpath(cache_dir)
+        write(joinpath(pkgdir_, "Project.toml"), """
+        name = "$pkg_name"
+        uuid = "$pkg_uuid"
+        version = "0.1.0"
+
+        [deps]
+        RustCall = "$(Base.PkgId(RustCall).uuid)"
+        """)
+        write(joinpath(pkgdir_, "src", "$pkg_name.jl"), """
+        module $pkg_name
+        using RustCall
+        @rust_crate $(repr(abspath(crate))) submodule="Bindings"
+        using .Bindings: total
+        export total
+        end
+        """)
+        pkgid = Base.PkgId(Base.UUID(pkg_uuid), pkg_name)
+        sep = Sys.iswindows() ? ";" : ":"
+        run_pkg(script) = withenv("JULIA_LOAD_PATH" => join((pkgdir(RustCall), root, "@stdlib"), sep),
+                                  "RUSTCALL_CACHE_DIR" => cache_dir,
+                                  "RUSTCALL_SUPPRESS_HELPERS_WARNING" => "1") do
+            readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $script`; stderr = devnull))
+        end
+
+        # `Base.isprecompiled` needs the package's *source* on the load path,
+        # which only the subprocesses have — asked here it raises "Cannot
+        # locate source". So the staleness question is asked inside a session
+        # that can see the package, before it loads it.
+        stale_then_call = """
+            id = Base.identify_package("$pkg_name")
+            stale = !Base.isprecompiled(id)
+            using $pkg_name
+            print(stale, " ", total(Int32(2), Int32(3)), " ", Base.isprecompiled(id))
+            """
+
+        try
+            @test run_pkg(stale_then_call) == "true 5 true"
+
+            # The crate's source files are among the image's dependencies.
+            cachefiles = Base.find_all_in_cache_path(pkgid)
+            @test !isempty(cachefiles)
+            if !isempty(cachefiles)
+                includes = Base.parse_cache_header(first(cachefiles))[2][1]
+                @test any(inc -> inc.filename == joinpath(crate, "src", "lib.rs"), includes)
+            end
+
+            # Nothing changed: the image stays valid and the crate is not
+            # rebuilt.
+            @test run_pkg(stale_then_call) == "false 5 true"
+
+            # Edit the crate. `include_dependency` compares mtimes, and a build
+            # can be fast enough to land in the same second.
+            sleep(1.1)
+            write(joinpath(crate, "src", "lib.rs"), source(100))
+
+            # The next session finds the image stale, re-precompiles, rebuilds
+            # the crate, and calls the new code.
+            @test run_pkg(stale_then_call) == "true 105 true"
+        finally
+            for dir in unique(dirname.(Base.find_all_in_cache_path(pkgid)))
+                rm(dir; recursive = true, force = true)
+            end
+            rm(root; recursive = true, force = true)
+        end
+    end
+end

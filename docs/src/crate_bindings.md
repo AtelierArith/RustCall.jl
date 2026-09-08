@@ -536,8 +536,10 @@ precompile cache like any other submodule. What happens, and when:
   `__init__` opens the cached library (through a private per-process copy, so
   Cargo's output and the cache copy stay free to be rebuilt, #309). No
   scanning, no Cargo.
-- **After `RustCall.clear_cache()`**, or after the crate's library was rebuilt:
-  the module declared the library with `Base.include_dependency`, so the
+- **After an edit to the crate, or `RustCall.clear_cache()`**: the module
+  declared the library *and the crate's own input files* — the set the artifact
+  identity is computed from, so a `path` dependency and a workspace root count
+  too — with `Base.include_dependency`, so the
   package's precompile cache is stale and the next `using` re-precompiles the
   package, building the crate again. Deterministic, and never a failed
   `dlopen` of a path that is gone.

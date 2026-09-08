@@ -405,6 +405,85 @@ end
 # ============================================================================
 
 """
+    _crate_precompile_dependencies(crate_path) -> Vector{String}
+
+Every file on disk that the crate's artifact identity is computed from, as
+absolute paths.
+
+A module generated in memory by `@rust_crate` may be compiled into a package's
+precompile image (#339), and Julia decides that image is stale by the mtime of
+the files the module declared with `Base.include_dependency`. Declaring only
+the built library is not enough: the library is content-addressed, so editing
+`src/lib.rs` produces a *different* cache path and leaves the old file
+untouched — the image would still be valid and the package would go on calling
+the previous build (#339 review). Declaring the inputs instead makes an edit to
+the crate invalidate the image, which is what sends the next `using` back
+through `@rust_crate`.
+
+The list is deliberately the same set `compute_crate_hash` reads: the crate
+directory's own input files, every local `path` dependency's, the workspace
+root's manifest and lockfile when the crate is a workspace member, and a
+library root that lives outside the package directory (`[lib] path =
+"../shared/lib.rs"`). Files that are not on disk are dropped —
+`include_dependency` wants a file that exists, and a missing input already
+changes the digest through `crate_content_digest`.
+"""
+function _crate_precompile_dependencies(crate_path::AbstractString)
+    root = abspath(String(crate_path))
+    isdir(root) || return String[]
+    deps = String[]
+    dirs = String[root]
+    try
+        _, found = local_path_dependency_dirs(root)
+        append!(dirs, found)
+    catch e
+        # Resolving the graph needs Cargo; without it the crate's own files are
+        # still worth declaring.
+        @debug "Could not resolve path dependencies for precompile tracking" crate_path exception = e
+    end
+    for dir in unique(abspath.(dirs))
+        isdir(dir) || continue
+        try
+            _, files = crate_input_files(dir)
+            for rel in files
+                f = joinpath(dir, rel)
+                isfile(f) && push!(deps, f)
+            end
+        catch e
+            @debug "Could not list crate input files for precompile tracking" dir exception = e
+        end
+    end
+    # A workspace member is decided by files outside its directory, and a
+    # library root may live outside it too — both are in the artifact key.
+    try
+        workspace = _cargo_root_dir(root)
+        if abspath(workspace) != root
+            for name in ("Cargo.toml", "Cargo.lock")
+                f = joinpath(workspace, name)
+                isfile(f) && push!(deps, f)
+            end
+        end
+        manifest_path = joinpath(root, "Cargo.toml")
+        if isfile(manifest_path)
+            lib_root = crate_lib_root(root, parse_cargo_toml(manifest_path))
+            if lib_root !== nothing
+                lib_dir = dirname(abspath(lib_root))
+                if !startswith(lib_dir * "/", root * "/") && isdir(lib_dir)
+                    _, files = crate_input_files(lib_dir)
+                    for rel in files
+                        f = joinpath(lib_dir, rel)
+                        isfile(f) && push!(deps, f)
+                    end
+                end
+            end
+        end
+    catch e
+        @debug "Could not resolve out-of-directory crate inputs" crate_path exception = e
+    end
+    return unique!(deps)
+end
+
+"""
     emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing) -> Expr
 
 Generate a Julia module expression containing bindings for the crate.
@@ -446,6 +525,10 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # the registry hold the same handle and the same liveness flag.
     lib_key = lib_name === nothing ? crate_library_name(info; release = build_release) : lib_name
 
+    # The files an edit to the crate would touch; see
+    # `_crate_precompile_dependencies`.
+    crate_inputs = _crate_precompile_dependencies(info.path)
+
     # Build the module body as a block
     module_body = quote
         import RustCall
@@ -470,13 +553,24 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # no rpath — opened before it (`PyO3LinkPlan.runtime_libraries`).
         const _PRELOAD_LIBRARIES = $preload
 
-        # When a package precompiles this module, the library becomes one of
-        # that package's precompile dependencies: rebuilt or removed
-        # (`RustCall.clear_cache()`), and Julia treats the package's cache as
-        # stale, re-precompiles it, and `@rust_crate` builds the crate again —
-        # rather than `__init__` opening a path that is gone (#339). Outside
-        # precompilation this records nothing.
+        # What makes a package that contains this module re-precompile, and so
+        # rebuild the crate, when it should (#339). Outside precompilation
+        # these record nothing.
+        #
+        # The library: removed by `RustCall.clear_cache()`, after which Julia
+        # sees the image as stale rather than letting `__init__` open a path
+        # that is gone.
         Base.include_dependency(_LIB_PATH)
+        # And the crate's own inputs — the very files its artifact identity is
+        # computed from. Without them an edit to `src/lib.rs` would leave the
+        # image valid: the new build lands at a *different* content-addressed
+        # cache path and the old file is still there, unchanged, so nothing
+        # Julia tracks would have moved and the package would go on calling the
+        # previous build (#339 review).
+        const _CRATE_INPUTS = $crate_inputs
+        for _input in _CRATE_INPUTS
+            Base.include_dependency(_input)
+        end
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in

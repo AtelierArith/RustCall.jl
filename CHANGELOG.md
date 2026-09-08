@@ -152,10 +152,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is made in `__init__` (as the written file already did since format 6),
   because after precompilation `__init__` runs in a later session than the one
   that generated the module (visible only through `Bindings.module_ref._LIB_PATH`);
-  and the module declares that library with `Base.include_dependency`, so
-  after `RustCall.clear_cache()` — or a rebuild of the crate — the package's
-  precompile cache is stale and the next `using` re-precompiles it and builds
-  the crate again, instead of `__init__` opening a path that is gone. The
+  and the module declares that library **and the crate's own input files** —
+  the set its artifact identity is computed from: the crate directory, every
+  local `path` dependency, a workspace root's manifest and lockfile, an
+  out-of-directory `[lib] path` — with `Base.include_dependency`. So editing
+  `src/lib.rs`, or `RustCall.clear_cache()`, makes the package's precompile
+  cache stale and the next `using` re-precompiles it and builds the crate
+  again, instead of `__init__` opening a path that is gone or the package
+  going on calling a build that no longer matches its source. Tracking the
+  library alone would not do the second of those: the library is
+  content-addressed, so a new build lands at a *different* path and leaves the
+  old file untouched (found in review of
+  [#351](https://github.com/AtelierArith/RustCall.jl/pull/351)). The
   crate is built when the package is precompiled, nothing is written into the
   package, and the library is not opened during precompilation (`__init__` is
   deferred to load time), so the bindings are callable after the package's
