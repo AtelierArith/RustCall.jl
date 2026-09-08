@@ -1108,39 +1108,8 @@ end
                 # A crate with no pyo3 in its resolved graph reads nothing of
                 # the file: the allowlist alone, and an edit is no new key.
                 if RustCall.local_path_dependency_dirs(PRECOMP_SAMPLE_CRATE)[1] == "cargo-tree"
-                    without_pyo3 = filter(p -> !startswith(first(p), "PYO3_"), RustCall.artifact_build_env())
-                    @test RustCall._plain_crate_build_env(PRECOMP_SAMPLE_CRATE) == without_pyo3
+                    @test RustCall._plain_crate_build_env(PRECOMP_SAMPLE_CRATE) == RustCall.artifact_build_env()
                 end
-            end
-        end
-    end
-end
-
-# `PYO3_*` is on the allowlist because pyo3's build script reads it, and only
-# that build script does: for a crate with no pyo3 in its graph the namespace
-# is not an input, so it is neither in the key nor in the load-time record —
-# configuring Python for another package must not rebuild this crate or warn
-# about its library (#339 review).
-@testset "PYO3_* is not an input of a crate without pyo3 (#339 review)" begin
-    if !RustCall.check_rustc_available()
-        @test_skip "rustc is required"
-    elseif RustCall.local_path_dependency_dirs(PRECOMP_SAMPLE_CRATE)[1] != "cargo-tree"
-        @test_skip "Cargo could not resolve the sample crate's graph offline"
-    else
-        info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
-        key_under(python) = withenv("PYO3_PYTHON" => python) do
-            RustCall.compute_crate_hash(info; release = true,
-                                        build_env = RustCall._plain_crate_build_env(info.path))
-        end
-        @test key_under("/one/python3") == key_under("/two/python3")
-        @test key_under("/one/python3") == key_under(nothing)
-        withenv("PYO3_PYTHON" => "/one/python3") do
-            @test !any(p -> startswith(first(p), "PYO3_"), RustCall._plain_crate_build_env(info.path))
-            @test !any(p -> startswith(first(p), "PYO3_"), RustCall._recorded_build_env(; pyo3 = false))
-            @test any(p -> first(p) == "PYO3_PYTHON", RustCall._recorded_build_env(; pyo3 = true))
-            recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; pyo3 = false)]
-            withenv("PYO3_PYTHON" => "/two/python3") do
-                @test_logs RustCall._warn_if_build_env_changed(recorded, info.path, "lib"; pyo3 = false)
             end
         end
     end

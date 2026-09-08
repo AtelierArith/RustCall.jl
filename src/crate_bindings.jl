@@ -575,16 +575,8 @@ artifact without being in that allowlist — `RUSTCALL_PYTHON_LIBDIR`, which
 a wrapper's identity and rpath (#339 review). One function for both sides, so
 what is recorded and what is compared cannot drift.
 """
-function _recorded_build_env(; python::Bool = false, pyo3::Bool = true)
+function _recorded_build_env(; python::Bool = false)
     env = Pair{String, String}[String(k) => String(v) for (k, v) in artifact_build_env()]
-    # `PYO3_*` is on the allowlist by prefix because pyo3's build script reads
-    # it — and only that build script does. A crate whose graph may not read
-    # pyo3's configuration (`crate_may_read_pyo3_config`) is built the same
-    # under any `PYO3_PYTHON`, so for it the namespace is not an input: keyed
-    # and recorded, configuring Python for another package rebuilt this crate
-    # and warned about its library for nothing (#339 review). The key side is
-    # `_plain_crate_build_env`, filtered the same way.
-    pyo3 || filter!(p -> !startswith(first(p), "PYO3_"), env)
     # Only for a module that binds a PyO3 wrapper: a plain crate's build never
     # consults `python_link_source()`, so for it this selector is not an input
     # and comparing it would warn about a library nothing changed (#339
@@ -783,9 +775,9 @@ again.
 function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
                                     recorded_cargo_config::AbstractString = "",
                                     recorded_toolchain::AbstractString = "";
-                                    python::Bool = false, pyo3::Bool = true)
+                                    python::Bool = false)
     current = try
-        _recorded_build_env(; python = python, pyo3 = pyo3)
+        _recorded_build_env(; python = python)
     catch e
         @debug "Could not read the build environment" exception = e
         return nothing
@@ -858,8 +850,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                            lib_name::Union{String, Nothing} = nothing,
                            preload::Vector{String} = String[],
                            extra_inputs::Vector{String} = String[],
-                           python::Bool = false,
-                           pyo3::Bool = true)
+                           python::Bool = false)
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -897,7 +888,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).
     build_env = try
-        _recorded_build_env(; python = python, pyo3 = pyo3)
+        _recorded_build_env(; python = python)
     catch e
         @debug "Could not record the build environment" exception = e
         Pair{String, String}[]
@@ -971,9 +962,6 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         const _CARGO_CONFIG = $cargo_config_digest
         const _TOOLCHAIN = $toolchain
         const _RECORDS_PYTHON = $python
-        # Whether the crate's build may read pyo3's configuration at all; when
-        # not, `PYO3_*` is neither in its key nor compared here (#339 review).
-        const _READS_PYO3_CONFIG = $pyo3
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -998,8 +986,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
             RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG,
-                                                _TOOLCHAIN; python = _RECORDS_PYTHON,
-                                                pyo3 = _READS_PYO3_CONFIG)
+                                                _TOOLCHAIN; python = _RECORDS_PYTHON)
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
@@ -2465,11 +2452,7 @@ to an unrelated configuration must not rebuild that crate (#339 review).
 """
 function _plain_crate_build_env(crate_path::AbstractString)
     build_env = artifact_build_env()
-    # No pyo3 in the graph: the `PYO3_*` namespace is not an input of this
-    # build either — only pyo3's build script reads it — so it leaves the key
-    # as it leaves the load-time record (`_recorded_build_env`; #339 review).
-    crate_may_read_pyo3_config(crate_path) ||
-        return filter!(p -> !startswith(first(p), "PYO3_"), build_env)
+    crate_may_read_pyo3_config(crate_path) || return build_env
     digest = _pyo3_config_file_digest()
     isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
     return build_env
@@ -2669,8 +2652,7 @@ function generate_bindings(crate_path::String;
                              lib_name=crate_library_name(info; release = build_release,
                                                          features = features,
                                                          default_features = default_features,
-                                                         build_env = build_env_snapshot),
-                             pyo3 = crate_may_read_pyo3_config(info.path))
+                                                         build_env = build_env_snapshot))
 end
 
 """
