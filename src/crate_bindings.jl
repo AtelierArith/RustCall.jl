@@ -609,7 +609,10 @@ deliberate: which one *answers* is only known by running them, and a load
 must not (#339 review).
 """
 function _python_config_selections()
-    map(("python3-config", "python-config")) do name
+    # A `Vector`, not a tuple: the wrapper path splices `last.(...)` of this
+    # into a `String[...]`, and a tuple there is one element that cannot be
+    # converted, not two strings.
+    map(["python3-config", "python-config"]) do name
         found = Sys.which(name)
         name => (found === nothing ? "" : String(found))
     end

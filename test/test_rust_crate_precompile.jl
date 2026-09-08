@@ -552,6 +552,14 @@ end
         end
     end
 
+    # The config selections are spliced into the wrapper module's tracked
+    # inputs as `String[...; last.(selections)]`: a Vector of pairs, or that
+    # splice is one unconvertible tuple (it was, once).
+    let sel = RustCall._python_config_selections()
+        @test sel isa Vector
+        @test String[String[]; last.(sel)] isa Vector{String}
+    end
+
     # `RUSTCALL_PYTHON_LIBDIR` is RustCall's own selector, outside the
     # allowlist, and it decides a PyO3 wrapper's rpath and identity: it is
     # recorded and compared like the rest (#339 review).
