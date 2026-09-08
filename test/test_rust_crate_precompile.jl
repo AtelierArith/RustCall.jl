@@ -358,6 +358,17 @@ end
             sleep(1.1)
             rm(joinpath(crate, "src", "extra.rs"))
             @test run_pkg(stale_then_call) == "true 105 true"
+
+            # A directory that held no input at all is tracked too: the first
+            # file appearing in an empty `assets/` changes the artifact, moves
+            # no file, and leaves the parent's entry list alone because the
+            # directory was already there (#339 review).
+            mkpath(joinpath(crate, "assets"))
+            sleep(1.1)
+            @test run_pkg(stale_then_call) == "true 105 true"   # `assets/` itself is new
+            sleep(1.1)
+            write(joinpath(crate, "assets", "table.csv"), "1,2\n")
+            @test run_pkg(stale_then_call) == "true 105 true"   # a file inside it is new
         finally
             for dir in unique(dirname.(Base.find_all_in_cache_path(pkgid)))
                 rm(dir; recursive = true, force = true)

@@ -464,6 +464,15 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
                 f = joinpath(dir, rel)
                 isfile(f) && push!(deps, f)
             end
+            # The directories of that same walk, including the ones holding no
+            # file: creating the first file in an empty `assets/` changes
+            # `crate_content_digest`, moves no file, and does not change its
+            # parent's entry list either, because the directory was already
+            # there (#339 review).
+            for rel in crate_input_dirs(dir)
+                d = rel == "." ? dir : joinpath(dir, rel)
+                isdir(d) && push!(deps, d)
+            end
         catch e
             @debug "Could not list crate input files for precompile tracking" dir exception = e
         end

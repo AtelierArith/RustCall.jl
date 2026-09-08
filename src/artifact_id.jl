@@ -905,6 +905,38 @@ function crate_input_files(dir::AbstractString)
 end
 
 """
+    crate_input_dirs(dir::AbstractString) -> Vector{String}
+
+Every directory [`crate_input_files`](@ref) walks, `dir` itself included, as
+paths relative to `dir` (`"."` for the root). Same walk, same exclusions —
+Cargo's `target/` at the package root, VCS metadata at any depth — so the two
+cannot drift.
+
+Separate from the file list because a *directory* is what tells a consumer that
+a file appeared. `crate_content_digest` hashes the list of files, so creating
+the first file in a directory that was empty changes the artifact; the parent's
+own entry list does not move (the directory was already there), and neither
+does any file. A caller that tracks directories therefore has to know about the
+empty ones too (#339 review).
+"""
+function crate_input_dirs(dir::AbstractString)
+    dir = String(dir)
+    dirs = String[]
+    for (root, subdirs, _) in walkdir(dir)
+        at_root = _canonical_dir(root) == _canonical_dir(dir)
+        filter!(subdirs) do d
+            d in CRATE_INPUT_VCS_DIRS_ANY_LEVEL && return false
+            at_root && d == "target" && return false
+            return true
+        end
+        push!(dirs, replace(relpath(root, dir), '\\' => '/'))
+    end
+    unique!(dirs)
+    sort!(dirs)
+    return dirs
+end
+
+"""
     local_path_dependency_dirs(root::AbstractString) -> (strategy::String, dirs::Vector{String})
 
 Directories of every local (path) crate reachable from the crate at `root`,
