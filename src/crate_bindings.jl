@@ -1518,9 +1518,10 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     method_name = Symbol(method.name)
     # Exported symbol of the method wrapper (`rustcall_<Struct>_<method>`, #279)
     # and the owner of the per-method string buffers, both off the struct's
-    # FFI name, which carries the module path (#300).
+    # FFI name, which carries the module path (#300). The manifest states the
+    # owner (#342); the derivation stands in only for an entry that states none.
     wrapper_name = method_wrapper_symbol(info.ffi_name, method)
-    helper_owner = "$(info.ffi_name)_$(method.name)"
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
 
     arg_syms = [Symbol(name) for name in method.arg_names]
 
@@ -1671,8 +1672,10 @@ method, shared by the in-memory `@rust_crate` emitter and the source-text one so
 the two cannot describe the same aggregate differently.
 
 `helper_owner` is what the wrapper's owned-string buffer is named after — the
-struct for an inline method, `<Struct>_<method>` for a crate one — and is the
-only thing that differs between the flavours.
+struct for a method wrapped next to its struct, `<Struct>_<method>` for one
+whose wrapper declares its own buffers — and is the only thing that differs
+between the flavours. The caller takes it from the manifest
+(`_method_string_owner`, #342).
 """
 function _method_payload_plan(info::RustStructInfo, method::RustMethod,
                               helper_owner::AbstractString;
@@ -3231,9 +3234,11 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     struct_name = struct_info.name
     method_name = method.name
     # Exported symbol (`rustcall_<Struct>_<method>`, #279) and the owner of the
-    # per-method string buffers, both off the struct's FFI name (#300).
+    # per-method string buffers, both off the struct's FFI name (#300). The
+    # manifest states the owner (#342); the derivation stands in only for an
+    # entry that states none.
     wrapper_name = method_wrapper_symbol(struct_info.ffi_name, method)
-    helper_owner = "$(struct_info.ffi_name)_$(method_name)"
+    helper_owner = _method_string_owner(method, "$(struct_info.ffi_name)_$(method_name)")
 
     arg_syms = join(method.arg_names, ", ")
 
