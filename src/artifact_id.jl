@@ -964,9 +964,12 @@ never collide with one found the other.
 
 The third value says whether the build *may* read pyo3's configuration
 (`PYO3_CONFIG_FILE`): `pyo3` / `pyo3-ffi` / `pyo3-build-config` in the resolved
-graph, or declared — optional or not, a feature may activate it — by any
-manifest in `dirs`. `true` whenever Cargo could not resolve the graph: a
-missing input is a stale library, an extra one a rebuild (#339 review).
+graph, declared — optional or not, a feature may activate it — by any manifest
+in `dirs`, or anywhere in the graph `cargo tree --all-features` resolves, which
+is a superset of every feature selection a build can ask for and so sees an
+optional *registry* dependency that pulls pyo3 in. `true` whenever Cargo could
+not resolve a graph: a missing input is a stale library, an extra one a
+rebuild (#339 review).
 """
 function local_path_dependency_dirs(root::AbstractString)
     root = String(root)
@@ -1026,7 +1029,11 @@ function _local_path_dependency_dirs_uncached(root::String)
                 _collect_manifest_path_deps!(dirs, dir, seen)
             end
             unique!(dirs)
-            return "cargo-tree", dirs, resolved_pyo3 || any(_manifest_declares_pyo3, dirs)
+            # The two cheap checks first; the all-features graph is one more
+            # `cargo tree`, and only a crate that names pyo3 nowhere pays it.
+            pyo3 = resolved_pyo3 || any(_manifest_declares_pyo3, dirs) ||
+                   _all_features_graph_may_use_pyo3(manifest)
+            return "cargo-tree", dirs, pyo3
         end
     end
 
@@ -1040,6 +1047,19 @@ end
 # The crates that read `PYO3_CONFIG_FILE` at build time. `pyo3-build-config`
 # is the one that does; `pyo3-ffi` and `pyo3` depend on it.
 const _PYO3_CONFIG_READERS = ("pyo3", "pyo3-ffi", "pyo3-build-config")
+
+# Whether any feature selection can pull a `_PYO3_CONFIG_READERS` crate into
+# the build: the graph with every feature on is a superset of the graph any
+# `features = [...]` asks for, so an optional *registry* dependency that
+# depends on pyo3 — invisible to the default graph and to the local manifests,
+# which see only its name — shows up here (#339 review). `true` when Cargo
+# cannot resolve that graph: what cannot be inspected is not ruled out.
+function _all_features_graph_may_use_pyo3(manifest::AbstractString)
+    listed = _cargo_tree(manifest, true; all_features = true)
+    isempty(listed) && (listed = _cargo_tree(manifest, false; all_features = true))
+    isempty(listed) && return true
+    return any(_tree_line_names_pyo3, split(listed, '\n'))
+end
 
 # `cargo tree --prefix none --format {p}` prints `name vX.Y.Z (...)`: the
 # first token is the package name.
@@ -1096,12 +1116,13 @@ the image (#339 review).
 """
 crate_may_read_pyo3_config(root::AbstractString) = local_path_dependency_dirs(root)[3]
 
-function _cargo_tree(manifest::AbstractString, locked::Bool)::String
+function _cargo_tree(manifest::AbstractString, locked::Bool; all_features::Bool = false)::String
     fmt = "{p}"   # a Cmd literal cannot carry braces unquoted
     args = String["tree", "--offline", "--target", "all",
                   "--edges", "normal,build,dev", "--prefix", "none",
                   "--format", fmt, "--manifest-path", String(manifest)]
     locked && push!(args, "--locked")
+    all_features && push!(args, "--all-features")
     CARGO_TREE_INVOCATIONS[] += 1
     return try
         read(pipeline(`$(cargo()) $(args)`; stderr = devnull), String)
