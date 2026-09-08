@@ -22,6 +22,10 @@ A method of a `#[julia]` struct as recorded in the manifest.
   `:julia`, `:py_methods` for a scanned `#[pymethods]` block, `:none` for an
   inline-mode impl (which carries none) or a hand-built method. It need not be
   the struct's own (#275 Phase 3)
+- `string_owner`: the stem the wrapper's string buffers hang off
+  (`<owner>_RustCallOwnedString`, `<owner>_free_rust_string`), stated by the
+  manifest rather than derived from the flavour (#342). Empty when the manifest
+  states none; see `_method_string_owner`
 """
 struct RustMethod
     name::String
@@ -55,12 +59,15 @@ struct RustMethod
     inner_type::String
     # Manifest schema 6 (#268): how each payload travels — "" as written,
     # "string" for an owned `<owner>_RustCallOwnedString` buffer released with
-    # `<owner>_free_rust_string`. The owner is the struct for an inline method
-    # and `<Struct>_<method>` for a crate one, matching the buffer a
-    # string-returning method of the same flavour uses.
+    # `<owner>_free_rust_string`. The owner is `string_owner`.
     ok_abi::String
     err_abi::String
     inner_abi::String
+    # The stem the wrapper's string buffers hang off (`Method.string_owner`,
+    # schema 8, #342). See `_method_string_owner`: the manifest
+    # states it, Julia never re-derives it from the flavour. Empty for a
+    # hand-built method and for a manifest entry with no wrapper.
+    string_owner::String
     # The impl block's attribute (`Method.attribute`, additive within schema
     # 6, #275 Phase 3): `:julia`, `:py_methods`, or `:none`.
     attribute::Symbol
@@ -81,12 +88,13 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     ok_abi::String = _default_payload_abi(ok_type),
                     err_abi::String = _default_payload_abi(err_type),
                     inner_abi::String = _default_payload_abi(inner_type),
+                    string_owner::String = "",
                     attribute::Symbol = :none)
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
-               attribute)
+               string_owner, attribute)
 end
 
 """
@@ -104,6 +112,30 @@ function _default_payload_abi(payload_type::AbstractString)
     entry === nothing && return ""
     return entry.surface_type === RustString || entry.surface_type === RustStr ? "string" : ""
 end
+
+"""
+    _method_string_owner(m::RustMethod, fallback) -> String
+
+The stem `m`'s string buffers hang off: `<owner>_RustCallOwnedString` for an
+owned `String` result or payload, released through `<owner>_free_rust_string`,
+and `<owner>_RustCallBorrowedString` for a borrowed `&str`.
+
+The manifest **states** it per method (`Method.string_owner`, schema 8, #342 —
+a breaking addition, because a consumer that ignores the column releases a
+cross-module method's buffer through a symbol the library does not export),
+because one inline manifest can hold both shapes: a method
+whose `#[julia] impl` block sits beside its struct shares the struct's buffers,
+one whose block sits in another module has its wrapper — and its buffers —
+emitted at the block. Deriving the owner from the flavour, as Julia did before
+#342, would look for `<Struct>_free_rust_string` where the library exports
+`<Struct>_<method>_free_rust_string`.
+
+`fallback` is the flavour's historical derivation, used for a hand-built
+`RustMethod` and for a manifest entry that states no owner (a scanned
+`#[pymethods]` method, a generic struct's methods).
+"""
+_method_string_owner(m::RustMethod, fallback::AbstractString) =
+    isempty(m.string_owner) ? String(fallback) : m.string_owner
 
 """
     method_wrapper_symbol(struct_name, method::RustMethod) -> String
@@ -553,7 +585,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     expanded_call_args; self = nothing, static_type = esc_struct))
             else
                 mc = ffi_return_contract(m.return_type; abi = m.return_abi,
-                                         owner = struct_stem)
+                                         owner = _method_string_owner(m, struct_stem))
                 if ffi_owned_string_return(mc)
                     free_fn = mc.free_symbol
                     push!(exprs, quote
@@ -602,7 +634,8 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 info, m, fname, wrapper_name, esc_args, bindings, preserved,
                 expanded_call_args; self = esc_struct))
         else
-            mc = ffi_return_contract(m.return_type; abi = m.return_abi, owner = struct_stem)
+            mc = ffi_return_contract(m.return_type; abi = m.return_abi,
+                                     owner = _method_string_owner(m, struct_stem))
             if ffi_owned_string_return(mc)
                 free_fn = mc.free_symbol
                 push!(exprs, quote
@@ -768,30 +801,35 @@ The Julia wrapper of an inline `#[julia]` struct method returning
 
 Identical in shape to the free-function wrapper in `src/julia_functions.jl`:
 one generation snapshot (pointer, panic channel and — when a payload is an
-owned string — the struct's `<Struct>_free_rust_string`), the aggregate read by
-value, the panic channel consulted *before* anything is decoded, and only the
-active payload converted and released.
+owned string — the `<owner>_free_rust_string` of the buffer the wrapper used),
+the aggregate read by value, the panic channel consulted *before* anything is
+decoded, and only the active payload converted and released.
 
 `self` is the escaped struct type for an instance method and `nothing` for a
-static one; the inline flavour names its string buffer after the **struct**, so
-that is the owner the release symbol comes from.
+static one. The owner of the string buffer comes from the manifest
+(`_method_string_owner`): the struct for a method wrapped next to it, the
+method itself for one whose `#[julia] impl` block sits in another module (#342).
 """
 function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fname,
                                         wrapper_name::AbstractString, esc_args, bindings,
                                         preserved, call_args; self = nothing,
                                         static_type = nothing)
     ctx = _ffi_context(m, info.name)
+    # The manifest says which buffers this wrapper uses: the struct's when it
+    # was emitted next to the struct, its own when it was emitted at a
+    # `#[julia] impl` block in another module (#342).
+    owner = _method_string_owner(m, info.ffi_name)
     if m.return_kind === :result
         ok_t, ok_slot = ffi_payload_symbols(m.ok_type, m.ok_abi, ctx)
         err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx)
         aggregate = :(RustCall.CResultType{$ok_slot, $err_slot})
-        free_sym = _payload_free_symbol(info.ffi_name, (m.ok_abi, m.err_abi))
+        free_sym = _payload_free_symbol(owner, (m.ok_abi, m.err_abi))
         decode = (c, tgt) ->
             :(RustCall.convert_c_result_to_rust_result($c, $ok_t, $err_t, $tgt.free_ptr))
     else
         inner_t, inner_slot = ffi_payload_symbols(m.inner_type, m.inner_abi, ctx)
         aggregate = :(RustCall.COptionType{$inner_slot})
-        free_sym = _payload_free_symbol(info.ffi_name, (m.inner_abi,))
+        free_sym = _payload_free_symbol(owner, (m.inner_abi,))
         decode = (c, tgt) ->
             :(RustCall.convert_c_option_to_rust_option($c, $inner_t, $tgt.free_ptr))
     end

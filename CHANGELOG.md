@@ -82,6 +82,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (scalars only, textual substitution, not type-stable, a compiler invocation
   per new snippet) and the guidance to use `rust"""..."""` with `@rust` for
   anything larger.
+- **An inline `rust"""` block's cross-module `#[julia] impl` compiles**
+  ([#342](https://github.com/AtelierArith/RustCall.jl/issues/342)). Since #315 a
+  `#[julia] impl` block may sit in another module than its struct. The inline
+  expander emitted every method's wrapper next to the *struct*, so a method
+  whose signature named a type only the impl's module can see (`type Count =
+  i32;` beside the block) produced a `cannot find type` error in generated
+  code. Such a wrapper is now emitted **inside the impl's module**, spelling
+  the struct the way the header does (`super::Gauge`) — which is what the
+  proc-macro has always done for the crate flavour. The exported symbol is
+  crate-global and still follows the struct (`rustcall_Gauge_read`), so nothing
+  a caller sees changes. A wrapper emitted at the block declares string buffers
+  of its own (`<Struct>_<method>_RustCallOwnedString`) instead of sharing the
+  struct's, and a struct whose only string-returning method is cross-module no
+  longer grows shared buffers nothing would use. The manifest gained
+  `Method.string_owner` so Julia reads which buffer each method uses instead
+  of deriving it from the flavour, and the **manifest schema goes to 8**: the
+  column is a breaking addition, not an additive one, because a consumer that
+  ignores it derives `<Struct>_free_rust_string` for a cross-module method
+  whose buffer is released through `<Struct>_<method>_free_rust_string` — and
+  where the struct has no local string helper that symbol does not exist, so
+  the buffer leaks in silence. `src/manifest.jl` validates exact equality, so
+  the version is what makes such a consumer refuse the manifest.
 
 ## [0.3.0] - 2026-09-08
 

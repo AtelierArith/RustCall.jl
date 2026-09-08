@@ -183,14 +183,20 @@ are compiled into the including module, so that is where they bind. An include
 whose path is not a literal (`include!(concat!(env!("OUT_DIR"), "/api.rs"))`)
 names a file the build writes later and is left to the compiler.
 
-!!! note "Inline blocks: keep the method signature in scope at the struct"
-    In a `rust"""` block the wrappers are emitted next to the struct, so a
-    cross-module method whose signature names a type that only the impl's
-    module can see (`type Count = i32;` beside the block) does not compile.
-    Qualify it (`super::ops::Count`) or keep the impl beside the struct;
-    [#342](https://github.com/AtelierArith/RustCall.jl/issues/342) tracks
-    emitting such a wrapper inside the impl's module instead. A crate's
-    wrappers are emitted at the impl site by the proc-macro and are unaffected.
+!!! note "Inline blocks: the wrapper is emitted where the block is"
+    A `rust"""` block follows the same rule (#342): the wrappers of a method
+    whose `impl` sits in another module than its struct are emitted **inside
+    that module**, so a signature may name a type only that module can see
+    (`type Count = i32;` beside the block). The exported symbol is crate-global
+    and still follows the struct (`rustcall_Counter_get`), so nothing on the
+    Julia side changes. Such a wrapper declares string buffers of its own
+    (`Counter_label_RustCallOwnedString`) rather than sharing the struct's, the
+    way a crate's wrappers always have; the manifest states which buffer each
+    method uses, so both flavours resolve the right `<owner>_free_rust_string`.
+    Julia still binds a method only when it can map every type its signature
+    names, so a method returning a module-local alias compiles on the Rust side
+    but has no Julia wrapper until the alias is spelled as a type RustCall
+    knows.
 
 ### Static methods
 

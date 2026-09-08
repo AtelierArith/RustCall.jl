@@ -94,7 +94,20 @@ use serde::{Deserialize, Serialize};
 ///   A version-6 consumer would derive `<Struct>_free` and
 ///   `<owner>_free_rust_string` from the bare name and release a buffer through
 ///   a symbol that no longer exists.
-pub const SCHEMA_VERSION: u32 = 7;
+///
+/// * **8** adds [`Method::string_owner`] (#342), the stem a method's string
+///   buffers hang off, and it is a *breaking* addition rather than an additive
+///   one. Since #342 an inline manifest can hold both buffer shapes at once —
+///   a method sharing its struct's buffers, and a cross-module method carrying
+///   its own — so a consumer that does not read the column falls back to
+///   deriving `<Struct>_free_rust_string` by flavour. For a cross-module
+///   method returning an owned `String`, the expanded library exports only
+///   `<Struct>_<method>_free_rust_string`, and where the struct has no local
+///   string helper at all that derived symbol does not exist: the buffer is
+///   never released and leaks, silently. `src/manifest.jl` validates exact
+///   equality, so bumping the version is what makes such a consumer refuse the
+///   manifest instead of using the wrong owner (#342 review).
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -506,12 +519,31 @@ pub struct Method {
     /// `T` of an `Option<T>` return, empty otherwise (#275).
     #[serde(default)]
     pub inner_type: String,
+    /// The stem this method's string buffers hang off:
+    /// `<owner>_RustCallOwnedString`, `<owner>_free_rust_string` and
+    /// `<owner>_RustCallBorrowedString` — for a string return
+    /// ([`Method::return_abi`]) as much as for a string `Result` / `Option`
+    /// payload ([`Method::ok_abi`]).
+    ///
+    /// The struct's own [`Struct::ffi_name`] when the wrapper is emitted next
+    /// to the struct and shares its buffers; `<ffi_name>_<method>`
+    /// (`crate::codegen::method_string_owner`) when the wrapper declares its
+    /// own — every crate-flavour method, and since #342 an inline method whose
+    /// `#[julia] impl` block sits in another module than its struct, whose
+    /// wrapper is emitted at the block. One inline manifest can hold both
+    /// shapes, so the manifest **states** the owner rather than leaving a
+    /// consumer to infer it from the flavour, exactly as schema 6 states the
+    /// payload ABIs instead of leaving them to be read off the spelling
+    /// (#268). Empty when no `#[julia]` wrapper exists (a scanned
+    /// `#[pymethods]` entry, a generic struct's methods, whose wrappers are
+    /// monomorphized under names Julia chooses); a consumer then falls back to
+    /// its flavour's derivation. Additive within schema 7.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub string_owner: String,
     /// How each `Result` / `Option` payload travels: `""` as written,
     /// `"string"` for an owned `<owner>_RustCallOwnedString` buffer released
-    /// through `<owner>_free_rust_string` (schema 6, #268). The owner is the
-    /// struct for an inline method and `<Struct>_<method>` for a crate one,
-    /// which is the same buffer a string-returning method of the same flavour
-    /// uses.
+    /// through `<owner>_free_rust_string` (schema 6, #268), the owner being
+    /// [`Method::string_owner`].
     #[serde(default)]
     pub ok_abi: String,
     #[serde(default)]
@@ -528,9 +560,10 @@ pub struct Method {
     pub args: Vec<Arg>,
     pub return_type: String,
     /// How the wrapper returns the value: `""` as written, `"string"` for an
-    /// owned `<Struct>_RustCallOwnedString` (a `String`, or a `&str` copied
+    /// owned `<owner>_RustCallOwnedString` (a `String`, or a `&str` copied
     /// because it may borrow from a converted argument), `"str"` for a
-    /// borrowed `<Struct>_RustCallBorrowedString`.
+    /// borrowed `<owner>_RustCallBorrowedString`, the owner being
+    /// [`Method::string_owner`].
     #[serde(default)]
     pub return_abi: String,
     /// For generic structs: the generic wrapper source registered for
@@ -634,10 +667,19 @@ fn symbol_owner(path: &[String], name: &str, line: usize) -> String {
     format!("`{}` (line {line})", segments.join("::"))
 }
 
+/// The `#[no_mangle]` release function of an owned-string buffer owned by
+/// `owner`. The buffer *types* are not symbols; this is the only exported item
+/// the string ABI adds (`crate::codegen::owned_string_helper`).
+fn owned_string_free_symbol(owner: &str) -> String {
+    format!("{owner}_free_rust_string")
+}
+
 impl Function {
-    /// The exported symbol this `#[julia]` function claims, with the owner
-    /// label of [`Manifest::symbol_owners`]; empty when it claims none (a PyO3
-    /// item, an unexported or generic one, an undecided `#[cfg]`).
+    /// The exported symbols this `#[julia]` function claims — its wrapper and,
+    /// when it returns an owned string, the release function of its buffer —
+    /// with the owner label of [`Manifest::symbol_owners`]; empty when it
+    /// claims none (a PyO3 item, an unexported or generic one, an undecided
+    /// `#[cfg]`).
     pub fn claimed_symbols(&self) -> Vec<(String, String)> {
         if self.attribute.is_pyo3_scan()
             || !self.exported
@@ -646,17 +688,38 @@ impl Function {
         {
             return Vec::new();
         }
-        vec![(
-            self.symbol.clone(),
-            symbol_owner(&self.module_path, &self.name, self.line),
-        )]
+        let who = symbol_owner(&self.module_path, &self.name, self.line);
+        let mut out = vec![(self.symbol.clone(), who.clone())];
+        if self.has_owned_string_helper && !self.ffi_name.is_empty() {
+            out.push((owned_string_free_symbol(&self.ffi_name), who));
+        }
+        out
+    }
+}
+
+impl Method {
+    /// Whether this method's wrapper hands back an owned string buffer — as a
+    /// result or as a `Result` / `Option` payload — and so needs the
+    /// `<string_owner>_free_rust_string` release function. A borrowed `&str`
+    /// (`return_abi == "str"`) travels through a *type* and exports nothing.
+    pub fn declares_owned_string(&self) -> bool {
+        self.return_abi == "string"
+            || self.ok_abi == "string"
+            || self.err_abi == "string"
+            || self.inner_abi == "string"
     }
 }
 
 impl Struct {
     /// The exported symbols this `#[julia]` struct claims — `free`, the field
-    /// accessors and the method wrappers — with the owner label of
+    /// accessors, the method wrappers and the release functions of the
+    /// owned-string buffers they use — with the owner label of
     /// [`Manifest::symbol_owners`].
+    ///
+    /// A buffer's release function is claimed once however many items share
+    /// it: an inline method wrapped next to its struct shares the struct's
+    /// (`string_owner == ffi_name`), one wrapped at a `#[julia] impl` block in
+    /// another module declares its own (#342).
     pub fn claimed_symbols(&self) -> Vec<(String, String)> {
         if self.attribute.is_pyo3_scan() || !self.cfg.is_empty() || self.ffi_name.is_empty() {
             return Vec::new();
@@ -674,10 +737,25 @@ impl Struct {
                 }
             }
         }
+        let mut buffers: Vec<String> = Vec::new();
+        if self.has_owned_string_helper {
+            buffers.push(self.ffi_name.clone());
+        }
         for m in &self.methods {
-            if !m.symbol.is_empty() && m.cfg.is_empty() {
-                out.push((m.symbol.clone(), who.clone()));
+            if m.cfg.is_empty() {
+                if !m.symbol.is_empty() {
+                    out.push((m.symbol.clone(), who.clone()));
+                }
+                if m.declares_owned_string()
+                    && !m.string_owner.is_empty()
+                    && !buffers.contains(&m.string_owner)
+                {
+                    buffers.push(m.string_owner.clone());
+                }
             }
+        }
+        for owner in buffers {
+            out.push((owned_string_free_symbol(&owner), who.clone()));
         }
         out
     }
@@ -744,6 +822,27 @@ impl Manifest {
         }
         for s in &self.structs {
             out.extend(s.claimed_symbols());
+        }
+        out
+    }
+
+    /// Symbols [`Manifest::symbol_owners`] lists twice, as
+    /// `(symbol, first owner, second owner)` in the order they were claimed.
+    ///
+    /// The crate scan claims incrementally as it walks files, so it reports a
+    /// duplicate itself (`crate::extract::CrateScan`). Inline expansion builds
+    /// one manifest for one block and asks this instead, so a `rust"""` block
+    /// whose generated symbols collide fails with a `compile_error!` naming
+    /// both items rather than with rustc's duplicate-symbol diagnostic
+    /// pointing into generated code (#342 review).
+    pub fn duplicate_symbols(&self) -> Vec<(String, String, String)> {
+        let mut seen: Vec<(String, String)> = Vec::new();
+        let mut out = Vec::new();
+        for (symbol, who) in self.symbol_owners() {
+            match seen.iter().find(|(s, _)| *s == symbol) {
+                Some((_, first)) => out.push((symbol, first.clone(), who)),
+                None => seen.push((symbol, who)),
+            }
         }
         out
     }

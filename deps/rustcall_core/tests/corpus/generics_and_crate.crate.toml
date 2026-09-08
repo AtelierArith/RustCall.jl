@@ -1,4 +1,4 @@
-schema_version = 7
+schema_version = 8
 mode = "crate"
 
 [[functions]]
@@ -108,6 +108,7 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+string_owner = "Pair_new"
 ok_abi = ""
 err_abi = ""
 inner_abi = ""
@@ -141,6 +142,7 @@ return_kind = "plain"
 ok_type = ""
 err_type = ""
 inner_type = ""
+string_owner = "Pair_first"
 ok_abi = ""
 err_abi = ""
 inner_abi = ""

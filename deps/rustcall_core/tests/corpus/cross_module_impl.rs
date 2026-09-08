@@ -8,6 +8,11 @@
 //! the inline flavour resolves it against the whole block (`ModelTree`).
 //! A second struct lives in a marked module and gets a method from a sibling
 //! marked module by its full path.
+//!
+//! A cross-module method's wrapper is emitted **inside the impl's module**
+//! (#342), so a signature may name a type only that module can see
+//! (`ops::Count`); its string buffers are the wrapper's own
+//! (`Gauge_label_RustCallOwnedString`), not the struct's.
 
 #[julia]
 pub struct Gauge {
@@ -24,10 +29,14 @@ impl Gauge {
 
 #[julia]
 pub mod ops {
+    // Private to `ops`: a wrapper naming it only compiles where the block is
+    // (#342).
+    type Count = i32;
+
     #[julia]
     impl super::Gauge {
         #[julia]
-        pub fn read(&self) -> i32 {
+        pub fn read(&self) -> Count {
             self.value
         }
 

@@ -165,8 +165,8 @@ using Libdl
     end
 
     @testset "manifest: schema version guard" begin
-        @test RustCall.MANIFEST_SCHEMA_VERSION == 7
-        @test RustCall._parse_manifest("schema_version = 7\nmode = \"inline\"\n")["schema_version"] == 7
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 8
+        @test RustCall._parse_manifest("schema_version = 8\nmode = \"inline\"\n")["schema_version"] == 8
         # Schema 1 predates the string ABI columns (`abi`, `return_abi`, the
         # helper flags), schema 2 predates the additive `symbol` semantics
         # (#279), schema 3 predates the contract columns
@@ -179,8 +179,12 @@ using Libdl
         # `py_*` entry with a `return_abi`, the `i32` `err_type` of a lowered
         # `PyResult`, and the generator's own skip reasons, #275 Phase 2).
         # Schema 6 still has the `julia_pyo3` attribute origin, whose items
-        # were bound under their as-written, non-lowered signature (#312); a
-        # consumer must not fall back to any of them.
+        # were bound under their as-written, non-lowered signature (#312).
+        # Schema 7 predates `Method.string_owner`: it derives a method's string
+        # buffers from the flavour, which since #342 is wrong for a
+        # cross-module inline method — the release symbol it derives is not
+        # exported and the buffer leaks. A consumer must not fall back to any
+        # of them.
         err = try
             RustCall._parse_manifest("schema_version = 1\nmode = \"inline\"\n")
             nothing
@@ -189,12 +193,13 @@ using Libdl
         end
         @test err isa RustCall.ExtractorError
         @test occursin("schema 1", sprint(showerror, err))
-        @test occursin("expects 7", sprint(showerror, err))
+        @test occursin("expects 8", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 3\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 4\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 5\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 6\nmode = \"inline\"\n")
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 7\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 999\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("mode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("not = [valid toml")

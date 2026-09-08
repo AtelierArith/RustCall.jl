@@ -281,6 +281,80 @@ fn symbol_owners_feed_the_duplicate_check() {
     assert!(who.contains("`a::run`"), "{who}");
 }
 
+/// The release function of an owned-string buffer is a `#[no_mangle]` export
+/// like any other, so it is claimed too — once however many items share the
+/// buffer (#342 review). The buffer *types* are not symbols, and a borrowed
+/// `&str` view exports nothing at all.
+#[test]
+fn owned_string_buffers_are_claimed_once_each() {
+    let m = extract(
+        r#"
+            #[julia] pub fn shout(s: &str) -> String { s.to_uppercase() }
+            #[julia] pub fn peek() -> &'static str { "hi" }
+            #[julia] pub struct Tag { pub name: String }
+            #[julia] impl Tag {
+                #[julia] pub fn label(&self) -> String { self.name.clone() }
+                #[julia] pub fn size(&self) -> i32 { 0 }
+            }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let owners = m.symbol_owners();
+    let claims = |symbol: &str| owners.iter().filter(|(s, _)| s == symbol).count();
+    assert_eq!(claims("shout_free_rust_string"), 1, "{owners:?}");
+    assert_eq!(
+        claims("peek_free_rust_string"),
+        0,
+        "a borrowed `&str` owns nothing"
+    );
+    // The struct's own buffer, for the `String` field getter, and the crate
+    // flavour's per-method one.
+    assert_eq!(claims("Tag_free_rust_string"), 1, "{owners:?}");
+    assert_eq!(claims("Tag_label_free_rust_string"), 1, "{owners:?}");
+    assert_eq!(claims("Tag_size_free_rust_string"), 0);
+    assert!(
+        m.duplicate_symbols().is_empty(),
+        "{:?}",
+        m.duplicate_symbols()
+    );
+}
+
+/// An inline method wrapped next to its struct *shares* the struct's buffer,
+/// so the two must not claim `<Struct>_free_rust_string` twice (#342).
+#[test]
+fn a_shared_inline_buffer_is_not_a_duplicate() {
+    let inline = rustcall_core::expand::expand(
+        r#"
+        #[julia] pub struct Tag { pub name: String }
+        impl Tag {
+            pub fn label(&self) -> String { self.name.clone() }
+            pub fn other(&self) -> String { self.name.clone() }
+        }
+        "#,
+    )
+    .unwrap();
+    let owners = inline.manifest.symbol_owners();
+    assert_eq!(
+        owners
+            .iter()
+            .filter(|(s, _)| s == "Tag_free_rust_string")
+            .count(),
+        1,
+        "{owners:?}"
+    );
+    assert!(
+        inline.manifest.duplicate_symbols().is_empty(),
+        "{:?}",
+        inline.manifest.duplicate_symbols()
+    );
+    assert!(
+        !inline.source.contains("compile_error"),
+        "{}",
+        inline.source
+    );
+}
+
 /// A crate-root `fn a__run` spells the symbol of `a::run`: the one coincidence
 /// the encoding cannot exclude. The scan refuses it with both owners instead
 /// of describing a `cdylib` that could not be linked — within one file as

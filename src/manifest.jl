@@ -36,9 +36,15 @@ as-written, non-lowered signature, #312; (b) module-qualified symbols, #300 —
 hangs off (`a::run` -> `a__run`), `symbol` and the field accessors are
 qualified by it, and crate mode records `module_path` for `#[julia]` items; a
 schema-6 consumer would derive `<Struct>_free` / `<owner>_free_rust_string`
-from the bare name).
+from the bare name). Schema 8 adds `Method.string_owner`, the stem a method's
+string buffers hang off: since #342 one inline manifest can hold both shapes —
+a method sharing its struct's buffers and a cross-module method carrying its
+own — so a schema-7 consumer, which derives the owner from the flavour, would
+release a cross-module method's `String` through a symbol the library does not
+export, and leak it. The version is what makes such a consumer refuse the
+manifest rather than get the owner wrong (#342 review).
 """
-const MANIFEST_SCHEMA_VERSION = 7
+const MANIFEST_SCHEMA_VERSION = 8
 
 """
     ExtractorError <: Exception
@@ -1077,6 +1083,10 @@ function _manifest_method(m)
         ok_abi = _mstr(m, "ok_abi"),
         err_abi = _mstr(m, "err_abi"),
         inner_abi = _mstr(m, "inner_abi"),
+        # The stem the wrapper's string buffers hang off; omitted by the
+        # extractor when the method has no wrapper of its own, additive within
+        # schema 7 (#342). Nothing downstream re-derives it from the flavour.
+        string_owner = _mstr(m, "string_owner"),
         # The impl block's attribute; omitted by the extractor when there is
         # none (an inline-mode impl), additive within schema 6 (#275 Phase 3).
         attribute = Symbol(something(_mstr_or_nothing(m, "attribute"), "none")),
