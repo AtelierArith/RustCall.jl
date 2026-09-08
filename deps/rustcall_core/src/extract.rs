@@ -652,6 +652,11 @@ struct ScannedImpl {
     /// block may sit in a gated module far from its struct, and its methods
     /// exist only under that predicate (#300 review).
     cfg: Vec<syn::Attribute>,
+    /// The `#[cfg]` of the enclosing modules alone — the block's own
+    /// predicate left out. This is the provenance a block shares with the
+    /// struct copy it was written beside, and what tells cfg-exclusive copies
+    /// of one fragment apart (#357 review).
+    enclosing_cfg: Vec<syn::Attribute>,
     line: usize,
     file: String,
 }
@@ -805,6 +810,7 @@ impl CrateScan {
                         header,
                         symbol_path: symbol_path.to_vec(),
                         cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs),
+                        enclosing_cfg: enclosing_cfg.to_vec(),
                         line: imp.span().start().line,
                         file: file.to_string(),
                     });
@@ -974,7 +980,7 @@ impl CrateScan {
             // scanned since #357. `locate` sees one name and lands on the
             // first; the block belongs to the variant under its own predicate,
             // or the other one ends up without the method (#357 review).
-            let index = self.cfg_variant_for(index, &imp.cfg);
+            let index = self.cfg_variant_for(index, &imp.enclosing_cfg);
             self.check_symbol_path(imp, index)?;
             self.structs[index].model.attach_impl(
                 &imp.item,
@@ -995,9 +1001,12 @@ impl CrateScan {
     }
 
     /// The `#[julia]` struct at `index`, or the same-named struct at the same
-    /// module path whose `#[cfg]` is `cfg` when there is one: cfg-exclusive
-    /// copies of one declaration are distinct structs to the scan, and an
-    /// impl block written under one predicate attaches to that copy.
+    /// module path whose enclosing `#[cfg]` is `cfg` when there is one:
+    /// cfg-exclusive copies of one declaration are distinct structs to the
+    /// scan, and an impl block written beside one copy attaches to that copy.
+    /// `cfg` is the block's *enclosing* predicate, not its effective one — a
+    /// block that adds `#[cfg(feature = "y")]` of its own still sits beside
+    /// exactly one copy, and its own predicate is carried by its methods.
     fn cfg_variant_for(&self, index: usize, cfg: &[syn::Attribute]) -> usize {
         let want = predicate_string(cfg);
         let here = &self.structs[index];

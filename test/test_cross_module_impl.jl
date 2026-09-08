@@ -701,6 +701,64 @@ end
                 @test [m["name"] for m in methods] == ["read"]
                 @test all(m -> m["cfg"] == g["cfg"], methods)
             end
+            # A block that adds a predicate of its own still sits beside
+            # exactly one copy: the match is on the *enclosing* cfg, and the
+            # block's own predicate travels with its methods (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                #[cfg(feature = "y")]
+                #[julia]
+                impl Gauge {
+                    #[julia]
+                    pub fn read(&self) -> i32 { self.value }
+                }
+                """)
+            own_cfg = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                                cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            gauges_y = filter(s -> s["name"] == "Gauge", own_cfg["structs"])
+            @test length(gauges_y) == 2
+            for g in gauges_y
+                methods = get(g, "methods", Any[])
+                @test [m["name"] for m in methods] == ["read"]
+                @test all(m -> occursin("feature = \"y\"", m["cfg"]) && occursin(g["cfg"], m["cfg"]),
+                          methods)
+            end
+
+            # The PyO3 scan follows the same rule, and cfg-exclusive copies of
+            # one class are not a symbol collision with each other — rustc
+            # never compiles them together (#357 review).
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                #[pymethods]
+                impl Gauge { pub fn read(&self) -> i32 { self.value } }
+                """)
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                pub mod api { include!("frag.rs"); }
+                """)
+            py = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib,
+                                           cfg = :lenient, cfg_text = RustCall._cargo_cfg_text())
+            classes = filter(s -> s["name"] == "Gauge", py["structs"])
+            @test length(classes) == 2
+            @test all(c -> c["skip_reason"] == "", classes)
+            for c in classes
+                methods = get(c, "methods", Any[])
+                @test [m["name"] for m in methods] == ["read"]
+                @test all(m -> m["skip_reason"] == "" && m["cfg"] == c["cfg"], methods)
+            end
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                """)
             write(joinpath(dir, "src", "frag.rs"), """
                 #[julia]
                 pub fn run() -> i32 { 1 }

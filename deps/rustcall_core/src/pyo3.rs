@@ -112,6 +112,10 @@ pub struct Pyo3Scan {
 struct ScannedClass {
     module_path: Vec<String>,
     entry: Struct,
+    /// The `#[cfg]` of the enclosing modules: what tells cfg-exclusive copies
+    /// of one fragment apart, and what a `#[pymethods]` block written beside
+    /// one copy shares with it (#357 review).
+    cfg: Vec<syn::Attribute>,
 }
 
 #[derive(Debug)]
@@ -127,6 +131,8 @@ struct ScannedImpl {
     /// `#[pymethods]` block may sit in a gated module far from its class, and
     /// its methods exist only under that predicate (#300 review).
     cfg: Vec<syn::Attribute>,
+    /// The enclosing modules' `#[cfg]` alone; see [`ScannedClass::cfg`].
+    enclosing_cfg: Vec<syn::Attribute>,
 }
 
 impl Located for ScannedClass {
@@ -228,6 +234,7 @@ impl Pyo3Scan {
                         self.classes.push(ScannedClass {
                             module_path: module_path.clone(),
                             entry: class_entry(s, reachable, module_path, enclosing_cfg),
+                            cfg: enclosing_cfg.to_vec(),
                         });
                     }
                 }
@@ -242,6 +249,7 @@ impl Pyo3Scan {
                         header,
                         line: imp.span().start().line,
                         cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs),
+                        enclosing_cfg: enclosing_cfg.to_vec(),
                         funcs: imp
                             .items
                             .iter()
@@ -318,6 +326,25 @@ impl Pyo3Scan {
             // `Struct::method` would not compile in Phase 2.
             let Ok(index) = locate(&self.classes, &imp.header, &self.imports) else {
                 continue;
+            };
+            // Cfg-exclusive copies of one class: the block written beside one
+            // copy belongs to that copy, not to the first `locate` saw (#357
+            // review). Same rule as `CrateScan::cfg_variant_for`.
+            let index = {
+                let want = crate::cfg::predicate_string(&imp.enclosing_cfg);
+                let here = &self.classes[index];
+                if crate::cfg::predicate_string(&here.cfg) == want {
+                    index
+                } else {
+                    self.classes
+                        .iter()
+                        .position(|c| {
+                            c.entry.name == here.entry.name
+                                && c.module_path == here.module_path
+                                && crate::cfg::predicate_string(&c.cfg) == want
+                        })
+                        .unwrap_or(index)
+                }
             };
             let owner_skip = self.classes[index].entry.skip_reason.clone();
             // The symbol is the *class's*: an `impl a::C` written elsewhere
@@ -436,6 +463,14 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
 ///
 /// The first entry in manifest order keeps the symbol so the outcome does not
 /// depend on which file was visited first.
+/// Whether two items whose symbols coincide really clash: they do unless both
+/// are gated and gated *differently* — cfg-exclusive copies of one fragment
+/// under a lenient scan, which rustc never compiles together. The same
+/// exemption `claimed_symbols` applies on the `#[julia]` side (#357 review).
+fn cfg_clash(a: &str, b: &str) -> bool {
+    a.is_empty() || b.is_empty() || a == b
+}
+
 fn mark_symbol_collisions(manifest: &mut Manifest) {
     // One table for every exported symbol of the whole manifest, whatever
     // produces it: a `#[julia]` function's wrapper, a `#[julia]` struct's
@@ -443,7 +478,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
     // They all live in one `cdylib`, so `rustcall_C_f` from a `#[julia]`
     // `impl C { fn f }` and from a `#[pyclass] C` with `#[pymethods] fn f`
     // are the same symbol even though nothing else about them matches.
-    let mut taken: Vec<(String, String)> = Vec::new();
+    let mut taken: Vec<(String, String, String)> = Vec::new();
 
     // Items already exported by a RustCall attribute own their symbols
     // outright: a PyO3 entry that wants one is the loser whatever the order.
@@ -454,11 +489,11 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
     {
         if f.exported && !f.symbol.is_empty() {
             for symbol in wrapper_symbols(&f.symbol) {
-                taken.push((symbol, qualified(&f.module_path, &f.name)));
+                taken.push((symbol, qualified(&f.module_path, &f.name), f.cfg.clone()));
             }
             if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
                 for symbol in string_helper_symbols(&f.ffi_name) {
-                    taken.push((symbol, qualified(&f.module_path, &f.name)));
+                    taken.push((symbol, qualified(&f.module_path, &f.name), f.cfg.clone()));
                 }
             }
         }
@@ -469,7 +504,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         .filter(|s| !s.attribute.is_pyo3_scan())
     {
         for symbol in struct_symbols(s) {
-            taken.push((symbol, qualified(&s.module_path, &s.name)));
+            taken.push((symbol, qualified(&s.module_path, &s.name), s.cfg.clone()));
         }
     }
 
@@ -491,14 +526,18 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
             symbols.extend(string_helper_symbols(&f.ffi_name));
         }
-        if let Some((_, owner)) = taken.iter().find(|(s, _)| symbols.contains(s)) {
+        let f_cfg = f.cfg.clone();
+        if let Some((_, owner, _)) = taken
+            .iter()
+            .find(|(s, _, c)| symbols.contains(s) && cfg_clash(c, &f_cfg))
+        {
             let owner = owner.clone();
             manifest.functions[i].skip_reason =
                 skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner);
         } else {
             let owner = qualified(&f.module_path, &f.name);
             for symbol in symbols {
-                taken.push((symbol, owner.clone()));
+                taken.push((symbol, owner.clone(), f_cfg.clone()));
             }
         }
     }
@@ -510,11 +549,17 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
     // with a free function, or between a class's own method and one of its
     // field accessors — is reported on the individual entry, which leaves the
     // rest of the class wrappable.
-    let mut class_names: Vec<(String, String)> = manifest
+    let mut class_names: Vec<(String, String, String)> = manifest
         .structs
         .iter()
         .filter(|s| !s.attribute.is_pyo3_scan())
-        .map(|s| (s.ffi_name.clone(), qualified(&s.module_path, &s.name)))
+        .map(|s| {
+            (
+                s.ffi_name.clone(),
+                qualified(&s.module_path, &s.name),
+                s.cfg.clone(),
+            )
+        })
         .collect();
 
     let mut struct_order: Vec<usize> = (0..manifest.structs.len()).collect();
@@ -531,8 +576,12 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             continue;
         }
         let name = s.ffi_name.clone();
+        let s_cfg = s.cfg.clone();
 
-        if let Some((_, owner)) = class_names.iter().find(|(n, _)| *n == name) {
+        if let Some((_, owner, _)) = class_names
+            .iter()
+            .find(|(n, _, c)| *n == name && cfg_clash(c, &s_cfg))
+        {
             let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner.clone());
             let s = &mut manifest.structs[i];
             s.skip_reason = reason.clone();
@@ -564,13 +613,16 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
                 symbols.extend(string_helper_symbols(&format!("{}_{}", class_name, m.name)));
             }
-            match taken.iter().find(|(t, _)| symbols.contains(t)) {
-                Some((_, other)) => {
+            match taken
+                .iter()
+                .find(|(t, _, c)| symbols.contains(t) && cfg_clash(c, &s_cfg))
+            {
+                Some((_, other, _)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, other);
                 }
                 None => {
                     for symbol in symbols {
-                        taken.push((symbol, owner.clone()));
+                        taken.push((symbol, owner.clone(), s_cfg.clone()));
                     }
                 }
             }
@@ -588,7 +640,10 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             .any(|f| !f.getter.is_empty() && is_string_spelling(&f.rust_type))
         {
             let helpers = string_helper_symbols(&class_name);
-            if taken.iter().any(|(t, _)| helpers.contains(t)) {
+            if taken
+                .iter()
+                .any(|(t, _, c)| helpers.contains(t) && cfg_clash(c, &s_cfg))
+            {
                 for f in &mut s.fields {
                     if is_string_spelling(&f.rust_type) {
                         f.ffi_compatible = false;
@@ -598,7 +653,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                 }
             } else {
                 for symbol in helpers {
-                    taken.push((symbol, owner.clone()));
+                    taken.push((symbol, owner.clone(), s_cfg.clone()));
                 }
             }
         }
@@ -607,16 +662,19 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                 if accessor.is_empty() {
                     continue;
                 }
-                match taken.iter().find(|(t, _)| t == accessor) {
+                match taken
+                    .iter()
+                    .find(|(t, _, c)| t == accessor && cfg_clash(c, &s_cfg))
+                {
                     Some(_) => accessor.clear(),
-                    None => taken.push((accessor.clone(), owner.clone())),
+                    None => taken.push((accessor.clone(), owner.clone(), s_cfg.clone())),
                 }
             }
             if f.getter.is_empty() && f.setter.is_empty() {
                 f.ffi_compatible = false;
             }
         }
-        class_names.push((name, owner));
+        class_names.push((name, owner, s_cfg));
     }
 }
 
