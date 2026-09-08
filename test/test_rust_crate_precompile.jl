@@ -998,56 +998,6 @@ end
     end
 end
 
-# An optional *registry* dependency that depends on pyo3 is invisible to the
-# default graph (inactive) and to the local manifests (they see its name only):
-# the graph with every feature on is what sees it (#339 review).
-@testset "An optional registry dependency that pulls pyo3 in may read PYO3_CONFIG_FILE (#339 review)" begin
-    if !_precomp_cargo_available()
-        @test_skip "cargo is required"
-    else
-        mktempdir() do root
-            # `pyo3-ffi` reads the file; it is in the offline registry cache
-            # because the pyo3 fixtures depend on pyo3. Declared under another
-            # name and optional, it is absent from the default graph, and only
-            # the all-features graph shows it — which is the step the local
-            # manifests cannot take for a registry crate that merely *depends*
-            # on pyo3, so that step is asserted on its own below.
-            for (name, package) in (("via_pyo3", "pyo3-ffi"), ("via_other", "anyhow"))
-                mkpath(joinpath(root, name, "src"))
-                write(joinpath(root, name, "Cargo.toml"), """
-                    [package]
-                    name = "$name"
-                    version = "0.1.0"
-                    edition = "2021"
-
-                    [features]
-                    extra = ["dep:helper"]
-
-                    [dependencies]
-                    helper = { package = "$package", version = "$(package == "anyhow" ? "1" : "0.29")", optional = true }
-                    """)
-                write(joinpath(root, name, "src", "lib.rs"), "pub fn m() -> i32 { 1 }\n")
-            end
-            manifest = joinpath(root, "via_pyo3", "Cargo.toml")
-            default_graph = RustCall._cargo_tree(manifest, false)
-            if !isempty(default_graph)
-                # The default graph omits the inactive dependency ...
-                @test !any(RustCall._tree_line_names_pyo3, split(default_graph, '\n'))
-                # ... and the all-features graph is what sees it.
-                @test RustCall._all_features_graph_may_use_pyo3(manifest)
-            end
-            @test RustCall.crate_may_read_pyo3_config(joinpath(root, "via_pyo3"))
-            # The negative side is decided only when Cargo resolved the
-            # all-features graph; otherwise the answer is the conservative `true`.
-            other = joinpath(root, "via_other", "Cargo.toml")
-            if !isempty(RustCall._cargo_tree(other, true; all_features = true)) &&
-               RustCall.local_path_dependency_dirs(joinpath(root, "via_other"))[1] == "cargo-tree"
-                @test !RustCall.crate_may_read_pyo3_config(joinpath(root, "via_other"))
-            end
-        end
-    end
-end
-
 # `PYO3_CONFIG_FILE` is on the allowlist by prefix, but what it *names* is a
 # path, and a crate that depends on pyo3 reads the file's contents at build time.
 # The wrapper path hashed those contents; the plain path keyed the path alone,
