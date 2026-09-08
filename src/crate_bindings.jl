@@ -407,13 +407,13 @@ end
 """
     _crate_precompile_dependencies(crate_path) -> Vector{String}
 
-Every file on disk that the crate's artifact identity is computed from, as
-absolute paths.
+Every path on disk that the crate's artifact identity is computed from — files
+**and the directories that hold them** — as absolute paths.
 
 A module generated in memory by `@rust_crate` may be compiled into a package's
-precompile image (#339), and Julia decides that image is stale by the mtime of
-the files the module declared with `Base.include_dependency`. Declaring only
-the built library is not enough: the library is content-addressed, so editing
+precompile image (#339), and Julia decides that image is stale from what the
+module declared with `Base.include_dependency`. Declaring only the built
+library is not enough: the library is content-addressed, so editing
 `src/lib.rs` produces a *different* cache path and leaves the old file
 untouched — the image would still be valid and the package would go on calling
 the previous build (#339 review). Declaring the inputs instead makes an edit to
@@ -421,12 +421,27 @@ the crate invalidate the image, which is what sends the next `using` back
 through `@rust_crate`.
 
 The list is deliberately the same set `compute_crate_hash` reads: the crate
-directory's own input files, every local `path` dependency's, the workspace
-root's manifest and lockfile when the crate is a workspace member, and a
-library root that lives outside the package directory (`[lib] path =
-"../shared/lib.rs"`). Files that are not on disk are dropped —
-`include_dependency` wants a file that exists, and a missing input already
-changes the digest through `crate_content_digest`.
+directory's own input files, every local `path` dependency's, the effective
+Cargo configuration, the contents of `PYO3_CONFIG_FILE` when the PyO3 wrapper
+path uses one, the workspace root's manifest and lockfile when the crate is a
+workspace member, and a library root that lives outside the package directory
+(`[lib] path = "../shared/lib.rs"`).
+
+**Directories are in the list because files alone cannot see an addition.**
+`include_dependency` tracks a directory by `join(readdir(path))`, so declaring
+each directory that holds an input catches a *new* file appearing beside the
+ones that were there — a source file a build script globs, or a
+`.cargo/config.toml` created where none existed — which changes
+`crate_content_digest` and therefore the artifact, while touching no file the
+image already knew (#339 review). Two gaps remain, both deliberate: a
+`.cargo/` created in an *ancestor* of the crate is not seen, and neither is one
+appearing in `CARGO_HOME`, because tracking those directories would mean
+tracking directories whose contents churn for unrelated reasons and
+re-precompiling the package for each.
+
+A path that is not on disk is dropped — `include_dependency` raises on an
+unreadable path, and a missing input already changes the digest through
+`crate_content_digest`.
 """
 function _crate_precompile_dependencies(crate_path::AbstractString)
     root = abspath(String(crate_path))
@@ -488,6 +503,25 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
         end
     catch e
         @debug "Could not resolve out-of-directory crate inputs" crate_path exception = e
+    end
+    # `PYO3_CONFIG_FILE` names a file whose *contents* decide the wrapper's
+    # Python version, ABI and library directory, and `_pyo3_wrapper_build_env`
+    # hashes those contents into the artifact. It usually lives outside the
+    # crate tree, so nothing above would have caught an edit to it (#339
+    # review).
+    let config = get(ENV, "PYO3_CONFIG_FILE", "")
+        isempty(config) || (isfile(config) && push!(deps, abspath(config)))
+    end
+    # The directories that hold those files, so a file *appearing* is seen too:
+    # `include_dependency` tracks a directory by its entry list. `CARGO_HOME`
+    # is left out on purpose — its top level holds the registry and git caches,
+    # and tracking it would re-precompile the package for reasons that have
+    # nothing to do with this crate.
+    cargo_home = abspath(get(ENV, "CARGO_HOME", joinpath(homedir(), ".cargo")))
+    for dir in unique(dirname.(deps))
+        isdir(dir) || continue
+        abspath(dir) == cargo_home && continue
+        push!(deps, dir)
     end
     return unique!(deps)
 end

@@ -345,6 +345,19 @@ end
             # The next session finds the image stale, re-precompiles, rebuilds
             # the crate, and calls the new code.
             @test run_pkg(stale_then_call) == "true 105 true"
+
+            # A file *appearing* changes the artifact — `crate_content_digest`
+            # hashes the file list — while touching none of the files the image
+            # already knew. The directories are in the dependency list for
+            # exactly this (#339 review).
+            sleep(1.1)
+            write(joinpath(crate, "src", "extra.rs"), "// not referenced\n")
+            @test run_pkg(stale_then_call) == "true 105 true"
+
+            # And the file it added is itself tracked from then on.
+            sleep(1.1)
+            rm(joinpath(crate, "src", "extra.rs"))
+            @test run_pkg(stale_then_call) == "true 105 true"
         finally
             for dir in unique(dirname.(Base.find_all_in_cache_path(pkgid)))
                 rm(dir; recursive = true, force = true)
