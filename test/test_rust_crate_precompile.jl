@@ -623,10 +623,11 @@ end
 # it records the values it was built under and says so at load time rather than
 # loading a library built for another environment in silence (#339 review).
 @testset "A changed build environment is reported at load time (#339 review)" begin
-    # The recorded set is whatever `artifact_build_env` captured at generation,
-    # so it is taken from the same environment the comparison starts in.
+    # The recorded set is what `_recorded_build_env` captures at generation —
+    # the allowlist plus RustCall's own selectors — so it is taken from the same
+    # environment the comparison starts in.
     withenv("RUSTFLAGS" => "-C target-cpu=native", "PYO3_PYTHON" => "/usr/bin/python3") do
-        recorded = Any[String(k) => String(v) for (k, v) in RustCall.artifact_build_env()]
+        recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()]
         @test any(p -> first(p) == "PYO3_PYTHON", recorded)
 
         # Unchanged: nothing to say.
@@ -668,7 +669,7 @@ end
         # No allowlisted variable moves between the two, so only the digest
         # can tell them apart.
         env_a = withenv("CARGO_HOME" => joinpath(home, "a")) do
-            Any[String(k) => String(v) for (k, v) in RustCall.artifact_build_env()]
+            Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()]
         end
         withenv("CARGO_HOME" => joinpath(home, "a")) do
             @test_logs RustCall._warn_if_build_env_changed(env_a, crate, "lib", digest_a)
@@ -973,9 +974,12 @@ end
                                             build_env = RustCall._plain_crate_build_env())
             end
             @test unset != a
-            # Unset, the helper is exactly the allowlist: no digest entry.
+            # Unset, the helper is the allowlist plus the interpreter pyo3's
+            # build script would use: no digest entry.
             withenv("PYO3_CONFIG_FILE" => nothing) do
-                @test RustCall._plain_crate_build_env() == RustCall.artifact_build_env()
+                env = RustCall._plain_crate_build_env()
+                @test !any(p -> first(p) == "pyo3-config-file-digest", env)
+                @test filter(p -> !startswith(first(p), "rustcall-pyo3-"), env) == RustCall.artifact_build_env()
             end
             withenv("PYO3_CONFIG_FILE" => config) do
                 @test any(p -> first(p) == "pyo3-config-file-digest", RustCall._plain_crate_build_env())
@@ -1010,6 +1014,94 @@ end
                 @test any(p -> first(p) == "pyo3-config-file-digest", RustCall._plain_crate_build_env())
                 @test normpath(config) in RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
             end
+        end
+    end
+end
+
+# A plain build of a crate that depends on pyo3 runs pyo3's build script, which
+# configures the library for the interpreter it selects — `PYO3_PYTHON`, else
+# `python3` on `PATH`. The raw `PYO3_*` values see neither a `PATH` that now
+# finds another Python nor a shim retargeted under one name; the interpreter's
+# identity does, and it is in the key and in the load-time record (#339
+# review). Shell-script fakes: Unix only, as above.
+@testset "A plain build is keyed by the interpreter pyo3 would configure for (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        Sys.iswindows() || mktempdir() do fake
+            sep = ":"
+            for which in ("a", "b")
+                dir = mkpath(joinpath(fake, which))
+                exe = joinpath(dir, "python3")
+                write(exe, "#!/bin/sh\necho \"$dir/python3\"\n"); chmod(exe, 0o755)
+            end
+            info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
+            under(which) = withenv("PYO3_PYTHON" => nothing, "PYO3_CONFIG_FILE" => nothing,
+                                   "PYO3_CROSS_LIB_DIR" => nothing,
+                                   "PATH" => joinpath(fake, which) * sep * get(ENV, "PATH", "")) do
+                (RustCall.compute_crate_hash(info; release = true,
+                                             build_env = RustCall._plain_crate_build_env()),
+                 Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()],
+                 RustCall._pyo3_build_interpreter())
+            end
+            key_a, recorded_a, (interp_a, _) = under("a")
+            key_b, _, (interp_b, _) = under("b")
+            @test interp_a == joinpath(fake, "a", "python3")
+            @test interp_b == joinpath(fake, "b", "python3")
+            @test key_a != key_b                       # same PYO3_*, another Python on PATH
+            @test under("a")[1] == key_a
+            @test Dict(recorded_a)["<pyo3 build interpreter>"] == interp_a
+            withenv("PYO3_PYTHON" => nothing, "PYO3_CONFIG_FILE" => nothing, "PYO3_CROSS_LIB_DIR" => nothing,
+                    "PATH" => joinpath(fake, "a") * sep * get(ENV, "PATH", "")) do
+                @test_logs RustCall._warn_if_build_env_changed(recorded_a, info.path, "lib")
+            end
+            withenv("PYO3_PYTHON" => nothing, "PYO3_CONFIG_FILE" => nothing, "PYO3_CROSS_LIB_DIR" => nothing,
+                    "PATH" => joinpath(fake, "b") * sep * get(ENV, "PATH", "")) do
+                @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(recorded_a, info.path, "lib")
+            end
+            # `PYO3_PYTHON` is taken as given, the way pyo3's build script does.
+            withenv("PYO3_PYTHON" => joinpath(fake, "b", "python3"), "PYO3_CONFIG_FILE" => nothing,
+                    "PYO3_CROSS_LIB_DIR" => nothing) do
+                @test RustCall._pyo3_build_interpreter()[1] == joinpath(fake, "b", "python3")
+            end
+            # pyo3's own configuration deciding: no interpreter is consulted,
+            # and none is keyed or recorded.
+            config = joinpath(fake, "pyo3-build-config.txt")
+            write(config, "implementation=CPython\nversion=3.12\nshared=true\nlib_dir=$fake\n")
+            withenv("PYO3_CONFIG_FILE" => config, "PYO3_PYTHON" => joinpath(fake, "a", "python3"),
+                    "PYO3_CROSS_LIB_DIR" => nothing) do
+                @test RustCall._pyo3_build_interpreter() == ("", "")
+                @test !any(p -> startswith(first(p), "rustcall-pyo3-python"), RustCall._plain_crate_build_env())
+                @test Dict(RustCall._recorded_build_env())["<pyo3 build interpreter>"] == ""
+            end
+        end
+    end
+end
+
+# `PYO3_CONFIG_FILE` may name a file that does not exist yet; a build script that
+# tolerates the absence is built without it, and the file appearing is then
+# the one event that changes the build. Until it exists its directory is the
+# declared input (the entry list sees the creation), afterwards the file is;
+# and the record carries the contents' digest either way, so a load after the
+# creation is told even when the image survived (#339 review).
+@testset "A PYO3_CONFIG_FILE selected before it exists is seen appearing (#339 review)" begin
+    mktempdir() do dir
+        config = joinpath(dir, "pyo3-build-config.txt")
+        withenv("PYO3_CONFIG_FILE" => config) do
+            absent = RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+            @test normpath(dir) in absent
+            @test normpath(config) ∉ absent
+            recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env()]
+            @test Dict(recorded)["<PYO3_CONFIG_FILE digest>"] == "unreadable"
+            @test_logs RustCall._warn_if_build_env_changed(recorded, PRECOMP_SAMPLE_CRATE, "lib")
+            write(config, "implementation=CPython\nversion=3.12\nshared=true\n")
+            present = RustCall._crate_precompile_dependencies(PRECOMP_SAMPLE_CRATE)
+            @test normpath(config) in present
+            @test normpath(dir) ∉ present
+            @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(recorded, PRECOMP_SAMPLE_CRATE, "lib")
+        end
+        withenv("PYO3_CONFIG_FILE" => nothing) do
+            @test Dict(RustCall._recorded_build_env())["<PYO3_CONFIG_FILE digest>"] == ""
         end
     end
 end

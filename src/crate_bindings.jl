@@ -554,8 +554,19 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     # Added *after* the holder loop on purpose: the selected file is the input,
     # not its directory — a sibling appearing next to it changes nothing the
     # build reads, and must not invalidate the image (#339 review).
+    # A selected file that does not exist *yet* is tracked through its
+    # directory instead: a build script that tolerates the absence is built
+    # without it, and the file appearing is then the one event that changes
+    # the build — the entry list of the directory is what sees it. Once the
+    # file exists, it is the input and the directory is not (#339 review).
     let config = get(ENV, "PYO3_CONFIG_FILE", "")
-        isempty(config) || (isfile(config) && push!(deps, abspath(config)))
+        if !isempty(config)
+            if isfile(config)
+                push!(deps, abspath(config))
+            elseif isdir(dirname(abspath(config)))
+                push!(deps, dirname(abspath(config)))
+            end
+        end
     end
     return unique!(map(normpath, deps))
 end
@@ -572,6 +583,23 @@ what is recorded and what is compared cannot drift.
 """
 function _recorded_build_env(; python::Bool = false)
     env = Pair{String, String}[String(k) => String(v) for (k, v) in artifact_build_env()]
+    # The *contents* of `PYO3_CONFIG_FILE`, not only its path: the file is
+    # tracked when it exists, but one selected before it exists cannot be —
+    # its directory is — and a load after it appeared must still be told.
+    # "" when unset, `_file_content_digest`'s marker when absent (#339 review).
+    push!(env, "<PYO3_CONFIG_FILE digest>" => _pyo3_config_file_digest())
+    if !python
+        # A plain build's pyo3 — a `cdylib` with `#[julia]` items that also
+        # depends on pyo3 — runs pyo3's build script, which selects an
+        # interpreter (`PYO3_PYTHON`, else `python3` on `PATH`) and configures
+        # the library for *that* Python's ABI. The `PYO3_*` values above see a
+        # changed `PYO3_PYTHON`, not a `PATH` that now finds another Python or
+        # a shim retargeted under the same name; what the interpreter *is* does
+        # (#339 review). Recorded the way `_plain_crate_build_env` keys it.
+        interpreter, fingerprint = _pyo3_build_interpreter()
+        push!(env, "<pyo3 build interpreter>" => interpreter)
+        push!(env, "<pyo3 build fingerprint>" => fingerprint)
+    end
     # Only for a module that binds a PyO3 wrapper: a plain crate's build never
     # consults `python_link_source()`, so for it this selector is not an input
     # and comparing it would warn about a library nothing changed (#339
@@ -632,6 +660,36 @@ function _recorded_build_env(; python::Bool = false)
         push!(env, "<python link dir>" => source[1])
     end
     return env
+end
+
+"""
+    _pyo3_build_interpreter() -> (interpreter::String, fingerprint::String)
+
+The interpreter pyo3's **build script** selects when a crate that depends on
+pyo3 is built as it stands (the plain path, no wrapper), and what that
+interpreter reports about itself (`_python_interpreter_fingerprint`): `("", "")`
+when pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, the `lib_dir` of a
+`PYO3_CONFIG_FILE`) decides and no interpreter is consulted; else `PYO3_PYTHON`
+as given; else the `sys.executable` of the first `python3` / `python` on
+`PATH`. The same order pyo3 uses — RustCall's own selectors
+(`RUSTCALL_PYTHON_LIBDIR`, CondaPkg) play no part in a build RustCall does not
+wrap. Part of a plain build's key and of its module's load-time record, so a
+`PATH` that finds another Python, or a shim retargeted under one name, is a
+different artifact and a reported change rather than a library configured for
+the previous ABI (#339 review). One short subprocess; "" for both when no
+interpreter can be run.
+"""
+function _pyo3_build_interpreter()
+    isempty(_pyo3_configured_lib_dir()) || return ("", "")
+    pinned = get(ENV, "PYO3_PYTHON", "")
+    interpreter = isempty(pinned) ? _python_executable_on_path() : String(pinned)
+    isempty(interpreter) && return ("", "")
+    fingerprint = try
+        String(_python_interpreter_fingerprint(interpreter))
+    catch
+        ""
+    end
+    return (interpreter, fingerprint)
 end
 
 """
@@ -2459,6 +2517,16 @@ function _plain_crate_build_env()
     build_env = artifact_build_env()
     digest = _pyo3_config_file_digest()
     isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
+    # And the interpreter pyo3's build script would configure the library for
+    # — under the names the wrapper's identity uses for its own
+    # (`_pyo3_wrapper_build_env`), since it is the same fact about the same
+    # Python. Empty, and absent, when pyo3's configuration names the library
+    # directory and no interpreter is consulted (#339 review).
+    interpreter, fingerprint = _pyo3_build_interpreter()
+    if !isempty(interpreter)
+        push!(build_env, "rustcall-pyo3-python" => interpreter)
+        push!(build_env, "rustcall-pyo3-python-config" => fingerprint)
+    end
     return build_env
 end
 
