@@ -473,3 +473,25 @@ end
         @test a == keys_of("-C target-cpu=native")
     end
 end
+
+# The registry name and the cache key must be decided by the *same* environment
+# snapshot. Keying only the cache gave two builds under different environments
+# distinct artifacts under one `_LIB_NAME`, and loading the second replaced the
+# first module's entry and mirror (#339 review).
+@testset "The registry name follows the build environment too (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
+        pair(flags) = withenv("RUSTFLAGS" => flags) do
+            env = RustCall.artifact_build_env()
+            (RustCall.compute_crate_hash(info; release = true, build_env = env),
+             RustCall.crate_library_name(info; release = true, build_env = env))
+        end
+        a_key, a_name = pair("-C target-cpu=native")
+        b_key, b_name = pair("-C opt-level=1")
+        @test a_key != b_key
+        @test a_name != b_name        # the name moves with the key, not apart from it
+        @test pair("-C target-cpu=native") == (a_key, a_name)
+    end
+end

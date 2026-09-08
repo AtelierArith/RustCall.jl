@@ -2247,9 +2247,10 @@ function generate_bindings(crate_path::String;
     # previous library in the cache and handed it back — which also made the
     # load-time warning's advice wrong, since re-precompiling the package
     # rebuilt the bindings around the same stale artifact (#339 review).
+    build_env_snapshot = artifact_build_env()
     cache_key = compute_crate_hash(info; release = build_release,
                                    features = features, default_features = default_features,
-                                   build_env = artifact_build_env())
+                                   build_env = build_env_snapshot)
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
 
     lib_path = if cached_lib !== nothing && isfile(cached_lib)
@@ -2320,11 +2321,18 @@ function generate_bindings(crate_path::String;
     # Generate module. The registry name follows the key, feature set
     # included, so two feature sets of one crate are two entries.
     @info "Generating Julia module..."
+    # The **same** snapshot decides the registry name as decides the cache key.
+    # Passing it to one and not the other gave two builds under different
+    # environments distinct artifacts under one `_LIB_NAME`: loading the second
+    # replaced the entry and re-pointed the first module's mirror at it, so its
+    # wrappers called the other build — a wrong ABI or a missing symbol where
+    # the environment changed the cfg-selected exports (#339 review).
     return emit_crate_module(info, lib_path; module_name=output_module_name,
                              build_release=build_release,
                              lib_name=crate_library_name(info; release = build_release,
                                                          features = features,
-                                                         default_features = default_features))
+                                                         default_features = default_features,
+                                                         build_env = build_env_snapshot))
 end
 
 """
