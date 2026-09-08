@@ -1004,6 +1004,19 @@ function _local_path_dependency_dirs_uncached(root::String)
         end
         if !isempty(found)
             append!(dirs, found)
+            # `cargo tree` resolves the *default* build's graph, and this
+            # function is called with no feature set: an optional `path`
+            # dependency that only `features = [...]` activates is not in
+            # `found`. Every local crate any manifest in the graph declares is
+            # added, transitively, optional or not — a crate the build *can*
+            # pull in is an input of the artifact, and an edit to it must
+            # change the key whether the current feature set pulls it in or
+            # not. Over-approximating costs a rebuild; under-approximating
+            # handed a stale library back under an unchanged key (#339 review).
+            seen = Set{String}()
+            for dir in copy(dirs)
+                _collect_manifest_path_deps!(dirs, dir, seen)
+            end
             unique!(dirs)
             return "cargo-tree", dirs
         end

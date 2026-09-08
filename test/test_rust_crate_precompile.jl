@@ -417,6 +417,35 @@ end
         deps = RustCall._crate_precompile_dependencies(joinpath(root, "main"))
         @test joinpath(root, "extra", "src", "lib.rs") in deps
         @test joinpath(root, "extra", "Cargo.toml") in deps
+
+        # The same crate is in the artifact key: an edit to it changes the
+        # digest, so a rebuild cannot find the old library under the old key.
+        _, dirs = RustCall.local_path_dependency_dirs(joinpath(root, "main"))
+        @test any(d -> RustCall._canonical_dir(d) == RustCall._canonical_dir(joinpath(root, "extra")), dirs)
+        before = RustCall.artifact_path_dependency_digest(joinpath(root, "main"))
+        write(joinpath(root, "extra", "src", "lib.rs"), "pub fn e() -> i32 { 2 }\n")
+        @test RustCall.artifact_path_dependency_digest(joinpath(root, "main")) != before
+
+        # And a crate the optional one declares in turn is followed as well.
+        mkpath(joinpath(root, "deeper", "src"))
+        write(joinpath(root, "deeper", "Cargo.toml"), """
+            [package]
+            name = "deeper"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+        write(joinpath(root, "deeper", "src", "lib.rs"), "pub fn d() -> i32 { 1 }\n")
+        write(joinpath(root, "extra", "Cargo.toml"), """
+            [package]
+            name = "extra"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            deeper = { path = "../deeper", optional = true }
+            """)
+        @test joinpath(root, "deeper", "src", "lib.rs") in
+              RustCall._crate_precompile_dependencies(joinpath(root, "main"))
     end
 end
 
@@ -538,8 +567,11 @@ end
         # old interpreter is still there and unchanged, so only the recorded
         # selection can say so (#339 review).
         mktempdir() do fake
+            # A shim that reports itself as `sys.executable` would: the
+            # selection is what the interpreter *says* it is, not the command
+            # found on `PATH`, so a pyenv/asdf shim whose target moved is seen.
             exe = joinpath(fake, "python3")
-            write(exe, "#!/bin/sh\nexit 0\n"); chmod(exe, 0o755)
+            write(exe, "#!/bin/sh\necho \"$fake/python3\"\n"); chmod(exe, 0o755)
             withenv("PYO3_PYTHON" => nothing) do
                 before = RustCall._python_selection()
                 withenv("PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
