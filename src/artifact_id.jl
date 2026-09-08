@@ -963,13 +963,15 @@ The strategy name is returned and hashed by callers, so a set found one way can
 never collide with one found the other.
 
 The third value says whether the build *may* read pyo3's configuration
-(`PYO3_CONFIG_FILE`): `pyo3` / `pyo3-ffi` / `pyo3-build-config` in the resolved
-graph, declared — optional or not, a feature may activate it — by any manifest
-in `dirs`, or anywhere in the graph `cargo tree --all-features` resolves, which
-is a superset of every feature selection a build can ask for and so sees an
-optional *registry* dependency that pulls pyo3 in. `true` whenever Cargo could
-not resolve a graph: a missing input is a stale library, an extra one a
-rebuild (#339 review).
+(`PYO3_CONFIG_FILE`): `pyo3` / `pyo3-ffi` / `pyo3-build-config` declared —
+optional or not, a feature may activate it — in `[dependencies]` /
+`[build-dependencies]` of any manifest in `dirs`, or anywhere in the
+`normal,build` graph `cargo tree --all-features` resolves, which is a superset
+of every feature selection a build can ask for and so sees an optional
+*registry* dependency that pulls pyo3 in. A pyo3 under `[dev-dependencies]`
+counts for neither: `cargo build` never compiles it. `true` whenever Cargo
+could not resolve that graph: a missing input is a stale library, an extra one
+a rebuild (#339 review).
 """
 function local_path_dependency_dirs(root::AbstractString)
     root = String(root)
@@ -1007,9 +1009,7 @@ function _local_path_dependency_dirs_uncached(root::String)
         listed = _cargo_tree(manifest, true)
         isempty(listed) && (listed = _cargo_tree(manifest, false))
         found = String[]
-        resolved_pyo3 = false
         for line in split(listed, '\n')
-            resolved_pyo3 |= _tree_line_names_pyo3(line)
             d = _crate_dir_from_tree_line(line)
             d === nothing || push!(found, d)
         end
@@ -1029,10 +1029,11 @@ function _local_path_dependency_dirs_uncached(root::String)
                 _collect_manifest_path_deps!(dirs, dir, seen)
             end
             unique!(dirs)
-            # The two cheap checks first; the all-features graph is one more
-            # `cargo tree`, and only a crate that names pyo3 nowhere pays it.
-            pyo3 = resolved_pyo3 || any(_manifest_declares_pyo3, dirs) ||
-                   _all_features_graph_may_use_pyo3(manifest)
+            # The cheap check first; the build graph is one more `cargo tree`,
+            # and only a crate that names pyo3 in no local manifest pays it.
+            # The listing above is not consulted for this: it carries `dev`
+            # edges, and a pyo3 under `[dev-dependencies]` is never built.
+            pyo3 = any(_manifest_declares_pyo3, dirs) || _build_graph_may_use_pyo3(manifest)
             return "cargo-tree", dirs, pyo3
         end
     end
@@ -1049,14 +1050,16 @@ end
 const _PYO3_CONFIG_READERS = ("pyo3", "pyo3-ffi", "pyo3-build-config")
 
 # Whether any feature selection can pull a `_PYO3_CONFIG_READERS` crate into
-# the build: the graph with every feature on is a superset of the graph any
+# the *build*: the graph with every feature on is a superset of the graph any
 # `features = [...]` asks for, so an optional *registry* dependency that
 # depends on pyo3 — invisible to the default graph and to the local manifests,
-# which see only its name — shows up here (#339 review). `true` when Cargo
-# cannot resolve that graph: what cannot be inspected is not ruled out.
-function _all_features_graph_may_use_pyo3(manifest::AbstractString)
-    listed = _cargo_tree(manifest, true; all_features = true)
-    isempty(listed) && (listed = _cargo_tree(manifest, false; all_features = true))
+# which see only its name — shows up here; and it is the `normal,build` graph,
+# because a pyo3 under `[dev-dependencies]` is compiled by `cargo test`, never
+# by the `cargo build` a binding runs (#339 review). `true` when Cargo cannot
+# resolve that graph: what cannot be inspected is not ruled out.
+function _build_graph_may_use_pyo3(manifest::AbstractString)
+    listed = _cargo_tree(manifest, true; all_features = true, edges = "normal,build")
+    isempty(listed) && (listed = _cargo_tree(manifest, false; all_features = true, edges = "normal,build"))
     isempty(listed) && return true
     return any(_tree_line_names_pyo3, split(listed, '\n'))
 end
@@ -1116,10 +1119,11 @@ the image (#339 review).
 """
 crate_may_read_pyo3_config(root::AbstractString) = local_path_dependency_dirs(root)[3]
 
-function _cargo_tree(manifest::AbstractString, locked::Bool; all_features::Bool = false)::String
+function _cargo_tree(manifest::AbstractString, locked::Bool;
+                     all_features::Bool = false, edges::AbstractString = "normal,build,dev")::String
     fmt = "{p}"   # a Cmd literal cannot carry braces unquoted
     args = String["tree", "--offline", "--target", "all",
-                  "--edges", "normal,build,dev", "--prefix", "none",
+                  "--edges", String(edges), "--prefix", "none",
                   "--format", fmt, "--manifest-path", String(manifest)]
     locked && push!(args, "--locked")
     all_features && push!(args, "--all-features")
