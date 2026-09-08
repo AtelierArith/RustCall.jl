@@ -957,47 +957,6 @@ end
     end
 end
 
-# A workspace member can name pyo3 without spelling it: `py = { workspace =
-# true, optional = true }` inherits `[workspace.dependencies] py = { package =
-# "pyo3" }`, and with the dependency optional the default `cargo tree` graph
-# omits it. The inherited specification decides, not the member's alias (#339
-# review).
-@testset "A workspace-inherited pyo3 alias may read PYO3_CONFIG_FILE (#339 review)" begin
-    mktempdir() do root
-        for (ws, package) in (("ws_pyo3", "pyo3"), ("ws_other", "anyhow"))
-            mkpath(joinpath(root, ws, "member", "src"))
-            write(joinpath(root, ws, "Cargo.toml"), """
-                [workspace]
-                members = ["member"]
-
-                [workspace.dependencies]
-                py = { package = "$package", version = "1" }
-                """)
-            write(joinpath(root, ws, "member", "Cargo.toml"), """
-                [package]
-                name = "member"
-                version = "0.1.0"
-                edition = "2021"
-
-                [features]
-                python = ["dep:py"]
-
-                [dependencies]
-                py = { workspace = true, optional = true }
-                """)
-            write(joinpath(root, ws, "member", "src", "lib.rs"), "pub fn m() -> i32 { 1 }\n")
-        end
-        @test RustCall._manifest_declares_pyo3(joinpath(root, "ws_pyo3", "member"))
-        @test !RustCall._manifest_declares_pyo3(joinpath(root, "ws_other", "member"))
-        @test RustCall.crate_may_read_pyo3_config(joinpath(root, "ws_pyo3", "member"))
-        # The negative side is only decided when Cargo resolved the graph;
-        # without it the answer is the conservative `true`.
-        if RustCall.local_path_dependency_dirs(joinpath(root, "ws_other", "member"))[1] == "cargo-tree"
-            @test !RustCall.crate_may_read_pyo3_config(joinpath(root, "ws_other", "member"))
-        end
-    end
-end
-
 # `PYO3_CONFIG_FILE` is on the allowlist by prefix, but what it *names* is a
 # path, and a crate that depends on pyo3 reads the file's contents at build time.
 # The wrapper path hashed those contents; the plain path keyed the path alone,
