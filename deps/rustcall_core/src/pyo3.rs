@@ -501,45 +501,7 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
 ///
 /// The first entry in manifest order keeps the symbol so the outcome does not
 /// depend on which file was visited first.
-/// The conjuncts of a predicate string: the arguments of a top-level
-/// `all(...)`, else the predicate itself.
-fn cfg_conjuncts(p: &str) -> Vec<&str> {
-    let Some(inner) = p.strip_prefix("all(").and_then(|r| r.strip_suffix(')')) else {
-        return vec![p];
-    };
-    let mut out = Vec::new();
-    let (mut depth, mut start) = (0usize, 0usize);
-    for (i, ch) in inner.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                out.push(inner[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(inner[start..].trim());
-    out
-}
-
-/// Whether two predicates are **provably** mutually exclusive: one conjunct
-/// of the first is the exact negation of one conjunct of the second. That is
-/// the shape of cfg-exclusive copies of one fragment (`feature = "x"` against
-/// `not(feature = "x")`, or `all(feature = "x", feature = "y")` against
-/// `all(not(feature = "x"), feature = "y")`), and nothing else: `feature = "x"`
-/// and `feature = "y"` may both be on, and are *not* exclusive (#357 review).
-pub(crate) fn cfg_exclusive(a: &str, b: &str) -> bool {
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    let (ca, cb) = (cfg_conjuncts(a), cfg_conjuncts(b));
-    ca.iter().any(|x| {
-        cb.iter()
-            .any(|y| format!("not({x})") == *y || format!("not({y})") == *x)
-    })
-}
+pub(crate) use crate::cfg::cfg_exclusive;
 
 /// Whether two items whose symbols coincide really clash: they do unless their
 /// predicates are provably exclusive — copies rustc never compiles together.
