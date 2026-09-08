@@ -51,9 +51,8 @@ pub fn checked_div(a: i32, b: i32) -> PyResult<i32> {
             "division by zero",
         ));
     }
-    a.checked_div(b).ok_or_else(|| {
-        pyo3::exceptions::PyOverflowError::new_err("quotient does not fit in i32")
-    })
+    a.checked_div(b)
+        .ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("quotient does not fit in i32"))
 }
 
 /// A class: an opaque handle in Julia, freed by the generated `Counter_free`,
