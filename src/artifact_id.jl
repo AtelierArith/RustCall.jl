@@ -1058,8 +1058,20 @@ end
 function _manifest_declares_pyo3(dir::AbstractString)
     parsed = _parse_manifest_or_nothing(joinpath(String(dir), "Cargo.toml"))
     parsed isa AbstractDict || return false
+    # `py = { workspace = true }` says nothing about the package: the
+    # `[workspace.dependencies]` entry it inherits does (`py = { package =
+    # "pyo3", ... }`), so the inherited specification is what is read.
+    workspace_deps, _ = _workspace_dependency_table(parsed, String(dir))
     declares(table) = table isa AbstractDict && any(table) do (name, spec)
-        package = spec isa AbstractDict ? String(get(spec, "package", name)) : String(name)
+        package = String(name)
+        if spec isa AbstractDict
+            if get(spec, "workspace", false) === true
+                inherited = get(workspace_deps, String(name), nothing)
+                inherited isa AbstractDict && (package = String(get(inherited, "package", name)))
+            else
+                package = String(get(spec, "package", name))
+            end
+        end
         package in _PYO3_CONFIG_READERS
     end
     sections = ("dependencies", "build-dependencies")
