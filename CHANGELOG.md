@@ -40,7 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `@irust("if $x > 0 { 1 } else { -1 }")` and
   `@irust("{ fn sq(v: i64) -> i64 { v * v }  sq($x) }")` simply work. A snippet
   that does not type-check raises with rustc's own diagnostic about the
-  snippet; a snippet whose value is `()` returns `nothing`.
+  snippet; a snippet whose value is `()` returns `nothing`. **Every** return
+  site is reconciled, not just the first: the probe's `()` return type keeps
+  the sites of `if flag { return 0; } x` from unifying with each other the way
+  they will in the real function, so a concrete type wins over an unconstrained
+  literal and genuinely disagreeing sites are named rather than guessed
+  between. The probe is compiled with the same target, opt-level and panic
+  flags as the build (`_cfg_rustc_flags`), because those decide `#[cfg]`
+  predicates — `debug_assertions` is on at opt-level 0 and off above it.
   `_infer_return_type_improved` / `_infer_return_type` are gone, and with them
   the last regex over Rust source in `src/` that decided anything (#264).
 - **An `@irust` snippet may contain statements**

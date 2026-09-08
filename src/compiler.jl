@@ -337,13 +337,20 @@ end
 The answer of `probe_rust_expression_type`: the Rust type of an expression as
 **rustc** named it, and rustc's own rendered diagnostics.
 
-`rust_type` is `nothing` when the probe could not name a type — which always
-means the snippet does not type-check for a reason of its own, and `rendered`
-is then the diagnosis to show the user.
+`rust_type` is `nothing` when the probe could not name one type for the whole
+snippet. `conflict` says which of the two reasons it was: empty means the
+snippet does not type-check for a reason of its own and `rendered` is the
+diagnosis; non-empty lists the types the snippet's several return sites
+required, which no single `extern "C"` signature can satisfy.
 """
 struct RustTypeProbe
     rust_type::Union{Nothing, String}
     rendered::String
+    conflict::Vector{String}
+
+    RustTypeProbe(rust_type, rendered, conflict = String[]) =
+        new(rust_type === nothing ? nothing : String(rust_type), String(rendered),
+            String[String(c) for c in conflict])
 end
 
 """
@@ -377,9 +384,22 @@ Those are inference variables that unify with any integer / float type, so they
 are answered with `i64` and `f64` — Julia's `Int` and `Float64`, and `f64` is
 Rust's own default as well.
 
+**Every** return site is read, not the first. A snippet with more than one —
+`if flag { return 0; } x` — produces one diagnostic per site, and the probe's
+`()` return type keeps them from unifying with each other the way they would in
+the real function: the literal `0` reads as `integer` while `x` reads as its own
+type. Taking the first would have generated `-> i64` for an `i32` snippet and
+failed the build it was meant to make possible (Codex review of PR #354). The
+sites are reconciled instead, by `_reconcile_probe_types`.
+
+The probe is compiled with `_cfg_rustc_flags(compiler)` — the same target,
+opt-level and panic flags the real build uses — because those decide `#[cfg]`
+predicates: `debug_assertions` is on at opt-level 0 and off above it, so a probe
+without them can see a different snippet from the one that gets built.
+
 A probe that fails for any *other* reason (a syntax error, an unknown method, a
-genuine type error) yields `rust_type === nothing`: the caller raises and shows
-`rendered`, because that output is the diagnosis.
+genuine type error) yields `rust_type === nothing` with an empty `conflict`: the
+caller raises and shows `rendered`, because that output is the diagnosis.
 """
 function probe_rust_expression_type(snippet::AbstractString, params::AbstractString;
                                     compiler::RustCompiler = get_default_compiler())
@@ -393,7 +413,9 @@ function probe_rust_expression_type(snippet::AbstractString, params::AbstractStr
             "--crate-type=lib",
             "--emit=metadata",
             "--error-format=json",
-            "--target=$(compiler.target_triple)",
+            # The flags that decide `#[cfg]`: the probe must see the same
+            # snippet the build will (`_cfg_rustc_flags`, src/manifest.jl).
+            _cfg_rustc_flags(compiler)...,
             "-o", out,
             src,
         ]
@@ -418,14 +440,16 @@ function probe_rust_expression_type(snippet::AbstractString, params::AbstractStr
                   if diagnostic_level(d) == "error" && !isempty(diagnostic_spans(d))]
         isempty(errors) && return RustTypeProbe(nothing, isempty(rendered) ? text : rendered)
 
-        found = String[]
+        constraints = Union{String, Symbol}[]
         for d in errors
-            t = _probe_type_from_diagnostic(d)
-            t === nothing && return RustTypeProbe(nothing, rendered)  # a real error
-            push!(found, t)
+            c = _probe_constraint_from_diagnostic(d)
+            c === nothing && return RustTypeProbe(nothing, rendered)  # a real error
+            push!(constraints, c)
         end
-        isempty(found) && return RustTypeProbe(nothing, rendered)
-        return RustTypeProbe(first(found), rendered)
+        resolved = _reconcile_probe_types(constraints)
+        resolved === nothing &&
+            return RustTypeProbe(nothing, rendered, _probe_constraint_names(constraints))
+        return RustTypeProbe(resolved, rendered)
     end
 end
 
@@ -435,21 +459,71 @@ end
 # and it is a field of a JSON object, not rendered text).
 const _PROBE_LABEL_PREFIX = "expected `()`, found "
 
-# The Rust type one error diagnostic names, or `nothing` if that diagnostic is
-# not the probe's `()` mismatch — in which case the snippet has a real problem.
-function _probe_type_from_diagnostic(d::AbstractDict)
+# The two labels that name an inference variable rather than a type, and the
+# spellings each of them unifies with.
+const _PROBE_INTEGER_TYPES = Set(["i8", "i16", "i32", "i64", "i128", "isize",
+                                  "u8", "u16", "u32", "u64", "u128", "usize"])
+const _PROBE_FLOAT_TYPES = Set(["f32", "f64"])
+
+"""
+    _probe_constraint_from_diagnostic(d) -> Union{String, Symbol, Nothing}
+
+What one return site of the probe requires: the Rust type it names, or
+`:integer` / `:float` when rustc reported an unconstrained literal, or `nothing`
+when the diagnostic is not the probe's own `()` mismatch at all — in which case
+the snippet has a real problem and the caller shows rustc's message.
+"""
+function _probe_constraint_from_diagnostic(d::AbstractDict)
     diagnostic_code(d) == "E0308" || return nothing
     label = primary_span_label(d)
     startswith(label, _PROBE_LABEL_PREFIX) || return nothing
     rest = strip(SubString(label, ncodeunits(_PROBE_LABEL_PREFIX) + 1))
-    # An inference variable rustc could not pin down: any integer / float type
-    # satisfies it, so name the one Julia would.
-    rest == "integer" && return "i64"
-    rest == "floating-point number" && return "f64"
+    rest == "integer" && return :integer
+    rest == "floating-point number" && return :float
     (length(rest) > 2 && startswith(rest, '`') && endswith(rest, '`')) &&
         return String(chop(rest; head = 1, tail = 1))
     return nothing
 end
+
+"""
+    _reconcile_probe_types(constraints) -> Union{String, Nothing}
+
+The one Rust type that satisfies every return site of a probe, or `nothing`
+when no single type does.
+
+A concrete type wins over an inference variable, because the variable is a
+literal that will unify with it once the real function declares a return type:
+`if flag { return 0; } x` with an `i32` `x` is `i32`, not `i64`. Two *different*
+concrete types, or an integer variable against a float type (and vice versa),
+cannot be reconciled — an `extern "C"` function has one return type, so the
+caller refuses rather than picking one and failing the build.
+
+With nothing but variables, Julia's own defaults answer: `i64` for an integer,
+`f64` as soon as any site is a float.
+"""
+function _reconcile_probe_types(constraints)
+    concrete = unique(String[c for c in constraints if c isa String])
+    length(concrete) > 1 && return nothing
+    wants(kind) = any(c -> c === kind, constraints)
+    if length(concrete) == 1
+        t = only(concrete)
+        wants(:integer) && !(t in _PROBE_INTEGER_TYPES) && return nothing
+        wants(:float) && !(t in _PROBE_FLOAT_TYPES) && return nothing
+        return t
+    end
+    wants(:integer) && wants(:float) && return nothing
+    wants(:float) && return "f64"
+    wants(:integer) && return "i64"
+    return nothing
+end
+
+# The constraints as a user would read them, for the "return sites disagree"
+# message. `:integer` / `:float` are rustc's own words for the two variables.
+_probe_constraint_names(constraints) =
+    unique(String[c isa String ? c :
+                  c === :integer ? "an unconstrained integer literal" :
+                  "an unconstrained floating-point literal"
+                  for c in constraints])
 
 # rustc's own rendering of the error-level diagnostics, for a message a human
 # reads. Never parsed.

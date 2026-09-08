@@ -1503,7 +1503,19 @@ function _probe_irust_return_type(code::String, rust_arg_types::Vector{String},
                                   compiler::RustCompiler)
     params = join(("arg$(i): $(t)" for (i, t) in enumerate(rust_arg_types)), ", ")
     probe = probe_rust_expression_type(code, params; compiler)
-    probe.rust_type === nothing && error("""
+    probe.rust_type === nothing || return probe.rust_type
+    isempty(probe.conflict) || error("""
+        @irust cannot give this snippet one return type.
+
+        Code: $code
+
+        Its return sites require: $(join(probe.conflict, ", ")).
+
+        A Rust function has one return type, so the snippet has to as well.
+        Give the literals a suffix (`0i32`) or a cast (`as i64`) so every path
+        agrees, or use rust\"\"\"...\"\"\" with `@rust`.
+        """)
+    error("""
         Failed to compile Rust code for @irust.
 
         Code: $code
@@ -1516,7 +1528,6 @@ function _probe_irust_return_type(code::String, rust_arg_types::Vector{String},
         variables. Use rust\"\"\"...\"\"\" with `@rust` for anything that needs
         more than one expression's worth of context.
         """)
-    return probe.rust_type
 end
 
 """

@@ -92,23 +92,53 @@ const _IRUST_RUSTC_AVAILABLE = RustCall.check_rustc_available()
         @test RustCall.diagnostic_level(d) == "error"
         @test RustCall.diagnostic_code(d) == "E0308"
         @test RustCall.primary_span_label(d) == "expected `()`, found `i64`"
-        @test RustCall._probe_type_from_diagnostic(d) == "i64"
+        @test RustCall._probe_constraint_from_diagnostic(d) == "i64"
 
-        # An unconstrained literal names no type; it unifies with any, so the
-        # probe answers with the one Julia would use.
+        # An unconstrained literal names no type. The constraint stays a
+        # symbol here; `_reconcile_probe_types` turns it into a spelling once
+        # every return site has been seen.
         unconstrained(found) = Dict{String, Any}(
             "code" => Dict{String, Any}("code" => "E0308"), "level" => "error",
             "spans" => Any[Dict{String, Any}("is_primary" => true,
                                              "label" => "expected `()`, found " * found)])
-        @test RustCall._probe_type_from_diagnostic(unconstrained("integer")) == "i64"
-        @test RustCall._probe_type_from_diagnostic(unconstrained("floating-point number")) == "f64"
+        @test RustCall._probe_constraint_from_diagnostic(unconstrained("integer")) === :integer
+        @test RustCall._probe_constraint_from_diagnostic(unconstrained("floating-point number")) === :float
 
         # Anything that is not the probe's own `()` mismatch is a real error.
         other = Dict{String, Any}(
             "code" => Dict{String, Any}("code" => "E0599"), "level" => "error",
             "spans" => Any[Dict{String, Any}("is_primary" => true,
                                              "label" => "method not found in `i64`")])
-        @test RustCall._probe_type_from_diagnostic(other) === nothing
+        @test RustCall._probe_constraint_from_diagnostic(other) === nothing
+    end
+
+    # A snippet with several return sites produces one diagnostic each, and the
+    # probe's `()` return type keeps them from unifying with each other the way
+    # they will in the real function. Taking the first is wrong (Codex review of
+    # PR #354): `if flag { return 0; } x` with an `i32` `x` would have been
+    # built as `-> i64`.
+    @testset "every return site is reconciled (#348)" begin
+        # A concrete type beats an unconstrained literal.
+        @test RustCall._reconcile_probe_types(Any[:integer, "i32"]) == "i32"
+        @test RustCall._reconcile_probe_types(Any["i32", :integer]) == "i32"
+        @test RustCall._reconcile_probe_types(Any[:float, "f32"]) == "f32"
+        @test RustCall._reconcile_probe_types(Any["u8", "u8", :integer]) == "u8"
+
+        # Nothing but variables: Julia's defaults.
+        @test RustCall._reconcile_probe_types(Any[:integer]) == "i64"
+        @test RustCall._reconcile_probe_types(Any[:integer, :integer]) == "i64"
+        @test RustCall._reconcile_probe_types(Any[:float]) == "f64"
+
+        # No single type satisfies every site.
+        @test RustCall._reconcile_probe_types(Any["i32", "i64"]) === nothing
+        @test RustCall._reconcile_probe_types(Any[:integer, :float]) === nothing
+        @test RustCall._reconcile_probe_types(Any[:float, "i32"]) === nothing
+        @test RustCall._reconcile_probe_types(Any[:integer, "bool"]) === nothing
+        @test RustCall._reconcile_probe_types(Any[]) === nothing
+
+        # A non-scalar concrete type is still one type; the FFI check refuses
+        # it later, with a message that names rust\"\"\".
+        @test RustCall._reconcile_probe_types(Any["String"]) == "String"
     end
 
     if !_IRUST_RUSTC_AVAILABLE
@@ -292,6 +322,41 @@ const _IRUST_RUSTC_AVAILABLE = RustCall.check_rustc_available()
 
             # A snippet whose value is `()`.
             @test @irust("let _unused = \$x * 2;") === nothing
+
+            # Several return sites, reconciled rather than decided by the
+            # first (Codex review of PR #354). The literal `0` reads as an
+            # unconstrained integer and the tail as its own type; the concrete
+            # one wins, because the literal unifies with it.
+            flag = true
+            x32 = Int32(21)
+            @test @irust("if \$flag { return 0; } \$x32") === Int32(0)
+            @test @irust("if \$flag { return 0; } \$x") === Int64(0)
+            @test @irust("if \$flag { return 0.0; } \$f") === 0.0
+
+            # Sites that genuinely disagree are refused, by name, instead of
+            # being built as one of them and failing in rustc.
+            err = try
+                @irust("if \$flag { return 1i64; } \$x32")
+                nothing
+            catch e
+                e
+            end
+            @test err isa ErrorException
+            @test occursin("one return type", sprint(showerror, err))
+            @test occursin("i64", sprint(showerror, err))
+            @test occursin("i32", sprint(showerror, err))
+            @test_throws ErrorException @irust("if \$flag { return 1.5; } \$x")
+
+            # The probe is compiled with the flags that decide `#[cfg]`
+            # predicates, so it sees the same snippet the build does
+            # (`debug_assertions` is on at opt-level 0 and off above it). If
+            # the two disagreed, one branch would be probed and the other
+            # built, and the generated signature would not compile.
+            @test @irust("""
+                #[cfg(debug_assertions)] let v = 1i32;
+                #[cfg(not(debug_assertions))] let v = 1i64;
+                v
+                """) == 1
 
             # A snippet with a genuine error: the message is rustc's own
             # diagnostic about the *snippet*, not about generated source.
