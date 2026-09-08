@@ -194,6 +194,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   naming the variables that changed and how to force a rebuild.
   [#355](https://github.com/AtelierArith/RustCall.jl/issues/355) tracks
   representing such inputs in the invalidation scheme itself.
+- **A plain crate's cache key covers the build environment**
+  ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)).
+  `compute_crate_hash` was called without `build_env` on the non-PyO3 path, so
+  two `cargo build`s under different `RUSTFLAGS` — or a different `CC` a build
+  script reads, or anything else in the #282 allowlist — shared one cache entry
+  and the second was handed the first one's library. The PyO3 wrapper path
+  already folded `artifact_build_env()` in; the plain path does now too. One
+  consequence is that the load-time warning above can be acted on: forcing the
+  package to be precompiled again really does rebuild the artifact, instead of
+  finding the stale one under the same key.
 - **`@rust_crate <crate> cache=false` on a crate that RustCall has to wrap**
   ([#339](https://github.com/AtelierArith/RustCall.jl/issues/339)). A crate
   whose `[lib]` is not a `cdylib` is bound through a generated wrapper project

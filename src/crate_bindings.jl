@@ -607,7 +607,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                            module_name::Union{String, Nothing}=nothing,
                            build_release::Bool = true,
                            lib_name::Union{String, Nothing} = nothing,
-                           preload::Vector{String} = String[])
+                           preload::Vector{String} = String[],
+                           extra_inputs::Vector{String} = String[])
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -633,6 +634,15 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # The files an edit to the crate would touch; see
     # `_crate_precompile_dependencies`.
     crate_inputs = _crate_precompile_dependencies(info.path)
+    # Inputs the caller knows about and the crate directory does not — the PyO3
+    # wrapper's interpreter and the libraries it preloads. An interpreter
+    # upgraded in place keeps its path, so only its *content* says it changed,
+    # and `plan.interpreter_config` is in the wrapper's artifact identity
+    # (#339 review).
+    for extra in extra_inputs
+        (isfile(extra) || isdir(extra)) && push!(crate_inputs, abspath(extra))
+    end
+    unique!(crate_inputs)
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).
     build_env = try
@@ -2218,7 +2228,9 @@ function generate_bindings(crate_path::String;
                                      module_name = output_module_name,
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
-                                     preload = wrapper.plan.runtime_libraries)
+                                     preload = wrapper.plan.runtime_libraries,
+                                     extra_inputs = String[wrapper.plan.interpreter;
+                                                           wrapper.plan.runtime_libraries])
         end
     end
     info = _plain_scan_info(crate_path, info, features, default_features, build_release)
@@ -2227,8 +2239,17 @@ function generate_bindings(crate_path::String;
     # a build the caller asked for with `features` / `default_features` is
     # not the default build, and must neither answer its lookup nor be built
     # as it (#307 review).
+    # `artifact_build_env()` is in the key here as it already is for a PyO3
+    # wrapper build (`_pyo3_wrapper_build_env`): `RUSTFLAGS`, a build script's
+    # `CC`, and the rest of the #282 allowlist decide what `cargo build`
+    # produces, so two builds under different values are different binaries and
+    # must not share an entry. Without it a changed environment found the
+    # previous library in the cache and handed it back — which also made the
+    # load-time warning's advice wrong, since re-precompiling the package
+    # rebuilt the bindings around the same stale artifact (#339 review).
     cache_key = compute_crate_hash(info; release = build_release,
-                                   features = features, default_features = default_features)
+                                   features = features, default_features = default_features,
+                                   build_env = artifact_build_env())
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
 
     lib_path = if cached_lib !== nothing && isfile(cached_lib)

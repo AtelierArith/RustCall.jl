@@ -452,3 +452,24 @@ end
         end
     end
 end
+
+# The plain-crate cache key covers the captured build environment, as the PyO3
+# wrapper's already did. Without it a changed `RUSTFLAGS` found the previous
+# library in the cache and handed it back — and the load-time warning's advice
+# was then wrong, because re-precompiling the package rebuilt the bindings
+# around the same stale artifact (#339 review).
+@testset "The plain crate key covers the build environment (#339 review)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        info = RustCall.scan_crate(PRECOMP_SAMPLE_CRATE)
+        keys_of(flags) = withenv("RUSTFLAGS" => flags) do
+            RustCall.compute_crate_hash(info; release = true,
+                                        build_env = RustCall.artifact_build_env())
+        end
+        a = keys_of("-C target-cpu=native")
+        b = keys_of("-C opt-level=1")
+        @test a != b
+        @test a == keys_of("-C target-cpu=native")
+    end
+end

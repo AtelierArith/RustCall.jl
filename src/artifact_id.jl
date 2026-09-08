@@ -907,7 +907,7 @@ end
 """
     crate_input_dirs(dir::AbstractString) -> Vector{String}
 
-Every directory [`crate_input_files`](@ref) walks, `dir` itself included, as
+Every directory `crate_input_files` walks, `dir` itself included, as
 paths relative to `dir` (`"."` for the root). Same walk, same exclusions —
 Cargo's `target/` at the package root, VCS metadata at any depth — so the two
 cannot drift.
