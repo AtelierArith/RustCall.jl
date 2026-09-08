@@ -507,6 +507,14 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
                         f = joinpath(lib_dir, rel)
                         isfile(f) && push!(deps, f)
                     end
+                    # And this tree's directories, for the same reason as the
+                    # crate's own: `external_lib_tree_digest` hashes the file
+                    # list, so a first file appearing in a directory that was
+                    # already there moves nothing else (#339 review).
+                    for rel in crate_input_dirs(lib_dir)
+                        d = rel == "." ? lib_dir : joinpath(lib_dir, rel)
+                        isdir(d) && push!(deps, d)
+                    end
                 end
             end
         end
