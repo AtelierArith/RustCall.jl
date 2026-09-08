@@ -191,6 +191,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                     dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
                     file: f.clone(),
                     position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+                    ancestry: Vec::new(),
                     follow_modules: false,
                     fragment: false,
                 })
@@ -215,6 +216,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                 file,
                 dir,
                 position,
+                ancestry,
                 follow_modules,
                 fragment,
             }) = queue.pop()
@@ -244,7 +246,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                         continue;
                     }
                 };
-                for next in pulled_in(&file, &dir, pending, follow_modules) {
+                for next in pulled_in(&file, &dir, pending, follow_modules, &ancestry) {
                     let canonical =
                         fs::canonicalize(&next.file).unwrap_or_else(|_| next.file.clone());
                     if listed.contains(&canonical) {
@@ -421,6 +423,13 @@ struct QueuedFile {
     /// file reached through an `include!`, because a listed file's modules are
     /// the caller's to list and a fragment's are not (#343 review).
     follow_modules: bool,
+    /// The fragments this file was reached through, innermost last. An
+    /// `include!` whose target is already on it is a cycle — `#[cfg(feature =
+    /// "optional")] include!("lib.rs")` in `lib.rs`, followed under a lenient
+    /// scan because the predicate is undecided — and is not followed again.
+    /// Ancestry, not a visited set: two *sibling* positions of one fragment
+    /// are both scanned, but a fragment never includes itself (#357 review).
+    ancestry: Vec<PathBuf>,
     /// An `include!`d fragment rather than a file of the module tree. A
     /// fragment need not be a list of items at all — `include!("table.rs")`
     /// holding `[1, 2, 3]` is an expression — so one that does not parse as a
@@ -448,8 +457,13 @@ fn pulled_in(
     dir: &Path,
     pending: rustcall_core::extract::PullIns,
     follow_modules: bool,
+    ancestry: &[PathBuf],
 ) -> Vec<QueuedFile> {
     let mut out = Vec::new();
+    // What everything below this file descends from: its own ancestry plus
+    // itself, so a fragment that includes its includer is caught too.
+    let mut lineage = ancestry.to_vec();
+    lineage.push(fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf()));
     if follow_modules {
         for m in pending.modules {
             let Some((child_file, child_dir)) = resolve_module_file(dir, &m) else {
@@ -469,6 +483,7 @@ fn pulled_in(
                     m.reachable,
                     &m.cfg,
                 ),
+                ancestry: lineage.clone(),
                 follow_modules: true,
                 fragment: false,
             });
@@ -486,10 +501,21 @@ fn pulled_in(
             );
             continue;
         }
+        let canonical = fs::canonicalize(&fragment).unwrap_or_else(|_| fragment.clone());
+        if lineage.contains(&canonical) {
+            eprintln!(
+                "rustcall-extract: `include!(\"{}\")` in {} includes a file it is part of; \
+                 skipping the cycle",
+                inc.path,
+                file.display()
+            );
+            continue;
+        }
         out.push(QueuedFile {
             dir: fragment.parent().unwrap_or(Path::new(".")).to_path_buf(),
             file: fragment,
             position: inc.position,
+            ancestry: lineage.clone(),
             follow_modules: true,
             fragment: true,
         });
@@ -519,6 +545,7 @@ fn scan_crate_tree(
         file: root.to_path_buf(),
         dir: root_dir,
         position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+        ancestry: Vec::new(),
         follow_modules: true,
         fragment: false,
     }];
@@ -539,6 +566,7 @@ fn scan_crate_tree(
         file,
         dir,
         position,
+        ancestry,
         follow_modules,
         fragment,
     }) = queue.pop()
@@ -564,7 +592,7 @@ fn scan_crate_tree(
             }
         };
 
-        queue.extend(pulled_in(&file, &dir, pending, follow_modules));
+        queue.extend(pulled_in(&file, &dir, pending, follow_modules, &ancestry));
     }
     // Structs and their impl blocks — `#[julia]` and PyO3 alike — may live in
     // different files, so the structs are only emitted once every file of the

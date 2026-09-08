@@ -833,6 +833,74 @@ end
                     all(m -> m["skip_reason"] == "", ms)
             end
 
+            # A block gated on something *else* (`feature = "y"`) is outside
+            # both copies too: with `y` on, rustc applies it to whichever
+            # `Gauge` the `x` state compiles, so it attaches to every copy its
+            # predicate can coexist with — in both scans (#357 review).
+            write(lib, """
+                use juliacall_macros::julia;
+                #[cfg(feature = "x")]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                #[julia]
+                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                #[cfg(feature = "y")]
+                mod ops {
+                    use juliacall_macros::julia;
+                    #[julia]
+                    impl crate::api::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }
+                }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[julia]
+                pub struct Gauge { pub value: i32 }
+                """)
+            gated = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(gated) == 2
+            @test all(g -> [m["name"] for m in get(g, "methods", Any[])] == ["read"], gated)
+            write(lib, """
+                #[cfg(feature = "x")]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(not(feature = "x"))]
+                pub mod api { include!("frag.rs"); }
+                #[cfg(feature = "y")]
+                mod ops {
+                    #[pymethods]
+                    impl crate::api::Gauge { pub fn read(&self) -> i32 { self.value } }
+                }
+                """)
+            write(joinpath(dir, "src", "frag.rs"), """
+                #[pyclass]
+                pub struct Gauge { pub value: i32 }
+                """)
+            gated_py = filter(s -> s["name"] == "Gauge", lenient()["structs"])
+            @test length(gated_py) == 2
+            @test all(g -> [m["name"] for m in get(g, "methods", Any[])] == ["read"], gated_py)
+
+            # A recursive `include!` behind an undecided feature is followed by
+            # a lenient scan; keying visited files by their full position let
+            # it grow the queue forever, since each pass added the predicate
+            # again. An include-ancestry guard stops the cycle and still lets
+            # two sibling positions of one fragment both be scanned (#357
+            # review). Bounded, so a regression fails instead of hanging.
+            write(lib, """
+                #[cfg(feature = "optional")]
+                include!("lib.rs");
+                #[pyfunction]
+                pub fn f() -> i32 { 1 }
+                """)
+            let cfg = RustCall._cfg_file_args(:lenient; cfg_text = RustCall._cargo_cfg_text()),
+                out = IOBuffer(),
+                proc = run(pipeline(`$(RustCall.extractor_path()) manifest --mode crate --skip-unparsable $cfg --crate-root $lib`;
+                                    stdout = out, stderr = devnull); wait = false)
+                finished = timedwait(() -> process_exited(proc), 120.0) === :ok
+                finished || kill(proc)
+                @test finished
+                @test finished && success(proc)
+                @test finished && occursin("name = \"f\"", String(take!(out)))
+            end
+
             write(lib, """
                 use juliacall_macros::julia;
                 #[cfg(feature = "x")]

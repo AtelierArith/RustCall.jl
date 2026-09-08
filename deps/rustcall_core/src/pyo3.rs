@@ -137,9 +137,10 @@ struct ScannedImpl {
 
 /// The classes a `#[pymethods]` block resolved to `index` attaches to, among
 /// the cfg-exclusive copies of that class at that module path: the copy whose
-/// enclosing `#[cfg]` is `enclosing` when there is one; every copy when the
-/// block is unconditional (empty `enclosing`) — it applies to whichever copy
-/// rustc compiles; else the located one (#357 review).
+/// enclosing `#[cfg]` is `enclosing` when there is one; else every copy whose
+/// predicate can coexist with `enclosing` — a block written outside the
+/// copies applies to whichever one rustc compiles; else the located one
+/// (#357 review).
 fn cfg_variants_of(
     classes: &[ScannedClass],
     index: usize,
@@ -158,16 +159,17 @@ fn cfg_variants_of(
     {
         return vec![exact];
     }
-    if want.is_empty() {
-        let all: Vec<usize> = classes
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| same(c))
-            .map(|(i, _)| i)
-            .collect();
-        if !all.is_empty() {
-            return all;
-        }
+    // Written outside every copy — at the root, or in a module gated on
+    // something else: every copy whose predicate can hold together with the
+    // block's, i.e. all but the provably exclusive ones (#357 review).
+    let overlapping: Vec<usize> = classes
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| same(c) && !cfg_exclusive(&crate::cfg::predicate_string(&c.cfg), &want))
+        .map(|(i, _)| i)
+        .collect();
+    if !overlapping.is_empty() {
+        return overlapping;
     }
     vec![index]
 }

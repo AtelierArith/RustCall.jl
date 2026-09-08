@@ -1008,9 +1008,9 @@ impl CrateScan {
     /// `cfg` is the block's *enclosing* predicate, not its effective one — a
     /// block that adds `#[cfg(feature = "y")]` of its own still sits beside
     /// exactly one copy, and its own predicate is carried by its methods.
-    /// A block written *outside* every copy — an unconditional
-    /// `#[julia] impl api::Gauge` at the crate root, empty `cfg` — applies to
-    /// whichever copy rustc compiles, so it attaches to every one.
+    /// A block written *outside* every copy — at the crate root, or in a
+    /// module gated on something else — applies to whichever copy rustc
+    /// compiles, so it attaches to every copy its predicate can coexist with.
     fn cfg_variants_for(&self, index: usize, cfg: &[syn::Attribute]) -> Vec<usize> {
         let want = predicate_string(cfg);
         let here = &self.structs[index];
@@ -1025,17 +1025,24 @@ impl CrateScan {
         {
             return vec![exact];
         }
-        if want.is_empty() {
-            let all: Vec<usize> = self
-                .structs
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| same(s))
-                .map(|(i, _)| i)
-                .collect();
-            if !all.is_empty() {
-                return all;
-            }
+        // No copy sits under exactly this predicate: the block was written
+        // outside them all — at the crate root, or in a module gated on
+        // something else (`#[cfg(feature = "y")] mod ops { impl
+        // crate::api::Gauge }`). rustc applies it to whichever copy it
+        // compiles, so it attaches to every copy whose predicate can hold
+        // together with the block's; only a copy *provably* exclusive with it
+        // is left out (#357 review).
+        let overlapping: Vec<usize> = self
+            .structs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                same(s) && !crate::pyo3::cfg_exclusive(&predicate_string(&s.cfg), &want)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !overlapping.is_empty() {
+            return overlapping;
         }
         vec![index]
     }
