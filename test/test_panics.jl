@@ -291,6 +291,80 @@ const _PANIC_RUSTC_AVAILABLE = RustCall.check_rustc_available()
         end
 
         # ------------------------------------------------------------------
+        # Path 4: `@irust`. It was the one entry point outside the contract —
+        # a hand-written `#[no_mangle] pub extern "C"` with no `catch_unwind`
+        # boundary and no channel write, so an unwind crossing it aborted the
+        # process while `_call_irust_function` read a channel nobody wrote
+        # (#346). Since the snippet is compiled as a `#[julia]` item it gets
+        # the same wrapper as everything else, and the same guarantees.
+        # ------------------------------------------------------------------
+        @testset "@irust reaches the same boundary (#346)" begin
+            n = Int64(7)
+            zero = Int64(0)
+
+            # An arithmetic panic (a division by zero; also an overflow check
+            # in a debug-profile build) and an explicit `panic!`.
+            @test_throws RustCall.RustPanicError @irust("\$n / \$zero")
+
+            boom = try
+                @irust("panic!(\"irust panics too\"); 0i64")
+                nothing
+            catch e
+                e
+            end
+            @test boom isa RustCall.RustPanicError
+            @test occursin("irust panics too", boom.message)
+
+            # The value of a non-panicking snippet is unchanged, and the
+            # channel was cleared by the read.
+            @test @irust("\$n * 2") == 14
+            @test_throws RustCall.RustPanicError @irust("\$n / \$zero")
+            @test @irust("\$n * 2") == 14
+
+            # The channel is a thread-local, so the rule that nothing yields
+            # between the wrapper call and the channel read has to hold here
+            # too. Explicit arguments rather than `$var` so that `arg1` — the
+            # one the return-type guess keys off — is the integer.
+            if Threads.nthreads() < 2
+                @test_skip "needs ≥2 threads; run with JULIA_NUM_THREADS>1 " *
+                           "(the CI matrix has a multithreaded Julia entry)"
+            else
+                snippet = "if arg2 { panic!(\"irust refuses {}\", arg1); } arg1 * 2"
+                # Compile once, on this task, so the racing tasks all take the
+                # memoized path.
+                @test RustCall._compile_and_call_irust(snippet, Int64(1), false) == Int64(2)
+
+                m = 200
+                results = Vector{Any}(undef, m)
+                @sync for i in 1:m
+                    Threads.@spawn results[i] = try
+                        RustCall._compile_and_call_irust(snippet, Int64(i), iseven(i))
+                    catch e
+                        e
+                    end
+                end
+                panics = 0
+                clean = 0
+                bad = 0
+                for i in 1:m
+                    if iseven(i)
+                        if results[i] isa RustCall.RustPanicError &&
+                           occursin("irust refuses $(i)", results[i].message)
+                            panics += 1
+                        else
+                            bad += 1
+                        end
+                    else
+                        results[i] === Int64(2i) ? (clean += 1) : (bad += 1)
+                    end
+                end
+                @test panics == m ÷ 2   # every panic seen, with its own text
+                @test clean == m - m ÷ 2 # and no spurious one
+                @test bad == 0
+            end
+        end
+
+        # ------------------------------------------------------------------
         # The process survived all of it — the point of the whole issue.
         # ------------------------------------------------------------------
         @testset "the session is intact" begin
