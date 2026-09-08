@@ -417,6 +417,9 @@ end
         deps = RustCall._crate_precompile_dependencies(joinpath(root, "main"))
         @test joinpath(root, "extra", "src", "lib.rs") in deps
         @test joinpath(root, "extra", "Cargo.toml") in deps
+        # The crate's *parent* is not an input: an unrelated sibling appearing
+        # in the checkout must not invalidate the image (#339 review).
+        @test normpath(root) ∉ normpath.(deps)
 
         # The same crate is in the artifact key: an edit to it changes the
         # digest, so a rebuild cannot find the old library under the old key.
@@ -606,6 +609,15 @@ end
                 recorded = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
                 @test any(p -> first(p) == "<python3-config selection>", recorded)
                 @test any(p -> first(p) == "<python-config selection>", recorded)
+                @test any(p -> first(p) == "<python fingerprint>", recorded)
+                # With `PYO3_PYTHON` deciding, neither config command is
+                # consulted, so neither is recorded (#339 review).
+                withenv("PYO3_PYTHON" => exe) do
+                    pinned = Any[String(k) => String(v) for (k, v) in RustCall._recorded_build_env(; python = true)]
+                    @test !any(p -> occursin("-config selection", first(p)), pinned)
+                    @test !RustCall._python_link_is_implicit()
+                end
+                @test RustCall._python_link_is_implicit()
                 @test_logs RustCall._warn_if_build_env_changed(recorded, "/crate", "lib"; python = true)
                 withenv("PATH" => fake * (Sys.iswindows() ? ";" : ":") * get(ENV, "PATH", "")) do
                     @test Dict(RustCall._python_config_selections())["python3-config"] == cfgexe

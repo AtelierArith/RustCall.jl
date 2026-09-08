@@ -544,8 +544,12 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     # is left out on purpose — its top level holds the registry and git caches,
     # and tracking it would re-precompile the package for reasons that have
     # nothing to do with this crate.
+    # Only the holders of *files*: a directory in the list is an input in its
+    # own right and its parent is not — for the crate root that parent is the
+    # checkout, whose unrelated siblings must not invalidate the image (#339
+    # review).
     cargo_home = abspath(get(ENV, "CARGO_HOME", joinpath(homedir(), ".cargo")))
-    for dir in unique(dirname.(deps))
+    for dir in unique(dirname.(filter(isfile, deps)))
         isdir(dir) || continue
         abspath(dir) == cargo_home && continue
         push!(deps, dir)
@@ -582,17 +586,59 @@ function _recorded_build_env(; python::Bool = false)
         # The resolved `sys.executable` is recorded beside the raw selection
         # (one short subprocess, only for a PyO3 wrapper module; #339 review).
         push!(env, "<python resolved>" => _python_resolved(selection))
+        # And what it *reports*: the same executable can describe a different
+        # Python after `PYTHONHOME` or its sysconfig metadata changes, and
+        # `_pyo3_wrapper_build_env` hashes exactly that description
+        # (`plan.interpreter_config`). Recorded the way the plan records it
+        # (#339 review).
+        push!(env, "<python fingerprint>" => _python_fingerprint(selection))
         # The link directory is not the interpreter's alone: for the implicit
         # case `python_link_source()` asks a bare `python3-config --ldflags`,
         # falling back to `python-config`, and `PATH` may resolve either to
         # another installation than the interpreter's. Both commands'
-        # identities are recorded; their content is tracked as files
-        # (`_python_config_selections`, #339 review).
-        for (name, path) in _python_config_selections()
-            push!(env, "<$name selection>" => path)
+        # identities are recorded, and their content tracked as files — but
+        # only on that implicit branch: with `PYO3_PYTHON`, a configured
+        # library directory, `RUSTCALL_PYTHON_LIBDIR` or CondaPkg deciding,
+        # neither command is consulted and neither is an input (#339 review).
+        if _python_link_is_implicit()
+            for (name, path) in _python_config_selections()
+                push!(env, "<$name selection>" => path)
+            end
         end
     end
     return env
+end
+
+"""
+    _python_link_is_implicit() -> Bool
+
+Whether `python_link_source()` would reach its last step — the interpreter and
+`python3-config` / `python-config` found on `PATH` — rather than be decided by
+pyo3's own configuration, `PYO3_PYTHON`, `RUSTCALL_PYTHON_LIBDIR` or CondaPkg.
+Only then are the config commands inputs of the wrapper (#339 review).
+"""
+function _python_link_is_implicit()
+    isempty(_pyo3_configured_lib_dir()) || return false
+    isempty(get(ENV, "PYO3_PYTHON", "")) || return false
+    isempty(get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")) || return false
+    return _condapkg_link_source() === nothing
+end
+
+"""
+    _python_fingerprint(selection) -> String
+
+What the selected interpreter reports about itself — `_python_interpreter_fingerprint`,
+the same call `python_link_source()` makes for the plan — or "" when nothing
+is selected or it cannot be run. One short subprocess, for a PyO3 wrapper
+module only (#339 review).
+"""
+function _python_fingerprint(selection::AbstractString)
+    isempty(selection) && return ""
+    return try
+        String(_python_interpreter_fingerprint(selection))
+    catch
+        ""
+    end
 end
 
 """
@@ -2435,7 +2481,9 @@ function generate_bindings(crate_path::String;
                                      extra_inputs = String[wrapper.plan.interpreter;
                                                            _python_resolved(wrapper.plan.interpreter);
                                                            wrapper.plan.runtime_libraries;
-                                                           last.(_python_config_selections())],
+                                                           (_python_link_is_implicit() ?
+                                                            last.(_python_config_selections()) :
+                                                            String[])],
                                      python = true)
         end
     end
