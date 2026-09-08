@@ -176,21 +176,23 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         // checked crate-wide (#300).
         (Mode::Crate, None) => {
             let mut scan = rustcall_core::extract::TreeScan::new();
-            // The `include!` fragments of each file are followed here too —
-            // no `mod` declaration reaches a fragment, so nothing else would
-            // bring it in — but out-of-line `mod`s are not: without a root
-            // there is no module tree to place them in, and the caller listed
-            // the files it wants scanned.
-            let mut queue: Vec<(PathBuf, rustcall_core::extract::FilePosition, bool)> = opts
+            // A listed file's own out-of-line `mod`s are not followed here:
+            // without a root there is no module tree to place them in, and the
+            // caller listed the files it wants scanned. What it *cannot* list
+            // is what a file pulls in implicitly — an `include!` fragment, and
+            // in turn whatever that fragment declares — so those are followed
+            // (#343, #343 review). `follow_modules` marks a file reached that
+            // way.
+            let mut queue: Vec<QueuedFile> = opts
                 .files
                 .iter()
                 .rev()
-                .map(|f| {
-                    (
-                        f.clone(),
-                        rustcall_core::extract::FilePosition::module(&[], true, &[]),
-                        false,
-                    )
+                .map(|f| QueuedFile {
+                    dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                    file: f.clone(),
+                    position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+                    follow_modules: false,
+                    fragment: false,
                 })
                 .collect();
             // Keyed by (file, module path) as the crate-root walk is: one
@@ -198,45 +200,40 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             // twice by rustc and belongs in the manifest twice, under each
             // module's own path (#343 review).
             let mut seen: Vec<(PathBuf, Vec<String>)> = Vec::new();
-            while let Some((f, position, fragment)) = queue.pop() {
-                let canonical = fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+            while let Some(QueuedFile {
+                file,
+                dir,
+                position,
+                follow_modules,
+                fragment,
+            }) = queue.pop()
+            {
+                let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
                 let key = (canonical, position.module_path.clone());
                 if seen.contains(&key) {
                     continue;
                 }
                 seen.push(key);
-                let src = read_source(&f)?;
+                let src = read_source(&file)?;
                 let scanned = scan.file(
                     &src,
                     opts.cfg.as_ref(),
                     &position,
                     &mut merged,
-                    &f.display().to_string(),
+                    &file.display().to_string(),
                 );
                 let pending = match scanned {
                     Ok(v) => v,
                     Err(e) => {
                         if fragment {
-                            skip_fragment_or_fail(e, &f)?;
+                            skip_fragment_or_fail(e, &file)?;
                         } else {
-                            skip_or_fail(e, &f, opts.skip_unparsable)?;
+                            skip_or_fail(e, &file, opts.skip_unparsable)?;
                         }
                         continue;
                     }
                 };
-                let here = f.parent().unwrap_or(Path::new(".")).to_path_buf();
-                for inc in pending.includes {
-                    let fragment_path = here.join(&inc.path);
-                    if !fragment_path.is_file() {
-                        eprintln!(
-                            "rustcall-extract: `include!(\"{}\")` in {} names no file; skipping it",
-                            inc.path,
-                            f.display()
-                        );
-                        continue;
-                    }
-                    queue.push((fragment_path, inc.position, true));
-                }
+                queue.extend(pulled_in(&file, &dir, pending, follow_modules));
             }
             scan.finish(&mut merged).map_err(|e| e.to_string())?;
         }
@@ -401,12 +398,85 @@ struct QueuedFile {
     file: PathBuf,
     dir: PathBuf,
     position: rustcall_core::extract::FilePosition,
+    /// Whether the out-of-line `mod` declarations of this file are followed.
+    /// Always true when there is a crate root; without one, true only for a
+    /// file reached through an `include!`, because a listed file's modules are
+    /// the caller's to list and a fragment's are not (#343 review).
+    follow_modules: bool,
     /// An `include!`d fragment rather than a file of the module tree. A
     /// fragment need not be a list of items at all — `include!("table.rs")`
     /// holding `[1, 2, 3]` is an expression — so one that does not parse as a
     /// file is left to the compiler instead of failing the scan, whatever
     /// `--skip-unparsable` says about the crate's own files.
     fragment: bool,
+}
+
+/// The files `pending` brings in, as queue entries.
+///
+/// One step for both walks, so the crate-root scan and the file-list scan
+/// cannot disagree about what a file pulls in (#343). `dir` is the *module*
+/// directory of `file`, which is where its out-of-line `mod`s live; an
+/// `include!` is relative to the directory of the file it is written in
+/// instead — `src/a.rs` is the file of module `a`, whose child modules live in
+/// `src/a/`, but `include!("x.rs")` in it names `src/x.rs` — and the fragment
+/// then owns its own directory for anything *it* declares.
+///
+/// `follow_modules` is false only for a file the caller listed in a scan with
+/// no crate root: its modules are the caller's to list. Everything reached
+/// from an `include!` sets it, because nothing outside the crate could have
+/// named those files.
+fn pulled_in(
+    file: &Path,
+    dir: &Path,
+    pending: rustcall_core::extract::PullIns,
+    follow_modules: bool,
+) -> Vec<QueuedFile> {
+    let mut out = Vec::new();
+    if follow_modules {
+        for m in pending.modules {
+            let Some((child_file, child_dir)) = resolve_module_file(dir, &m) else {
+                eprintln!(
+                    "rustcall-extract: `mod {};` in {} names no file under {}; skipping it",
+                    m.name,
+                    file.display(),
+                    dir.display()
+                );
+                continue;
+            };
+            out.push(QueuedFile {
+                file: child_file,
+                dir: child_dir,
+                position: rustcall_core::extract::FilePosition::module(
+                    &m.module_path,
+                    m.reachable,
+                    &m.cfg,
+                ),
+                follow_modules: true,
+                fragment: false,
+            });
+        }
+    }
+
+    let here = file.parent().unwrap_or(Path::new(".")).to_path_buf();
+    for inc in pending.includes {
+        let fragment = here.join(&inc.path);
+        if !fragment.is_file() {
+            eprintln!(
+                "rustcall-extract: `include!(\"{}\")` in {} names no file; skipping it",
+                inc.path,
+                file.display()
+            );
+            continue;
+        }
+        out.push(QueuedFile {
+            dir: fragment.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            file: fragment,
+            position: inc.position,
+            follow_modules: true,
+            fragment: true,
+        });
+    }
+    out
 }
 
 /// Scan a whole crate by following its module tree from `root` (#275, #315).
@@ -431,6 +501,7 @@ fn scan_crate_tree(
         file: root.to_path_buf(),
         dir: root_dir,
         position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+        follow_modules: true,
         fragment: false,
     }];
     // Keyed by (file, module path): `#[path = "shared.rs"] pub mod a;` and the
@@ -445,6 +516,7 @@ fn scan_crate_tree(
         file,
         dir,
         position,
+        follow_modules,
         fragment,
     }) = queue.pop()
     {
@@ -469,51 +541,7 @@ fn scan_crate_tree(
             }
         };
 
-        for m in pending.modules {
-            let Some((child_file, child_dir)) = resolve_module_file(&dir, &m) else {
-                eprintln!(
-                    "rustcall-extract: `mod {};` in {} names no file under {}; skipping it",
-                    m.name,
-                    file.display(),
-                    dir.display()
-                );
-                continue;
-            };
-            queue.push(QueuedFile {
-                file: child_file,
-                dir: child_dir,
-                position: rustcall_core::extract::FilePosition::module(
-                    &m.module_path,
-                    m.reachable,
-                    &m.cfg,
-                ),
-                fragment: false,
-            });
-        }
-
-        // An `include!` is relative to the *file* it is written in, not to the
-        // module directory: `src/a.rs` is the file of module `a`, whose child
-        // modules live in `src/a/`, but `include!("x.rs")` in it names
-        // `src/x.rs`. The fragment then owns its own directory for anything it
-        // declares.
-        let here = file.parent().unwrap_or(Path::new(".")).to_path_buf();
-        for inc in pending.includes {
-            let fragment = here.join(&inc.path);
-            if !fragment.is_file() {
-                eprintln!(
-                    "rustcall-extract: `include!(\"{}\")` in {} names no file; skipping it",
-                    inc.path,
-                    file.display()
-                );
-                continue;
-            }
-            queue.push(QueuedFile {
-                dir: fragment.parent().unwrap_or(Path::new(".")).to_path_buf(),
-                file: fragment,
-                position: inc.position,
-                fragment: true,
-            });
-        }
+        queue.extend(pulled_in(&file, &dir, pending, follow_modules));
     }
     // Structs and their impl blocks — `#[julia]` and PyO3 alike — may live in
     // different files, so the structs are only emitted once every file of the

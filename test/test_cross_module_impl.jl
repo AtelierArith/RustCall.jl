@@ -588,3 +588,44 @@ end
         end
     end
 end
+
+# The no-crate-root walk does not follow a listed file's own `mod` declarations
+# — the caller lists the files it wants — but a fragment's are not the caller's
+# to list: nothing outside the crate names them, and rustc compiles them. So
+# they are followed, resolved against the fragment's own directory (#343
+# review).
+@testset "A mod declared inside a fragment is followed without a crate root (#343 review)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the no-root fragment-module test"
+    else
+        mktempdir() do dir
+            mkpath(joinpath(dir, "frag"))
+            write(joinpath(dir, "frag", "api.rs"), """
+                pub mod nested;
+                #[julia]
+                pub fn from_api() -> i32 { 1 }
+                """)
+            write(joinpath(dir, "frag", "nested.rs"), """
+                use juliacall_macros::julia;
+                #[julia]
+                pub fn deep() -> i32 { 2 }
+                """)
+            lib = joinpath(dir, "lib.rs")
+            write(lib, """
+                use juliacall_macros::julia;
+                include!("frag/api.rs");
+                """)
+
+            manifest = RustCall.extract_manifest([lib]; mode = "crate")
+            names = sort([f["name"] for f in manifest["functions"]])
+            @test names == ["deep", "from_api"]
+
+            # A listed file's own `mod` is still the caller's to list: this
+            # walk has no module tree to place it in.
+            plain = joinpath(dir, "plain.rs")
+            write(plain, "pub mod nested;\n")
+            plain_manifest = RustCall.extract_manifest([plain]; mode = "crate")
+            @test isempty(plain_manifest["functions"])
+        end
+    end
+end
