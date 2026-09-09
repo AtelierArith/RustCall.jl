@@ -420,7 +420,26 @@ impl CfgSet {
                         errors.extend(self.prune_items(inner));
                     }
                 }
-                Item::Enum(e) => self.prune_generics(&mut e.generics, &mut errors),
+                Item::Enum(e) => {
+                    self.prune_generics(&mut e.generics, &mut errors);
+                    let mut kept = syn::punctuated::Punctuated::new();
+                    for mut variant in std::mem::take(&mut e.variants) {
+                        let errs = self.expand_cfg_attrs(&mut variant.attrs);
+                        if !errs.is_empty() {
+                            errors.extend(errs);
+                            continue;
+                        }
+                        match self.attrs_active(&variant.attrs) {
+                            Ok(true) => {
+                                self.strip_decided_cfgs(&mut variant.attrs);
+                                kept.push(variant);
+                            }
+                            Ok(false) => {}
+                            Err(error) => errors.push(error),
+                        }
+                    }
+                    e.variants = kept;
+                }
                 Item::Trait(t) => self.prune_generics(&mut t.generics, &mut errors),
                 Item::Impl(imp) => {
                     self.prune_generics(&mut imp.generics, &mut errors);

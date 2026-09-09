@@ -103,6 +103,29 @@ impl PublicRoutes {
                         module: is_module,
                         predicates: predicates(&effective),
                     });
+                if let Item::Enum(v) = item {
+                    for variant in &v.variants {
+                        let mut variant_path = path.clone();
+                        variant_path.push(variant.ident.to_string());
+                        self.names.insert(variant.ident.to_string());
+                        let attrs = crate::cfg::effective_cfg_attrs(&effective, &variant.attrs);
+                        for namespace in [Namespace::Type, Namespace::Value] {
+                            if namespace == Namespace::Value
+                                && matches!(variant.fields, syn::Fields::Named(_))
+                            {
+                                continue;
+                            }
+                            self.definitions
+                                .entry((namespace, variant_path.clone()))
+                                .or_default()
+                                .push(Definition {
+                                    visibility: syn::parse_quote!(pub),
+                                    module: false,
+                                    predicates: predicates(&attrs),
+                                });
+                        }
+                    }
+                }
                 if let Item::Struct(v) = item {
                     if !matches!(v.fields, syn::Fields::Named(_)) {
                         let constructor_visibility = if v

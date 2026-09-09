@@ -41,7 +41,14 @@ function _public_route_wrapper303(file_module)
             #[allow(non_snake_case)] pub fn PublicCounter() -> i32 { 99 }
             pub use hidden::calculate as public_calculate;
             pub use hidden::calculate as _;
-            pub use hidden::api as public_api;
+            pub use hidden::api::{self as public_api};
+            mod functions { pub use crate::hidden::calculate; }
+            mod variants {
+                #[allow(non_camel_case_types)] pub enum E { calculate }
+                pub use E::*;
+            }
+            pub use functions::*;
+            pub use variants::*;
             """)
         wrapper = _link_libpython_wrapper(root)
         if wrapper === nothing

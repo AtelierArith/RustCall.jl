@@ -1,6 +1,66 @@
 use rustcall_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
 
 #[test]
+fn renamed_and_named_self_imports_expose_modules() {
+    for route in [
+        "pub use outer::inner::{self as facade};",
+        "pub use outer::inner::{self};",
+    ] {
+        let scanned = extract(&format!(
+            "mod outer {{ pub mod inner {{ #[pyfunction] pub fn calculate() -> i32 {{ 42 }} }} }} {route}"
+        ), Mode::Crate).unwrap();
+        let expected = if route.contains("facade") {
+            "facade"
+        } else {
+            "inner"
+        };
+        assert!(scanned.functions[0].skip_reason.is_empty());
+        assert_eq!(scanned.functions[0].callable_path, [expected, "calculate"]);
+        let wrapped = wrapper_crate(&scanned, "user_crate", true);
+        assert!(wrapped
+            .lib_rs
+            .contains(&format!("user_crate::{expected}::calculate()")));
+    }
+}
+
+#[test]
+fn enum_variant_globs_prevent_ambiguous_function_routes() {
+    for variant in ["calculate", "calculate(i32)"] {
+        let scanned = extract(
+            &format!(
+                r#"
+            mod a {{ pub enum E {{ {variant} }} pub use E::*; }}
+            mod b {{ #[pyfunction] pub fn calculate() -> i32 {{ 42 }} }}
+            pub use a::*;
+            pub use b::*;
+        "#
+            ),
+            Mode::Crate,
+        )
+        .unwrap();
+        assert_eq!(scanned.functions[0].skip_reason, "not_public");
+        assert!(scanned.functions[0].callable_path.is_empty());
+    }
+}
+
+#[test]
+fn disabled_enum_variants_do_not_block_public_function_routes() {
+    let scanned = rustcall_core::extract::extract_with_cfg(
+        r#"
+        mod a { pub enum E { #[cfg(any())] calculate } pub use E::*; }
+        mod b { #[pyfunction] pub fn calculate() -> i32 { 42 } }
+        pub use a::*;
+        pub use b::*;
+    "#,
+        Mode::Crate,
+        Some(&rustcall_core::cfg::CfgSet::default()),
+    )
+    .unwrap();
+    assert!(scanned.functions[0].skip_reason.is_empty());
+    assert_eq!(scanned.functions[0].callable_path, ["calculate"]);
+}
+
+#[test]
 fn public_class_and_unrelated_same_named_value_are_not_ambiguous() {
     let scanned = extract(
         r#"
