@@ -1,6 +1,37 @@
 using Test
 using RustCall
 
+@testset "state cache factories run outside STATE and preserve a concurrent winner (#251)" begin
+    view = lock(RustCall.REGISTRY_LOCK) do
+        RustCall._state_view(gensym(:factory_test), Dict{String, Any}())
+    end
+    started = Channel{Nothing}(1)
+    release = Channel{Nothing}(1)
+    creator = Threads.@spawn get!(view, "key") do
+        put!(started, nothing)
+        take!(release)
+        1
+    end
+    take!(started)
+    updater = Threads.@spawn (view["key"] = 99)
+    try
+        @test timedwait(() -> istaskdone(updater), 5) == :ok
+    finally
+        put!(release, nothing)
+    end
+    @test fetch(creator) == 99
+    wait(updater)
+    @test view["key"] == 99
+    @test get!(() -> error("must not evaluate an existing key"), view, "key") == 99
+    view["nothing"] = nothing
+    @test get!(() -> error("nothing is a cached value"), view, "nothing") === nothing
+    @test_throws ErrorException get!(() -> error("factory failed"), view, "missing")
+    @test !haskey(view, "missing")
+    lock(RustCall.REGISTRY_LOCK) do
+        delete!(RustCall.STATE.value.values, view.name)
+    end
+end
+
 # Inspect values rather than constructor spellings: a registry returned by a
 # factory must be caught too. Compiler-generated documentation metadata is not
 # application state; immutable lookup tables and StateViews are safe to share.

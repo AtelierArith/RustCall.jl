@@ -94,8 +94,15 @@ end
 Base.get!(view::StateView, key, default) = _state_read(view) do state_value
     get!(state_value, key, default)
 end
-Base.get!(default::Function, view::StateView, key) = _state_read(view) do state_value
-    get!(default, state_value, key)
+function Base.get!(default::Function, view::StateView, key)
+    cached = _state_read(view) do state_value
+        haskey(state_value, key) ? Some(state_value[key]) : nothing
+    end
+    cached === nothing || return something(cached)
+    # A default may run rustc/Cargo or arbitrary caller code. Do not hold
+    # STATE during its evaluation; another publisher may win in the meantime.
+    candidate = default()
+    return get!(view, key, candidate)
 end
 Base.haskey(view::StateView, key) = _state_read(view) do state_value
     haskey(state_value, key)

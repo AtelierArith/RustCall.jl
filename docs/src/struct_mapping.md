@@ -427,6 +427,9 @@ not bound by the struct instantiation, does not prevent construction. Such a
 method is not part of that object's compiled member set. Calling an unavailable
 member reports an error rather than silently entering another generation.
 Calling a method after explicitly finalizing its receiver also reports an error.
+Methods and field wrappers also reject an object whose captured image has been
+explicitly closed, even when its Rust allocation pointer is still non-null.
+Retirement leaves the image mapped and does not disable existing objects.
 
 ## Best Practices
 

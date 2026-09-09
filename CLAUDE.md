@@ -116,6 +116,9 @@ check also rejects blocking operations, FFI and logging inside explicit state
 transactions. Compiler initialization publishes only if no concurrent setter
 has won. Watcher selection, task publication and stop snapshots are state
 transactions; scheduling, waiting, source I/O and callbacks occur outside them.
+StateView cache defaults are evaluated outside STATE, then published only if
+another task has not already supplied the key. This includes the cold Cargo
+and rustc cfg probes, whose subprocess must never run inside a state transaction.
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 

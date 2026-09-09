@@ -1080,16 +1080,22 @@ end
 """
     check_not_freed(obj, type_name)
 
-Raise when a method is called on an object whose finalizer already ran.
+Raise when the object was finalized or its captured library image was closed.
 
 Without it the call dereferences `C_NULL` inside Rust, which is a segfault
-rather than an error message. The inline structs got this in #277 Phase B4;
+rather than an error message, or enters a retained pointer in an unmapped
+image. This check does not make closing concurrently with a call safe: an
+explicit close still requires quiescence. The inline structs got this in #277 Phase B4;
 `@rust_crate` structs have had it since #246 (`_check_not_freed`).
 """
 function check_not_freed(obj, type_name::AbstractString)
     if getfield(obj, :ptr) == C_NULL
         throw(RustError("attempted to use a freed $(type_name) object: its " *
                         "finalizer has already released the Rust allocation"))
+    end
+    if hasfield(typeof(obj), :alive) && !getfield(obj, :alive)[]
+        throw(RustError("attempted to use an unloaded $(type_name) object: its " *
+                        "Rust library image has been closed"))
     end
     return nothing
 end

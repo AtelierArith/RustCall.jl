@@ -4,6 +4,34 @@ using Test
 
 struct NonCopyStatePayload{T} end
 
+@testset "closed generic images reject methods and field wrappers before FFI (#291)" begin
+    rust"""
+    #[julia]
+    pub struct ClosedGenericImage<T> { value: T }
+    impl<T> ClosedGenericImage<T> {
+        pub fn new(value: T) -> Self { Self { value } }
+        pub fn closed_value(&self) -> T where T: Copy { self.value }
+    }
+    """
+    object = ClosedGenericImage{Int32}(Int32(7))
+    @test Base.invokelatest(closed_value, object) == 7
+    @test object.value == 7
+    object.value = Int32(8)
+    @test Base.invokelatest(closed_value, object) == 8
+    # Explicit close intentionally makes the allocation inert. The pointer
+    # remains non-null: checking only finalization is not sufficient.
+    RustCall.unload_library(object.lib_name; close = true)
+    @test getfield(object, :ptr) != C_NULL
+    @test !getfield(object, :alive)[]
+    @test_throws RustCall.RustError Base.invokelatest(closed_value, object)
+    @test_throws RustCall.RustError object.value
+    @test_throws RustCall.RustError (object.value = Int32(9))
+    before = RustCall.finalizer_failure_count()
+    finalize(object)
+    @test getfield(object, :ptr) == C_NULL
+    @test RustCall.finalizer_failure_count() == before
+end
+
 @testset "generic group registration replaces the whole member set atomically (#251, #291)" begin
     source(member) = """
         #[julia] pub struct AtomicGenericGroup<T> { value: T }
