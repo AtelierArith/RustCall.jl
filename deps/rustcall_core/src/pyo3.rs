@@ -108,6 +108,8 @@ pub struct Pyo3Scan {
     classes: Vec<ScannedClass>,
     impls: Vec<ScannedImpl>,
     imports: Vec<ScannedImport>,
+    routes: crate::public_routes::PublicRoutes,
+    intrinsic_skips: std::collections::BTreeMap<(Vec<String>, String, usize, String), String>,
 }
 
 #[derive(Debug)]
@@ -215,6 +217,7 @@ impl Pyo3Scan {
         enclosing_cfg: &[syn::Attribute],
         manifest: &mut Manifest,
     ) -> Vec<PendingModule> {
+        self.routes.file(items, module_path, enclosing_cfg);
         let mut path = module_path.to_vec();
         let mut dirs = Vec::new();
         let mut pending = Vec::new();
@@ -257,6 +260,22 @@ impl Pyo3Scan {
                     }
                     match pyo3_marker(&f.attrs) {
                         Some(Pyo3Marker::Function) => {
+                            let intrinsic = function_entry(
+                                f,
+                                Attribute::PyFunction,
+                                true,
+                                module_path,
+                                enclosing_cfg,
+                            );
+                            self.intrinsic_skips.insert(
+                                (
+                                    module_path.clone(),
+                                    intrinsic.name.clone(),
+                                    intrinsic.line,
+                                    intrinsic.cfg.clone(),
+                                ),
+                                intrinsic.skip_reason,
+                            );
                             manifest.functions.push(function_entry(
                                 f,
                                 Attribute::PyFunction,
@@ -365,6 +384,54 @@ impl Pyo3Scan {
     /// Order is by (module path, line) so the result does not depend on the
     /// order the caller happened to visit files in.
     pub fn finish(mut self, manifest: &mut Manifest) {
+        let mut route_cache = std::collections::BTreeMap::new();
+        for function in &mut manifest.functions {
+            if !function.attribute.is_pyo3_scan() {
+                continue;
+            }
+            let mut canonical = function.module_path.clone();
+            canonical.push(function.name.clone());
+            let routes = route_cache
+                .entry(function.cfg.clone())
+                .or_insert_with(|| self.routes.resolve_for(&function.cfg));
+            if let Some(route) = routes.get(&canonical) {
+                if function.skip_reason == skip_reason::NOT_PUBLIC {
+                    if let Some(intrinsic) = self.intrinsic_skips.get(&(
+                        function.module_path.clone(),
+                        function.name.clone(),
+                        function.line,
+                        function.cfg.clone(),
+                    )) {
+                        function.skip_reason = intrinsic.clone();
+                    }
+                }
+                if route.path != canonical {
+                    function.callable_path = route.path.clone();
+                }
+                merge_route_cfg(&mut function.cfg, &mut function.cfg_features, route);
+            }
+        }
+        for class in &mut self.classes {
+            let mut canonical = class.module_path.clone();
+            canonical.push(class.entry.name.clone());
+            let routes = route_cache
+                .entry(class.entry.cfg.clone())
+                .or_insert_with(|| self.routes.resolve_for(&class.entry.cfg));
+            if let Some(route) = routes.get(&canonical) {
+                if class.entry.skip_reason == skip_reason::NOT_PUBLIC {
+                    class.entry.skip_reason = item_skip_reason(
+                        &class.visibility,
+                        true,
+                        !class.entry.type_params.is_empty(),
+                    )
+                    .unwrap_or_default();
+                }
+                if route.path != canonical {
+                    class.entry.callable_path = route.path.clone();
+                }
+                merge_route_cfg(&mut class.entry.cfg, &mut class.entry.cfg_features, route);
+            }
+        }
         self.impls.sort_by(|a, b| {
             a.header
                 .module_path
@@ -971,6 +1038,32 @@ fn struct_symbols(s: &Struct) -> Vec<String> {
     out
 }
 
+fn merge_route_cfg(
+    cfg: &mut String,
+    features: &mut Vec<String>,
+    route: &crate::public_routes::PublicRoute,
+) {
+    let mut predicates = route.predicates.clone();
+    if !cfg.is_empty() {
+        predicates.insert(cfg.clone());
+    }
+    if predicates.is_empty() {
+        return;
+    }
+    *cfg = if predicates.len() == 1 {
+        predicates.into_iter().next().unwrap()
+    } else {
+        format!(
+            "all({})",
+            predicates.into_iter().collect::<Vec<_>>().join(",")
+        )
+    };
+    let meta: syn::Meta =
+        syn::parse_str(&format!("cfg({cfg})")).expect("cfg predicates came from syn");
+    let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[#meta])];
+    *features = crate::cfg::predicate_features(&attrs);
+}
+
 fn qualified(module_path: &[String], name: &str) -> String {
     if module_path.is_empty() {
         name.to_string()
@@ -1052,6 +1145,7 @@ fn function_entry(
         body_has_cfg: crate::cfg::body_has_cfg(&func.block),
         line: func.span().start().line,
         module_path: module_path.to_vec(),
+        callable_path: Vec::new(),
     }
 }
 
@@ -1148,6 +1242,7 @@ fn class_entry(
         generic_wrappers: Vec::new(),
         line: item.span().start().line,
         module_path: module_path.to_vec(),
+        callable_path: Vec::new(),
     }
 }
 

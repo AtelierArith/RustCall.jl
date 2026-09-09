@@ -44,7 +44,7 @@ release a cross-module method's `String` through a symbol the library does not
 export, and leak it. The version is what makes such a consumer refuse the
 manifest rather than get the owner wrong (#342 review).
 """
-const MANIFEST_SCHEMA_VERSION = 8
+const MANIFEST_SCHEMA_VERSION = 9
 
 """
     ExtractorError <: Exception

@@ -255,7 +255,7 @@ nothing emits it yet. The manifest describes what Phase 2 will generate.
 
 | reason | meaning |
 | --- | --- |
-| `not_public` | the item is not `pub`, so a wrapper crate compiled outside the scanned crate cannot name it (rustc `E0603`). A `pub` item inside a private `mod` counts as private. |
+| `not_public` | no externally accessible Rust path names the item. A `pub` item inside a private module can be wrapped when an accessible `pub use` re-exports it. Restricted or private imports do not grant access. |
 | `pyo3_type:<T>` | the signature mentions `<T>`, which only exists with a live interpreter: `PyObject`, `Py<T>`, `Bound<'_, T>`, `&PyAny`, `Python<'_>`, `PyRef`, `PyRefMut`, anything under `pyo3::` |
 | `pymodule` | a `#[pymodule]` initializer: it exists to be called by Python's import machinery |
 | `generic` | a generic item; monomorphizing PyO3 items is out of scope |
@@ -313,16 +313,27 @@ can be hidden behind a concrete, non-generic `#[pyclass]`.
 
 ### Modules are followed, not guessed
 
-An item's `module_path` is what a wrapper crate has to write
-(`user_crate::api::item`), so it has to be right. The extractor therefore
+An item's `module_path` records its canonical definition location, which fixes
+its exported symbol identity and Julia module layout. Schema 9 adds
+`callable_path` for an external Rust spelling when a public re-export is needed;
+an empty path uses `module_path` plus the item's name. The extractor therefore
 follows the crate's module tree from `src/lib.rs` (`rustcall-extract manifest
 --crate-root`) rather than treating each `.rs` file as its own root:
 `pub mod api;` backed by `src/api.rs`, `src/deep/mod.rs`, `#[path = "..."]`
 overrides, and an out-of-line module declared inside an inline one
 (`mod outer { pub mod child; }` → `src/outer/child.rs`) are all resolved the
-way rustc resolves them. That is also how a private parent is caught — a
-`mod hidden;` without `pub` makes everything inside it `not_public`, however
-`pub` the items themselves are.
+way rustc resolves them. A private parent blocks direct access, but an accessible
+`pub use hidden::Item as PublicItem` can provide the external call path.
+Named, chained and glob re-exports, including aliases of public modules, are
+resolved separately from local imports used to attach impl blocks. Private or
+restricted imports, inaccessible intermediate modules and ambiguous glob names
+do not grant external access. Conditional routes retain their cfg; an
+unconditional public route is preferred over a conditional alias.
+
+Aliases do not create duplicate Julia owning types: the class is still bound
+once at its canonical Julia module location, while its constructor, methods
+and destructor call the accessible Rust spelling. Public reachability does not
+remove other restrictions such as async or unsupported signatures.
 
 The root is the crate's library root: `[lib] path` when the manifest sets one,
 otherwise `src/lib.rs`. A `mod` declaration whose file does not exist (behind a

@@ -465,6 +465,7 @@ fn function_entry(func: &ItemFn, module_path: &[String]) -> Function {
         .collect();
     let return_type = return_type_to_string(&func.sig.output);
     Function {
+        callable_path: Vec::new(),
         cfg: crate::cfg::predicate_string(&func.attrs),
         cfg_features: crate::cfg::predicate_features(&func.attrs),
         name: func.sig.ident.to_string(),
