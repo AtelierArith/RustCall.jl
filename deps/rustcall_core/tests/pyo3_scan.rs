@@ -795,6 +795,53 @@ fn skipped_owners_do_not_reserve_aggregate_names() {
     }
 }
 
+#[test]
+fn aggregate_reservations_follow_surviving_owners_through_chains() {
+    // Each excluded class would emit another aggregate if it survived. The
+    // reservation must disappear with that class, even several links deep.
+    for reverse in [false, true] {
+        let mut classes = Vec::new();
+        let mut name = "CResult_f".to_string();
+        for _ in 0..8 {
+            classes.push(format!(
+                "#[pyclass] pub struct {name} {{ pub value: i32 }}
+                 #[pymethods] impl {name} {{
+                    pub fn value(&self) -> Option<i32> {{ Some(self.value) }}
+                 }}"
+            ));
+            name = format!("COption_{name}_value");
+        }
+        if reverse {
+            classes.reverse();
+        }
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn f() -> PyResult<i32> {{ Ok(1) }}\n{}",
+            classes.join("\n")
+        ));
+        let mut name = "CResult_f".to_string();
+        for depth in 0..8 {
+            let class = manifest.structs.iter().find(|s| s.name == name).unwrap();
+            assert_eq!(class.skip_reason.is_empty(), depth % 2 == 1, "{name}");
+            assert_eq!(class.methods[0].skip_reason.is_empty(), depth % 2 == 1);
+            name = format!("COption_{name}_value");
+        }
+    }
+}
+
+#[test]
+fn symbol_collision_losers_do_not_reserve_aggregate_names() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }
+         #[pyfunction] pub fn foo_take_panic() -> PyResult<i32> { Ok(1) }
+         #[pyclass] pub struct CResult_foo_take_panic { pub value: i32 }",
+    );
+    assert_eq!(
+        function(&manifest, "foo_take_panic").skip_reason,
+        "symbol_collision:foo"
+    );
+    assert!(manifest.structs[0].skip_reason.is_empty());
+}
+
 /// A plain type alias is another way a PyO3 impl can name its class (#303).
 #[test]
 fn a_type_alias_disambiguates_a_pymethods_target() {

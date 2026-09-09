@@ -421,7 +421,6 @@ impl Pyo3Scan {
         // `fn User()` refused for the class `User`'s name does not also cost the
         // class its `String` getters' helper (#307 review).
         mark_julia_surface_collisions(manifest);
-        mark_symbol_collisions(manifest);
     }
 }
 
@@ -449,11 +448,23 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
     // Resolve the user-facing owners before reserving their implementation
     // types. An owner skipped by a class or an earlier method emits no ABI
     // aggregate and must not take a valid class's name with it.
-    mark_julia_surface_collisions_pass(manifest, false);
-    mark_julia_surface_collisions_pass(manifest, true);
+    mark_julia_surface_collisions_pass(manifest, None);
+    mark_symbol_collisions(manifest);
+    let owners = manifest.clone();
+    loop {
+        let mut next = owners.clone();
+        mark_julia_surface_collisions_pass(&mut next, Some(manifest));
+        if next == *manifest {
+            return;
+        }
+        *manifest = next;
+    }
 }
 
-fn mark_julia_surface_collisions_pass(manifest: &mut Manifest, reserve_aggregates: bool) {
+fn mark_julia_surface_collisions_pass(
+    manifest: &mut Manifest,
+    aggregate_owners: Option<&Manifest>,
+) {
     // The Julia surface is one namespace *per generated module*, and the
     // bindings lay one Julia module out per Rust module (#300), so every key
     // below carries the module path: `a::parse` and `b::parse` live in
@@ -481,10 +492,16 @@ fn mark_julia_surface_collisions_pass(manifest: &mut Manifest, reserve_aggregate
     // laying out classes and functions: otherwise a user-defined `pyclass`
     // with one of those names would redefine the aggregate after the wrapper
     // emitter had already declared it (#303).
-    let mut aggregate_names: Vec<(Scoped, String, String)> = manifest
-        .functions
-        .iter()
-        .filter(|f| reserve_aggregates && f.attribute.is_pyo3_scan() && f.skip_reason.is_empty())
+    // Recompute from surviving owners, not from the manifest being marked:
+    // excluding CResult_f also removes COption_CResult_f_method. Starting
+    // each pass from the owner decisions restores classes blocked only by a
+    // now-absent aggregate. This converges: every dependency adds a CResult_
+    // or COption_ prefix (and, for methods, the class name), so aggregate
+    // exclusion chains strictly increase name length and cannot cycle.
+    let mut aggregate_names: Vec<(Scoped, String, String)> = aggregate_owners
+        .into_iter()
+        .flat_map(|owners| &owners.functions)
+        .filter(|f| f.attribute.is_pyo3_scan() && f.skip_reason.is_empty())
         .filter(|f| {
             matches!(
                 f.return_kind,
@@ -504,10 +521,10 @@ fn mark_julia_surface_collisions_pass(manifest: &mut Manifest, reserve_aggregate
         })
         .map(|(path, name, owner, cfg)| ((path, name), owner, cfg))
         .collect();
-    for s in manifest
-        .structs
-        .iter()
-        .filter(|s| reserve_aggregates && s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
+    for s in aggregate_owners
+        .into_iter()
+        .flat_map(|owners| &owners.structs)
+        .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
     {
         for m in s.methods.iter().filter(|m| {
             m.skip_reason.is_empty()
