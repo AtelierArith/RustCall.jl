@@ -22,6 +22,11 @@ function _public_route_wrapper303(file_module)
                     #[new] pub fn new(value: i32) -> Self { Self { value } }
                     pub fn value(&self) -> i32 { self.value }
                 }
+                #[pyclass] pub struct AliasCounter { pub value: i32 }
+                #[pymethods] impl AliasCounter {
+                    #[new] pub fn new(value: i32) -> Self { Self { value } }
+                    pub fn doubled(&self) -> i32 { self.value * 2 }
+                }
                 pub mod api {
                     use pyo3::prelude::*;
                     #[pyfunction] pub fn answer() -> i32 { 17 }
@@ -36,6 +41,8 @@ function _public_route_wrapper303(file_module)
         write(joinpath(root, "src", "lib.rs"), module_source * raw"""
             mod bridge { pub use crate::hidden::Counter as PublicCounter; }
             pub use bridge::*;
+            type AliasBridge = hidden::AliasCounter;
+            pub type PublicAliasCounter = AliasBridge;
             // Rust permits this value beside the re-exported type. It must
             // not make the class's type-namespace route ambiguous.
             #[allow(non_snake_case)] pub fn PublicCounter() -> i32 { 99 }
@@ -56,7 +63,7 @@ function _public_route_wrapper303(file_module)
         else
             bindings = @rust_crate root
             module_ = getfield(bindings, :module_ref)
-            object = nothing
+            objects = Any[]
             try
                 # Julia's canonical layout is unchanged; only the external
                 # Rust call path uses the public aliases. One owning type.
@@ -68,14 +75,20 @@ function _public_route_wrapper303(file_module)
                 answer = Base.invokelatest(getfield, api, :answer)
                 @test Base.invokelatest(calculate) == 42
                 object = Base.invokelatest(counter, Int32(23))
+                push!(objects, object)
                 @test Base.invokelatest(value, object) == 23
                 @test Base.invokelatest(getproperty, object, :value) == 23
                 Base.invokelatest(setproperty!, object, :value, Int32(31))
                 @test Base.invokelatest(getproperty, object, :value) == 31
                 @test Base.invokelatest(value, object) == 31
                 @test Base.invokelatest(answer) == 17
+                alias_counter = Base.invokelatest(getfield, hidden, :AliasCounter)
+                doubled = Base.invokelatest(getfield, hidden, :doubled)
+                alias_object = Base.invokelatest(alias_counter, Int32(12))
+                push!(objects, alias_object)
+                @test Base.invokelatest(doubled, alias_object) == 24
             finally
-                object === nothing || finalize(object)
+                foreach(finalize, objects)
                 name = Base.invokelatest(getfield, module_, :_LIB_NAME)
                 RustCall.unload_library(name; close = true)
                 RustCall.close_retired_handles!(RustCall.retired_handles(name))

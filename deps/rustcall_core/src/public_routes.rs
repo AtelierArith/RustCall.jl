@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use syn::{Attribute, Item, Visibility};
 
-use crate::paths::{imports_of_use, visible_from, ScannedImport};
+use crate::paths::{import_of_type_alias, imports_of_use, visible_from, ScannedImport};
 
 type Path = Vec<String>;
 
@@ -78,6 +78,16 @@ impl PublicRoutes {
                 Item::Fn(v) => Some((&v.sig.ident, &v.vis, &v.attrs, false)),
                 Item::Struct(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
                 Item::Enum(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
+                // A non-generic path alias is another externally callable
+                // spelling of its target, not a distinct type identity. It is
+                // recorded as an import edge below so `pub type API = hidden::C`
+                // exposes C to a wrapper crate (#303).
+                Item::Type(v)
+                    if v.generics.params.is_empty()
+                        && import_of_type_alias(v, module).is_some() =>
+                {
+                    None
+                }
                 Item::Type(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
                 Item::Const(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
                 Item::Static(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
@@ -168,6 +178,18 @@ impl PublicRoutes {
                         visibility: v.vis.clone(),
                         predicates: predicates(&crate::cfg::effective_cfg_attrs(cfg, &v.attrs)),
                     });
+                }
+            }
+            if let Item::Type(v) = item {
+                if v.generics.params.is_empty() {
+                    if let Some(binding) = import_of_type_alias(v, module) {
+                        self.names.insert(binding.alias.clone());
+                        self.imports.push(Import {
+                            binding,
+                            visibility: v.vis.clone(),
+                            predicates: predicates(&crate::cfg::effective_cfg_attrs(cfg, &v.attrs)),
+                        });
+                    }
                 }
             }
         }
@@ -441,6 +463,33 @@ mod tests {
     }
 
     #[test]
+    fn path_type_aliases_are_type_namespace_routes() {
+        for (aliases, expected) in [
+            ("pub type API = hidden::C;", "API"),
+            ("type Bridge = hidden::C; pub type API = Bridge;", "API"),
+            ("pub mod api { pub type C = crate::hidden::C; }", "api::C"),
+            ("pub mod api { pub type C = super::hidden::C; }", "api::C"),
+            (
+                "pub mod api { mod bridge { pub type C = crate::hidden::C; } pub type C = self::bridge::C; }",
+                "api::C",
+            ),
+        ] {
+            let result = routes(&format!("mod hidden {{ pub struct C; }} {aliases}"));
+            assert_eq!(result[&path("hidden::C")].path, path(expected), "{aliases}");
+        }
+        assert!(
+            !routes("mod hidden { pub struct C; } type API = hidden::C;")
+                .contains_key(&path("hidden::C"))
+        );
+        // A generic alias needs type arguments and cannot be emitted as a bare
+        // callable path by the wrapper generator.
+        assert!(
+            !routes("mod hidden { pub struct C; } pub type API<T> = hidden::C;")
+                .contains_key(&path("hidden::C"))
+        );
+    }
+
+    #[test]
     fn rejects_private_ambiguous_and_cyclic_routes() {
         for export in [
             "use hidden::calculate;",
@@ -466,6 +515,11 @@ mod tests {
         let result =
             routes("mod hidden { pub fn f() {} } #[cfg(feature = \"api\")] pub use hidden::f;");
         assert!(!result[&path("hidden::f")].predicates.is_empty());
+
+        let result = routes(
+            "mod hidden { pub struct C; } #[cfg(feature = \"api\")] pub type C = hidden::C;",
+        );
+        assert!(!result[&path("hidden::C")].predicates.is_empty());
     }
 
     #[test]

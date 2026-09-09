@@ -282,6 +282,50 @@ fn public_class_routes_are_resolved_before_method_attachment() {
 }
 
 #[test]
+fn public_type_aliases_are_callable_class_routes() {
+    for (aliases, expected) in [
+        (
+            "pub type PublicCounter = hidden::Counter;",
+            "user_crate::PublicCounter",
+        ),
+        (
+            "type Bridge = hidden::Counter; pub type PublicCounter = Bridge;",
+            "user_crate::PublicCounter",
+        ),
+        (
+            "pub mod api { pub type Counter = crate::hidden::Counter; }",
+            "user_crate::api::Counter",
+        ),
+    ] {
+        let scanned = extract(
+            &format!(
+                r#"
+                mod hidden {{
+                    #[pyclass] pub struct Counter {{ value: i32 }}
+                    #[pymethods] impl Counter {{
+                        #[new] pub fn new() -> Self {{ Self {{ value: 7 }} }}
+                        pub fn value(&self) -> i32 {{ self.value }}
+                    }}
+                }}
+                {aliases}
+                "#
+            ),
+            Mode::Crate,
+        )
+        .unwrap();
+        let class = &scanned.structs[0];
+        assert!(
+            class.skip_reason.is_empty(),
+            "{aliases}: {}",
+            class.skip_reason
+        );
+        let wrapped = wrapper_crate(&scanned, "user_crate", true);
+        assert!(wrapped.lib_rs.contains(expected), "{aliases}");
+        assert!(!wrapped.lib_rs.contains("user_crate::hidden::Counter"));
+    }
+}
+
+#[test]
 fn chained_glob_and_module_alias_routes_reach_the_same_definition() {
     for exports in [
         "mod bridge { pub use crate::hidden::calculate as renamed; } pub use bridge::renamed;",
