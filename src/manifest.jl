@@ -797,7 +797,8 @@ fragment rather than items, is left to the compiler.
 """
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
                           cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
-                          crate_root::Union{Nothing, AbstractString} = nothing)
+                          crate_root::Union{Nothing, AbstractString} = nothing,
+                          build_env::Union{Nothing, AbstractDict} = nothing)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && crate_root === nothing && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
@@ -809,8 +810,28 @@ function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::
     else
         append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
     end
-    text = _run_extractor(vcat(args, _scan_inputs(files, crate_root)))
+    text = _run_extractor_with_build_env(vcat(args, _scan_inputs(files, crate_root)), build_env)
     return _parse_manifest(text)
+end
+
+function _run_extractor_with_build_env(args::Vector{String}, build_env; source_inputs = nothing)
+    build_env === nothing && source_inputs === nothing && return _run_extractor(args)
+    mktempdir() do dir
+        command = copy(args)
+        if build_env !== nothing
+            environment = Dict{String, String}(String(k) => String(v) for (k, v) in build_env)
+            path = joinpath(dir, "build-environment.toml")
+            open(path, "w") do io
+                TOML.print(io, environment; sorted = true)
+            end
+            append!(command, ["--build-env-file", path])
+        end
+        inputs_path = joinpath(dir, "inputs.toml")
+        source_inputs === nothing || append!(command, ["--inputs-out", inputs_path])
+        text = _run_extractor(command)
+        source_inputs === nothing || append!(source_inputs, String.(TOML.parsefile(inputs_path)["files"]))
+        text
+    end
 end
 
 """
@@ -842,7 +863,11 @@ struct WrapperCrateSource
     crate_name::String
     lib_rs::String
     manifest::Dict{String, Any}
+    source_files::Vector{String}
 end
+
+WrapperCrateSource(name::String, source::String, manifest::Dict{String, Any}) =
+    WrapperCrateSource(name, source, manifest, String[])
 
 """
     wrap_crate(files; crate_name, cfg=:strict, cfg_text=nothing,
@@ -865,7 +890,8 @@ Python-free wrapper build possible at all.
 function wrap_crate(files::Vector{String}; crate_name::AbstractString,
                     cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
                     crate_root::Union{Nothing, AbstractString} = nothing,
-                    skip_unparsable::Bool = false)
+                    skip_unparsable::Bool = false,
+                    build_env::Union{Nothing, AbstractDict} = nothing)
     isempty(files) && crate_root === nothing &&
         throw(ArgumentError("wrap_crate needs at least one source file"))
     args = ["wrap", "--crate-name", String(crate_name)]
@@ -875,7 +901,9 @@ function wrap_crate(files::Vector{String}; crate_name::AbstractString,
     else
         append!(args, _cfg_file_args(cfg; cfg_text = cfg_text))
     end
-    text = _run_extractor(vcat(args, _scan_inputs(files, crate_root)))
+    source_inputs = crate_root === nothing ? nothing : String[]
+    text = _run_extractor_with_build_env(vcat(args, _scan_inputs(files, crate_root)), build_env;
+                                         source_inputs = source_inputs)
     doc = try
         TOML.parse(text)
     catch e
@@ -893,7 +921,8 @@ function wrap_crate(files::Vector{String}; crate_name::AbstractString,
         throw(ExtractorError("wrapper crate output has no [manifest] table"))
     return WrapperCrateSource(String(get(doc, "crate_name", String(crate_name))),
                               String(get(doc, "lib_rs", "")),
-                              Dict{String, Any}(manifest))
+                              Dict{String, Any}(manifest),
+                              source_inputs === nothing ? copy(files) : source_inputs)
 end
 
 """

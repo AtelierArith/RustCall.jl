@@ -322,7 +322,8 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
                              policy::LoadPolicy = inline_cargo_policy(),
                              features::Vector{String} = String[],
                              default_features::Bool = true,
-                             locked::Bool = false)
+                             locked::Bool = false,
+                             target_directory::AbstractString = joinpath(project.path, "target"))
     # Build command
     cargo_cmd = cargo()
     build_args = _cargo_build_args(release, features, default_features; locked = locked)
@@ -346,7 +347,7 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     # The environment variable outranks the config key, and the target
     # directory is not part of the artifact (`_is_cargo_env_key`).
     build_env = Dict{String, String}(build_env === nothing ? ENV : build_env)
-    build_env["CARGO_TARGET_DIR"] = joinpath(project.path, "target")
+    build_env["CARGO_TARGET_DIR"] = abspath(target_directory)
 
     # Run cargo build
     cd(project.path) do
@@ -397,7 +398,7 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     end
 
     # Get the built library path
-    lib_path = get_built_library_path(project, release)
+    lib_path = get_built_library_path(project, release; target_directory = abspath(target_directory))
 
     if !isfile(lib_path)
         # On Windows, Cargo may generate library files without the "lib" prefix
@@ -408,7 +409,7 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
             if startswith(lib_name, "lib")
                 alt_lib_name = lib_name[4:end]  # Remove "lib" prefix
                 target_dir = release ? "release" : "debug"
-                alt_lib_path = joinpath(project.path, "target", target_dir, alt_lib_name)
+                alt_lib_path = joinpath(abspath(target_directory), target_dir, alt_lib_name)
                 if isfile(alt_lib_path)
                     return alt_lib_path
                 end
@@ -442,11 +443,12 @@ The path follows Cargo's target directory structure:
 - Release: target/release/libname.dylib (or .so, .dll)
 - Debug: target/debug/libname.dylib
 """
-function get_built_library_path(project::CargoProject, release::Bool)
+function get_built_library_path(project::CargoProject, release::Bool;
+                                target_directory::AbstractString = joinpath(project.path, "target"))
     target_dir = release ? "release" : "debug"
     lib_name = get_project_lib_name(project)
 
-    joinpath(project.path, "target", target_dir, lib_name)
+    joinpath(target_directory, target_dir, lib_name)
 end
 
 """

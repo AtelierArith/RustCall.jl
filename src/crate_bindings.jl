@@ -122,7 +122,8 @@ println("Found \$(length(info.julia_functions)) Julia functions")
 ```
 """
 function scan_crate(crate_path::String; cfg = :lenient,
-                    cfg_text::Union{Nothing, AbstractString} = nothing)
+                    cfg_text::Union{Nothing, AbstractString} = nothing,
+                    build_env::Union{Nothing, AbstractDict} = nothing)
     # Validate path
     if !isdir(crate_path)
         error("Crate path does not exist: $crate_path")
@@ -157,7 +158,7 @@ function scan_crate(crate_path::String; cfg = :lenient,
     lib_root, tree_files = _crate_scan_inputs(crate_path, cargo_toml, source_files)
     manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
                                 cfg = cfg, cfg_text = cfg_text,
-                                crate_root = lib_root)
+                                crate_root = lib_root, build_env = build_env)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
     # Items the crate marks only for PyO3 (#275 Phase 1). They are reported so
@@ -2664,7 +2665,8 @@ function generate_bindings(crate_path::String;
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
-                                     extra_inputs = python_inputs,
+                                     extra_inputs = unique(vcat(python_inputs, wrapper.source.source_files,
+                                                                 dirname.(wrapper.source.source_files))),
                                      python = links_python)
         end
     end

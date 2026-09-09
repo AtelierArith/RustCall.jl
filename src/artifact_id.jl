@@ -759,6 +759,11 @@ function _canonical_dir(dir::AbstractString)::String
     end
 end
 
+function artifact_scan_inputs(files::Vector{String})
+    Pair{String, String}["rustcall-scan-input:" * path => _file_content_digest(path)
+                         for path in sort!(unique(abspath.(files)))]
+end
+
 """
     crate_content_digest(dir::AbstractString) -> String
 

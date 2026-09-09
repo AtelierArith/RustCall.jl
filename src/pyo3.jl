@@ -199,6 +199,7 @@ struct PyO3LinkPlan
     interpreter::String
     interpreter_config::String
     runtime_libraries::Vector{String}
+    build_env::Union{Nothing, Dict{String, String}}
 end
 
 function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String,
@@ -207,10 +208,11 @@ function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String
                       crate_features::Vector{String} = String[],
                       cfg_text::String = "", resolved::Bool = false,
                       interpreter::String = "", interpreter_config::String = "",
-                      runtime_libraries::Vector{String} = String[])
+                      runtime_libraries::Vector{String} = String[],
+                      build_env::Union{Nothing, Dict{String, String}} = nothing)
     PyO3LinkPlan(mode, feature_flags, rpath, reason, dependency_default_features,
                  pyo3_features, crate_features, cfg_text, resolved, interpreter,
-                 interpreter_config, runtime_libraries)
+                 interpreter_config, runtime_libraries, build_env)
 end
 
 """
@@ -310,8 +312,8 @@ function pyo3_feature_candidates(crate_path::AbstractString)
     out = NamedTuple[]
     for name in sort(collect(keys(features)))
         name == "default" && continue
-        resolved = _cargo_resolved_features(crate_path,
-                                            ["--no-default-features", "--features", String(name)])
+        resolved = _cargo_resolved_features(crate_path;
+                                            features = [String(name)], default_features = false)
         resolved === nothing && continue
         _, pyo3_features, pyo3_active = resolved
         pyo3_active || continue
@@ -342,7 +344,8 @@ wrapper will be built with (`_wrapper_probe_cfg_text`).
 function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                              release::Bool = true, features::Vector{String} = String[],
                              default_features::Bool = true)
-    resolved = _cargo_resolved_features(crate_path, flags)
+    resolved = _cargo_resolved_features(crate_path; features = features,
+                                        default_features = default_features)
     resolved === nothing && return nothing
     crate_features, pyo3_features, pyo3_active = resolved
     # The interpreter is decided *before* the probe, because the probe runs
@@ -354,9 +357,10 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                    !("extension-module" in pyo3_features && !extension_module_is_linkable())
     rpath, interpreter, interpreter_config =
         links_python ? _python_link_source_or_empty() : ("", "", "")
-    cfg_text = _wrapper_probe_cfg_text(crate_path; features = features,
+    context = _wrapper_probe_context(crate_path; features = features,
                                        default_features = default_features, release = release,
                                        interpreter = interpreter)
+    cfg_text = context.cfg_text
     # `cargo tree` answered but `cargo rustc -- --print cfg` did not: the plan
     # knows the feature graph and nothing about the configuration the build
     # compiles under, so the scan cannot be run in strict mode. Saying
@@ -374,7 +378,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
         return PyO3LinkPlan(:python_free, copy(flags), "",
                             "with $(label), Cargo does not resolve pyo3 at all, so the wrapper " *
                             "links no libpython", !no_defaults;
-                            crate_features = crate_features, cfg_text = cfg_text, resolved = true)
+                            crate_features = crate_features, cfg_text = cfg_text, resolved = true,
+                            build_env = context.build_env)
     end
 
     if "extension-module" in pyo3_features && !extension_module_is_linkable()
@@ -387,7 +392,7 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                             "_Py_Dealloc). `pyo3_feature_candidates` lists the features that " *
                             "activate pyo3 without it", !no_defaults;
                             pyo3_features = pyo3_features, crate_features = crate_features,
-                            cfg_text = cfg_text, resolved = true)
+                            cfg_text = cfg_text, resolved = true, build_env = context.build_env)
     end
 
     detail = isempty(rpath) ?
@@ -406,7 +411,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                         pyo3_features = pyo3_features, crate_features = crate_features,
                         cfg_text = cfg_text, resolved = true, interpreter = interpreter,
                         interpreter_config = interpreter_config,
-                        runtime_libraries = _python_runtime_libraries(interpreter))
+                        runtime_libraries = _python_runtime_libraries(interpreter),
+                        build_env = context.build_env)
 end
 
 """
@@ -445,12 +451,17 @@ wrapper is built against, not the one pyo3 would find on its own; it is part of
 the memo key.
 """
 function _wrapper_probe_cfg_text(crate_path::AbstractString;
+                                 kwargs...)
+    _wrapper_probe_context(crate_path; kwargs...).cfg_text
+end
+
+function _wrapper_probe_context(crate_path::AbstractString;
                                  features::Vector{String} = String[],
                                  default_features::Bool = true, release::Bool = true,
                                  interpreter::AbstractString = "")
     path = abspath(String(crate_path))
     package = _cargo_package_name(path)
-    isempty(package) && return ""
+    isempty(package) && return (cfg_text = "", build_env = nothing)
     key = _wrapper_probe_memo_key(path, features, default_features, release;
                                   interpreter = interpreter)
     probe = () -> begin
@@ -470,20 +481,44 @@ function _wrapper_probe_cfg_text(crate_path::AbstractString;
                 # either — a `#[cfg(panic = "...")]` item would be scanned for
                 # the opposite build (#307 review).
                 env = _wrapper_probe_env(path, release, interpreter)
-                cmd = `$(cargo()) rustc -q $flag -p $package --lib -- --print cfg`
+                cmd = `$(cargo()) rustc -q $flag --message-format=json -p $package --lib -- --print cfg`
                 out = read(setenv(cmd, env; dir = dir), String)
-                join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l),
-                            split(out, '\n')), "\n") * "\n"
+                # `pkgid` requires Cargo.lock. The successful probe first
+                # resolves it, including for a fresh crate without a lockfile.
+                package_id = strip(read(setenv(`$(cargo()) pkgid -p $package`, env; dir = dir), String))
+                _cargo_probe_context(out, package_id, path)
             finally
                 rm(dir; recursive = true, force = true)
             end
         catch e
             @debug "Could not probe the wrapper-root build cfg of $(path)" exception = e
-            ""
+            (cfg_text = "", build_env = nothing)
         end
     end
     _ = key
     return probe()
+end
+
+function _cargo_probe_context(output::AbstractString, package_id::AbstractString, path::AbstractString)
+    environment = Dict("CARGO_MANIFEST_DIR" => String(path),
+                       "CARGO_MANIFEST_PATH" => joinpath(path, "Cargo.toml"))
+    cfg_lines = String[]
+    for line in split(output, '\n')
+        stripped = strip(line)
+        if startswith(stripped, "{")
+            message = parse_json(stripped)
+            get(message, "reason", "") == "build-script-executed" || continue
+            get(message, "package_id", "") == package_id || continue
+            for pair in get(message, "env", [])
+                environment[String(pair[1])] = String(pair[2])
+            end
+            out_dir = String(get(message, "out_dir", ""))
+            isempty(out_dir) || (environment["OUT_DIR"] = out_dir)
+        elseif occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", stripped)
+            push!(cfg_lines, stripped)
+        end
+    end
+    (cfg_text = isempty(cfg_lines) ? "" : join(cfg_lines, "\n") * "\n", build_env = environment)
 end
 
 # Memo of `_wrapper_probe_cfg_text`, keyed like `_CRATE_CFG_TEXT`.
@@ -634,16 +669,21 @@ function _pyo3_unresolved_cfg_plan(crate_path::AbstractString, flags::Vector{Str
 end
 
 """
-    _cargo_resolved_features(crate_path, flags) -> Union{Tuple, Nothing}
+    _cargo_resolved_features(crate_path; features, default_features) -> Union{Tuple, Nothing}
 
 `(crate_features, pyo3_features, pyo3_active)` as Cargo resolves them for a
-build of `crate_path` under `flags`, from
+build of `crate_path` as a dependency of the generated wrapper, from
 
-    cargo tree -e features,normal --prefix none --format "{p}|{f}" --no-dedupe
+    cargo tree -e features,normal --prefix none --format "{p}|{f}" --no-dedupe -p <target>
 
 which prints one line per package with its **resolved** feature list — the
 transitive closure, with target-specific tables and renamed dependencies
 already applied.
+
+The command runs in a wrapper-shaped edition-2021 root with the requested
+features on its target dependency, and the target workspace's lockfile and
+root overrides. Running in the target root instead can use resolver 1 and
+unify build-dependency features that the actual wrapper keeps separate.
 
 The edge filter is `features,normal`: a wrapper crate depends on the target
 crate's library, so its dev- and build-dependencies are not in the graph it
@@ -654,20 +694,31 @@ activates it.
 `nothing` when the command fails (no cargo, an unresolvable crate, no network
 for a fresh registry).
 """
-function _cargo_resolved_features(crate_path::AbstractString, flags::Vector{String})
+function _cargo_resolved_features(crate_path::AbstractString;
+                                   features::Vector{String} = String[],
+                                   default_features::Bool = true)
     path = abspath(String(crate_path))
+    package = _cargo_package_name(path)
+    isempty(package) && return nothing
     out = try
-        args = String["tree", "-e", "features,normal", "--prefix", "none",
-                      "--format", "{p}|{f}", "--no-dedupe"]
-        append!(args, flags)
-        read(pipeline(setenv(`$(cargo()) $args`; dir = path); stderr = devnull), String)
+        dir = _wrapper_shaped_project(path, "rustcall-pyo3-features")
+        try
+            write(joinpath(dir, "src", "lib.rs"), "")
+            write(joinpath(dir, "Cargo.toml"),
+                  _probe_cargo_toml(package, path, features, default_features) *
+                  _root_patch_toml(path))
+            args = String["tree", "-e", "features,normal", "--prefix", "none",
+                          "--format", "{p}|{f}", "--no-dedupe", "-p", package]
+            read(pipeline(setenv(`$(cargo()) $args`; dir = dir); stderr = devnull), String)
+        finally
+            rm(dir; recursive = true, force = true)
+        end
     catch e
         @debug "Could not resolve features of $(path)" exception = e
         return nothing
     end
     isempty(strip(out)) && return nothing
 
-    package = _cargo_package_name(crate_path)
     crate_features = String[]
     pyo3_features = String[]
     pyo3_active = false
@@ -1178,10 +1229,10 @@ end
 Whether `@rust_crate` should generate a wrapper crate for the PyO3 items of
 this crate rather than bind only its `#[julia]` ones (#275 Phase 2).
 
-It should exactly when the scan found a PyO3 item a wrapper *could* export. A
-crate whose PyO3 items are all skipped, or which has none, takes the pre-#275
-path unchanged — so nothing that worked before now runs a Cargo feature
-resolution it does not need.
+The initial scan may find an exportable PyO3 item, or a Cargo build script may
+generate one that cannot be seen until the build is probed. Build-script crates
+therefore need the resolved scan even when their committed sources expose no
+PyO3 items. Other crates with no wrappable PyO3 items keep the pre-#275 path.
 
 This is the cheap pre-check, on the lenient scan `scan_crate` already did.
 `build_pyo3_wrapper` has the final say: under the build's own configuration a
@@ -1195,7 +1246,16 @@ function crate_needs_pyo3_wrapper(info::CrateInfo)
         (any(isempty(m.skip_reason) for m in st.methods) ||
          !isempty(st.field_getters) || !isempty(st.field_setters)) && return true
     end
-    return false
+    return _crate_has_build_script(info.path)
+end
+
+function _crate_has_build_script(path::AbstractString)
+    manifest = parse_cargo_toml(joinpath(path, "Cargo.toml"))
+    package = get(manifest, "package", Dict())
+    script = get(package, "build", nothing)
+    script === false && return false
+    script isa AbstractString && return true
+    isfile(joinpath(path, "build.rs"))
 end
 
 """
@@ -1265,7 +1325,7 @@ function build_pyo3_wrapper(info::CrateInfo;
     cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
     source = wrap_crate(tree_files; crate_name = crate_rust_identifier(info.name, cargo_toml),
                         cfg = cfg, cfg_text = cfg_text,
-                        crate_root = lib_root, skip_unparsable = true)
+                        crate_root = lib_root, skip_unparsable = true, build_env = plan.build_env)
 
     functions, structs, skipped, pyo3_exports = _pyo3_wrapper_items(source.manifest)
     # Nothing PyO3 to wrap under this feature set — a crate whose markers are
@@ -1287,10 +1347,10 @@ function build_pyo3_wrapper(info::CrateInfo;
     rustflags = pyo3_link_rustflags(plan)
 
     wrapper_info = CrateInfo(info.name, info.path, info.version, info.dependencies,
-                             functions, structs, info.source_files,
+                             functions, structs, sort!(unique(vcat(info.source_files, source.source_files))),
                              info.pyo3_functions, info.pyo3_structs)
 
-    build_env = _pyo3_wrapper_build_env(plan, rustflags)
+    build_env = _pyo3_wrapper_build_env(plan, rustflags; source_files = source.source_files)
     key = compute_crate_hash(info; release = release, kind = "pyo3-wrapper",
                              features = features, default_features = default_features,
                              build_env = build_env)
@@ -1324,8 +1384,13 @@ and records nothing. pyo3's other build inputs (`PYO3_CONFIG_FILE`,
 `PYO3_CROSS_*`, …) reach the key through the `PYO3_*` prefix of the allowlist,
 and the contents of `PYO3_CONFIG_FILE` are hashed here on top.
 """
-function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String})
+function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String}; source_files::Vector{String} = String[])
     build_env = artifact_build_env()
+    append!(build_env, artifact_scan_inputs(source_files))
+    if plan.build_env !== nothing
+        append!(build_env, ["rustcall-target-env:" * name => value
+                            for (name, value) in sort!(collect(plan.build_env); by = first)])
+    end
     push!(build_env, "rustcall-link-flags" => join(rustflags, " "))
     if plan.mode === :link_libpython
         push!(build_env, "rustcall-pyo3-python" => plan.interpreter)
@@ -1464,8 +1529,11 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     # Under the crate's own `target/`, with its lockfile and `[patch]` table,
     # so the wrapper resolves as the crate does (`_wrapper_shaped_project`).
     wrapper_path = _wrapper_shaped_project(info.path, "rustcall-pyo3-wrapper")
+    # Dependency outputs are shared with the probe. Distinct wrapper artifacts
+    # must not overwrite one shared cdylib between Cargo exiting and our copy.
+    wrapper_name = "rustcall_wrapper_$(key)"
     write(joinpath(wrapper_path, "Cargo.toml"),
-          generate_pyo3_wrapper_cargo_toml(info, plan) * _root_patch_toml(info.path))
+          generate_pyo3_wrapper_cargo_toml(info, plan; wrapper_name = wrapper_name) * _root_patch_toml(info.path))
     write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
 
     # The link options travel in the wrapper's own build script, not in
@@ -1478,7 +1546,7 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     script = _pyo3_wrapper_build_script(plan)
     isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
 
-    project = CargoProject("$(info.name)_rustcall_wrapper", "0.1.0", DependencySpec[],
+    project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
                            "2021", wrapper_path)
     env = Dict{String, String}(ENV)
     # Only where pyo3 is actually in the graph: a `:python_free` build has no
@@ -1491,7 +1559,8 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     end
     try
         built = build_cargo_project(project; release = release, env = env,
-                                    policy = crate_wrapper_policy())
+                                    policy = crate_wrapper_policy(),
+                                    target_directory = joinpath(info.path, "target", "rustcall-pyo3-probe", "target"))
         if cache_enabled
             try
                 save_cargo_cached_library(key, built)
@@ -1667,12 +1736,13 @@ a **dependency's** default features can be switched off — `cargo build
 wrapper depends on nothing else: everything the generated code needs is `std`,
 which is what makes the shape identical to a `#[julia]` crate's output.
 """
-function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan)
+function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
+                                         wrapper_name::AbstractString = "$(info.name)_rustcall_wrapper")
     lines = String[
         "# Generated by RustCall.jl for the PyO3 crate `$(info.name)` (#275 Phase 2).",
         "# Link plan: $(plan.mode) — $(plan.reason)",
         "[package]",
-        "name = \"$(info.name)_rustcall_wrapper\"",
+        "name = \"$(wrapper_name)\"",
         "version = \"0.1.0\"",
         "edition = \"2021\"",
         "",
@@ -1747,7 +1817,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     # `resolved = false` on the plan makes explicit.
     info = isempty(plan.cfg_text) ?
         scan_crate(String(crate_path)) :
-        scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text)
+        scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text, build_env = plan.build_env)
 
     julia_items = Any[info.julia_functions...; info.julia_structs...]
     wrappable = Any[]
@@ -1784,7 +1854,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             source = wrap_crate(tree_files;
                                 crate_name = crate_rust_identifier(info.name, cargo_toml),
                                 cfg = cfg, cfg_text = cfg_text,
-                                crate_root = lib_root, skip_unparsable = true)
+                                crate_root = lib_root, skip_unparsable = true, build_env = plan.build_env)
             functions, structs, refused, _ = _pyo3_wrapper_items(source.manifest)
             wrapped = Any[]
             for f in functions

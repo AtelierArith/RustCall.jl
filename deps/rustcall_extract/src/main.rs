@@ -37,6 +37,11 @@ const USAGE: &str = "usage:
   rustcall-extract schema-version
 
 Use '-' as FILE to read from stdin.
+--build-env-file: TOML string map of the target Cargo build environment; requires
+--crate-root in crate mode. Resolves include! paths using concat!/env! and fails
+if a required variable is missing. Shared by manifest and wrap.
+--inputs-out: write the scanned source paths as a TOML files array; requires
+--crate-root in crate mode. Includes build-generated files actually read.
 --cfg-file: output of `rustc --print cfg`; items disabled by #[cfg] are dropped
 from the manifest and the expanded source. Without it every item is reported.
 --cfg-lenient: with --cfg-file, decide only target predicates (unix, windows,
@@ -156,10 +161,29 @@ struct ScanOptions {
     skip_unparsable: bool,
     crate_root: Option<PathBuf>,
     files: Vec<PathBuf>,
+    build_env_file: Option<PathBuf>,
+    inputs_out: Option<PathBuf>,
 }
 
 /// Run the scan `opts` describes and return the merged manifest.
 fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
+    if opts.inputs_out.is_some() && (opts.mode != Mode::Crate || opts.crate_root.is_none()) {
+        return Err("--inputs-out requires --crate-root in crate mode".into());
+    }
+    let environment = match &opts.build_env_file {
+        Some(path) => {
+            if opts.mode != Mode::Crate || opts.crate_root.is_none() {
+                return Err("--build-env-file requires --crate-root in crate mode".into());
+            }
+            let text = fs::read_to_string(path)
+                .map_err(|e| format!("cannot read build environment {}: {e}", path.display()))?;
+            Some(rustcall_core::include_paths::IncludeEnvironment(
+                toml::from_str(&text)
+                    .map_err(|e| format!("invalid build environment {}: {e}", path.display()))?,
+            ))
+        }
+        None => None,
+    };
     let mut merged = Manifest::new(opts.mode);
     match (opts.mode, &opts.crate_root) {
         (Mode::Inline, _) => {
@@ -172,7 +196,19 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             }
         }
         (Mode::Crate, Some(root)) => {
-            scan_crate_tree(root, opts.cfg.as_ref(), opts.skip_unparsable, &mut merged)?;
+            let inputs = scan_crate_tree(
+                root,
+                opts.cfg.as_ref(),
+                opts.skip_unparsable,
+                &mut merged,
+                environment,
+            )?;
+            if let Some(path) = &opts.inputs_out {
+                let text = toml::to_string(&std::collections::BTreeMap::from([("files", inputs)]))
+                    .map_err(|e| format!("cannot serialize scan inputs: {e}"))?;
+                fs::write(path, text)
+                    .map_err(|e| format!("cannot write scan inputs {}: {e}", path.display()))?;
+            }
         }
         // No root: every FILE is its own module root. Structs and impl blocks
         // are still married across the files (#315) and exported symbols
@@ -316,6 +352,8 @@ fn skip_or_fail(e: ExtractError, file: &Path, skip_unparsable: bool) -> Result<(
 
 /// Generate the wrapper crate of a PyO3 crate (#275 Phase 2).
 fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
+    let mut build_env_file = None;
+    let mut inputs_out = None;
     let mut crate_name: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut cfg_file: Option<PathBuf> = None;
@@ -326,6 +364,12 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
     let mut i = 0;
     while i < args.len() {
         match token(&args[i]) {
+            Token::Option("--inputs-out") => {
+                inputs_out = Some(take_path(args, &mut i, "--inputs-out")?)
+            }
+            Token::Option("--build-env-file") => {
+                build_env_file = Some(take_path(args, &mut i, "--build-env-file")?)
+            }
             Token::Option("--skip-unparsable") => skip_unparsable = true,
             Token::Option("--crate-name") => {
                 crate_name = Some(take_value(args, &mut i, "--crate-name")?)
@@ -353,6 +397,8 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
     // a call to something the build may not have.
     let cfg_resolved = cfg.is_some() && !cfg_lenient;
     let scanned = scan(&ScanOptions {
+        inputs_out,
+        build_env_file,
         mode: Mode::Crate,
         cfg,
         skip_unparsable,
@@ -374,6 +420,8 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
 }
 
 fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
+    let mut build_env_file = None;
+    let mut inputs_out = None;
     let mut mode: Option<Mode> = None;
     let mut out: Option<PathBuf> = None;
     let mut cfg_file: Option<PathBuf> = None;
@@ -384,6 +432,12 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     let mut i = 0;
     while i < args.len() {
         match token(&args[i]) {
+            Token::Option("--inputs-out") => {
+                inputs_out = Some(take_path(args, &mut i, "--inputs-out")?)
+            }
+            Token::Option("--build-env-file") => {
+                build_env_file = Some(take_path(args, &mut i, "--build-env-file")?)
+            }
             Token::Option("--skip-unparsable") => skip_unparsable = true,
             Token::Option("--mode") => {
                 let v = take_value(args, &mut i, "--mode")?;
@@ -411,6 +465,8 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     }
     let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient)?;
     let merged = scan(&ScanOptions {
+        inputs_out,
+        build_env_file,
         mode,
         cfg,
         skip_unparsable,
@@ -618,7 +674,8 @@ fn scan_crate_tree(
     cfg: Option<&CfgSet>,
     skip_unparsable: bool,
     manifest: &mut Manifest,
-) -> Result<(), String> {
+    environment: Option<rustcall_core::include_paths::IncludeEnvironment>,
+) -> Result<Vec<PathBuf>, String> {
     let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut queue = vec![QueuedFile {
         file: root.to_path_buf(),
@@ -639,7 +696,11 @@ fn scan_crate_tree(
     // kept whichever predicate the walk reached last (#357). One fragment
     // included twice at the *same* position is still one scan.
     let mut visited: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
-    let mut scan = rustcall_core::extract::TreeScan::new();
+    let mut input_paths = std::collections::BTreeSet::new();
+    let mut scan = environment.map_or_else(
+        rustcall_core::extract::TreeScan::new,
+        rustcall_core::extract::TreeScan::with_include_environment,
+    );
 
     while let Some(QueuedFile {
         file,
@@ -651,6 +712,17 @@ fn scan_crate_tree(
     }) = queue.pop()
     {
         let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+        // Retain the spelling followed as well as its destination: replacing
+        // a source symlink must invalidate a consumer watching these inputs.
+        let spelling = if file.is_absolute() {
+            file.clone()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| e.to_string())?
+                .join(&file)
+        };
+        input_paths.insert(spelling);
+        input_paths.insert(canonical.clone());
         let key = (canonical, position.clone());
         if visited.contains(&key) {
             continue;
@@ -676,7 +748,8 @@ fn scan_crate_tree(
     // Structs and their impl blocks — `#[julia]` and PyO3 alike — may live in
     // different files, so the structs are only emitted once every file of the
     // tree has been seen.
-    scan.finish(manifest).map_err(|e| e.to_string())
+    scan.finish(manifest).map_err(|e| e.to_string())?;
+    Ok(input_paths.into_iter().collect())
 }
 
 /// Where a `mod name;` declaration's file lives, and the directory its own
