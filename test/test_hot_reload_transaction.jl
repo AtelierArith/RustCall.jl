@@ -730,6 +730,26 @@ end
                 """)
             woke = fetch(waiter)
             @test woke
+
+            @testset "empty nested directories remain watched before their first source write" begin
+                empty_dir = joinpath(crate, "src", "new_module", "deeper")
+                mkpath(empty_dir)
+                # Consume the parent creation event while the new directory
+                # contains no Rust files. The next wait must subscribe there.
+                RustCall._drain_source_changes(state, 0.05)
+                dirs = RustCall._watched_directories(state)
+                @test dirname(empty_dir) in dirs
+                @test empty_dir in dirs
+                waiter = Threads.@spawn begin
+                    for _ in 1:10
+                        RustCall._await_source_change(state, 1.0) && return true
+                    end
+                    false
+                end
+                sleep(0.2)
+                write(joinpath(empty_dir, "first.rs"), "pub fn first() {}")
+                @test fetch(waiter)
+            end
         end
     end
 

@@ -4,6 +4,48 @@ using Test
 
 struct NonCopyStatePayload{T} end
 
+@testset "same-name generic rebuild retains each object's image (#291)" begin
+    rust"""
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static SAME_NAME_COUNTER: AtomicI32 = AtomicI32::new(0);
+    #[julia]
+    pub struct SameNameGenerationProbe<T> { value: T }
+    impl<T> SameNameGenerationProbe<T> {
+        pub fn new(value: T) -> Self { Self { value } }
+        pub fn same_name_tick(&self) -> i32 { SAME_NAME_COUNTER.fetch_add(1, Ordering::SeqCst) + 1 }
+        pub fn same_name_count(&self) -> i32 { SAME_NAME_COUNTER.load(Ordering::SeqCst) }
+    }
+    """
+    old = SameNameGenerationProbe{Int32}(Int32(7))
+    current = nothing
+    try
+        @test Base.invokelatest(same_name_tick, old) == 1
+        RustCall.unload_library(old.lib_name)
+        current = SameNameGenerationProbe{Int32}(Int32(8))
+        @test current.lib_name == old.lib_name
+        @test getfield(current, :alive) !== getfield(old, :alive)
+        @test Base.invokelatest(same_name_count, current) == 0
+        @test Base.invokelatest(same_name_count, old) == 1
+        @test Base.invokelatest(same_name_tick, current) == 1
+        @test Base.invokelatest(same_name_tick, old) == 2
+        for (object, value) in ((old, 7), (current, 8))
+            @test object.value == value
+            object.value = Int32(value + 10)
+            @test object.value == value + 10
+            for member in ("SameNameGenerationProbe_free", "SameNameGenerationProbe_get_value",
+                           "SameNameGenerationProbe_set_value", "SameNameGenerationProbe_same_name_count")
+                snapshot = RustCall._generic_artifact_member(object.lib_name, member, getfield(object, :alive))
+                @test RustCall.alive_ref_for_handle(snapshot.handle, object.lib_name) === getfield(object, :alive)
+            end
+        end
+    finally
+        finalize(old)
+        current === nothing || finalize(current)
+        RustCall.close_retired_handles!(RustCall.retired_handles(old.lib_name))
+        RustCall.unload_library(old.lib_name; close = true)
+    end
+end
+
 @testset "closed generic images reject methods and field wrappers before FFI (#291)" begin
     rust"""
     #[julia]
@@ -105,7 +147,7 @@ end
         free = RustCall.get_monomorphized_function("MethodLocalParam_free", params)
         @test ctor.handle == free.handle
         @test getfield(object, :free_ptr) == free.func_ptr
-        @test !haskey(RustCall.GENERIC_STRUCT_ARTIFACTS[object.lib_name], "MethodLocalParam_map")
+        @test !haskey(RustCall.GENERIC_STRUCT_ARTIFACTS[(object.lib_name, getfield(object, :alive))], "MethodLocalParam_map")
     finally
         finalize(object)
     end
@@ -170,7 +212,7 @@ end
             end
             @test error isa RustCall.RustPanicError
             @test occursin("generation 111", sprint(showerror, error))
-            original_free = RustCall._generic_artifact_member(old.lib_name, "GenerationStableBox_free")
+            original_free = RustCall._generic_artifact_member(old.lib_name, "GenerationStableBox_free", getfield(old, :alive))
             @test original_free.func_ptr == getfield(old, :free_ptr)
             if version == 222
                 # Retire the original image while readers still enter it.

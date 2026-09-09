@@ -1,6 +1,85 @@
 using Test
 using RustCall
 
+@testset "state filter predicates run outside STATE and retain concurrent writes (#251)" begin
+    for initial in (Dict("old" => 1), [1], Set([1]))
+        view = lock(RustCall.REGISTRY_LOCK) do
+            RustCall._state_view(gensym(:filter_test), initial)
+        end
+        entered = Channel{Nothing}(1)
+        release = Channel{Nothing}(1)
+        worker = Threads.@spawn filter!(view) do entry
+            put!(entered, nothing)
+            take!(release)
+            false
+        end
+        take!(entered)
+        writer = Threads.@spawn begin
+            if initial isa AbstractDict
+                view["old"] = 2
+                view["added"] = 3
+            else
+                push!(view, 2)
+            end
+        end
+        try
+            @test timedwait(() -> istaskdone(writer), 5) == :ok
+        finally
+            put!(release, nothing)
+        end
+        @test fetch(worker) === view
+        wait(writer)
+        @test copy(view) == (initial isa AbstractDict ? Dict("old" => 2, "added" => 3) :
+                            initial isa AbstractSet ? Set([2]) : [2])
+        previous = copy(view)
+        @test_throws ErrorException filter!(_ -> error("predicate failed"), view)
+        @test copy(view) == previous
+        lock(RustCall.REGISTRY_LOCK) do
+            delete!(RustCall.STATE.value.values, view.name)
+        end
+    end
+
+    # The deferred queue uses the same snapshot protocol even though its
+    # entries are wrapped in a queue rather than stored directly in STATE.
+    queue = RustCall.DEFERRED_DROPS
+    original = lock(RustCall.REGISTRY_LOCK) do
+        entries = RustCall._state_value(queue).entries
+        saved = copy(entries)
+        empty!(entries)
+        saved
+    end
+    old = RustCall.DeferredDrop(Ptr{Cvoid}(1), "filter-old", :unused)
+    added = RustCall.DeferredDrop(Ptr{Cvoid}(2), "filter-new", :unused)
+    entered = Channel{Nothing}(1)
+    release = Channel{Nothing}(1)
+    push!(queue, old)
+    worker = Threads.@spawn filter!(queue) do entry
+        put!(entered, nothing)
+        take!(release)
+        false
+    end
+    take!(entered)
+    writer = Threads.@spawn push!(queue, added)
+    try
+        @test timedwait(() -> istaskdone(writer), 5) == :ok
+    finally
+        put!(release, nothing)
+    end
+    try
+        @test fetch(worker) === queue
+        wait(writer)
+        @test lock(RustCall.REGISTRY_LOCK) do
+            RustCall._state_value(queue).entries == [added]
+        end
+    finally
+        lock(RustCall.REGISTRY_LOCK) do
+            entries = RustCall._state_value(queue).entries
+            empty!(entries)
+            append!(entries, original)
+        end
+    end
+end
+
 @testset "state cache factories run outside STATE and preserve a concurrent winner (#251)" begin
     view = lock(RustCall.REGISTRY_LOCK) do
         RustCall._state_view(gensym(:factory_test), Dict{String, Any}())

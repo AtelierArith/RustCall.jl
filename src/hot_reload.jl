@@ -608,14 +608,18 @@ end
 """
     _watched_directories(state) -> Vector{String}
 
-Every directory holding a source this state tracks, `src/` included even when
-it is empty. Recomputed per wait: a reload can add files, and a new file can be
-in a directory nothing was watching.
+Every directory below `src/`, including empty nested directories, plus the
+parents of tracked sources elsewhere. Recomputed per wait: directory creation
+may precede the first source write and must establish that directory's watch.
 """
 function _watched_directories(state::HotReloadState)
     dirs = Set{String}()
     src_dir = joinpath(state.crate_path, "src")
-    isdir(src_dir) && push!(dirs, src_dir)
+    if isdir(src_dir)
+        for (directory, _, _) in walkdir(src_dir)
+            push!(dirs, directory)
+        end
+    end
     for file in state.source_files
         parent = dirname(file)
         isdir(parent) && push!(dirs, parent)

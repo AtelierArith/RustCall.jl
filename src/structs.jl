@@ -440,7 +440,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                      function $fname(self::$where_clause, $(esc_args...)) where {$(esc_T_params...)}
                          RustCall.check_not_freed(self, $struct_name_str)
                          GC.@preserve self begin
-                             _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),))
+                             _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),), getfield(self, :alive))
                          end
                      end
                  end)
@@ -485,7 +485,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     getter_name, rust_field_type = field_info[field]
                     type_param_names = ($(map(name -> QuoteNode(name), info.type_params)...),)
                     field_type = _resolve_generic_struct_field_type(rust_field_type, type_param_names, ($(esc_T_params...),))
-                    return _call_generic_field(self.lib_name, getter_name, self.ptr, field_type, ($(esc_T_params...),))
+                    return _call_generic_field(self.lib_name, getter_name, self.ptr, field_type, ($(esc_T_params...),), getfield(self, :alive))
                 elseif field in method_names_set
                     $(method_accessors...)
                     return getfield(self, field)
@@ -499,7 +499,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 if haskey(field_setters_map, field)
                     RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
-                    _call_generic_method(self.lib_name, setter_name, self.ptr, (value,), ($(esc_T_params...),))
+                    _call_generic_method(self.lib_name, setter_name, self.ptr, (value,), ($(esc_T_params...),), getfield(self, :alive))
                     return value
                 else
                     return setfield!(self, field, value)
@@ -1263,7 +1263,10 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     # and allocator; the legacy symbol lookup remains a compatibility fallback
     # for hand-registered generic functions (#291).
     free_name = ffi_struct_free_symbol(struct_name)
-    free_info = _generic_artifact_member(lib_name, free_name)
+    alive = lock(REGISTRY_LOCK) do
+        alive_ref_for_handle(handle, lib_name)
+    end
+    free_info = _generic_artifact_member(lib_name, free_name, alive)
     if free_info === nothing
         free_info = try
             generic_free = GENERIC_FUNCTION_REGISTRY[free_name]
@@ -1320,8 +1323,8 @@ function _generic_constructor_call(func_name::String, args::Tuple, types::Tuple)
     return (ptr, info.lib_name, info.handle, info.generation)
 end
 
-function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple)
-    original = _generic_artifact_member(lib_name, func_name)
+function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple, alive::Base.RefValue{Bool})
+    original = _generic_artifact_member(lib_name, func_name, alive)
     original === nothing || return _call_monomorphized(original, ptr, args...)
     generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
     param_names = generic_info.type_params
@@ -1339,8 +1342,8 @@ function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoi
     return _call_monomorphized(info, ptr, args...)
 end
 
-function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple)
-    original = _generic_artifact_member(lib_name, func_name)
+function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple, alive::Base.RefValue{Bool})
+    original = _generic_artifact_member(lib_name, func_name, alive)
     original === nothing || return _call_monomorphized(original, ptr)
     generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
     param_names = generic_info.type_params

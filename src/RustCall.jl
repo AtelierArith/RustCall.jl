@@ -132,15 +132,40 @@ Base.prepend!(view::StateView, items) = _state_read(view) do state_value
     prepend!(state_value, items)
 end
 function Base.filter!(predicate::Function, view::StateView)
-    if view.name === :deferred_drops
-        return lock(DEFERRED_DROPS_LOCK) do
-            queue = _state_value(view)
-            filter!(predicate, getfield(queue, :entries))
+    storage(value) = view.name === :deferred_drops && view.owner === nothing ?
+                     getfield(value, :entries) : value
+    snapshot = _state_read(view) do value
+        copy(storage(value))
+    end
+    # Predicates are caller code and may wait for another registry user.
+    # Evaluate once per snapshot entry without STATE, then remove only entries
+    # which have not been replaced. Concurrent additions are not filtered.
+    rejected = [entry for entry in snapshot if !predicate(entry)]
+    _state_read(view) do value
+        current = storage(value)
+        if current isa AbstractDict
+            for (key, previous) in rejected
+                haskey(current, key) && current[key] === previous && delete!(current, key)
+            end
+        elseif current isa AbstractVector
+            for previous in rejected
+                index = findfirst(entry -> entry === previous, current)
+                index === nothing || deleteat!(current, index)
+            end
+        elseif current isa AbstractSet
+            for previous in rejected
+                for entry in current
+                    if entry === previous
+                        delete!(current, entry)
+                        break
+                    end
+                end
+            end
+        else
+            throw(ArgumentError("filter! requires a dictionary, vector or set StateView"))
         end
     end
-    return _state_read(view) do state_value
-        filter!(predicate, state_value)
-    end
+    return view
 end
 Base.isempty(view::StateView) = _state_read(view, isempty)
 Base.length(view::StateView) = _state_read(view, length)

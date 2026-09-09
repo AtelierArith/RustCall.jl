@@ -112,13 +112,15 @@ const MONOMORPHIZED_FUNCTIONS = _state_view(:monomorphized_functions,
 
 # An object's image is immutable even after the source registration changes.
 # Keep original wrapper names alongside the compiled snapshots, indexed by
-# artifact identity, so methods never specialize against a newer layout.
+# artifact name and image-lifetime flag: unloading and rebuilding identical
+# source reuses the name but must not replace an old object's member snapshots.
 const GENERIC_STRUCT_ARTIFACTS = _state_view(:generic_struct_artifacts,
-    Dict{String, Dict{String, FunctionInfo}}())
+    Dict{Tuple{String, Base.RefValue{Bool}}, Dict{String, FunctionInfo}}())
 
-function _generic_artifact_member(lib_name::String, func_name::String)
+function _generic_artifact_member(lib_name::String, func_name::String,
+                                  alive::Base.RefValue{Bool})
     lock(REGISTRY_LOCK) do
-        members = get(GENERIC_STRUCT_ARTIFACTS, lib_name, nothing)
+        members = get(GENERIC_STRUCT_ARTIFACTS, (lib_name, alive), nothing)
         members === nothing && return nothing
         info = get(members, func_name, nothing)
         info === nothing && throw(RustError(
@@ -545,7 +547,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             for (key, info) in compiled
                 MONOMORPHIZED_FUNCTIONS[key] = info
             end
-            GENERIC_STRUCT_ARTIFACTS[lib_name] = named_members
+            GENERIC_STRUCT_ARTIFACTS[(lib_name, artifact.alive)] = named_members
             MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
         end
     end
