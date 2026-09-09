@@ -228,10 +228,13 @@ impl PublicRoutes {
                 }
             }
         }
-        let mut named_present = direct.is_some();
+        // A named binding shadows globs even when its target lives outside the
+        // scanned module tree and cannot be resolved here. Treating only a
+        // successfully resolved import as present can expose a same-named
+        // glob item under a path Rust actually binds to something else.
+        let named_present = direct.is_some() || !explicit.is_empty();
         for import in &explicit {
             let targets = self.import_target(import, namespace, visiting);
-            named_present |= !targets.is_empty();
             if accessible(&import.visibility, module, observer) {
                 for mut target in targets {
                     target.predicates.extend(import.predicates.clone());
@@ -485,6 +488,12 @@ mod tests {
         // callable path by the wrapper generator.
         assert!(
             !routes("mod hidden { pub struct C; } pub type API<T> = hidden::C;")
+                .contains_key(&path("hidden::C"))
+        );
+        // The alias is still a named binding when its target is not one of the
+        // scanner's definitions. It shadows the glob just as rustc does.
+        assert!(
+            !routes("mod hidden { pub struct C; } pub use hidden::*; pub type C = i32;")
                 .contains_key(&path("hidden::C"))
         );
     }
