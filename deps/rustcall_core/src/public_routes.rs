@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use syn::{Attribute, Item, Visibility};
 
-use crate::paths::{import_of_type_alias, imports_of_use, visible_from, ScannedImport};
+use crate::paths::{import_of_type_alias, imports_of_use, visible_from, PathAnchor, ScannedImport};
 
 type Path = Vec<String>;
 
@@ -71,7 +71,11 @@ impl PublicRoutes {
         if path.path.leading_colon.is_some() && !self.edition_2015 {
             return None;
         }
-        import_of_type_alias(item, module)
+        let mut binding = import_of_type_alias(item, module)?;
+        if path.path.leading_colon.is_some() {
+            binding.qualifier.anchor = PathAnchor::Crate;
+        }
+        Some(binding)
     }
 
     /// Resolve within one cfg variant. A public module in a mutually exclusive
@@ -546,6 +550,18 @@ mod tests {
             scan.resolve()[&(Namespace::Type, path("dep::C"))].path,
             path("C")
         );
+        let file = syn::parse_file(
+            "mod hidden { pub struct C { pub value: i32 } } pub mod api { mod hidden { pub struct C { pub nested: i32 } } pub type Alias = ::hidden::C; }",
+        )
+        .unwrap();
+        let mut scan = PublicRoutes::with_edition("2015");
+        scan.file(&file.items, &[], &[]);
+        let result = scan.resolve();
+        assert_eq!(
+            result[&(Namespace::Type, path("hidden::C"))].path,
+            path("api::Alias")
+        );
+        assert!(!result.contains_key(&(Namespace::Type, path("api::hidden::C"))));
     }
 
     #[test]
