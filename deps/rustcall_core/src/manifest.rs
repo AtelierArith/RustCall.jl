@@ -114,7 +114,12 @@ use serde::{Deserialize, Serialize};
 ///   element spelling and [`Field::free_symbol`] names the allocator-matched
 ///   release export; an older consumer would otherwise read the returned
 ///   `(ptr, len, cap)` aggregate as a Rust `Vec<T>` value.
-pub const SCHEMA_VERSION: u32 = 10;
+/// * **11** widens the `PyResult` ABI: `String` / `&str` success values use
+///   [`Function::ok_abi`] / [`Method::ok_abi`] to declare an owned string
+///   payload, and a class-valued `PyResult<Self>` stores an owned pointer in
+///   the success slot. A schema-10 consumer ignores those shapes and would
+///   decode the aggregate with the wrong field type.
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.

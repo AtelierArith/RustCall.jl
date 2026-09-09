@@ -46,9 +46,13 @@ manifest rather than get the owner wrong (#342 review). Schema 9 adds the
 externally callable re-export path used for items defined behind private
 modules (#303). Schema 10 adds the `vec` field ABI, its `vec_element`, and its
 allocator-matched `free_symbol`; a schema-9 consumer would call the returned
-owned buffer as a Rust `Vec<T>` value and could not release it (#303).
+owned buffer as a Rust `Vec<T>` value and could not release it (#303). Schema
+11 widens the `PyResult` ABI: `String` / `&str` success payloads use `ok_abi`
+to select an owned buffer, and `PyResult<Self>` carries an owned class pointer;
+a schema-10 consumer would decode either aggregate with the wrong slot type
+(#303).
 """
-const MANIFEST_SCHEMA_VERSION = 10
+const MANIFEST_SCHEMA_VERSION = 11
 
 """
     ExtractorError <: Exception
