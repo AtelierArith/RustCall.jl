@@ -16,6 +16,24 @@ Generic functions in Rust use type parameters (e.g., `fn identity<T>(x: T) -> T`
 
 ## Basic Usage
 
+### Dependency-backed specializations
+
+Generics declared in a `rust"""` block with `// cargo-deps:` are specialized
+through Cargo, including generic bodies containing `#[cfg]` or `cfg!`.
+Registration retains the dependency specifications, tracked build environment
+and exact Cargo.lock contents. Later specializations replay that environment
+and lockfile even if the session's environment or persisted lockfile changes.
+The artifact identity also includes the dependency contents and build context.
+The generated root package name is captured with the lockfile: changing a path
+dependency's source creates a new specialization without invalidating that root
+entry. Existing generic objects continue to use their original image's members.
+
+If the effective Cargo configuration files change after registration, evaluate
+the original block again: specialization rejects the mismatched configuration
+instead of compiling already-pruned source under different settings. Generic
+struct members, including allocation and destruction, share one Cargo-built
+image per instantiation. Blocks without dependencies still use direct rustc.
+
 ### Automatic Detection
 
 When you define a generic function in a `rust""` block, RustCall.jl automatically detects and registers it:

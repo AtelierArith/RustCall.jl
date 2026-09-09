@@ -623,6 +623,11 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         end
         cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
                                    cargo_config = cargo_config, cargo_lock = cargo_lock)
+        lock_text = isempty(cargo_lock) ? "" : read(
+            project === nothing ? stored_lock : joinpath(project.path, "Cargo.lock"), String)
+        isempty(cargo_lock) || stable_content_hash(lock_text) == cargo_lock || throw(CargoBuildError(
+            "Cargo.lock changed while capturing generic build context", "", source_file))
+        cargo_context = _generic_cargo_context(dependencies, build_env_key, cargo_config, lock_text)
         # THE key for this block: the in-memory name, the disk lookup, the build
         # and the save all use this one value (#278, #287). If a second formula
         # ever appears downstream, `build_cargo_project_cached` refuses the build
@@ -642,7 +647,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # rather than leaving metadata for a library that is gone.
         policy = inline_cargo_policy()
         if is_in_memory &&
-           _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+           _register_manifest(expanded, lib_name; cargo_backed = true, cargo_context, policy,
                               snapshot_env = build_env, require_loaded = true)
             @debug "Using cached Cargo library from memory" lib_name=lib_name
             return lib_name
@@ -659,7 +664,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             # Load from cache through the one loader (#277 Phase B). A failure to
             # open the cached file is not fatal: fall through and rebuild.
             loaded = try
-                _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+                _register_manifest(expanded, lib_name; cargo_backed = true, cargo_context, policy,
                                    load_path = cached_lib, snapshot_env = build_env)
             catch e
                 @debug "Failed to load the cached Cargo library; rebuilding" exception = e
@@ -702,7 +707,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
         # Load and register the library: handle and manifest lookup tables
         # together (#279 follow-up, #277 Phase B).
-        _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+        _register_manifest(expanded, lib_name; cargo_backed = true, cargo_context, policy,
                            load_path = lib_path, snapshot_env = build_env)
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
@@ -841,6 +846,7 @@ the global registry lock held.
 """
 function _register_manifest(expanded, lib_name::String; compiler = nothing,
                             cargo_backed::Bool = false,
+                            cargo_context = nothing,
                             policy::LoadPolicy = inline_rustc_policy(),
                             load_path::Union{AbstractString, Nothing} = nothing,
                             handle::Union{Ptr{Cvoid}, Nothing} = nothing,
@@ -866,7 +872,7 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     registered || return false
 
     for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source; compiler)
+        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
     end
     for sig in signatures
         if sig.is_generic
@@ -874,21 +880,18 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
             # expanded for so a later `set_default_compiler` cannot drop
             # #[cfg]-gated items from the specialization.
             #
-            # A lazy specialization is a direct `rustc` build. For a Cargo-backed
-            # block that is a different configuration (profile, `panic`,
-            # RUSTFLAGS `--cfg`s) from the one the block was expanded and built
-            # under. Item-level pruning has resolved the `#[cfg]`s on items and
-            # signatures, but a `#[cfg]` statement or `cfg!` inside the body
-            # would be decided anew by rustc: refuse such a generic rather than
-            # build it under the wrong configuration.
-            blocked = cargo_backed && sig.body_has_cfg ?
+            # Real Cargo loads retain their complete build context. A manual
+            # manifest registration without that context must still refuse a
+            # cfg-dependent body rather than silently using direct rustc.
+            blocked = cargo_backed && cargo_context === nothing && sig.body_has_cfg ?
                 "generic function `$(sig.name)` comes from a `// cargo-deps:` block and its body " *
                 "contains `#[cfg]` or `cfg!`, which the lazy specialization (a direct rustc build) " *
                 "would evaluate under a different configuration than the Cargo build; move the " *
                 "configuration-dependent code out of the generic body or into a non-generic helper" : ""
             register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
                                       arg_types = sig.arg_types, return_type = sig.return_type,
-                                      path = qualified_name(sig.module_path, sig.name), compiler, blocked)
+                                      path = qualified_name(sig.module_path, sig.name), compiler, blocked,
+                                      cargo = cargo_context)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         end
     end

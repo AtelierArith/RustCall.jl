@@ -56,6 +56,77 @@ function Base.:(==)(a::TypeConstraints, b::TypeConstraints)
     a.bounds == b.bounds
 end
 
+struct GenericCargoContext
+    dependencies::Tuple
+    env::String
+    config::String
+    lockfile::String
+    package_name::String
+end
+
+function _generic_cargo_context(dependencies, env, config, lockfile)
+    specs = Tuple((; dep.name, dep.version, features = Tuple(dep.features), dep.git,
+                    path = dep.path === nothing ? nothing : abspath(dep.path)) for dep in dependencies)
+    GenericCargoContext(specs, String(env), String(config), String(lockfile),
+                        cargo_block_package(dependencies))
+end
+
+_generic_cargo_dependencies(context::GenericCargoContext) =
+    DependencySpec[DependencySpec(dep.name, dep.version, collect(String, dep.features),
+                                  dep.git, dep.path) for dep in context.dependencies]
+
+_generic_cargo_identity(::Nothing) = (; dependencies = String[], build_env = Pair{String, String}[])
+function _generic_cargo_identity(context::GenericCargoContext)
+    env = _cargo_build_env(context.env)
+    _cargo_config_digest(env; dir = tempdir()) == context.config || throw(RustError(
+        "Cargo configuration changed since generic registration; evaluate the original rust block again"))
+    (; dependencies = artifact_dependency_strings(_generic_cargo_dependencies(context)),
+       build_env = Pair{String, String}["cargo-env" => context.env,
+           "cargo-config" => context.config, "cargo-lockfile" => context.lockfile,
+           "cargo-package" => context.package_name])
+end
+
+function _compile_generic_source(source::String, compiler::RustCompiler, context)
+    context === nothing && return compile_rust_to_shared_lib(wrap_rust_code(source); compiler)
+    _generic_cargo_identity(context) # Recheck immediately before building.
+    dependencies = _generic_cargo_dependencies(context)
+    env = _cargo_build_env(context.env)
+    # Source edits change the dependency-content identity, but the captured
+    # lockfile still names the original generated root package. Keep that
+    # package name while building the newly identified specialization.
+    project = create_cargo_project(context.package_name, dependencies)
+    try
+        write_rust_code_to_project(project, wrap_rust_code(source))
+        lock_digest = ""
+        if !isempty(context.lockfile)
+            lock_path = joinpath(project.path, "Cargo.lock")
+            write(lock_path, context.lockfile)
+            lock_digest = _file_content_digest(lock_path)
+        end
+        id = _cargo_block_id(wrap_rust_code(source), dependencies, context.env;
+                            cargo_config = context.config, cargo_lock = lock_digest)
+        path = build_cargo_project_cached(project, id; env, locked = !isempty(context.lockfile))
+        cached = get_cargo_cached_library(artifact_key(id))
+        cached !== nothing && isfile(cached) && return cached
+        # Cache publication is best-effort. Keep the successful build alive
+        # after cleaning its Cargo project, as the direct rustc path does.
+        retained = joinpath(mktempdir(), basename(path))
+        cp(path, retained)
+        return retained
+    catch err
+        if err isa CargoBuildError && occursin("persisted Cargo.lock", err.message)
+            throw(CargoBuildError(
+                "Cargo specialization cannot replay its registered Cargo.lock. " *
+                "Re-evaluate the original rust block to capture changed dependency manifests; " *
+                "clearing the persisted lock store does not update this registration.",
+                err.stderr, err.project_path))
+        end
+        rethrow()
+    finally
+        compiler.debug_mode || cleanup_cargo_project(project)
+    end
+end
+
 """
     GenericFunctionInfo
 
@@ -73,15 +144,20 @@ struct GenericFunctionInfo
     compiler::Union{Nothing, RustCompiler}  # compiler the block was expanded for (nothing: default)
     # Non-empty when the function cannot be specialized lazily: the reason,
     # raised as a `RustError` by `monomorphize_function`. Set for generics of a
-    # Cargo-backed block whose body contains `#[cfg]`/`cfg!`, because the
-    # lazy specialization is a direct `rustc` build under another
-    # configuration than the Cargo build the block was expanded for.
+    # manually registered Cargo manifest whose build context is unavailable.
+    # Normal Cargo blocks retain their context and specialize through Cargo.
     blocked::String
     # Non-nothing for generic struct wrappers. All members of one group are
     # specialized into a single cdylib so allocation and destruction share an
     # allocator (#291).
     group::Union{Nothing, Symbol}
+    cargo::Union{Nothing, GenericCargoContext}
 end
+
+GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
+                    return_type, path, compiler, blocked, group) =
+    GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
+                        return_type, path, compiler, blocked, group, nothing)
 
 # Keep the public positional constructor used by older tests and extensions.
 GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
@@ -143,22 +219,22 @@ end
 
 The identity of one instantiation of a generic function: the registered source
 (context plus generic code), the parameter bindings **in declaration order**,
-and the compiler snapshot the instantiation is built under. `dependencies` and
-`build_env` are left empty here — the lazy specialization is a direct `rustc`
-build — but they are fields of the record, so a future Cargo-backed
-specialization (#277) needs no new key formula.
+and the compiler snapshot the instantiation is built under. Cargo-backed
+registrations additionally identify their dependencies, captured environment,
+configuration and exact lockfile; direct rustc registrations leave those empty.
 
 Throws `ArgumentError` when `type_params` does not bind every declared
 parameter.
 """
 function _monomorphization_id(generic_info, func_name::AbstractString, type_params, compiler)
-    return ArtifactId(
+    return ArtifactId(;
         kind = "monomorphization",
         source = isempty(generic_info.context) ? generic_info.code :
                  generic_info.context * "\n" * generic_info.code,
         type_params = artifact_type_params(generic_info.type_params, type_params),
         target_triple = compiler.target_triple,
         codegen = artifact_codegen_options(compiler),
+        _generic_cargo_identity(generic_info.cargo)...,
         extra = Pair{String, String}["function" => String(func_name)],
     )
 end
@@ -329,8 +405,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         specialized = specialize_generic(full_source, generic_info.path, bindings, specialized_name)
         specialized_code = specialized.source
 
-        wrapped_code = wrap_rust_code(specialized_code)
-        lib_path = compile_rust_to_shared_lib(wrapped_code; compiler=compiler)
+        lib_path = _compile_generic_source(specialized_code, compiler, generic_info.cargo)
 
         # Load and register the instantiation under its artifact identity.
         # `basename(lib_path)` used to be the key, but `_unique_source_name`
@@ -348,7 +423,9 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         lib_name = "rust_generic_$(artifact_short_id(cache_key))"
         specialized_symbol = specialized.symbol
         artifact = load_artifact!(generics_policy(), lib_path;
-                                  lib_name, eager = (specialized_symbol,))
+                                  lib_name, eager = (specialized_symbol,),
+                                  snapshot_env = generic_info.cargo === nothing ? nothing :
+                                                 _cargo_build_env(generic_info.cargo.env))
 
         func_ptr = Libdl.dlsym(artifact.handle, specialized_symbol; throw_error=false)
         if func_ptr === nothing || func_ptr == C_NULL
@@ -447,13 +524,14 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
                                               for (i, p) in enumerate(info.type_params))
         first_info = first(members)
         compiler = something(first_info.compiler, get_default_compiler())
-        group_id = ArtifactId(
+        group_id = ArtifactId(;
             kind = "generic_struct",
             source = isempty(first_info.context) ? first_info.code :
                      first_info.context * "\n" * first_info.code,
             type_params = artifact_type_params(first_info.type_params, params_for(first_info)),
             target_triple = compiler.target_triple,
             codegen = artifact_codegen_options(compiler),
+            _generic_cargo_identity(first_info.cargo)...,
             extra = Pair{String, String}["group" => String(group)],
         )
         group_key = artifact_key(group_id)
@@ -479,7 +557,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
         full_source = isempty(first_info.context) ? first_info.code :
                       first_info.context * "\n" * first_info.code
         specialized = specialize_generic_group(full_source, specs)
-        if !_generic_group_typechecks(specialized.source, compiler)
+        if !_generic_group_typechecks(specialized.source, compiler, first_info.cargo)
             # Rust decides applicability. A concrete type can satisfy the
             # constructor's bounds without satisfying every method's bounds.
             # Keep all applicable wrappers together, including allocation and
@@ -487,12 +565,12 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             applicable = Int[]
             for i in eachindex(specs)
                 candidate = specialize_generic_group(full_source, [specs[i]])
-                if _generic_group_typechecks(candidate.source, compiler)
+                if _generic_group_typechecks(candidate.source, compiler, first_info.cargo)
                     push!(applicable, i)
                 elseif members[i].name == func_name
                     # Use the normal compiler diagnostics for the requested
                     # invalid specialization; this build is expected to fail.
-                    compile_rust_to_shared_lib(wrap_rust_code(candidate.source); compiler)
+                    _compile_generic_source(candidate.source, compiler, first_info.cargo)
                     error("Specialization applicability probe disagreed with compilation")
                 end
             end
@@ -500,11 +578,12 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             specs = specs[applicable]
             specialized = specialize_generic_group(full_source, specs)
         end
-        wrapped_code = wrap_rust_code(specialized.source)
-        lib_path = compile_rust_to_shared_lib(wrapped_code; compiler = compiler)
+        lib_path = _compile_generic_source(specialized.source, compiler, first_info.cargo)
         lib_name = "rust_generic_struct_$(artifact_short_id(group_key))"
         eager = [s.symbol for s in specialized.functions]
-        artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager)
+        artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager,
+                                  snapshot_env = first_info.cargo === nothing ? nothing :
+                                                 _cargo_build_env(first_info.cargo.env))
 
         compiled = Dict{String, FunctionInfo}()
         named_members = Dict{String, FunctionInfo}()
@@ -562,9 +641,19 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
     end
 end
 
-# Compile only metadata when checking whether a set of concrete wrappers is
-# valid. This invokes Rust's trait solver without linking or loading an image.
-function _generic_group_typechecks(source::String, compiler::RustCompiler)
+# Direct rustc checks only metadata. Cargo-backed checks reuse the normal
+# cached build to retain dependency and build-script configuration; neither
+# path loads an image while checking applicability.
+function _generic_group_typechecks(source::String, compiler::RustCompiler, context = nothing)
+    if context !== nothing
+        try
+            _compile_generic_source(source, compiler, context)
+            return true
+        catch err
+            err isa CargoBuildError || rethrow()
+            return false
+        end
+    end
     mktempdir() do dir
         input = joinpath(dir, "generic_group.rs")
         output = joinpath(dir, "generic_group.rmeta")
@@ -631,7 +720,8 @@ function _prepare_generic_function(
     path::String=func_name,
     compiler::Union{Nothing, RustCompiler}=nothing,
     blocked::String="",
-    group::Union{Nothing, Symbol}=nothing
+    group::Union{Nothing, Symbol}=nothing,
+    cargo::Union{Nothing, GenericCargoContext}=nothing
 )
     # Manual registrations usually pass only the source. Recover the argument
     # and return types (and, when not given, the trait bounds) from the
@@ -646,7 +736,7 @@ function _prepare_generic_function(
         end
     end
     return GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types,
-                               return_type, path, compiler, blocked, group)
+                               return_type, path, compiler, blocked, group, cargo)
 end
 
 function _publish_generic_struct_group!(group::Symbol, members::Vector{GenericFunctionInfo})

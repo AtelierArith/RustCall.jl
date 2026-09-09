@@ -854,8 +854,8 @@ using TOML
             @test ccall(RustCall.get_function_pointer(resolved, "stale_alias_value"), Int32, ()) == 42
 
             # A generic whose body contains `#[cfg]`/`cfg!` is reported as such;
-            # from a Cargo-backed block its lazy specialization (a direct rustc
-            # build under another configuration) is refused with a clear error.
+            # a manual Cargo manifest registration without a captured build
+            # context still refuses direct-rustc specialization with a clear error.
             cfg_body = """
             #[julia]
             pub fn cfg_body_generic<T: Copy>(x: T) -> T { if cfg!(panic = "unwind") { x } else { x } }
@@ -904,8 +904,9 @@ using TOML
                     Core.eval(dep_mod, Expr(:macrocall, GlobalRef(RustCall, Symbol("@rust_str")),
                                             LineNumberNode(1, :cfgdep), block))
                     @test Core.eval(dep_mod, :(cfg_dep_plain(Int32(1)))) == Int32(2)
-                    @test !isempty(RustCall.GENERIC_FUNCTION_REGISTRY["cfg_dep_generic"].blocked)
-                    @test_throws RustCall.RustError Core.eval(dep_mod, :(RustCall.@rust cfg_dep_generic(Int32(3))))
+                    @test isempty(RustCall.GENERIC_FUNCTION_REGISTRY["cfg_dep_generic"].blocked)
+                    @test RustCall.GENERIC_FUNCTION_REGISTRY["cfg_dep_generic"].cargo !== nothing
+                    @test Core.eval(dep_mod, :(RustCall.@rust cfg_dep_generic(Int32(3)))) == Int32(3)
                 end
             end
 

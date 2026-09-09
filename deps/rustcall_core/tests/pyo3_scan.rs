@@ -1661,6 +1661,41 @@ fn julia_surface_collisions_are_refused() {
     assert_eq!(class("B").skip_reason, "");
 }
 
+#[test]
+fn surface_claims_are_released_after_symbol_exclusions() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }
+         #[pyfunction] pub fn FOO() -> i32 { 2 }
+         #[pyclass] pub struct C;
+         #[pymethods] impl C { #[staticmethod] pub fn FOO() -> i32 { 3 } }
+         #[pyclass] pub struct D;
+         #[pymethods] impl D { #[staticmethod] pub fn FOO() -> i32 { 4 } }",
+    );
+    assert_eq!(function(&manifest, "foo").skip_reason, "");
+    assert!(function(&manifest, "FOO")
+        .skip_reason
+        .starts_with("symbol_collision:"));
+    let c = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    let d = manifest.structs.iter().find(|s| s.name == "D").unwrap();
+    assert_eq!(c.methods[0].skip_reason, "");
+    assert_eq!(d.methods[0].skip_reason, "julia_name_collision:C::FOO");
+
+    let manifest = scan(
+        "#[pyclass] pub struct A;
+         #[pymethods] impl A {
+             #[staticmethod] pub fn foo() -> i32 { 1 }
+             #[staticmethod] pub fn FOO() -> i32 { 2 }
+         }
+         #[pyclass] pub struct B;
+         #[pymethods] impl B { #[staticmethod] pub fn FOO() -> i32 { 3 } }",
+    );
+    let a = manifest.structs.iter().find(|s| s.name == "A").unwrap();
+    let b = manifest.structs.iter().find(|s| s.name == "B").unwrap();
+    assert_eq!(a.methods[0].skip_reason, "");
+    assert!(a.methods[1].skip_reason.starts_with("symbol_collision:"));
+    assert_eq!(b.methods[0].skip_reason, "");
+}
+
 /// A class is a Julia type *and* its constructor function, so its name is
 /// taken for every arity: a free function or a static method of that name
 /// would redefine the constant (`function User()` before `mutable struct

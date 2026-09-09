@@ -273,7 +273,8 @@ name (`module::Struct_method`); `specialize` then instantiates it in place with
 every module-scoped name available. Non-generic structs have their wrappers
 compiled into the library directly and need no registration.
 """
-function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String; compiler = nothing)
+function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String;
+                                           compiler = nothing, cargo = nothing)
     isempty(info.type_params) && return nothing
     group = Symbol("generic_struct:", qualified_name(info.module_path, info.name))
     members = GenericFunctionInfo[]
@@ -291,7 +292,7 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
         push!(members, _prepare_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
                                   arg_types = arg_types,
                                   path = qualified_name(info.module_path, wrapper_name), compiler,
-                                  group = group))
+                                  group = group, cargo))
     end
     _publish_generic_struct_group!(group, members)
     return nothing

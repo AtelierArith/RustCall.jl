@@ -32,6 +32,47 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
 # generation, Cargo, loading, calling, and destructing are hard assertions.
 @testset "PyO3 wrapper crate (#275 Phase 2)" begin
 
+    @testset "a symbol-excluded function releases its Julia surface name (#303)" begin
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            manifest = replace(read(joinpath(PYO3_ONLY_CRATE, "Cargo.toml"), String),
+                               "sample_crate_pyo3_only" => "surface_owner_303")
+            write(joinpath(dir, "Cargo.toml"), manifest)
+            write(joinpath(dir, "src", "lib.rs"), """
+                #![allow(non_snake_case)]
+                use pyo3::prelude::*;
+                #[pyfunction] pub fn foo() -> i32 { 1 }
+                #[pyfunction] pub fn FOO() -> i32 { 2 }
+                #[pyclass] pub struct C;
+                #[pymethods] impl C {
+                    #[staticmethod] pub fn FOO() -> i32 { 3 }
+                }
+                #[pyclass] pub struct D;
+                #[pymethods] impl D {
+                    #[staticmethod] pub fn FOO() -> i32 { 4 }
+                }
+                """)
+            wrapper = _link_libpython_wrapper(dir)
+            if wrapper === nothing
+                @test_skip "no linkable Python here"
+            else
+                @test all(f -> f.name != "FOO", wrapper.info.julia_functions)
+                c = only(filter(s -> s.name == "C", wrapper.info.julia_structs))
+                @test any(m -> m.name == "FOO", c.methods)
+                bindings = @rust_crate dir
+                module_ = getfield(bindings, :module_ref)
+                try
+                    foo = Base.invokelatest(getfield, module_, :foo)
+                    FOO = Base.invokelatest(getfield, module_, :FOO)
+                    @test Base.invokelatest(foo) == 1
+                    @test Base.invokelatest(FOO) == 3
+                finally
+                    RustCall.unload_library(Base.invokelatest(getfield, module_, :_LIB_NAME); close = true)
+                end
+            end
+        end
+    end
+
     @testset "the opaque PyErr message is one contract, written down twice" begin
         # `rustcall_core::wrap::PYERR_MESSAGE` and `RustCall.PYO3_OPAQUE_ERROR`
         # describe the same value; the Rust side documents it and the Julia side

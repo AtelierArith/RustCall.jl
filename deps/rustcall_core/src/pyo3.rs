@@ -448,8 +448,8 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
     // Resolve the user-facing owners before reserving their implementation
     // types. An owner skipped by a class or an earlier method emits no ABI
     // aggregate and must not take a valid class's name with it.
-    mark_julia_surface_collisions_pass(manifest, None);
     let owners = manifest.clone();
+    mark_julia_surface_collisions_pass(manifest, None);
     mark_symbol_collisions(manifest);
     loop {
         let mut next = owners.clone();
@@ -469,6 +469,13 @@ fn mark_julia_surface_collisions_pass(
     manifest: &mut Manifest,
     aggregate_owners: Option<&Manifest>,
 ) {
+    // A linker-excluded entry emits no Julia binding either. It remains a
+    // candidate in the fresh pass, but must not reserve a surface name until
+    // symbol ownership allows it again. Indexing is stable across the clones.
+    let symbol_excluded = |reason: &str| {
+        reason.starts_with("symbol_collision:")
+            || reason.starts_with("owner_skipped:symbol_collision:")
+    };
     // The Julia surface is one namespace *per generated module*, and the
     // bindings lay one Julia module out per Rust module (#300), so every key
     // below carries the module path: `a::parse` and `b::parse` live in
@@ -482,8 +489,14 @@ fn mark_julia_surface_collisions_pass(
     let class_names: Vec<(Scoped, String, String)> = manifest
         .structs
         .iter()
-        .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
-        .map(|s| {
+        .enumerate()
+        .filter(|(i, s)| {
+            s.attribute.is_pyo3_scan()
+                && s.skip_reason.is_empty()
+                && aggregate_owners
+                    .is_none_or(|previous| !symbol_excluded(&previous.structs[*i].skip_reason))
+        })
+        .map(|(_, s)| {
             (
                 (s.module_path.clone(), s.name.clone()),
                 qualified(&s.module_path, &s.name),
@@ -498,10 +511,9 @@ fn mark_julia_surface_collisions_pass(
     // emitter had already declared it (#303).
     // Recompute from surviving owners, not from the manifest being marked:
     // excluding CResult_f also removes COption_CResult_f_method. Starting
-    // each pass from the owner decisions restores classes blocked only by a
-    // now-absent aggregate. This converges: every dependency adds a CResult_
-    // or COption_ prefix (and, for methods, the class name), so aggregate
-    // exclusion chains strictly increase name length and cannot cycle.
+    // each pass from the original candidates restores classes blocked only
+    // by a now-absent aggregate. Symbol-excluded owners likewise release
+    // their surface claims, allowing previously blocked candidates back in.
     let mut aggregate_names: Vec<(Scoped, String, String)> = aggregate_owners
         .into_iter()
         .flat_map(|owners| &owners.functions)
@@ -560,7 +572,7 @@ fn mark_julia_surface_collisions_pass(
     };
 
     let mut taken: Vec<(ScopedArity, String, String)> = Vec::new();
-    for f in &mut manifest.functions {
+    for (i, f) in manifest.functions.iter_mut().enumerate() {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() {
             continue;
         }
@@ -572,13 +584,17 @@ fn mark_julia_surface_collisions_pass(
             f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, aggregate);
             continue;
         }
-        taken.push((
-            (f.module_path.clone(), f.name.clone(), f.args.len()),
-            qualified(&f.module_path, &f.name),
-            f.cfg.clone(),
-        ));
+        if aggregate_owners
+            .is_none_or(|previous| !symbol_excluded(&previous.functions[i].skip_reason))
+        {
+            taken.push((
+                (f.module_path.clone(), f.name.clone(), f.args.len()),
+                qualified(&f.module_path, &f.name),
+                f.cfg.clone(),
+            ));
+        }
     }
-    for s in &mut manifest.structs {
+    for (i, s) in manifest.structs.iter_mut().enumerate() {
         if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
             continue;
         }
@@ -594,7 +610,7 @@ fn mark_julia_surface_collisions_pass(
             }
             continue;
         }
-        for m in &mut s.methods {
+        for (j, m) in s.methods.iter_mut().enumerate() {
             if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
                 continue;
             }
@@ -614,7 +630,13 @@ fn mark_julia_surface_collisions_pass(
                 Some((_, other, _)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, other);
                 }
-                None => taken.push((key, format!("{owner}::{}", m.name), m.cfg.clone())),
+                None => {
+                    if aggregate_owners.is_none_or(|previous| {
+                        !symbol_excluded(&previous.structs[i].methods[j].skip_reason)
+                    }) {
+                        taken.push((key, format!("{owner}::{}", m.name), m.cfg.clone()));
+                    }
+                }
             }
         }
     }

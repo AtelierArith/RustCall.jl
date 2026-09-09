@@ -1370,6 +1370,30 @@ end
         @test_skip "rustc is required"
     else
         rust"""
+        struct Rc246Allocator;
+        static RC246_LIVE_BUFFERS: std::sync::atomic::AtomicIsize =
+            std::sync::atomic::AtomicIsize::new(0);
+        unsafe impl std::alloc::GlobalAlloc for Rc246Allocator {
+            unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+                let ptr = std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout);
+                if !ptr.is_null() && layout.size() == 65536 {
+                    RC246_LIVE_BUFFERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                ptr
+            }
+            unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+                if layout.size() == 65536 {
+                    RC246_LIVE_BUFFERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                std::alloc::GlobalAlloc::dealloc(&std::alloc::System, ptr, layout);
+            }
+        }
+        #[global_allocator]
+        static RC246_ALLOCATOR: Rc246Allocator = Rc246Allocator;
+        #[julia]
+        pub fn rc246_live_buffers() -> isize {
+            RC246_LIVE_BUFFERS.load(std::sync::atomic::Ordering::SeqCst)
+        }
         #[julia]
         pub struct Rc246Buf { n: usize }
         impl Rc246Buf {
@@ -1379,20 +1403,38 @@ end
         """
         buf = Rc246Buf(UInt(65536))
         @test length(make(buf)) == 65536
+        @test (@rust rc246_live_buffers()) == 0
 
-        # 10^4 calls allocate 640 MB of Rust buffers in total. If the wrapper
-        # did not hand each one back to `Rc246Buf_free_rust_string`, the
-        # high-water mark would grow by that much; releasing keeps it flat.
-        GC.gc()
-        before = Sys.maxrss()
-        total = 0
-        for _ in 1:10_000
-            total += length(make(buf))
+        # Positive control: bypass Julia's automatic release once, prove the
+        # allocator observes the outstanding buffer, then release it through
+        # the allocating image's captured helper even if the assertion fails.
+        target = RustCall.resolve_call_target(getfield(buf, :lib_name),
+            RustCall.ffi_method_symbol("Rc246Buf", "make");
+            free_symbol = "Rc246Buf_free_rust_string")
+        raw = RustCall.call_rust_function(target.func_ptr, RustCall.CRustString,
+                                         getfield(buf, :ptr))
+        RustCall.check_rust_panic_ptr(target.channel, "Rc246Buf::make")
+        try
+            @test (@rust rc246_live_buffers()) == 1
+        finally
+            RustCall._take_owned_string(raw, target.free_ptr)
         end
-        GC.gc()
-        growth = Sys.maxrss() - before
+        @test (@rust rc246_live_buffers()) == 0
+
+        # 10^4 calls allocate 640 MB of Rust buffers in total. Count their
+        # deallocations directly: process-wide RSS also includes Julia's
+        # compiler and GC heaps, so it cannot establish Rust buffer ownership.
+        total = 0
+        for i in 1:10_000
+            total += length(make(buf))
+            # Keep the temporary Julia copies small in parallel CI workers.
+            # GC cannot reclaim an outstanding Rust-owned buffer.
+            i % 250 == 0 && GC.gc()
+        end
         @test total == 10_000 * 65536
-        @test growth < 200 * 1024 * 1024
+        # This checks Rust deallocation directly, independently of RSS and
+        # Julia's GC schedule: no returned Rust buffer may remain allocated.
+        @test (@rust rc246_live_buffers()) == 0
 
         # And the release really is the contract's symbol, resolved inside the
         # allocating library rather than spelled at the call site.

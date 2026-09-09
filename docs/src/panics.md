@@ -79,7 +79,7 @@ the session outright) and the Cargo path took Cargo's default — the same
 | `#[julia] fn` in `rust"""` | direct `rustc` | `RustPanicError` |
 | `#[julia] fn` in `rust"""` with `// cargo-deps:` | Cargo, RustCall's manifest | `RustPanicError` |
 | `#[julia]` method / constructor | either | `RustPanicError` |
-| `#[julia]` generic instantiation | direct `rustc` | `RustPanicError` |
+| `#[julia]` generic instantiation | direct `rustc`, or Cargo for dependency-backed blocks | `RustPanicError` |
 | `#[julia]` item in a `@rust_crate` crate **without** `cdylib` | Cargo, RustCall's wrapper manifest | `RustPanicError` |
 | `#[julia]` item in a `@rust_crate` crate **with** `cdylib` | Cargo, **the user's** manifest | `RustPanicError`, unless their profile pins `panic = "abort"` |
 | raw `#[no_mangle] extern "C" fn` you wrote yourself | either | **abort** — RustCall generates no wrapper, so there is no boundary |
