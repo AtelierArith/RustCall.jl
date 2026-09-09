@@ -47,13 +47,14 @@ FunctionInfo(name::String, lib_name::String, return_type::Type, arg_types::Vecto
 Registry for function information.
 Maps function name to FunctionInfo.
 """
-const FUNCTION_REGISTRY = Dict{String, FunctionInfo}()
+const FUNCTION_REGISTRY = _state_view(:function_registry, Dict{String, FunctionInfo}())
 
 """
 Library-scoped registry for function information.
 Maps (library name, function name) to FunctionInfo.
 """
-const FUNCTION_REGISTRY_BY_LIB = Dict{Tuple{String, String}, FunctionInfo}()
+const FUNCTION_REGISTRY_BY_LIB = _state_view(:function_registry_by_lib,
+    Dict{Tuple{String, String}, FunctionInfo}())
 
 """
 Registry for function return types (for functions without full signature
@@ -69,7 +70,8 @@ call's pointer and its ABI always come from the same build.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const FUNCTION_RETURN_TYPES_BY_LIB = Dict{Tuple{String, String}, Type}()
+const FUNCTION_RETURN_TYPES_BY_LIB = _state_view(:function_return_types_by_lib,
+    Dict{Tuple{String, String}, Type}())
 
 """
 Rust item name to exported C symbol, keyed by `(library name, Rust name)`.
@@ -89,7 +91,8 @@ unloaded library cannot leave a stale mapping behind.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const FUNCTION_SYMBOLS_BY_LIB = Dict{Tuple{String, String}, String}()
+const FUNCTION_SYMBOLS_BY_LIB = _state_view(:function_symbols_by_lib,
+    Dict{Tuple{String, String}, String}())
 
 """
     register_function_symbol(lib_name, name, symbol)
@@ -250,7 +253,8 @@ calling a pointer into a `dlclose`d one.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const PANIC_CHANNELS = Dict{Tuple{String, String}, Ptr{Cvoid}}()
+const PANIC_CHANNELS = _state_view(:panic_channels,
+    Dict{Tuple{String, String}, Ptr{Cvoid}}())
 
 # Buffer for one panic message. Panic text is short; a message longer than this
 # is fetched again with an exact-size buffer (the channel keeps it until it has

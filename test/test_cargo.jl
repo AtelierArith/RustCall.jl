@@ -897,6 +897,24 @@ end
         @test all(==(RustCall._file_content_digest(stored)), digests)
         @test all(d -> read(joinpath(d, "Cargo.lock"), String) == winner, dirs)
         foreach(d -> rm(d; recursive = true, force = true), dirs)
+
+        # A stale entry must not satisfy a loser that meets the claim: it
+        # waits for the replacement to name the generated root package.
+        write(stored, "[[package]]\nname = \"old_root\"\n")
+        mktempdir() do d
+            waiting = joinpath(d, "Cargo.lock")
+            write(waiting, "[[package]]\nname = \"rustcall_block_itoa\"\n")
+            @test RustCall._claim_lockfile!(claim)
+            waiter = Threads.@spawn RustCall._publish_lockfile!(
+                stored, waiting; replace = true, root = "rustcall_block_itoa", wait = 1.0)
+            sleep(0.1)
+            @test !istaskdone(waiter)
+            write(stored, read(waiting, String))
+            rm(claim; force = true)
+            @test RustCall._file_content_digest(waiting) == fetch(waiter)
+            @test read(waiting, String) == read(stored, String)
+        end
+
         # No temporary or claim file is left behind by any path.
         @test all(f -> !occursin(".tmp-", f) && !endswith(f, ".claim"),
                   readdir(RustCall.lockfile_dir()))

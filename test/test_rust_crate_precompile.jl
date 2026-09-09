@@ -638,6 +638,12 @@ end
         withenv("PYO3_PYTHON" => "/opt/py/bin/python3") do
             @test_logs (:warn,) match_mode = :any RustCall._warn_if_build_env_changed(
                 recorded, "/crate", "lib")
+            @test_throws RustCall.RustError RustCall._warn_if_build_env_changed(
+                recorded, "/crate", "lib"; strict = true)
+        end
+        withenv("RUSTFLAGS" => "-C opt-level=1") do
+            @test_throws RustCall.RustError RustCall._warn_if_build_env_changed(
+                recorded, "/crate", "lib"; strict = true)
         end
 
         # Gone away: warned too.

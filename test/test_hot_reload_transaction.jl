@@ -864,6 +864,24 @@ end
                 # rather than simply never memoizing.
                 write_manifest("")
                 @test RustCall._crate_build_cfg_text(crate) == without
+
+                # A build script can read an input that is not in the digest
+                # RustCall can enumerate. The probe must still follow the
+                # build's current cfg instead of serving a stale memo (#291).
+                build_script = joinpath(crate, "build.rs")
+                write(build_script, """
+                    fn main() {
+                        let flag = std::fs::read_to_string("cfg.flag").unwrap();
+                        println!("cargo:rustc-cfg=rustcall_{}", flag.trim());
+                    }
+                    """)
+                write(joinpath(crate, "cfg.flag"), "first")
+                first_probe = RustCall._crate_build_cfg_text(crate)
+                @test occursin("rustcall_first", first_probe)
+                write(joinpath(crate, "cfg.flag"), "second")
+                second_probe = RustCall._crate_build_cfg_text(crate)
+                @test occursin("rustcall_second", second_probe)
+                @test !occursin("rustcall_first", second_probe)
             end
         end
     end

@@ -55,19 +55,20 @@ HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
 Registry of hot-reloadable crates.
 Maps library name to HotReloadState.
 """
-const HOT_RELOAD_REGISTRY = Dict{String, HotReloadState}()
+const HOT_RELOAD_REGISTRY = _state_view(:hot_reload_registry,
+    Dict{String, HotReloadState}())
 
 """
 Global flag to enable/disable all hot reload functionality.
 """
-const HOT_RELOAD_ENABLED = Ref(true)
+const HOT_RELOAD_ENABLED = _state_view(:hot_reload_enabled, Ref(true))
 
 """
 Per-library locks to serialize reload operations for the same library.
 Prevents concurrent hot reloads of the same crate from corrupting state.
 """
-const RELOAD_LOCKS = Dict{String, ReentrantLock}()
-const RELOAD_LOCKS_LOCK = ReentrantLock()
+const RELOAD_LOCKS = _state_view(:reload_locks, Dict{String, ReentrantLock}())
+const RELOAD_LOCKS_LOCK = REGISTRY_LOCK
 
 """
     _get_reload_lock(lib_name::String) -> ReentrantLock
@@ -551,7 +552,7 @@ multi-file save, and short enough to be invisible in a dev loop. The issue asks
 for two saves within 200 ms to produce one reload, which this satisfies with
 room to spare.
 """
-const HOT_RELOAD_DEBOUNCE_SECONDS = Ref(0.1)
+const HOT_RELOAD_DEBOUNCE_SECONDS = _state_view(:hot_reload_debounce_seconds, Ref(0.1))
 
 """
     _await_source_change(state, timeout) -> Bool

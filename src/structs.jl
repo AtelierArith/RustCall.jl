@@ -275,6 +275,7 @@ compiled into the library directly and need no registration.
 """
 function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String; compiler = nothing)
     isempty(info.type_params) && return nothing
+    group = Symbol("generic_struct:", qualified_name(info.module_path, info.name))
     for (wrapper_name, _, wrapper_params) in info.generic_wrappers
         # The wrapper's own parameter names, positionally aligned with the
         # struct's parameters, so `Point{Int32}` binds the right name even when
@@ -288,7 +289,8 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
         arg_types = m === nothing ? String[] : info.methods[m].arg_types
         register_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
                                   arg_types = arg_types,
-                                  path = qualified_name(info.module_path, wrapper_name), compiler)
+                                  path = qualified_name(info.module_path, wrapper_name), compiler,
+                                  group = group)
     end
     return nothing
 end
@@ -1238,18 +1240,34 @@ end
 Run a generic constructor and hand back the pointer **and** the snapshot the
 object it allocated must capture.
 
-The destructor is looked for on the constructor's **own** image first: the
-instantiation `rustcall-extract specialize` produces carries the whole
-`#[julia]` item, so `<Struct>_free` is normally exported by the very artifact
-that allocated the object — one image, one allocator, one liveness flag. Only
-when it is not does this fall back to monomorphizing the destructor separately,
-which is the pre-existing behaviour and is recorded in
-`docs/src/panics.md` as a limit of the generic path: an object allocated by one
-`cdylib` and freed through another crosses an allocator boundary.
+The generic-struct group specializes the constructor, methods, accessors, and
+`<Struct>_free` into the constructor's image, so one instantiation has one
+allocator and one liveness flag. The symbol lookup below remains a fallback
+for hand-registered generic functions that predate grouped registration.
 """
 function _call_generic_constructor(func_name::String, struct_name::AbstractString,
                                    args::Tuple, types::Tuple)
     ptr, lib_name, handle, generation = _generic_constructor_call(func_name, args, types)
+    # Generic struct groups specialize the destructor beside the constructor.
+    # Resolve that cached wrapper first so the object captures the same image
+    # and allocator; the legacy symbol lookup remains a compatibility fallback
+    # for hand-registered generic functions (#291).
+    free_info = try
+        free_name = "$(struct_name)_free"
+        generic_free = GENERIC_FUNCTION_REGISTRY[free_name]
+        free_params = Dict{Symbol, Type}(p => types[i]
+                                         for (i, p) in enumerate(generic_free.type_params))
+        monomorphize_function(free_name, free_params)
+    catch
+        nothing
+    end
+    if free_info !== nothing && free_info.handle == handle && free_info.lib_name == lib_name
+        gen = lock(REGISTRY_LOCK) do
+            ArtifactGeneration(handle, free_info.func_ptr,
+                               alive_ref_for_handle(handle, lib_name), generation)
+        end
+        return (ptr, lib_name, gen)
+    end
     free_symbol = ffi_struct_free_symbol(struct_name)
     own = handle == C_NULL ? C_NULL :
           (found = Libdl.dlsym(handle, free_symbol; throw_error = false);

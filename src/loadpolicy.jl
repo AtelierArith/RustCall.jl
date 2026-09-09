@@ -542,8 +542,8 @@ Read once, at `__init__`: a load policy must not change halfway through a
 session, or two artifacts of one program would disagree about the namespace
 they published into.
 """
-const DLOPEN_GLOBAL_OVERRIDE = Ref(false)
-const _DLOPEN_GLOBAL_WARNED = Ref(false)
+const DLOPEN_GLOBAL_OVERRIDE = _state_view(:dlopen_global_override, Ref(false))
+const _DLOPEN_GLOBAL_WARNED = _state_view(:dlopen_global_warned, Ref(false))
 
 # Called from `RustCall.__init__`.
 function _init_dlopen_global_override!(env = ENV)
@@ -952,7 +952,7 @@ inert; the object itself is unreachable from here by then.
 Guarded by `REGISTRY_LOCK`.  An alias (`alias_artifact!`) shares the flag of
 the artifact it aliases, so unloading either name retires both.
 """
-const ARTIFACT_ALIVE = Dict{String, Ref{Bool}}()
+const ARTIFACT_ALIVE = _state_view(:artifact_alive, Dict{String, Ref{Bool}}())
 
 """
     artifact_alive_ref(lib_name) -> Ref{Bool}
@@ -1002,7 +1002,7 @@ swap.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const ARTIFACT_GENERATIONS = Dict{String, Int}()
+const ARTIFACT_GENERATIONS = _state_view(:artifact_generations, Dict{String, Int}())
 
 # The generation being installed for `name`. Caller holds REGISTRY_LOCK.
 function _next_artifact_generation!(name::String)
@@ -1073,7 +1073,8 @@ still there waiting for the new handle.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const HANDLE_MIRRORS = Dict{String, Vector{Base.RefValue{CrateGeneration}}}()
+const HANDLE_MIRRORS = _state_view(:handle_mirrors,
+    Dict{String, Vector{Base.RefValue{CrateGeneration}}}())
 
 """
     register_handle_mirror!(lib_name, gen_ref)
@@ -1189,7 +1190,7 @@ A liveness flag that is `false` and stays `false`: the answer for a pointer
 whose image is neither registered nor retired. Shared, because it is immutable
 in practice — nothing ever flips it.
 """
-const DEAD_ARTIFACT = Ref(false)
+const DEAD_ARTIFACT = _state_view(:dead_artifact, Ref(false))
 
 """
     RETIRED_HANDLES
@@ -1224,7 +1225,7 @@ needs it; a long-running process or a test harness does.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const RETIRED_HANDLES = Dict{Ptr{Cvoid}, RetiredImage}()
+const RETIRED_HANDLES = _state_view(:retired_handles, Dict{Ptr{Cvoid}, RetiredImage}())
 
 """
     retired_handles() -> Vector{Ptr{Cvoid}}
@@ -1601,7 +1602,7 @@ cannot both decide to perform the last close.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const OWNED_HANDLES = Dict{Ptr{Cvoid}, Int}()
+const OWNED_HANDLES = _state_view(:owned_handles, Dict{Ptr{Cvoid}, Int}())
 
 """
     close_artifact_handle!(handle) -> Bool
@@ -1763,7 +1764,8 @@ closed: the artifacts that import it may outlive any one of them being
 retired, and a runtime like Python cannot be unloaded and reloaded within one
 process anyway. Guarded by `REGISTRY_LOCK`.
 """
-const PRELOADED_LIBRARIES = Dict{String, Ptr{Cvoid}}()
+const PRELOADED_LIBRARIES = _state_view(:preloaded_libraries,
+    Dict{String, Ptr{Cvoid}}())
 
 """
     preload_dependency!(policy::LoadPolicy, path) -> Ptr{Cvoid}

@@ -1601,8 +1601,9 @@ end
     @test id_ab.type_params == ["T" => "Int32", "U" => "Int64"]
     @test id_ba.type_params == ["T" => "Int64", "U" => "Int32"]
     @test RustCall.artifact_key(id_ab) != RustCall.artifact_key(id_ba)
-    # The registry that used to collide is now keyed by that value.
-    @test RustCall.MONOMORPHIZED_FUNCTIONS isa Dict{String, RustCall.FunctionInfo}
+    # The registry that used to collide is now keyed by that value.  Registry
+    # views are backed by RustCall.STATE (#251), rather than naked Dict globals.
+    @test RustCall.MONOMORPHIZED_FUNCTIONS isa RustCall.StateView
 end
 
 # #278 B6: a precompiled module stores the *inputs* of a `rust"""` block, never

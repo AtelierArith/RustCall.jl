@@ -24,6 +24,8 @@ jobs:
         run: bash scripts/lint_load_path.sh src
       - name: Check that every FFI entry point takes one generation snapshot
         run: bash scripts/lint_generation_snapshot.sh src
+      - name: Check that mutable registries use the Lockable state container
+        run: bash scripts/lint_state_container.sh src
 
   rust-tests:
     name: Rust ${{ matrix.rust }} - ${{ matrix.os }} - ${{ matrix.crate }}
@@ -114,3 +116,38 @@ jobs:
           JULIA_NUM_THREADS: ${{ matrix.threads }}
         with:
           test_args: ${{ matrix.test_args }}
+
+  compile-benchmark:
+    name: Compile benchmark - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Build the release extractor
+        working-directory: deps/rustcall_extract
+        run: cargo build --release
+      - name: Run cold and warm compile benchmark
+        shell: bash
+        env:
+          RUSTCALL_EXTRACT: ${{ github.workspace }}/deps/rustcall_extract/target/release/rustcall-extract${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: julia --project benchmark/benchmarks_compile.jl | tee benchmark-${{ runner.os }}.txt
+      - name: Publish benchmark result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### ${{ runner.os }}"
+            cat benchmark-${{ runner.os }}.txt
+          } >> "$GITHUB_STEP_SUMMARY"

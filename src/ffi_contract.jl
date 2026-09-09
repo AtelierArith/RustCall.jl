@@ -207,7 +207,7 @@ that one layer accepts can no longer be silently mistranslated by the next
 (#245 item 2). Spellings the contract deliberately refuses are absent, and
 [`ffi_lookup`](@ref) returns `nothing` for them.
 """
-const FFI_TYPE_TABLE = Dict{String, FFIType}()
+const FFI_TYPE_TABLE = _state_view(:ffi_type_table, Dict{String, FFIType}())
 
 function _ffi_register!(entry::FFIType)
     FFI_TYPE_TABLE[entry.rust] = entry
@@ -542,7 +542,7 @@ end
 # Positional contracts
 # ============================================================================
 
-const _FFI_UNKNOWN_SLOTS = Type[]
+const _FFI_UNKNOWN_SLOTS = _state_view(:ffi_unknown_slots, Type[])
 
 """
     ffi_manifest_abi_kind(abi::AbstractString) -> Union{Symbol, Nothing}
@@ -953,9 +953,9 @@ is about — so `:warn` and `:none` exist only to get an existing crate compilin
 again while its unsupported types are dealt with. `write_bindings_to_file`
 binds this per call through its `strict` keyword.
 """
-const FFI_STRICT = Ref{Symbol}(:error)
+const FFI_STRICT = _state_view(:ffi_strict, Ref{Symbol}(:error))
 
-const _FFI_WARNED_CONTEXTS = Set{String}()
+const _FFI_WARNED_CONTEXTS = _state_view(:ffi_warned_contexts, Set{String}())
 
 """
     ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
@@ -1767,4 +1767,3 @@ function ffi_check_by_value(@nospecialize(R::Type), arg_types)
     end
     return nothing
 end
-

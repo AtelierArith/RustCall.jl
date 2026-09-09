@@ -612,6 +612,100 @@ fn a_renamed_import_disambiguates_too() {
     );
 }
 
+/// A module alias in an explicit `impl alias::C` qualifier resolves through
+/// the import rather than being treated as a literal child module (#303).
+#[test]
+fn a_module_alias_disambiguates_an_explicit_pymethods_target() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a as alias;\n\
+            #[pymethods] impl alias::C { pub fn only_a(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
+/// A glob import still scopes a bare `impl` to the imported module (#303).
+#[test]
+fn a_glob_import_disambiguates_a_bare_pymethods_target() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a::*;\n\
+            #[pymethods] impl C { pub fn only_a(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
+/// A plain type alias is another way a PyO3 impl can name its class (#303).
+#[test]
+fn a_type_alias_disambiguates_a_pymethods_target() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            type Alias = crate::a::C;\n\
+            #[pymethods] impl Alias { pub fn only_a(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
 /// Two `pub fn run` in different modules of one crate used to want one
 /// `rustcall_run`; the module path is part of the symbol since #300, so both
 /// are wrappable and `symbol_collision` is unreachable for them.
@@ -1404,6 +1498,44 @@ fn class_names_are_reserved_on_the_julia_surface() {
     let method = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
     assert_eq!(method("Other").skip_reason, "julia_name_collision:b::Other");
     assert_eq!(method("Other2").skip_reason, "");
+}
+
+#[test]
+fn generated_result_aggregate_names_are_reserved() {
+    let manifest = scan(
+        "#[pyfunction] pub fn parse() -> PyResult<i32> { Ok(0) }\n\
+         #[pyclass] pub struct CResult_parse;\n\
+         #[pymethods] impl CResult_parse {\n\
+             #[new] pub fn new() -> Self { CResult_parse }\n\
+         }",
+    );
+    let class = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "CResult_parse")
+        .unwrap();
+    assert_eq!(class.skip_reason, "julia_name_collision:CResult_parse");
+    assert_eq!(function(&manifest, "parse").skip_reason, "");
+}
+
+#[test]
+fn generated_method_aggregate_names_are_reserved() {
+    let manifest = scan(
+        "#[pyclass] pub struct A;\n\
+         #[pymethods] impl A {\n\
+             pub fn checked(&self) -> PyResult<i32> { Ok(0) }\n\
+         }\n\
+         #[pyclass] pub struct CResult_A_checked;\n\
+         #[pymethods] impl CResult_A_checked {\n\
+             #[new] pub fn new() -> Self { CResult_A_checked }\n\
+         }",
+    );
+    let class = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "CResult_A_checked")
+        .unwrap();
+    assert_eq!(class.skip_reason, "julia_name_collision:CResult_A_checked");
 }
 
 /// The Julia surface is one namespace per generated module (#300): a free

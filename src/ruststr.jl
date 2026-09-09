@@ -4,17 +4,18 @@
 Registry for compiled Rust libraries.
 Maps library name to (library handle, functions dict).
 """
-const RUST_LIBRARIES = Dict{String, Tuple{Ptr{Cvoid}, Dict{String, Ptr{Cvoid}}}}()
+const RUST_LIBRARIES = _state_view(:rust_libraries,
+    Dict{String, Tuple{Ptr{Cvoid}, Dict{String, Ptr{Cvoid}}}}())
 
 """
 Current active library name.
 """
-const CURRENT_LIB = Ref{String}("")
+const CURRENT_LIB = _state_view(:current_lib, Ref{String}(""))
 
 """
 Active library for each module during macro expansion.
 """
-const MODULE_ACTIVE_LIB = Dict{Module, String}()
+const MODULE_ACTIVE_LIB = _state_view(:module_active_lib, Dict{Module, String}())
 
 """
     get_current_library() -> String
@@ -1133,7 +1134,7 @@ end
 Registry for irust snippets.
 Maps a snippet's artifact key to the `IrustSnippet` describing what was built.
 """
-const IRUST_FUNCTIONS = Dict{String, IrustSnippet}()
+const IRUST_FUNCTIONS = _state_view(:irust_functions, Dict{String, IrustSnippet}())
 
 """
     @irust(code, args...)

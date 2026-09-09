@@ -201,7 +201,7 @@ function ensure_cargo_lockfile!(project::CargoProject;
         String(take!(stderr_io)), project.path))
     isfile(target) || throw(CargoBuildError("cargo generate-lockfile produced no Cargo.lock",
                                             "", project.path))
-    return _publish_lockfile!(stored, target; replace = replace_stale)
+    return _publish_lockfile!(stored, target; replace = replace_stale, root = project.name)
 end
 
 # Whether the lockfile at `path` carries a `[[package]]` entry for `root` — the
@@ -238,21 +238,25 @@ the file: if no other RustCall process is resolving the set, a previous one
 died holding the claim — delete that file (or run `clear_lockfiles()`) and
 build again.
 
-With `replace = true` the claim holder publishes over an existing file: the
-caller has established that the stored file is not this set's resolution
-(`_lockfile_names_root`), and the claim still serialises the writers.
+With `replace = true` the claim holder revalidates the stored file while it
+holds the claim. It replaces the file only when it still does not name `root`;
+otherwise it replays the now-fresh entry. A loser with a stale file waits for
+the entry to name `root`, not merely for any file to exist (#322).
 
 Throws `CargoBuildError` in that case.
 """
 function _publish_lockfile!(stored::AbstractString, target::AbstractString;
-                            wait::Real = 10.0, replace::Bool = false)
+                            wait::Real = 10.0, replace::Bool = false,
+                            root::Union{Nothing, AbstractString} = nothing)
     stored = String(stored)
     target = String(target)
     mkpath(dirname(stored))
     claim = stored * ".claim"
     if _claim_lockfile!(claim)
         try
-            if replace || !isfile(stored)
+            should_replace = replace &&
+                             (root === nothing || !_lockfile_names_root(stored, root))
+            if should_replace || !isfile(stored)
                 tmp = stored * ".tmp-$(getpid())-$(rand(UInt32))"
                 cp(target, tmp; force = true)
                 # Only the claim holder renames, so this replaces nothing.
@@ -263,12 +267,16 @@ function _publish_lockfile!(stored::AbstractString, target::AbstractString;
         end
     else
         deadline = time() + Float64(wait)
-        while !isfile(stored) && time() < deadline
+        while (!isfile(stored) ||
+               (root !== nothing && !_lockfile_names_root(stored, root))) &&
+              time() < deadline
             sleep(0.05)
         end
-        isfile(stored) || throw(CargoBuildError(
+        ready = root === nothing ? isfile(stored) :
+                (isfile(stored) && _lockfile_names_root(stored, root))
+        ready || throw(CargoBuildError(
             "Another RustCall process holds the claim on this dependency set's Cargo.lock " *
-            "and published nothing within $(wait)s. If no other process is resolving it, " *
+            "and published no matching resolution within $(wait)s. If no other process is resolving it, " *
             "a previous one died holding the claim: delete `$(claim)` (or run " *
             "`RustCall.clear_lockfiles()`) and build again",
             "claim: $(claim)", dirname(target)))

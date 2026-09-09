@@ -4,7 +4,8 @@
 using Libdl
 
 # Registry for Rust helper library
-const RUST_HELPERS_LIB = Ref{Union{Ptr{Cvoid}, Nothing}}(nothing)
+const RUST_HELPERS_LIB = _state_view(:rust_helpers_lib,
+    Ref{Union{Ptr{Cvoid}, Nothing}}(nothing))
 
 """
     safe_dlsym(lib::Ptr{Cvoid}, sym::Symbol) -> Ptr{Cvoid}
@@ -22,7 +23,7 @@ function safe_dlsym(lib::Ptr{Cvoid}, sym::Symbol)
 end
 
 # Flag to track if we've already warned about missing library
-const DROP_WARNING_SHOWN = Ref{Bool}(false)
+const DROP_WARNING_SHOWN = _state_view(:drop_warning_shown, Ref{Bool}(false))
 
 # Deferred pointer tracking for cleanup when library becomes available
 struct DeferredDrop
@@ -39,12 +40,19 @@ end
 DeferredDrop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol) =
     DeferredDrop(ptr, type_name, drop_symbol, UInt(0), UInt(0), false)
 
-const DEFERRED_DROPS = DeferredDrop[]
+# The queue storage lives in STATE with the other mutable runtime state, but
+# the finalizer path below accesses it through `_state_value` and takes only
+# the queue's short lock. It must not take STATE, dlsym, or log (#251).
+mutable struct DeferredDropQueue
+    entries::Vector{DeferredDrop}
+end
+
+const DEFERRED_DROPS = _state_view(:deferred_drops, DeferredDropQueue(DeferredDrop[]))
 const DEFERRED_DROPS_LOCK = ReentrantLock()
 
 # Maximum number of deferred drops before a warning is issued and a flush is attempted.
 # This prevents unbounded memory growth when the Rust helpers library is unavailable.
-const MAX_DEFERRED_DROPS = Ref{Int}(1000)
+const MAX_DEFERRED_DROPS = _state_view(:max_deferred_drops, Ref{Int}(1000))
 
 """
     _defer_drop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol)
@@ -54,8 +62,9 @@ If the queue exceeds `MAX_DEFERRED_DROPS`, attempts a flush first.
 """
 function _defer_drop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol)
     should_flush = lock(DEFERRED_DROPS_LOCK) do
-        push!(DEFERRED_DROPS, DeferredDrop(ptr, type_name, drop_symbol))
-        return length(DEFERRED_DROPS) >= MAX_DEFERRED_DROPS[]
+        queue = _state_value(DEFERRED_DROPS)
+        push!(queue.entries, DeferredDrop(ptr, type_name, drop_symbol))
+        return length(queue.entries) >= MAX_DEFERRED_DROPS[]
     end
     if should_flush
         @warn "Deferred drop queue reached $(MAX_DEFERRED_DROPS[]) entries, attempting flush" maxlog=5
@@ -73,8 +82,9 @@ If the queue exceeds `MAX_DEFERRED_DROPS`, attempts a flush first.
 """
 function _defer_vec_drop(ptr::Ptr{Cvoid}, len::UInt, cap::UInt, type_name::String, drop_symbol::Symbol)
     should_flush = lock(DEFERRED_DROPS_LOCK) do
-        push!(DEFERRED_DROPS, DeferredDrop(ptr, type_name, drop_symbol, len, cap, true))
-        return length(DEFERRED_DROPS) >= MAX_DEFERRED_DROPS[]
+        queue = _state_value(DEFERRED_DROPS)
+        push!(queue.entries, DeferredDrop(ptr, type_name, drop_symbol, len, cap, true))
+        return length(queue.entries) >= MAX_DEFERRED_DROPS[]
     end
     if should_flush
         @warn "Deferred drop queue reached $(MAX_DEFERRED_DROPS[]) entries, attempting flush" maxlog=5
@@ -93,7 +103,7 @@ helpers library was unavailable at drop time.
 """
 function get_deferred_drop_count()
     lock(DEFERRED_DROPS_LOCK) do
-        return length(DEFERRED_DROPS)
+        return length(_state_value(DEFERRED_DROPS).entries)
     end
 end
 
@@ -111,8 +121,9 @@ function flush_deferred_drops()
     end
 
     drops = lock(DEFERRED_DROPS_LOCK) do
-        d = copy(DEFERRED_DROPS)
-        empty!(DEFERRED_DROPS)
+        queue = _state_value(DEFERRED_DROPS)
+        d = copy(queue.entries)
+        empty!(queue.entries)
         d
     end
 
@@ -139,7 +150,7 @@ function flush_deferred_drops()
 
     if !isempty(failed)
         lock(DEFERRED_DROPS_LOCK) do
-            prepend!(DEFERRED_DROPS, failed)
+            prepend!(_state_value(DEFERRED_DROPS).entries, failed)
         end
     end
 
@@ -157,7 +168,7 @@ Return the number of pointers awaiting deferred deallocation.
 """
 function deferred_drop_count()
     return lock(DEFERRED_DROPS_LOCK) do
-        length(DEFERRED_DROPS)
+        length(_state_value(DEFERRED_DROPS).entries)
     end
 end
 

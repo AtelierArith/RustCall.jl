@@ -28,8 +28,132 @@ module RustCall
 
 using Libdl
 
-# Thread-safety lock for global registries
-const REGISTRY_LOCK = ReentrantLock()
+"""
+    RustCallState
+
+The mutable process state of RustCall.  The value is held by `STATE`, a
+`Base.Lockable`, so registry objects are never declared as independent module
+globals.  `StateView` is a compatibility handle used by the older internal
+names; every operation on it takes the state lock, including reads made by
+tests and extensions.
+
+The state lock is the outer lock in RustCall's lock-ordering policy.  Code
+under it may only manipulate state and resolve already-loaded pointers; it must
+not call user Julia code, compile, `dlopen`/`dlclose`, or execute a `ccall`.
+Those operations happen before or after the locked transaction.
+"""
+mutable struct RustCallState
+    values::Dict{Symbol, Any}
+end
+
+const STATE = Base.Lockable(RustCallState(Dict{Symbol, Any}()))
+
+struct StateView
+    name::Symbol
+end
+
+_state_value(view::StateView) = STATE.value.values[view.name]
+
+function _state_view(name::Symbol, value)
+    STATE.value.values[name] = value
+    return StateView(name)
+end
+
+function _state_read(view::StateView, f::Function)
+    lock(STATE.lock) do
+        f(STATE.value.values[view.name])
+    end
+end
+_state_read(f::Function, view::StateView) = _state_read(view, f)
+
+Base.getindex(view::StateView) = _state_read(view) do value
+    value isa Ref ? value[] : value
+end
+Base.isassigned(view::StateView) = _state_read(view) do value
+    value isa Ref ? isassigned(value) : true
+end
+Base.getindex(view::StateView, key...) = _state_read(view) do value
+    getindex(value, key...)
+end
+Base.setindex!(view::StateView, value) = _state_read(view) do state_value
+    state_value[] = value
+end
+Base.setindex!(view::StateView, value, key...) = _state_read(view) do state_value
+    setindex!(state_value, value, key...)
+end
+Base.get(view::StateView, key, default) = _state_read(view) do state_value
+    get(state_value, key, default)
+end
+Base.get!(view::StateView, key, default) = _state_read(view) do state_value
+    get!(state_value, key, default)
+end
+Base.get!(default::Function, view::StateView, key) = _state_read(view) do state_value
+    get!(default, state_value, key)
+end
+Base.haskey(view::StateView, key) = _state_read(view) do state_value
+    haskey(state_value, key)
+end
+Base.delete!(view::StateView, key) = _state_read(view) do state_value
+    delete!(state_value, key)
+end
+Base.empty!(view::StateView) = _state_read(view) do state_value
+    empty!(state_value)
+end
+function Base.push!(view::StateView, items...)
+    if view.name === :deferred_drops
+        queue = _state_value(view)
+        return lock(DEFERRED_DROPS_LOCK) do
+            push!(getfield(queue, :entries), items...)
+        end
+    end
+    return _state_read(view) do state_value
+        push!(state_value, items...)
+    end
+end
+Base.prepend!(view::StateView, items) = _state_read(view) do state_value
+    prepend!(state_value, items)
+end
+function Base.filter!(predicate::Function, view::StateView)
+    if view.name === :deferred_drops
+        queue = _state_value(view)
+        return lock(DEFERRED_DROPS_LOCK) do
+            filter!(predicate, getfield(queue, :entries))
+        end
+    end
+    return _state_read(view) do state_value
+        filter!(predicate, state_value)
+    end
+end
+Base.isempty(view::StateView) = _state_read(view, isempty)
+Base.length(view::StateView) = _state_read(view, length)
+Base.copy(view::StateView) = _state_read(view, copy)
+Base.keys(view::StateView) = _state_read(view) do value
+    collect(keys(value))
+end
+Base.values(view::StateView) = _state_read(view) do value
+    collect(values(value))
+end
+
+# Iteration uses a snapshot so the state lock is not held across user code.
+function Base.iterate(view::StateView)
+    snapshot = _state_read(view, copy)
+    item = iterate(snapshot)
+    item === nothing && return nothing
+    value, cursor = item
+    return value, (snapshot, cursor)
+end
+function Base.iterate(view::StateView, state::Tuple{Any, Any})
+    snapshot, cursor = state
+    item = iterate(snapshot, cursor)
+    item === nothing && return nothing
+    value, next_cursor = item
+    return value, (snapshot, next_cursor)
+end
+
+# Thread-safety lock for the state container.  It remains named for internal
+# compatibility, but the lock now belongs to STATE rather than to a free
+# standing registry.
+const REGISTRY_LOCK = STATE.lock
 
 # Include submodules in order of dependency
 include("types.jl")

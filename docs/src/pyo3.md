@@ -407,22 +407,17 @@ error). Either way the fix is the same: install `python3-dev` /
 Python that ships the library.
 
 The same requirement shapes RustCall's own test suite. The testsets that build
-and load a `:link_libpython` wrapper — in `test/test_pyo3_wrapper.jl` today,
-and the PyO3 cross-module case that #300 (PR #333) adds in
-`test/test_module_symbols.jl` — try the build first and **skip** the testset
-when it fails, each logging an `@info` whose message starts with `skipping`
-(`"skipping the :link_libpython wrapper testset"` from the shared helper, and
-the per-testset `"skipping the mixed-crate build"`,
-`"skipping the feature-gated build"`, `"skipping the configured-crate build"`),
-some also recording a `@test_skip`. Every one of these catches *every* failure
-of that build, not only a missing libpython, so a skip is never a pass and can
-also hide a wrapper or Cargo regression: grep a run's output for `skipping` and
-read the `exception` those `@info`s carry before trusting a green run on a
-machine that skipped them (routing them all through one prerequisite check is
-tracked as #336). The Ubuntu CI jobs have a linkable Python and run them in
-full. `test/test_pyo3_link_plan.jl` and
-`test/test_manifest.jl` only compute the plan and always run, as do the
-scan-level assertions and every `:python_free` case
+and load a `:link_libpython` wrapper — in `test/test_pyo3_wrapper.jl` and the
+PyO3 cross-module case in `test/test_module_symbols.jl` — use one shared
+prerequisite helper. It checks the resolved plan and then checks for a
+linkable library in the selected directory (`libpython3.x.so`,
+`libpython3.x.dylib` or `Python3.framework`, or `python3xy.lib`). It logs an
+informative `skipping` message only when that prerequisite is absent. Once the
+directory is linkable, wrapper generation, Cargo, compiler, loading, and calls
+are hard failures; a wrapper regression cannot become a skip. The Ubuntu CI
+jobs have a linkable Python and run these testsets in full.
+`test/test_pyo3_link_plan.jl` and `test/test_manifest.jl` only compute the plan
+and always run, as do the scan-level assertions and every `:python_free` case
 (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`, and
 `examples/SampleCratePyO3.jl`), which need no Python.
 
@@ -581,8 +576,9 @@ build script configures itself for (`PYO3_PYTHON`, `plan.interpreter`).
 
 The wrapper crate — and the cfg probe that decides what it can call — is
 built under the target crate's own `target/`, seeded with the crate's
-`Cargo.lock` and `[patch]` table, so the crate's `.cargo/config.toml`, its
-pins and its overrides apply to the wrapper exactly as they apply to the crate
+`Cargo.lock` and root `[patch]` / `[replace]` tables, so the crate's
+`.cargo/config.toml`, its pins and its overrides apply to the wrapper exactly
+as they apply to the crate
 itself; Cargo gives none of the three to a dependency of a root elsewhere.
 
 The interpreter — its path *and* what it reports about itself

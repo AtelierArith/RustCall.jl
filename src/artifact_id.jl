@@ -498,7 +498,8 @@ const _ARTIFACT_DIGEST_LOCK = ReentrantLock()
 
 # canonical crate dir => (manifest stamps of every crate in the graph,
 #                          (strategy, dirs))
-const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}()
+const _PATH_DEP_GRAPH_CACHE = _state_view(:path_dep_graph_cache,
+    Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}())
 
 """
     CARGO_TREE_INVOCATIONS
@@ -506,7 +507,7 @@ const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{Strin
 How many times `cargo tree` has been spawned this session. A test hook for the
 performance requirement of #278.
 """
-const CARGO_TREE_INVOCATIONS = Ref(0)
+const CARGO_TREE_INVOCATIONS = _state_view(:cargo_tree_invocations, Ref(0))
 
 """
     _artifact_reset_digest_caches!()

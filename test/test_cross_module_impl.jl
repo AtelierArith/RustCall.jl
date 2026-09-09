@@ -643,6 +643,31 @@ end
     end
 end
 
+# A file named in FILE... can also be the target of an include! from another
+# listed file. The explicit root position must not win over the include's
+# module position (#356).
+@testset "a listed include fragment keeps its module position (#356)" begin
+    if !RustCall.check_rustc_available()
+        @warn "rustc not found, skipping the listed-fragment position test"
+    else
+        mktempdir() do dir
+            frag = joinpath(dir, "frag.rs")
+            write(frag, "#[julia] pub fn shout() -> i32 { 1 }\n")
+            lib = joinpath(dir, "lib.rs")
+            write(lib, """
+                use juliacall_macros::julia;
+                #[julia]
+                pub mod api { include!("frag.rs"); }
+                """)
+            manifest = RustCall.extract_manifest([lib, frag]; mode = "crate")
+            shout = filter(f -> f["name"] == "shout", manifest["functions"])
+            @test length(shout) == 1
+            @test shout[1]["module_path"] == ["api"]
+            @test shout[1]["symbol"] == "rustcall_api__shout"
+        end
+    end
+end
+
 # Two mutually exclusive `#[cfg]` modules of one name, each including the same
 # fragment, are one file at one module path under two predicates. The walk
 # keyed the files it had seen by (file, module path), so the second was

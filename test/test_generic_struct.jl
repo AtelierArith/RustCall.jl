@@ -89,14 +89,14 @@ using Test
         end
         @test any(f -> f === alive, registered)
 
-        # Each generic instantiation is compiled into its own artifact today,
-        # so the destructor may live in a different image from the
-        # constructor. What the snapshot guarantees is that the flag belongs to
-        # the image the finalizer will actually call into; giving a generic
-        # struct's constructor and destructor one artifact, which is what
-        # would put the allocation and the free on one allocator, is #291.
+        # Constructor, methods, accessors, and destructor for one type
+        # instantiation share one artifact, so allocation and free use one
+        # allocator (#291).
         lib = getfield(b, :lib_name)
         @test !isempty(lib)
+        free_info = only(filter(info -> occursin("Boxed_free", info.name),
+                                values(RustCall.MONOMORPHIZED_FUNCTIONS)))
+        @test free_info.lib_name == lib
 
         # ...and the object still frees exactly once, without raising.
         before = RustCall.finalizer_failure_count()

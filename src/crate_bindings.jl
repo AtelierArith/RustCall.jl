@@ -805,10 +805,12 @@ function _python_selection()
 end
 
 """
-    _warn_if_build_env_changed(recorded, crate_path, lib_name)
+    _warn_if_build_env_changed(recorded, crate_path, lib_name; strict = false)
 
-Warn when the environment that decides this crate's artifact is not the one it
-was built under.
+Check whether the environment that decides this crate's artifact is the one it
+was built under. The generated `@rust_crate` module uses `strict = true` and
+refuses to load a precompiled image whose non-file inputs changed; the default
+is retained for diagnostic callers and emits the historical warning.
 
 Julia invalidates a precompile image from *files*, and
 `Base.include_dependency` is the only lever a generated module has. Part of the
@@ -828,7 +830,8 @@ again.
 function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
                                     recorded_cargo_config::AbstractString = "",
                                     recorded_toolchain::AbstractString = "";
-                                    python::Bool = false)
+                                    python::Bool = false,
+                                    strict::Bool = false)
     current = try
         _recorded_build_env(; python = python)
     catch e
@@ -870,15 +873,18 @@ function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_na
         now_toolchain == recorded_toolchain || push!(changed, "<Rust toolchain>")
     end
     isempty(changed) && return nothing
-    @warn """
-          RustCall: the build environment changed since `$(lib_name)` was compiled into this \
-          package's precompile image, and Julia cannot see that — it invalidates an image from \
-          files, and these are not files. The library that is about to load was built under the \
-          previous values.
+    message = """
+    RustCall: the build environment changed since `$(lib_name)` was compiled into this package's
+    precompile image, and Julia cannot see that — it invalidates an image from files, and these
+    are not files. The library that is about to load was built under the previous values.
 
-          Force a rebuild with `Pkg.precompile(; force = true)`, or touch a source file of the \
-          crate.
-          """ crate = crate_path variables = changed
+    Variables: $(join(changed, ", ")). Force a rebuild with `Pkg.precompile(; force = true)`, or
+    touch a source file of the crate.
+    """
+    if strict
+        throw(RustError(String(strip(message))))
+    end
+    @warn message crate = crate_path variables = changed
     return nothing
 end
 
@@ -1039,7 +1045,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
             RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG,
-                                                _TOOLCHAIN; python = _RECORDS_PYTHON)
+                                                _TOOLCHAIN; python = _RECORDS_PYTHON,
+                                                strict = true)
             RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place

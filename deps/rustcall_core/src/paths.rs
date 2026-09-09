@@ -10,7 +10,7 @@
 //! `super::C`, `self::C`, `a::C`, a bare `C`), the `use` declarations of the
 //! impl's module, and finally the one struct of that name anywhere.
 
-use syn::{Ident, Item, ItemUse, Type};
+use syn::{Ident, Item, ItemType, ItemUse, Type};
 
 use crate::types::unparen;
 
@@ -220,6 +220,10 @@ pub struct ScannedImport {
     /// Where that path is rooted, so `use crate::a::C;` and `use a::C;` are
     /// not confused when the enclosing module also has an `a`.
     pub qualifier: PathQualifier,
+    /// Whether this is a glob import such as `use crate::model::*`.  Globs
+    /// cannot name one alias, but they still disambiguate a bare impl header
+    /// to the imported module (#303).
+    pub glob: bool,
 }
 
 /// What a bare `impl C` in `module_path` could be referring to through the
@@ -230,8 +234,20 @@ pub fn imports_of_use(item: &ItemUse, module_path: &[String]) -> Vec<ScannedImpo
     flatten_use_tree(&item.tree, &mut prefix, &mut bindings);
     bindings
         .into_iter()
-        .map(|(alias, anchored)| {
-            let qualifier = path_qualifier(anchored.iter().cloned());
+        .map(|(alias, anchored, glob)| {
+            let qualifier = if glob {
+                // `path_qualifier` normally drops the final item segment.
+                // Add a sentinel so the module prefix of a glob remains in
+                // the candidate path.
+                path_qualifier(
+                    anchored
+                        .iter()
+                        .cloned()
+                        .chain(std::iter::once("__rustcall_glob__".to_string())),
+                )
+            } else {
+                path_qualifier(anchored.iter().cloned())
+            };
             // The anchor segments are not part of the module path; the
             // qualifier keeps what they meant.
             let path: Vec<String> = anchored
@@ -243,9 +259,39 @@ pub fn imports_of_use(item: &ItemUse, module_path: &[String]) -> Vec<ScannedImpo
                 alias,
                 path,
                 qualifier,
+                glob,
             }
         })
         .collect()
+}
+
+/// Treat a plain path type alias as a local import for impl resolution. Rust
+/// accepts `type Alias = crate::model::C; #[pymethods] impl Alias { ... }`,
+/// while the scanner otherwise only sees the spelling `Alias` (#303).
+pub fn import_of_type_alias(item: &ItemType, module_path: &[String]) -> Option<ScannedImport> {
+    let Type::Path(path) = unparen(&item.ty) else {
+        return None;
+    };
+    path.qself.is_none().then(|| {
+        let anchored: Vec<String> = path
+            .path
+            .segments
+            .iter()
+            .map(|s| s.ident.to_string())
+            .collect();
+        let qualifier = path_qualifier(anchored.iter().cloned());
+        let path = anchored
+            .into_iter()
+            .filter(|s| s != "crate" && s != "self" && s != "super")
+            .collect();
+        ScannedImport {
+            module_path: module_path.to_vec(),
+            alias: item.ident.to_string(),
+            path,
+            qualifier,
+            glob: false,
+        }
+    })
 }
 
 /// Flatten a `use` tree into the names it binds and the paths they name,
@@ -260,7 +306,7 @@ pub fn imports_of_use(item: &ItemUse, module_path: &[String]) -> Vec<ScannedImpo
 fn flatten_use_tree(
     tree: &syn::UseTree,
     prefix: &mut Vec<String>,
-    out: &mut Vec<(String, Vec<String>)>,
+    out: &mut Vec<(String, Vec<String>, bool)>,
 ) {
     match tree {
         syn::UseTree::Path(path) => {
@@ -272,12 +318,12 @@ fn flatten_use_tree(
         syn::UseTree::Name(name) => {
             let mut full = prefix.clone();
             full.push(name.ident.to_string());
-            out.push((name.ident.to_string(), full));
+            out.push((name.ident.to_string(), full, false));
         }
         syn::UseTree::Rename(rename) => {
             let mut full = prefix.clone();
             full.push(rename.ident.to_string());
-            out.push((rename.rename.to_string(), full));
+            out.push((rename.rename.to_string(), full, false));
         }
         syn::UseTree::Group(group) => {
             for item in &group.items {
@@ -285,7 +331,7 @@ fn flatten_use_tree(
             }
         }
         // A glob binds no name this matcher can key on.
-        syn::UseTree::Glob(_) => {}
+        syn::UseTree::Glob(_) => out.push(("*".to_string(), prefix.clone(), true)),
     }
 }
 
@@ -357,6 +403,39 @@ pub fn locate<T: Located>(
     let named = |s: &T| s.name() == name;
 
     if !header.qualifier.is_uninformative() {
+        // An imported module alias is part of the path's meaning:
+        // `use crate::z as alias; impl alias::C` names `z::C`, not a class
+        // called `C` next to the impl. Refusing an unresolved alias also
+        // avoids silently attaching the methods to a same-named local class
+        // (#303).
+        let alias_import = if header.qualifier.anchor == PathAnchor::Relative {
+            header.qualifier.segments.first().and_then(|alias| {
+                imports.iter().find(|import| {
+                    import.module_path == header.module_path
+                        && !import.glob
+                        && import.alias == *alias
+                })
+            })
+        } else {
+            None
+        };
+        if let Some(import) = alias_import {
+            let mut segments = import.path.clone();
+            segments.extend(header.qualifier.segments.iter().skip(1).cloned());
+            let imported = PathQualifier {
+                anchor: import.qualifier.anchor,
+                segments,
+            };
+            for candidate in imported.candidates(&header.module_path) {
+                if let Some(i) = structs
+                    .iter()
+                    .position(|s| named(s) && s.module_path() == candidate.as_slice())
+                {
+                    return Ok(i);
+                }
+            }
+            return Err(Unresolved::NotFound);
+        }
         // `impl a::C` inside module `m` means `m::a::C`, or `a::C` from the
         // crate root — try both, nearest first. `impl crate::a::C` means
         // only the second, and `impl self::a::C` only the first.
@@ -396,6 +475,24 @@ pub fn locate<T: Located>(
             if let Some(i) = structs
                 .iter()
                 .position(|s| s.name() == target && s.module_path() == candidate.as_slice())
+            {
+                return Ok(i);
+            }
+        }
+    }
+
+    // A glob has no alias to compare, but `use a::*; impl C` is still scoped
+    // to `a::C` before Rust considers unrelated same-named structs.  Only
+    // accept a class whose module is exactly the imported module; this avoids
+    // treating a nested module's private implementation as re-exported.
+    for import in imports {
+        if import.module_path != header.module_path || !import.glob {
+            continue;
+        }
+        for candidate in import.qualifier.candidates(&header.module_path) {
+            if let Some(i) = structs
+                .iter()
+                .position(|s| named(s) && s.module_path() == candidate.as_slice())
             {
                 return Ok(i);
             }

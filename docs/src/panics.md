@@ -146,6 +146,16 @@ The rules the finalizer follows, and why:
 * **A method call on a freed object raises**, rather than dereferencing a null
   pointer.
 
+## Runtime state and lock ordering
+
+RustCall keeps mutable registries in one `Base.Lockable` state container,
+`RustCall.STATE`. The older registry names are lock-taking views into that
+container, so a read cannot accidentally bypass the state lock. The state lock
+protects only short in-memory transactions: compilation, `dlopen`/`dlclose`,
+user Julia callbacks, and Rust `ccall`s happen outside it. Finalizers do not
+take the state lock, resolve symbols, or log; the deferred-drop queue is stored
+in `STATE` but uses its own short queue lock on the finalizer path.
+
 If you need the Rust object to outlive the Julia wrapper, do not let the
 wrapper be collected — keep a reference, or use `GC.@preserve` around the
 region where the raw pointer is used.

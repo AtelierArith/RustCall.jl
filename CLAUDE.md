@@ -96,7 +96,17 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 
 ## Thread Safety
 
-Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables in `src/codegen.jl` and `ARTIFACT_ALIVE`.
+Mutable runtime state is stored in `RustCall.STATE`, a `Base.Lockable{RustCallState}` in
+`src/RustCall.jl`. The legacy names (`RUST_LIBRARIES`,
+`GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables and
+`ARTIFACT_ALIVE`) are lock-taking `StateView`s into that container; they are not
+independent mutable globals. `REGISTRY_LOCK` is the container's lock. The lock
+ordering rule is: take `STATE`/`REGISTRY_LOCK` only for an in-memory state
+transaction, never while calling user Julia code, compiling, opening/closing a
+library, or executing a Rust `ccall`; perform those operations before or after
+the transaction. The deferred-drop queue's storage is also in `STATE`, but its
+finalizer-safe access uses a separate short queue lock without taking the state
+lock. Finalizers remain otherwise lock-free.
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 
@@ -131,7 +141,7 @@ A replaced image is **retired, not closed**, so a call already inside one stays 
 - `test/test_regressions.jl` holds regression tests for fixed issues
 - Proc-macro tests: `deps/juliacall_macros/tests/`
 - Many tests require `rustc` and skip gracefully if unavailable
-- **PyO3 wrapper tests that link libpython skip without a linkable Python.** A crate whose pyo3 dependency is mandatory is wrapped as a `:link_libpython` build (`docs/src/pyo3.md`), so the testsets that *build and load* such a wrapper (`test/test_pyo3_wrapper.jl`'s `:link_libpython` testsets, and the PyO3 cross-module case #300 / PR #333 adds to `test/test_module_symbols.jl`) first try the build and skip when it fails — through `_link_libpython_wrapper` (`@info "skipping the :link_libpython wrapper testset"`) or a per-testset `try` (`"skipping the mixed-crate build"`, `"skipping the feature-gated build"`, `"skipping the configured-crate build"`, some with a `@test_skip`); grep a run for `skipping`. Typically the cause is that `python_link_source()` found no linkable `libpython3.x` (a `python3` without the shared-library symlink, or none at all), but both catch *every* build failure, so a skip can also hide a wrapper/Cargo regression: read the `exception` in those `@info`s (#336 tracks narrowing the catch). A skipped testset is not a pass: on a machine whose Python ships a linkable library — `libpython3.x.so` (Linux, `python3-dev`), `libpython3.x.dylib` or a `Python3.framework` bundle (macOS), `python3xy.lib` (Windows) — or with `PYO3_PYTHON` / `RUSTCALL_PYTHON_LIBDIR` pointing at one, they run in full, and the Ubuntu CI jobs do run them. `test/test_pyo3_link_plan.jl` and `test/test_manifest.jl` only *compute* the plan (`plan.mode === :link_libpython`) and always run; so do the scan-level assertions and every `:python_free` case (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`), which need no Python at all.
+- **PyO3 wrapper tests that link libpython skip only when the prerequisite is absent.** A crate whose pyo3 dependency is mandatory is wrapped as a `:link_libpython` build (`docs/src/pyo3.md`). The shared `_link_libpython_wrapper` helper first requires `plan.mode === :link_libpython` and a linkable library in the directory selected by `python_link_source()`; it logs the reason and skips only then. Once that prerequisite holds, wrapper generation, Cargo, compiler, loading, and calls are hard failures. The helper is shared by `test/test_pyo3_wrapper.jl` and the PyO3 cross-module case in `test/test_module_symbols.jl`. A skipped testset is not a pass: on a machine whose Python ships a linkable library — `libpython3.x.so` (Linux, `python3-dev`), `libpython3.x.dylib` or a `Python3.framework` bundle (macOS), `python3xy.lib` (Windows) — or with `PYO3_PYTHON` / `RUSTCALL_PYTHON_LIBDIR` pointing at one, they run in full, and the Ubuntu CI jobs do run them. `test/test_pyo3_link_plan.jl` and `test/test_manifest.jl` only *compute* the plan (`plan.mode === :link_libpython`) and always run; so do the scan-level assertions and every `:python_free` case (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`), which need no Python at all.
 
 ## CI
 

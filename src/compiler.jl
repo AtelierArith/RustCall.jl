@@ -124,7 +124,7 @@ function get_rustc_version()
 end
 
 # Global default compiler instance
-const DEFAULT_COMPILER = Ref{RustCompiler}()
+const DEFAULT_COMPILER = _state_view(:default_compiler, Ref{RustCompiler}())
 
 """
     get_default_compiler() -> RustCompiler

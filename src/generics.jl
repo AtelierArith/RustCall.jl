@@ -77,13 +77,24 @@ struct GenericFunctionInfo
     # lazy specialization is a direct `rustc` build under another
     # configuration than the Cargo build the block was expanded for.
     blocked::String
+    # Non-nothing for generic struct wrappers. All members of one group are
+    # specialized into a single cdylib so allocation and destruction share an
+    # allocator (#291).
+    group::Union{Nothing, Symbol}
 end
+
+# Keep the public positional constructor used by older tests and extensions.
+GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
+                    return_type, path, compiler, blocked) =
+    GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
+                        return_type, path, compiler, blocked, nothing)
 
 """
 Registry for generic functions.
 Maps function name to GenericFunctionInfo.
 """
-const GENERIC_FUNCTION_REGISTRY = Dict{String, GenericFunctionInfo}()
+const GENERIC_FUNCTION_REGISTRY = _state_view(:generic_function_registry,
+    Dict{String, GenericFunctionInfo}())
 
 """
 Registry for monomorphized function instances.
@@ -96,7 +107,8 @@ previous key was `(func_name, tuple(sort(values(type_params))...))`: sorting the
 `pair<T=i64, U=i32>` shared one entry and the second call ran the first one's
 machine code (#247).
 """
-const MONOMORPHIZED_FUNCTIONS = Dict{String, FunctionInfo}()
+const MONOMORPHIZED_FUNCTIONS = _state_view(:monomorphized_functions,
+    Dict{String, FunctionInfo}())
 
 """
     _monomorphization_id(generic_info, func_name, type_params, compiler) -> ArtifactId
@@ -244,6 +256,13 @@ info = monomorphize_function("identity", Dict{Symbol, Type}(:T => Int32))
 ```
 """
 function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type})
+    registered = lock(REGISTRY_LOCK) do
+        get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+    end
+    registered === nothing && error("Function '$func_name' is not registered as a generic function")
+    registered.group === nothing ||
+        return _monomorphize_generic_struct_group(registered.group, func_name, type_params)
+
     lock(REGISTRY_LOCK) do
         # Get generic function info. The declared parameter order lives here,
         # and the key cannot be computed without it (#247).
@@ -372,6 +391,110 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
 end
 
 """
+    _monomorphize_generic_struct_group(group, func_name, type_params)
+
+Compile every wrapper of one generic struct instantiation into one cdylib.
+The constructor and `free` wrapper therefore use the same allocator, and all
+methods share the same generation snapshot (#291).
+"""
+function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
+                                             type_params::Dict{Symbol, <:Type})
+    return lock(REGISTRY_LOCK) do
+        members = [info for info in values(GENERIC_FUNCTION_REGISTRY)
+                   if info.group === group]
+        isempty(members) && error("Generic struct group '$group' is not registered")
+        target = findfirst(info -> info.name == func_name, members)
+        target === nothing && error("Function '$func_name' is not registered in generic struct group '$group'")
+        target_info = members[target]
+        type_values = Type[type_params[p] for p in target_info.type_params]
+        params_for(info) = Dict{Symbol, Type}(p => type_values[i]
+                                              for (i, p) in enumerate(info.type_params))
+        first_info = first(members)
+        compiler = something(first_info.compiler, get_default_compiler())
+        group_id = ArtifactId(
+            kind = "generic_struct",
+            source = isempty(first_info.context) ? first_info.code :
+                     first_info.context * "\n" * first_info.code,
+            type_params = artifact_type_params(first_info.type_params, params_for(first_info)),
+            target_triple = compiler.target_triple,
+            codegen = artifact_codegen_options(compiler),
+            extra = Pair{String, String}["group" => String(group)],
+        )
+        group_key = artifact_key(group_id)
+        member_keys = Dict{String, String}(
+            info.name => artifact_key(_monomorphization_id(info, info.name,
+                                                           params_for(info), compiler))
+            for info in members)
+        cached = get(MONOMORPHIZED_FUNCTIONS, member_keys[func_name], nothing)
+        cached === nothing || return cached
+        for info in members
+            isempty(info.blocked) || throw(RustError(info.blocked))
+        end
+
+        type_suffix = join([_rust_type_suffix(t) for (_, t) in group_id.type_params], "_")
+        specs = NamedTuple[]
+        for info in members
+            member_params = params_for(info)
+            bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(member_params[p])
+                                            for p in info.type_params]
+            push!(specs, (fn = info.path, bindings = bindings,
+                          new_name = "$(info.name)_$(type_suffix)_$(artifact_short_id(group_key, 8))"))
+        end
+        full_source = isempty(first_info.context) ? first_info.code :
+                      first_info.context * "\n" * first_info.code
+        specialized = specialize_generic_group(full_source, specs)
+        wrapped_code = wrap_rust_code(specialized.source)
+        lib_path = compile_rust_to_shared_lib(wrapped_code; compiler = compiler)
+        lib_name = "rust_generic_struct_$(artifact_short_id(group_key))"
+        eager = [s.symbol for s in specialized.functions]
+        artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager)
+
+        for (info, sp) in zip(members, specialized.functions)
+            func_ptr = Libdl.dlsym(artifact.handle, sp.symbol; throw_error = false)
+            (func_ptr === nothing || func_ptr == C_NULL) &&
+                error("Function '$(sp.symbol)' not found in library '$lib_path'")
+            arg_types = Type[_specialized_arg_type(t, params_for(info)) for t in sp.arg_types]
+            string_return = :none
+            free_ptr = C_NULL
+            if sp.has_owned_string_helper
+                string_return = :owned
+                free_ptr = Libdl.dlsym(artifact.handle, ffi_free_symbol(sp.ffi_name);
+                                       throw_error = false)
+                (free_ptr === nothing || free_ptr == C_NULL) &&
+                    error("Function '$(ffi_free_symbol(sp.ffi_name))' not found in library '$lib_path'")
+            elseif sp.has_borrowed_string_helper
+                string_return = :borrowed
+            end
+            ret_type = if string_return === :none
+                try
+                    _specialized_return_type(sp.return_type,
+                                             ffi_signature_context(sp.name, sp.arg_types,
+                                                                   sp.return_type))
+                catch
+                    # A group can contain a method whose concrete return is
+                    # outside the FFI contract even when the constructor being
+                    # requested is valid. Leave that member uncached so a
+                    # later call reports the same contract error at its own
+                    # call site instead of failing construction of the object.
+                    info.name == func_name && rethrow()
+                    continue
+                end
+            else
+                String
+            end
+            channel = Libdl.dlsym(artifact.handle, ffi_panic_symbol(sp.symbol);
+                                  throw_error = false)
+            channel = (channel === nothing) ? C_NULL : channel
+            MONOMORPHIZED_FUNCTIONS[member_keys[info.name]] =
+                FunctionInfo(sp.symbol, lib_name, ret_type, arg_types, func_ptr,
+                             sp.arg_abis, string_return, free_ptr, channel,
+                             artifact.handle, artifact.generation)
+        end
+        return MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
+    end
+end
+
+"""
     register_generic_function(func_name, code, type_params, constraints, context)
 
 Register a generic Rust function for later monomorphization.
@@ -406,7 +529,8 @@ function register_generic_function(
     return_type::String="",
     path::String=func_name,
     compiler::Union{Nothing, RustCompiler}=nothing,
-    blocked::String=""
+    blocked::String="",
+    group::Union{Nothing, Symbol}=nothing
 )
     # Manual registrations usually pass only the source. Recover the argument
     # and return types (and, when not given, the trait bounds) from the
@@ -421,7 +545,8 @@ function register_generic_function(
         end
     end
     lock(REGISTRY_LOCK) do
-        info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types, return_type, path, compiler, blocked)
+        info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types,
+                                   return_type, path, compiler, blocked, group)
         GENERIC_FUNCTION_REGISTRY[func_name] = info
         return info
     end

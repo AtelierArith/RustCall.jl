@@ -42,7 +42,9 @@ use crate::extract::fn_args;
 use crate::manifest::{
     skip_reason, Attribute, Field, Function, Manifest, Method, ReturnKind, Struct,
 };
-use crate::paths::{imports_of_use, locate, ImplHeader, Located, ScannedImport};
+use crate::paths::{
+    import_of_type_alias, imports_of_use, locate, ImplHeader, Located, ScannedImport,
+};
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
     has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type,
@@ -236,6 +238,11 @@ impl Pyo3Scan {
     ) {
         for item in items {
             match item {
+                Item::Type(alias) => {
+                    if let Some(import) = import_of_type_alias(alias, module_path) {
+                        self.imports.push(import);
+                    }
+                }
                 Item::Fn(f) => {
                     if julia_owns_entry_point(&f.attrs) {
                         // Owned by `#[julia]`, which exports `rustcall_<name>`
@@ -379,8 +386,14 @@ impl Pyo3Scan {
                 // still wraps `a::C`'s methods (#300).
                 let class_path = self.classes[index].module_path.clone();
                 for func in &imp.funcs {
-                    let entry =
-                        method_entry(&imp.header.target, &class_path, func, &owner_skip, &imp.cfg);
+                    let entry = method_entry(
+                        &imp.header.target,
+                        &class_path,
+                        &imp.header.module_path,
+                        func,
+                        &owner_skip,
+                        &imp.cfg,
+                    );
                     self.classes[index].entry.methods.push(entry);
                 }
             }
@@ -440,6 +453,58 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             )
         })
         .collect();
+    // Result/Option wrappers are Julia types in the same generated module as
+    // their owner (`CResult_<fn>`, `COption_<fn>`). Reserve those names before
+    // laying out classes and functions: otherwise a user-defined `pyclass`
+    // with one of those names would redefine the aggregate after the wrapper
+    // emitter had already declared it (#303).
+    let mut aggregate_names: Vec<(Scoped, String, String)> = manifest
+        .functions
+        .iter()
+        .filter(|f| f.attribute.is_pyo3_scan() && f.skip_reason.is_empty())
+        .filter(|f| {
+            matches!(
+                f.return_kind,
+                ReturnKind::PyResult | ReturnKind::Result | ReturnKind::Option
+            )
+        })
+        .flat_map(|f| {
+            let path = f.module_path.clone();
+            let cfg = f.cfg.clone();
+            let result = format!("CResult_{}", f.name);
+            let option = format!("COption_{}", f.name);
+            [
+                (path.clone(), result.clone(), result, cfg.clone()),
+                (path, option.clone(), option, cfg),
+            ]
+        })
+        .map(|(path, name, owner, cfg)| ((path, name), owner, cfg))
+        .collect();
+    for s in manifest
+        .structs
+        .iter()
+        .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
+    {
+        for m in s.methods.iter().filter(|m| {
+            m.skip_reason.is_empty()
+                && matches!(
+                    m.return_kind,
+                    ReturnKind::PyResult | ReturnKind::Result | ReturnKind::Option
+                )
+        }) {
+            let result = format!("CResult_{}_{}", s.name, m.name);
+            let option = format!("COption_{}_{}", s.name, m.name);
+            let path = s.module_path.clone();
+            let cfg = s.cfg.clone();
+            aggregate_names.push(((path.clone(), result.clone()), result, cfg.clone()));
+            aggregate_names.push(((path, option.clone()), option, cfg));
+        }
+    }
+    let aggregate_named = |path: &[String], name: &str, cfg: &str| {
+        aggregate_names
+            .iter()
+            .find(|((p, n), _, c)| p == path && n == name && cfg_clash(c, cfg))
+    };
     let class_named = |path: &[String], name: &str, cfg: &str| {
         class_names
             .iter()
@@ -455,6 +520,10 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
             continue;
         }
+        if let Some((_, aggregate, _)) = aggregate_named(&f.module_path, &f.name, &f.cfg) {
+            f.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, aggregate);
+            continue;
+        }
         taken.push((
             (f.module_path.clone(), f.name.clone(), f.args.len()),
             qualified(&f.module_path, &f.name),
@@ -467,12 +536,26 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
         }
         let owner = qualified(&s.module_path, &s.name);
         let s_cfg = s.cfg.clone();
+        if let Some((_, aggregate, _)) = aggregate_named(&s.module_path, &s.name, &s_cfg) {
+            let reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, aggregate);
+            s.skip_reason = reason.clone();
+            for m in &mut s.methods {
+                if m.skip_reason.is_empty() {
+                    m.skip_reason = skip_reason::detailed(skip_reason::OWNER_SKIPPED, &reason);
+                }
+            }
+            continue;
+        }
         for m in &mut s.methods {
             if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
                 continue;
             }
             if let Some((_, class, _)) = class_named(&s.module_path, &m.name, &s_cfg) {
                 m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
+                continue;
+            }
+            if let Some((_, aggregate, _)) = aggregate_named(&s.module_path, &m.name, &s_cfg) {
+                m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, aggregate);
                 continue;
             }
             let key = (s.module_path.clone(), m.name.clone(), m.args.len());
@@ -980,6 +1063,7 @@ fn class_entry(
 fn method_entry(
     struct_ident: &syn::Ident,
     class_path: &[String],
+    impl_path: &[String],
     func: &ImplItemFn,
     owner_skip: &str,
     enclosing_cfg: &[syn::Attribute],
@@ -1053,7 +1137,8 @@ fn method_entry(
         returns_boxed_struct: is_constructor
             || matches!(
                 &func.sig.output,
-                syn::ReturnType::Type(_, ty) if returns_class(ty, struct_ident)
+                syn::ReturnType::Type(_, ty)
+                    if returns_class(ty, struct_ident, class_path, impl_path)
             ),
         args: fn_args(&func.sig),
         return_type: return_type_to_string(&func.sig.output),
@@ -1070,7 +1155,12 @@ fn method_entry(
 /// segment, and boxing it as the class would not compile (#307 review).
 /// `codegen::returns_boxed_struct`'s last-segment rule stays with the
 /// `#[julia]` path, whose items live in the crate that defines the struct.
-fn returns_class(ty: &Type, class: &syn::Ident) -> bool {
+fn returns_class(
+    ty: &Type,
+    class: &syn::Ident,
+    class_path: &[String],
+    impl_path: &[String],
+) -> bool {
     let Type::Path(path) = unparen(ty) else {
         return false;
     };
@@ -1086,7 +1176,37 @@ fn returns_class(ty: &Type, class: &syn::Ident) -> bool {
     match segments.as_slice() {
         [only] => only == "Self" || class == only.as_str(),
         [first, .., last] => {
-            matches!(first.as_str(), "crate" | "self" | "super") && class == last.as_str()
+            if class != last.as_str() {
+                return false;
+            }
+            let mut base = match first.as_str() {
+                "crate" => Vec::new(),
+                "self" => impl_path.to_vec(),
+                "super" => {
+                    let levels = segments
+                        .iter()
+                        .take_while(|s| s.as_str() == "super")
+                        .count();
+                    if levels > impl_path.len() {
+                        return false;
+                    }
+                    impl_path[..impl_path.len() - levels].to_vec()
+                }
+                // A relative qualified path is rooted in the impl's module
+                // for this scan.  Compare the complete path, not only its
+                // final segment, so `other::C` cannot box as `a::C` (#303).
+                _ => impl_path.to_vec(),
+            };
+            let start = if first == "crate" || first == "self" || first == "super" {
+                segments
+                    .iter()
+                    .take_while(|s| matches!(s.as_str(), "crate" | "self" | "super"))
+                    .count()
+            } else {
+                0
+            };
+            base.extend(segments[start..segments.len() - 1].iter().cloned());
+            base == class_path
         }
         [] => false,
     }
