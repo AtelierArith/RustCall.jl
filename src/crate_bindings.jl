@@ -1689,7 +1689,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
 end
 
 """
-    _py_result_types(ok_type, context; strict) -> (surface, slot, is_unit)
+    _py_result_types(ok_type, ok_abi, context; strict) -> (surface, slot, is_unit)
 
 How a lowered `PyResult<T>` is read on the Julia side (#275 Phase 2).
 
@@ -1702,13 +1702,14 @@ Julia hands back `nothing`.
 The error side is not a type at all — it is always `PYO3_OPAQUE_ERROR`, because
 the generated wrapper drops the `PyErr` without ever rendering it.
 """
-function _py_result_types(ok_type::AbstractString, context::AbstractString;
+function _py_result_types(ok_type::AbstractString, ok_abi::AbstractString,
+                          context::AbstractString;
                           strict::Symbol = FFI_STRICT[])
     if isempty(strip(String(ok_type))) || strip(String(ok_type)) == "()"
         return (:Nothing, :UInt8, true)
     end
-    surface = ffi_return_symbol_or_throw(String(ok_type), "", context; strict = strict)
-    slot = ffi_return_slot_symbol_or_throw(String(ok_type), "", context; strict = strict)
+    surface, slot = ffi_payload_symbols(String(ok_type), String(ok_abi), context;
+                                        strict = strict)
     return (surface, slot, false)
 end
 
@@ -1727,13 +1728,21 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
     func_name = Symbol(func.name)
     func_name_str = func.name
     symbol_str = func.symbol
-    ok_julia_type, ok_slot_type, is_unit = _py_result_types(func.ok_type, _ffi_context(func))
+    ok_julia_type, ok_slot_type, is_unit =
+        _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func))
 
     c_result_struct_name = Symbol("CResult_", func_name_str)
     ptr_sym = _generated_local("func_ptr", func.arg_names)
     c_sym = _generated_local("c_result", func.arg_names)
     channel_sym = _generated_local("panic_channel", func.arg_names)
-    ok_value = is_unit ? :nothing : :(convert_return($ok_julia_type, $c_sym.ok_value))
+    free_sym = _generated_local("free_ptr", func.arg_names)
+    free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi,))
+    target = isempty(free_str) ?
+        :(($ptr_sym, $channel_sym) = _call_target($symbol_str)) :
+        :(($ptr_sym, $channel_sym, $free_sym) = _call_target($symbol_str, $free_str))
+    free_expr = isempty(free_str) ? :(C_NULL) : free_sym
+    ok_value = is_unit ? :nothing :
+        :(_result_payload($ok_julia_type, $c_sym.ok_value, $free_expr))
 
     quote
         # `<: FFIByValue` is RustCall's own by-value layout assertion about a
@@ -1749,7 +1758,7 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
 
         function $func_name($(arg_syms...))
             $(bindings...)
-            $ptr_sym, $channel_sym = _call_target($symbol_str)
+            $target
             $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
             # A panic returns the Err discriminant with an uninitialized
             # payload, so the channel is read before anything is decoded (#244).
@@ -2447,24 +2456,48 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
-    ok_julia_type, ok_slot_type, is_unit =
-        _py_result_types(method.ok_type, _ffi_context(method, struct_name_str))
+    boxed = method.returns_boxed_struct
+    ok_julia_type, ok_slot_type, is_unit = boxed ?
+        (struct_name, :(Ptr{Cvoid}), false) :
+        _py_result_types(method.ok_type, method.ok_abi,
+                         _ffi_context(method, struct_name_str))
 
     c_result_struct_name = Symbol("CResult_", struct_name_str, "_", method.name)
     ptr_sym = _generated_local("func_ptr", method.arg_names)
     c_sym = _generated_local("c_result", method.arg_names)
     channel_sym = _generated_local("panic_channel", method.arg_names)
+    free_sym = _generated_local("free_ptr", method.arg_names)
+    alive_sym = _generated_local("alive", method.arg_names)
+    free_channel_sym = _generated_local("free_panic_channel", method.arg_names)
 
     all_args = Any[]
     method.is_static || push!(all_args, :(getfield(self, :ptr)))
     append!(all_args, converted_args)
     method.is_static || pushfirst!(preserved, :self)
     method_label = "$(struct_name_str)::$(method.name)"
-    ok_value = is_unit ? :nothing : :(convert_return($ok_julia_type, $c_sym.ok_value))
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
+    target = if boxed
+        :(($ptr_sym, $channel_sym, $free_sym, $alive_sym, $free_channel_sym) =
+              _ctor_target($wrapper_name, $(ffi_struct_free_symbol(info.ffi_name))))
+    elseif !isempty(payload_free)
+        :(($ptr_sym, $channel_sym, $free_sym) =
+              _call_target($wrapper_name, $payload_free))
+    else
+        :(($ptr_sym, $channel_sym) = _call_target($wrapper_name))
+    end
+    free_expr = isempty(payload_free) ? :(C_NULL) : free_sym
+    ok_value = if is_unit
+        :nothing
+    elseif boxed
+        :($struct_name($c_sym.ok_value, $free_sym, $alive_sym, $free_channel_sym))
+    else
+        :(_result_payload($ok_julia_type, $c_sym.ok_value, $free_expr))
+    end
 
     body = quote
         $(bindings...)
-        $ptr_sym, $channel_sym = _call_target($wrapper_name)
+        $target
         $c_sym = $(_quote_preserved(preserved,
                                     :(call_rust_function($ptr_sym, $c_result_struct_name,
                                                          $(all_args...)))))
@@ -2485,7 +2518,14 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
         end
     end
 
-    if method.is_static
+    if method.is_static && method.is_constructor
+        quote
+            $declaration
+            function $struct_name($(arg_syms...))
+                $body
+            end
+        end
+    elseif method.is_static
         # Type-dispatched, bare form only without a name collision (#323); see
         # `_generate_crate_method_wrapper`.
         # The delegator names its own arguments: an argument called like the
@@ -3969,13 +4009,20 @@ function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::St
                                        strict::Symbol = FFI_STRICT[])
     func_name = func.name
     ok_type_str, ok_slot_str, is_unit =
-        _py_result_types(func.ok_type, _ffi_context(func); strict = strict)
+        _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func); strict = strict)
     sym = func.symbol
     c_result_struct_name = "CResult_$func_name"
     ptr_var = _generated_local("func_ptr", func.arg_names)
     c_var = _generated_local("c_result", func.arg_names)
     channel_var = _generated_local("panic_channel", func.arg_names)
-    ok_value = is_unit ? "nothing" : "convert_return($ok_type_str, $c_var.ok_value)"
+    free_var = _generated_local("free_ptr", func.arg_names)
+    free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi,))
+    target = isempty(free_str) ?
+        "$ptr_var, $channel_var = _call_target(\"$sym\")" :
+        "$ptr_var, $channel_var, $free_var = _call_target(\"$sym\", \"$free_str\")"
+    free_expr = isempty(free_str) ? "C_NULL" : string(free_var)
+    ok_value = is_unit ? "nothing" :
+        "_result_payload($ok_type_str, $c_var.ok_value, $free_expr)"
 
     return """
 # RustCall's own mirror of a `#[repr(C)]` aggregate it generated (#245).
@@ -3986,7 +4033,7 @@ struct $c_result_struct_name <: FFIByValue
 end
 
 function $func_name($arg_syms)
-$(prologue)    $ptr_var, $channel_var = _call_target("$sym")
+$(prologue)    $target
     $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)"))
     _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_ok == 1
@@ -4329,22 +4376,46 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
                                      strict::Symbol = FFI_STRICT[], bare::Bool = true)
     struct_name = info.name
     method_name = method.name
-    ok_type_str, ok_slot_str, is_unit =
-        _py_result_types(method.ok_type, _ffi_context(method, struct_name); strict = strict)
+    boxed = method.returns_boxed_struct
+    ok_type_str, ok_slot_str, is_unit = boxed ?
+        (struct_name, "Ptr{Cvoid}", false) :
+        _py_result_types(method.ok_type, method.ok_abi,
+                         _ffi_context(method, struct_name); strict = strict)
     c_result_struct_name = "CResult_$(struct_name)_$(method_name)"
     ptr_var = _generated_local("func_ptr", method.arg_names)
     c_var = _generated_local("c_result", method.arg_names)
     channel_var = _generated_local("panic_channel", method.arg_names)
+    free_var = _generated_local("free_ptr", method.arg_names)
+    alive_var = _generated_local("alive", method.arg_names)
+    free_channel_var = _generated_local("free_panic_channel", method.arg_names)
 
     all_args = String[]
     method.is_static || push!(all_args, "getfield(self, :ptr)")
     isempty(converted_args_str) || push!(all_args, converted_args_str)
     args_str = join(all_args, ", ")
     method_label = "$(struct_name)::$(method_name)"
-    ok_value = is_unit ? "nothing" : "convert_return($ok_type_str, $c_var.ok_value)"
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
+    target = if boxed
+        "$ptr_var, $channel_var, $free_var, $alive_var, $free_channel_var = " *
+        "_ctor_target(\"$wrapper_name\", \"$(ffi_struct_free_symbol(info.ffi_name))\")"
+    elseif !isempty(payload_free)
+        "$ptr_var, $channel_var, $free_var = " *
+        "_call_target(\"$wrapper_name\", \"$payload_free\")"
+    else
+        "$ptr_var, $channel_var = _call_target(\"$wrapper_name\")"
+    end
+    free_expr = isempty(payload_free) ? "C_NULL" : string(free_var)
+    ok_value = if is_unit
+        "nothing"
+    elseif boxed
+        "$struct_name($c_var.ok_value, $free_var, $alive_var, $free_channel_var)"
+    else
+        "_result_payload($ok_type_str, $c_var.ok_value, $free_expr)"
+    end
 
     body = """
-$(prologue)    $ptr_var, $channel_var = _call_target("$wrapper_name")
+$(prologue)    $target
     $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $args_str)"))
     _guard_panic(nothing, $channel_var, "$method_label")
     if $c_var.is_ok == 1
@@ -4362,7 +4433,12 @@ struct $c_result_struct_name <: FFIByValue
 end
 """
 
-    if method.is_static
+    if method.is_static && method.is_constructor
+        return """$declaration
+function $struct_name($arg_syms)
+$body
+end"""
+    elseif method.is_static
         # Type-dispatched, bare form only without a name collision (#323); see
         # `_emit_method_definition`.
         comma_args = isempty(arg_syms) ? "" : ", $arg_syms"

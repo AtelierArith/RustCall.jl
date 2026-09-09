@@ -40,8 +40,8 @@ const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(
                          "nor a `String`/`&str`",
     "unsupported_return" => "a return type the wrapper cannot lower: it does not cross the " *
                             "C ABI as a single value",
-    "py_result_payload" => "a `PyResult` whose `Ok` type does not fit in the `CResult` " *
-                           "aggregate; widening this is tracked in #303",
+    "py_result_payload" => "a `PyResult` whose `Ok` type cannot be lowered into the " *
+                           "`CResult` aggregate; widening this is tracked in #303",
     "cfg_undecided" => "the item is behind a `#[cfg]` the scan could not decide, so whether " *
                        "the build the wrapper links against has it is unknown",
 )

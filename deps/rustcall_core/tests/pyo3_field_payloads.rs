@@ -79,3 +79,117 @@ fn set_only_vec_fields_need_no_return_helper() {
     assert!(wrapped.lib_rs.contains("fn rustcall_Values_set_data"));
     assert!(!wrapped.lib_rs.contains("RustCallOwnedVec"));
 }
+
+#[test]
+fn py_result_strings_use_owned_payload_buffers() {
+    let scan = extract(
+        r#"
+        #[pyfunction]
+        pub fn render(ok: bool) -> PyResult<String> {
+            if ok { Ok("ready".to_string()) } else { todo!() }
+        }
+        #[pyclass]
+        pub struct Label;
+        #[pymethods]
+        impl Label {
+            #[new] pub fn new() -> Self { Self }
+            pub fn render(&self, ok: bool) -> PyResult<String> {
+                if ok { Ok("label".to_string()) } else { todo!() }
+            }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let function = wrapped
+        .manifest
+        .functions
+        .iter()
+        .find(|f| f.name == "render")
+        .unwrap();
+    assert!(function.exported);
+    assert_eq!(function.ok_abi, "string");
+    assert!(function.has_owned_string_helper);
+    let method = wrapped.manifest.structs[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "render")
+        .unwrap();
+    assert_eq!(method.ok_abi, "string");
+    assert_eq!(method.string_owner, "Label_render");
+    for item in [
+        "render_RustCallOwnedString",
+        "render_free_rust_string",
+        "Label_render_RustCallOwnedString",
+        "Label_render_free_rust_string",
+    ] {
+        assert!(wrapped.lib_rs.contains(item), "missing {item}");
+    }
+}
+
+#[test]
+fn py_result_self_is_an_owned_pointer_payload() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct Counter { value: i32 }
+        #[pymethods]
+        impl Counter {
+            #[new]
+            pub fn new(value: i32) -> PyResult<Self> { Ok(Self { value }) }
+            pub fn shifted(&self, by: i32) -> PyResult<Self> {
+                Ok(Self { value: self.value + by })
+            }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let class = &wrapped.manifest.structs[0];
+    for method in &class.methods {
+        assert!(method.returns_boxed_struct, "{}", method.name);
+        assert!(method.skip_reason.is_empty(), "{}", method.skip_reason);
+    }
+    assert!(wrapped
+        .lib_rs
+        .contains("ok_value: ::std::mem::MaybeUninit<*mut user_crate::Counter>"));
+    assert!(wrapped
+        .lib_rs
+        .contains("Box::into_raw(Box::new(rustcall_ok))"));
+}
+
+#[test]
+fn inheritance_constructor_tuple_is_not_boxed_as_the_child() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct Base;
+        #[pyclass(extends = Base)]
+        pub struct Child;
+        #[pymethods]
+        impl Child {
+            #[new]
+            pub fn new() -> PyResult<(Self, Base)> { Ok((Self, Base)) }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let method = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "Child")
+        .unwrap()
+        .methods
+        .iter()
+        .find(|method| method.name == "new")
+        .unwrap();
+    assert!(method.is_constructor);
+    assert!(!method.returns_boxed_struct);
+    assert_eq!(method.skip_reason, "py_result_payload:(Self, Base)");
+    assert!(!wrapped.lib_rs.contains("fn rustcall_Child_new"));
+}

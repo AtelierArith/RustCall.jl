@@ -114,7 +114,12 @@ use serde::{Deserialize, Serialize};
 ///   element spelling and [`Field::free_symbol`] names the allocator-matched
 ///   release export; an older consumer would otherwise read the returned
 ///   `(ptr, len, cap)` aggregate as a Rust `Vec<T>` value.
-pub const SCHEMA_VERSION: u32 = 10;
+/// * **11** widens the `PyResult` ABI: `String` / `&str` success values use
+///   [`Function::ok_abi`] / [`Method::ok_abi`] to declare an owned string
+///   payload, and a class-valued `PyResult<Self>` stores an owned pointer in
+///   the success slot. A schema-10 consumer ignores those shapes and would
+///   decode the aggregate with the wrong field type.
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -155,7 +160,7 @@ pub mod skip_reason {
     /// single value. The spelling follows the colon (#275 Phase 2).
     pub const UNSUPPORTED_RETURN: &str = "unsupported_return";
     /// A `PyResult<T>` whose `Ok` type does not fit in the `CResult`
-    /// aggregate (`String`, `Self`, a `Vec`, ...). The spelling follows the
+    /// aggregate (a `Vec`, an unrelated struct by value, ...). The spelling follows the
     /// colon. Widening this is tracked by #303 (#275 Phase 2).
     pub const PY_RESULT_PAYLOAD: &str = "py_result_payload";
     /// The item carries a `#[cfg(...)]` predicate the scan could not decide,

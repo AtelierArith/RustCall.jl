@@ -2,9 +2,19 @@
 
 use rustcall_core::extract::extract;
 use rustcall_core::manifest::{skip_reason, Attribute, Function, Manifest, Mode, ReturnKind};
+use rustcall_core::pyo3::Pyo3Scan;
 
 fn scan(source: &str) -> Manifest {
     extract(source, Mode::Crate).expect("failed to extract crate manifest")
+}
+
+fn scan_with_edition(source: &str, edition: &str) -> Manifest {
+    let file = syn::parse_file(source).expect("failed to parse crate source");
+    let mut manifest = Manifest::new(Mode::Crate);
+    let mut scan = Pyo3Scan::with_edition(edition);
+    scan.file(&file.items, &[], true, &[], &mut manifest);
+    scan.finish(&mut manifest);
+    manifest
 }
 
 fn function<'a>(manifest: &'a Manifest, name: &str) -> &'a Function {
@@ -903,6 +913,91 @@ fn a_type_alias_disambiguates_a_pymethods_target() {
     assert!(in_b.methods.is_empty());
 }
 
+#[test]
+fn leading_colon_type_aliases_follow_the_rust_edition_for_impls_and_returns() {
+    let source = "
+        pub mod dep { #[pyclass] pub struct C {} }
+        pub mod uses {
+            pub mod dep { #[pyclass] pub struct C {} }
+            type Alias = ::dep::C;
+            #[pymethods] impl Alias {
+                pub fn via_alias(&self) -> i32 { 1 }
+            }
+            #[pymethods] impl crate::dep::C {
+                #[staticmethod]
+                pub fn returns_alias() -> Alias { todo!() }
+            }
+        }
+    ";
+
+    let edition_2015 = scan_with_edition(source, "2015");
+    let root = edition_2015
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["dep"])
+        .unwrap();
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|method| method.name.as_str())
+            .collect::<Vec<_>>(),
+        ["via_alias", "returns_alias"]
+    );
+    assert!(
+        root.methods
+            .iter()
+            .find(|method| method.name == "returns_alias")
+            .unwrap()
+            .returns_boxed_struct
+    );
+    assert!(edition_2015
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["uses", "dep"])
+        .unwrap()
+        .methods
+        .is_empty());
+
+    let edition_2021 = scan_with_edition(source, "2021");
+    let root = edition_2021
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["dep"])
+        .unwrap();
+    assert_eq!(root.methods.len(), 1);
+    assert_eq!(root.methods[0].name, "returns_alias");
+    assert!(!root.methods[0].returns_boxed_struct);
+    assert!(edition_2021
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["uses", "dep"])
+        .unwrap()
+        .methods
+        .is_empty());
+}
+
+#[test]
+fn leading_colon_direct_returns_follow_the_rust_edition() {
+    let source = "
+        pub mod uses {
+            pub mod dep { #[pyclass] pub struct C {} }
+            #[pymethods] impl dep::C {
+                pub fn absolute(&self) -> PyResult<::uses::dep::C> { todo!() }
+            }
+        }
+    ";
+
+    let edition_2015 = scan_with_edition(source, "2015");
+    let method = &edition_2015.structs[0].methods[0];
+    assert_eq!(method.name, "absolute");
+    assert!(method.returns_boxed_struct);
+
+    let edition_2021 = scan_with_edition(source, "2021");
+    let method = &edition_2021.structs[0].methods[0];
+    assert_eq!(method.name, "absolute");
+    assert!(!method.returns_boxed_struct);
+}
+
 /// Two `pub fn run` in different modules of one crate used to want one
 /// `rustcall_run`; the module path is part of the symbol since #300, so both
 /// are wrappable and `symbol_collision` is unreachable for them.
@@ -1295,10 +1390,10 @@ fn a_crate_anchored_import_disambiguates_absolutely() {
     assert!(nested.methods.is_empty());
 }
 
-/// A `#[pymethods]` method is boxed when it is a `#[new]` or returns `Self` /
-/// the class — never because it happens to be called `new` (#307 review): a
-/// `#[staticmethod] fn new() -> i32` promised as `*mut Class` would not
-/// compile.
+/// A `#[pymethods]` method is boxed only when its return payload is `Self` /
+/// the class — never merely because it is marked `#[new]` or happens to be
+/// called `new` (#307 review, #303): either would promise the wrong pointer
+/// type for a scalar or inheritance tuple.
 #[test]
 fn boxing_follows_the_constructor_marker_not_the_name() {
     let manifest = scan(
@@ -1306,6 +1401,7 @@ fn boxing_follows_the_constructor_marker_not_the_name() {
          #[pymethods] impl P {\n\
             #[staticmethod] pub fn new() -> i32 { 0 }\n\
             #[new] pub fn create() -> Self { P {} }\n\
+            #[new] pub fn inherited() -> PyResult<(Self, i32)> { todo!() }\n\
             #[staticmethod] pub fn make() -> P { P {} }\n\
             pub fn count(&self) -> i32 { 0 }\n\
          }",
@@ -1316,6 +1412,8 @@ fn boxing_follows_the_constructor_marker_not_the_name() {
     assert!(!by("new").returns_boxed_struct);
     assert!(by("create").is_constructor);
     assert!(by("create").returns_boxed_struct);
+    assert!(by("inherited").is_constructor);
+    assert!(!by("inherited").returns_boxed_struct);
     assert!(!by("make").is_constructor);
     assert!(by("make").returns_boxed_struct);
     assert!(!by("count").returns_boxed_struct);

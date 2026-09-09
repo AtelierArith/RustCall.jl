@@ -81,8 +81,7 @@ using TOML
         # A `#[pyclass]` is an opaque handle whose methods come from every
         # `#[pymethods]` block, and whose fields are the `#[pyo3(get, set)]`
         # ones.
-        point = only(info.pyo3_structs)
-        @test point.name == "Point"
+        point = only(s for s in info.pyo3_structs if s.name == "Point")
         @test point.attribute === :py_class
         @test point.skip_reason == ""
         @test [f[1] for f in point.fields] == ["x", "y", "scale"]
@@ -95,7 +94,8 @@ using TOML
         @test point.field_setters["scale"] == "rustcall_Point_set_scale"
         methods = Dict(m.name => m for m in point.methods)
         @test sort(collect(keys(methods))) ==
-              ["label", "new", "norm", "origin", "scaled", "scaled_norm", "set_both", "sum"]
+              ["label", "new", "norm", "origin", "scaled", "scaled_norm", "set_both",
+               "shifted", "sum", "try_label"]
         @test methods["new"].is_constructor
         @test methods["new"].symbol == "rustcall_Point_new"
         @test methods["origin"].is_static
@@ -103,6 +103,16 @@ using TOML
         @test methods["sum"].accessor == "getter"
         @test methods["set_both"].accessor == "setter"
         @test methods["set_both"].is_mutable
+        @test methods["try_label"].return_kind === :py_result
+        @test methods["try_label"].ok_type == "String"
+        @test methods["shifted"].return_kind === :py_result
+        @test methods["shifted"].returns_boxed_struct
+
+        fallible = only(s for s in info.pyo3_structs if s.name == "Fallible")
+        fallible_methods = Dict(m.name => m for m in fallible.methods)
+        @test fallible_methods["new"].is_constructor
+        @test fallible_methods["new"].return_kind === :py_result
+        @test fallible_methods["new"].returns_boxed_struct
 
         # A `#[pymethods]` method returning `PyResult` carries its return
         # shape, so Phase 2 never re-reads the Rust type spelling (#264).

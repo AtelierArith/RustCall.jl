@@ -1,4 +1,4 @@
-schema_version = 10
+schema_version = 11
 mode = "crate"
 
 [[functions]]
@@ -242,9 +242,9 @@ ffi_name = "render"
 symbol = "rustcall_render"
 attribute = "py_function"
 vis = "pub"
-skip_reason = "py_result_payload:String"
+skip_reason = ""
 python_name = ""
-exported = false
+exported = true
 cfg = ""
 cfg_features = []
 is_generic = false
@@ -254,12 +254,12 @@ return_type = "PyResult<String>"
 return_kind = "py_result"
 return_abi = ""
 ok_type = "String"
-err_type = ""
+err_type = "i32"
 inner_type = ""
-ok_abi = ""
+ok_abi = "string"
 err_abi = ""
 inner_abi = ""
-has_owned_string_helper = false
+has_owned_string_helper = true
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false

@@ -268,10 +268,22 @@ pub fn imports_of_use(item: &ItemUse, module_path: &[String]) -> Vec<ScannedImpo
 /// Treat a plain path type alias as a local import for impl resolution. Rust
 /// accepts `type Alias = crate::model::C; #[pymethods] impl Alias { ... }`,
 /// while the scanner otherwise only sees the spelling `Alias` (#303).
-pub fn import_of_type_alias(item: &ItemType, module_path: &[String]) -> Option<ScannedImport> {
+///
+/// A leading `::` names this crate's root only in edition 2015. In edition
+/// 2018 and later it starts in the extern prelude, whose crates this scanner
+/// does not index, so it must not accidentally resolve to a same-named local
+/// module.
+pub fn import_of_type_alias(
+    item: &ItemType,
+    module_path: &[String],
+    edition_2015: bool,
+) -> Option<ScannedImport> {
     let Type::Path(path) = unparen(&item.ty) else {
         return None;
     };
+    if path.path.leading_colon.is_some() && !edition_2015 {
+        return None;
+    }
     path.qself.is_none().then(|| {
         let anchored: Vec<String> = path
             .path
@@ -279,7 +291,10 @@ pub fn import_of_type_alias(item: &ItemType, module_path: &[String]) -> Option<S
             .iter()
             .map(|s| s.ident.to_string())
             .collect();
-        let qualifier = path_qualifier(anchored.iter().cloned());
+        let mut qualifier = path_qualifier(anchored.iter().cloned());
+        if path.path.leading_colon.is_some() {
+            qualifier.anchor = PathAnchor::Crate;
+        }
         let path = anchored
             .into_iter()
             .filter(|s| s != "crate" && s != "self" && s != "super")

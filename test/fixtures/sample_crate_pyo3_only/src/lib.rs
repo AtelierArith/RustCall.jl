@@ -36,6 +36,14 @@ pub fn parse(s: &str) -> PyResult<i32> {
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
+/// An owned string nested in `PyResult`; the wrapper must release only the
+/// active success payload and must never inspect the error slot on failure.
+#[pyfunction]
+pub fn render(ok: bool) -> PyResult<String> {
+    ok.then(|| "rendered".repeat(1024))
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("render failed"))
+}
+
 /// Wrappable, and deliberately explosive: the generated wrapper catches the
 /// panic and Julia raises `RustCall.RustPanicError` instead of the process
 /// aborting (#244).
@@ -54,6 +62,11 @@ pub fn dropped_points() -> i64 {
     DROPPED.load(Ordering::SeqCst)
 }
 
+#[pyfunction]
+pub fn dropped_fallible() -> i64 {
+    FALLIBLE_DROPPED.load(Ordering::SeqCst)
+}
+
 /// Skipped: not `pub`, so a wrapper crate cannot name it (rustc E0603).
 #[pyfunction]
 fn private_add(a: i32, b: i32) -> i32 {
@@ -68,6 +81,7 @@ pub fn describe(py: Python<'_>) -> i32 {
 }
 
 static DROPPED: AtomicI64 = AtomicI64::new(0);
+static FALLIBLE_DROPPED: AtomicI64 = AtomicI64::new(0);
 
 // Python-side layout/typing options do not change the native Rust Point value
 // that the wrapper owns. `generic` here enables Python generic aliases; this
@@ -149,10 +163,61 @@ impl Point {
         }
     }
 
+    /// An owned-string success payload nested in the aggregate.
+    pub fn try_label(&self, ok: bool) -> PyResult<String> {
+        ok.then(|| format!("({}, {})", self.x, self.y).repeat(512))
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("label failed"))
+    }
+
+    /// A class value nested in the aggregate. The generated wrapper boxes it,
+    /// and Julia binds that box to the same library generation's destructor.
+    pub fn shifted(&self, by: f64) -> PyResult<Self> {
+        if by.is_finite() {
+            Ok(Point {
+                x: self.x + by,
+                y: self.y + by,
+                scale: self.scale,
+            })
+        } else {
+            Err(pyo3::exceptions::PyValueError::new_err("shift must be finite"))
+        }
+    }
+
     /// A `String`-returning method: an owned buffer released through
     /// `Point_label_free_rust_string`.
     pub fn label(&self) -> String {
         format!("({}, {})", self.x, self.y)
+    }
+}
+
+/// A separate class whose Python constructor itself can fail. This pins the
+/// `#[new] -> PyResult<Self>` wrapper shape without changing `Point`'s API.
+#[pyclass]
+pub struct Fallible {
+    value: i32,
+}
+
+impl Drop for Fallible {
+    fn drop(&mut self) {
+        FALLIBLE_DROPPED.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[pymethods]
+impl Fallible {
+    #[new]
+    pub fn new(value: i32) -> PyResult<Self> {
+        if value >= 0 {
+            Ok(Self { value })
+        } else {
+            Err(pyo3::exceptions::PyValueError::new_err(
+                "value must be non-negative",
+            ))
+        }
+    }
+
+    pub fn fallible_value(&self) -> i32 {
+        self.value
     }
 }
 

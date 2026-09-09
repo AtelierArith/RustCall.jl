@@ -109,6 +109,7 @@ pub struct Pyo3Scan {
     impls: Vec<ScannedImpl>,
     imports: Vec<ScannedImport>,
     routes: crate::public_routes::PublicRoutes,
+    edition_2015: bool,
     intrinsic_skips: std::collections::BTreeMap<(Vec<String>, String, usize, String), String>,
 }
 
@@ -116,6 +117,7 @@ impl Pyo3Scan {
     pub fn with_edition(edition: &str) -> Self {
         Self {
             routes: crate::public_routes::PublicRoutes::with_edition(edition),
+            edition_2015: edition == "2015",
             ..Self::default()
         }
     }
@@ -259,7 +261,9 @@ impl Pyo3Scan {
         for item in items {
             match item {
                 Item::Type(alias) => {
-                    if let Some(import) = import_of_type_alias(alias, module_path) {
+                    if let Some(import) =
+                        import_of_type_alias(alias, module_path, self.edition_2015)
+                    {
                         self.imports.push(import);
                     }
                 }
@@ -480,10 +484,13 @@ impl Pyo3Scan {
                 for func in &imp.funcs {
                     let returns_self = matches!(
                         &func.sig.output,
-                        syn::ReturnType::Type(_, ty) if returns_class(
-                            ty, &self.classes[index], &imp.header.module_path,
-                            &self.classes, &self.imports,
-                        )
+                        syn::ReturnType::Type(_, ty) if {
+                            let value = py_result_ok_type(ty).unwrap_or_else(|| (**ty).clone());
+                            returns_class(
+                                &value, &self.classes[index], &imp.header.module_path,
+                                &self.classes, &self.imports, self.edition_2015,
+                            )
+                        }
                     );
                     let class_ident =
                         syn::Ident::new(&self.classes[index].entry.name, imp.header.target.span());
@@ -1369,13 +1376,12 @@ fn method_entry(
         ok_abi: String::new(),
         err_abi: String::new(),
         inner_abi: String::new(),
-        // A `#[new]`, and any other method returning `Self` / the class, hands
-        // back the class itself — an opaque handle a wrapper boxes
-        // (`#[pyclass]` is never `repr(C)`). Decided from the PyO3 marker and
-        // the return type, never from the method's name: a
-        // `#[staticmethod] fn new() -> i32` is an ordinary method, and boxing
-        // its `i32` as a `*mut Class` would not compile (#307 review).
-        returns_boxed_struct: is_constructor || returns_self,
+        // Only a return payload that resolves to `Self` / the class is an
+        // opaque handle this wrapper may box (`#[pyclass]` is never `repr(C)`).
+        // The `#[new]` marker alone is insufficient: an inheritance
+        // constructor returns `(Self, Base)` (possibly inside `PyResult`),
+        // which cannot inhabit a `*mut Self` success slot (#303).
+        returns_boxed_struct: returns_self,
         args: fn_args(&func.sig),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
@@ -1397,11 +1403,18 @@ fn returns_class(
     impl_path: &[String],
     classes: &[ScannedClass],
     imports: &[ScannedImport],
+    edition_2015: bool,
 ) -> bool {
     let Type::Path(path) = unparen(ty) else {
         return false;
     };
     if path.qself.is_some() {
+        return false;
+    }
+    // A leading `::` names the current crate only in edition 2015. In newer
+    // editions it starts in the extern prelude, which this scanner cannot
+    // resolve and must not confuse with a same-named local module.
+    if path.path.leading_colon.is_some() && !edition_2015 {
         return false;
     }
     if path.path.is_ident("Self") {
@@ -1410,9 +1423,13 @@ fn returns_class(
     let Some(target) = path.path.segments.last() else {
         return false;
     };
+    let mut qualifier = crate::paths::type_path_qualifier(ty);
+    if path.path.leading_colon.is_some() {
+        qualifier.anchor = crate::paths::PathAnchor::Crate;
+    }
     let header = ImplHeader {
         target: target.ident.clone(),
-        qualifier: crate::paths::type_path_qualifier(ty),
+        qualifier,
         module_path: impl_path.to_vec(),
     };
     crate::paths::locate_type(classes, &header, imports).is_ok_and(|index| {

@@ -283,6 +283,13 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             @test !bad.is_ok
             @test bad.value == RustCall.PYO3_OPAQUE_ERROR
 
+            rendered = M.render(true)
+            @test rendered isa RustCall.RustResult{String, String}
+            @test rendered.is_ok && rendered.value == "rendered"^1024
+            render_error = M.render(false)
+            @test !render_error.is_ok
+            @test render_error.value == RustCall.PYO3_OPAQUE_ERROR
+
             # The generated struct type is defined in a newer world than this
             # testset, so its constructor and property access go through
             # `invokelatest`; the function proxies of `CrateBindings` already do.
@@ -331,6 +338,34 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             @test good.is_ok && good.value ≈ 2 * M.norm(p)
             @test !M.scaled(p, Inf).is_ok
             @test M.scaled(p, Inf).value == RustCall.PYO3_OPAQUE_ERROR
+
+            labelled = M.try_label(p, true)
+            @test labelled isa RustCall.RustResult{String, String}
+            @test labelled.is_ok && labelled.value == "(6, 2)"^512
+            @test !M.try_label(p, false).is_ok
+
+            before_shift = M.dropped_points()
+            shifted = M.shifted(p, 1.5)
+            @test shifted isa RustCall.RustResult{typeof(p), String}
+            @test shifted.is_ok
+            @test M.norm(shifted.value) ≈ hypot(7.5, 3.5)
+            finalize(shifted.value)
+            @test M.dropped_points() == before_shift + 1
+            finalize(shifted.value)
+            @test M.dropped_points() == before_shift + 1
+            failed_shift = M.shifted(p, Inf)
+            @test !failed_shift.is_ok
+            @test failed_shift.value == RustCall.PYO3_OPAQUE_ERROR
+
+            before_fallible = M.dropped_fallible()
+            made = call(M.Fallible, Int32(7))
+            @test made isa RustCall.RustResult{M.Fallible, String}
+            @test made.is_ok && M.fallible_value(made.value) == 7
+            finalize(made.value)
+            @test M.dropped_fallible() == before_fallible + 1
+            rejected = call(M.Fallible, Int32(-1))
+            @test !rejected.is_ok
+            @test rejected.value == RustCall.PYO3_OPAQUE_ERROR
 
             # A panic in a wrapped item is catchable, not fatal.
             @test_throws RustCall.RustPanicError M.boom(Int32(-1))
@@ -393,6 +428,11 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             # the Julia-side assertion claims.
             @test occursin("#[repr(C)]", source.lib_rs)
             @test occursin("pub struct CResult_parse", source.lib_rs)
+            @test occursin("pub struct CResult_render", source.lib_rs)
+            @test occursin("pub struct CResult_Point_try_label", source.lib_rs)
+            @test occursin("pub struct CResult_Point_shifted", source.lib_rs)
+            @test occursin("pub struct CResult_Fallible_new", source.lib_rs)
+            @test occursin("Result::Ok(Box::into_raw(Box::new(rustcall_ok)))", source.lib_rs)
 
             functions, structs, _, _ = RustCall._pyo3_wrapper_items(source.manifest)
             wrapped = RustCall.CrateInfo(info.name, info.path, info.version, info.dependencies,
@@ -403,12 +443,24 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                                                    lib_name = "rust_crate_byvalue_probe")
             @test occursin("struct CResult_parse <: FFIByValue", code)
             @test occursin("struct CResult_Point_scaled <: FFIByValue", code)
+            @test occursin("struct CResult_render <: FFIByValue", code)
+            @test occursin("ok_value::RustCall.CRustString", code)
+            @test occursin("struct CResult_Point_shifted <: FFIByValue", code)
+            @test occursin("ok_value::Ptr{Cvoid}", code)
+            @test occursin("_ctor_target(\"rustcall_Point_shifted\"", code)
+            @test occursin("function Fallible(value)", code)
+            @test occursin("_ctor_target(\"rustcall_Fallible_new\"", code)
 
             expr = RustCall.emit_crate_module(wrapped, "/nonexistent/lib.so";
                                               lib_name = "rust_crate_byvalue_probe")
             text = string(expr)
             @test occursin("CResult_parse <: FFIByValue", text)
             @test occursin("CResult_Point_scaled <: FFIByValue", text)
+            @test occursin("CResult_render <: FFIByValue", text)
+            @test occursin("CResult_Point_try_label <: FFIByValue", text)
+            @test occursin("CResult_Point_shifted <: FFIByValue", text)
+            @test occursin("CResult_Fallible_new <: FFIByValue", text)
+            @test occursin("_ctor_target", text)
         end
     end
 

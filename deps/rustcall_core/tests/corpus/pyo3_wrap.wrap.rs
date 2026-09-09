@@ -665,6 +665,182 @@ pub extern "C" fn rustcall_check(flag: bool) -> CResult_check {
     }
 }
 thread_local! {
+    static __RUSTCALL_PANIC_RUSTCALL_RENDER : ::std::cell::RefCell <
+    ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_render_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_PANIC_RUSTCALL_RENDER
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
+#[repr(C)]
+pub struct render_RustCallOwnedString {
+    pub ptr: *mut u8,
+    pub len: usize,
+    pub cap: usize,
+}
+#[no_mangle]
+pub extern "C" fn render_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
+    if !ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(ptr, len, cap));
+        }
+    }
+}
+#[repr(C)]
+pub struct CResult_render {
+    is_ok: u8,
+    /// Only initialized when `is_ok == 1`. `MaybeUninit` keeps the
+    /// inactive field free of validity invariants (e.g. `NonZeroU32`).
+    ok_value: ::std::mem::MaybeUninit<render_RustCallOwnedString>,
+    /// Only initialized when `is_ok == 0`.
+    err_value: ::std::mem::MaybeUninit<i32>,
+}
+impl CResult_render {
+    /// Wrap a `Result` in the C-compatible representation.
+    pub fn new(value: Result<render_RustCallOwnedString, i32>) -> Self {
+        match value {
+            Ok(v) => {
+                Self {
+                    is_ok: 1,
+                    ok_value: ::std::mem::MaybeUninit::new(v),
+                    err_value: ::std::mem::MaybeUninit::zeroed(),
+                }
+            }
+            Err(e) => {
+                Self {
+                    is_ok: 0,
+                    ok_value: ::std::mem::MaybeUninit::zeroed(),
+                    err_value: ::std::mem::MaybeUninit::new(e),
+                }
+            }
+        }
+    }
+    /// Whether the call succeeded.
+    pub fn is_ok(&self) -> bool {
+        self.is_ok == 1
+    }
+    /// The `Ok` value, if any.
+    pub fn ok(&self) -> Option<&render_RustCallOwnedString> {
+        if self.is_ok == 1 {
+            Some(unsafe { self.ok_value.assume_init_ref() })
+        } else {
+            None
+        }
+    }
+    /// The `Err` value, if any.
+    pub fn err(&self) -> Option<&i32> {
+        if self.is_ok == 0 {
+            Some(unsafe { self.err_value.assume_init_ref() })
+        } else {
+            None
+        }
+    }
+    /// The value returned after a caught panic (#244): the `Err`
+    /// discriminant with **no** payload initialized.
+    ///
+    /// Julia reads this wrapper's panic channel before it decodes
+    /// anything, and raises `RustPanicError`, so neither payload is
+    /// ever observed. Both stay `MaybeUninit::zeroed()`, which is what
+    /// `new` already writes for the inactive side.
+    pub fn panicked() -> Self {
+        Self {
+            is_ok: 0,
+            ok_value: ::std::mem::MaybeUninit::zeroed(),
+            err_value: ::std::mem::MaybeUninit::zeroed(),
+        }
+    }
+}
+#[no_mangle]
+pub extern "C" fn rustcall_render() -> CResult_render {
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            CResult_render::new(
+                match user_crate::render()
+                    .map_err(|rustcall_py_err| {
+                        ::std::mem::drop(rustcall_py_err);
+                        1i32
+                    })
+                {
+                    ::std::result::Result::Ok(rustcall_ok) => {
+                        ::std::result::Result::Ok({
+                            let mut rustcall_bytes = ToString::to_string(&rustcall_ok)
+                                .into_bytes();
+                            let rustcall_buf = render_RustCallOwnedString {
+                                ptr: rustcall_bytes.as_mut_ptr(),
+                                len: rustcall_bytes.len(),
+                                cap: rustcall_bytes.capacity(),
+                            };
+                            ::std::mem::forget(rustcall_bytes);
+                            rustcall_buf
+                        })
+                    }
+                    ::std::result::Result::Err(rustcall_err) => {
+                        ::std::result::Result::Err(rustcall_err)
+                    }
+                },
+            )
+        }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "render", rustcall_message
+            );
+            __RUSTCALL_PANIC_RUSTCALL_RENDER
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            CResult_render::panicked()
+        }
+    }
+}
+thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_DIVIDE : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
