@@ -1,6 +1,59 @@
 use rustcall_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
 
 #[test]
+fn public_alias_restores_only_supported_field_accessors() {
+    for options in ["", "get_all, set_all", "get_all, frozen"] {
+        let definition = format!(
+            r#"
+            #[pyclass({options})] pub struct Counter {{
+                #[pyo3(get, set)] pub value: i32,
+                #[pyo3(get, set)] pub text: String,
+                #[pyo3(get, set)] private: i32,
+                #[pyo3(get, set)] pub unsupported: Vec<i32>,
+                pub automatic: i32,
+            }}
+        "#
+        );
+        let direct = extract(&format!("pub mod hidden {{ {definition} }}"), Mode::Crate).unwrap();
+        let alias = extract(
+            &format!("mod hidden {{ {definition} }} pub use hidden::Counter as PublicCounter;"),
+            Mode::Crate,
+        )
+        .unwrap();
+        assert_eq!(
+            alias.structs[0].fields, direct.structs[0].fields,
+            "{options}"
+        );
+        let fields = &alias.structs[0].fields;
+        assert!(!fields[0].getter.is_empty());
+        assert_eq!(fields[0].setter.is_empty(), options.contains("frozen"));
+        assert!(fields[2].getter.is_empty() && fields[2].setter.is_empty());
+        assert!(fields[3].getter.is_empty() && fields[3].setter.is_empty());
+        let wrapped = wrapper_crate(&alias, "user_crate", true);
+        assert!(wrapped
+            .lib_rs
+            .contains("rustcall_hidden__Counter_get_value"));
+    }
+}
+
+#[test]
+fn underscore_imports_never_grant_callable_routes() {
+    let source = "mod hidden { #[pyfunction] pub fn calculate() -> i32 { 42 } } pub use hidden::calculate as _;";
+    let anonymous = extract(source, Mode::Crate).unwrap();
+    assert_eq!(anonymous.functions[0].skip_reason, "not_public");
+    assert!(anonymous.functions[0].callable_path.is_empty());
+    let named = extract(
+        &format!("{source} pub use hidden::calculate as public_calculate;"),
+        Mode::Crate,
+    )
+    .unwrap();
+    assert!(named.functions[0].skip_reason.is_empty());
+    assert_eq!(named.functions[0].callable_path, ["public_calculate"]);
+    let wrapped = wrapper_crate(&named, "user_crate", true);
+    assert!(wrapped.lib_rs.contains("user_crate::public_calculate"));
+}
+
+#[test]
 fn intrinsic_signature_reasons_are_owned_by_the_cfg_variant() {
     // Identical canonical name and source line, as when two cfg-exclusive
     // fragments define different signatures at the same source position.

@@ -17,7 +17,7 @@ function _public_route_wrapper303(file_module)
         hidden_source = raw"""
                 use pyo3::prelude::*;
                 #[pyfunction] pub fn calculate() -> i32 { 42 }
-                #[pyclass] pub struct Counter { value: i32 }
+                #[pyclass] pub struct Counter { #[pyo3(get, set)] pub value: i32 }
                 #[pymethods] impl Counter {
                     #[new] pub fn new(value: i32) -> Self { Self { value } }
                     pub fn value(&self) -> i32 { self.value }
@@ -37,6 +37,7 @@ function _public_route_wrapper303(file_module)
             mod bridge { pub use crate::hidden::Counter as PublicCounter; }
             pub use bridge::*;
             pub use hidden::calculate as public_calculate;
+            pub use hidden::calculate as _;
             pub use hidden::api as public_api;
             """)
         wrapper = _link_libpython_wrapper(root)
@@ -58,6 +59,10 @@ function _public_route_wrapper303(file_module)
                 @test Base.invokelatest(calculate) == 42
                 object = Base.invokelatest(counter, Int32(23))
                 @test Base.invokelatest(value, object) == 23
+                @test Base.invokelatest(getproperty, object, :value) == 23
+                Base.invokelatest(setproperty!, object, :value, Int32(31))
+                @test Base.invokelatest(getproperty, object, :value) == 31
+                @test Base.invokelatest(value, object) == 31
                 @test Base.invokelatest(answer) == 17
             finally
                 object === nothing || finalize(object)

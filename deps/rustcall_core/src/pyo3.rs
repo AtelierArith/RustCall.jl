@@ -117,6 +117,9 @@ struct ScannedClass {
     module_path: Vec<String>,
     entry: Struct,
     visibility: syn::Visibility,
+    /// Accessors under the same field/type checks, before module reachability
+    /// disables them. A public re-export can restore that reachability later.
+    reachable_fields: Vec<Field>,
     /// The `#[cfg]` of the enclosing modules: what tells cfg-exclusive copies
     /// of one fragment apart, and what a `#[pymethods]` block written beside
     /// one copy shares with it (#357 review).
@@ -304,6 +307,8 @@ impl Pyo3Scan {
                         self.classes.push(ScannedClass {
                             module_path: module_path.clone(),
                             entry: class_entry(s, reachable, module_path, enclosing_cfg),
+                            reachable_fields: class_entry(s, true, module_path, enclosing_cfg)
+                                .fields,
                             visibility: s.vis.clone(),
                             cfg: enclosing_cfg.to_vec(),
                         });
@@ -425,6 +430,7 @@ impl Pyo3Scan {
                         !class.entry.type_params.is_empty(),
                     )
                     .unwrap_or_default();
+                    class.entry.fields = std::mem::take(&mut class.reachable_fields);
                 }
                 if route.path != canonical {
                     class.entry.callable_path = route.path.clone();

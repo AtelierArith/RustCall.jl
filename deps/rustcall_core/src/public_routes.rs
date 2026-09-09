@@ -98,6 +98,11 @@ impl PublicRoutes {
             }
             if let Item::Use(v) = item {
                 for binding in imports_of_use(v, module) {
+                    // `use ... as _` imports anonymously and creates no path
+                    // a dependent crate can name, even when the use is pub.
+                    if !binding.glob && binding.alias == "_" {
+                        continue;
+                    }
                     if !binding.glob {
                         self.names.insert(binding.alias.clone());
                     }
