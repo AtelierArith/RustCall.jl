@@ -101,9 +101,9 @@ function _record_module_block!(mod::Module, lib_name::String,
         conflict = _module_symbol_conflict(data[:symbols], lib_name, names)
         conflict === nothing || return conflict
         for symbol in names
-            data[:symbols][symbol] = lib_name
+            _state_mutate_storage!(data[:symbols], :setindex!, lib_name, symbol)
         end
-        data[:libs][lib_name] = block
+        _state_mutate_storage!(data[:libs], :setindex!, block, lib_name)
         data[:active][] = lib_name
         MODULE_ACTIVE_LIB[mod] = lib_name
         MODULE_BLOCK_SEQUENCE[] += 1
@@ -127,7 +127,7 @@ function _record_module_symbols_transaction!(table, lib_name, symbols, module_na
         conflict = _module_symbol_conflict(values, name, names)
         conflict === nothing || return conflict
         for symbol in names
-            values[symbol] = name
+            _state_mutate_storage!(values, :setindex!, name, symbol)
         end
         return nothing
     end

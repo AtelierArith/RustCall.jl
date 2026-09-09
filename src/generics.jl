@@ -117,6 +117,15 @@ const MONOMORPHIZED_FUNCTIONS = _state_view(:monomorphized_functions,
 const GENERIC_STRUCT_ARTIFACTS = _state_view(:generic_struct_artifacts,
     Dict{Tuple{String, Base.RefValue{Bool}}, Dict{String, FunctionInfo}}())
 
+# Caller holds STATE and has made this image inert. Retired, still-live
+# generations retain their members; explicit reclamation releases the maps.
+function _forget_generic_image!(alive::Base.RefValue{Bool})
+    for key in keys(GENERIC_STRUCT_ARTIFACTS)
+        key[2] === alive && delete!(GENERIC_STRUCT_ARTIFACTS, key)
+    end
+    return nothing
+end
+
 function _generic_artifact_member(lib_name::String, func_name::String,
                                   alive::Base.RefValue{Bool})
     lock(REGISTRY_LOCK) do

@@ -1,6 +1,117 @@
 using Test
 using RustCall
 
+@testset "state filters preserve delete/reinsert updates and release mutation watches (#251)" begin
+    for original in (Dict("key" => 1), [1], Set([1]))
+        view = lock(RustCall.REGISTRY_LOCK) do
+            RustCall._state_view(gensym(:aba_probe), copy(original))
+        end
+        entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+        worker = Threads.@spawn filter!(view) do entry
+            put!(entered, nothing)
+            take!(release)
+            false
+        end
+        take!(entered)
+        if original isa AbstractDict
+            delete!(view, "key")
+            view["key"] = 1
+        else
+            empty!(view)
+            push!(view, 1)
+        end
+        put!(release, nothing)
+        fetch(worker)
+        try
+            @test copy(view) == original
+            snapshot = view[]
+            empty!(snapshot)
+            @test copy(view) == original
+            @test isempty(RustCall.STATE_FILTERS)
+            @test_throws ErrorException filter!(_ -> error("failed predicate"), view)
+            @test isempty(RustCall.STATE_FILTERS)
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.STATE.value.values, view.name)
+            end
+        end
+    end
+
+    # A flush can drain and requeue an identical deferred drop while a filter
+    # is paused. These internal queue writes also participate in tracking.
+    queue = RustCall.DEFERRED_DROPS
+    entry = RustCall.DeferredDrop(Ptr{Cvoid}(123), "aba_queue", :unused)
+    saved = lock(RustCall.REGISTRY_LOCK) do
+        value = RustCall._state_value(queue).entries
+        saved = copy(value)
+        RustCall._state_mutate_storage!(value, :empty!)
+        saved
+    end
+    push!(queue, entry)
+    entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+    worker = Threads.@spawn filter!(queue) do item
+        put!(entered, nothing)
+        take!(release)
+        false
+    end
+    take!(entered)
+    lock(RustCall.REGISTRY_LOCK) do
+        value = RustCall._state_value(queue).entries
+        RustCall._state_mutate_storage!(value, :empty!)
+        RustCall._state_mutate_storage!(value, :prepend!, [entry])
+    end
+    put!(release, nothing)
+    fetch(worker)
+    try
+        @test lock(RustCall.REGISTRY_LOCK) do
+            RustCall._state_value(queue).entries == [entry]
+        end
+        @test isempty(RustCall.STATE_FILTERS)
+    finally
+        lock(RustCall.REGISTRY_LOCK) do
+            value = RustCall._state_value(queue).entries
+            RustCall._state_mutate_storage!(value, :empty!)
+            RustCall._state_mutate_storage!(value, :prepend!, saved)
+        end
+    end
+end
+
+@testset "FFI layout callbacks and method definitions run outside STATE (#251)" begin
+    scope = Module(gensym(:FFIStateAudit))
+    Core.eval(scope, :(using RustCall))
+    Core.eval(scope, :(struct AuditValue; x::Int32; end))
+    T = Base.invokelatest(getfield, scope, :AuditValue)
+    entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+    Core.eval(scope, quote
+        function RustCall.ffi_by_value_layout(::Type{$T})
+            put!($entered, nothing)
+            take!($release)
+            :repr_c
+        end
+    end)
+    registrar = Threads.@spawn RustCall.register_ffi_struct(T)
+    take!(entered)
+    observer = Threads.@spawn lock(() -> true, RustCall.REGISTRY_LOCK)
+    # Releasing only STATE is insufficient: the callback must also let a
+    # different task acquire the definition gate.
+    gate_observer = Threads.@spawn lock(() -> true, RustCall.FFI_METHOD_LOCK[])
+    try
+        @test timedwait(() -> istaskdone(observer), 5) == :ok
+        @test timedwait(() -> istaskdone(gate_observer), 5) == :ok
+    finally
+        put!(release, nothing)
+    end
+    try
+        @test fetch(registrar) === T
+        @test fetch(observer)
+        @test fetch(gate_observer)
+    finally
+        @test RustCall.unregister_ffi_struct(T)
+    end
+    @test RustCall.register_ffi_struct(T) === T
+    @test RustCall.unregister_ffi_struct(T)
+end
+
 @testset "state filter predicates run outside STATE and retain concurrent writes (#251)" begin
     for initial in (Dict("old" => 1), [1], Set([1]))
         view = lock(RustCall.REGISTRY_LOCK) do
@@ -153,6 +264,7 @@ function _state_transaction_callouts(source::String, file = "fixture")
         (tailname(x.args[1]) == :_state_read ||
          (tailname(x.args[1]) == :lock && any(state_argument, x.args[2:end])))
     forbidden = (:ccall, :run, :read, :write, :wait, :sleep, :yield, :dlopen, :dlclose,
+                 :eval, :delete_method, :_ffi_by_value_agrees,
                  :compile_rust_to_shared_lib, :expand_inline, :extract_manifest,
                  :monomorphize_function, :toolchain_fingerprint, :artifact_compiler_identity,
                  :rebuild_callback, :invokelatest, Symbol("@warn"), Symbol("@debug"),
@@ -304,6 +416,7 @@ end
         :FUNCTION_RETURN_TYPES_BY_LIB, :FUNCTION_SYMBOLS_BY_LIB,
         :PANIC_CHANNELS, :GENERIC_FUNCTION_REGISTRY,
         :MONOMORPHIZED_FUNCTIONS, :GENERIC_STRUCT_ARTIFACTS, :IRUST_FUNCTIONS, :HOT_RELOAD_REGISTRY,
+        :STATE_FILTERS, :FFI_METHOD_LOCK,
         :RELOAD_LOCKS, :ARTIFACT_ALIVE,
         :ARTIFACT_GENERATIONS, :HANDLE_MIRRORS, :RETIRED_HANDLES,
         :OWNED_HANDLES, :PRELOADED_LIBRARIES, :HANDLE_ONLY_ALIVE, :DEFERRED_DROPS,

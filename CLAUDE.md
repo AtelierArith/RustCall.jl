@@ -119,10 +119,19 @@ transactions; scheduling, waiting, source I/O and callbacks occur outside them.
 StateView cache defaults are evaluated outside STATE, then published only if
 another task has not already supplied the key. This includes the cold Cargo
 and rustc cfg probes, whose subprocess must never run inside a state transaction.
-StateView `filter!` likewise evaluates predicates on a snapshot outside STATE;
-publication removes only rejected entries still present with the same value,
-preserving concurrent replacements and additions. Callers must not wrap
-arbitrary callbacks in their own outer STATE transaction.
+StateView `filter!` likewise evaluates predicates on a snapshot outside STATE.
+Active filters observe container writes in the same state transaction; key
+updates and original vector-occurrence tokens distinguish delete/reinsert from
+an unchanged entry, even when the value is identical. The deferred queue and
+module metadata use that same mutation path. Observations are released when
+filtering completes or throws. Callers must not wrap arbitrary callbacks in
+their own outer STATE transaction.
+
+FFI layout method definitions use a separate, STATE-owned definition gate.
+Never acquire that gate while holding STATE: fetch it first, release STATE,
+then serialize the method-table edit. User-defined layout callbacks run outside
+both locks, with the exact method rechecked before accepting an existing
+registration. `Core.eval` and method deletion never run inside STATE.
 
 Inline `rust"""` caller modules also use owner-qualified `StateView`s for
 their library, symbol and active-library tables. `src/module_state.jl` publishes
@@ -155,7 +164,7 @@ Two consequences worth knowing:
 - **A constructor's snapshot includes the object's destructor.** `resolve_call_target(lib, ctor; free_symbol = "<Struct>_free")` returns the allocating wrapper *and* the `free_ptr` / `alive` the resulting object captures, so an object can never be bound to a generation other than the one that allocated it. `_call_rust_constructor` returns `(ptr, target)` for exactly this; the crate templates use `_ctor_target`.
 - **A retired image keeps its identity.** An image is retired, not closed, so it stays mapped with live objects holding its flag; loading the same path again gets the same handle back and adopts that same flag (one mapped image, one flag), and a retirement closes exactly the number of owned opens it was retired with — never the live counter, which a concurrent reopen may have raised.
 - **A cached record is a snapshot too.** `FunctionInfo` (a monomorphized generic, `register_function`) carries the channel, the handle and the generation it was built with, because it is called long after the lookup that produced it.
-- **Generic objects keep image-specific members.** `GENERIC_STRUCT_ARTIFACTS` is keyed by both artifact name and the image's liveness flag. Rebuilding identical source after retirement reuses the name but creates a separate member map; methods and accessors select with the object's captured flag, never the current name alone.
+- **Generic objects keep image-specific members.** `GENERIC_STRUCT_ARTIFACTS` is keyed by both artifact name and the image's liveness flag. Rebuilding identical source after retirement reuses the name but creates a separate member map; methods and accessors select with the object's captured flag, never the current name alone. Retired mapped images keep their records; making an image inert during explicit reclamation removes its member map without touching a live replacement's map.
 - **A generated `@rust_crate` module keeps one immutable record, not several `Ref`s.** `_LIB_GEN` is an owner-qualified StateView of a `Ref{CrateGeneration}` in STATE. The record holds handle + liveness flag + generation, replaced wholesale by `_update_handle_mirrors!` inside the `REGISTRY_LOCK` transaction; wrappers read it once per call, releasing STATE before symbol resolution or FFI. Two independently read cells are not a snapshot. `__init__` registers the mirror **before** loading and never assigns it afterwards — an assignment after `load_artifact!` would overwrite a newer generation a concurrent reload had already published. The legacy raw-Ref registration overload remains compatible; generated modules use only the owned view.
 
 A replaced image is **retired, not closed**, so a call already inside one stays valid; a cached pointer finds its own image's flag through `alive_ref_for_handle`, never through the name. **One image, one flag**: every name of a handle shares it — an alias by construction (`alias_artifact!`), and a second `load_artifact!` of the same path by adopting the flag the image already has (`registered_alive_for_handle`, #291). A second flag would not be cosmetic: `unload_artifact!` retires with one of them and drops the other without flipping it, so objects holding the dropped flag believe themselves live over unmapped code. For the same reason, re-aliasing a name that already names this image does not retire it. `test/test_hot_reload_transaction.jl` asserts all of this adversarially: a reload loop against tasks that call, panic, allocate and drop — plus one that reads the crate-module record — checking that no call returns an unpublished generation, that no generation number is ever paired with two different results, that no panic is lost and that no finalizer fails.

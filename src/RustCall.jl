@@ -78,7 +78,8 @@ end
 _state_read(f::Function, view::StateView) = _state_read(view, f)
 
 Base.getindex(view::StateView) = _state_read(view) do value
-    value isa Ref ? value[] : value
+    value isa Ref ? value[] :
+        value isa Union{AbstractDict, AbstractVector, AbstractSet} ? copy(value) : value
 end
 Base.isassigned(view::StateView) = _state_read(view) do value
     value isa Ref ? isassigned(value) : true
@@ -86,18 +87,11 @@ end
 Base.getindex(view::StateView, key...) = _state_read(view) do value
     getindex(value, key...)
 end
-Base.setindex!(view::StateView, value) = _state_read(view) do state_value
-    state_value[] = value
-end
-Base.setindex!(view::StateView, value, key...) = _state_read(view) do state_value
-    setindex!(state_value, value, key...)
-end
+Base.setindex!(view::StateView, value, key...) = _state_mutate(view, :setindex!, value, key...)
 Base.get(view::StateView, key, default) = _state_read(view) do state_value
     get(state_value, key, default)
 end
-Base.get!(view::StateView, key, default) = _state_read(view) do state_value
-    get!(state_value, key, default)
-end
+Base.get!(view::StateView, key, default) = _state_mutate(view, :get!, key, default)
 function Base.get!(default::Function, view::StateView, key)
     cached = _state_read(view) do state_value
         haskey(state_value, key) ? Some(state_value[key]) : nothing
@@ -111,62 +105,12 @@ end
 Base.haskey(view::StateView, key) = _state_read(view) do state_value
     haskey(state_value, key)
 end
-Base.delete!(view::StateView, key) = _state_read(view) do state_value
-    delete!(state_value, key)
-end
-Base.empty!(view::StateView) = _state_read(view) do state_value
-    empty!(state_value)
-end
-function Base.push!(view::StateView, items...)
-    if view.name === :deferred_drops
-        return lock(DEFERRED_DROPS_LOCK) do
-            queue = _state_value(view)
-            push!(getfield(queue, :entries), items...)
-        end
-    end
-    return _state_read(view) do state_value
-        push!(state_value, items...)
-    end
-end
-Base.prepend!(view::StateView, items) = _state_read(view) do state_value
-    prepend!(state_value, items)
-end
-function Base.filter!(predicate::Function, view::StateView)
-    storage(value) = view.name === :deferred_drops && view.owner === nothing ?
-                     getfield(value, :entries) : value
-    snapshot = _state_read(view) do value
-        copy(storage(value))
-    end
-    # Predicates are caller code and may wait for another registry user.
-    # Evaluate once per snapshot entry without STATE, then remove only entries
-    # which have not been replaced. Concurrent additions are not filtered.
-    rejected = [entry for entry in snapshot if !predicate(entry)]
-    _state_read(view) do value
-        current = storage(value)
-        if current isa AbstractDict
-            for (key, previous) in rejected
-                haskey(current, key) && current[key] === previous && delete!(current, key)
-            end
-        elseif current isa AbstractVector
-            for previous in rejected
-                index = findfirst(entry -> entry === previous, current)
-                index === nothing || deleteat!(current, index)
-            end
-        elseif current isa AbstractSet
-            for previous in rejected
-                for entry in current
-                    if entry === previous
-                        delete!(current, entry)
-                        break
-                    end
-                end
-            end
-        else
-            throw(ArgumentError("filter! requires a dictionary, vector or set StateView"))
-        end
-    end
-    return view
-end
+Base.delete!(view::StateView, key) = _state_mutate(view, :delete!, key)
+Base.deleteat!(view::StateView, indices) = _state_mutate(view, :deleteat!, indices)
+Base.empty!(view::StateView) = _state_mutate(view, :empty!)
+Base.push!(view::StateView, items...) = _state_mutate(view, :push!, items...)
+Base.prepend!(view::StateView, items) = _state_mutate(view, :prepend!, collect(items))
+Base.filter!(predicate::Function, view::StateView) = _filter_state!(predicate, view)
 Base.isempty(view::StateView) = _state_read(view, isempty)
 Base.length(view::StateView) = _state_read(view, length)
 Base.copy(view::StateView) = _state_read(view, copy)
@@ -197,6 +141,8 @@ end
 # compatibility, but the lock now belongs to STATE rather than to a free
 # standing registry.
 const REGISTRY_LOCK = STATE.lock
+
+include("state_filter.jl")
 
 # Include submodules in order of dependency
 include("types.jl")

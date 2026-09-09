@@ -1308,6 +1308,7 @@ function close_retired_handles!(handles = retired_handles())
             # Flip under the lock, before the close: an object finalized in
             # between must see `false`, not a handle that is about to go.
             record.alive[] = false
+            _forget_generic_image!(record.alive)
             delete!(RETIRED_HANDLES, handle)
             push!(found, handle => record)
         end
@@ -1640,7 +1641,10 @@ function close_artifact_handle!(handle::Ptr{Cvoid})
         if remaining == 1
             alive = get(HANDLE_ONLY_ALIVE, handle, nothing)
             delete!(HANDLE_ONLY_ALIVE, handle)
-            alive === nothing || (alive[] = false)
+            if alive !== nothing
+                alive[] = false
+                _forget_generic_image!(alive)
+            end
         end
         return true
     end

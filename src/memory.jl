@@ -109,7 +109,7 @@ If the queue exceeds `MAX_DEFERRED_DROPS`, attempts a flush first.
 function _defer_drop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol)
     should_flush = lock(DEFERRED_DROPS_LOCK) do
         queue = _state_value(DEFERRED_DROPS)
-        push!(queue.entries, DeferredDrop(ptr, type_name, drop_symbol))
+        _state_mutate_storage!(queue.entries, :push!, DeferredDrop(ptr, type_name, drop_symbol))
         return length(queue.entries) >= MAX_DEFERRED_DROPS[]
     end
     if should_flush
@@ -129,7 +129,7 @@ If the queue exceeds `MAX_DEFERRED_DROPS`, attempts a flush first.
 function _defer_vec_drop(ptr::Ptr{Cvoid}, len::UInt, cap::UInt, type_name::String, drop_symbol::Symbol)
     should_flush = lock(DEFERRED_DROPS_LOCK) do
         queue = _state_value(DEFERRED_DROPS)
-        push!(queue.entries, DeferredDrop(ptr, type_name, drop_symbol, len, cap, true))
+        _state_mutate_storage!(queue.entries, :push!, DeferredDrop(ptr, type_name, drop_symbol, len, cap, true))
         return length(queue.entries) >= MAX_DEFERRED_DROPS[]
     end
     if should_flush
@@ -169,7 +169,7 @@ function flush_deferred_drops()
     drops = lock(DEFERRED_DROPS_LOCK) do
         queue = _state_value(DEFERRED_DROPS)
         d = copy(queue.entries)
-        empty!(queue.entries)
+        _state_mutate_storage!(queue.entries, :empty!)
         d
     end
 
@@ -196,7 +196,7 @@ function flush_deferred_drops()
 
     if !isempty(failed)
         lock(DEFERRED_DROPS_LOCK) do
-            prepend!(_state_value(DEFERRED_DROPS).entries, failed)
+            _state_mutate_storage!(_state_value(DEFERRED_DROPS).entries, :prepend!, failed)
         end
     end
 

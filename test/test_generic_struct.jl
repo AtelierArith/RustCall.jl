@@ -38,6 +38,18 @@ struct NonCopyStatePayload{T} end
                 @test RustCall.alive_ref_for_handle(snapshot.handle, object.lib_name) === getfield(object, :alive)
             end
         end
+        old_key = (old.lib_name, getfield(old, :alive))
+        current_key = (current.lib_name, getfield(current, :alive))
+        @test haskey(RustCall.GENERIC_STRUCT_ARTIFACTS, old_key)
+        @test haskey(RustCall.GENERIC_STRUCT_ARTIFACTS, current_key)
+        finalize(old)
+        RustCall.close_retired_handles!(RustCall.retired_handles(old.lib_name))
+        @test !haskey(RustCall.GENERIC_STRUCT_ARTIFACTS, old_key)
+        @test haskey(RustCall.GENERIC_STRUCT_ARTIFACTS, current_key)
+        @test Base.invokelatest(same_name_count, current) == 1
+        finalize(current)
+        RustCall.unload_library(current.lib_name; close = true)
+        @test !haskey(RustCall.GENERIC_STRUCT_ARTIFACTS, current_key)
     finally
         finalize(old)
         current === nothing || finalize(current)
