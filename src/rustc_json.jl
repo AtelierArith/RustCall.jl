@@ -1,7 +1,8 @@
 # Reading rustc's structured diagnostics.
 #
 # `rustc --error-format=json` writes one JSON object per line on stderr. That
-# is the *only* thing this file parses: it exists so that a decision taken from
+# supplies compiler diagnostics; the JSON reader also reads Cargo build-context
+# messages. It exists so that a decision taken from
 # a compiler diagnostic is taken from the diagnostic's fields — its error code,
 # its span, its label — rather than from the human-rendered text, which rustc
 # is free to reformat.

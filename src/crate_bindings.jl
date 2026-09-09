@@ -122,7 +122,8 @@ println("Found \$(length(info.julia_functions)) Julia functions")
 ```
 """
 function scan_crate(crate_path::String; cfg = :lenient,
-                    cfg_text::Union{Nothing, AbstractString} = nothing)
+                    cfg_text::Union{Nothing, AbstractString} = nothing,
+                    build_env::Union{Nothing, AbstractDict} = nothing)
     # Validate path
     if !isdir(crate_path)
         error("Crate path does not exist: $crate_path")
@@ -157,7 +158,7 @@ function scan_crate(crate_path::String; cfg = :lenient,
     lib_root, tree_files = _crate_scan_inputs(crate_path, cargo_toml, source_files)
     manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
                                 cfg = cfg, cfg_text = cfg_text,
-                                crate_root = lib_root)
+                                crate_root = lib_root, build_env = build_env)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
     # Items the crate marks only for PyO3 (#275 Phase 1). They are reported so
@@ -168,11 +169,18 @@ function scan_crate(crate_path::String; cfg = :lenient,
 
     # Extract dependencies from Cargo.toml
     dependencies = extract_crate_dependencies(cargo_toml)
+    version = get(cargo_toml["package"], "version", "0.1.0")
+    if version isa AbstractDict && get(version, "workspace", false) === true
+        metadata = _cargo_package_metadata(crate_path)
+        manifest_path = realpath(cargo_toml_path)
+        package = only(p for p in metadata["packages"] if realpath(p["manifest_path"]) == manifest_path)
+        version = package["version"]
+    end
 
     CrateInfo(
         cargo_toml["package"]["name"],
         abspath(crate_path),
-        get(cargo_toml["package"], "version", "0.1.0"),
+        version,
         dependencies,
         all_functions,
         all_structs,
@@ -569,6 +577,22 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
         end
     end
     return unique!(map(normpath, deps))
+end
+
+function _expand_precompile_inputs(paths::Vector{String})
+    expanded = String[]
+    for path in unique(abspath.(paths))
+        if isfile(path)
+            push!(expanded, path)
+        elseif isdir(path)
+            for (root, dirs, files) in walkdir(path)
+                push!(expanded, root)
+                append!(expanded, joinpath.(Ref(root), dirs))
+                append!(expanded, joinpath.(Ref(root), files))
+            end
+        end
+    end
+    unique!(map(normpath, expanded))
 end
 
 """
@@ -2664,7 +2688,10 @@ function generate_bindings(crate_path::String;
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
-                                     extra_inputs = python_inputs,
+                                     extra_inputs = unique(vcat(python_inputs,
+                                                                 _expand_precompile_inputs(plan.build_inputs),
+                                                                 wrapper.source.source_files,
+                                                                 dirname.(wrapper.source.source_files))),
                                      python = links_python)
         end
     end

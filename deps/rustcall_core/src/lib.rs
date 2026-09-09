@@ -15,6 +15,7 @@ pub mod cfg;
 pub mod codegen;
 pub mod expand;
 pub mod extract;
+pub mod include_paths;
 pub mod manifest;
 pub mod model;
 pub mod paths;
