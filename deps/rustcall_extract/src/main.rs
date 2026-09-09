@@ -5,6 +5,7 @@
 //! rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
 //! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
+//! rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
 //! rustcall-extract schema-version
 //! ```
 //!
@@ -25,12 +26,14 @@ use std::process::ExitCode;
 use rustcall_core::cfg::CfgSet;
 use rustcall_core::extract::ExtractError;
 use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
+use serde::Deserialize;
 
 const USAGE: &str = "usage:
   rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
   rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
   rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
+  rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
   rustcall-extract schema-version
 
 Use '-' as FILE to read from stdin.
@@ -176,17 +179,28 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         // checked crate-wide (#300).
         (Mode::Crate, None) => {
             let mut scan = rustcall_core::extract::TreeScan::new();
+            // A listed file that is also reached through an include must not
+            // win merely because it appeared in FILE...: its root position is
+            // not the position Rust gives the included items. Discover those
+            // files before the manifest pass so the explicit root can be
+            // suppressed even when FILE... lists the fragment first (#356).
+            let implicit = rootless_implicit_files(&opts.files, opts.cfg.as_ref())?;
             // A listed file's own out-of-line `mod`s are not followed here:
-            // without a root there is no module tree to place them in, and the
-            // caller listed the files it wants scanned. What it *cannot* list
-            // is what a file pulls in implicitly — an `include!` fragment, and
-            // in turn whatever that fragment declares — so those are followed
-            // (#343, #343 review). `follow_modules` marks a file reached that
-            // way.
+            // without a root there is no module tree to place them in. A file
+            // that is listed *and* reached implicitly is the exception: its
+            // explicit root position is suppressed and the include/module
+            // position supplied by `pulled_in` wins (#356). What a file pulls
+            // in implicitly — and in turn whatever that fragment declares —
+            // is followed (#343, #343 review). `follow_modules` marks a file
+            // reached that way.
             let mut queue: Vec<QueuedFile> = opts
                 .files
                 .iter()
                 .rev()
+                .filter(|f| {
+                    let canonical = fs::canonicalize(f).unwrap_or_else(|_| (*f).clone());
+                    !implicit.contains(&canonical)
+                })
                 .map(|f| QueuedFile {
                     dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
                     file: f.clone(),
@@ -196,22 +210,26 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                     fragment: false,
                 })
                 .collect();
+            // An invalid include cycle can make every listed file appear
+            // reachable. Keep one explicit root so the cycle is diagnosed by
+            // the normal scan rather than returning an empty manifest.
+            if queue.is_empty() {
+                if let Some(f) = opts.files.first() {
+                    queue.push(QueuedFile {
+                        dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                        file: f.clone(),
+                        position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+                        ancestry: Vec::new(),
+                        follow_modules: false,
+                        fragment: false,
+                    });
+                }
+            }
             // Keyed by (file, module path) as the crate-root walk is: one
             // fragment `include!`d under two different modules is compiled
             // twice by rustc and belongs in the manifest twice, under each
             // module's own path (#343 review).
             let mut seen: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
-            // What the caller listed. A file it named is scanned as its own
-            // root, and following a fragment into it as well would scan it
-            // twice under two module paths — a `#[julia]` item would then
-            // claim its symbol twice and the run would fail with a
-            // duplicate-symbol error. In this mode the caller's list wins
-            // (#343 review).
-            let listed: Vec<PathBuf> = opts
-                .files
-                .iter()
-                .map(|f| fs::canonicalize(f).unwrap_or_else(|_| f.clone()))
-                .collect();
             while let Some(QueuedFile {
                 file,
                 dir,
@@ -247,11 +265,6 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                     }
                 };
                 for next in pulled_in(&file, &dir, pending, follow_modules, &ancestry) {
-                    let canonical =
-                        fs::canonicalize(&next.file).unwrap_or_else(|_| next.file.clone());
-                    if listed.contains(&canonical) {
-                        continue;
-                    }
                     queue.push(next);
                 }
             }
@@ -523,6 +536,72 @@ fn pulled_in(
     out
 }
 
+/// Find listed files that are also reached through an implicit include/module
+/// walk. The returned paths suppress their root-position queue entries in the
+/// rootless scan; the normal manifest walk then reaches each through the
+/// `QueuedFile` position supplied by `pulled_in`.
+fn rootless_implicit_files(
+    files: &[PathBuf],
+    cfg: Option<&CfgSet>,
+) -> Result<Vec<PathBuf>, String> {
+    let listed: Vec<PathBuf> = files
+        .iter()
+        .map(|f| fs::canonicalize(f).unwrap_or_else(|_| f.clone()))
+        .collect();
+    let mut queue: Vec<QueuedFile> = files
+        .iter()
+        .rev()
+        .map(|f| QueuedFile {
+            dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            file: f.clone(),
+            position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+            ancestry: Vec::new(),
+            follow_modules: false,
+            fragment: false,
+        })
+        .collect();
+    let mut seen: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
+    let mut implicit = Vec::new();
+    let mut scan = rustcall_core::extract::TreeScan::new();
+    let mut manifest = Manifest::new(Mode::Crate);
+
+    while let Some(QueuedFile {
+        file,
+        dir,
+        position,
+        ancestry,
+        follow_modules,
+        fragment: _,
+    }) = queue.pop()
+    {
+        let canonical = fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+        let key = (canonical.clone(), position.clone());
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let src = read_source(&file)?;
+        let pending = match scan.file(
+            &src,
+            cfg,
+            &position,
+            &mut manifest,
+            &file.display().to_string(),
+        ) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        for next in pulled_in(&file, &dir, pending, follow_modules, &ancestry) {
+            let next_canonical = fs::canonicalize(&next.file).unwrap_or_else(|_| next.file.clone());
+            if listed.contains(&next_canonical) && !implicit.contains(&next_canonical) {
+                implicit.push(next_canonical.clone());
+            }
+            queue.push(next);
+        }
+    }
+    Ok(implicit)
+}
+
 /// Scan a whole crate by following its module tree from `root` (#275, #315).
 ///
 /// Only this layer touches the filesystem: `rustcall_core` hands back the
@@ -727,6 +806,58 @@ fn cmd_specialize(args: &[Arg]) -> Result<(), String> {
         .map_err(|e| format!("failed to write stdout: {e}"))
 }
 
+#[derive(Debug, Deserialize)]
+struct ManySpecFile {
+    specializations: Vec<ManySpec>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManySpec {
+    #[serde(rename = "fn")]
+    fn_name: String,
+    new_name: String,
+    bindings: std::collections::BTreeMap<String, String>,
+}
+
+fn cmd_specialize_many(args: &[Arg]) -> Result<(), String> {
+    let mut spec_path: Option<PathBuf> = None;
+    let mut manifest_out: Option<PathBuf> = None;
+    let mut file: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match token(&args[i]) {
+            Token::Option("--spec") => spec_path = Some(take_path(args, &mut i, "--spec")?),
+            Token::Option("--manifest") => {
+                manifest_out = Some(take_path(args, &mut i, "--manifest")?)
+            }
+            Token::Option(f) => return Err(format!("unknown option `{f}`\n{USAGE}")),
+            Token::File(f) => single_file(&mut file, f, "specialize-many")?,
+        }
+        i += 1;
+    }
+    let spec_path = spec_path.ok_or("--spec is required")?;
+    let file = file.ok_or("FILE is required")?;
+    let specs: ManySpecFile = toml::from_str(
+        &fs::read_to_string(&spec_path)
+            .map_err(|e| format!("failed to read {}: {e}", spec_path.display()))?,
+    )
+    .map_err(|e| format!("failed to parse {}: {e}", spec_path.display()))?;
+    let requests: Vec<rustcall_core::specialize::SpecializationSpec> = specs
+        .specializations
+        .into_iter()
+        .map(|s| (s.fn_name, s.bindings.into_iter().collect(), s.new_name))
+        .collect();
+    let src = read_source(&file)?;
+    let sp = rustcall_core::specialize::specialize_many(&src, &requests)
+        .map_err(|e| format!("{}: {e}", file.display()))?;
+    if let Some(path) = manifest_out.as_deref() {
+        write_manifest(&sp.manifest, Some(path))?;
+    }
+    io::stdout()
+        .write_all(sp.source.as_bytes())
+        .map_err(|e| format!("failed to write stdout: {e}"))
+}
+
 fn run() -> Result<(), String> {
     let args: Vec<Arg> = std::env::args_os().skip(1).map(Arg).collect();
     let Some(cmd) = args.first() else {
@@ -738,6 +869,7 @@ fn run() -> Result<(), String> {
         Some("wrap") => cmd_wrap(rest),
         Some("expand") => cmd_expand(rest),
         Some("specialize") => cmd_specialize(rest),
+        Some("specialize-many") => cmd_specialize_many(rest),
         Some("schema-version") => {
             println!("{SCHEMA_VERSION}");
             Ok(())

@@ -612,6 +612,297 @@ fn a_renamed_import_disambiguates_too() {
     );
 }
 
+/// A module alias in an explicit `impl alias::C` qualifier resolves through
+/// the import rather than being treated as a literal child module (#303).
+#[test]
+fn a_module_alias_disambiguates_an_explicit_pymethods_target() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a as alias;\n\
+            #[pymethods] impl alias::C { pub fn only_a(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
+#[test]
+fn class_return_types_resolve_module_and_type_aliases() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a as alias;\n\
+            use crate::a::C as Renamed;\n\
+            #[pymethods] impl Renamed {\n\
+                #[staticmethod] pub fn by_module() -> alias::C { alias::C {} }\n\
+                #[staticmethod] pub fn by_type() -> Renamed { Renamed {} }\n\
+                #[staticmethod] pub fn other() -> crate::b::C { crate::b::C {} }\n\
+            }\n\
+         }",
+    );
+    let class = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == ["a"])
+        .unwrap();
+    assert_eq!(class.methods.len(), 3);
+    for name in ["by_module", "by_type"] {
+        let method = class.methods.iter().find(|m| m.name == name).unwrap();
+        assert!(method.returns_boxed_struct, "{name}");
+        assert!(method.skip_reason.is_empty(), "{}", method.skip_reason);
+        assert_eq!(method.symbol, format!("rustcall_a__C_{name}"));
+    }
+    assert!(
+        !class
+            .methods
+            .iter()
+            .find(|m| m.name == "other")
+            .unwrap()
+            .returns_boxed_struct
+    );
+}
+
+/// A glob import still scopes a bare `impl` to the imported module (#303).
+#[test]
+fn a_glob_import_disambiguates_a_bare_pymethods_target() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a::*;\n\
+            #[pymethods] impl C { pub fn only_a(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
+#[test]
+fn glob_imports_do_not_select_inaccessible_classes() {
+    for private_vis in ["", "pub(self)", "pub(in crate::a)"] {
+        let manifest = scan(&format!(
+            "pub mod a {{ #[pyclass] {private_vis} struct C {{}} }}
+             pub mod b {{ #[pyclass] pub struct C {{}} }}
+             pub mod uses {{
+                use crate::a::*;
+                use crate::b::*;
+                #[pymethods] impl C {{ pub fn selected(&self) -> i32 {{ 7 }} }}
+             }}"
+        ));
+        let a = manifest
+            .structs
+            .iter()
+            .find(|s| s.module_path == ["a"])
+            .unwrap();
+        let b = manifest
+            .structs
+            .iter()
+            .find(|s| s.module_path == ["b"])
+            .unwrap();
+        assert!(a.methods.is_empty(), "{private_vis}");
+        assert_eq!(b.methods.len(), 1, "{private_vis}");
+        assert_eq!(b.methods[0].name, "selected");
+        assert!(b.methods[0].skip_reason.is_empty());
+    }
+}
+
+#[test]
+fn glob_importability_is_not_external_wrapper_reachability() {
+    let manifest = scan(
+        "pub mod a {
+            #[pyclass] struct C {}
+            pub mod nested {
+                use super::*;
+                #[pymethods] impl C { pub fn selected(&self) -> i32 { 7 } }
+            }
+         }
+         pub mod b { #[pyclass] pub(crate) struct D {} }
+         pub mod uses {
+            use crate::b::*;
+            #[pymethods] impl D { pub fn internal(&self) -> i32 { 8 } }
+         }",
+    );
+    for (name, method) in [("C", "selected"), ("D", "internal")] {
+        let class = manifest.structs.iter().find(|s| s.name == name).unwrap();
+        assert!(!class.skip_reason.is_empty());
+        assert_eq!(class.methods.len(), 1);
+        assert_eq!(class.methods[0].name, method);
+    }
+}
+
+#[test]
+fn skipped_owners_do_not_reserve_aggregate_names() {
+    for (ret, prefix, value) in [
+        ("PyResult<i32>", "CResult", "Ok(1)"),
+        ("Option<i32>", "COption", "Some(1)"),
+    ] {
+        let manifest = scan(&format!(
+            "#[pyclass] pub struct parse {{ pub value: i32 }}
+             #[pyfunction] pub fn parse() -> {ret} {{ {value} }}
+             #[pyclass] pub struct {prefix}_parse {{ pub value: i32 }}"
+        ));
+        assert!(manifest.functions[0]
+            .skip_reason
+            .starts_with("julia_name_collision:"));
+        assert!(manifest.structs.iter().all(|s| s.skip_reason.is_empty()));
+
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn parse() -> i32 {{ 1 }}
+             #[pyclass] pub struct S {{}}
+             #[pymethods] impl S {{ #[staticmethod] pub fn parse() -> {ret} {{ {value} }} }}
+             #[pyclass] pub struct {prefix}_S_parse {{ pub value: i32 }}"
+        ));
+        let s = manifest.structs.iter().find(|s| s.name == "S").unwrap();
+        assert!(s.methods[0]
+            .skip_reason
+            .starts_with("julia_name_collision:"));
+        assert!(manifest.structs.iter().all(|s| s.skip_reason.is_empty()));
+    }
+}
+
+#[test]
+fn aggregate_reservations_follow_surviving_owners_through_chains() {
+    // Each excluded class would emit another aggregate if it survived. The
+    // reservation must disappear with that class, even several links deep.
+    for reverse in [false, true] {
+        let mut classes = Vec::new();
+        let mut name = "CResult_f".to_string();
+        for _ in 0..8 {
+            classes.push(format!(
+                "#[pyclass] pub struct {name} {{ pub value: i32 }}
+                 #[pymethods] impl {name} {{
+                    pub fn value(&self) -> Option<i32> {{ Some(self.value) }}
+                 }}"
+            ));
+            name = format!("COption_{name}_value");
+        }
+        if reverse {
+            classes.reverse();
+        }
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn f() -> PyResult<i32> {{ Ok(1) }}\n{}",
+            classes.join("\n")
+        ));
+        let mut name = "CResult_f".to_string();
+        for depth in 0..8 {
+            let class = manifest.structs.iter().find(|s| s.name == name).unwrap();
+            assert_eq!(class.skip_reason.is_empty(), depth % 2 == 1, "{name}");
+            assert_eq!(class.methods[0].skip_reason.is_empty(), depth % 2 == 1);
+            name = format!("COption_{name}_value");
+        }
+    }
+}
+
+#[test]
+fn symbol_collision_losers_do_not_reserve_aggregate_names() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }
+         #[pyfunction] pub fn foo_take_panic() -> PyResult<i32> { Ok(1) }
+         #[pyclass] pub struct CResult_foo_take_panic { pub value: i32 }",
+    );
+    assert_eq!(
+        function(&manifest, "foo_take_panic").skip_reason,
+        "symbol_collision:foo"
+    );
+    assert!(manifest.structs[0].skip_reason.is_empty());
+}
+
+#[test]
+fn aggregate_exclusions_release_symbols_for_other_owners() {
+    for (ret, body) in [("i32", "1"), ("Option<i32>", "Some(1)")] {
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn f() -> PyResult<i32> {{ Ok(1) }}
+             #[pyfunction] pub fn CResult_f() -> i32 {{ 1 }}
+             #[pyclass] pub struct CResult {{ pub value: i32 }}
+             #[pymethods] impl CResult {{ pub fn f(&self) -> {ret} {{ {body} }} }}
+             #[pyclass] pub struct COption_CResult_f {{ pub value: i32 }}"
+        ));
+        assert_eq!(function(&manifest, "f").skip_reason, "");
+        assert_eq!(
+            function(&manifest, "CResult_f").skip_reason,
+            "julia_name_collision:CResult_f"
+        );
+        let class = manifest
+            .structs
+            .iter()
+            .find(|s| s.name == "CResult")
+            .unwrap();
+        assert!(class.methods[0].skip_reason.is_empty());
+        let reserved = manifest
+            .structs
+            .iter()
+            .find(|s| s.name == "COption_CResult_f")
+            .unwrap();
+        assert_eq!(reserved.skip_reason.is_empty(), ret == "i32");
+    }
+}
+
+/// A plain type alias is another way a PyO3 impl can name its class (#303).
+#[test]
+fn a_type_alias_disambiguates_a_pymethods_target() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            type Alias = crate::a::C;\n\
+            #[pymethods] impl Alias { pub fn only_a(&self) -> i32 { 0 } }\n\
+         }",
+    );
+    let in_a = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["a".to_string()])
+        .unwrap();
+    let in_b = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(
+        in_a.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["only_a"]
+    );
+    assert!(in_b.methods.is_empty());
+}
+
 /// Two `pub fn run` in different modules of one crate used to want one
 /// `rustcall_run`; the module path is part of the symbol since #300, so both
 /// are wrappable and `symbol_collision` is unreachable for them.
@@ -1370,6 +1661,41 @@ fn julia_surface_collisions_are_refused() {
     assert_eq!(class("B").skip_reason, "");
 }
 
+#[test]
+fn surface_claims_are_released_after_symbol_exclusions() {
+    let manifest = scan(
+        "#[pyfunction] pub fn foo() -> i32 { 1 }
+         #[pyfunction] pub fn FOO() -> i32 { 2 }
+         #[pyclass] pub struct C;
+         #[pymethods] impl C { #[staticmethod] pub fn FOO() -> i32 { 3 } }
+         #[pyclass] pub struct D;
+         #[pymethods] impl D { #[staticmethod] pub fn FOO() -> i32 { 4 } }",
+    );
+    assert_eq!(function(&manifest, "foo").skip_reason, "");
+    assert!(function(&manifest, "FOO")
+        .skip_reason
+        .starts_with("symbol_collision:"));
+    let c = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+    let d = manifest.structs.iter().find(|s| s.name == "D").unwrap();
+    assert_eq!(c.methods[0].skip_reason, "");
+    assert_eq!(d.methods[0].skip_reason, "julia_name_collision:C::FOO");
+
+    let manifest = scan(
+        "#[pyclass] pub struct A;
+         #[pymethods] impl A {
+             #[staticmethod] pub fn foo() -> i32 { 1 }
+             #[staticmethod] pub fn FOO() -> i32 { 2 }
+         }
+         #[pyclass] pub struct B;
+         #[pymethods] impl B { #[staticmethod] pub fn FOO() -> i32 { 3 } }",
+    );
+    let a = manifest.structs.iter().find(|s| s.name == "A").unwrap();
+    let b = manifest.structs.iter().find(|s| s.name == "B").unwrap();
+    assert_eq!(a.methods[0].skip_reason, "");
+    assert!(a.methods[1].skip_reason.starts_with("symbol_collision:"));
+    assert_eq!(b.methods[0].skip_reason, "");
+}
+
 /// A class is a Julia type *and* its constructor function, so its name is
 /// taken for every arity: a free function or a static method of that name
 /// would redefine the constant (`function User()` before `mutable struct
@@ -1404,6 +1730,90 @@ fn class_names_are_reserved_on_the_julia_surface() {
     let method = |n: &str| user.methods.iter().find(|m| m.name == n).unwrap();
     assert_eq!(method("Other").skip_reason, "julia_name_collision:b::Other");
     assert_eq!(method("Other2").skip_reason, "");
+}
+
+#[test]
+fn generated_result_aggregate_names_are_reserved() {
+    let manifest = scan(
+        "#[pyfunction] pub fn parse() -> PyResult<i32> { Ok(0) }\n\
+         #[pyclass] pub struct CResult_parse;\n\
+         #[pymethods] impl CResult_parse {\n\
+             #[new] pub fn new() -> Self { CResult_parse }\n\
+         }",
+    );
+    let class = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "CResult_parse")
+        .unwrap();
+    assert_eq!(class.skip_reason, "julia_name_collision:CResult_parse");
+    assert_eq!(function(&manifest, "parse").skip_reason, "");
+}
+
+#[test]
+fn ungenerated_aggregate_names_remain_available() {
+    for (return_type, unused_prefix) in [
+        ("PyResult<i32>", "COption"),
+        ("Result<i32, i32>", "COption"),
+        ("Option<i32>", "CResult"),
+    ] {
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn parse() -> {return_type} {{ todo!() }}
+             #[pyclass] pub struct {unused_prefix}_parse;
+             #[pyclass] pub struct A;
+             #[pymethods] impl A {{
+                 pub fn checked(&self) -> {return_type} {{ todo!() }}
+             }}
+             #[pyclass] pub struct {unused_prefix}_A_checked;"
+        ));
+        assert_eq!(function(&manifest, "parse").skip_reason, "");
+        for class in &manifest.structs {
+            assert_eq!(class.skip_reason, "", "{}", class.name);
+        }
+    }
+}
+
+#[test]
+fn generated_method_aggregate_names_are_reserved() {
+    let manifest = scan(
+        "#[pyclass] pub struct A;\n\
+         #[pymethods] impl A {\n\
+             pub fn checked(&self) -> PyResult<i32> { Ok(0) }\n\
+         }\n\
+         #[pyclass] pub struct CResult_A_checked;\n\
+         #[pymethods] impl CResult_A_checked {\n\
+             #[new] pub fn new() -> Self { CResult_A_checked }\n\
+         }",
+    );
+    let class = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "CResult_A_checked")
+        .unwrap();
+    assert_eq!(class.skip_reason, "julia_name_collision:CResult_A_checked");
+}
+
+#[test]
+fn method_aggregate_reservations_keep_the_method_cfg() {
+    for (return_type, prefix) in [("Option<i32>", "COption"), ("PyResult<i32>", "CResult")] {
+        let manifest = scan(&format!(
+            "#[pyclass] pub struct C;
+             #[pymethods] impl C {{
+                 #[cfg(feature = \"choice\")]
+                 pub fn value(&self) -> {return_type} {{ todo!() }}
+             }}
+             #[cfg(not(feature = \"choice\"))]
+             #[pyclass] pub struct {prefix}_C_value;"
+        ));
+        let class = manifest
+            .structs
+            .iter()
+            .find(|s| s.name == format!("{prefix}_C_value"))
+            .unwrap();
+        assert_eq!(class.skip_reason, "");
+        let owner = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+        assert_eq!(owner.methods[0].skip_reason, "");
+    }
 }
 
 /// The Julia surface is one namespace per generated module (#300): a free

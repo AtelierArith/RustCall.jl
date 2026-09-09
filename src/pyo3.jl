@@ -20,7 +20,7 @@ Human-readable text for each `skip_reason` the extractor records
 (`rustcall_core::manifest::skip_reason`). A reason may carry a detail after a
 colon (`pyo3_type:Python<'_>`); `pyo3_skip_explanation` splits it off.
 """
-const PYO3_SKIP_REASONS = Dict{String, String}(
+const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(),
     "not_public" => "not `pub`, so a wrapper crate cannot name it (rustc E0603)",
     "pyo3_type" => "the signature uses a type that needs a live Python interpreter",
     "pymodule" => "a `#[pymodule]` initializer: it only means something to Python's import machinery",
@@ -433,9 +433,10 @@ the wrapper; and it runs under the wrapper policy's environment
 (`_cargo_panic_env`), so an inherited `CARGO_PROFILE_*_PANIC` cannot make it
 describe a build the wrapper never makes. Then
 `cargo rustc -p <crate> --lib -- --print cfg`. The build cache is
-`<crate>/target/rustcall-pyo3-probe/target`, so repeated plans do not rebuild
-the dependency graph. Memoized like `_crate_build_cfg_text`, on the same
-inputs; `""` when Cargo will not answer.
+`<crate>/target/rustcall-pyo3-probe/target`, so Cargo still reuses compiled
+dependencies, but the cfg answer itself is not memoized: build scripts can
+observe inputs outside a stable digest (#291). `""` means Cargo did not
+answer.
 
 `interpreter`, when given, is pinned in `PYO3_PYTHON` for the probe exactly as
 the wrapper build pins it (`_wrapper_probe_env`), so a crate whose build script
@@ -481,13 +482,12 @@ function _wrapper_probe_cfg_text(crate_path::AbstractString;
             ""
         end
     end
-    lock(_EXTRACTOR_LOCK) do
-        get!(probe, _WRAPPER_CFG_TEXT, key)
-    end
+    _ = key
+    return probe()
 end
 
 # Memo of `_wrapper_probe_cfg_text`, keyed like `_CRATE_CFG_TEXT`.
-const _WRAPPER_CFG_TEXT = Dict{String, String}()
+const _WRAPPER_CFG_TEXT = _state_view(:wrapper_cfg_text, Dict{String, String}())
 
 # The environment the probe runs under — the one the real wrapper build runs
 # under: the wrapper policy's panic pin (`_cargo_panic_env`), the probe's own
@@ -1582,32 +1582,50 @@ end
 _cargo_root_dir(crate_path::AbstractString) =
     something(_workspace_root_dir(abspath(String(crate_path))), abspath(String(crate_path)))
 
-# The `[patch]` table of the crate's Cargo root — the only manifest whose
-# `[patch]` Cargo honours — as TOML text for a root manifest that lives
-# elsewhere, every `path = ` entry rewritten to an absolute path; "" when the
-# root has none.
+# The root-only `[patch]` and `[replace]` tables of the crate's Cargo root as
+# TOML text for a root manifest that lives elsewhere, every `path = ` entry
+# rewritten to an absolute path; "" when the root has neither. `[replace]` is
+# deprecated but remains valid Cargo input and is still used by older crates.
 function _root_patch_toml(crate_path::AbstractString)
     root = _cargo_root_dir(crate_path)
     manifest = joinpath(root, "Cargo.toml")
     isfile(manifest) || return ""
-    patch = get(TOML.parsefile(manifest), "patch", nothing)
-    (patch isa AbstractDict && !isempty(patch)) || return ""
+    parsed = TOML.parsefile(manifest)
+    patch = get(parsed, "patch", nothing)
+    replacement = get(parsed, "replace", nothing)
+    (patch isa AbstractDict && !isempty(patch)) ||
+        (replacement isa AbstractDict && !isempty(replacement)) || return ""
     rewritten = Dict{String, Any}()
-    for (source, entries) in patch
-        entries isa AbstractDict || continue
-        table = Dict{String, Any}()
-        for (name, spec) in entries
+    if patch isa AbstractDict
+        patched = Dict{String, Any}()
+        for (source, entries) in patch
+            entries isa AbstractDict || continue
+            table = Dict{String, Any}()
+            for (name, spec) in entries
+                if spec isa AbstractDict && haskey(spec, "path")
+                    spec = Dict{String, Any}(spec)
+                    spec["path"] = abspath(joinpath(root, String(spec["path"])))
+                end
+                table[String(name)] = spec
+            end
+            patched[String(source)] = table
+        end
+        isempty(patched) || (rewritten["patch"] = patched)
+    end
+    if replacement isa AbstractDict
+        replacements = Dict{String, Any}()
+        for (package, spec) in replacement
             if spec isa AbstractDict && haskey(spec, "path")
                 spec = Dict{String, Any}(spec)
                 spec["path"] = abspath(joinpath(root, String(spec["path"])))
             end
-            table[String(name)] = spec
+            replacements[String(package)] = spec
         end
-        rewritten[String(source)] = table
+        isempty(replacements) || (rewritten["replace"] = replacements)
     end
     io = IOBuffer()
     println(io)
-    TOML.print(io, Dict{String, Any}("patch" => rewritten))
+    TOML.print(io, rewritten)
     return String(take!(io))
 end
 

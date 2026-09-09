@@ -411,6 +411,26 @@ panic channel *before* it decodes anything, and raises `RustCall.RustPanicError`
 - The methods of a **generic** struct are monomorphized on demand and return
   the type as written; `Result`/`Option` lowering does not apply to them.
 
+### Generic objects and registration updates
+
+One generic struct instantiation builds its applicable constructor, destructor,
+methods and accessors into one library. Each object keeps that library's method
+snapshots as well as its destructor: replacing the source registration affects
+new objects, not the layout or method implementation used by an existing object.
+An existing object's string release and panic channel stay in its original image.
+Registration prepares all members outside the state lock, then publishes the
+complete group in one transaction, removing methods absent from the replacement.
+This does not erase the compiled member snapshots that existing objects own.
+
+A method with stricter trait bounds, or additional method-local type parameters
+not bound by the struct instantiation, does not prevent construction. Such a
+method is not part of that object's compiled member set. Calling an unavailable
+member reports an error rather than silently entering another generation.
+Calling a method after explicitly finalizing its receiver also reports an error.
+Methods and field wrappers also reject an object whose captured image has been
+explicitly closed, even when its Rust allocation pointer is still non-null.
+Retirement leaves the image mapped and does not disable existing objects.
+
 ## Best Practices
 
 ### 1. Always Use `#[derive(JuliaStruct)]`

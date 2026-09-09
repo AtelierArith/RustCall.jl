@@ -123,7 +123,8 @@ end
 # `get_cache_dir` is on the lookup path of every cached compile, and resolving
 # it probes the filesystem for a writable depot, so the answer is memoized and
 # invalidated whenever either input changes (which is what tests do).
-const _CACHE_DIR_MEMO = Ref{Union{Nothing, Tuple{Vector{String}, String, String}}}(nothing)
+const _CACHE_DIR_MEMO = _state_view(:cache_dir_memo,
+    Ref{Union{Nothing, Tuple{Vector{String}, String, String}}}(nothing))
 
 """
     _reset_cache_dir_memo!()

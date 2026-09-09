@@ -96,13 +96,68 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 
 ## Thread Safety
 
-Global state is protected by `REGISTRY_LOCK` (ReentrantLock) in `src/RustCall.jl`. This guards `RUST_LIBRARIES`, `GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables in `src/codegen.jl` and `ARTIFACT_ALIVE`.
+Mutable runtime state is stored in `RustCall.STATE`, a `Base.Lockable{RustCallState}` in
+`src/RustCall.jl`. The legacy names (`RUST_LIBRARIES`,
+`GENERIC_FUNCTION_REGISTRY`, the per-library metadata tables and
+`ARTIFACT_ALIVE`) are lock-taking `StateView`s into that container; they are not
+independent mutable globals. `REGISTRY_LOCK` is the container's lock. The lock
+ordering rule is: take `STATE`/`REGISTRY_LOCK` only for an in-memory state
+transaction, never while calling user Julia code, compiling, opening/closing a
+library, or executing a Rust `ccall`; perform those operations before or after
+the transaction. The deferred-drop queue's storage is also in `STATE` and its
+compatibility lock aliases the state lock. Only explicit drops enqueue;
+ownership finalizers use captured destructor pointers and liveness flags,
+with an atomic exactly-once claim, and never access that queue.
+
+Read-only tables use immutable dictionaries and tuples. The state test scans
+module values (including factory results and immutable wrappers), so a new
+mutable registry is rejected without adding its name to a list. A Julia-AST
+check also rejects blocking operations, FFI and logging inside explicit state
+transactions. Compiler initialization publishes only if no concurrent setter
+has won. Watcher selection, task publication and stop snapshots are state
+transactions; scheduling, waiting, source I/O and callbacks occur outside them.
+StateView cache defaults are evaluated outside STATE, then published only if
+another task has not already supplied the key. This includes the cold Cargo
+and rustc cfg probes, whose subprocess must never run inside a state transaction.
+Library metadata iterators and string conversions are materialized and validated
+before STATE is acquired. The publication helper accepts only prepared concrete
+rows, so a failing iterator or invalid return type cannot erase prior metadata.
+Explicit retirement also materializes its caller-supplied handle iterator before
+changing liveness flags under STATE.
+StateView `filter!` likewise evaluates predicates on a snapshot outside STATE.
+Active filters observe container writes in the same state transaction; key
+updates and original vector-occurrence tokens distinguish delete/reinsert from
+an unchanged entry, even when the value is identical. The deferred queue and
+module metadata use that same mutation path. Observations are released when
+filtering completes or throws. Callers must not wrap arbitrary callbacks in
+their own outer STATE transaction.
+
+FFI layout method definitions use a separate, STATE-owned definition gate.
+Never acquire that gate while holding STATE: fetch it first, release STATE,
+then serialize the method-table edit. User-defined layout callbacks run outside
+both locks, with the exact method rechecked before accepting an existing
+registration. `Core.eval` and method deletion never run inside STATE.
+
+Inline `rust"""` caller modules also use owner-qualified `StateView`s for
+their library, symbol and active-library tables.
+Legacy caller containers are copied into concrete STATE-owned storage outside
+the lock when adopted; internal module binding access then returns owned views.
+The caller's historical Dict/Ref constants are no longer live registry aliases.
+`src/module_state.jl` publishes these tables together after validating every
+symbol collision. During caller
+precompilation, only immutable `ModuleBlockRecord`s are serialized; a fresh
+process reconstructs the mutable tables in `STATE` before loading the recorded
+blocks. Runtime cache hits do not add precompile-record bindings. Both crate
+module templates also expose owner-qualified views for their generation cell
+and symbol cache; preload paths, source inputs and recorded environment values
+are immutable tuples. A symbol-cache miss resolves outside STATE and only its
+publication takes the state lock.
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 
-**One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point resolves everything it needs — function pointer, panic channel, owned-`String` release function, struct destructor, liveness `Ref`, **and the return ABI** — in **one** locked step, and then uses only that snapshot. Nothing after the snapshot may look anything up by library name: a second lookup can land on the other side of a swap, and the call then enters the retired image while the channel, the `free`, or the return type belongs to its replacement — a lost panic, a buffer released through the wrong allocator, or a scalar read as a struct.
+**One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point captures its handle, cached pointers, liveness `Ref` and **return ABI** in **one** locked step. Cold function, panic-channel and release/destructor pointers are then resolved on that captured handle outside STATE. No later name lookup may supply any part of the returned target: that could cross a swap and pair an old call with a replacement's channel, allocator or ABI. Cache publication writes only to the captured image's cache. The legacy name-keyed panic cache compares its captured registry entry before publishing, but that comparison never changes the pointer returned to its caller. Explicit closing requires quiescence of the entire FFI operation, including target resolution.
 
 There are exactly four snapshot constructors, and `scripts/lint_generation_snapshot.sh` fails CI if anything else resolves a piece on its own:
 
@@ -118,7 +173,8 @@ Two consequences worth knowing:
 - **A constructor's snapshot includes the object's destructor.** `resolve_call_target(lib, ctor; free_symbol = "<Struct>_free")` returns the allocating wrapper *and* the `free_ptr` / `alive` the resulting object captures, so an object can never be bound to a generation other than the one that allocated it. `_call_rust_constructor` returns `(ptr, target)` for exactly this; the crate templates use `_ctor_target`.
 - **A retired image keeps its identity.** An image is retired, not closed, so it stays mapped with live objects holding its flag; loading the same path again gets the same handle back and adopts that same flag (one mapped image, one flag), and a retirement closes exactly the number of owned opens it was retired with — never the live counter, which a concurrent reopen may have raised.
 - **A cached record is a snapshot too.** `FunctionInfo` (a monomorphized generic, `register_function`) carries the channel, the handle and the generation it was built with, because it is called long after the lookup that produced it.
-- **A generated `@rust_crate` module keeps one immutable record, not several `Ref`s.** `_LIB_GEN::Ref{CrateGeneration}` holds handle + liveness flag + generation, replaced wholesale by `_update_handle_mirrors!` inside the `REGISTRY_LOCK` transaction; wrappers read it once per call and take no lock. Two cells written under one lock and read under another are not a snapshot. `__init__` registers the mirror **before** loading and never assigns it afterwards — an assignment after `load_artifact!` would overwrite a newer generation a concurrent reload had already published.
+- **Generic objects keep image-specific members.** `GENERIC_STRUCT_ARTIFACTS` is keyed by both artifact name and the image's liveness flag. Rebuilding identical source after retirement reuses the name but creates a separate member map; methods and accessors select with the object's captured flag, never the current name alone. Retired mapped images keep their records; making an image inert during explicit reclamation removes its member map without touching a live replacement's map.
+- **A generated `@rust_crate` module keeps one immutable record, not several `Ref`s.** `_LIB_GEN` is an owner-qualified StateView of a `Ref{CrateGeneration}` in STATE. The record holds handle + liveness flag + generation, replaced wholesale by `_update_handle_mirrors!` inside the `REGISTRY_LOCK` transaction; wrappers read it once per call, releasing STATE before symbol resolution or FFI. Two independently read cells are not a snapshot. `__init__` registers the mirror **before** loading and never assigns it afterwards — an assignment after `load_artifact!` would overwrite a newer generation a concurrent reload had already published. The legacy raw-Ref registration overload remains compatible; generated modules use only the owned view.
 
 A replaced image is **retired, not closed**, so a call already inside one stays valid; a cached pointer finds its own image's flag through `alive_ref_for_handle`, never through the name. **One image, one flag**: every name of a handle shares it — an alias by construction (`alias_artifact!`), and a second `load_artifact!` of the same path by adopting the flag the image already has (`registered_alive_for_handle`, #291). A second flag would not be cosmetic: `unload_artifact!` retires with one of them and drops the other without flipping it, so objects holding the dropped flag believe themselves live over unmapped code. For the same reason, re-aliasing a name that already names this image does not retire it. `test/test_hot_reload_transaction.jl` asserts all of this adversarially: a reload loop against tasks that call, panic, allocate and drop — plus one that reads the crate-module record — checking that no call returns an unpublished generation, that no generation number is ever paired with two different results, that no panic is lost and that no finalizer fails.
 
@@ -131,7 +187,7 @@ A replaced image is **retired, not closed**, so a call already inside one stays 
 - `test/test_regressions.jl` holds regression tests for fixed issues
 - Proc-macro tests: `deps/juliacall_macros/tests/`
 - Many tests require `rustc` and skip gracefully if unavailable
-- **PyO3 wrapper tests that link libpython skip without a linkable Python.** A crate whose pyo3 dependency is mandatory is wrapped as a `:link_libpython` build (`docs/src/pyo3.md`), so the testsets that *build and load* such a wrapper (`test/test_pyo3_wrapper.jl`'s `:link_libpython` testsets, and the PyO3 cross-module case #300 / PR #333 adds to `test/test_module_symbols.jl`) first try the build and skip when it fails — through `_link_libpython_wrapper` (`@info "skipping the :link_libpython wrapper testset"`) or a per-testset `try` (`"skipping the mixed-crate build"`, `"skipping the feature-gated build"`, `"skipping the configured-crate build"`, some with a `@test_skip`); grep a run for `skipping`. Typically the cause is that `python_link_source()` found no linkable `libpython3.x` (a `python3` without the shared-library symlink, or none at all), but both catch *every* build failure, so a skip can also hide a wrapper/Cargo regression: read the `exception` in those `@info`s (#336 tracks narrowing the catch). A skipped testset is not a pass: on a machine whose Python ships a linkable library — `libpython3.x.so` (Linux, `python3-dev`), `libpython3.x.dylib` or a `Python3.framework` bundle (macOS), `python3xy.lib` (Windows) — or with `PYO3_PYTHON` / `RUSTCALL_PYTHON_LIBDIR` pointing at one, they run in full, and the Ubuntu CI jobs do run them. `test/test_pyo3_link_plan.jl` and `test/test_manifest.jl` only *compute* the plan (`plan.mode === :link_libpython`) and always run; so do the scan-level assertions and every `:python_free` case (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`), which need no Python at all.
+- **PyO3 wrapper tests that link libpython skip only when the prerequisite is absent.** A crate whose pyo3 dependency is mandatory is wrapped as a `:link_libpython` build (`docs/src/pyo3.md`). The shared `_link_libpython_wrapper` helper first requires `plan.mode === :link_libpython` and a linkable library in the directory selected by `python_link_source()`; it logs the reason and skips only then. Once that prerequisite holds, wrapper generation, Cargo, compiler, loading, and calls are hard failures. The helper is shared by `test/test_pyo3_wrapper.jl` and the PyO3 cross-module case in `test/test_module_symbols.jl`. A skipped testset is not a pass: on a machine whose Python ships a linkable library — `libpython3.x.so` (Linux, `python3-dev`), `libpython3.x.dylib` or a `Python3.framework` bundle (macOS), `python3xy.lib` (Windows) — or with `PYO3_PYTHON` / `RUSTCALL_PYTHON_LIBDIR` pointing at one, they run in full, and the Ubuntu CI jobs do run them. `test/test_pyo3_link_plan.jl` and `test/test_manifest.jl` only *compute* the plan (`plan.mode === :link_libpython`) and always run; so do the scan-level assertions and every `:python_free` case (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`), which need no Python at all.
 
 ## CI
 

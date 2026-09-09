@@ -542,8 +542,8 @@ Read once, at `__init__`: a load policy must not change halfway through a
 session, or two artifacts of one program would disagree about the namespace
 they published into.
 """
-const DLOPEN_GLOBAL_OVERRIDE = Ref(false)
-const _DLOPEN_GLOBAL_WARNED = Ref(false)
+const DLOPEN_GLOBAL_OVERRIDE = _state_view(:dlopen_global_override, Ref(false))
+const _DLOPEN_GLOBAL_WARNED = _state_view(:dlopen_global_warned, Ref(false))
 
 # Called from `RustCall.__init__`.
 function _init_dlopen_global_override!(env = ENV)
@@ -833,7 +833,6 @@ function register_library!(policy::LoadPolicy, lib_name::AbstractString, handle:
     handle == C_NULL && throw(ArgumentError("refusing to register a NULL handle for $(name)"))
     lock(REGISTRY_LOCK) do
         if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
-            @debug "register_library!: keeping the existing entry" lib_name=name policy=policy.name
             return
         end
         RUST_LIBRARIES[name] = (handle, Dict{String, Ptr{Cvoid}}())
@@ -952,7 +951,7 @@ inert; the object itself is unreachable from here by then.
 Guarded by `REGISTRY_LOCK`.  An alias (`alias_artifact!`) shares the flag of
 the artifact it aliases, so unloading either name retires both.
 """
-const ARTIFACT_ALIVE = Dict{String, Ref{Bool}}()
+const ARTIFACT_ALIVE = _state_view(:artifact_alive, Dict{String, Ref{Bool}}())
 
 """
     artifact_alive_ref(lib_name) -> Ref{Bool}
@@ -1002,7 +1001,7 @@ swap.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const ARTIFACT_GENERATIONS = Dict{String, Int}()
+const ARTIFACT_GENERATIONS = _state_view(:artifact_generations, Dict{String, Int}())
 
 # The generation being installed for `name`. Caller holds REGISTRY_LOCK.
 function _next_artifact_generation!(name::String)
@@ -1016,8 +1015,10 @@ end
 
 Which generation of `lib_name` is installed now; `0` if none ever was.
 """
-artifact_generation(lib_name::AbstractString) =
-    lock(() -> get(ARTIFACT_GENERATIONS, String(lib_name), 0), REGISTRY_LOCK)
+function artifact_generation(lib_name::AbstractString)
+    name = String(lib_name)
+    lock(() -> get(ARTIFACT_GENERATIONS, name, 0), REGISTRY_LOCK)
+end
 
 """
     CrateGeneration
@@ -1058,13 +1059,13 @@ CrateGeneration() = CrateGeneration(C_NULL, Ref(false), 0)
 that the loader keeps in sync.
 
 A generated `@rust_crate` module resolves its symbols through its own
-generation record rather than through a registry lookup per call — that is the
-whole point of the module-local `Ref`. But a raw copy of a handle goes **stale**
+generation record. The module exposes an owner-qualified StateView and the
+underlying cell is owned by STATE. A raw copy of a handle goes **stale**
 the moment the library is replaced or unloaded: a hot reload closes the previous
 image, and `unload_library` drops it, after which a raw copy of the handle
 would be read against an image nothing points at any more. Registering the
-module's `Ref` here lets the transaction that swaps the handle swap the mirror
-in the same critical section, so the fast path stays a `Ref` read and can never
+module's owned cell here lets the transaction that swaps the handle swap the mirror
+in the same critical section, so a single record read can never
 point at a closed image (#277 Phase B).
 
 The mirrors survive an unload rather than being dropped with it: a hot reload is
@@ -1073,7 +1074,8 @@ still there waiting for the new handle.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const HANDLE_MIRRORS = Dict{String, Vector{Base.RefValue{CrateGeneration}}}()
+const HANDLE_MIRRORS = _state_view(:handle_mirrors,
+    Dict{String, Vector{Base.RefValue{CrateGeneration}}}())
 
 """
     register_handle_mirror!(lib_name, gen_ref)
@@ -1103,6 +1105,15 @@ function register_handle_mirror!(lib_name::AbstractString,
         end
     end
     return nothing
+end
+
+# Generated modules expose only an immutable owner-qualified view. The cell
+# itself lives in STATE; the loader's mirror list aliases that same owned cell.
+function register_handle_mirror!(lib_name::AbstractString, view::StateView)
+    view.owner !== nothing && view.name === :crate_generation ||
+        throw(ArgumentError("A crate generation mirror requires a module-owned generation view"))
+    gen_ref = _state_read(view, identity)
+    return register_handle_mirror!(lib_name, gen_ref)
 end
 
 # Publish one generation to every mirror of `name`: one pointer store each, so
@@ -1179,8 +1190,15 @@ function alive_ref_for_handle(handle::Ptr{Cvoid}, lib_name::AbstractString)
     end
     retired = get(RETIRED_HANDLES, handle, nothing)
     retired === nothing || return retired.alive
-    return DEAD_ARTIFACT
+    local_alive = get(HANDLE_ONLY_ALIVE, handle, nothing)
+    local_alive === nothing || return local_alive
+    return _state_read(DEAD_ARTIFACT, identity)
 end
+
+# Images loaded by helper/module-local policies still need a handle-owned
+# flag, even though they have no RUST_LIBRARIES row.
+const HANDLE_ONLY_ALIVE = _state_view(:handle_only_alive,
+    Dict{Ptr{Cvoid}, Base.RefValue{Bool}}())
 
 """
     DEAD_ARTIFACT
@@ -1189,7 +1207,7 @@ A liveness flag that is `false` and stays `false`: the answer for a pointer
 whose image is neither registered nor retired. Shared, because it is immutable
 in practice — nothing ever flips it.
 """
-const DEAD_ARTIFACT = Ref(false)
+const DEAD_ARTIFACT = _state_view(:dead_artifact, Ref(false))
 
 """
     RETIRED_HANDLES
@@ -1224,7 +1242,7 @@ needs it; a long-running process or a test harness does.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const RETIRED_HANDLES = Dict{Ptr{Cvoid}, RetiredImage}()
+const RETIRED_HANDLES = _state_view(:retired_handles, Dict{Ptr{Cvoid}, RetiredImage}())
 
 """
     retired_handles() -> Vector{Ptr{Cvoid}}
@@ -1235,9 +1253,11 @@ those that were known by `lib_name`.
 """
 retired_handles() = lock(() -> collect(keys(RETIRED_HANDLES)), REGISTRY_LOCK)
 
-retired_handles(lib_name::AbstractString) = lock(REGISTRY_LOCK) do
+function retired_handles(lib_name::AbstractString)
     name = String(lib_name)
-    [h for (h, r) in RETIRED_HANDLES if name in r.names]
+    lock(REGISTRY_LOCK) do
+        [h for (h, r) in RETIRED_HANDLES if name in r.names]
+    end
 end
 
 # Record an image that has left the registry. Its liveness flag stays as it is
@@ -1284,14 +1304,16 @@ An image RustCall did not open is released from the bookkeeping but not
 closed: closing it belongs to whoever opened it (`OWNED_HANDLES`).
 """
 function close_retired_handles!(handles = retired_handles())
+    selected = Ptr{Cvoid}[handle for handle in handles]
     records = lock(REGISTRY_LOCK) do
         found = Pair{Ptr{Cvoid}, RetiredImage}[]
-        for handle in handles
+        for handle in selected
             record = get(RETIRED_HANDLES, handle, nothing)
             record === nothing && continue
             # Flip under the lock, before the close: an object finalized in
             # between must see `false`, not a handle that is about to go.
             record.alive[] = false
+            _forget_generic_image!(record.alive)
             delete!(RETIRED_HANDLES, handle)
             push!(found, handle => record)
         end
@@ -1601,7 +1623,7 @@ cannot both decide to perform the last close.
 
 Guarded by `REGISTRY_LOCK`.
 """
-const OWNED_HANDLES = Dict{Ptr{Cvoid}, Int}()
+const OWNED_HANDLES = _state_view(:owned_handles, Dict{Ptr{Cvoid}, Int}())
 
 """
     close_artifact_handle!(handle) -> Bool
@@ -1621,6 +1643,14 @@ function close_artifact_handle!(handle::Ptr{Cvoid})
         remaining == 0 && return false
         remaining == 1 ? delete!(OWNED_HANDLES, handle) :
                          (OWNED_HANDLES[handle] = remaining - 1)
+        if remaining == 1
+            alive = get(HANDLE_ONLY_ALIVE, handle, nothing)
+            delete!(HANDLE_ONLY_ALIVE, handle)
+            if alive !== nothing
+                alive[] = false
+                _forget_generic_image!(alive)
+            end
+        end
         return true
     end
     owned || return false
@@ -1673,7 +1703,7 @@ function registered_alive_for_handle(handle::Ptr{Cvoid})
         ref = get(ARTIFACT_ALIVE, name, nothing)
         ref === nothing || return ref
     end
-    return nothing
+    return get(HANDLE_ONLY_ALIVE, handle, nothing)
 end
 
 """
@@ -1729,8 +1759,17 @@ Throws if the load fails, leaving the registry untouched.
 function load_artifact!(policy::LoadPolicy, path::AbstractString;
                         lib_name::AbstractString,
                         preload = (),
+                        symbols = (), return_types = (), eager = (),
                         kwargs...)
     lib_path = String(path)
+    name = String(lib_name)
+    # Reject caller metadata before acquiring a loader reference. Otherwise
+    # a throwing iterator or conversion in adopt_artifact! leaks this open.
+    metadata = registers_in_rust_libraries(policy) ?
+               prepare_library_metadata(symbols, return_types) :
+               prepare_library_metadata((), ())
+    prepared_eager = registers_in_rust_libraries(policy) ?
+                     String[String(symbol) for symbol in eager] : String[]
     for dependency in preload
         preload_dependency!(policy, dependency)
     end
@@ -1748,7 +1787,9 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     # registration turns out not to need it (`:insert_only` lost the race), it
     # is this call's job to close it. `adopt_artifact!` never closes a handle
     # it was merely handed.
-    return adopt_artifact!(policy, handle; lib_name, path = lib_path,
+    return adopt_artifact!(policy, handle; lib_name = name, path = lib_path,
+                           symbols = metadata.symbols, return_types = metadata.return_types,
+                           eager = prepared_eager,
                            close_duplicate = true, kwargs...)
 end
 
@@ -1763,7 +1804,8 @@ closed: the artifacts that import it may outlive any one of them being
 retired, and a runtime like Python cannot be unloaded and reloaded within one
 process anyway. Guarded by `REGISTRY_LOCK`.
 """
-const PRELOADED_LIBRARIES = Dict{String, Ptr{Cvoid}}()
+const PRELOADED_LIBRARIES = _state_view(:preloaded_libraries,
+    Dict{String, Ptr{Cvoid}}())
 
 """
     preload_dependency!(policy::LoadPolicy, path) -> Ptr{Cvoid}
@@ -1836,15 +1878,38 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
     assumed = snapshot_env === nothing ? must_assume_unwind(policy) :
               must_assume_unwind(policy, snapshot_env)
 
+    # Resolve on the supplied image before entering STATE. Registration still
+    # publishes the complete cache and metadata together; dynamic symbol
+    # resolution can execute loader code and must not hold the registry lock.
+    cache = Dict{String, Ptr{Cvoid}}()
+    if registers_in_rust_libraries(policy)
+        for symbol in eager
+            name_ = String(symbol)
+            found = Libdl.dlsym(handle, name_; throw_error = false)
+            (found === nothing || found == C_NULL) && continue
+            cache[name_] = found
+        end
+    end
+
     duplicate = C_NULL
     replaced = C_NULL
+    metadata = registers_in_rust_libraries(policy) ?
+               prepare_library_metadata(symbols, return_types) : nothing
     artifact = lock(REGISTRY_LOCK) do
         if !registers_in_rust_libraries(policy)
-            return LoadedArtifact(name, handle, lib_path, policy, _new_alive!(name),
+            retired = get(RETIRED_HANDLES, handle, nothing)
+            alive = something(registered_alive_for_handle(handle),
+                              retired === nothing ? nothing : retired.alive, Ref(true))
+            HANDLE_ONLY_ALIVE[handle] = alive
+            ARTIFACT_ALIVE[name] = alive
+            # A live helper/module-local owner revives the image just like a
+            # registry owner. Its old retirement must no longer flip the
+            # shared flag or reclaim the opens this owner now relies on.
+            delete!(RETIRED_HANDLES, handle)
+            return LoadedArtifact(name, handle, lib_path, policy, alive,
                                   assumed, 0)
         end
         if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
-            @debug "load_artifact!: keeping the existing entry" lib_name = name policy = policy.name
             duplicate = handle
             existing, _ = RUST_LIBRARIES[name]
             alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
@@ -1854,13 +1919,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         if haskey(RUST_LIBRARIES, name)
             replaced = RUST_LIBRARIES[name][1]
         end
-        cache = Dict{String, Ptr{Cvoid}}()
-        for symbol in eager
-            found = Libdl.dlsym(handle, String(symbol); throw_error = false)
-            (found === nothing || found == C_NULL) && continue
-            cache[String(symbol)] = found
-        end
-        install_library_metadata!(name, symbols, return_types)
+        install_library_metadata!(name, metadata)
         # One flag per *image*, not per registration. Re-registering the same
         # handle — the same file opened again, which `dlopen` refcounts and
         # answers with the same image — is the same lifetime, so it keeps the
@@ -1953,11 +2012,12 @@ function register_artifact_metadata!(policy::LoadPolicy, lib_name::AbstractStrin
                                      require_loaded::Bool = false,
                                      set_current::Bool = policy.sets_current_lib)
     name = String(lib_name)
+    metadata = prepare_library_metadata(symbols, return_types)
     return lock(REGISTRY_LOCK) do
         if require_loaded && !haskey(RUST_LIBRARIES, name)
             return false
         end
-        install_library_metadata!(name, symbols, return_types)
+        install_library_metadata!(name, metadata)
         set_current && (CURRENT_LIB[] = name)
         return true
     end
@@ -2099,8 +2159,11 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         # record retired, keep the flag, close later.
         ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
-        _update_handle_mirrors!(target, entry[1], alive,
-                                get(ARTIFACT_GENERATIONS, target, 0))
+        # Generation numbers belong to the destination name. Rebinding it to
+        # another image must advance its stamp; an idempotent alias must not.
+        generation = displaced == entry[1] ? get(ARTIFACT_GENERATIONS, target, 0) :
+                     _next_artifact_generation!(target)
+        _update_handle_mirrors!(target, entry[1], alive, generation)
         # An alias that displaces a *different* image takes a name away from it
         # — and an image with no name left is unreachable: nothing can unload
         # it and `close_retired_handles!` cannot see it, so its owned `dlopen`

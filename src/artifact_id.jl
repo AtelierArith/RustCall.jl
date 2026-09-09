@@ -181,8 +181,7 @@ end
 # Compiler identity (#252)
 # ----------------------------------------------------------------------------
 
-const _ARTIFACT_COMPILER_IDENTITY = Ref{String}("")
-const _ARTIFACT_COMPILER_LOCK = ReentrantLock()
+const _ARTIFACT_COMPILER_IDENTITY = _state_view(:artifact_compiler_identity, Ref{String}(""))
 
 """
     artifact_compiler_identity() -> String
@@ -204,22 +203,20 @@ compile do not.
 The result is memoized for the session.
 """
 function artifact_compiler_identity()::String
-    lock(_ARTIFACT_COMPILER_LOCK) do
-        if isempty(_ARTIFACT_COMPILER_IDENTITY[])
-            rustc_ver = _tool_version(rustc, "rustc")
-            cargo_ver = _tool_version(cargo, "cargo")
-            # A wrapper stands between Cargo and rustc and can change what is
-            # produced (sccache, clippy-driver, a custom shim), so it is part
-            # of the identity of the compiler that actually runs.
-            wrapper = get(ENV, "RUSTC_WRAPPER", "")
-            ws_wrapper = get(ENV, "RUSTC_WORKSPACE_WRAPPER", "")
-            _ARTIFACT_COMPILER_IDENTITY[] = string(
-                "rustc=", rustc_ver,
-                "\ncargo=", cargo_ver,
-                "\nrustc_wrapper=", wrapper,
-                "\nrustc_workspace_wrapper=", ws_wrapper)
-        end
-        return _ARTIFACT_COMPILER_IDENTITY[]
+    cached = _ARTIFACT_COMPILER_IDENTITY[]
+    isempty(cached) || return cached
+    # Processes and toolchain callbacks run outside STATE. Racing first
+    # callers may compute a candidate, but publish only one session identity.
+    rustc_ver = _tool_version(rustc, "rustc")
+    cargo_ver = _tool_version(cargo, "cargo")
+    wrapper = get(ENV, "RUSTC_WRAPPER", "")
+    ws_wrapper = get(ENV, "RUSTC_WORKSPACE_WRAPPER", "")
+    candidate = string("rustc=", rustc_ver, "\ncargo=", cargo_ver,
+                       "\nrustc_wrapper=", wrapper,
+                       "\nrustc_workspace_wrapper=", ws_wrapper)
+    return _state_read(_ARTIFACT_COMPILER_IDENTITY) do value
+        isempty(value[]) && (value[] = candidate)
+        value[]
     end
 end
 
@@ -498,7 +495,8 @@ const _ARTIFACT_DIGEST_LOCK = ReentrantLock()
 
 # canonical crate dir => (manifest stamps of every crate in the graph,
 #                          (strategy, dirs))
-const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}()
+const _PATH_DEP_GRAPH_CACHE = _state_view(:path_dep_graph_cache,
+    Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}())
 
 """
     CARGO_TREE_INVOCATIONS
@@ -506,7 +504,7 @@ const _PATH_DEP_GRAPH_CACHE = Dict{String, Tuple{Any, Tuple{String, Vector{Strin
 How many times `cargo tree` has been spawned this session. A test hook for the
 performance requirement of #278.
 """
-const CARGO_TREE_INVOCATIONS = Ref(0)
+const CARGO_TREE_INVOCATIONS = _state_view(:cargo_tree_invocations, Ref(0))
 
 """
     _artifact_reset_digest_caches!()
@@ -849,9 +847,9 @@ end
 
 Version-control metadata directories, never a crate input at any depth.
 """
-const CRATE_INPUT_VCS_DIRS_ANY_LEVEL = String[
+const CRATE_INPUT_VCS_DIRS_ANY_LEVEL = (
     ".bzr", ".git", ".hg", ".jj", ".pijul", ".svn",
-]
+)
 
 """
     CRATE_INPUT_VCS_DIRS
@@ -862,7 +860,7 @@ Cargo's build output. `target` is excluded **only at the package root** —
 directories are excluded at any depth. Everything else under a package
 directory is an input.
 """
-const CRATE_INPUT_VCS_DIRS = String[CRATE_INPUT_VCS_DIRS_ANY_LEVEL..., "target"]
+const CRATE_INPUT_VCS_DIRS = (CRATE_INPUT_VCS_DIRS_ANY_LEVEL..., "target")
 
 """
     crate_input_files(dir::AbstractString) -> (strategy::String, files::Vector{String})
@@ -1282,7 +1280,7 @@ separately documented allowlist: see `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`.
 *cfg probe* snapshot that is embedded in generated code and replayed for a
 rebuild; this list is the one that reaches artifact keys. Extend this one.
 """
-const ARTIFACT_BUILD_ENV_PREFIXES = String[
+const ARTIFACT_BUILD_ENV_PREFIXES = (
     "CARGO_BUILD_",
     "CARGO_CFG_",
     "CARGO_ENCODED_RUSTFLAGS",
@@ -1293,27 +1291,27 @@ const ARTIFACT_BUILD_ENV_PREFIXES = String[
     # (#307 review). The *contents* of `PYO3_CONFIG_FILE` are hashed by the
     # wrapper build on top of this (`_pyo3_wrapper_build_env`).
     "PYO3_",
-]
+)
 
 "See `ARTIFACT_BUILD_ENV_PREFIXES`."
-const ARTIFACT_BUILD_ENV_NAMES = String[
+const ARTIFACT_BUILD_ENV_NAMES = (
     "RUSTC",
     "RUSTC_WORKSPACE_WRAPPER",
     "RUSTC_WRAPPER",
     "RUSTDOCFLAGS",
     "RUSTFLAGS",
     "RUSTUP_TOOLCHAIN",
-]
+)
 
 "See `ARTIFACT_BUILD_ENV_PREFIXES`."
-const ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS = String[
+const ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS = (
     "AUTH",
     "CREDENTIAL",
     "KEY",
     "PASSWORD",
     "SECRET",
     "TOKEN",
-]
+)
 
 """
     ARTIFACT_BUILD_SCRIPT_ENV_NAMES
@@ -1337,22 +1335,22 @@ spelling, which `cc-rs` also accepts, is covered by the prefixes.
     **rebuild**, while an unchanged captured set does not by itself prove
     "fresh".
 """
-const ARTIFACT_BUILD_SCRIPT_ENV_NAMES = String[
+const ARTIFACT_BUILD_SCRIPT_ENV_NAMES = (
     "AR", "ASFLAGS", "CC", "CFLAGS", "CPPFLAGS", "CXX", "CXXFLAGS",
     "LD", "LDFLAGS", "NM", "RANLIB", "STRIP",
-]
+)
 
 "See `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`."
-const ARTIFACT_BUILD_SCRIPT_ENV_PREFIXES = String[
+const ARTIFACT_BUILD_SCRIPT_ENV_PREFIXES = (
     "AR_", "BINDGEN_", "CARGO_FEATURE_", "CC_", "CFLAGS_", "CLANG_", "CMAKE_",
     "CXXFLAGS_", "CXX_", "HOST_", "LDFLAGS_", "LIBCLANG_", "LINKER_",
     "PKG_CONFIG", "TARGET_",
-]
+)
 
 "See `ARTIFACT_BUILD_SCRIPT_ENV_NAMES`."
-const ARTIFACT_BUILD_SCRIPT_ENV_SUFFIXES = String[
+const ARTIFACT_BUILD_SCRIPT_ENV_SUFFIXES = (
     "_AR", "_CC", "_CFLAGS", "_CXX", "_CXXFLAGS", "_LDFLAGS", "_LINKER",
-]
+)
 
 """
     artifact_build_env_captured(name::AbstractString) -> Bool

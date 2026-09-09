@@ -3,7 +3,7 @@
 """
 Mapping from Julia types to Rust type names (as Strings).
 """
-const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
+const JULIA_TO_RUST_TYPE_MAP = Base.ImmutableDict(Base.ImmutableDict{Type, String}(),
     # Signed integers
     Int8 => "i8",
     Int16 => "i16",
@@ -27,7 +27,6 @@ const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
 
     # Void
     Cvoid => "()",
-    Nothing => "()",
 )
 
 """

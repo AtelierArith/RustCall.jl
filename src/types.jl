@@ -347,28 +347,13 @@ mutable struct RustBox{T}
     ptr::Ptr{Cvoid}
     dropped::Bool
     const drop_lock::ReentrantLock
+    const drop_claimed::Threads.Atomic{Bool}
+    const free_ptr::Ptr{Cvoid}
+    const alive::Base.RefValue{Bool}
 
-    function RustBox{T}(ptr::Ptr{Cvoid}) where {T}
-        box = new{T}(ptr, false, ReentrantLock())
-        # Attach finalizer for automatic cleanup
-        # The actual drop will be handled by memory.jl if available
-        finalizer(box) do b
-            lock(b.drop_lock) do
-                if !b.dropped && b.ptr != C_NULL
-                    # Try to call Rust drop function if memory.jl is loaded
-                    try
-                        if isdefined(RustCall, :drop_rust_box)
-                            RustCall.drop_rust_box(b)
-                        else
-                            b.dropped = true
-                        end
-                    catch e
-                        @warn "Error dropping RustBox in finalizer: $e"
-                        b.dropped = true
-                    end
-                end
-            end
-        end
+    function RustBox{T}(ptr::Ptr{Cvoid}, target = _ownership_drop_target(T, :box)) where {T}
+        box = new{T}(ptr, false, ReentrantLock(), Threads.Atomic{Bool}(false), target...)
+        finalizer(_finalize_ownership!, box)
         return box
     end
 end
@@ -401,25 +386,13 @@ mutable struct RustRc{T}
     ptr::Ptr{Cvoid}
     dropped::Bool
     const drop_lock::ReentrantLock
+    const drop_claimed::Threads.Atomic{Bool}
+    const free_ptr::Ptr{Cvoid}
+    const alive::Base.RefValue{Bool}
 
-    function RustRc{T}(ptr::Ptr{Cvoid}) where {T}
-        rc = new{T}(ptr, false, ReentrantLock())
-        finalizer(rc) do r
-            lock(r.drop_lock) do
-                if !r.dropped && r.ptr != C_NULL
-                    try
-                        if isdefined(RustCall, :drop_rust_rc)
-                            RustCall.drop_rust_rc(r)
-                        else
-                            r.dropped = true
-                        end
-                    catch e
-                        @warn "Error dropping RustRc in finalizer: $e"
-                        r.dropped = true
-                    end
-                end
-            end
-        end
+    function RustRc{T}(ptr::Ptr{Cvoid}, target = _ownership_drop_target(T, :rc)) where {T}
+        rc = new{T}(ptr, false, ReentrantLock(), Threads.Atomic{Bool}(false), target...)
+        finalizer(_finalize_ownership!, rc)
         return rc
     end
 end
@@ -456,25 +429,13 @@ mutable struct RustArc{T}
     ptr::Ptr{Cvoid}
     dropped::Bool
     const drop_lock::ReentrantLock
+    const drop_claimed::Threads.Atomic{Bool}
+    const free_ptr::Ptr{Cvoid}
+    const alive::Base.RefValue{Bool}
 
-    function RustArc{T}(ptr::Ptr{Cvoid}) where {T}
-        arc = new{T}(ptr, false, ReentrantLock())
-        finalizer(arc) do a
-            lock(a.drop_lock) do
-                if !a.dropped && a.ptr != C_NULL
-                    try
-                        if isdefined(RustCall, :drop_rust_arc)
-                            RustCall.drop_rust_arc(a)
-                        else
-                            a.dropped = true
-                        end
-                    catch e
-                        @warn "Error dropping RustArc in finalizer: $e"
-                        a.dropped = true
-                    end
-                end
-            end
-        end
+    function RustArc{T}(ptr::Ptr{Cvoid}, target = _ownership_drop_target(T, :arc)) where {T}
+        arc = new{T}(ptr, false, ReentrantLock(), Threads.Atomic{Bool}(false), target...)
+        finalizer(_finalize_ownership!, arc)
         return arc
     end
 end
@@ -518,30 +479,15 @@ mutable struct RustVec{T}
     cap::UInt
     dropped::Bool
     const drop_lock::ReentrantLock
+    const drop_claimed::Threads.Atomic{Bool}
+    const free_ptr::Ptr{Cvoid}
+    const alive::Base.RefValue{Bool}
 
-    function RustVec{T}(ptr::Ptr{Cvoid}, len::UInt, cap::UInt) where {T}
+    function RustVec{T}(ptr::Ptr{Cvoid}, len::UInt, cap::UInt,
+                        target = _ownership_drop_target(T, :vec)) where {T}
         isbitstype(T) || error("RustVec only supports isbits types, got $T")
-        vec = new{T}(ptr, len, cap, false, ReentrantLock())
-        finalizer(vec) do v
-            lock(v.drop_lock) do
-                if !v.dropped && v.ptr != C_NULL
-                    # Call Rust-side drop when available; fall back to marking dropped.
-                    try
-                        if isdefined(@__MODULE__, :drop_rust_vec)
-                            drop_fn = getfield(@__MODULE__, :drop_rust_vec)
-                            Base.invokelatest(drop_fn, v)
-                        else
-                            v.dropped = true
-                            v.ptr = C_NULL
-                        end
-                    catch e
-                        @warn "Error dropping RustVec in finalizer: $e"
-                        v.dropped = true
-                        v.ptr = C_NULL
-                    end
-                end
-            end
-        end
+        vec = new{T}(ptr, len, cap, false, ReentrantLock(), Threads.Atomic{Bool}(false), target...)
+        finalizer(_finalize_ownership!, vec)
         return vec
     end
 end

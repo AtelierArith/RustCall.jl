@@ -205,6 +205,95 @@ pub struct Specialized {
     pub manifest: Manifest,
 }
 
+/// A specialization request used by [`specialize_many`].
+pub type SpecializationSpec = (String, Vec<(String, String)>, String);
+
+/// Specialize several functions into one source file and one artifact.
+///
+/// `specialize` intentionally returns a complete source file because the
+/// generic function may depend on sibling items.  Generic structs need the
+/// same property for *all* of their wrappers: compiling `new` and `free` in
+/// separate cdylibs crosses allocator boundaries.  Build the first complete
+/// file, then merge only the additional items from each later specialization
+/// into the corresponding module.  The original generic items occur in every
+/// single-function result and are therefore not duplicated.
+pub fn specialize_many(
+    source: &str,
+    specs: &[SpecializationSpec],
+) -> Result<Specialized, SpecializeError> {
+    let Some((first_fn, first_bindings, first_name)) = specs.first() else {
+        return Err(SpecializeError::FunctionNotFound(
+            "no specialization requests".to_string(),
+        ));
+    };
+    let mut combined = specialize(source, first_fn, first_bindings, first_name)?;
+    let mut combined_file: syn::File =
+        syn::parse_file(&combined.source).map_err(|e| SpecializeError::Parse(e.to_string()))?;
+
+    for (fn_name, bindings, new_name) in specs.iter().skip(1) {
+        let one = specialize(source, fn_name, bindings, new_name)?;
+        let module_path = one
+            .manifest
+            .functions
+            .first()
+            .map(|f| f.module_path.clone())
+            .unwrap_or_default();
+        let path: Vec<&str> = module_path.iter().map(String::as_str).collect();
+        let mut extra_file: syn::File =
+            syn::parse_file(&one.source).map_err(|e| SpecializeError::Parse(e.to_string()))?;
+
+        let current = locate_items(&mut combined_file.items, &path)
+            .ok_or_else(|| SpecializeError::FunctionNotFound(fn_name.clone()))?;
+        let extra = locate_items(&mut extra_file.items, &path)
+            .ok_or_else(|| SpecializeError::FunctionNotFound(fn_name.clone()))?;
+
+        let existing_names: std::collections::HashSet<String> =
+            current.iter().filter_map(item_name).collect();
+        let existing_macros: std::collections::HashSet<String> =
+            current.iter().filter_map(item_text_if_macro).collect();
+        for item in extra.drain(..) {
+            if let Some(name) = item_name(&item) {
+                if !existing_names.contains(&name) {
+                    current.push(item);
+                }
+            } else if let Some(text) = item_text_if_macro(&item) {
+                if !existing_macros.contains(&text) {
+                    current.push(item);
+                }
+            }
+        }
+        combined.manifest.functions.extend(one.manifest.functions);
+    }
+
+    combined.source = prettyplease::unparse(&combined_file);
+    Ok(combined)
+}
+
+fn item_name(item: &Item) -> Option<String> {
+    match item {
+        Item::Const(i) => Some(i.ident.to_string()),
+        Item::Enum(i) => Some(i.ident.to_string()),
+        Item::ExternCrate(i) => Some(i.ident.to_string()),
+        Item::Fn(i) => Some(i.sig.ident.to_string()),
+        Item::Mod(i) => Some(i.ident.to_string()),
+        Item::Static(i) => Some(i.ident.to_string()),
+        Item::Struct(i) => Some(i.ident.to_string()),
+        Item::Trait(i) => Some(i.ident.to_string()),
+        Item::TraitAlias(i) => Some(i.ident.to_string()),
+        Item::Type(i) => Some(i.ident.to_string()),
+        Item::Union(i) => Some(i.ident.to_string()),
+        Item::Use(i) => Some(quote::quote!(#i).to_string()),
+        _ => None,
+    }
+}
+
+fn item_text_if_macro(item: &Item) -> Option<String> {
+    match item {
+        Item::Macro(i) => Some(quote::quote!(#i).to_string()),
+        _ => None,
+    }
+}
+
 pub fn specialize(
     source: &str,
     fn_name: &str,
@@ -498,6 +587,42 @@ mod tests {
             specialize(src, "other::f", &[], "n").unwrap_err(),
             SpecializeError::FunctionNotFound(_)
         ));
+    }
+
+    #[test]
+    fn specializes_a_generic_struct_group_into_one_source() {
+        let src = r#"
+            pub struct Boxed<T> { value: T }
+            impl<T> Boxed<T> {
+                pub fn new(value: T) -> Self { Self { value } }
+            }
+            pub fn Boxed_new<T>(value: T) -> *mut Boxed<T> {
+                Box::into_raw(Box::new(Boxed::new(value)))
+            }
+            pub fn Boxed_free<T>(ptr: *mut Boxed<T>) {
+                if !ptr.is_null() { unsafe { drop(Box::from_raw(ptr)); } }
+            }
+        "#;
+        let out = specialize_many(
+            src,
+            &[
+                (
+                    "Boxed_new".to_string(),
+                    vec![("T".to_string(), "i32".to_string())],
+                    "Boxed_new_i32".to_string(),
+                ),
+                (
+                    "Boxed_free".to_string(),
+                    vec![("T".to_string(), "i32".to_string())],
+                    "Boxed_free_i32".to_string(),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!(out.manifest.functions.len(), 2);
+        assert!(out.source.contains("rustcall_Boxed_new_i32"));
+        assert!(out.source.contains("rustcall_Boxed_free_i32"));
+        assert_eq!(out.source.matches("static __RUSTCALL_PANIC").count(), 2);
     }
 
     #[test]

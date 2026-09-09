@@ -61,9 +61,9 @@ Base.showerror(io::IO, e::ExtractorError) = print(io, "ExtractorError: ", e.msg)
 # Locating and fingerprinting the extractor
 # ----------------------------------------------------------------------------
 
-const _EXTRACTOR_PATH = Ref{String}("")
-const _EXTRACTOR_DIGEST = Ref{String}("")
-const _TOOLCHAIN_FINGERPRINT = Ref{String}("")
+const _EXTRACTOR_PATH = _state_view(:extractor_path, Ref{String}(""))
+const _EXTRACTOR_DIGEST = _state_view(:extractor_digest, Ref{String}(""))
+const _TOOLCHAIN_FINGERPRINT = _state_view(:toolchain_fingerprint, Ref{String}(""))
 const _EXTRACTOR_LOCK = ReentrantLock()
 
 """
@@ -274,14 +274,15 @@ end
 
 # Keyed by source, cfg mode and a digest of the cfg set actually used, so a
 # later `set_default_compiler` (other target / opt-level) re-expands.
-const _EXPANSION_CACHE = Dict{Tuple{String, Symbol, String}, ExpandedInline}()
+const _EXPANSION_CACHE = _state_view(:expansion_cache,
+    Dict{Tuple{String, Symbol, String}, ExpandedInline}())
 const _EXPANSION_LOCK = ReentrantLock()
 
 # `rustc --print cfg` output and the file handed to the extractor, keyed by the
 # rustc flags that decide the configuration.
-const _RUSTC_CFG_TEXT = Dict{Vector{String}, String}()
+const _RUSTC_CFG_TEXT = _state_view(:rustc_cfg_text, Dict{Vector{String}, String}())
 # cfg files handed to the extractor, keyed by the digest of their content.
-const _RUSTC_CFG_FILE = Dict{String, String}()
+const _RUSTC_CFG_FILE = _state_view(:rustc_cfg_file, Dict{String, String}())
 
 """
     _cfg_rustc_flags(compiler = get_default_compiler()) -> Vector{String}
@@ -310,12 +311,12 @@ end
 # Cargo-side cfg: obtained from Cargo itself so profile overrides
 # (`CARGO_PROFILE_RELEASE_*`), `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS` and
 # `.cargo/config` settings are reflected. Cached per session and environment.
-const _CARGO_CFG_TEXT = Dict{String, String}()
+const _CARGO_CFG_TEXT = _state_view(:cargo_cfg_text, Dict{String, String}())
 
 # `rustc --print cfg` probed inside a *specific external crate*, keyed by
 # (crate path, profile, Cargo/RUSTFLAGS environment). See
 # `_crate_build_cfg_text`.
-const _CRATE_CFG_TEXT = Dict{String, String}()
+const _CRATE_CFG_TEXT = _state_view(:crate_cfg_text, Dict{String, String}())
 
 """
     _cargo_probe_profile() -> String
@@ -596,29 +597,23 @@ build, or a workspace member Cargo refuses to probe. The caller must treat an
 empty result as "unknown" and fall back to the lenient scan; guessing a
 configuration is worse than not deciding one.
 
-Cached per `(crate path, profile, Cargo/RUSTFLAGS environment)` **and the
-content of everything that decides the answer**: the crate's `Cargo.toml` (its
-`[features]` and their defaults), its `build.rs` (which can emit
-`cargo::rustc-cfg`), and the `.cargo/config.toml` chain from the crate up to
-`CARGO_HOME`. Keyed on the path alone, a hot reload after a feature or
-build-script change reused the previous probe and rescanned the crate against
-`#[cfg]`s the new build does not have — registering the wrong ABI for the
-functions it then called (#255, #277).
+The older implementation memoized this per `(crate path, profile,
+environment)` plus a digest of the files it could enumerate. That was still
+unsound for build scripts that read generated files or sibling crates.
 
-**A reload passes `memo = false` and always probes.** The digest above covers
-what RustCall can enumerate, and that is not everything: a `build.rs` may read
-an environment variable, a generated file, or a sibling crate, and emit a
-different `cargo::rustc-cfg` with its own source unchanged. A hot reload is
-exactly the workload where that matters and exactly the one that can afford the
-probe — it has just run a full `cargo build`. The memo therefore serves first
-loads, where the crate has not been built under this process before; a reload
-re-probes unconditionally.
+The probe is intentionally **not memoized**. A digest can cover the manifest,
+`build.rs` and Cargo config, but a build script may read an environment
+variable, a generated file, or a sibling crate and emit a different
+`cargo::rustc-cfg` with its own source unchanged. Reusing a probe in that case
+can register the wrong ABI for the functions the new build exports (#255,
+#291). The extra Cargo invocation is deliberate; correctness is more
+important than the probe's small amount of wall time.
 
 `features` passes extra Cargo feature flags (`--no-default-features`,
 `--all-features`, `--features x`) so a caller can ask what the configuration
 looks like under a *different* feature set than the crate's default — which is
 how #275 scans a PyO3 crate under the feature set its wrapper would be built
-with. They are part of the memo key.
+with. They are passed directly to each probe.
 
 `--print cfg` still resolves and builds the crate's dependencies, but every
 caller today has just built the crate anyway.
@@ -642,10 +637,11 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
                 ""
             end
     end
-    lock(_EXTRACTOR_LOCK) do
-        memo || return (_CRATE_CFG_TEXT[key] = probe())
-        get!(probe, _CRATE_CFG_TEXT, key)
-    end
+    # `memo` remains as a source-compatible keyword for callers that used the
+    # old API; both values now mean "probe the crate that is actually being
+    # built".
+    _ = memo
+    return probe()
 end
 
 """
@@ -960,6 +956,55 @@ function specialize_generic(source::String, fn_name::String,
             _mbool(fn, "has_borrowed_string_helper"),
             _ffi_name_of(fn),
         )
+    end
+end
+
+"""
+    specialize_generic_group(source, specs) -> (source, functions)
+
+Instantiate several generic wrappers into one source file. `specs` is a
+vector of named tuples `(fn, bindings, new_name)`, where `bindings` is the
+same `Pair{String,String}` vector accepted by `specialize_generic`. This is
+used by generic structs so constructor, methods, accessors, and destructor
+share one cdylib and therefore one allocator.
+"""
+function specialize_generic_group(source::String, specs)
+    isempty(specs) && throw(ArgumentError("a generic specialization group cannot be empty"))
+    mktempdir() do dir
+        src = joinpath(dir, "generic.rs")
+        spec_path = joinpath(dir, "specializations.toml")
+        manifest_path = joinpath(dir, "manifest.toml")
+        write(src, source)
+        entries = Dict{String, Any}[]
+        for spec in specs
+            push!(entries, Dict(
+                "fn" => String(spec.fn),
+                "new_name" => String(spec.new_name),
+                "bindings" => Dict(String(first(p)) => String(last(p)) for p in spec.bindings),
+            ))
+        end
+        open(spec_path, "w") do io
+            TOML.print(io, Dict("specializations" => entries))
+        end
+        out = _run_extractor(["specialize-many", "--spec", spec_path,
+                              "--manifest", manifest_path, src])
+        manifest = _parse_manifest(read(manifest_path, String))
+        functions = SpecializedFunction[]
+        for fn in _mvec(manifest, "functions")
+            args = get(fn, "args", Any[])
+            push!(functions, SpecializedFunction(
+                out,
+                String(fn["name"]),
+                _mstr(fn, "symbol"),
+                String[String(a["rust_type"]) for a in args],
+                String(fn["return_type"]),
+                String[_mstr(a, "abi") for a in args],
+                _mbool(fn, "has_owned_string_helper"),
+                _mbool(fn, "has_borrowed_string_helper"),
+                _ffi_name_of(fn),
+            ))
+        end
+        return (source = out, functions = functions)
     end
 end
 

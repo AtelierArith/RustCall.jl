@@ -110,7 +110,7 @@ hits=$(grep -rnE --include='*.jl' '_LIB_HANDLE|_LIB_ALIVE' "$dir" \
        | grep -vE '^[^:]*:[0-9]+: *(push!\(lines, ")?#' || true)
 if [[ -n "$hits" ]]; then
     report "A @rust_crate module publishes ONE record, not two Refs (issue #277)." \
-           "The template's state is _LIB_GEN::Ref{CrateGeneration}; read it once per call. Two cells written under two different locks are not a snapshot." \
+           "The template's _LIB_GEN view yields one CrateGeneration; read it once per call. Two independently read cells are not a snapshot." \
            "$hits"
 fi
 

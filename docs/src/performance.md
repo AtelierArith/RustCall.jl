@@ -325,6 +325,10 @@ The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS.
 ### Running Benchmarks
 
 ```bash
+# Extractor + rustc compile-time benchmark (cold and warm)
+RUSTCALL_EXTRACT=/path/to/rustcall-extract \
+  julia --project benchmark/benchmarks_compile.jl
+
 # Basic benchmarks
 julia --project benchmark/benchmarks.jl
 
@@ -337,6 +341,34 @@ julia --project benchmark/benchmarks_arrays.jl
 # Generics benchmarks
 julia --project benchmark/benchmarks_generics.jl
 ```
+
+### Inline compilation benchmark (#271)
+
+`benchmark/benchmarks_compile.jl` measures the extractor-based inline pipeline
+with one Rust cdylib per sample. Cold samples use a new source identity, so
+they include extraction and `rustc` with no compiled-artifact cache hit. Warm
+samples reuse one source after unloading its image, so they exercise the disk
+cache and the memoized expansion without measuring an FFI call.
+
+The first recorded run was on macOS (`Darwin x86_64`, Julia 1.12.7, rustc
+1.98.0):
+
+| Platform | Cold: extract + rustc | Warm: cache + memoized expansion |
+|---|---:|---:|
+| macOS x86_64 | 406.56 ms | 1.63 ms |
+
+CI measurements from commit `f6e84bd` on 2026-09-09 (Julia 1.12.7,
+rustc 1.98.1; 3 cold samples and 5 warm samples):
+
+| Platform | Cold: extract + rustc | Warm: cache + memoized expansion |
+|---|---:|---:|
+| [Linux x86_64](https://github.com/AtelierArith/RustCall.jl/actions/runs/34303413582/job/102314990683) | 140.06 ms | 35.08 ms |
+| [macOS aarch64](https://github.com/AtelierArith/RustCall.jl/actions/runs/34303413582/job/102314990577) | 264.79 ms | 3.62 ms |
+| [Windows x86_64](https://github.com/AtelierArith/RustCall.jl/actions/runs/34303413582/job/102314990769) | 256.59 ms | 1.18 ms |
+
+These are runner-specific measurements, not controlled comparisons between
+operating systems. The script prints the platform, Julia version, rustc version,
+and medians so subsequent runs can be compared with their environment recorded.
 
 ## Performance Tuning Tips
 

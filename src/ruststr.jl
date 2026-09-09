@@ -4,17 +4,18 @@
 Registry for compiled Rust libraries.
 Maps library name to (library handle, functions dict).
 """
-const RUST_LIBRARIES = Dict{String, Tuple{Ptr{Cvoid}, Dict{String, Ptr{Cvoid}}}}()
+const RUST_LIBRARIES = _state_view(:rust_libraries,
+    Dict{String, Tuple{Ptr{Cvoid}, Dict{String, Ptr{Cvoid}}}}())
 
 """
 Current active library name.
 """
-const CURRENT_LIB = Ref{String}("")
+const CURRENT_LIB = _state_view(:current_lib, Ref{String}(""))
 
 """
 Active library for each module during macro expansion.
 """
-const MODULE_ACTIVE_LIB = Dict{Module, String}()
+const MODULE_ACTIVE_LIB = _state_view(:module_active_lib, Dict{Module, String}())
 
 """
     get_current_library() -> String
@@ -76,11 +77,12 @@ end
 
 Everything one call needs — the function pointer, its panic channel, and
 optionally the release function for an owned-`String` result — resolved from
-**one generation** of one library, under **one** `REGISTRY_LOCK` critical
-section.
+**one generation** of one library. The handle, cached pointers and return ABI
+are captured in **one** `REGISTRY_LOCK` critical section; missing pointers are
+then resolved on that captured handle outside the lock.
 
-This is the entry point every FFI call goes through, and the single lock is the
-point of it. A library can be replaced between any two lookups (that is what a
+This is the entry point every FFI call goes through. A library can be replaced
+between any two name lookups (that is what a
 hot reload is), so resolving the pointer and then the channel separately means
 the call can enter the retired image and read the replacement's channel: a
 panic raised by the call is invisible, and a panic the new image happens to
@@ -104,79 +106,83 @@ same handle is not an ambiguity. Genuinely different functions of the same name
 in different libraries are refused rather than guessed.
 """
 function resolve_call_target(lib_name::String, func_name::String;
-                             free_symbol::AbstractString = "")
-    lock(REGISTRY_LOCK) do
-        # Resolve a symbol on one library's handle, memoizing into that
-        # library's own pointer cache. Caller holds the lock.
-        resolve_in(handle, cache, symbol) = begin
-            cached = get(cache, symbol, C_NULL)
-            cached == C_NULL || return cached
-            found = Libdl.dlsym(handle, symbol; throw_error = false)
-            (found === nothing || found == C_NULL) && return C_NULL
-            cache[symbol] = found
-            found
-        end
-        # The whole target, from one library, in one place: this is what makes
-        # the pieces belong to the same generation.
-        target_in(owner, handle, cache, func_ptr) = begin
+                             free_symbol::AbstractString = "",
+                             _lookup = Libdl.dlsym)
+    release_symbol = String(free_symbol)
+    # Capture all generation-dependent metadata together. Cold symbol lookups
+    # below use only these captured handles, even if publication retires them
+    # before lookup finishes. Explicit close still requires caller quiescence.
+    snapshot = lock(REGISTRY_LOCK) do
+        capture(owner, entry) = begin
+            handle, cache = entry
             symbol = exported_symbol(owner, func_name)
-            channel = get(PANIC_CHANNELS, (owner, symbol), nothing)
-            if channel === nothing
-                channel = resolve_in(handle, cache, ffi_panic_symbol(symbol))
-                PANIC_CHANNELS[(owner, symbol)] = channel
-            end
-            free_ptr = isempty(free_symbol) ? C_NULL :
-                       resolve_in(handle, cache, String(free_symbol))
-            # The return metadata belongs to the snapshot as much as the
-            # pointers do: it decides how the `ccall` reads the return slot,
-            # and reading a retired generation's result with the replacement's
-            # ABI is memory corruption, not a wrong answer (#277).
+            panic_symbol = ffi_panic_symbol(symbol)
+            channel = get(PANIC_CHANNELS, (owner, symbol), get(cache, panic_symbol, nothing))
+            free_ptr = isempty(release_symbol) ? C_NULL : get(cache, release_symbol, nothing)
             return_type = get(FUNCTION_RETURN_TYPES_BY_LIB, (owner, func_name), nothing)
-            func_info = get(FUNCTION_REGISTRY_BY_LIB, (owner, func_name),
-                            get(FUNCTION_REGISTRY, func_name, nothing))
-            CallTarget(func_ptr, channel, free_ptr,
-                       alive_ref_for_handle(handle, owner), handle, owner,
-                       return_type, func_info,
-                       get(ARTIFACT_GENERATIONS, owner, 0))
+            valid_info(info) = info !== nothing && info.handle == handle &&
+                info.generation == get(ARTIFACT_GENERATIONS, info.lib_name, -1) &&
+                (source = get(RUST_LIBRARIES, info.lib_name, nothing);
+                 source !== nothing && source[1] == handle)
+            func_info = get(FUNCTION_REGISTRY_BY_LIB, (owner, func_name), nothing)
+            valid_info(func_info) || (func_info = get(FUNCTION_REGISTRY, func_name, nothing))
+            valid_info(func_info) || (func_info = nothing)
+            (; owner, handle, cache, symbol, panic_symbol, channel, free_ptr,
+               func_ptr = get(cache, symbol, nothing), return_type, func_info,
+               alive = alive_ref_for_handle(handle, owner),
+               generation = get(ARTIFACT_GENERATIONS, owner, 0))
         end
-
-        # First, try the specified library
-        if haskey(RUST_LIBRARIES, lib_name)
-            symbol = exported_symbol(lib_name, func_name)
-            lib_handle, func_cache = RUST_LIBRARIES[lib_name]
-            func_ptr = resolve_in(lib_handle, func_cache, symbol)
-            func_ptr == C_NULL ||
-                return target_in(lib_name, lib_handle, func_cache, func_ptr)
+        entry = get(RUST_LIBRARIES, lib_name, nothing)
+        preferred = entry === nothing ? nothing : capture(lib_name, entry)
+        # Keep the warmed preferred-library path independent of registry size.
+        if preferred !== nothing && preferred.func_ptr !== nothing &&
+           preferred.func_ptr != C_NULL && preferred.channel !== nothing &&
+           preferred.free_ptr !== nothing
+            return CallTarget(preferred.func_ptr, preferred.channel, preferred.free_ptr,
+                              preferred.alive, preferred.handle, preferred.owner,
+                              preferred.return_type, preferred.func_info, preferred.generation)
         end
+        others = [capture(owner, entry) for (owner, entry) in RUST_LIBRARIES if owner != lib_name]
+        (preferred, others)
+    end
+    snapshot isa CallTarget && return snapshot
+    preferred, others = snapshot
 
-        # Fallback: search all other loaded libraries
-        candidates = Tuple{String, Ptr{Cvoid}}[]
-        for (other_lib_name, (other_lib_handle, other_func_cache)) in RUST_LIBRARIES
-            other_lib_name == lib_name && continue   # Already checked
-            symbol = exported_symbol(other_lib_name, func_name)
-            ptr = resolve_in(other_lib_handle, other_func_cache, symbol)
-            ptr == C_NULL && continue
-            push!(candidates, (other_lib_name, ptr))
+    resolve_in(row, symbol, cached) = begin
+        cached === nothing || return cached
+        found = _lookup(row.handle, symbol; throw_error = false)
+        ptr = found === nothing ? C_NULL : found
+        lock(REGISTRY_LOCK) do
+            # Publish only into the captured image's cache. No late lookup by
+            # name can redirect this write or contribute data to the target.
+            row.cache[symbol] = ptr
         end
-
-        # Two names for one handle resolve to one pointer, and that is one
-        # candidate, not a conflict.
-        distinct = unique(last, candidates)
-        if length(distinct) == 1
-            owner, ptr = first(distinct)
-            @debug "Function '$func_name' found in library '$owner' (fallback search)"
-            handle, cache = RUST_LIBRARIES[owner]
-            return target_in(owner, handle, cache, ptr)
-        elseif length(distinct) > 1
-            # Ambiguous - found in genuinely different libraries
-            error("Function '$func_name' found in multiple libraries: $(join(first.(candidates), ", ")). Please use a unique function name.")
+        ptr
+    end
+    finish(row, ptr) = begin
+        channel = resolve_in(row, row.panic_symbol, row.channel)
+        free_ptr = isempty(release_symbol) ? C_NULL : resolve_in(row, release_symbol, row.free_ptr)
+        CallTarget(ptr, channel, free_ptr, row.alive, row.handle, row.owner,
+                   row.return_type, row.func_info, row.generation)
+    end
+    if preferred !== nothing
+        ptr = resolve_in(preferred, preferred.symbol, preferred.func_ptr)
+        ptr == C_NULL || return finish(preferred, ptr)
+    end
+    candidates = [(row, resolve_in(row, row.symbol, row.func_ptr)) for row in others]
+    filter!(candidate -> last(candidate) != C_NULL, candidates)
+    distinct = unique(last, candidates)
+    if length(distinct) == 1
+        row, ptr = only(distinct)
+        return finish(row, ptr)
+    elseif length(distinct) > 1
+        owners = join([row.owner for (row, _) in candidates], ", ")
+        error("Function '$func_name' found in multiple libraries: $owners. Please use a unique function name.")
+    else
+        if preferred !== nothing
+            error("Function '$func_name' not found in library '$lib_name' or any other loaded library")
         else
-            # Not found anywhere
-            if haskey(RUST_LIBRARIES, lib_name)
-                error("Function '$func_name' not found in library '$lib_name' or any other loaded library")
-            else
-                error("Library '$lib_name' not found and function '$func_name' not found in any loaded library")
-            end
+            error("Library '$lib_name' not found and function '$func_name' not found in any loaded library")
         end
     end
 end
@@ -251,43 +257,12 @@ macro rust_str(code)
                                           compiler_level = $(snapshot_compiler.optimization_level),
                                           cargo_env = $cargo_env)
 
-        # Store the block (source plus the cfg/compiler snapshot it was expanded
-        # under) in the calling module for precompilation support: a reload in a
-        # later session rebuilds the very same configuration, see `ensure_loaded`.
-        if !isdefined($__module__, :__RUSTCALL_LIBS)
-            # Use Core.eval to define the constant if it doesn't exist
-            # Note: We use a Dict to support multiple blocks
-            @eval $__module__ const __RUSTCALL_LIBS = Dict{String, Any}()
-        end
-        $__module__.__RUSTCALL_LIBS[lib_name] = RustCall.RustBlockSnapshot(
+        # Publish module metadata in one STATE transaction. Only immutable
+        # block records are stored in a precompiled caller's image.
+        RustCall._record_module_block!($__module__, lib_name, RustCall.RustBlockSnapshot(
             $(esc(code)), $cfg_text,
             $(snapshot_compiler.target_triple), $(snapshot_compiler.optimization_level),
-            $cargo_env)
-
-        # Track the "current" library for this module
-        # Use Ref{String} so the binding is const but the value can be mutated
-        # This avoids Pluto's "cannot assign to imported variable" error
-        if !isdefined($__module__, :__RUSTCALL_ACTIVE_LIB)
-            @eval $__module__ const __RUSTCALL_ACTIVE_LIB = Ref("")
-        end
-        $__module__.__RUSTCALL_ACTIVE_LIB[] = lib_name
-
-        # Which library exported each of this block's symbols, per module. A
-        # generated wrapper resolves through *this* table, so two modules that
-        # each define `add` call their own `add` regardless of which block was
-        # compiled last (#250). Registering a name a second block of the same
-        # module already exported is refused here, with a message.
-        if !isdefined($__module__, :__RUSTCALL_SYMBOL_LIB)
-            @eval $__module__ const __RUSTCALL_SYMBOL_LIB = Dict{String, String}()
-        end
-        RustCall._record_module_symbols!($__module__.__RUSTCALL_SYMBOL_LIB,
-                                         lib_name, $block_symbols,
-                                         $(QuoteNode(nameof(__module__))))
-
-        # Track active library for macro expansion in this session
-        lock(REGISTRY_LOCK) do
-            MODULE_ACTIVE_LIB[$__module__] = lib_name
-        end
+            $cargo_env), $block_symbols)
 
         $(julia_defs...)
         $(julia_func_wrappers)
@@ -311,34 +286,9 @@ Re-running the *same* block is not a collision — the identity, and therefore
 the library name, is unchanged. Neither is re-running an edited block whose
 previous library has been unloaded.
 """
-function _record_module_symbols!(table::AbstractDict, lib_name::AbstractString,
+function _record_module_symbols!(table::Union{AbstractDict, StateView}, lib_name::AbstractString,
                                  symbols, module_name = :Main)
-    name = String(lib_name)
-    for symbol in symbols
-        sym = String(symbol)
-        owner = get(table, sym, "")
-        if !isempty(owner) && owner != name
-            still_loaded = lock(REGISTRY_LOCK) do
-                haskey(RUST_LIBRARIES, owner)
-            end
-            if still_loaded
-                throw(RustError("""
-                    `$(sym)` is already exported by another `rust\"\"\"` block in module $(module_name).
-
-                    Two blocks of one module exporting the same name is an ambiguity, not an
-                    override: the Julia wrapper of the second would replace the first while both
-                    libraries stayed loaded, and which one a call reached would depend on the
-                    order they were compiled in.
-
-                    Either rename the Rust function, or drop the earlier block first:
-
-                        RustCall.unload_library("$(owner)")
-                    """))
-            end
-        end
-        table[sym] = name
-    end
-    return nothing
+    return _record_module_symbols_transaction!(table, lib_name, symbols, module_name)
 end
 
 """
@@ -353,8 +303,11 @@ block was compiled last *anywhere*, so a second module defining the same Rust
 name captured the first module's calls (#250).
 """
 function module_symbol_library(mod::Module, symbol::AbstractString)
-    if isdefined(mod, :__RUSTCALL_SYMBOL_LIB)
-        table = getfield(mod, :__RUSTCALL_SYMBOL_LIB)
+    # A generated function may be the first entry into a precompiled caller;
+    # it must restore that module's blocks just as an explicit @rust call does.
+    _resolve_lib(mod, "")
+    table = _module_binding(mod, :__RUSTCALL_SYMBOL_LIB)
+    if table !== nothing
         name = get(table, String(symbol), "")
         if !isempty(name)
             loaded = lock(REGISTRY_LOCK) do
@@ -363,8 +316,9 @@ function module_symbol_library(mod::Module, symbol::AbstractString)
             loaded && return name
         end
     end
-    if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
-        name = getfield(mod, :__RUSTCALL_ACTIVE_LIB)[]
+    active = _module_binding(mod, :__RUSTCALL_ACTIVE_LIB)
+    if active !== nothing
+        name = active[]
         if !isempty(name)
             loaded = lock(REGISTRY_LOCK) do
                 haskey(RUST_LIBRARIES, name)
@@ -669,6 +623,11 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         end
         cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
                                    cargo_config = cargo_config, cargo_lock = cargo_lock)
+        lock_text = isempty(cargo_lock) ? "" : read(
+            project === nothing ? stored_lock : joinpath(project.path, "Cargo.lock"), String)
+        isempty(cargo_lock) || stable_content_hash(lock_text) == cargo_lock || throw(CargoBuildError(
+            "Cargo.lock changed while capturing generic build context", "", source_file))
+        cargo_context = _generic_cargo_context(dependencies, build_env_key, cargo_config, lock_text)
         # THE key for this block: the in-memory name, the disk lookup, the build
         # and the save all use this one value (#278, #287). If a second formula
         # ever appears downstream, `build_cargo_project_cached` refuses the build
@@ -688,7 +647,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
         # rather than leaving metadata for a library that is gone.
         policy = inline_cargo_policy()
         if is_in_memory &&
-           _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+           _register_manifest(expanded, lib_name; cargo_backed = true, cargo_context, policy,
                               snapshot_env = build_env, require_loaded = true)
             @debug "Using cached Cargo library from memory" lib_name=lib_name
             return lib_name
@@ -705,7 +664,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             # Load from cache through the one loader (#277 Phase B). A failure to
             # open the cached file is not fatal: fall through and rebuild.
             loaded = try
-                _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+                _register_manifest(expanded, lib_name; cargo_backed = true, cargo_context, policy,
                                    load_path = cached_lib, snapshot_env = build_env)
             catch e
                 @debug "Failed to load the cached Cargo library; rebuilding" exception = e
@@ -748,7 +707,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
         # Load and register the library: handle and manifest lookup tables
         # together (#279 follow-up, #277 Phase B).
-        _register_manifest(expanded, lib_name; cargo_backed = true, policy,
+        _register_manifest(expanded, lib_name; cargo_backed = true, cargo_context, policy,
                            load_path = lib_path, snapshot_env = build_env)
 
         @info "Successfully built Rust code with Cargo" lib_name=lib_name
@@ -887,6 +846,7 @@ the global registry lock held.
 """
 function _register_manifest(expanded, lib_name::String; compiler = nothing,
                             cargo_backed::Bool = false,
+                            cargo_context = nothing,
                             policy::LoadPolicy = inline_rustc_policy(),
                             load_path::Union{AbstractString, Nothing} = nothing,
                             handle::Union{Ptr{Cvoid}, Nothing} = nothing,
@@ -912,7 +872,7 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     registered || return false
 
     for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source; compiler)
+        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
     end
     for sig in signatures
         if sig.is_generic
@@ -920,21 +880,18 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
             # expanded for so a later `set_default_compiler` cannot drop
             # #[cfg]-gated items from the specialization.
             #
-            # A lazy specialization is a direct `rustc` build. For a Cargo-backed
-            # block that is a different configuration (profile, `panic`,
-            # RUSTFLAGS `--cfg`s) from the one the block was expanded and built
-            # under. Item-level pruning has resolved the `#[cfg]`s on items and
-            # signatures, but a `#[cfg]` statement or `cfg!` inside the body
-            # would be decided anew by rustc: refuse such a generic rather than
-            # build it under the wrong configuration.
-            blocked = cargo_backed && sig.body_has_cfg ?
+            # Real Cargo loads retain their complete build context. A manual
+            # manifest registration without that context must still refuse a
+            # cfg-dependent body rather than silently using direct rustc.
+            blocked = cargo_backed && cargo_context === nothing && sig.body_has_cfg ?
                 "generic function `$(sig.name)` comes from a `// cargo-deps:` block and its body " *
                 "contains `#[cfg]` or `cfg!`, which the lazy specialization (a direct rustc build) " *
                 "would evaluate under a different configuration than the Cargo build; move the " *
                 "configuration-dependent code out of the generic body or into a non-generic helper" : ""
             register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
                                       arg_types = sig.arg_types, return_type = sig.return_type,
-                                      path = qualified_name(sig.module_path, sig.name), compiler, blocked)
+                                      path = qualified_name(sig.module_path, sig.name), compiler, blocked,
+                                      cargo = cargo_context)
             @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
         end
     end
@@ -1133,7 +1090,7 @@ end
 Registry for irust snippets.
 Maps a snippet's artifact key to the `IrustSnippet` describing what was built.
 """
-const IRUST_FUNCTIONS = Dict{String, IrustSnippet}()
+const IRUST_FUNCTIONS = _state_view(:irust_functions, Dict{String, IrustSnippet}())
 
 """
     @irust(code, args...)
@@ -1683,7 +1640,7 @@ function _julia_to_rust_type(julia_type::Type)
 end
 
 """
-    IRUST_SCALAR_TYPES :: Dict{Type, String}
+    IRUST_SCALAR_TYPES :: Base.ImmutableDict{Type, String}
 
 The scalars `@irust` passes and returns, Julia type to Rust spelling — the
 whole surface, and the same table for both directions so an argument type and a
@@ -1698,7 +1655,7 @@ reaching the `ccall` through the *return* path, since the probe would name
 `i128` and the contract would accept it — a platform ABI mismatch rather than a
 wrong answer (Codex review of PR #354).
 """
-const IRUST_SCALAR_TYPES = Dict{Type, String}(
+const IRUST_SCALAR_TYPES = Base.ImmutableDict(Base.ImmutableDict{Type, String}(),
     Int8 => "i8",
     Int16 => "i16",
     Int32 => "i32",
@@ -1713,12 +1670,12 @@ const IRUST_SCALAR_TYPES = Dict{Type, String}(
 )
 
 """
-    IRUST_SCALAR_RUST_TYPES :: Set{String}
+    IRUST_SCALAR_RUST_TYPES :: Tuple
 
 The Rust spellings `IRUST_SCALAR_TYPES` covers, for checking a *result*. `()`
 is accepted separately: a snippet whose value is unit returns `nothing`.
 """
-const IRUST_SCALAR_RUST_TYPES = Set{String}(values(IRUST_SCALAR_TYPES))
+const IRUST_SCALAR_RUST_TYPES = Tuple(values(IRUST_SCALAR_TYPES))
 
 """
     _rust_to_julia_type(rust_type::String) -> Type

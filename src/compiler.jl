@@ -124,7 +124,7 @@ function get_rustc_version()
 end
 
 # Global default compiler instance
-const DEFAULT_COMPILER = Ref{RustCompiler}()
+const DEFAULT_COMPILER = _state_view(:default_compiler, Ref{RustCompiler}())
 
 """
     get_default_compiler() -> RustCompiler
@@ -132,10 +132,21 @@ const DEFAULT_COMPILER = Ref{RustCompiler}()
 Get or create the default RustCompiler instance.
 """
 function get_default_compiler()
-    if !isassigned(DEFAULT_COMPILER)
-        DEFAULT_COMPILER[] = RustCompiler()
+    return _default_compiler(RustCompiler)
+end
+
+function _default_compiler(make_compiler)
+    cached = _state_read(DEFAULT_COMPILER) do value
+        isassigned(value) ? value[] : nothing
     end
-    return DEFAULT_COMPILER[]
+    cached === nothing || return cached
+    candidate = make_compiler()
+    return _state_read(DEFAULT_COMPILER) do value
+        # A concurrent setter or initializer wins over this candidate. Never
+        # overwrite a compiler published while its replacement was computed.
+        isassigned(value) || (value[] = candidate)
+        value[]
+    end
 end
 
 """
@@ -563,9 +574,9 @@ const _PROBE_LABEL_PREFIX = "expected `()`, found "
 
 # The two labels that name an inference variable rather than a type, and the
 # spellings each of them unifies with.
-const _PROBE_INTEGER_TYPES = Set(["i8", "i16", "i32", "i64", "i128", "isize",
-                                  "u8", "u16", "u32", "u64", "u128", "usize"])
-const _PROBE_FLOAT_TYPES = Set(["f32", "f64"])
+const _PROBE_INTEGER_TYPES = ("i8", "i16", "i32", "i64", "i128", "isize",
+                              "u8", "u16", "u32", "u64", "u128", "usize")
+const _PROBE_FLOAT_TYPES = ("f32", "f64")
 
 """
     _probe_constraint_from_diagnostic(d) -> Union{String, Symbol, Nothing}

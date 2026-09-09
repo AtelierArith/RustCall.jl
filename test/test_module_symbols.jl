@@ -12,6 +12,8 @@
 
 using Test
 using RustCall
+
+include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
 using RustToolChain: cargo
 
 const MS_MACROS_PATH = joinpath(dirname(@__DIR__), "deps", "juliacall_macros")
@@ -548,13 +550,7 @@ end
                 # Building and calling needs a linkable Python (see
                 # test_pyo3_wrapper.jl); everything after the build is a hard
                 # assertion.
-                wrapper = try
-                    plan = RustCall.pyo3_link_plan(dir)
-                    plan.mode === :link_libpython ? RustCall.build_pyo3_wrapper(info) : nothing
-                catch e
-                    @info "skipping the PyO3 two-classes build" exception = e
-                    nothing
-                end
+                wrapper = _link_libpython_wrapper(dir)
                 if wrapper === nothing || !_MS_HAVE_CARGO
                     @test_skip "no linkable Python here: the wrapper cannot be built"
                 else

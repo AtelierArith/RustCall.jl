@@ -207,7 +207,7 @@ that one layer accepts can no longer be silently mistranslated by the next
 (#245 item 2). Spellings the contract deliberately refuses are absent, and
 [`ffi_lookup`](@ref) returns `nothing` for them.
 """
-const FFI_TYPE_TABLE = Dict{String, FFIType}()
+const FFI_TYPE_TABLE = _state_view(:ffi_type_table, Dict{String, FFIType}())
 
 function _ffi_register!(entry::FFIType)
     FFI_TYPE_TABLE[entry.rust] = entry
@@ -542,7 +542,7 @@ end
 # Positional contracts
 # ============================================================================
 
-const _FFI_UNKNOWN_SLOTS = Type[]
+const _FFI_UNKNOWN_SLOTS = _state_view(:ffi_unknown_slots, Type[])
 
 """
     ffi_manifest_abi_kind(abi::AbstractString) -> Union{Symbol, Nothing}
@@ -953,9 +953,9 @@ is about — so `:warn` and `:none` exist only to get an existing crate compilin
 again while its unsupported types are dealt with. `write_bindings_to_file`
 binds this per call through its `strict` keyword.
 """
-const FFI_STRICT = Ref{Symbol}(:error)
+const FFI_STRICT = _state_view(:ffi_strict, Ref{Symbol}(:error))
 
-const _FFI_WARNED_CONTEXTS = Set{String}()
+const _FFI_WARNED_CONTEXTS = _state_view(:ffi_warned_contexts, Set{String}())
 
 """
     ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
@@ -1158,8 +1158,8 @@ function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback)
     # Test and insert atomically: reading the set outside the lock let two
     # threads both see the context as new and warn twice — and raced with the
     # insert itself.
+    key = String(ctx)
     first_time = lock(REGISTRY_LOCK) do
-        key = String(ctx)
         key in _FFI_WARNED_CONTEXTS && return false
         push!(_FFI_WARNED_CONTEXTS, key)
         return true
@@ -1456,15 +1456,17 @@ end
 Whether a `ffi_by_value_layout` method for **exactly** `T` still has to be
 defined. See `register_ffi_struct` for why only an exact duplicate is skipped.
 
-Takes `REGISTRY_LOCK` itself (it is reentrant, so the function form's larger
-transaction may call it), because the macro form cannot hold the lock across
+Uses the state-owned method-definition gate, never STATE, because the macro
+form cannot hold the gate across
 its definition: a method definition has to be a top-level expression in the
 calling module, and a `lock(...) do ... end` body would make it a local.
 Serializing the check alone is enough there — a macro used at a module's top
 level expands while that module is being loaded, on one task.
 """
+const FFI_METHOD_LOCK = _state_view(:ffi_method_lock, ReentrantLock())
+
 _ffi_by_value_needs_method(@nospecialize(T::Type)) =
-    lock(() -> _ffi_layout_method(T) === nothing, REGISTRY_LOCK)
+    lock(() -> _ffi_layout_method(T) === nothing, FFI_METHOD_LOCK[])
 
 """
     _ffi_by_value_agrees(T, layout) -> Nothing
@@ -1563,28 +1565,28 @@ See also `@register_ffi_struct`, `unregister_ffi_struct`,
 
 function register_ffi_struct(@nospecialize(T::Type); repr_c::Bool = true)
     _validate_ffi_by_value(T; repr_c = repr_c)
-    # The check and the method definition are **one** transaction under
-    # `REGISTRY_LOCK`, paired with the one in `unregister_ffi_struct`. Split,
-    # two tasks racing on the same type could both define the method, or an
-    # unregister could land between them — finding no method, returning `false`,
-    # and leaving the type enabled by the method the other task then installed
-    # (#245 review). There is no bookkeeping beside the method table to keep in
-    # step, because there is no bookkeeping.
-    return lock(REGISTRY_LOCK) do
-        # Skip only an *exact* duplicate. Defining the same method twice warns
-        # under `--warn-overwrite=yes`, which `Pkg.test` sets; anything broader
-        # that happens to cover `T` is a different assertion and must not
-        # suppress this one.
-        if !_ffi_by_value_needs_method(T)
-            # Already asserted: idempotent when it says the same thing, an
-            # error when it does not (see `_ffi_by_value_agrees`).
-            _ffi_by_value_agrees(T, :repr_c)
-            return T
+    # Method-table edits are serialized separately from STATE. Capture the
+    # gate first and release STATE before acquiring it; eval and method
+    # invalidation must never execute inside a registry transaction.
+    gate = FFI_METHOD_LOCK[]
+    while true
+        existing = lock(gate) do
+            method = _ffi_layout_method(T)
+            method === nothing || return method
+            Core.eval(_ffi_registration_module(T),
+                      :($(GlobalRef(@__MODULE__, :ffi_by_value_layout))(::Type{$T}) =
+                            $(QuoteNode(:repr_c))))
+            nothing
         end
-        Core.eval(_ffi_registration_module(T),
-                  :($(GlobalRef(@__MODULE__, :ffi_by_value_layout))(::Type{$T}) =
-                        $(QuoteNode(:repr_c))))
-        return T
+        existing === nothing && return T
+        # A caller-defined layout method is arbitrary Julia code. Run it with
+        # neither STATE nor the definition gate held, then verify that it was
+        # not replaced while we were outside the gate.
+        _ffi_by_value_agrees(T, :repr_c)
+        unchanged = lock(gate) do
+            _ffi_layout_method(T) === existing
+        end
+        unchanged && return T
     end
 end
 
@@ -1685,12 +1687,12 @@ not by remembering it.
 
 Deleting a method invalidates code that dispatched through it, so this is not
 something to do in a loop; it is a correction, made by a test or by a user who
-changed their mind. It runs under `REGISTRY_LOCK`, as one transaction with the
-one in `register_ffi_struct`.
+changed their mind. It uses the same method-definition gate as
+`register_ffi_struct`, without holding STATE.
 """
 function unregister_ffi_struct(@nospecialize(T::Type))
     # One transaction, paired with `register_ffi_struct`: see the comment there.
-    return lock(REGISTRY_LOCK) do
+    return lock(FFI_METHOD_LOCK[]) do
         m = _ffi_layout_method(T)
         m === nothing && return false
         Base.delete_method(m)
@@ -1767,4 +1769,3 @@ function ffi_check_by_value(@nospecialize(R::Type), arg_types)
     end
     return nothing
 end
-

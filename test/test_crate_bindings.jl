@@ -589,7 +589,7 @@ end
         # The module's state is ONE immutable record — handle, liveness flag
         # and generation published together — read once per call. Two `Ref`s
         # written under two different locks were not a snapshot (#277).
-        @test occursin("const _LIB_GEN = Ref(RustCall.CrateGeneration())", code)
+        @test occursin("const _LIB_GEN = RustCall.StateView(:crate_generation, @__MODULE__)", code)
         @test !occursin("const _LIB_HANDLE", code)
         @test !occursin("const _LIB_ALIVE", code)
         # ...and `__init__` does not assign it after loading: the
@@ -620,7 +620,7 @@ end
         @test !occursin("preload", code)
         code_preload = RustCall.emit_crate_module_code(info, "/tmp/lib.so";
             preload = ["C:\\\\Python312\\\\python312.dll"])
-        @test occursin("const _PRELOAD_LIBRARIES = $(repr(["C:\\\\Python312\\\\python312.dll"]))",
+        @test occursin("const _PRELOAD_LIBRARIES = $(repr(("C:\\\\Python312\\\\python312.dll",)))",
                        code_preload)
         @test occursin("lib_name = _LIB_NAME, preload = _PRELOAD_LIBRARIES)", code_preload)
         @test !occursin("Libdl.dlopen", code_preload)

@@ -20,6 +20,57 @@ _src(name) = read(joinpath(_SRC_DIR, name), String)
 """Number of non-overlapping occurrences of `needle` in the source of `name`."""
 _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
 
+@testset "helper-policy images retain one handle-owned liveness flag (#251)" begin
+    if RustCall.check_rustc_available()
+        path = RustCall.compile_rust_to_shared_lib("""
+            #[no_mangle]
+            pub extern "C" fn handle_only_probe() -> i32 { 29 }
+            """)
+        policy = RustCall.helper_library_policy()
+        first = RustCall.load_artifact!(policy, path; lib_name = "helper_flag_first")
+        second = nothing
+        try
+            second = RustCall.load_artifact!(policy, path; lib_name = "helper_flag_second")
+            @test first.handle == second.handle
+            @test first.alive === second.alive
+            @test lock(RustCall.REGISTRY_LOCK) do
+                RustCall.alive_ref_for_handle(first.handle, "unregistered_name") === first.alive
+            end
+            @test RustCall.close_artifact_handle!(second.handle)
+            second = nothing
+            @test first.alive[]
+        finally
+            second === nothing || RustCall.close_artifact_handle!(second.handle)
+            RustCall.close_artifact_handle!(first.handle)
+        end
+        @test !first.alive[]
+        @test !haskey(RustCall.HANDLE_ONLY_ALIVE, first.handle)
+
+        @testset "a helper owner revives a retired image" begin
+            registered = RustCall.load_artifact!(RustCall.inline_rustc_policy(), path;
+                                                lib_name = "helper_revived_image")
+            RustCall.unload_library("helper_revived_image")
+            @test registered.handle in RustCall.retired_handles()
+            revived = RustCall.load_artifact!(policy, path; lib_name = "helper_revived_owner")
+            try
+                @test revived.alive === registered.alive
+                @test !(revived.handle in RustCall.retired_handles())
+                @test RustCall.close_retired_handles!([revived.handle]) == 0
+                @test revived.alive[]
+                fn = Libdl.dlsym(revived.handle, :handle_only_probe)
+                @test ccall(fn, Int32, ()) == 29
+            finally
+                # This image owns the original open and the helper reopen.
+                RustCall.close_artifact_handle!(revived.handle)
+                RustCall.close_artifact_handle!(registered.handle)
+            end
+            @test !revived.alive[]
+        end
+    else
+        @test_skip "rustc is required"
+    end
+end
+
 """
     _reclaim_libraries!(names...)
 

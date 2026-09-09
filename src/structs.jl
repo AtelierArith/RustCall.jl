@@ -273,8 +273,11 @@ name (`module::Struct_method`); `specialize` then instantiates it in place with
 every module-scoped name available. Non-generic structs have their wrappers
 compiled into the library directly and need no registration.
 """
-function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String; compiler = nothing)
+function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String;
+                                           compiler = nothing, cargo = nothing)
     isempty(info.type_params) && return nothing
+    group = Symbol("generic_struct:", qualified_name(info.module_path, info.name))
+    members = GenericFunctionInfo[]
     for (wrapper_name, _, wrapper_params) in info.generic_wrappers
         # The wrapper's own parameter names, positionally aligned with the
         # struct's parameters, so `Point{Int32}` binds the right name even when
@@ -286,10 +289,12 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
         end
         m = findfirst(mm -> "$(info.name)_$(mm.name)" == wrapper_name, info.methods)
         arg_types = m === nothing ? String[] : info.methods[m].arg_types
-        register_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
+        push!(members, _prepare_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
                                   arg_types = arg_types,
-                                  path = qualified_name(info.module_path, wrapper_name), compiler)
+                                  path = qualified_name(info.module_path, wrapper_name), compiler,
+                                  group = group, cargo))
     end
+    _publish_generic_struct_group!(group, members)
     return nothing
 end
 
@@ -434,8 +439,9 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                  # result points into the Rust object (#242 review).
                  push!(exprs, quote
                      function $fname(self::$where_clause, $(esc_args...)) where {$(esc_T_params...)}
+                         RustCall.check_not_freed(self, $struct_name_str)
                          GC.@preserve self begin
-                             _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),))
+                             _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),), getfield(self, :alive))
                          end
                      end
                  end)
@@ -480,7 +486,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     getter_name, rust_field_type = field_info[field]
                     type_param_names = ($(map(name -> QuoteNode(name), info.type_params)...),)
                     field_type = _resolve_generic_struct_field_type(rust_field_type, type_param_names, ($(esc_T_params...),))
-                    return _call_generic_field(self.lib_name, getter_name, self.ptr, field_type, ($(esc_T_params...),))
+                    return _call_generic_field(self.lib_name, getter_name, self.ptr, field_type, ($(esc_T_params...),), getfield(self, :alive))
                 elseif field in method_names_set
                     $(method_accessors...)
                     return getfield(self, field)
@@ -494,7 +500,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 if haskey(field_setters_map, field)
                     RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
-                    _call_generic_method(self.lib_name, setter_name, self.ptr, (value,), ($(esc_T_params...),))
+                    _call_generic_method(self.lib_name, setter_name, self.ptr, (value,), ($(esc_T_params...),), getfield(self, :alive))
                     return value
                 else
                     return setfield!(self, field, value)
@@ -929,7 +935,8 @@ end
     artifact_generation_snapshot(lib_name, struct_name) -> ArtifactGeneration
 
 The destructor of `struct_name` **and** the liveness flag of the image that
-exports it, from one generation, under one lock.
+exports it, from one generation. The handle and flag are captured together;
+a cold destructor pointer is resolved on that handle outside STATE.
 
 This is what a `#[julia]` struct captures at construction so its finalizer
 needs no lookup (#249). The two must come from the same generation: taken
@@ -949,27 +956,30 @@ function artifact_generation_snapshot(lib_name::AbstractString,
                                       struct_name::AbstractString)
     name = String(lib_name)
     symbol = ffi_struct_free_symbol(struct_name)
-    return lock(REGISTRY_LOCK) do
+    handle, cache, free_ptr, alive, generation = lock(REGISTRY_LOCK) do
         alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
         generation = get(ARTIFACT_GENERATIONS, name, 0)
         entry = get(RUST_LIBRARIES, name, nothing)
-        entry === nothing && return ArtifactGeneration(C_NULL, C_NULL, alive, generation)
+        entry === nothing && return (C_NULL, nothing, C_NULL, alive, generation)
         handle, cache = entry
         free_ptr = get(cache, symbol, C_NULL)
-        if free_ptr == C_NULL
-            found = try
-                Libdl.dlsym(handle, symbol; throw_error = false)
-            catch e
-                @debug "Could not resolve $(symbol) in $(name)" exception = e
-                nothing
-            end
-            if !(found === nothing || found == C_NULL)
-                free_ptr = found
+        (handle, cache, free_ptr, alive, generation)
+    end
+    if handle != C_NULL && free_ptr == C_NULL
+        found = try
+            Libdl.dlsym(handle, symbol; throw_error = false)
+        catch
+            nothing
+        end
+        if !(found === nothing || found == C_NULL)
+            free_ptr = found
+            # This is the captured image's cache, not a fresh name lookup.
+            lock(REGISTRY_LOCK) do
                 cache[symbol] = found
             end
         end
-        return ArtifactGeneration(handle, free_ptr, alive, generation)
     end
+    return ArtifactGeneration(handle, free_ptr, alive, generation)
 end
 
 """
@@ -1027,16 +1037,17 @@ struct whose `_free` wrapper the extractor did not emit.
 """
 function _generic_struct_free_target(free_name::AbstractString, types::Tuple)
     return try
+        name = String(free_name)
         generic_info = lock(REGISTRY_LOCK) do
-            get(GENERIC_FUNCTION_REGISTRY, String(free_name), nothing)
+            get(GENERIC_FUNCTION_REGISTRY, name, nothing)
         end
         generic_info === nothing && return (C_NULL, "", C_NULL, 0)
         type_params = Dict{Symbol, Type}()
         for (i, p) in enumerate(generic_info.type_params)
             type_params[p] = types[i]
         end
-        info = get_monomorphized_function(String(free_name), type_params)
-        info === nothing && (info = monomorphize_function(String(free_name), type_params))
+        info = get_monomorphized_function(name, type_params)
+        info === nothing && (info = monomorphize_function(name, type_params))
         (info.func_ptr, info.lib_name, info.handle, info.generation)
     catch e
         @debug "Could not resolve the destructor of $(free_name)" exception = e
@@ -1065,7 +1076,7 @@ function generic_struct_generation_snapshot(free_name::AbstractString, types::Tu
     name = isempty(free_lib) ? String(fallback_lib) : free_lib
     return lock(REGISTRY_LOCK) do
         free_ptr == C_NULL &&
-            return ArtifactGeneration(C_NULL, C_NULL, DEAD_ARTIFACT, generation)
+            return ArtifactGeneration(C_NULL, C_NULL, _state_read(DEAD_ARTIFACT, identity), generation)
         return ArtifactGeneration(handle, free_ptr, alive_ref_for_handle(handle, name),
                                   generation)
     end
@@ -1074,16 +1085,22 @@ end
 """
     check_not_freed(obj, type_name)
 
-Raise when a method is called on an object whose finalizer already ran.
+Raise when the object was finalized or its captured library image was closed.
 
 Without it the call dereferences `C_NULL` inside Rust, which is a segfault
-rather than an error message. The inline structs got this in #277 Phase B4;
+rather than an error message, or enters a retained pointer in an unmapped
+image. This check does not make closing concurrently with a call safe: an
+explicit close still requires quiescence. The inline structs got this in #277 Phase B4;
 `@rust_crate` structs have had it since #246 (`_check_not_freed`).
 """
 function check_not_freed(obj, type_name::AbstractString)
     if getfield(obj, :ptr) == C_NULL
         throw(RustError("attempted to use a freed $(type_name) object: its " *
                         "finalizer has already released the Rust allocation"))
+    end
+    if hasfield(typeof(obj), :alive) && !getfield(obj, :alive)[]
+        throw(RustError("attempted to use an unloaded $(type_name) object: its " *
+                        "Rust library image has been closed"))
     end
     return nothing
 end
@@ -1238,18 +1255,40 @@ end
 Run a generic constructor and hand back the pointer **and** the snapshot the
 object it allocated must capture.
 
-The destructor is looked for on the constructor's **own** image first: the
-instantiation `rustcall-extract specialize` produces carries the whole
-`#[julia]` item, so `<Struct>_free` is normally exported by the very artifact
-that allocated the object — one image, one allocator, one liveness flag. Only
-when it is not does this fall back to monomorphizing the destructor separately,
-which is the pre-existing behaviour and is recorded in
-`docs/src/panics.md` as a limit of the generic path: an object allocated by one
-`cdylib` and freed through another crosses an allocator boundary.
+The generic-struct group specializes the constructor, methods, accessors, and
+`<Struct>_free` into the constructor's image, so one instantiation has one
+allocator and one liveness flag. The symbol lookup below remains a fallback
+for hand-registered generic functions that predate grouped registration.
 """
 function _call_generic_constructor(func_name::String, struct_name::AbstractString,
                                    args::Tuple, types::Tuple)
     ptr, lib_name, handle, generation = _generic_constructor_call(func_name, args, types)
+    # Generic struct groups specialize the destructor beside the constructor.
+    # Resolve that cached wrapper first so the object captures the same image
+    # and allocator; the legacy symbol lookup remains a compatibility fallback
+    # for hand-registered generic functions (#291).
+    free_name = ffi_struct_free_symbol(struct_name)
+    alive = lock(REGISTRY_LOCK) do
+        alive_ref_for_handle(handle, lib_name)
+    end
+    free_info = _generic_artifact_member(lib_name, free_name, alive)
+    if free_info === nothing
+        free_info = try
+            generic_free = GENERIC_FUNCTION_REGISTRY[free_name]
+            free_params = Dict{Symbol, Type}(p => types[i]
+                                             for (i, p) in enumerate(generic_free.type_params))
+            monomorphize_function(free_name, free_params)
+        catch
+            nothing
+        end
+    end
+    if free_info !== nothing && free_info.handle == handle && free_info.lib_name == lib_name
+        gen = lock(REGISTRY_LOCK) do
+            ArtifactGeneration(handle, free_info.func_ptr,
+                               alive_ref_for_handle(handle, lib_name), generation)
+        end
+        return (ptr, lib_name, gen)
+    end
     free_symbol = ffi_struct_free_symbol(struct_name)
     own = handle == C_NULL ? C_NULL :
           (found = Libdl.dlsym(handle, free_symbol; throw_error = false);
@@ -1289,7 +1328,9 @@ function _generic_constructor_call(func_name::String, args::Tuple, types::Tuple)
     return (ptr, info.lib_name, info.handle, info.generation)
 end
 
-function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple)
+function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple, alive::Base.RefValue{Bool})
+    original = _generic_artifact_member(lib_name, func_name, alive)
+    original === nothing || return _call_monomorphized(original, ptr, args...)
     generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
     param_names = generic_info.type_params
 
@@ -1306,7 +1347,9 @@ function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoi
     return _call_monomorphized(info, ptr, args...)
 end
 
-function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple)
+function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple, alive::Base.RefValue{Bool})
+    original = _generic_artifact_member(lib_name, func_name, alive)
+    original === nothing || return _call_monomorphized(original, ptr)
     generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
     param_names = generic_info.type_params
 

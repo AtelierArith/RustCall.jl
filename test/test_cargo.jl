@@ -5,6 +5,104 @@ using RustCall
 using Test
 using SHA: sha256
 
+@testset "Cargo generics preserve dependencies and the registered cfg environment (#291)" begin
+    mktempdir() do root
+        dependency = joinpath(root, "dependency")
+        mkpath(joinpath(dependency, "src"))
+        write(joinpath(dependency, "Cargo.toml"), """
+            [package]
+            name = "cargo_generic_dep_291"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+        write(joinpath(dependency, "src", "lib.rs"), "pub fn marker() -> i32 { 291 }\n")
+        source = """
+            // cargo-deps: cargo_generic_dep_291={path="$(RustCall.escape_toml_string(dependency))"}
+            #[julia]
+            pub fn cargo_generic_291<T: Copy + std::ops::Add<Output=T>>(x: T) -> T {
+                if cfg!(generic_cargo_probe) && cargo_generic_dep_291::marker() == 291 { x + x } else { x }
+            }
+            #[julia]
+            pub struct CargoBox291<T> { pub value: T }
+            #[julia]
+            impl<T: Copy + std::ops::Add<Output=T>> CargoBox291<T> {
+                pub fn new(value: T) -> Self { Self { value } }
+                pub fn doubled(&self) -> T {
+                    if cfg!(generic_cargo_probe) && cargo_generic_dep_291::marker() == 291 {
+                        self.value + self.value
+                    } else { self.value }
+                }
+            }
+            """
+        scope = Module(:CargoGenerics291)
+        Core.eval(scope, :(using RustCall))
+        previous = Set(keys(RustCall.RUST_LIBRARIES))
+        objects = Any[]
+        withenv("RUSTCALL_CACHE_DIR" => joinpath(root, "cache"),
+                "RUSTFLAGS" => "--cfg generic_cargo_probe", "CARGO_ENCODED_RUSTFLAGS" => nothing) do
+            try
+                Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+                info = RustCall.GENERIC_FUNCTION_REGISTRY["cargo_generic_291"]
+                @test info.cargo !== nothing
+                @test !isempty(info.cargo.lockfile)
+                @test isempty(info.blocked)
+                changed_config = RustCall.GenericCargoContext(info.cargo.dependencies,
+                    info.cargo.env, "different configuration", info.cargo.lockfile,
+                    info.cargo.package_name)
+                @test_throws RustCall.RustError RustCall._generic_cargo_identity(changed_config)
+                stored = RustCall.lockfile_path(RustCall._generic_cargo_dependencies(info.cargo))
+                startswith(normpath(stored), normpath(root)) || error("test lockfile escaped its isolated cache")
+                @test read(stored, String) == info.cargo.lockfile
+                write(stored, "the persisted store has changed since registration\n")
+                withenv("RUSTFLAGS" => nothing) do
+                    function_ = x -> Core.eval(scope, :(@rust cargo_generic_291($x)))
+                    @test Base.invokelatest(function_, Int32(7)) == 14
+                    @test Base.invokelatest(function_, Int64(9)) == 18
+                    before = length(RustCall.MONOMORPHIZED_FUNCTIONS)
+                    @test Base.invokelatest(function_, Int32(7)) == 14
+                    @test length(RustCall.MONOMORPHIZED_FUNCTIONS) == before
+                    box_type = Core.eval(scope, :(CargoBox291{Int32}))
+                    box = Base.invokelatest(box_type, Int32(8))
+                    push!(objects, box)
+                    doubled = Base.invokelatest(getfield, scope, :doubled)
+                    @test Base.invokelatest(doubled, box) == 16
+                    @test Base.invokelatest(getproperty, box, :value) == 8
+                    Base.invokelatest(setproperty!, box, :value, Int32(10))
+                    @test Base.invokelatest(doubled, box) == 20
+                    @test getfield(box, :free_ptr) != C_NULL
+                    original_root = info.cargo.package_name
+                    write(joinpath(dependency, "src", "lib.rs"), "pub fn marker() -> i32 { 292 }\n")
+                    @test RustCall.cargo_block_package(RustCall._generic_cargo_dependencies(info.cargo)) != original_root
+                    @test Base.invokelatest(function_, Int16(7)) == 7
+                    # A changed dependency yields a new specialization of an
+                    # already used type as well, not the old cached answer.
+                    @test Base.invokelatest(function_, Int32(7)) == 7
+                    replacement = Base.invokelatest(box_type, Int32(8))
+                    push!(objects, replacement)
+                    @test Base.invokelatest(doubled, replacement) == 8
+                    @test Base.invokelatest(doubled, box) == 20
+                    manifest_path = joinpath(dependency, "Cargo.toml")
+                    write(manifest_path, replace(read(manifest_path, String), "0.1.0" => "0.2.0"))
+                    mismatch = try
+                        Base.invokelatest(function_, UInt8(7))
+                        nothing
+                    catch err
+                        err
+                    end
+                    @test mismatch isa RustCall.CargoBuildError
+                    @test occursin("original rust block", sprint(showerror, mismatch))
+                end
+            finally
+                foreach(finalize, objects)
+                for name in setdiff(Set(keys(RustCall.RUST_LIBRARIES)), previous)
+                    haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name; close = true)
+                    RustCall.close_retired_handles!(RustCall.retired_handles(name))
+                end
+            end
+        end
+    end
+end
+
 @testset "Cargo Project Generation" begin
 
     @testset "generate_cargo_toml" begin
@@ -897,9 +995,53 @@ end
         @test all(==(RustCall._file_content_digest(stored)), digests)
         @test all(d -> read(joinpath(d, "Cargo.lock"), String) == winner, dirs)
         foreach(d -> rm(d; recursive = true, force = true), dirs)
+
+        # A stale entry must not satisfy a loser that meets the claim: it
+        # waits for the replacement to name the generated root package.
+        write(stored, "[[package]]\nname = \"old_root\"\n")
+        mktempdir() do d
+            waiting = joinpath(d, "Cargo.lock")
+            write(waiting, "[[package]]\nname = \"rustcall_block_itoa\"\n")
+            @test RustCall._claim_lockfile!(claim)
+            waiter = Threads.@spawn RustCall._publish_lockfile!(
+                stored, waiting; replace = true, root = "rustcall_block_itoa", wait = 1.0)
+            sleep(0.1)
+            @test !istaskdone(waiter)
+            write(stored, read(waiting, String))
+            rm(claim; force = true)
+            @test RustCall._file_content_digest(waiting) == fetch(waiter)
+            @test read(waiting, String) == read(stored, String)
+        end
+
         # No temporary or claim file is left behind by any path.
         @test all(f -> !occursin(".tmp-", f) && !endswith(f, ".claim"),
                   readdir(RustCall.lockfile_dir()))
+    end
+end
+
+@testset "a stale replacer revalidates after acquiring the publication claim (#322)" begin
+    mktempdir() do dir
+        stored = joinpath(dir, "store", "Cargo.lock")
+        mkpath(dirname(stored))
+        write(stored, "[[package]]\nname = \"old_root\"\nversion = \"0.1.0\"\n")
+        root = "rustcall_block_claim_test"
+        # Both builders classify the old entry before either publishes. The
+        # second still carries replace=true after the first has replaced it.
+        replace_a = !RustCall._lockfile_names_root(stored, root)
+        replace_b = !RustCall._lockfile_names_root(stored, root)
+        @test replace_a && replace_b
+        a = joinpath(dir, "a.lock")
+        b = joinpath(dir, "b.lock")
+        first_graph = "[[package]]\nname = \"$root\"\nversion = \"0.1.0\"\n# graph A\n"
+        second_graph = "[[package]]\nname = \"$root\"\nversion = \"0.1.0\"\n# graph B\n"
+        write(a, first_graph)
+        write(b, second_graph)
+        first_digest = RustCall._publish_lockfile!(stored, a; replace = replace_a, root)
+        second_digest = RustCall._publish_lockfile!(stored, b; replace = replace_b, root)
+        @test read(stored, String) == first_graph
+        @test read(a, String) == read(b, String) == first_graph
+        @test first_digest == second_digest == RustCall._file_content_digest(stored)
+        @test !isfile(stored * ".claim")
     end
 end
 

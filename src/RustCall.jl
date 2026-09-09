@@ -28,8 +28,122 @@ module RustCall
 
 using Libdl
 
-# Thread-safety lock for global registries
-const REGISTRY_LOCK = ReentrantLock()
+"""
+    RustCallState
+
+The mutable process state of RustCall.  The value is held by `STATE`, a
+`Base.Lockable`, so registry objects are never declared as independent module
+globals.  `StateView` is a compatibility handle used by the older internal
+names; every operation on it takes the state lock, including reads made by
+tests and extensions.
+
+Static lookup tables are immutable dictionaries or tuples, not mutable
+registries. `test/test_state.jl` inspects all module bindings, including values
+returned by factories and containers nested in immutable wrappers, so a newly
+named mutable registry cannot bypass the declaration guard. The compiler's
+documentation metadata and synchronization primitives are not application
+registries; captured per-object liveness flags belong to the state-owned images.
+
+Code under the state lock may only manipulate in-memory state. It must not
+call user Julia code, compile, resolve symbols, open/close libraries, or execute
+a `ccall`. Those operations happen before or after the locked transaction.
+Fetch the FFI method-definition gate from STATE before acquiring it; never
+acquire that gate while holding STATE, and run layout callbacks outside both.
+"""
+mutable struct RustCallState
+    values::Dict{Symbol, Any}
+end
+
+const STATE = Base.Lockable(RustCallState(Dict{Symbol, Any}()))
+
+struct StateView
+    name::Symbol
+    owner::Union{Nothing, Module}
+end
+StateView(name::Symbol) = StateView(name, nothing)
+
+_state_value(view::StateView) = view.owner === nothing ? STATE.value.values[view.name] :
+    STATE.value.values[:module_states][view.owner][view.name]
+
+function _state_view(name::Symbol, value)
+    STATE.value.values[name] = value
+    return StateView(name)
+end
+
+function _state_read(view::StateView, f::Function)
+    view.owner === nothing || _ensure_module_state!(view.owner)
+    lock(STATE.lock) do
+        f(_state_value(view))
+    end
+end
+_state_read(f::Function, view::StateView) = _state_read(view, f)
+
+Base.getindex(view::StateView) = _state_read(view) do value
+    value isa Ref ? value[] :
+        value isa Union{AbstractDict, AbstractVector, AbstractSet} ? copy(value) : value
+end
+Base.isassigned(view::StateView) = _state_read(view) do value
+    value isa Ref ? isassigned(value) : true
+end
+Base.getindex(view::StateView, key...) = _state_read(view) do value
+    getindex(value, key...)
+end
+Base.setindex!(view::StateView, value, key...) = _state_mutate(view, :setindex!, value, key...)
+Base.get(view::StateView, key, default) = _state_read(view) do state_value
+    get(state_value, key, default)
+end
+Base.get!(view::StateView, key, default) = _state_mutate(view, :get!, key, default)
+function Base.get!(default::Function, view::StateView, key)
+    cached = _state_read(view) do state_value
+        haskey(state_value, key) ? Some(state_value[key]) : nothing
+    end
+    cached === nothing || return something(cached)
+    # A default may run rustc/Cargo or arbitrary caller code. Do not hold
+    # STATE during its evaluation; another publisher may win in the meantime.
+    candidate = default()
+    return get!(view, key, candidate)
+end
+Base.haskey(view::StateView, key) = _state_read(view) do state_value
+    haskey(state_value, key)
+end
+Base.delete!(view::StateView, key) = _state_mutate(view, :delete!, key)
+Base.deleteat!(view::StateView, indices) = _state_mutate(view, :deleteat!, indices)
+Base.empty!(view::StateView) = _state_mutate(view, :empty!)
+Base.push!(view::StateView, items...) = _state_mutate(view, :push!, items...)
+Base.prepend!(view::StateView, items) = _state_mutate(view, :prepend!, collect(items))
+Base.filter!(predicate::Function, view::StateView) = _filter_state!(predicate, view)
+Base.isempty(view::StateView) = _state_read(view, isempty)
+Base.length(view::StateView) = _state_read(view, length)
+Base.copy(view::StateView) = _state_read(view, copy)
+Base.keys(view::StateView) = _state_read(view) do value
+    collect(keys(value))
+end
+Base.values(view::StateView) = _state_read(view) do value
+    collect(values(value))
+end
+
+# Iteration uses a snapshot so the state lock is not held across user code.
+function Base.iterate(view::StateView)
+    snapshot = _state_read(view, copy)
+    item = iterate(snapshot)
+    item === nothing && return nothing
+    value, cursor = item
+    return value, (snapshot, cursor)
+end
+function Base.iterate(view::StateView, state::Tuple{Any, Any})
+    snapshot, cursor = state
+    item = iterate(snapshot, cursor)
+    item === nothing && return nothing
+    value, next_cursor = item
+    return value, (snapshot, next_cursor)
+end
+
+# Thread-safety lock for the state container.  It remains named for internal
+# compatibility, but the lock now belongs to STATE rather than to a free
+# standing registry.
+const REGISTRY_LOCK = STATE.lock
+
+include("state_filter.jl")
 
 # Include submodules in order of dependency
 include("types.jl")
@@ -63,6 +177,7 @@ include("cargoproject.jl")
 include("cargobuild.jl")
 
 include("ruststr.jl")
+include("module_state.jl")
 include("rustmacro.jl")
 
 # Phase 2: Generics support

@@ -21,41 +21,57 @@
 using RustCall
 using Test
 
+include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
+
 const PYO3_OPTIONAL_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_optional")
 const PYO3_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_only")
 const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed")
 
-# Whether a `:link_libpython` wrapper can actually be built here.
-#
-# Knowing the plan is not enough, and deliberately so: a machine can have a
-# Python interpreter whose library directory `python_library_dir` finds while
-# still lacking what the *link* needs — the `libpython3.x.so` symlink and the
-# headers live in a `-dev` package that a bare CI image does not install, and
-# pyo3's build script refuses without them. So the guard performs the build and
-# skips on a build failure, rather than asserting on a machine that cannot
-# produce the artifact at all.
-#
-# Only the build is forgiven. Everything after it — loading, calling,
-# destructing — is a hard assertion, so a real regression cannot hide behind
-# this skip. The build result is returned so the testset does not pay for it
-# twice; `@rust_crate` then hits the cache it just filled.
-function _link_libpython_wrapper(crate; features::Vector{String} = String[],
-                                 default_features::Bool = true)
-    RustCall.check_rustc_available() || return nothing
-    try
-        plan = RustCall.pyo3_link_plan(crate; features = features,
-                                       default_features = default_features)
-        plan.mode === :link_libpython || return nothing
-        return RustCall.build_pyo3_wrapper(RustCall.scan_crate(crate);
-                                           features = features,
-                                           default_features = default_features)
-    catch e
-        @info "skipping the :link_libpython wrapper testset" exception = e
-        return nothing
-    end
-end
-
+# `_link_libpython_wrapper` skips only when the link plan or an actual linkable
+# Python library is unavailable. Once that prerequisite exists, wrapper
+# generation, Cargo, loading, calling, and destructing are hard assertions.
 @testset "PyO3 wrapper crate (#275 Phase 2)" begin
+
+    @testset "a symbol-excluded function releases its Julia surface name (#303)" begin
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            manifest = replace(read(joinpath(PYO3_ONLY_CRATE, "Cargo.toml"), String),
+                               "sample_crate_pyo3_only" => "surface_owner_303")
+            write(joinpath(dir, "Cargo.toml"), manifest)
+            write(joinpath(dir, "src", "lib.rs"), """
+                #![allow(non_snake_case)]
+                use pyo3::prelude::*;
+                #[pyfunction] pub fn foo() -> i32 { 1 }
+                #[pyfunction] pub fn FOO() -> i32 { 2 }
+                #[pyclass] pub struct C;
+                #[pymethods] impl C {
+                    #[staticmethod] pub fn FOO() -> i32 { 3 }
+                }
+                #[pyclass] pub struct D;
+                #[pymethods] impl D {
+                    #[staticmethod] pub fn FOO() -> i32 { 4 }
+                }
+                """)
+            wrapper = _link_libpython_wrapper(dir)
+            if wrapper === nothing
+                @test_skip "no linkable Python here"
+            else
+                @test all(f -> f.name != "FOO", wrapper.info.julia_functions)
+                c = only(filter(s -> s.name == "C", wrapper.info.julia_structs))
+                @test any(m -> m.name == "FOO", c.methods)
+                bindings = @rust_crate dir
+                module_ = getfield(bindings, :module_ref)
+                try
+                    foo = Base.invokelatest(getfield, module_, :foo)
+                    FOO = Base.invokelatest(getfield, module_, :FOO)
+                    @test Base.invokelatest(foo) == 1
+                    @test Base.invokelatest(FOO) == 3
+                finally
+                    RustCall.unload_library(Base.invokelatest(getfield, module_, :_LIB_NAME); close = true)
+                end
+            end
+        end
+    end
 
     @testset "the opaque PyErr message is one contract, written down twice" begin
         # `rustcall_core::wrap::PYERR_MESSAGE` and `RustCall.PYO3_OPAQUE_ERROR`
@@ -65,6 +81,32 @@ end
         @test occursin(RustCall.PYO3_OPAQUE_ERROR, rust)
         @test RustCall.PYO3_ERROR_CODE == Int32(1)
         @test occursin("pub const PYERR_CODE: i32 = 1;", rust)
+    end
+
+    @testset "a linkable Python does not hide wrapper build failures (#336)" begin
+        plan = RustCall.pyo3_link_plan(PYO3_ONLY_CRATE)
+        if plan.mode !== :link_libpython || !_linkable_python_library(plan.rpath)
+            @test_skip "no linkable Python here"
+        else
+            @test_throws ErrorException _link_libpython_wrapper(
+                PYO3_ONLY_CRATE;
+                build_wrapper = (_; kwargs...) -> error("forced wrapper failure"))
+        end
+    end
+
+    @testset "a missing Python library skips before invoking the wrapper builder (#336)" begin
+        mktempdir() do dir
+            withenv("RUSTCALL_PYTHON_LIBDIR" => dir,
+                    "PYO3_PYTHON" => joinpath(dir, "missing-python")) do
+                invoked = Ref(false)
+                result = @test_logs (:info, "skipping the :link_libpython wrapper testset") _link_libpython_wrapper(
+                    PYO3_ONLY_CRATE;
+                    build_wrapper = (_; kwargs...) -> (invoked[] = true))
+                @test result === nothing
+                @test !invoked[]
+                @test !_linkable_python_library(dir)
+            end
+        end
     end
 
     @testset "generation: what the wrapper exports, and what it refuses" begin
@@ -191,6 +233,43 @@ end
 
             M = @rust_crate PYO3_ONLY_CRATE
 
+            @testset "PyO3 rejects Rust-generic classes and annotated trait impls (#303)" begin
+                cases = [
+                    ("#[pyclass] pub struct Invalid<T> { value: T }",
+                     "#[pyclass] cannot have generic parameters"),
+                    ("""
+                     #[pyclass] pub struct Invalid {}
+                     trait Value { fn value(&self) -> i32; }
+                     #[pymethods] impl Value for Invalid {
+                         fn value(&self) -> i32 { 1 }
+                     }
+                     """, "#[pymethods] cannot be used on trait impl blocks"),
+                ]
+                mktempdir() do dir
+                    mkpath(joinpath(dir, "src"))
+                    write(joinpath(dir, "Cargo.toml"), """
+                        [package]
+                        name = "invalid_pyo3_shape"
+                        version = "0.1.0"
+                        edition = "2021"
+                        [dependencies]
+                        pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+                        """)
+                    for (source, diagnostic) in cases
+                        write(joinpath(dir, "src", "lib.rs"), "use pyo3::prelude::*;\n" * source)
+                        cmd = `$(RustCall.cargo()) check --offline --manifest-path $(joinpath(dir, "Cargo.toml"))`
+                        cmd = addenv(cmd, "CARGO_TARGET_DIR" => joinpath(dir, "target"))
+                        mktemp() do _, output
+                            result = run(pipeline(ignorestatus(cmd), stdout = output, stderr = output))
+                            seekstart(output)
+                            diagnostics = read(output, String)
+                            @test !success(result)
+                            @test occursin(diagnostic, diagnostics)
+                        end
+                    end
+                end
+            end
+
             # Free functions, including the string ABI.
             @test M.add(Int32(2), Int32(3)) == 5
             @test M.shout("hello") == "HELLO!"
@@ -258,12 +337,19 @@ end
 
             # The generated `Point_free` really runs the Rust destructor: the
             # crate counts its drops.
-            before = M.dropped_points()
-            let doomed = call(M.Point, 1.0, 1.0)
-                @test M.norm(doomed) ≈ sqrt(2.0)
-                finalize(doomed)
+            @testset "class layout options, Python generic aliases and an inherent trait bridge (#303)" begin
+                before = M.dropped_points()
+                let doomed = call(M.Point, 1.0, 1.0)
+                    @test M.norm(doomed) ≈ sqrt(2.0)
+                    @test call(getproperty, doomed, :x) == 1.0
+                    call(setproperty!, doomed, :x, 2.0)
+                    @test M.norm(doomed) ≈ sqrt(5.0)
+                    finalize(doomed)
+                    @test M.dropped_points() == before + 1
+                    finalize(doomed)
+                end
+                @test M.dropped_points() == before + 1
             end
-            @test M.dropped_points() == before + 1
         end
     end
 
@@ -464,12 +550,7 @@ end
             @test !isempty(info.julia_functions)
             @test RustCall.crate_needs_pyo3_wrapper(info)
 
-            wrapper = try
-                RustCall.build_pyo3_wrapper(info)
-            catch e
-                @info "skipping the mixed-crate build" exception = e
-                nothing
-            end
+            wrapper = _link_libpython_wrapper(PYO3_MIXED_CRATE)
             if wrapper === nothing
                 @test_skip "the mixed crate's wrapper (:link_libpython) cannot be built here"
             else
@@ -534,13 +615,9 @@ end
                 @test_skip "Cargo could not resolve the crate"
             else
                 @test !isempty(plan.cfg_text)
-                wrapper = try
-                    RustCall.build_pyo3_wrapper(info; features = ["python"],
-                                                default_features = false)
-                catch e
-                    @info "skipping the feature-gated build" exception = e
-                    nothing
-                end
+                wrapper = _link_libpython_wrapper(PYO3_OPTIONAL_CRATE;
+                                                  features = ["python"],
+                                                  default_features = false)
                 if wrapper === nothing
                     @test_skip "the feature-gated wrapper (:link_libpython) cannot be built here"
                 else
@@ -648,6 +725,17 @@ end
                     @test occursin("[patch.crates-io", patched)
                     @test occursin("vendor", patched)
                     @test !occursin("path = \"vendor/foo\"", patched)
+                    write(joinpath(pdir, "Cargo.toml"), """
+                    [package]
+                    name = "replaced"
+                    version = "0.1.0"
+                    [replace]
+                    "foo:1.0.0" = { path = "vendor/foo" }
+                    """)
+                    replaced = RustCall._root_patch_toml(pdir)
+                    @test occursin("[replace", replaced)
+                    @test occursin("foo:1.0.0", replaced)
+                    @test !occursin("path = \"vendor/foo\"", replaced)
                 end
                 @test RustCall._root_patch_toml(dir) == ""
                 # Both generated manifests are Cargo roots of their own, so a
@@ -707,14 +795,10 @@ end
                     @test_skip "Cargo could not resolve the crate"
                 else
                     @test occursin(r"^rustcall_from_config$"m, plan_on.cfg_text)
-                    wrapper = try
-                        RustCall.build_pyo3_wrapper(info; features = ["python"],
-                                                    default_features = false,
-                                                    cache_enabled = false)
-                    catch e
-                        @info "skipping the configured-crate build" exception = e
-                        nothing
-                    end
+                    wrapper = _link_libpython_wrapper(dir;
+                                                      features = ["python"],
+                                                      default_features = false,
+                                                      cache_enabled = false)
                     if wrapper === nothing
                         @test_skip "no linkable Python here: the configured crate's wrapper cannot be built"
                     else

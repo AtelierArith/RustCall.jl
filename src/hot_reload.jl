@@ -55,19 +55,20 @@ HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
 Registry of hot-reloadable crates.
 Maps library name to HotReloadState.
 """
-const HOT_RELOAD_REGISTRY = Dict{String, HotReloadState}()
+const HOT_RELOAD_REGISTRY = _state_view(:hot_reload_registry,
+    Dict{String, HotReloadState}())
 
 """
 Global flag to enable/disable all hot reload functionality.
 """
-const HOT_RELOAD_ENABLED = Ref(true)
+const HOT_RELOAD_ENABLED = _state_view(:hot_reload_enabled, Ref(true))
 
 """
 Per-library locks to serialize reload operations for the same library.
 Prevents concurrent hot reloads of the same crate from corrupting state.
 """
-const RELOAD_LOCKS = Dict{String, ReentrantLock}()
-const RELOAD_LOCKS_LOCK = ReentrantLock()
+const RELOAD_LOCKS = _state_view(:reload_locks, Dict{String, ReentrantLock}())
+const RELOAD_LOCKS_LOCK = REGISTRY_LOCK
 
 """
     _get_reload_lock(lib_name::String) -> ReentrantLock
@@ -369,14 +370,14 @@ function _reload_library_once(state::HotReloadState)
         # Monomorphizations resolved against the previous image hold raw
         # pointers into it (#73); they belong to the replaced artifact, not to
         # the new one.
-        lock(REGISTRY_LOCK) do
+        cleared = lock(REGISTRY_LOCK) do
             stale = [k for (k, v) in MONOMORPHIZED_FUNCTIONS if v.lib_name == state.lib_name]
             for k in stale
                 delete!(MONOMORPHIZED_FUNCTIONS, k)
             end
-            isempty(stale) ||
-                @debug "Hot reload: Cleared $(length(stale)) stale monomorphized functions"
+            length(stale)
         end
+        cleared == 0 || @debug "Hot reload: Cleared $cleared stale monomorphized functions"
 
         state.last_failure = ""
         @info "Hot reload: Successfully reloaded $(state.lib_name)"
@@ -486,15 +487,10 @@ Start a background task that watches for file changes.
 """
 function start_watch_task(state::HotReloadState; interval::Float64=1.0,
                           poll::Bool=false)
-    if state.watch_task !== nothing && !istaskdone(state.watch_task)
-        @warn "Watch task already running for $(state.lib_name)"
-        return
-    end
-
-    state.watch_task = @async begin
+    task = Task() do
         @info "Hot reload: Watching $(state.crate_path) for changes..."
 
-        while state.enabled && HOT_RELOAD_ENABLED[]
+        while _watch_is_enabled(state)
             try
                 changed = if poll
                     sleep(interval)
@@ -518,6 +514,22 @@ function start_watch_task(state::HotReloadState; interval::Float64=1.0,
 
         @info "Hot reload: Stopped watching $(state.lib_name)"
     end
+    published = lock(REGISTRY_LOCK) do
+        state.enabled || return false
+        running = state.watch_task
+        running !== nothing && !istaskdone(running) && return false
+        state.watch_task = task
+        true
+    end
+    published || return nothing
+    # Scheduling and waiting are outside STATE. A concurrent stop may already
+    # be waiting on this task; its first enabled check then exits immediately.
+    schedule(task)
+    return task
+end
+
+_watch_is_enabled(state::HotReloadState) = lock(REGISTRY_LOCK) do
+    state.enabled && HOT_RELOAD_ENABLED[]
 end
 
 """
@@ -551,7 +563,7 @@ multi-file save, and short enough to be invisible in a dev loop. The issue asks
 for two saves within 200 ms to produce one reload, which this satisfies with
 room to spare.
 """
-const HOT_RELOAD_DEBOUNCE_SECONDS = Ref(0.1)
+const HOT_RELOAD_DEBOUNCE_SECONDS = _state_view(:hot_reload_debounce_seconds, Ref(0.1))
 
 """
     _await_source_change(state, timeout) -> Bool
@@ -596,14 +608,18 @@ end
 """
     _watched_directories(state) -> Vector{String}
 
-Every directory holding a source this state tracks, `src/` included even when
-it is empty. Recomputed per wait: a reload can add files, and a new file can be
-in a directory nothing was watching.
+Every directory below `src/`, including empty nested directories, plus the
+parents of tracked sources elsewhere. Recomputed per wait: directory creation
+may precede the first source write and must establish that directory's watch.
 """
 function _watched_directories(state::HotReloadState)
     dirs = Set{String}()
     src_dir = joinpath(state.crate_path, "src")
-    isdir(src_dir) && push!(dirs, src_dir)
+    if isdir(src_dir)
+        for (directory, _, _) in walkdir(src_dir)
+            push!(dirs, directory)
+        end
+    end
     for file in state.source_files
         parent = dirname(file)
         isdir(parent) && push!(dirs, parent)
@@ -760,10 +776,11 @@ const MAX_DEBOUNCE_WINDOWS = 10
 Stop the file watching task for a crate.
 """
 function stop_watch_task(state::HotReloadState)
-    state.enabled = false
-
-    task = state.watch_task
-    if task !== nothing && !istaskdone(task)
+    task = lock(REGISTRY_LOCK) do
+        state.enabled = false
+        state.watch_task
+    end
+    if task !== nothing && task !== current_task() && !istaskdone(task)
         # Wait for the watch task to finish so any in-progress reload completes
         # before we return. This prevents the caller from observing an
         # inconsistent state where a reload is still running.
@@ -776,7 +793,10 @@ function stop_watch_task(state::HotReloadState)
         end
     end
 
-    state.watch_task = nothing
+    lock(REGISTRY_LOCK) do
+        state.watch_task === task && (state.watch_task = nothing)
+    end
+    return nothing
 end
 
 # ============================================================================
@@ -827,14 +847,13 @@ function enable_hot_reload(lib_name::String, crate_path::String;
     end
 
     # Check if already registered (protect HOT_RELOAD_REGISTRY with REGISTRY_LOCK)
-    lock(REGISTRY_LOCK) do
-        if haskey(HOT_RELOAD_REGISTRY, lib_name)
-            existing = HOT_RELOAD_REGISTRY[lib_name]
-            if existing.enabled
-                @warn "Hot reload already enabled for $lib_name"
-                return existing
-            end
-        end
+    existing = lock(REGISTRY_LOCK) do
+        entry = get(HOT_RELOAD_REGISTRY, lib_name, nothing)
+        entry !== nothing && entry.enabled ? entry : nothing
+    end
+    if existing !== nothing
+        @warn "Hot reload already enabled for $lib_name"
+        return existing
     end
 
     # Find source files
@@ -851,12 +870,6 @@ function enable_hot_reload(lib_name::String, crate_path::String;
 
     # Get current library path
     lib_path = ""
-    lock(REGISTRY_LOCK) do
-        if haskey(RUST_LIBRARIES, lib_name)
-            # Library is already loaded, we need to find its path
-            # For now, we'll rebuild on first change
-        end
-    end
 
     # Create state
     state = HotReloadState(
@@ -871,9 +884,16 @@ function enable_hot_reload(lib_name::String, crate_path::String;
     )
 
     # Register (protect HOT_RELOAD_REGISTRY with REGISTRY_LOCK)
-    lock(REGISTRY_LOCK) do
-        HOT_RELOAD_REGISTRY[lib_name] = state
+    selected = lock(REGISTRY_LOCK) do
+        entry = get(HOT_RELOAD_REGISTRY, lib_name, nothing)
+        if entry !== nothing && entry.enabled
+            entry
+        else
+            HOT_RELOAD_REGISTRY[lib_name] = state
+            state
+        end
     end
+    selected === state || return selected
 
     # Start watching
     start_watch_task(state, interval=interval, poll=poll)
@@ -890,20 +910,14 @@ Disable hot reload for a Rust crate.
 - `lib_name::String`: Name of the library to disable hot reload for
 """
 function disable_hot_reload(lib_name::String)
-    state = lock(REGISTRY_LOCK) do
-        if !haskey(HOT_RELOAD_REGISTRY, lib_name)
-            @warn "Hot reload not enabled for $lib_name"
-            return nothing
-        end
-        HOT_RELOAD_REGISTRY[lib_name]
-    end
+    state = get(HOT_RELOAD_REGISTRY, lib_name, nothing)
 
     if state === nothing
+        @warn "Hot reload not enabled for $lib_name"
         return
     end
 
     stop_watch_task(state)
-    state.enabled = false
 
     @info "Hot reload disabled for $lib_name"
 end
