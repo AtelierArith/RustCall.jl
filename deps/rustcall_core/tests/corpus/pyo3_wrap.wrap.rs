@@ -16,6 +16,9 @@ pub extern "C" fn rustcall_add_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_ADD
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -84,6 +87,9 @@ pub extern "C" fn rustcall_shout_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_SHOUT
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -187,6 +193,9 @@ pub extern "C" fn rustcall_tag_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_TAG
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -269,6 +278,9 @@ pub extern "C" fn rustcall_echo_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_ECHO
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -371,6 +383,9 @@ pub extern "C" fn rustcall_parse_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_PARSE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -514,6 +529,9 @@ pub extern "C" fn rustcall_check_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_CHECK
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -656,6 +674,9 @@ pub extern "C" fn rustcall_divide_take_panic(out: *mut u8, cap: usize) -> usize 
     __RUSTCALL_PANIC_RUSTCALL_DIVIDE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -790,6 +811,9 @@ pub extern "C" fn rustcall_maybe_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_MAYBE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -904,6 +928,9 @@ pub extern "C" fn rustcall_note_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_NOTE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -972,6 +999,9 @@ pub extern "C" fn rustcall_geometry__area_take_panic(out: *mut u8, cap: usize) -
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__AREA
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1031,11 +1061,80 @@ pub extern "C" fn rustcall_geometry__area(w: f64, h: f64) -> f64 {
         }
     }
 }
+thread_local! {
+    static __RUSTCALL_DROP_PANIC_67656F6D657472795F5F526563745F66726565 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn geometry__Rect_free_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_DROP_PANIC_67656F6D657472795F5F526563745F66726565
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn geometry__Rect_free(ptr: *mut user_crate::geometry::Rect) {
-    if !ptr.is_null() {
-        unsafe {
-            drop(Box::from_raw(ptr));
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            if !ptr.is_null() {
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Rect::drop", rustcall_message
+            );
+            __RUSTCALL_DROP_PANIC_67656F6D657472795F5F526563745F66726565
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
         }
     }
 }
@@ -1053,42 +1152,340 @@ pub extern "C" fn geometry__Rect_free_rust_string(ptr: *mut u8, len: usize, cap:
         }
     }
 }
+thread_local! {
+    static
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F77 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_geometry__Rect_get_w_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F77
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn rustcall_geometry__Rect_get_w(
     ptr: *const user_crate::geometry::Rect,
 ) -> f64 {
-    unsafe { (*ptr).w }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).w } } }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_geometry__Rect_get_w", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F77
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<f64>() }
+        }
+    }
+}
+thread_local! {
+    static
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F7365745F77 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_geometry__Rect_set_w_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F7365745F77
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn rustcall_geometry__Rect_set_w(
     ptr: *mut user_crate::geometry::Rect,
     value: f64,
 ) {
-    unsafe {
-        (*ptr).w = value;
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                unsafe {
+                    (*ptr).w = value;
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_geometry__Rect_set_w", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F7365745F77
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+        }
     }
+}
+thread_local! {
+    static
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F7365745F6465707468
+    : ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_geometry__Rect_set_depth_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F7365745F6465707468
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn rustcall_geometry__Rect_set_depth(
     ptr: *mut user_crate::geometry::Rect,
     value: f64,
 ) {
-    unsafe {
-        (*ptr).depth = value;
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                unsafe {
+                    (*ptr).depth = value;
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_geometry__Rect_set_depth", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F7365745F6465707468
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+        }
     }
+}
+thread_local! {
+    static
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F6E616D65
+    : ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_geometry__Rect_get_name_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F6E616D65
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn rustcall_geometry__Rect_get_name(
     ptr: *const user_crate::geometry::Rect,
 ) -> geometry__Rect_RustCallOwnedString {
-    let mut rustcall_bytes = unsafe { (*ptr).name.clone().into_bytes() };
-    let rustcall_ret = geometry__Rect_RustCallOwnedString {
-        ptr: rustcall_bytes.as_mut_ptr(),
-        len: rustcall_bytes.len(),
-        cap: rustcall_bytes.capacity(),
-    };
-    ::std::mem::forget(rustcall_bytes);
-    rustcall_ret
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                let mut rustcall_bytes = unsafe { (*ptr).name.clone().into_bytes() };
+                let rustcall_ret = geometry__Rect_RustCallOwnedString {
+                    ptr: rustcall_bytes.as_mut_ptr(),
+                    len: rustcall_bytes.len(),
+                    cap: rustcall_bytes.capacity(),
+                };
+                ::std::mem::forget(rustcall_bytes);
+                rustcall_ret
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_geometry__Rect_get_name", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F6E616D65
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<geometry__Rect_RustCallOwnedString>() }
+        }
+    }
 }
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_NEW : ::std::cell::RefCell <
@@ -1103,6 +1500,9 @@ pub extern "C" fn rustcall_geometry__Rect_new_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_NEW
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1180,6 +1580,9 @@ pub extern "C" fn rustcall_geometry__Rect_unit_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_UNIT
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1255,6 +1658,9 @@ pub extern "C" fn rustcall_geometry__Rect_area_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_AREA
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1332,6 +1738,9 @@ pub extern "C" fn rustcall_geometry__Rect_scale_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1409,6 +1818,9 @@ pub extern "C" fn rustcall_geometry__Rect_label_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_LABEL
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1516,6 +1928,9 @@ pub extern "C" fn rustcall_geometry__Rect_scaled_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_SCALED
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1652,11 +2067,80 @@ pub extern "C" fn rustcall_geometry__Rect_scaled(
         }
     }
 }
+thread_local! {
+    static __RUSTCALL_DROP_PANIC_67656F6D657472795F5F436F756E7465725F66726565 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn geometry__Counter_free_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_DROP_PANIC_67656F6D657472795F5F436F756E7465725F66726565
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn geometry__Counter_free(ptr: *mut user_crate::geometry::Counter) {
-    if !ptr.is_null() {
-        unsafe {
-            drop(Box::from_raw(ptr));
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            if !ptr.is_null() {
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Counter::drop", rustcall_message
+            );
+            __RUSTCALL_DROP_PANIC_67656F6D657472795F5F436F756E7465725F66726565
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
         }
     }
 }
@@ -1673,6 +2157,9 @@ pub extern "C" fn rustcall_geometry__Counter_new_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_NEW
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -1745,6 +2232,9 @@ pub extern "C" fn rustcall_geometry__Counter_describe_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__COUNTER_DESCRIBE
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();

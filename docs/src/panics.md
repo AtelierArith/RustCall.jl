@@ -34,7 +34,7 @@ checked_div(Int32(9), Int32(3))     # 3 — the library is still usable
 
 ### How it works
 
-Every `extern "C"` wrapper RustCall generates for a `#[julia]` item runs the
+Every function/method wrapper RustCall generates for a `#[julia]` item runs the
 body inside `std::panic::catch_unwind`. On a panic the wrapper:
 
 1. records the message in a **thread-local channel of its own**, and
@@ -83,9 +83,10 @@ the session outright) and the Cargo path took Cargo's default — the same
 | `#[julia]` item in a `@rust_crate` crate **without** `cdylib` | Cargo, RustCall's wrapper manifest | `RustPanicError` |
 | `#[julia]` item in a `@rust_crate` crate **with** `cdylib` | Cargo, **the user's** manifest | `RustPanicError`, unless their profile pins `panic = "abort"` |
 | raw `#[no_mangle] extern "C" fn` you wrote yourself | either | **abort** — RustCall generates no wrapper, so there is no boundary |
-| a panic inside a `Drop` impl, or in a generated field accessor | either | **abort** |
+| a panic inside `Drop`, called by a generated destructor | either, with unwinding enabled | caught; a Julia finalizer increments `finalizer_failure_count()` |
+| a panic in a generated field accessor or clone helper | either, with unwinding enabled | `RustPanicError` |
 
-Two rows abort, and both are visible from the source:
+Cases that can still abort:
 
 * **Raw `extern "C"`.** RustCall does not rewrite functions you export
   yourself; there is nothing between your body and the C ABI. Add `#[julia]` to
@@ -93,6 +94,15 @@ Two rows abort, and both are visible from the source:
 * **A crate that pins `panic = "abort"`.** RustCall does not write that crate's
   manifest and will not override the profile of a crate it merely builds. If
   you want the boundary, remove the pin from the crate's `[profile.release]`.
+
+Generated field accessors and clone helpers use the same unwind boundary as
+method wrappers. Their channel is captured before the call, and Julia reads it
+before converting an owned or borrowed string result. A caught panic does not
+roll back side effects: if a setter panics while dropping the old field value,
+do not assume the object still contains its previous value.
+
+A second panic during Rust's unwind cleanup can still abort; `catch_unwind`
+does not make double-panicking destructors safe.
 
 `RustCall.must_assume_unwind(policy)` answers "could a panic from this door
 reach Julia uncaught?" for any policy.
@@ -130,8 +140,9 @@ disabled to diagnose a segfault.
 
 The rules the finalizer follows, and why:
 
-* **It captures, it does not look up.** The destructor pointer and the
-  library's liveness flag are resolved at construction time and stored on the
+* **It captures, it does not look up.** The destructor pointer, its panic
+  channel and the library's liveness flag are resolved from one image at
+  construction time and stored on the
   object. A finalizer may run while the running thread holds
   `RustCall.REGISTRY_LOCK` — taking it would deadlock — and a `dlsym` plus
   method compilation inside a finalizer is exactly the crash class that made
@@ -143,6 +154,12 @@ The rules the finalizer follows, and why:
   An object outliving its image is inert, not a jump into freed text. Merely
   *unloading* does not flip it — the image is still mapped, so the object still
   frees correctly (see "Libraries are retired, not closed").
+* **A destructor panic is counted, not thrown from the finalizer.** The
+  generated Rust boundary catches it. The finalizer immediately consumes the
+  captured channel without allocating a Julia message buffer, then increments
+  `RustCall.finalizer_failure_count()`. No registry lookup, lock or Julia log
+  occurs between the destructor call and channel read. Rust's panic hook may
+  still write its diagnostic to stderr.
 * **A method call on a freed object raises**, rather than dereferencing a null
   pointer.
 
@@ -226,6 +243,22 @@ whose destructor must run later. Epoch or hazard-pointer designs can have
 different costs; this measurement does not rule them out. Automatic reclamation
 would need a complete protocol and workload-level evidence before replacing
 the explicit quiescence contract above.
+
+#### Build configuration probe cost (#291)
+
+The Cargo cfg probe is no longer memoized: `build.rs` can read inputs that a
+RustCall cache key cannot enumerate. `benchmark/benchmarks_cfg_probe.jl` measures
+the cost on an isolated dependency-free crate and checks that changing a file
+read by `build.rs` changes the next probe result without editing the script.
+Run it with `julia --project benchmark/benchmarks_cfg_probe.jl`.
+
+A local Darwin x86_64 / Julia 1.12.7 run on 2026-09-09 measured a 0.725 s first
+probe, a 0.075 s median over ten unchanged probes (range 0.073–0.108 s), and
+1.650 s after changing the build-script input. The first measurement includes
+Julia compilation; the changed-input measurement includes Cargo rebuild work.
+These are illustrative small-crate costs, not bounds for dependency-heavy
+workspaces. The probe happens during loading/building, not on each FFI call;
+the current decision accepts that cost to avoid a stale build configuration.
 
 ### The allocator contract
 

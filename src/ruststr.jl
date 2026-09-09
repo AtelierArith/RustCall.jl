@@ -109,6 +109,7 @@ function resolve_call_target(lib_name::String, func_name::String;
                              free_symbol::AbstractString = "",
                              _lookup = Libdl.dlsym)
     release_symbol = String(free_symbol)
+    release_channel_symbol = isempty(release_symbol) ? "" : ffi_panic_symbol(release_symbol)
     # Capture all generation-dependent metadata together. Cold symbol lookups
     # below use only these captured handles, even if publication retires them
     # before lookup finishes. Explicit close still requires caller quiescence.
@@ -119,6 +120,7 @@ function resolve_call_target(lib_name::String, func_name::String;
             panic_symbol = ffi_panic_symbol(symbol)
             channel = get(PANIC_CHANNELS, (owner, symbol), get(cache, panic_symbol, nothing))
             free_ptr = isempty(release_symbol) ? C_NULL : get(cache, release_symbol, nothing)
+            free_channel = isempty(release_symbol) ? C_NULL : get(cache, release_channel_symbol, nothing)
             return_type = get(FUNCTION_RETURN_TYPES_BY_LIB, (owner, func_name), nothing)
             valid_info(info) = info !== nothing && info.handle == handle &&
                 info.generation == get(ARTIFACT_GENERATIONS, info.lib_name, -1) &&
@@ -127,7 +129,7 @@ function resolve_call_target(lib_name::String, func_name::String;
             func_info = get(FUNCTION_REGISTRY_BY_LIB, (owner, func_name), nothing)
             valid_info(func_info) || (func_info = get(FUNCTION_REGISTRY, func_name, nothing))
             valid_info(func_info) || (func_info = nothing)
-            (; owner, handle, cache, symbol, panic_symbol, channel, free_ptr,
+            (; owner, handle, cache, symbol, panic_symbol, channel, free_ptr, free_channel,
                func_ptr = get(cache, symbol, nothing), return_type, func_info,
                alive = alive_ref_for_handle(handle, owner),
                generation = get(ARTIFACT_GENERATIONS, owner, 0))
@@ -137,10 +139,11 @@ function resolve_call_target(lib_name::String, func_name::String;
         # Keep the warmed preferred-library path independent of registry size.
         if preferred !== nothing && preferred.func_ptr !== nothing &&
            preferred.func_ptr != C_NULL && preferred.channel !== nothing &&
-           preferred.free_ptr !== nothing
+           preferred.free_ptr !== nothing && preferred.free_channel !== nothing
             return CallTarget(preferred.func_ptr, preferred.channel, preferred.free_ptr,
                               preferred.alive, preferred.handle, preferred.owner,
-                              preferred.return_type, preferred.func_info, preferred.generation)
+                              preferred.return_type, preferred.func_info, preferred.generation,
+                              preferred.free_channel)
         end
         others = [capture(owner, entry) for (owner, entry) in RUST_LIBRARIES if owner != lib_name]
         (preferred, others)
@@ -162,8 +165,10 @@ function resolve_call_target(lib_name::String, func_name::String;
     finish(row, ptr) = begin
         channel = resolve_in(row, row.panic_symbol, row.channel)
         free_ptr = isempty(release_symbol) ? C_NULL : resolve_in(row, release_symbol, row.free_ptr)
+        free_channel = isempty(release_symbol) ? C_NULL :
+                       resolve_in(row, release_channel_symbol, row.free_channel)
         CallTarget(ptr, channel, free_ptr, row.alive, row.handle, row.owner,
-                   row.return_type, row.func_info, row.generation)
+                   row.return_type, row.func_info, row.generation, free_channel)
     end
     if preferred !== nothing
         ptr = resolve_in(preferred, preferred.symbol, preferred.func_ptr)

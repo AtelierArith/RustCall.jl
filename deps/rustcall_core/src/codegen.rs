@@ -560,6 +560,13 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
         pub extern "C" fn #reader(out: *mut u8, cap: usize) -> usize {
             #slot.with(|rustcall_slot| {
                 let mut rustcall_slot = rustcall_slot.borrow_mut();
+                // Finalizers only need a failure count, not its text. This
+                // reserved request consumes the channel without allocating a
+                // Julia message buffer or leaving a stale panic for a later
+                // call. Ordinary null/zero length queries still retain it.
+                if out.is_null() && cap == usize::MAX {
+                    return rustcall_slot.take().map_or(0, |message| message.len());
+                }
                 let rustcall_len = match rustcall_slot.as_ref() {
                     ::std::option::Option::Some(message) => {
                         let bytes = message.as_bytes();
@@ -1319,11 +1326,43 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
     })
 }
 
-/// `cfgs` is the struct's own `#[cfg]` set, copied onto every generated
-/// helper: inside a `#[julia] mod` the module macro expands a
-/// `#[cfg(feature = "x")] #[julia] pub struct C` before rustc evaluates the
-/// predicate, and a helper without it would refer to a struct that is gone
-/// when `x` is off (#300 review).
+/// Apply the common boundary to generated field/clone helpers. These helpers
+/// return only unit, primitives, raw pointers, owned-string buffers or Vec.
+/// In particular, Vec must use an empty vector, not an invalid zeroed value.
+pub(crate) fn guard_struct_helper(tokens: TokenStream2) -> TokenStream2 {
+    let mut function: ItemFn = syn::parse2(tokens).expect("generated struct helper is a function");
+    let symbol = &function.sig.ident;
+    let suffix: String = symbol
+        .to_string()
+        .bytes()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    let slot = format_ident!("__RUSTCALL_HELPER_PANIC_{}", suffix);
+    let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
+    let channel = panic_channel(&cfg_attrs(&function.attrs), &slot, &reader);
+    let (sentinel, unit) = match &function.sig.output {
+        ReturnType::Default => (quote! {}, true),
+        ReturnType::Type(_, ty) if matches!(unparen(ty), Type::Tuple(t) if t.elems.is_empty()) => {
+            (quote! {}, true)
+        }
+        ReturnType::Type(_, ty) if is_vec_type(ty) => (quote! { ::std::vec::Vec::new() }, false),
+        ReturnType::Type(_, ty) => (quote! { unsafe { ::std::mem::zeroed::<#ty>() } }, false),
+    };
+    let original = &function.block;
+    let body = guarded_body(
+        &symbol.to_string(),
+        &slot,
+        &quote! {},
+        quote! { #original },
+        sentinel,
+        unit,
+    );
+    function.block = syn::parse_quote!({ #body });
+    quote! { #channel #function }
+}
+
+/// Copy the struct's cfg onto every accessor and its channel, including when
+/// a module macro expands the struct before rustc evaluates the predicate.
 fn crate_field_accessors(
     item_struct: &ItemStruct,
     stem: &Ident,
@@ -1351,7 +1390,7 @@ fn crate_field_accessors(
                 // owned `(ptr, len, cap)` buffer the caller hands back to
                 // `<Struct>_free_rust_string`, exactly as the inline flavour
                 // and the string-returning method wrappers do (#246).
-                ffi_functions.extend(quote! {
+                ffi_functions.extend(guard_struct_helper(quote! {
                     #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #owned_helper {
@@ -1364,46 +1403,94 @@ fn crate_field_accessors(
                         std::mem::forget(rustcall_bytes);
                         rustcall_ret
                     }
-                });
+                }));
             } else if needs_clone_for_getter(field_ty) {
-                ffi_functions.extend(quote! {
+                ffi_functions.extend(guard_struct_helper(quote! {
                     #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name.clone() }
                     }
-                });
+                }));
             } else {
-                ffi_functions.extend(quote! {
+                ffi_functions.extend(guard_struct_helper(quote! {
                     #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name }
                     }
-                });
+                }));
             }
             let setter_name = format_ident!("{}_set_{}", stem, field_name);
-            ffi_functions.extend(quote! {
-                #(#cfgs)*
-                #[no_mangle]
-                pub extern "C" fn #setter_name(ptr: *mut #struct_name, value: #field_ty) {
-                    unsafe { (*ptr).#field_name = value; }
-                }
-            });
+            ffi_functions.extend(struct_field_setter(
+                struct_name,
+                field_name,
+                field_ty,
+                &setter_name,
+                cfgs,
+            ));
         }
     }
     ffi_functions
 }
 
-fn crate_free_fn(struct_name: &Ident, stem: &Ident, cfgs: &[Attribute]) -> TokenStream2 {
-    let free_fn_name = format_ident!("{}_free", stem);
-    quote! {
+fn struct_field_setter(
+    owner: &Ident,
+    field: &Ident,
+    ty: &Type,
+    setter: &Ident,
+    cfgs: &[Attribute],
+) -> TokenStream2 {
+    let value = format_ident!("value");
+    let (args, conversion) = if is_string_type(ty) {
+        string_arg_conversion(&value, ty, &["ptr".into()])
+    } else {
+        (vec![quote! { value: #ty }], None)
+    };
+    guard_struct_helper(quote! {
         #(#cfgs)*
         #[no_mangle]
-        pub extern "C" fn #free_fn_name(ptr: *mut #struct_name) {
+        pub extern "C" fn #setter(ptr: *mut #owner, #(#args),*) {
+            #conversion
+            unsafe { (*ptr).#field = value; }
+        }
+    })
+}
+
+pub(crate) fn struct_free_wrapper(
+    struct_type: &syn::Path,
+    stem: &Ident,
+    cfgs: &[Attribute],
+) -> TokenStream2 {
+    let free_fn_name = format_ident!("{}_free", stem);
+    // Unlike case folding, byte encoding keeps distinct struct names such as
+    // `C` and `c` distinct in the private TLS namespace as well.
+    let slot_suffix: String = free_fn_name
+        .to_string()
+        .bytes()
+        .map(|byte| format!("{byte:02X}"))
+        .collect();
+    let slot = format_ident!("__RUSTCALL_DROP_PANIC_{}", slot_suffix);
+    let reader = format_ident!("{}", panic_symbol(&free_fn_name.to_string()));
+    let channel = panic_channel(cfgs, &slot, &reader);
+    let body = guarded_body(
+        &format!("{}::drop", path_tail(struct_type)),
+        &slot,
+        &quote! {},
+        quote! {
             if !ptr.is_null() {
                 unsafe { drop(Box::from_raw(ptr)); }
             }
+        },
+        quote! {},
+        true,
+    );
+    quote! {
+        #channel
+        #(#cfgs)*
+        #[no_mangle]
+        pub extern "C" fn #free_fn_name(ptr: *mut #struct_type) {
+            #body
         }
     }
 }
@@ -1422,7 +1509,8 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String
     let stem = struct_stem(module_path, &item_struct.ident);
     // The struct's `#[cfg]` gates its helpers too (#300 review).
     let cfgs = cfg_attrs(&item_struct.attrs);
-    let free = crate_free_fn(&item_struct.ident, &stem, &cfgs);
+    let struct_name = &item_struct.ident;
+    let free = struct_free_wrapper(&syn::parse_quote!(#struct_name), &stem, &cfgs);
     let accessors = crate_field_accessors(&item_struct, &stem, &cfgs);
 
     quote! {
@@ -1778,15 +1866,11 @@ pub fn inline_struct_wrappers(
     let mut out = TokenStream2::new();
     let mut meta = InlineStructMeta::default();
 
-    let free_name = format_ident!("{}_free", stem);
-    out.extend(quote! {
-        #[no_mangle]
-        pub extern "C" fn #free_name(ptr: *mut #struct_name) {
-            if !ptr.is_null() {
-                unsafe { drop(Box::from_raw(ptr)); }
-            }
-        }
-    });
+    out.extend(struct_free_wrapper(
+        &syn::parse_quote!(#struct_name),
+        &stem,
+        &[],
+    ));
 
     let fields = model.named_fields();
     let accessible: Vec<&(Ident, Type)> = fields
@@ -1848,7 +1932,7 @@ pub fn inline_struct_wrappers(
             setter.to_string(),
         ));
         if is_string_type(field_ty) {
-            out.extend(quote! {
+            out.extend(guard_struct_helper(quote! {
                 #[no_mangle]
                 pub extern "C" fn #getter(ptr: *const #struct_name) -> #owned_helper {
                     let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
@@ -1860,39 +1944,40 @@ pub fn inline_struct_wrappers(
                     std::mem::forget(rustcall_bytes);
                     rustcall_ret
                 }
-            });
+            }));
         } else if is_vec_type(field_ty) {
-            out.extend(quote! {
+            out.extend(guard_struct_helper(quote! {
                 #[no_mangle]
                 pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
                     unsafe { (*ptr).#field_name.clone() }
                 }
-            });
+            }));
         } else {
-            out.extend(quote! {
+            out.extend(guard_struct_helper(quote! {
                 #[no_mangle]
                 pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
                     unsafe { (*ptr).#field_name }
                 }
-            });
+            }));
         }
-        out.extend(quote! {
-            #[no_mangle]
-            pub extern "C" fn #setter(ptr: *mut #struct_name, value: #field_ty) {
-                unsafe { (*ptr).#field_name = value; }
-            }
-        });
+        out.extend(struct_field_setter(
+            struct_name,
+            field_name,
+            field_ty,
+            &setter,
+            &[],
+        ));
     }
 
     if model.derives.iter().any(|d| d == "Clone") {
         meta.has_clone = true;
         let clone_name = format_ident!("{}_clone", stem);
-        out.extend(quote! {
+        out.extend(guard_struct_helper(quote! {
             #[no_mangle]
             pub extern "C" fn #clone_name(ptr: *const #struct_name) -> *mut #struct_name {
                 unsafe { Box::into_raw(Box::new((*ptr).clone())) }
             }
-        });
+        }));
     }
 
     for m in &local {

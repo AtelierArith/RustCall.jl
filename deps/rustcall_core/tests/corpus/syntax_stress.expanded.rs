@@ -23,6 +23,9 @@ pub extern "C" fn rustcall_const_expression_take_panic(
     __RUSTCALL_PANIC_RUSTCALL_CONST_EXPRESSION
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -98,6 +101,9 @@ pub extern "C" fn rustcall_raw_braces_take_panic(out: *mut u8, cap: usize) -> us
     __RUSTCALL_PANIC_RUSTCALL_RAW_BRACES
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();
@@ -194,6 +200,9 @@ pub extern "C" fn rustcall_cfg_disabled_take_panic(out: *mut u8, cap: usize) -> 
     __RUSTCALL_PANIC_RUSTCALL_CFG_DISABLED
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();

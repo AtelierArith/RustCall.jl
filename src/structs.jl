@@ -371,6 +371,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 # that owns it is still loaded.
                 free_ptr::Ptr{Cvoid}
                 alive::Base.RefValue{Bool}
+                free_channel::Ptr{Cvoid}
 
                 # The destructor and the flag are handed in by the call that
                 # allocated `ptr`, from that call's own snapshot: resolving
@@ -379,8 +380,9 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 # image with another image's `free` (#249, #277).
                 function $where_clause(ptr::Ptr{Cvoid}, lib::String,
                                        free_ptr::Ptr{Cvoid},
-                                       alive::Base.RefValue{Bool}) where {$(esc_T_params...)}
-                    obj = new{$(esc_T_params...)}(ptr, lib, free_ptr, alive)
+                                       alive::Base.RefValue{Bool},
+                                       free_channel::Ptr{Cvoid} = C_NULL) where {$(esc_T_params...)}
+                    obj = new{$(esc_T_params...)}(ptr, lib, free_ptr, alive, free_channel)
                     finalizer(RustCall.finalize_rust_object!, obj)
                     return obj
                 end
@@ -389,7 +391,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 function $where_clause(ptr::Ptr{Cvoid}, lib::String) where {$(esc_T_params...)}
                     gen = RustCall.generic_struct_generation_snapshot(
                         $generic_free_name, ($(esc_T_params...),), lib)
-                    return $esc_struct{$(esc_T_params...)}(ptr, lib, gen.free_ptr, gen.alive)
+                    return $esc_struct{$(esc_T_params...)}(ptr, lib, gen.free_ptr, gen.alive, gen.free_channel)
                 end
             end
         end)
@@ -430,7 +432,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                                  $wrapper_name, $struct_name_str,
                                  ($(esc_args...),), ($(esc_T_params...),))
                              return $esc_struct{$(esc_T_params...)}(ptr_val, lib_val,
-                                                                    gen.free_ptr, gen.alive)
+                                                                    gen.free_ptr, gen.alive, gen.free_channel)
                          end
                      end)
                  end
@@ -529,6 +531,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             lib_name::String
             free_ptr::Ptr{Cvoid}
             alive::Base.RefValue{Bool}
+            free_channel::Ptr{Cvoid}
 
             # The one that matters: the destructor and the liveness flag are
             # handed in by the caller, taken from the *same* snapshot as the
@@ -537,8 +540,9 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             # between would bind a pointer from the retired image to the
             # replacement's destructor (#249, #277).
             function $esc_struct(ptr::Ptr{Cvoid}, lib::String,
-                                 free_ptr::Ptr{Cvoid}, alive::Base.RefValue{Bool})
-                obj = new(ptr, lib, free_ptr, alive)
+                                 free_ptr::Ptr{Cvoid}, alive::Base.RefValue{Bool},
+                                 free_channel::Ptr{Cvoid} = C_NULL)
+                obj = new(ptr, lib, free_ptr, alive, free_channel)
                 finalizer(RustCall.finalize_rust_object!, obj)
                 return obj
             end
@@ -548,7 +552,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             # which is the best it can do.
             function $esc_struct(ptr::Ptr{Cvoid}, lib::String)
                 gen = RustCall.artifact_generation_snapshot(lib, $struct_stem)
-                return $esc_struct(ptr, lib, gen.free_ptr, gen.alive)
+                return $esc_struct(ptr, lib, gen.free_ptr, gen.alive, gen.free_channel)
             end
         end
     end)
@@ -582,7 +586,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         # that allocates, its panic channel, and the destructor
                         # and liveness flag the object will carry (#277).
                         ptr, tgt = GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...))
-                        return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)
+                        return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                     end
                 end)
             elseif m.return_kind === :result || m.return_kind === :option
@@ -672,7 +676,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                             # is bound to the generation that ran it, exactly
                             # like a constructor (#277).
                             res, tgt = GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...))
-                            return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive)
+                            return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                         else
                             return GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...))
                         end
@@ -766,6 +770,17 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
                     lib = self.lib_name
+                    field_info = $(QuoteNode(field_getters))
+                    if field_info[field][2] === :owned_string
+                        text = RustCall.ffi_string_argument(value, "value", setter_name)
+                        target = RustCall.resolve_call_target(lib, setter_name)
+                        GC.@preserve self text begin
+                            RustCall.guard_rust_panic_ptr(
+                                call_rust_function(target.func_ptr, Cvoid, self.ptr, pointer(text), Csize_t(ncodeunits(text))),
+                                target.channel, setter_name)
+                        end
+                        return value
+                    end
                     target = RustCall.resolve_call_target(lib, setter_name)
                     RustCall.guard_rust_panic_ptr(
                         GC.@preserve(self,
@@ -789,7 +804,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     # that cloned it (#277).
                     ptr, tgt = GC.@preserve self _call_rust_constructor(
                         self.lib_name, $clone_name, $struct_stem, self.ptr)
-                    return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)
+                    return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                 end
             end)
         end
@@ -956,14 +971,15 @@ function artifact_generation_snapshot(lib_name::AbstractString,
                                       struct_name::AbstractString)
     name = String(lib_name)
     symbol = ffi_struct_free_symbol(struct_name)
-    handle, cache, free_ptr, alive, generation = lock(REGISTRY_LOCK) do
+    channel_symbol = ffi_panic_symbol(symbol)
+    handle, cache, free_ptr, free_channel, alive, generation = lock(REGISTRY_LOCK) do
         alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
         generation = get(ARTIFACT_GENERATIONS, name, 0)
         entry = get(RUST_LIBRARIES, name, nothing)
-        entry === nothing && return (C_NULL, nothing, C_NULL, alive, generation)
+        entry === nothing && return (C_NULL, nothing, C_NULL, C_NULL, alive, generation)
         handle, cache = entry
         free_ptr = get(cache, symbol, C_NULL)
-        (handle, cache, free_ptr, alive, generation)
+        (handle, cache, free_ptr, get(cache, channel_symbol, nothing), alive, generation)
     end
     if handle != C_NULL && free_ptr == C_NULL
         found = try
@@ -979,7 +995,14 @@ function artifact_generation_snapshot(lib_name::AbstractString,
             end
         end
     end
-    return ArtifactGeneration(handle, free_ptr, alive, generation)
+    if handle != C_NULL && free_channel === nothing
+        found = Libdl.dlsym(handle, channel_symbol; throw_error = false)
+        free_channel = found === nothing ? C_NULL : found
+        lock(REGISTRY_LOCK) do
+            cache[channel_symbol] = free_channel
+        end
+    end
+    return ArtifactGeneration(handle, free_ptr, alive, generation, free_channel)
 end
 
 """
@@ -996,7 +1019,8 @@ The order is the contract:
 3. bail out if the library is gone: `unload_artifact!` flipped the captured
    liveness flag, and calling into a `dlclose`d image is a jump into freed
    text, which is worse than the leak;
-4. call the captured destructor, counting rather than logging a failure.
+4. call the captured destructor and immediately consume its captured panic
+   channel, counting rather than logging a failure.
 
 No lock, no lookup, no allocation on the success path.
 """
@@ -1007,8 +1031,13 @@ function finalize_rust_object!(x)
     getfield(x, :alive)[] || return nothing
     free_ptr = getfield(x, :free_ptr)
     free_ptr == C_NULL && return nothing
+    free_channel = hasfield(typeof(x), :free_channel) ? getfield(x, :free_channel) : C_NULL
     try
         ccall(free_ptr, Cvoid, (Ptr{Cvoid},), ptr)
+        if free_channel != C_NULL
+            failed = ccall(free_channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, typemax(Csize_t))
+            failed > 0 && Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
+        end
     catch
         Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
     end
@@ -1016,7 +1045,7 @@ function finalize_rust_object!(x)
 end
 
 """
-    _generic_struct_free_target(free_name, types) -> (free_ptr, lib_name, handle, generation)
+    _generic_struct_free_target(free_name, types) -> (free_ptr, lib_name, handle, generation, channel)
 
 The destructor of one instantiation of a generic `#[julia]` struct, resolved by
 monomorphizing it **at construction time**, together with the image it came
@@ -1032,7 +1061,7 @@ Not called directly by generated code: `generic_struct_generation_snapshot`
 pairs the pointer with the liveness flag of `handle` under one lock, which is
 the value a constructor may capture.
 
-`(C_NULL, "", C_NULL, 0)` when the generic destructor is not registered — a
+`(C_NULL, "", C_NULL, 0, C_NULL)` when the generic destructor is not registered — a
 struct whose `_free` wrapper the extractor did not emit.
 """
 function _generic_struct_free_target(free_name::AbstractString, types::Tuple)
@@ -1041,17 +1070,17 @@ function _generic_struct_free_target(free_name::AbstractString, types::Tuple)
         generic_info = lock(REGISTRY_LOCK) do
             get(GENERIC_FUNCTION_REGISTRY, name, nothing)
         end
-        generic_info === nothing && return (C_NULL, "", C_NULL, 0)
+        generic_info === nothing && return (C_NULL, "", C_NULL, 0, C_NULL)
         type_params = Dict{Symbol, Type}()
         for (i, p) in enumerate(generic_info.type_params)
             type_params[p] = types[i]
         end
         info = get_monomorphized_function(name, type_params)
         info === nothing && (info = monomorphize_function(name, type_params))
-        (info.func_ptr, info.lib_name, info.handle, info.generation)
+        (info.func_ptr, info.lib_name, info.handle, info.generation, info.channel)
     catch e
         @debug "Could not resolve the destructor of $(free_name)" exception = e
-        (C_NULL, "", C_NULL, 0)
+        (C_NULL, "", C_NULL, 0, C_NULL)
     end
 end
 
@@ -1072,13 +1101,13 @@ leaks rather than calling into unmapped memory.
 """
 function generic_struct_generation_snapshot(free_name::AbstractString, types::Tuple,
                                             fallback_lib::AbstractString)
-    free_ptr, free_lib, handle, generation = _generic_struct_free_target(free_name, types)
+    free_ptr, free_lib, handle, generation, free_channel = _generic_struct_free_target(free_name, types)
     name = isempty(free_lib) ? String(fallback_lib) : free_lib
     return lock(REGISTRY_LOCK) do
         free_ptr == C_NULL &&
             return ArtifactGeneration(C_NULL, C_NULL, _state_read(DEAD_ARTIFACT, identity), generation)
         return ArtifactGeneration(handle, free_ptr, alive_ref_for_handle(handle, name),
-                                  generation)
+                                  generation, free_channel)
     end
 end
 
@@ -1285,7 +1314,7 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     if free_info !== nothing && free_info.handle == handle && free_info.lib_name == lib_name
         gen = lock(REGISTRY_LOCK) do
             ArtifactGeneration(handle, free_info.func_ptr,
-                               alive_ref_for_handle(handle, lib_name), generation)
+                               alive_ref_for_handle(handle, lib_name), generation, free_info.channel)
         end
         return (ptr, lib_name, gen)
     end
@@ -1294,9 +1323,11 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
           (found = Libdl.dlsym(handle, free_symbol; throw_error = false);
            found === nothing ? C_NULL : found)
     if own != C_NULL
+        found = Libdl.dlsym(handle, ffi_panic_symbol(free_symbol); throw_error = false)
+        free_channel = found === nothing ? C_NULL : found
         gen = lock(REGISTRY_LOCK) do
             ArtifactGeneration(handle, own, alive_ref_for_handle(handle, lib_name),
-                               generation)
+                               generation, free_channel)
         end
         return (ptr, lib_name, gen)
     end
@@ -1359,10 +1390,9 @@ function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid
     end
 
     info = monomorphize_function(func_name, type_params)
-    # A `String` field getter returns an owned buffer (#242); other fields
-    # use the type resolved from the struct's parameters.
-    info.string_return === :none || return _call_monomorphized(info, ptr)
-    return call_rust_function(info.func_ptr, ret_type, ptr)
+    # The specialization owns both the return ABI and the panic channel,
+    # including for a primitive field in this legacy registration path.
+    return _call_monomorphized(info, ptr)
 end
 
 function _resolve_generic_struct_field_type(field_type::String, type_param_names, type_param_values::Tuple)

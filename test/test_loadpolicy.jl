@@ -553,7 +553,7 @@ end
         # A constructor allocates, so the object it returns is built from the
         # constructor's own snapshot — never from a second lookup afterwards.
         @test occursin("ptr, tgt = GC.@preserve", _src("structs.jl"))
-        @test occursin("\$esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive)",
+        @test occursin("\$esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)",
                        _src("structs.jl"))
         @test occursin("_ctor_target(", _src("crate_bindings.jl"))
         @test occursin("alive_ref_for_handle(", _src("structs.jl"))

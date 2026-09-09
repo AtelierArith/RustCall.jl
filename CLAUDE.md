@@ -182,6 +182,17 @@ A replaced image is **retired, not closed**, so a call already inside one stays 
 
 ## Testing
 
+Generated struct destructors use the shared Rust panic boundary. Constructor
+snapshots and generated objects capture the destructor's `free_channel` along
+with `free_ptr` and liveness from the same image. The finalizer calls free and
+then consumes that captured channel with `(out = C_NULL, cap = typemax(Csize_t))`
+before anything can yield, counting a failure without allocating a Julia
+message buffer. This reserved read discards the message; normal null/zero
+queries retain it for the usual message-reading path. Do not resolve a channel
+or take STATE inside a finalizer. `test_destructor_panics.jl` runs real panicking
+destructors in child processes, so a missing boundary fails instead of aborting
+the entire test worker.
+
 - Entry point: `test/runtests.jl` (includes 30+ test files)
 - Tests are organized by feature: ownership, arrays, generics, cargo, crate bindings, hot reload, etc.
 - `test/test_regressions.jl` holds regression tests for fixed issues

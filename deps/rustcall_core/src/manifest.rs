@@ -728,14 +728,22 @@ impl Struct {
         let mut out = Vec::new();
         // A generic struct exports nothing itself.
         if self.type_params.is_empty() {
-            out.push((format!("{}_free", self.ffi_name), who.clone()));
+            let free = crate::codegen::struct_free_symbol(&self.ffi_name);
+            out.push((crate::codegen::panic_symbol(&free), who.clone()));
+            out.push((free, who.clone()));
         }
         for field in &self.fields {
             for accessor in [&field.getter, &field.setter] {
                 if !accessor.is_empty() {
                     out.push((accessor.clone(), who.clone()));
+                    out.push((crate::codegen::panic_symbol(accessor), who.clone()));
                 }
             }
+        }
+        if self.has_clone {
+            let clone = format!("{}_clone", self.ffi_name);
+            out.push((crate::codegen::panic_symbol(&clone), who.clone()));
+            out.push((clone, who.clone()));
         }
         let mut buffers: Vec<String> = Vec::new();
         if self.has_owned_string_helper {
