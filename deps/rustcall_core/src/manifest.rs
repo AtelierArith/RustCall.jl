@@ -728,7 +728,9 @@ impl Struct {
         let mut out = Vec::new();
         // A generic struct exports nothing itself.
         if self.type_params.is_empty() {
-            out.push((format!("{}_free", self.ffi_name), who.clone()));
+            let free = crate::codegen::struct_free_symbol(&self.ffi_name);
+            out.push((crate::codegen::panic_symbol(&free), who.clone()));
+            out.push((free, who.clone()));
         }
         for field in &self.fields {
             for accessor in [&field.getter, &field.setter] {

@@ -560,6 +560,13 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
         pub extern "C" fn #reader(out: *mut u8, cap: usize) -> usize {
             #slot.with(|rustcall_slot| {
                 let mut rustcall_slot = rustcall_slot.borrow_mut();
+                // Finalizers only need a failure count, not its text. This
+                // reserved request consumes the channel without allocating a
+                // Julia message buffer or leaving a stale panic for a later
+                // call. Ordinary null/zero length queries still retain it.
+                if out.is_null() && cap == usize::MAX {
+                    return rustcall_slot.take().map_or(0, |message| message.len());
+                }
                 let rustcall_len = match rustcall_slot.as_ref() {
                     ::std::option::Option::Some(message) => {
                         let bytes = message.as_bytes();
@@ -1395,15 +1402,40 @@ fn crate_field_accessors(
     ffi_functions
 }
 
-fn crate_free_fn(struct_name: &Ident, stem: &Ident, cfgs: &[Attribute]) -> TokenStream2 {
+pub(crate) fn struct_free_wrapper(
+    struct_type: &syn::Path,
+    stem: &Ident,
+    cfgs: &[Attribute],
+) -> TokenStream2 {
     let free_fn_name = format_ident!("{}_free", stem);
-    quote! {
-        #(#cfgs)*
-        #[no_mangle]
-        pub extern "C" fn #free_fn_name(ptr: *mut #struct_name) {
+    // Unlike case folding, byte encoding keeps distinct struct names such as
+    // `C` and `c` distinct in the private TLS namespace as well.
+    let slot_suffix: String = free_fn_name
+        .to_string()
+        .bytes()
+        .map(|byte| format!("{byte:02X}"))
+        .collect();
+    let slot = format_ident!("__RUSTCALL_DROP_PANIC_{}", slot_suffix);
+    let reader = format_ident!("{}", panic_symbol(&free_fn_name.to_string()));
+    let channel = panic_channel(cfgs, &slot, &reader);
+    let body = guarded_body(
+        &format!("{}::drop", path_tail(struct_type)),
+        &slot,
+        &quote! {},
+        quote! {
             if !ptr.is_null() {
                 unsafe { drop(Box::from_raw(ptr)); }
             }
+        },
+        quote! {},
+        true,
+    );
+    quote! {
+        #channel
+        #(#cfgs)*
+        #[no_mangle]
+        pub extern "C" fn #free_fn_name(ptr: *mut #struct_type) {
+            #body
         }
     }
 }
@@ -1422,7 +1454,8 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String
     let stem = struct_stem(module_path, &item_struct.ident);
     // The struct's `#[cfg]` gates its helpers too (#300 review).
     let cfgs = cfg_attrs(&item_struct.attrs);
-    let free = crate_free_fn(&item_struct.ident, &stem, &cfgs);
+    let struct_name = &item_struct.ident;
+    let free = struct_free_wrapper(&syn::parse_quote!(#struct_name), &stem, &cfgs);
     let accessors = crate_field_accessors(&item_struct, &stem, &cfgs);
 
     quote! {
@@ -1778,15 +1811,11 @@ pub fn inline_struct_wrappers(
     let mut out = TokenStream2::new();
     let mut meta = InlineStructMeta::default();
 
-    let free_name = format_ident!("{}_free", stem);
-    out.extend(quote! {
-        #[no_mangle]
-        pub extern "C" fn #free_name(ptr: *mut #struct_name) {
-            if !ptr.is_null() {
-                unsafe { drop(Box::from_raw(ptr)); }
-            }
-        }
-    });
+    out.extend(struct_free_wrapper(
+        &syn::parse_quote!(#struct_name),
+        &stem,
+        &[],
+    ));
 
     let fields = model.named_fields();
     let accessible: Vec<&(Ident, Type)> = fields

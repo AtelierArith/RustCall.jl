@@ -293,15 +293,11 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
 
     // `<Struct>_free`, the destructor `RustCall.ffi_struct_free_symbol` names
     // from the manifest's `ffi_name` (#300).
-    let free = format_ident!("{}_free", s.ffi_name);
-    out.extend(quote! {
-        #[no_mangle]
-        pub extern "C" fn #free(ptr: *mut #class) {
-            if !ptr.is_null() {
-                unsafe { drop(Box::from_raw(ptr)); }
-            }
-        }
-    });
+    out.extend(crate::codegen::struct_free_wrapper(
+        &class,
+        &format_ident!("{}", s.ffi_name),
+        &[],
+    ));
 
     // The struct-level owned-string buffer, shared by every `String` field
     // getter (`RustCall._ffi_field_return` names it after the struct).

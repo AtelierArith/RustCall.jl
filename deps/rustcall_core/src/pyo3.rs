@@ -769,12 +769,19 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
         let name = s.ffi_name.clone();
         let s_cfg = s.cfg.clone();
+        let free = crate::codegen::struct_free_symbol(&s.ffi_name);
+        let free_symbols = [crate::codegen::panic_symbol(&free), free];
 
-        if let Some((_, owner, _)) = class_names
+        let class_conflict = class_names
             .iter()
             .find(|(n, _, c)| *n == name && cfg_clash(c, &s_cfg))
-        {
-            let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, &owner.clone());
+            .or_else(|| {
+                taken.iter().find(|(symbol, _, cfg)| {
+                    free_symbols.contains(symbol) && cfg_clash(cfg, &s_cfg)
+                })
+            });
+        if let Some((_, owner, _)) = class_conflict {
+            let reason = skip_reason::detailed(skip_reason::SYMBOL_COLLISION, owner);
             let s = &mut manifest.structs[i];
             s.skip_reason = reason.clone();
             for m in &mut s.methods {
@@ -795,6 +802,9 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         // `rustcall_C_set_x` — leave the method wrappable and drop the
         // accessor, rather than taking the whole class down.
         let owner = qualified(&s.module_path, &s.name);
+        for symbol in free_symbols {
+            taken.push((symbol, owner.clone(), s_cfg.clone()));
+        }
         let s = &mut manifest.structs[i];
         let class_name = s.ffi_name.clone();
         for m in &mut s.methods {
@@ -927,6 +937,11 @@ fn wrapper_symbols(symbol: &str) -> [String; 3] {
 /// struct-level owned-string helper its `String` getters share.
 fn struct_symbols(s: &Struct) -> Vec<String> {
     let mut out = Vec::new();
+    if s.type_params.is_empty() {
+        let free = crate::codegen::struct_free_symbol(&s.ffi_name);
+        out.push(crate::codegen::panic_symbol(&free));
+        out.push(free);
+    }
     for m in &s.methods {
         if m.skip_reason.is_empty() && !m.symbol.is_empty() {
             out.extend(wrapper_symbols(&m.symbol));

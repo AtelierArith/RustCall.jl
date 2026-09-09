@@ -205,6 +205,8 @@ by library name.**
   its result with the replacement's ABI — a scalar read as a struct, which is
   memory corruption rather than a wrong answer.
 - `generation` — which generation of `lib_name` all of the above came from.
+- `free_channel` — the release/destructor's panic channel from that same image,
+  captured before allocation so an object's finalizer never resolves it later.
 """
 struct CallTarget
     func_ptr::Ptr{Cvoid}
@@ -216,7 +218,12 @@ struct CallTarget
     return_type::Union{Type, Nothing}
     func_info::Union{FunctionInfo, Nothing}
     generation::Int
+    free_channel::Ptr{Cvoid}
 end
+
+CallTarget(func_ptr, channel, free_ptr, alive, handle, lib_name, return_type, func_info, generation) =
+    CallTarget(func_ptr, channel, free_ptr, alive, handle, lib_name, return_type, func_info,
+               generation, C_NULL)
 
 """
     ArtifactGeneration
@@ -224,7 +231,7 @@ end
 The per-object half of a snapshot: what a `#[julia]` struct captures at
 construction so its finalizer needs no lookup at all (#249).
 
-`free_ptr` and `alive` must come from **one** generation: taken separately, an
+`free_ptr`, `free_channel` and `alive` must come from **one** generation: taken separately, an
 object could capture the destructor of the image it was allocated by and the
 liveness flag of the image that replaced it, and would then either skip a free
 it should have made or make one into an image that had been closed.
@@ -234,7 +241,11 @@ struct ArtifactGeneration
     free_ptr::Ptr{Cvoid}
     alive::Base.RefValue{Bool}
     generation::Int
+    free_channel::Ptr{Cvoid}
 end
+
+ArtifactGeneration(handle, free_ptr, alive, generation) =
+    ArtifactGeneration(handle, free_ptr, alive, generation, C_NULL)
 
 """
     PANIC_CHANNELS

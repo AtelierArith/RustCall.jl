@@ -210,15 +210,31 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
         @test RustCall.compute_crate_hash(info; release = false) != hash1
 
         # The whole crate directory is an input, not just the scanned .rs files:
-        # a new file in the crate changes the key.
-        probe = joinpath(info.path, "rc278_probe.txt")
-        try
-            write(probe, "an input the scan never lists")
-            RustCall._artifact_reset_digest_caches!()
-            @test RustCall.compute_crate_hash(info) != hash1
-        finally
-            rm(probe; force = true)
-            RustCall._artifact_reset_digest_caches!()
+        # a new file in the crate changes the key. Never mutate the shared
+        # sample: another worker's precompile image tracks its directory, so
+        # even a temporary probe can invalidate an otherwise unchanged image.
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "isolated_hash_probe"
+                version = "0.1.0"
+                edition = "2021"
+                """)
+            write(joinpath(dir, "src", "lib.rs"), "pub fn value() -> i32 { 1 }\n")
+            isolated = RustCall.scan_crate(dir)
+            RustCall.compute_crate_hash(isolated) # materialize Cargo.lock
+            original = RustCall.compute_crate_hash(isolated)
+            probe = joinpath(dir, "rc278_probe.txt")
+            try
+                write(probe, "an input the scan never lists")
+                RustCall._artifact_reset_digest_caches!()
+                @test RustCall.compute_crate_hash(isolated) != original
+            finally
+                rm(probe; force = true)
+                RustCall._artifact_reset_digest_caches!()
+            end
+            @test RustCall.compute_crate_hash(isolated) == original
         end
         @test RustCall.compute_crate_hash(info) == hash1
     end
@@ -1205,9 +1221,11 @@ end
     @test occursin("GC.@preserve(self, __rustcall_str_name, _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
     # Constructors still return the boxed struct
     # A boxed-struct result is bound to the generation that allocated it: the
-    # destructor and the flag come from the constructor's own snapshot (#277).
-    @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)), free_ptr, alive)", code)
-    @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)), free_ptr, alive)", code)
+    # destructor, its panic channel and the flag come from the constructor's
+    # own snapshot (#277, #291).
+    @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)), free_ptr, alive, free_panic_channel)", code)
+    @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)), free_ptr, alive, free_panic_channel)", code)
+    @test occursin("func_ptr, panic_channel, free_ptr, alive, free_panic_channel = _ctor_target", code)
     @test occursin("_ctor_target(\"rustcall_Point_new\", \"Point_free\")", code)
     @test Meta.parse(code) isa Expr
 

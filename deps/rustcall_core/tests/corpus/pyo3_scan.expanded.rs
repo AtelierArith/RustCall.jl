@@ -145,6 +145,9 @@ pub extern "C" fn rustcall_dual_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_DUAL
         .with(|rustcall_slot| {
             let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
             let rustcall_len = match rustcall_slot.as_ref() {
                 ::std::option::Option::Some(message) => {
                     let bytes = message.as_bytes();

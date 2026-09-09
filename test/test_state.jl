@@ -189,6 +189,8 @@ end
         pub fn state_lookup_value() -> $type { $value }
         #[no_mangle]
         pub extern "C" fn state_lookup_release() {}
+        #[no_mangle]
+        pub extern "C" fn state_lookup_release_take_panic(_out: *mut u8, _cap: usize) -> usize { 0 }
         """
     old = RustCall._compile_and_load_rust(source("i32", "111"), "state_lookup", 1)
     replacement = RustCall._compile_and_load_rust(source("f64", "222.0"), "state_lookup", 1)
@@ -231,6 +233,7 @@ end
         @test RustCall.call_rust_function(target.func_ptr, Int32) == 111
         @test target.channel == RustCall.Libdl.dlsym(old_handle, "rustcall_state_lookup_value_take_panic")
         @test target.free_ptr == RustCall.Libdl.dlsym(old_handle, "state_lookup_release")
+        @test target.free_channel == RustCall.Libdl.dlsym(old_handle, "state_lookup_release_take_panic")
         current = RustCall.resolve_call_target(old, "state_lookup_value";
             free_symbol = "state_lookup_release")
         @test current.handle == replacement_handle
@@ -239,6 +242,8 @@ end
         @test RustCall._snapshot_return_type(current) === Float64
         @test RustCall.call_rust_function(current.func_ptr, Float64) == 222.0
         @test current.free_ptr == RustCall.Libdl.dlsym(replacement_handle, "state_lookup_release")
+        @test current.free_channel == RustCall.Libdl.dlsym(replacement_handle, "state_lookup_release_take_panic")
+        @test current.free_channel != target.free_channel
         @test current.generation == target.generation + 1
         RustCall.alias_artifact!(RustCall.inline_rustc_policy(), replacement, old)
         @test RustCall.resolve_call_target(old, "state_lookup_value").generation == current.generation

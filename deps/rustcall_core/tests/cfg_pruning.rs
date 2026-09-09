@@ -698,11 +698,14 @@ fn generated_struct_helpers_carry_the_struct_cfg() {
                 );
             }
             syn::Item::Struct(s) => assert!(has_cfg(&s.attrs), "`{}` lost its cfg", s.ident),
+            syn::Item::Macro(m) if m.mac.path.is_ident("thread_local") => {
+                assert!(has_cfg(&m.attrs), "the destructor panic slot lost its cfg");
+            }
             _ => {}
         }
     }
-    // free, get_v, set_v, get_label, set_label, free_rust_string
-    assert_eq!(fns, 6);
+    // free + its panic reader, get_v, set_v, get_label, set_label, free_rust_string
+    assert_eq!(fns, 7);
 
     let imp: syn::ItemImpl = syn::parse_str(
         "#[cfg(feature = \"x\")] impl C { #[julia] pub fn get(&self) -> i32 { self.v } }",
