@@ -258,7 +258,12 @@ fn function_wrapper(
         receiver: None,
         args,
         ret: plan.ret,
-        target: CallTarget::Free(item_path(krate, &f.module_path, &f.name)),
+        target: CallTarget::Free(callable_path(
+            krate,
+            &f.callable_path,
+            &f.module_path,
+            &f.name,
+        )),
         call_suffix: plan.call_suffix,
     });
 
@@ -288,7 +293,7 @@ fn function_wrapper(
 /// the build the wrapper is compiled against may not have it, and a call to a
 /// missing member is a compile error in generated code (#307 review).
 fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStream2 {
-    let class = item_path(krate, &s.module_path, &s.name);
+    let class = callable_path(krate, &s.callable_path, &s.module_path, &s.name);
     let mut out = TokenStream2::new();
 
     // `<Struct>_free`, the destructor `RustCall.ffi_struct_free_symbol` names
@@ -718,6 +723,13 @@ fn item_path(krate: &Ident, module_path: &[String], name: &str) -> syn::Path {
     }
     path.segments.push(format_ident!("{}", name).into());
     path
+}
+
+fn callable_path(krate: &Ident, route: &[String], module: &[String], name: &str) -> syn::Path {
+    match route.split_last() {
+        Some((name, module)) => item_path(krate, module, name),
+        None => item_path(krate, module, name),
+    }
 }
 
 fn symbol_ident(name: &str) -> Result<Ident, String> {

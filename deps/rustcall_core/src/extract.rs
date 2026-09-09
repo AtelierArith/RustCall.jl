@@ -232,6 +232,7 @@ pub fn function_entry(
         ""
     };
     Function {
+        callable_path: Vec::new(),
         name,
         ffi_name,
         symbol,
@@ -1243,6 +1244,7 @@ fn crate_struct_entry(
         })
         .collect();
     Struct {
+        callable_path: Vec::new(),
         cfg: predicate_string(&effective_cfg),
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
         name: model.name(),

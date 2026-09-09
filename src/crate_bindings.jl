@@ -870,7 +870,10 @@ function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_na
             @debug "Could not fingerprint the toolchain" exception = e
             recorded_toolchain
         end
-        now_toolchain == recorded_toolchain || push!(changed, "<Rust toolchain>")
+        if now_toolchain != recorded_toolchain
+            @debug "Generated crate toolchain mismatch" lib_name crate_path recorded_toolchain now_toolchain
+            push!(changed, "<Rust toolchain>")
+        end
     end
     isempty(changed) && return nothing
     message = """
@@ -959,6 +962,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         @debug "Could not record the toolchain fingerprint" exception = e
         ""
     end
+    @debug "Recording generated crate toolchain" lib_key toolchain
     crate_dir = abspath(String(info.path))
     # The effective Cargo configuration is chosen by `CARGO_HOME`, which is not
     # an allowlisted variable: its digest is what says whether the same build

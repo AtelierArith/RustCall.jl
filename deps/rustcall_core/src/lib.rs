@@ -18,6 +18,7 @@ pub mod extract;
 pub mod manifest;
 pub mod model;
 pub mod paths;
+pub mod public_routes;
 pub mod pyo3;
 pub mod specialize;
 pub mod types;

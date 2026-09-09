@@ -107,7 +107,10 @@ use serde::{Deserialize, Serialize};
 ///   never released and leaks, silently. `src/manifest.jl` validates exact
 ///   equality, so bumping the version is what makes such a consumer refuse the
 ///   manifest instead of using the wrong owner (#342 review).
-pub const SCHEMA_VERSION: u32 = 8;
+/// * **9** adds [`Function::callable_path`] and [`Struct::callable_path`]
+///   (#303): wrappers must call the externally reachable re-export instead
+///   of a canonical definition inside a private module.
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -424,6 +427,10 @@ pub struct Function {
     /// from it, and a consumer that lays items out per module keys on it.
     #[serde(default)]
     pub module_path: Vec<String>,
+    /// External Rust spelling, including the item name, when re-exported from
+    /// its canonical module. Empty means module_path + name (legacy manifests).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callable_path: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -643,6 +650,9 @@ pub struct Struct {
     /// Enclosing inline modules of the struct (see [`Function::module_path`]).
     #[serde(default)]
     pub module_path: Vec<String>,
+    /// External Rust spelling; canonical identity remains module_path + name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callable_path: Vec<String>,
 }
 
 /// A generic wrapper of a generic inline struct. In inline mode the wrapper is

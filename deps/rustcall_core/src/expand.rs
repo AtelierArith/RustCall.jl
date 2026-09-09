@@ -407,6 +407,7 @@ fn concrete_struct_entry(
     let stem = crate::codegen::symbol_stem(module_path, &model.name());
     let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &model.item.attrs);
     Struct {
+        callable_path: Vec::new(),
         cfg: predicate_string(&effective_cfg),
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
         name: model.name(),
@@ -479,6 +480,7 @@ fn generic_struct_entry(
     }
 
     Struct {
+        callable_path: Vec::new(),
         cfg: predicate_string(&effective_cfg),
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
         name: model.name(),

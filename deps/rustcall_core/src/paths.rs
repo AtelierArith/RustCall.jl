@@ -317,12 +317,19 @@ fn flatten_use_tree(
         }
         syn::UseTree::Name(name) => {
             let mut full = prefix.clone();
-            full.push(name.ident.to_string());
-            out.push((name.ident.to_string(), full, false));
+            let alias = if name.ident == "self" && !prefix.is_empty() {
+                prefix.last().unwrap().clone()
+            } else {
+                full.push(name.ident.to_string());
+                name.ident.to_string()
+            };
+            out.push((alias, full, false));
         }
         syn::UseTree::Rename(rename) => {
             let mut full = prefix.clone();
-            full.push(rename.ident.to_string());
+            if rename.ident != "self" || prefix.is_empty() {
+                full.push(rename.ident.to_string());
+            }
             out.push((rename.rename.to_string(), full, false));
         }
         syn::UseTree::Group(group) => {
