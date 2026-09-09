@@ -4,6 +4,112 @@ using Test
 
 struct NonCopyStatePayload{T} end
 
+@testset "method-local type parameters do not block a generic constructor" begin
+    rust"""
+    #[julia]
+    pub struct MethodLocalParam<T> { value: T }
+    impl<T> MethodLocalParam<T> {
+        pub fn new(value: T) -> Self { Self { value } }
+        pub fn map<U>(&self, value: U) -> U { value }
+        pub fn local_value(&self) -> T where T: Copy { self.value }
+    }
+    """
+    object = MethodLocalParam{Int32}(Int32(17))
+    try
+        @test Base.invokelatest(local_value, object) == 17
+        params = Dict{Symbol, Type}(:T => Int32)
+        ctor = RustCall.get_monomorphized_function("MethodLocalParam_new", params)
+        free = RustCall.get_monomorphized_function("MethodLocalParam_free", params)
+        @test ctor.handle == free.handle
+        @test getfield(object, :free_ptr) == free.func_ptr
+        @test !haskey(RustCall.GENERIC_STRUCT_ARTIFACTS[object.lib_name], "MethodLocalParam_map")
+    finally
+        finalize(object)
+    end
+end
+
+@testset "generic objects retain their method generation across registration reload (#291)" begin
+    rust"""
+    #[julia]
+    pub struct GenerationStableBox<T> { value: T }
+    impl<T> GenerationStableBox<T> {
+        pub fn new(value: T) -> Self { Self { value } }
+        pub fn stable_stamp(&self) -> i32 { 111 }
+        pub fn stable_label(&self) -> String { "generation 111".to_string() }
+        pub fn stable_boom(&self) -> i32 { panic!("generation 111") }
+    }
+    """
+    old = GenerationStableBox{Int32}(Int32(7))
+    @test Base.invokelatest(stable_stamp, old) == 111
+    members = filter(info -> info.group === Symbol("generic_struct:GenerationStableBox"),
+                     collect(values(RustCall.GENERIC_FUNCTION_REGISTRY)))
+    @test !isempty(members)
+    stop = Threads.Atomic{Bool}(false)
+    readers = Task[]
+    objects = Any[old]
+    before = RustCall.finalizer_failure_count()
+    try
+        if Threads.nthreads() > 1
+            for _ in 1:3
+                push!(readers, Threads.@spawn begin
+                    valid = true
+                    calls = 0
+                    while !stop[]
+                        valid &= Base.invokelatest(stable_stamp, old) == 111
+                        calls += 1
+                        yield()
+                    end
+                    (valid, calls)
+                end)
+            end
+        end
+        for version in (222, 333)
+            replacements = [RustCall.GenericFunctionInfo(
+                info.name, replace(info.code, "111" => string(version)), info.type_params,
+                info.constraints, info.context, info.arg_types, info.return_type,
+                info.path, info.compiler, info.blocked, info.group) for info in members]
+            lock(RustCall.REGISTRY_LOCK) do
+                for info in replacements
+                    RustCall.GENERIC_FUNCTION_REGISTRY[info.name] = info
+                end
+            end
+            current = GenerationStableBox{Int32}(Int32(version))
+            push!(objects, current)
+            @test Base.invokelatest(stable_stamp, current) == version
+            @test current.lib_name != old.lib_name
+            @test Base.invokelatest(stable_stamp, old) == 111
+            @test Base.invokelatest(stable_label, old) == "generation 111"
+            error = try
+                Base.invokelatest(stable_boom, old)
+                nothing
+            catch caught
+                caught
+            end
+            @test error isa RustCall.RustPanicError
+            @test occursin("generation 111", sprint(showerror, error))
+            original_free = RustCall._generic_artifact_member(old.lib_name, "GenerationStableBox_free")
+            @test original_free.func_ptr == getfield(old, :free_ptr)
+        end
+    finally
+        stop[] = true
+        for reader in readers
+            valid, calls = fetch(reader)
+            @test valid
+            @test calls > 0
+        end
+        for object in objects
+            finalize(object)
+        end
+        lock(RustCall.REGISTRY_LOCK) do
+            for info in members
+                RustCall.GENERIC_FUNCTION_REGISTRY[info.name] = info
+            end
+        end
+    end
+    @test RustCall.finalizer_failure_count() == before
+    @test_throws RustCall.RustError Base.invokelatest(stable_stamp, old)
+end
+
 @testset "generic methods with stronger bounds do not block construction" begin
     rust"""
     #[derive(Default)]

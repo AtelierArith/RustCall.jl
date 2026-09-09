@@ -201,6 +201,32 @@ code. So `close = true` says two things at once — "no call is in flight" and
 A REPL session editing Rust in a loop never needs any of this. A long-running
 process that reloads thousands of times, or a test harness, does.
 
+#### Reclamation cost assessment (#291)
+
+The current decision is to retain explicit reclamation, not impose a shared
+reader counter on every FFI call. `benchmark/benchmarks_retirement.jl` compares
+the same cached Rust call with and without two atomic read-modify-write
+operations, and checks results and the final zero reader count. Run it with
+`julia --threads=4 --project benchmark/benchmarks_retirement.jl`.
+
+An illustrative local run on 2026-09-09 (Darwin x86_64, Julia 1.12.7,
+rustc 1.98.0) measured these medians over 20 batches, with 50,000 calls per worker:
+
+| Workers | Cached call | Shared reader counter |
+|---|---:|---:|
+| 1 | 4.45 ns/completed call | 20.74 ns/completed call |
+| 4 | 0.85 ns/completed call | 37.08 ns/completed call |
+
+These are wall-time throughput costs, not concurrent per-call latencies or a
+prediction for a real application's workload. The shared counter contends when
+workers call the same image. This is only a lower-bound cost probe, **not a safe
+reclamation protocol**: publication/recheck ordering and live-object lifetime
+pins are still required. An image with no active calls may still own an object
+whose destructor must run later. Epoch or hazard-pointer designs can have
+different costs; this measurement does not rule them out. Automatic reclamation
+would need a complete protocol and workload-level evidence before replacing
+the explicit quiescence contract above.
+
 ### The allocator contract
 
 An allocation made by one library must be released by **that same library**. A

@@ -842,6 +842,36 @@ fn symbol_collision_losers_do_not_reserve_aggregate_names() {
     assert!(manifest.structs[0].skip_reason.is_empty());
 }
 
+#[test]
+fn aggregate_exclusions_release_symbols_for_other_owners() {
+    for (ret, body) in [("i32", "1"), ("Option<i32>", "Some(1)")] {
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn f() -> PyResult<i32> {{ Ok(1) }}
+             #[pyfunction] pub fn CResult_f() -> i32 {{ 1 }}
+             #[pyclass] pub struct CResult {{ pub value: i32 }}
+             #[pymethods] impl CResult {{ pub fn f(&self) -> {ret} {{ {body} }} }}
+             #[pyclass] pub struct COption_CResult_f {{ pub value: i32 }}"
+        ));
+        assert_eq!(function(&manifest, "f").skip_reason, "");
+        assert_eq!(
+            function(&manifest, "CResult_f").skip_reason,
+            "julia_name_collision:CResult_f"
+        );
+        let class = manifest
+            .structs
+            .iter()
+            .find(|s| s.name == "CResult")
+            .unwrap();
+        assert!(class.methods[0].skip_reason.is_empty());
+        let reserved = manifest
+            .structs
+            .iter()
+            .find(|s| s.name == "COption_CResult_f")
+            .unwrap();
+        assert_eq!(reserved.skip_reason.is_empty(), ret == "i32");
+    }
+}
+
 /// A plain type alias is another way a PyO3 impl can name its class (#303).
 #[test]
 fn a_type_alias_disambiguates_a_pymethods_target() {

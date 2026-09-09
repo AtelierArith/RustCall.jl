@@ -449,11 +449,15 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
     // types. An owner skipped by a class or an earlier method emits no ABI
     // aggregate and must not take a valid class's name with it.
     mark_julia_surface_collisions_pass(manifest, None);
-    mark_symbol_collisions(manifest);
     let owners = manifest.clone();
+    mark_symbol_collisions(manifest);
     loop {
         let mut next = owners.clone();
         mark_julia_surface_collisions_pass(&mut next, Some(manifest));
+        // A symbol winner may have just lost its Julia name to an aggregate.
+        // Re-evaluate symbol ownership too, so it cannot leave permanent
+        // tombstones on methods that are now safe to emit.
+        mark_symbol_collisions(&mut next);
         if next == *manifest {
             return;
         }

@@ -436,6 +436,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                  # result points into the Rust object (#242 review).
                  push!(exprs, quote
                      function $fname(self::$where_clause, $(esc_args...)) where {$(esc_T_params...)}
+                         RustCall.check_not_freed(self, $struct_name_str)
                          GC.@preserve self begin
                              _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),))
                          end
@@ -1253,14 +1254,17 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     # Resolve that cached wrapper first so the object captures the same image
     # and allocator; the legacy symbol lookup remains a compatibility fallback
     # for hand-registered generic functions (#291).
-    free_info = try
-        free_name = "$(struct_name)_free"
-        generic_free = GENERIC_FUNCTION_REGISTRY[free_name]
-        free_params = Dict{Symbol, Type}(p => types[i]
-                                         for (i, p) in enumerate(generic_free.type_params))
-        monomorphize_function(free_name, free_params)
-    catch
-        nothing
+    free_name = ffi_struct_free_symbol(struct_name)
+    free_info = _generic_artifact_member(lib_name, free_name)
+    if free_info === nothing
+        free_info = try
+            generic_free = GENERIC_FUNCTION_REGISTRY[free_name]
+            free_params = Dict{Symbol, Type}(p => types[i]
+                                             for (i, p) in enumerate(generic_free.type_params))
+            monomorphize_function(free_name, free_params)
+        catch
+            nothing
+        end
     end
     if free_info !== nothing && free_info.handle == handle && free_info.lib_name == lib_name
         gen = lock(REGISTRY_LOCK) do
@@ -1309,6 +1313,8 @@ function _generic_constructor_call(func_name::String, args::Tuple, types::Tuple)
 end
 
 function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple)
+    original = _generic_artifact_member(lib_name, func_name)
+    original === nothing || return _call_monomorphized(original, ptr, args...)
     generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
     param_names = generic_info.type_params
 
@@ -1326,6 +1332,8 @@ function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoi
 end
 
 function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple)
+    original = _generic_artifact_member(lib_name, func_name)
+    original === nothing || return _call_monomorphized(original, ptr)
     generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
     param_names = generic_info.type_params
 

@@ -110,6 +110,23 @@ machine code (#247).
 const MONOMORPHIZED_FUNCTIONS = _state_view(:monomorphized_functions,
     Dict{String, FunctionInfo}())
 
+# An object's image is immutable even after the source registration changes.
+# Keep original wrapper names alongside the compiled snapshots, indexed by
+# artifact identity, so methods never specialize against a newer layout.
+const GENERIC_STRUCT_ARTIFACTS = _state_view(:generic_struct_artifacts,
+    Dict{String, Dict{String, FunctionInfo}}())
+
+function _generic_artifact_member(lib_name::String, func_name::String)
+    lock(REGISTRY_LOCK) do
+        members = get(GENERIC_STRUCT_ARTIFACTS, lib_name, nothing)
+        members === nothing && return nothing
+        info = get(members, func_name, nothing)
+        info === nothing && throw(RustError(
+            "Generic member '$func_name' is unavailable in the object's image '$lib_name'"))
+        return info
+    end
+end
+
 """
     _monomorphization_id(generic_info, func_name, type_params, compiler) -> ArtifactId
 
@@ -410,6 +427,11 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
         target === nothing && error("Function '$func_name' is not registered in generic struct group '$group'")
         target_info = members[target]
         type_values = Type[type_params[p] for p in target_info.type_params]
+        # A method may add its own generic parameters after the struct's.
+        # Constructing S<T> does not bind map<U>'s U: leave that wrapper out
+        # of this instantiation instead of indexing beyond type_values
+        # while merely assembling the group's cache keys.
+        members = filter(info -> length(info.type_params) <= length(type_values), members)
         params_for(info) = Dict{Symbol, Type}(p => type_values[i]
                                               for (i, p) in enumerate(info.type_params))
         first_info = first(members)
@@ -474,6 +496,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
         artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager)
 
         compiled = Dict{String, FunctionInfo}()
+        named_members = Dict{String, FunctionInfo}()
         for (info, sp) in zip(members, specialized.functions)
             func_ptr = Libdl.dlsym(artifact.handle, sp.symbol; throw_error = false)
             (func_ptr === nothing || func_ptr == C_NULL) &&
@@ -514,6 +537,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
                 FunctionInfo(sp.symbol, lib_name, ret_type, arg_types, func_ptr,
                              sp.arg_abis, string_return, free_ptr, channel,
                              artifact.handle, artifact.generation)
+            named_members[info.name] = compiled[member_keys[info.name]]
         end
         return lock(REGISTRY_LOCK) do
             cached = get(MONOMORPHIZED_FUNCTIONS, member_keys[func_name], nothing)
@@ -521,6 +545,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             for (key, info) in compiled
                 MONOMORPHIZED_FUNCTIONS[key] = info
             end
+            GENERIC_STRUCT_ARTIFACTS[lib_name] = named_members
             MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
         end
     end
