@@ -72,6 +72,9 @@ jobs:
           # Python"). Only SampleCratePyO3Only.jl and
           # RustCrateMacroPyO3Only.jl read it.
           PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+          # Compare precompile/runtime fingerprint components for the
+          # reproducible toolchain mismatch in this example (#363).
+          JULIA_DEBUG: ${{ matrix.package == 'RustCrateMacroPyO3Only.jl' && 'RustCall' || '' }}
         run: >
           julia --color=yes --project=examples/${{ matrix.package }} -e '
             using Pkg

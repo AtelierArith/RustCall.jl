@@ -9,6 +9,15 @@ use crate::paths::{imports_of_use, visible_from, ScannedImport};
 
 type Path = Vec<String>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Namespace {
+    Type,
+    Value,
+}
+
+type RouteKey = (Namespace, Path);
+type Visiting = BTreeSet<(Namespace, Path, String)>;
+
 #[derive(Clone, Debug)]
 struct Definition {
     visibility: Visibility,
@@ -37,7 +46,7 @@ pub struct PublicRoute {
 
 #[derive(Clone, Default, Debug)]
 pub struct PublicRoutes {
-    definitions: BTreeMap<Path, Vec<Definition>>,
+    definitions: BTreeMap<RouteKey, Vec<Definition>>,
     imports: Vec<Import>,
     names: BTreeSet<String>,
 }
@@ -45,7 +54,7 @@ pub struct PublicRoutes {
 impl PublicRoutes {
     /// Resolve within one cfg variant. A public module in a mutually exclusive
     /// variant must not grant access to the private copy at the same path.
-    pub fn resolve_for(&self, cfg: &str) -> BTreeMap<Path, PublicRoute> {
+    pub fn resolve_for(&self, cfg: &str) -> BTreeMap<RouteKey, PublicRoute> {
         let compatible = |predicates: &BTreeSet<String>| {
             !predicates
                 .iter()
@@ -82,14 +91,39 @@ impl PublicRoutes {
                 self.names.insert(name.to_string());
                 path.push(name.to_string());
                 let effective = crate::cfg::effective_cfg_attrs(cfg, attrs);
+                let namespace = match item {
+                    Item::Fn(_) | Item::Const(_) | Item::Static(_) => Namespace::Value,
+                    _ => Namespace::Type,
+                };
                 self.definitions
-                    .entry(path.clone())
+                    .entry((namespace, path.clone()))
                     .or_default()
                     .push(Definition {
                         visibility: visibility.clone(),
                         module: is_module,
                         predicates: predicates(&effective),
                     });
+                if let Item::Struct(v) = item {
+                    if !matches!(v.fields, syn::Fields::Named(_)) {
+                        let constructor_visibility = if v
+                            .fields
+                            .iter()
+                            .all(|f| matches!(f.vis, Visibility::Public(_)))
+                        {
+                            visibility.clone()
+                        } else {
+                            Visibility::Inherited
+                        };
+                        self.definitions
+                            .entry((Namespace::Value, path.clone()))
+                            .or_default()
+                            .push(Definition {
+                                visibility: constructor_visibility,
+                                module: false,
+                                predicates: predicates(&effective),
+                            });
+                    }
+                }
                 if let Item::Mod(v) = item {
                     if let Some((_, items)) = &v.content {
                         self.file(items, &path, &effective);
@@ -120,17 +154,18 @@ impl PublicRoutes {
         &self,
         module: &[String],
         name: &str,
+        namespace: Namespace,
         observer: Option<&[String]>,
-        visiting: &mut BTreeSet<(Path, String)>,
+        visiting: &mut Visiting,
     ) -> BTreeSet<Target> {
-        let key = (module.to_vec(), name.to_string());
+        let key = (namespace, module.to_vec(), name.to_string());
         if !visiting.insert(key.clone()) {
             return BTreeSet::new();
         }
         let mut path = module.to_vec();
         path.push(name.to_string());
         let mut result = BTreeSet::new();
-        let direct = self.definitions.get(&path);
+        let direct = self.definitions.get(&(namespace, path.clone()));
         let explicit: Vec<_> = self
             .imports
             .iter()
@@ -148,23 +183,28 @@ impl PublicRoutes {
                 }
             }
         }
+        let mut named_present = direct.is_some();
         for import in &explicit {
+            let targets = self.import_target(import, namespace, visiting);
+            named_present |= !targets.is_empty();
             if accessible(&import.visibility, module, observer) {
-                for mut target in self.import_target(import, visiting) {
+                for mut target in targets {
                     target.predicates.extend(import.predicates.clone());
                     result.insert(target);
                 }
             }
         }
         // Named bindings shadow globs even when the named binding is private.
-        if direct.is_none() && explicit.is_empty() {
+        if !named_present {
             for import in self.imports.iter().filter(|v| {
                 v.binding.module_path == module
                     && v.binding.glob
                     && accessible(&v.visibility, module, observer)
             }) {
-                for source in self.import_target(import, visiting) {
-                    for mut target in self.name(&source.path, name, Some(module), visiting) {
+                for source in self.import_target(import, Namespace::Type, visiting) {
+                    for mut target in
+                        self.name(&source.path, name, namespace, Some(module), visiting)
+                    {
                         target.predicates.extend(source.predicates.clone());
                         target.predicates.extend(import.predicates.clone());
                         result.insert(target);
@@ -179,7 +219,8 @@ impl PublicRoutes {
     fn import_target(
         &self,
         import: &Import,
-        visiting: &mut BTreeSet<(Path, String)>,
+        namespace: Namespace,
+        visiting: &mut Visiting,
     ) -> BTreeSet<Target> {
         let binding = &import.binding;
         let mut qualifier = binding.qualifier.clone();
@@ -193,12 +234,21 @@ impl PublicRoutes {
                 path: Vec::new(),
                 predicates: BTreeSet::new(),
             }]);
-            for segment in path {
+            for (index, segment) in path.iter().enumerate() {
+                let segment_namespace = if index + 1 == path.len() {
+                    namespace
+                } else {
+                    Namespace::Type
+                };
                 let mut next = BTreeSet::new();
                 for parent in targets {
-                    for mut target in
-                        self.name(&parent.path, &segment, Some(&binding.module_path), visiting)
-                    {
+                    for mut target in self.name(
+                        &parent.path,
+                        segment,
+                        segment_namespace,
+                        Some(&binding.module_path),
+                        visiting,
+                    ) {
                         target.predicates.extend(parent.predicates.clone());
                         next.insert(target);
                     }
@@ -215,7 +265,7 @@ impl PublicRoutes {
     /// Select a deterministic externally reachable spelling for each canonical
     /// item. Ambiguous names are never chosen. Module cycles are traversed once
     /// per route, so re-export loops cannot grow paths indefinitely.
-    pub fn resolve(&self) -> BTreeMap<Path, PublicRoute> {
+    pub fn resolve(&self) -> BTreeMap<RouteKey, PublicRoute> {
         let mut result = BTreeMap::new();
         let mut queue =
             VecDeque::from([(Vec::new(), Vec::new(), BTreeSet::new(), BTreeSet::new())]);
@@ -224,47 +274,51 @@ impl PublicRoutes {
                 continue;
             }
             for name in &self.names {
-                let targets = self.name(&module, name, None, &mut BTreeSet::new());
-                if targets
-                    .iter()
-                    .map(|v| &v.path)
-                    .collect::<BTreeSet<_>>()
-                    .len()
-                    != 1
-                {
-                    continue;
-                }
-                for target in targets {
-                    let Some(definitions) = self.definitions.get(&target.path) else {
-                        continue;
-                    };
-                    if !definitions
+                for namespace in [Namespace::Type, Namespace::Value] {
+                    let targets = self.name(&module, name, namespace, None, &mut BTreeSet::new());
+                    if targets
                         .iter()
-                        .any(|v| matches!(v.visibility, Visibility::Public(_)))
+                        .map(|v| &v.path)
+                        .collect::<BTreeSet<_>>()
+                        .len()
+                        != 1
                     {
                         continue;
                     }
-                    let mut path = prefix.clone();
-                    path.push(name.clone());
-                    let mut predicates = inherited.clone();
-                    predicates.extend(target.predicates);
-                    let candidate = PublicRoute {
-                        path: path.clone(),
-                        predicates: predicates.clone(),
-                    };
-                    let rank = |route: &PublicRoute| {
-                        (route.predicates.len(), route.path.len(), route.path.clone())
-                    };
-                    result
-                        .entry(target.path.clone())
-                        .and_modify(|current| {
-                            if rank(&candidate) < rank(current) {
-                                *current = candidate.clone();
-                            }
-                        })
-                        .or_insert(candidate);
-                    if definitions.iter().any(|v| v.module) {
-                        queue.push_back((target.path, path, predicates, ancestors.clone()));
+                    for target in targets {
+                        let Some(definitions) =
+                            self.definitions.get(&(namespace, target.path.clone()))
+                        else {
+                            continue;
+                        };
+                        if !definitions
+                            .iter()
+                            .any(|v| matches!(v.visibility, Visibility::Public(_)))
+                        {
+                            continue;
+                        }
+                        let mut path = prefix.clone();
+                        path.push(name.clone());
+                        let mut predicates = inherited.clone();
+                        predicates.extend(target.predicates);
+                        let candidate = PublicRoute {
+                            path: path.clone(),
+                            predicates: predicates.clone(),
+                        };
+                        let rank = |route: &PublicRoute| {
+                            (route.predicates.len(), route.path.len(), route.path.clone())
+                        };
+                        result
+                            .entry((namespace, target.path.clone()))
+                            .and_modify(|current| {
+                                if rank(&candidate) < rank(current) {
+                                    *current = candidate.clone();
+                                }
+                            })
+                            .or_insert(candidate);
+                        if definitions.iter().any(|v| v.module) {
+                            queue.push_back((target.path, path, predicates, ancestors.clone()));
+                        }
                     }
                 }
             }
@@ -295,10 +349,46 @@ mod tests {
         let file = syn::parse_file(source).unwrap();
         let mut routes = PublicRoutes::default();
         routes.file(&file.items, &[], &[]);
-        routes.resolve()
+        routes
+            .resolve()
+            .into_iter()
+            .map(|((_, path), route)| (path, route))
+            .collect()
     }
     fn path(value: &str) -> Path {
         value.split("::").map(String::from).collect()
+    }
+
+    #[test]
+    fn canonical_type_and_value_keep_independent_routes() {
+        let file = syn::parse_file("mod hidden { pub struct Thing { pub value: i32 } pub fn Thing() {} } pub use hidden::*; pub use hidden::Thing as Z; pub fn Thing() {}").unwrap();
+        let mut scan = PublicRoutes::default();
+        scan.file(&file.items, &[], &[]);
+        let routes = scan.resolve();
+        assert_eq!(
+            routes[&(Namespace::Type, path("hidden::Thing"))].path,
+            path("Thing")
+        );
+        assert_eq!(
+            routes[&(Namespace::Value, path("hidden::Thing"))].path,
+            path("Z")
+        );
+    }
+
+    #[test]
+    fn a_named_type_does_not_shadow_a_glob_value() {
+        let file = syn::parse_file("mod types { pub struct Thing { pub value: i32 } } mod values { pub fn Thing() {} } pub use types::Thing; pub use values::*;").unwrap();
+        let mut scan = PublicRoutes::default();
+        scan.file(&file.items, &[], &[]);
+        let routes = scan.resolve();
+        assert_eq!(
+            routes[&(Namespace::Type, path("types::Thing"))].path,
+            path("Thing")
+        );
+        assert_eq!(
+            routes[&(Namespace::Value, path("values::Thing"))].path,
+            path("Thing")
+        );
     }
 
     #[test]

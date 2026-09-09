@@ -36,6 +36,9 @@ function _public_route_wrapper303(file_module)
         write(joinpath(root, "src", "lib.rs"), module_source * raw"""
             mod bridge { pub use crate::hidden::Counter as PublicCounter; }
             pub use bridge::*;
+            // Rust permits this value beside the re-exported type. It must
+            // not make the class's type-namespace route ambiguous.
+            #[allow(non_snake_case)] pub fn PublicCounter() -> i32 { 99 }
             pub use hidden::calculate as public_calculate;
             pub use hidden::calculate as _;
             pub use hidden::api as public_api;

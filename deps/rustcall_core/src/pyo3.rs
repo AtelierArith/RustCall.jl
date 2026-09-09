@@ -399,7 +399,9 @@ impl Pyo3Scan {
             let routes = route_cache
                 .entry(function.cfg.clone())
                 .or_insert_with(|| self.routes.resolve_for(&function.cfg));
-            if let Some(route) = routes.get(&canonical) {
+            if let Some(route) =
+                routes.get(&(crate::public_routes::Namespace::Value, canonical.clone()))
+            {
                 if function.skip_reason == skip_reason::NOT_PUBLIC {
                     if let Some(intrinsic) = self.intrinsic_skips.get(&(
                         function.module_path.clone(),
@@ -422,7 +424,9 @@ impl Pyo3Scan {
             let routes = route_cache
                 .entry(class.entry.cfg.clone())
                 .or_insert_with(|| self.routes.resolve_for(&class.entry.cfg));
-            if let Some(route) = routes.get(&canonical) {
+            if let Some(route) =
+                routes.get(&(crate::public_routes::Namespace::Type, canonical.clone()))
+            {
                 if class.entry.skip_reason == skip_reason::NOT_PUBLIC {
                     class.entry.skip_reason = item_skip_reason(
                         &class.visibility,

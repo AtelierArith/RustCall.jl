@@ -178,6 +178,7 @@ function toolchain_fingerprint()
                 "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
             ]
             fingerprint = bytes2hex(sha256(join(parts, "\n")))
+            @debug "Computed RustCall toolchain fingerprint" fingerprint parts
             # A fingerprint computed without a usable toolchain describes
             # nothing that could have been compiled; never memoize it.
             identified || return fingerprint

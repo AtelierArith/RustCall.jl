@@ -1,6 +1,29 @@
 use rustcall_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
 
 #[test]
+fn public_class_and_unrelated_same_named_value_are_not_ambiguous() {
+    let scanned = extract(
+        r#"
+        mod hidden {
+            #[pyclass] pub struct Thing { #[pyo3(get, set)] pub value: i32 }
+            #[pymethods] impl Thing { #[new] pub fn new() -> Self { Self { value: 42 } } }
+        }
+        pub use hidden::Thing;
+        pub fn Thing() -> i32 { 99 }
+    "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let class = &scanned.structs[0];
+    assert!(class.skip_reason.is_empty());
+    assert_eq!(class.callable_path, ["Thing"]);
+    assert!(!class.fields[0].getter.is_empty());
+    assert!(class.methods[0].skip_reason.is_empty());
+    let wrapped = wrapper_crate(&scanned, "user_crate", true);
+    assert!(wrapped.lib_rs.contains("user_crate::Thing::new()"));
+}
+
+#[test]
 fn public_alias_restores_only_supported_field_accessors() {
     for options in ["", "get_all, set_all", "get_all, frozen"] {
         let definition = format!(
