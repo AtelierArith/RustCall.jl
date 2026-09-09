@@ -511,6 +511,13 @@ mod tests {
         assert!(!result.contains_key(&(Namespace::Type, path("hidden::C"))));
         // The alias is type-only, so it must not shadow the tuple constructor.
         assert!(result.contains_key(&(Namespace::Value, path("hidden::C"))));
+        // A leading `::` is rooted in the extern prelude, never in a local
+        // same-named module. The alias remains a named definition so it also
+        // shadows the local glob.
+        let result = routes(
+            "mod dep { pub struct C { pub value: i32 } } pub use dep::*; pub type C = ::dep::C;",
+        );
+        assert!(!result.contains_key(&path("dep::C")));
     }
 
     #[test]

@@ -272,6 +272,11 @@ pub fn import_of_type_alias(item: &ItemType, module_path: &[String]) -> Option<S
     let Type::Path(path) = unparen(&item.ty) else {
         return None;
     };
+    // In Rust 2018, a leading `::` names an extern-prelude crate. It must not
+    // fall back to a same-named local module when resolving public routes.
+    if path.path.leading_colon.is_some() {
+        return None;
+    }
     path.qself.is_none().then(|| {
         let anchored: Vec<String> = path
             .path
