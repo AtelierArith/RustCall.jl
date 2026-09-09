@@ -1422,16 +1422,39 @@ fn crate_field_accessors(
                 }));
             }
             let setter_name = format_ident!("{}_set_{}", stem, field_name);
-            ffi_functions.extend(guard_struct_helper(quote! {
-                #(#cfgs)*
-                #[no_mangle]
-                pub extern "C" fn #setter_name(ptr: *mut #struct_name, value: #field_ty) {
-                    unsafe { (*ptr).#field_name = value; }
-                }
-            }));
+            ffi_functions.extend(struct_field_setter(
+                struct_name,
+                field_name,
+                field_ty,
+                &setter_name,
+                cfgs,
+            ));
         }
     }
     ffi_functions
+}
+
+fn struct_field_setter(
+    owner: &Ident,
+    field: &Ident,
+    ty: &Type,
+    setter: &Ident,
+    cfgs: &[Attribute],
+) -> TokenStream2 {
+    let value = format_ident!("value");
+    let (args, conversion) = if is_string_type(ty) {
+        string_arg_conversion(&value, ty, &["ptr".into()])
+    } else {
+        (vec![quote! { value: #ty }], None)
+    };
+    guard_struct_helper(quote! {
+        #(#cfgs)*
+        #[no_mangle]
+        pub extern "C" fn #setter(ptr: *mut #owner, #(#args),*) {
+            #conversion
+            unsafe { (*ptr).#field = value; }
+        }
+    })
 }
 
 pub(crate) fn struct_free_wrapper(
@@ -1937,12 +1960,13 @@ pub fn inline_struct_wrappers(
                 }
             }));
         }
-        out.extend(guard_struct_helper(quote! {
-            #[no_mangle]
-            pub extern "C" fn #setter(ptr: *mut #struct_name, value: #field_ty) {
-                unsafe { (*ptr).#field_name = value; }
-            }
-        }));
+        out.extend(struct_field_setter(
+            struct_name,
+            field_name,
+            field_ty,
+            &setter,
+            &[],
+        ));
     }
 
     if model.derives.iter().any(|d| d == "Clone") {

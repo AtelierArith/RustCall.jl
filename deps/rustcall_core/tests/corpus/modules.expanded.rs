@@ -447,10 +447,18 @@ pub mod a {
             })
     }
     #[no_mangle]
-    pub extern "C" fn a__C_set_label(ptr: *mut C, value: String) {
+    pub extern "C" fn a__C_set_label(
+        ptr: *mut C,
+        value_ptr: *const u8,
+        value_len: usize,
+    ) {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 {
+                    let value = unsafe {
+                        let slice = std::slice::from_raw_parts(value_ptr, value_len);
+                        String::from_utf8_lossy(slice).into_owned()
+                    };
                     unsafe {
                         (*ptr).label = value;
                     }

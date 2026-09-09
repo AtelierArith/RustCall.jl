@@ -1937,10 +1937,18 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
                             self_ptr_expr, value_expr)
     name = String(setter_symbol)
     c = _ffi_field_return(info, field_name, field_type)
-    if ffi_owned_string_return(c) || ffi_borrowed_string_return(c)
-        # A `String` field's setter takes the text itself, as a C string the
-        # wrapper copies; the contract has no single-slot spelling for it and
-        # there is nothing to convert.
+    if ffi_owned_string_return(c)
+        # Match the wrapper's byte pointer/length input; never pass Rust String
+        # by value or truncate an embedded NUL through a C string.
+        return quote
+            let text = RustCall.ffi_string_argument($value_expr, "value", $name),
+                (fp, channel) = _call_target($name)
+                GC.@preserve text begin
+                    _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, pointer(text), Csize_t(ncodeunits(text))), channel, $name)
+                end
+            end
+        end
+    elseif ffi_borrowed_string_return(c)
         return quote
             let (fp, channel) = _call_target($name)
                 _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, $value_expr), channel, $name)
@@ -1966,8 +1974,10 @@ function _crate_field_write_source(info::RustStructInfo, field_name::AbstractStr
                                    self_ptr::String, value::String; strict::Symbol = FFI_STRICT[])
     target = "(fp, channel) = _call_target(\"$setter_symbol\")"
     c = _ffi_field_return(info, field_name, field_type)
-    if ffi_owned_string_return(c) || ffi_borrowed_string_return(c)
-        # As in `_crate_field_write`: a string setter takes the text itself.
+    if ffi_owned_string_return(c)
+        return "let text = RustCall.ffi_string_argument($value, \"value\", \"$setter_symbol\"), $target; " *
+               "GC.@preserve text begin _guard_panic(call_rust_function(fp, Cvoid, $self_ptr, pointer(text), Csize_t(ncodeunits(text))), channel, \"$setter_symbol\"); end; end"
+    elseif ffi_borrowed_string_return(c)
         return "let $target; _guard_panic(call_rust_function(fp, Cvoid, $self_ptr, $value), channel, \"$setter_symbol\"); end"
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),

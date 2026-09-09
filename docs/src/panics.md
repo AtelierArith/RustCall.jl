@@ -244,6 +244,22 @@ different costs; this measurement does not rule them out. Automatic reclamation
 would need a complete protocol and workload-level evidence before replacing
 the explicit quiescence contract above.
 
+#### Build configuration probe cost (#291)
+
+The Cargo cfg probe is no longer memoized: `build.rs` can read inputs that a
+RustCall cache key cannot enumerate. `benchmark/benchmarks_cfg_probe.jl` measures
+the cost on an isolated dependency-free crate and checks that changing a file
+read by `build.rs` changes the next probe result without editing the script.
+Run it with `julia --project benchmark/benchmarks_cfg_probe.jl`.
+
+A local Darwin x86_64 / Julia 1.12.7 run on 2026-09-09 measured a 0.725 s first
+probe, a 0.075 s median over ten unchanged probes (range 0.073–0.108 s), and
+1.650 s after changing the build-script input. The first measurement includes
+Julia compilation; the changed-input measurement includes Cargo rebuild work.
+These are illustrative small-crate costs, not bounds for dependency-heavy
+workspaces. The probe happens during loading/building, not on each FFI call;
+the current decision accepts that cost to avoid a stale build configuration.
+
 ### The allocator contract
 
 An allocation made by one library must be released by **that same library**. A

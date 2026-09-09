@@ -5,6 +5,66 @@ use rustcall_core::{
 };
 
 #[test]
+fn string_setters_copy_byte_pairs_in_both_flavours() {
+    for flavour in ["inline", "crate"] {
+        let declaration = if flavour == "inline" {
+            expand("#[julia] pub struct Text { pub value: String }")
+                .unwrap()
+                .source
+        } else {
+            transform_struct_crate(
+                syn::parse_quote! {
+                    pub struct Text { pub value: String }
+                },
+                &[],
+            )
+            .to_string()
+        };
+        let source = format!(
+            r#"
+            #![allow(non_snake_case)]
+            {declaration}
+            fn main() {{
+                let mut object = Text {{ value: String::new() }};
+                for value in ["日本語\0末尾", "", "replacement"] {{
+                    Text_set_value(&mut object, value.as_ptr(), value.len());
+                    assert_eq!(object.value, value);
+                    assert_eq!(Text_set_value_take_panic(std::ptr::null_mut(), 0), 0);
+                }}
+            }}
+        "#
+        );
+        let dir = std::env::temp_dir().join(format!(
+            "rustcall_string_setter_{}_{flavour}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("probe.rs");
+        let binary = dir.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&input, source).unwrap();
+        let compile = Command::new("rustc")
+            .args(["--edition=2021", "-C", "panic=unwind"])
+            .arg(&input)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "{flavour}: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = Command::new(&binary).output().unwrap();
+        assert!(
+            run.status.success(),
+            "{flavour}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
 fn accessor_channels_are_reserved() {
     let source = r#"
         #[julia] pub struct rustcall_Fields { pub value: i32 }

@@ -770,6 +770,17 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
                     lib = self.lib_name
+                    field_info = $(QuoteNode(field_getters))
+                    if field_info[field][2] === :owned_string
+                        text = RustCall.ffi_string_argument(value, "value", setter_name)
+                        target = RustCall.resolve_call_target(lib, setter_name)
+                        GC.@preserve self text begin
+                            RustCall.guard_rust_panic_ptr(
+                                call_rust_function(target.func_ptr, Cvoid, self.ptr, pointer(text), Csize_t(ncodeunits(text))),
+                                target.channel, setter_name)
+                        end
+                        return value
+                    end
                     target = RustCall.resolve_call_target(lib, setter_name)
                     RustCall.guard_rust_panic_ptr(
                         GC.@preserve(self,

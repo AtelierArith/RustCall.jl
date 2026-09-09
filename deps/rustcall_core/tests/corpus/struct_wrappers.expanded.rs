@@ -223,10 +223,18 @@ pub extern "C" fn Greeter_set_name_take_panic(out: *mut u8, cap: usize) -> usize
         })
 }
 #[no_mangle]
-pub extern "C" fn Greeter_set_name(ptr: *mut Greeter, value: String) {
+pub extern "C" fn Greeter_set_name(
+    ptr: *mut Greeter,
+    value_ptr: *const u8,
+    value_len: usize,
+) {
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             {
+                let value = unsafe {
+                    let slice = std::slice::from_raw_parts(value_ptr, value_len);
+                    String::from_utf8_lossy(slice).into_owned()
+                };
                 unsafe {
                     (*ptr).name = value;
                 }

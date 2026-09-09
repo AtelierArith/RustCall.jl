@@ -1,6 +1,55 @@
 using RustCall
 using Test
 
+@testset "String field setters use byte pairs (#291)" begin
+    scope = Module(gensym(:StringSetter291))
+    Core.eval(scope, :(using RustCall))
+    source = raw"""
+        #[julia] pub struct TextSetter291 { pub text: String }
+        #[julia] impl TextSetter291 {
+            pub fn new() -> Self { Self { text: String::new() } }
+        }
+        """
+    lib = Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+    object = Base.invokelatest(Base.invokelatest(getfield, scope, :TextSetter291))
+    info = RustCall.RustStructInfo(
+        "TextSetter291", String[], RustCall.RustMethod[], "",
+        [("text", "String")], true, Dict{String, Bool}();
+        field_abis = Dict("text" => "string"), has_owned_string_helper = true)
+    try
+        Core.eval(scope, quote
+            import RustCall: call_rust_function
+            const library = $lib
+            function _call_target(name)
+                target = RustCall.resolve_call_target(library, name)
+                (target.func_ptr, target.channel)
+            end
+            _guard_panic(value, channel, name) = RustCall.guard_rust_panic_ptr(value, channel, name)
+        end)
+        for flavour in (:inline, :ast, :source)
+            if flavour !== :inline
+                body = flavour === :ast ?
+                    RustCall._crate_field_write(info, "text", "String", "TextSetter291_set_text", :ptr, :value) :
+                    Meta.parse(RustCall._crate_field_write_source(info, "text", "String", "TextSetter291_set_text", "ptr", "value"))
+                Core.eval(scope, :(function set_text(ptr, value); $body; end))
+            end
+            setter(value) = flavour === :inline ?
+                Base.invokelatest(setproperty!, object, :text, value) :
+                GC.@preserve object Base.invokelatest(Base.invokelatest(getfield, scope, :set_text), getfield(object, :ptr), value)
+            for text in ("日本語\0末尾", "", "replacement")
+                setter(text)
+                @test Base.invokelatest(getproperty, object, :text) == text
+            end
+            @test_throws RustCall.RustError setter(String(UInt8[0xff]))
+            @test Base.invokelatest(getproperty, object, :text) == "replacement"
+        end
+    finally
+        finalize(object)
+        RustCall.unload_library(lib; close = true)
+        RustCall.close_retired_handles!(RustCall.retired_handles(lib))
+    end
+end
+
 @testset "both crate field emitters propagate panic channels (#291)" begin
     # The Rust tests exercise panicking Clone/Drop in generated accessors.
     # Here real guarded Rust functions stand in for accessor symbols so every
