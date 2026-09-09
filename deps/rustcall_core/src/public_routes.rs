@@ -30,6 +30,7 @@ struct Import {
     binding: ScannedImport,
     visibility: Visibility,
     predicates: BTreeSet<String>,
+    namespace: Option<Namespace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,6 +178,7 @@ impl PublicRoutes {
                         binding,
                         visibility: v.vis.clone(),
                         predicates: predicates(&crate::cfg::effective_cfg_attrs(cfg, &v.attrs)),
+                        namespace: None,
                     });
                 }
             }
@@ -188,6 +190,7 @@ impl PublicRoutes {
                             binding,
                             visibility: v.vis.clone(),
                             predicates: predicates(&crate::cfg::effective_cfg_attrs(cfg, &v.attrs)),
+                            namespace: Some(Namespace::Type),
                         });
                     }
                 }
@@ -215,7 +218,10 @@ impl PublicRoutes {
             .imports
             .iter()
             .filter(|v| {
-                v.binding.module_path == module && !v.binding.glob && v.binding.alias == name
+                v.binding.module_path == module
+                    && !v.binding.glob
+                    && v.binding.alias == name
+                    && v.namespace.is_none_or(|candidate| candidate == namespace)
             })
             .collect();
         if let Some(definitions) = direct {
@@ -232,9 +238,13 @@ impl PublicRoutes {
         // scanned module tree and cannot be resolved here. Treating only a
         // successfully resolved import as present can expose a same-named
         // glob item under a path Rust actually binds to something else.
-        let named_present = direct.is_some() || !explicit.is_empty();
+        let mut named_present = direct.is_some()
+            || explicit
+                .iter()
+                .any(|import| import.namespace == Some(namespace));
         for import in &explicit {
             let targets = self.import_target(import, namespace, visiting);
+            named_present |= !targets.is_empty();
             if accessible(&import.visibility, module, observer) {
                 for mut target in targets {
                     target.predicates.extend(import.predicates.clone());
@@ -492,10 +502,15 @@ mod tests {
         );
         // The alias is still a named binding when its target is not one of the
         // scanner's definitions. It shadows the glob just as rustc does.
-        assert!(
-            !routes("mod hidden { pub struct C; } pub use hidden::*; pub type C = i32;")
-                .contains_key(&path("hidden::C"))
-        );
+        let file =
+            syn::parse_file("mod hidden { pub struct C; } pub use hidden::*; pub type C = i32;")
+                .unwrap();
+        let mut scan = PublicRoutes::default();
+        scan.file(&file.items, &[], &[]);
+        let result = scan.resolve();
+        assert!(!result.contains_key(&(Namespace::Type, path("hidden::C"))));
+        // The alias is type-only, so it must not shadow the tuple constructor.
+        assert!(result.contains_key(&(Namespace::Value, path("hidden::C"))));
     }
 
     #[test]
