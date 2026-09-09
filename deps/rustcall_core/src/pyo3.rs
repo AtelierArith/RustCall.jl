@@ -864,12 +864,17 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                 if accessor.is_empty() {
                     continue;
                 }
+                let symbols = [accessor.clone(), crate::codegen::panic_symbol(accessor)];
                 match taken
                     .iter()
-                    .find(|(t, _, c)| t == accessor && cfg_clash(c, &s_cfg))
+                    .find(|(t, _, c)| symbols.contains(t) && cfg_clash(c, &s_cfg))
                 {
                     Some(_) => accessor.clear(),
-                    None => taken.push((accessor.clone(), owner.clone(), s_cfg.clone())),
+                    None => {
+                        for symbol in symbols {
+                            taken.push((symbol, owner.clone(), s_cfg.clone()));
+                        }
+                    }
                 }
             }
             if f.getter.is_empty() && f.setter.is_empty() {
@@ -956,9 +961,11 @@ fn struct_symbols(s: &Struct) -> Vec<String> {
     for f in &s.fields {
         if !f.getter.is_empty() {
             out.push(f.getter.clone());
+            out.push(crate::codegen::panic_symbol(&f.getter));
         }
         if !f.setter.is_empty() {
             out.push(f.setter.clone());
+            out.push(crate::codegen::panic_symbol(&f.setter));
         }
     }
     out

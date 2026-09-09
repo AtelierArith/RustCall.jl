@@ -1326,11 +1326,43 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
     })
 }
 
-/// `cfgs` is the struct's own `#[cfg]` set, copied onto every generated
-/// helper: inside a `#[julia] mod` the module macro expands a
-/// `#[cfg(feature = "x")] #[julia] pub struct C` before rustc evaluates the
-/// predicate, and a helper without it would refer to a struct that is gone
-/// when `x` is off (#300 review).
+/// Apply the common boundary to generated field/clone helpers. These helpers
+/// return only unit, primitives, raw pointers, owned-string buffers or Vec.
+/// In particular, Vec must use an empty vector, not an invalid zeroed value.
+pub(crate) fn guard_struct_helper(tokens: TokenStream2) -> TokenStream2 {
+    let mut function: ItemFn = syn::parse2(tokens).expect("generated struct helper is a function");
+    let symbol = &function.sig.ident;
+    let suffix: String = symbol
+        .to_string()
+        .bytes()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    let slot = format_ident!("__RUSTCALL_HELPER_PANIC_{}", suffix);
+    let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
+    let channel = panic_channel(&cfg_attrs(&function.attrs), &slot, &reader);
+    let (sentinel, unit) = match &function.sig.output {
+        ReturnType::Default => (quote! {}, true),
+        ReturnType::Type(_, ty) if matches!(unparen(ty), Type::Tuple(t) if t.elems.is_empty()) => {
+            (quote! {}, true)
+        }
+        ReturnType::Type(_, ty) if is_vec_type(ty) => (quote! { ::std::vec::Vec::new() }, false),
+        ReturnType::Type(_, ty) => (quote! { unsafe { ::std::mem::zeroed::<#ty>() } }, false),
+    };
+    let original = &function.block;
+    let body = guarded_body(
+        &symbol.to_string(),
+        &slot,
+        &quote! {},
+        quote! { #original },
+        sentinel,
+        unit,
+    );
+    function.block = syn::parse_quote!({ #body });
+    quote! { #channel #function }
+}
+
+/// Copy the struct's cfg onto every accessor and its channel, including when
+/// a module macro expands the struct before rustc evaluates the predicate.
 fn crate_field_accessors(
     item_struct: &ItemStruct,
     stem: &Ident,
@@ -1358,7 +1390,7 @@ fn crate_field_accessors(
                 // owned `(ptr, len, cap)` buffer the caller hands back to
                 // `<Struct>_free_rust_string`, exactly as the inline flavour
                 // and the string-returning method wrappers do (#246).
-                ffi_functions.extend(quote! {
+                ffi_functions.extend(guard_struct_helper(quote! {
                     #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #owned_helper {
@@ -1371,32 +1403,32 @@ fn crate_field_accessors(
                         std::mem::forget(rustcall_bytes);
                         rustcall_ret
                     }
-                });
+                }));
             } else if needs_clone_for_getter(field_ty) {
-                ffi_functions.extend(quote! {
+                ffi_functions.extend(guard_struct_helper(quote! {
                     #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name.clone() }
                     }
-                });
+                }));
             } else {
-                ffi_functions.extend(quote! {
+                ffi_functions.extend(guard_struct_helper(quote! {
                     #(#cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name }
                     }
-                });
+                }));
             }
             let setter_name = format_ident!("{}_set_{}", stem, field_name);
-            ffi_functions.extend(quote! {
+            ffi_functions.extend(guard_struct_helper(quote! {
                 #(#cfgs)*
                 #[no_mangle]
                 pub extern "C" fn #setter_name(ptr: *mut #struct_name, value: #field_ty) {
                     unsafe { (*ptr).#field_name = value; }
                 }
-            });
+            }));
         }
     }
     ffi_functions
@@ -1877,7 +1909,7 @@ pub fn inline_struct_wrappers(
             setter.to_string(),
         ));
         if is_string_type(field_ty) {
-            out.extend(quote! {
+            out.extend(guard_struct_helper(quote! {
                 #[no_mangle]
                 pub extern "C" fn #getter(ptr: *const #struct_name) -> #owned_helper {
                     let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
@@ -1889,39 +1921,39 @@ pub fn inline_struct_wrappers(
                     std::mem::forget(rustcall_bytes);
                     rustcall_ret
                 }
-            });
+            }));
         } else if is_vec_type(field_ty) {
-            out.extend(quote! {
+            out.extend(guard_struct_helper(quote! {
                 #[no_mangle]
                 pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
                     unsafe { (*ptr).#field_name.clone() }
                 }
-            });
+            }));
         } else {
-            out.extend(quote! {
+            out.extend(guard_struct_helper(quote! {
                 #[no_mangle]
                 pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
                     unsafe { (*ptr).#field_name }
                 }
-            });
+            }));
         }
-        out.extend(quote! {
+        out.extend(guard_struct_helper(quote! {
             #[no_mangle]
             pub extern "C" fn #setter(ptr: *mut #struct_name, value: #field_ty) {
                 unsafe { (*ptr).#field_name = value; }
             }
-        });
+        }));
     }
 
     if model.derives.iter().any(|d| d == "Clone") {
         meta.has_clone = true;
         let clone_name = format_ident!("{}_clone", stem);
-        out.extend(quote! {
+        out.extend(guard_struct_helper(quote! {
             #[no_mangle]
             pub extern "C" fn #clone_name(ptr: *const #struct_name) -> *mut #struct_name {
                 unsafe { Box::into_raw(Box::new((*ptr).clone())) }
             }
-        });
+        }));
     }
 
     for m in &local {

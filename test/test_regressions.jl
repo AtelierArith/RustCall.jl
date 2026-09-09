@@ -1347,16 +1347,18 @@ end
         @test c.ownership === :owned_by_rust
         @test c.free_symbol == "Rc246Counter_free_rust_string"
 
-        # Both crate-path generators read it through the owned-buffer helper and
-        # release it through the contract's symbol. On `main` this branch read
+        # Both crate-path generators check the raw buffer's panic channel before
+        # copying it and release it through the contract's symbol. Previously this branch read
         # `call_rust_function(ptr, Any, ...)` and leaked.
         emitted = RustCall._emit_struct_code(info)
-        @test occursin("_call_rust_owned_string_ptr", emitted)
+        @test occursin("_guard_panic(call_rust_function(fp, RustCall.CRustString", emitted)
+        @test occursin("RustCall._take_owned_string(raw, freep)", emitted)
         @test occursin("Rc246Counter_free_rust_string", emitted)
         @test !occursin("call_rust_function(func_ptr, Any", emitted)
 
         generated = string(RustCall._generate_property_accessors(info))
-        @test occursin("_call_rust_owned_string_ptr", generated)
+        @test occursin("_guard_panic(call_rust_function(fp, RustCall.CRustString", generated)
+        @test occursin("RustCall._take_owned_string(raw, freep)", generated)
         @test occursin("Rc246Counter_free_rust_string", generated)
 
         # A plain field is unaffected.

@@ -118,6 +118,7 @@ jobs:
         run: |
           julia --threads=4 --check-bounds=yes --project test/test_state.jl
           julia --threads=4 --check-bounds=yes --project test/test_hot_reload_transaction.jl
+          julia --threads=4 --check-bounds=yes --project test/test_generic_reload.jl
       - uses: julia-actions/julia-runtest@v1
         env:
           JULIA_NUM_THREADS: ${{ matrix.threads }}

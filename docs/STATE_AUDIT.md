@@ -29,6 +29,22 @@ helper must not be moved into a caller's outer transaction. The internal
 
 ## Mechanical and runtime checks
 
+The acceptance criteria of #251 map to the following checks. The snapshot
+extension in #362 also captures destructor panic readers outside STATE; its
+cold-lookup regression checks the old and replacement channels independently.
+
+| Acceptance criterion | Evidence to verify on the PR head |
+| --- | --- |
+| No independent module-level mutable registry | `the mutable runtime registry lives in one Lockable state (#251)` in `test_state.jl`, plus `scripts/lint_state_container.sh` |
+| Four-thread, bounds-checked concurrent compilation, calls, cache hits and reload | CI's `Bounds-checked state and mixed reload stress` step; `inline compile, calls and cache hits overlap reloads (#251)` in `test_hot_reload_transaction.jl` |
+| Documented lock ordering and no FFI/user callbacks under STATE | `RustCallState` docstring, the transaction audit above, AST transaction guard in `test_state.jl`, and the named callback/cold-resolution regressions in the table |
+
+The same CI step additionally runs `test_generic_reload.jl`: real Cargo
+reloads overlap calls and panics on retained generic objects, while new
+specializations and destructor counts are checked against their own images
+(#291). This complements, rather than substitutes for, the mixed compilation
+stress required by #251.
+
 - `test_state.jl` inspects actual module values, including nested containers,
   rather than recognizing only constructor spellings. Runtime registries and
   generated-module tables must be StateViews; immutable lookup tables remain

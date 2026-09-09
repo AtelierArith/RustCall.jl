@@ -639,26 +639,234 @@ pub extern "C" fn Point_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
         }
     }
 }
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F78 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_Point_get_x_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F78
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn rustcall_Point_get_x(ptr: *const user_crate::Point) -> f64 {
-    unsafe { (*ptr).x }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).x } } }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_Point_get_x", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F78
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<f64>() }
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F79 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_Point_get_y_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F79
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_get_y(ptr: *const user_crate::Point) -> f64 {
-    unsafe { (*ptr).y }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).y } } }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_Point_get_y", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F79
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<f64>() }
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F746167 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_Point_get_tag_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F746167
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_get_tag(
     ptr: *const user_crate::Point,
 ) -> Point_RustCallOwnedString {
-    let mut rustcall_bytes = unsafe { (*ptr).tag.clone().into_bytes() };
-    let rustcall_ret = Point_RustCallOwnedString {
-        ptr: rustcall_bytes.as_mut_ptr(),
-        len: rustcall_bytes.len(),
-        cap: rustcall_bytes.capacity(),
-    };
-    ::std::mem::forget(rustcall_bytes);
-    rustcall_ret
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                let mut rustcall_bytes = unsafe { (*ptr).tag.clone().into_bytes() };
+                let rustcall_ret = Point_RustCallOwnedString {
+                    ptr: rustcall_bytes.as_mut_ptr(),
+                    len: rustcall_bytes.len(),
+                    cap: rustcall_bytes.capacity(),
+                };
+                ::std::mem::forget(rustcall_bytes);
+                rustcall_ret
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_Point_get_tag", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F506F696E745F6765745F746167
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<Point_RustCallOwnedString>() }
+        }
+    }
 }
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_POINT_NEW : ::std::cell::RefCell <
@@ -1194,11 +1402,83 @@ pub extern "C" fn shapes__Circle_free(ptr: *mut user_crate::shapes::Circle) {
         }
     }
 }
+thread_local! {
+    static
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F7368617065735F5F436972636C655F6765745F72 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_shapes__Circle_get_r_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F7368617065735F5F436972636C655F6765745F72
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn rustcall_shapes__Circle_get_r(
     ptr: *const user_crate::shapes::Circle,
 ) -> f64 {
-    unsafe { (*ptr).r }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).r } } }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_shapes__Circle_get_r", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F7368617065735F5F436972636C655F6765745F72
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<f64>() }
+        }
+    }
 }
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_SHAPES__CIRCLE_NEW : ::std::cell::RefCell <
@@ -1437,17 +1717,162 @@ pub extern "C" fn GatedPoint_free(ptr: *mut user_crate::GatedPoint) {
         }
     }
 }
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4761746564506F696E745F6765745F78 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_GatedPoint_get_x_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4761746564506F696E745F6765745F78
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn rustcall_GatedPoint_get_x(ptr: *const user_crate::GatedPoint) -> f64 {
-    unsafe { (*ptr).x }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).x } } }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_GatedPoint_get_x", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4761746564506F696E745F6765745F78
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<f64>() }
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4761746564506F696E745F7365745F78 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_GatedPoint_set_x_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4761746564506F696E745F7365745F78
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn rustcall_GatedPoint_set_x(
     ptr: *mut user_crate::GatedPoint,
     value: f64,
 ) {
-    unsafe {
-        (*ptr).x = value;
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                unsafe {
+                    (*ptr).x = value;
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_GatedPoint_set_x", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4761746564506F696E745F7365745F78
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+        }
     }
 }
 thread_local! {

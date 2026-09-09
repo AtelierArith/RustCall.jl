@@ -99,36 +99,388 @@ pub struct Greeter_RustCallBorrowedString {
     pub ptr: *const u8,
     pub len: usize,
 }
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_477265657465725F6765745F6E616D65 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn Greeter_get_name_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_477265657465725F6765745F6E616D65
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn Greeter_get_name(ptr: *const Greeter) -> Greeter_RustCallOwnedString {
-    let mut rustcall_bytes = unsafe { (*ptr).name.clone().into_bytes() };
-    let rustcall_ret = Greeter_RustCallOwnedString {
-        ptr: rustcall_bytes.as_mut_ptr(),
-        len: rustcall_bytes.len(),
-        cap: rustcall_bytes.capacity(),
-    };
-    std::mem::forget(rustcall_bytes);
-    rustcall_ret
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                let mut rustcall_bytes = unsafe { (*ptr).name.clone().into_bytes() };
+                let rustcall_ret = Greeter_RustCallOwnedString {
+                    ptr: rustcall_bytes.as_mut_ptr(),
+                    len: rustcall_bytes.len(),
+                    cap: rustcall_bytes.capacity(),
+                };
+                std::mem::forget(rustcall_bytes);
+                rustcall_ret
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Greeter_get_name", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_477265657465725F6765745F6E616D65
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<Greeter_RustCallOwnedString>() }
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_477265657465725F7365745F6E616D65 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn Greeter_set_name_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_477265657465725F7365745F6E616D65
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn Greeter_set_name(ptr: *mut Greeter, value: String) {
-    unsafe {
-        (*ptr).name = value;
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                unsafe {
+                    (*ptr).name = value;
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Greeter_set_name", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_477265657465725F7365745F6E616D65
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+        }
     }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_477265657465725F6765745F766973697473 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn Greeter_get_visits_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_477265657465725F6765745F766973697473
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn Greeter_get_visits(ptr: *const Greeter) -> u32 {
-    unsafe { (*ptr).visits }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).visits } } }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Greeter_get_visits", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_477265657465725F6765745F766973697473
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<u32>() }
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_477265657465725F7365745F766973697473 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn Greeter_set_visits_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_477265657465725F7365745F766973697473
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn Greeter_set_visits(ptr: *mut Greeter, value: u32) {
-    unsafe {
-        (*ptr).visits = value;
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                unsafe {
+                    (*ptr).visits = value;
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Greeter_set_visits", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_477265657465725F7365745F766973697473
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+        }
     }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_477265657465725F636C6F6E65 : ::std::cell::RefCell <
+    ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn Greeter_clone_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_477265657465725F636C6F6E65
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn Greeter_clone(ptr: *const Greeter) -> *mut Greeter {
-    unsafe { Box::into_raw(Box::new((*ptr).clone())) }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            { unsafe { Box::into_raw(Box::new((*ptr).clone())) } }
+        }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Greeter_clone", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_477265657465725F636C6F6E65
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<*mut Greeter>() }
+        }
+    }
 }
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_GREETER_NEW : ::std::cell::RefCell <
@@ -844,14 +1196,153 @@ pub extern "C" fn Divider_free_rust_string(ptr: *mut u8, len: usize, cap: usize)
         }
     }
 }
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_446976696465725F6765745F7363616C65 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn Divider_get_scale_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_446976696465725F6765745F7363616C65
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
 #[no_mangle]
 pub extern "C" fn Divider_get_scale(ptr: *const Divider) -> i32 {
-    unsafe { (*ptr).scale }
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).scale } } }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Divider_get_scale", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_446976696465725F6765745F7363616C65
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe { ::std::mem::zeroed::<i32>() }
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_HELPER_PANIC_446976696465725F7365745F7363616C65 :
+    ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn Divider_set_scale_take_panic(out: *mut u8, cap: usize) -> usize {
+    __RUSTCALL_HELPER_PANIC_446976696465725F7365745F7363616C65
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
 }
 #[no_mangle]
 pub extern "C" fn Divider_set_scale(ptr: *mut Divider, value: i32) {
-    unsafe {
-        (*ptr).scale = value;
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                unsafe {
+                    (*ptr).scale = value;
+                }
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(_) => {}
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "Divider_set_scale", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_446976696465725F7365745F7363616C65
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+        }
     }
 }
 thread_local! {

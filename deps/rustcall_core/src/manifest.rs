@@ -736,8 +736,14 @@ impl Struct {
             for accessor in [&field.getter, &field.setter] {
                 if !accessor.is_empty() {
                     out.push((accessor.clone(), who.clone()));
+                    out.push((crate::codegen::panic_symbol(accessor), who.clone()));
                 }
             }
+        }
+        if self.has_clone {
+            let clone = format!("{}_clone", self.ffi_name);
+            out.push((crate::codegen::panic_symbol(&clone), who.clone()));
+            out.push((clone, who.clone()));
         }
         let mut buffers: Vec<String> = Vec::new();
         if self.has_owned_string_helper {

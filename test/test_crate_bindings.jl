@@ -890,7 +890,8 @@ end
 
         code = RustCall._emit_struct_code(info)
         @test occursin("_call_target(\"rustcall_Tagged_label\", \"Tagged_free_rust_string\")", code)
-        @test occursin("_call_rust_owned_string_ptr(fp, freep, getfield(self, :ptr))", code)
+        @test occursin("_guard_panic(call_rust_function(fp, RustCall.CRustString, getfield(self, :ptr)), channel,", code)
+        @test occursin("RustCall._take_owned_string(raw, freep)", code)
         # ...and never the two-lookup form it replaced.
         @test !occursin("_get_func_ptr(\"Tagged_free_rust_string\")", code)
         @test Meta.parse("module M\n" * code * "\nend") isa Expr

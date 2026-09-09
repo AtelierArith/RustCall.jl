@@ -84,7 +84,7 @@ the session outright) and the Cargo path took Cargo's default — the same
 | `#[julia]` item in a `@rust_crate` crate **with** `cdylib` | Cargo, **the user's** manifest | `RustPanicError`, unless their profile pins `panic = "abort"` |
 | raw `#[no_mangle] extern "C" fn` you wrote yourself | either | **abort** — RustCall generates no wrapper, so there is no boundary |
 | a panic inside `Drop`, called by a generated destructor | either, with unwinding enabled | caught; a Julia finalizer increments `finalizer_failure_count()` |
-| a panic in a generated field accessor | either | **abort** (remaining #291 work) |
+| a panic in a generated field accessor or clone helper | either, with unwinding enabled | `RustPanicError` |
 
 Cases that can still abort:
 
@@ -94,8 +94,12 @@ Cases that can still abort:
 * **A crate that pins `panic = "abort"`.** RustCall does not write that crate's
   manifest and will not override the profile of a crate it merely builds. If
   you want the boundary, remove the pin from the crate's `[profile.release]`.
-* **Generated field accessors.** These still have no panic boundary. Completing
-  their coverage is tracked in #291 separately from generated destructors.
+
+Generated field accessors and clone helpers use the same unwind boundary as
+method wrappers. Their channel is captured before the call, and Julia reads it
+before converting an owned or borrowed string result. A caught panic does not
+roll back side effects: if a setter panics while dropping the old field value,
+do not assume the object still contains its previous value.
 
 A second panic during Rust's unwind cleanup can still abort; `catch_unwind`
 does not make double-panicking destructors safe.

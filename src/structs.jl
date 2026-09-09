@@ -1379,10 +1379,9 @@ function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid
     end
 
     info = monomorphize_function(func_name, type_params)
-    # A `String` field getter returns an owned buffer (#242); other fields
-    # use the type resolved from the struct's parameters.
-    info.string_return === :none || return _call_monomorphized(info, ptr)
-    return call_rust_function(info.func_ptr, ret_type, ptr)
+    # The specialization owns both the return ABI and the panic channel,
+    # including for a primitive field in this legacy registration path.
+    return _call_monomorphized(info, ptr)
 end
 
 function _resolve_generic_struct_field_type(field_type::String, type_param_names, type_param_values::Tuple)

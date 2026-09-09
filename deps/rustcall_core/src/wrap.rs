@@ -343,7 +343,7 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
         if is_string_type(&ty) {
             if !f.getter.is_empty() {
                 let getter = format_ident!("{}", f.getter);
-                out.extend(quote! {
+                out.extend(crate::codegen::guard_struct_helper(quote! {
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #class) -> #owned_helper {
                         let mut rustcall_bytes = unsafe { (*ptr).#field.clone().into_bytes() };
@@ -355,7 +355,7 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
                         ::std::mem::forget(rustcall_bytes);
                         rustcall_ret
                     }
-                });
+                }));
             }
             // A `String` field is read by copying it out; writing one would
             // need the byte-pair ABI on a setter, which no accessor shape
@@ -371,21 +371,21 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
                 // Only `Copy` FFI types reach here: `String` has its own
                 // branch above and the scan gives a `Vec<T>` no accessor
                 // (no ABI for it on the Julia side yet, #303).
-                out.extend(quote! {
+                out.extend(crate::codegen::guard_struct_helper(quote! {
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #class) -> #ty {
                         unsafe { (*ptr).#field }
                     }
-                });
+                }));
             }
             if !f.setter.is_empty() {
                 let setter = format_ident!("{}", f.setter);
-                out.extend(quote! {
+                out.extend(crate::codegen::guard_struct_helper(quote! {
                     #[no_mangle]
                     pub extern "C" fn #setter(ptr: *mut #class, value: #ty) {
                         unsafe { (*ptr).#field = value; }
                     }
-                });
+                }));
             }
         }
     }

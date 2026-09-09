@@ -1893,21 +1893,31 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
                            field_type::AbstractString, getter_symbol::AbstractString,
                            self_ptr_expr)
     c = _ffi_field_return(info, field_name, field_type)
-    ptr_expr = :(_get_func_ptr($(String(getter_symbol))))
+    name = String(getter_symbol)
     if ffi_owned_string_return(c)
         # Getter and release function from one snapshot: separately resolved,
         # a reload between them freed the buffer through the wrong image (#277).
         return quote
-            let (fp, _, freep) = _call_target($(String(getter_symbol)), $(c.free_symbol))
-                _call_rust_owned_string_ptr(fp, freep, $self_ptr_expr)
+            let (fp, channel, freep) = _call_target($name, $(c.free_symbol))
+                raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr_expr), channel, $name)
+                RustCall._take_owned_string(raw, freep)
             end
         end
     elseif ffi_borrowed_string_return(c)
-        return :(_call_rust_borrowed_string_ptr($ptr_expr, $self_ptr_expr))
+        return quote
+            let (fp, channel) = _call_target($name)
+                raw = _guard_panic(call_rust_function(fp, RustCall.CRustStr, $self_ptr_expr), channel, $name)
+                RustCall._crust_str_to_julia(raw)
+            end
+        end
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type))
-    return :(call_rust_function($ptr_expr, $julia_type, $self_ptr_expr))
+    return quote
+        let (fp, channel) = _call_target($name)
+            _guard_panic(call_rust_function(fp, $julia_type, $self_ptr_expr), channel, $name)
+        end
+    end
 end
 
 """
@@ -1925,18 +1935,25 @@ conversion raises on a value that does not fit rather than reinterpreting it.
 function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
                             field_type::AbstractString, setter_symbol::AbstractString,
                             self_ptr_expr, value_expr)
-    ptr_expr = :(_get_func_ptr($(String(setter_symbol))))
+    name = String(setter_symbol)
     c = _ffi_field_return(info, field_name, field_type)
     if ffi_owned_string_return(c) || ffi_borrowed_string_return(c)
         # A `String` field's setter takes the text itself, as a C string the
         # wrapper copies; the contract has no single-slot spelling for it and
         # there is nothing to convert.
-        return :(call_rust_function($ptr_expr, Cvoid, $self_ptr_expr, $value_expr))
+        return quote
+            let (fp, channel) = _call_target($name)
+                _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, $value_expr), channel, $name)
+            end
+        end
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type))
-    return :(call_rust_function($ptr_expr, Cvoid, $self_ptr_expr,
-                                convert($julia_type, $value_expr)))
+    return quote
+        let value = convert($julia_type, $value_expr), (fp, channel) = _call_target($name)
+            _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, value), channel, $name)
+        end
+    end
 end
 
 """
@@ -1947,16 +1964,17 @@ Source-text counterpart of `_crate_field_write` for the file emitter.
 function _crate_field_write_source(info::RustStructInfo, field_name::AbstractString,
                                    field_type::AbstractString, setter_symbol::AbstractString,
                                    self_ptr::String, value::String; strict::Symbol = FFI_STRICT[])
-    ptr_expr = "_get_func_ptr(\"$setter_symbol\")"
+    target = "(fp, channel) = _call_target(\"$setter_symbol\")"
     c = _ffi_field_return(info, field_name, field_type)
     if ffi_owned_string_return(c) || ffi_borrowed_string_return(c)
         # As in `_crate_field_write`: a string setter takes the text itself.
-        return "call_rust_function($ptr_expr, Cvoid, $self_ptr, $value)"
+        return "let $target; _guard_panic(call_rust_function(fp, Cvoid, $self_ptr, $value), channel, \"$setter_symbol\"); end"
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
                                             strict = strict)
-    return "call_rust_function($ptr_expr, Cvoid, $self_ptr, convert($julia_type, $value))"
+    return "let converted_value = convert($julia_type, $value), $target; " *
+           "_guard_panic(call_rust_function(fp, Cvoid, $self_ptr, converted_value), channel, \"$setter_symbol\"); end"
 end
 
 """
@@ -1968,18 +1986,20 @@ function _crate_field_read_source(info::RustStructInfo, field_name::AbstractStri
                                   field_type::AbstractString, getter_symbol::AbstractString,
                                   self_ptr::String; strict::Symbol = FFI_STRICT[])
     c = _ffi_field_return(info, field_name, field_type)
-    ptr_expr = "_get_func_ptr(\"$getter_symbol\")"
+    target = "(fp, channel) = _call_target(\"$getter_symbol\")"
     if ffi_owned_string_return(c)
         # Getter and release function from one snapshot (#277).
-        return "let (fp, _, freep) = _call_target(\"$getter_symbol\", \"$(c.free_symbol)\"); " *
-               "_call_rust_owned_string_ptr(fp, freep, $self_ptr); end"
+        return "let (fp, channel, freep) = _call_target(\"$getter_symbol\", \"$(c.free_symbol)\"); " *
+               "raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr), channel, \"$getter_symbol\"); " *
+               "RustCall._take_owned_string(raw, freep); end"
     elseif ffi_borrowed_string_return(c)
-        return "_call_rust_borrowed_string_ptr($ptr_expr, $self_ptr)"
+        return "let $target; raw = _guard_panic(call_rust_function(fp, RustCall.CRustStr, $self_ptr), channel, \"$getter_symbol\"); " *
+               "RustCall._crust_str_to_julia(raw); end"
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
                                             strict = strict)
-    return "call_rust_function($ptr_expr, $julia_type, $self_ptr)"
+    return "let $target; _guard_panic(call_rust_function(fp, $julia_type, $self_ptr), channel, \"$getter_symbol\"); end"
 end
 
 """
