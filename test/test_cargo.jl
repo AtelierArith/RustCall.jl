@@ -921,6 +921,32 @@ end
     end
 end
 
+@testset "a stale replacer revalidates after acquiring the publication claim (#322)" begin
+    mktempdir() do dir
+        stored = joinpath(dir, "store", "Cargo.lock")
+        mkpath(dirname(stored))
+        write(stored, "[[package]]\nname = \"old_root\"\nversion = \"0.1.0\"\n")
+        root = "rustcall_block_claim_test"
+        # Both builders classify the old entry before either publishes. The
+        # second still carries replace=true after the first has replaced it.
+        replace_a = !RustCall._lockfile_names_root(stored, root)
+        replace_b = !RustCall._lockfile_names_root(stored, root)
+        @test replace_a && replace_b
+        a = joinpath(dir, "a.lock")
+        b = joinpath(dir, "b.lock")
+        first_graph = "[[package]]\nname = \"$root\"\nversion = \"0.1.0\"\n# graph A\n"
+        second_graph = "[[package]]\nname = \"$root\"\nversion = \"0.1.0\"\n# graph B\n"
+        write(a, first_graph)
+        write(b, second_graph)
+        first_digest = RustCall._publish_lockfile!(stored, a; replace = replace_a, root)
+        second_digest = RustCall._publish_lockfile!(stored, b; replace = replace_b, root)
+        @test read(stored, String) == first_graph
+        @test read(a, String) == read(b, String) == first_graph
+        @test first_digest == second_digest == RustCall._file_content_digest(stored)
+        @test !isfile(stored * ".claim")
+    end
+end
+
 @testset "the generated package is named from the set, and reserves no name (#313 review)" begin
     # The root package appears in `Cargo.lock` by name, so it is derived from
     # the dependency set — every block declaring the set shares the lockfile —

@@ -7,6 +7,53 @@ using Libdl
 const RUST_HELPERS_LIB = _state_view(:rust_helpers_lib,
     Ref{Union{Ptr{Cvoid}, Nothing}}(nothing))
 
+# Resolve only at construction, never from a finalizer. A raw-pointer wrapper
+# may have no supported helper; it still captures an inert target rather than
+# trying to discover a library during GC.
+function _ownership_drop_target(::Type{T}, kind::Symbol,
+                                lib = get_rust_helpers_lib()) where {T}
+    lib === nothing && return (Ptr{Cvoid}(C_NULL), Ref(false))
+    symbol = kind === :box ? _rust_box_drop_symbol(T) :
+             kind === :rc ? _rust_rc_drop_symbol(T) :
+             kind === :arc ? _rust_arc_drop_symbol(T) : _rust_vec_drop_symbol(T)
+    symbol === nothing && return (Ptr{Cvoid}(C_NULL), Ref(false))
+    pointer = Libdl.dlsym(lib, symbol; throw_error=false)
+    pointer === nothing && return (Ptr{Cvoid}(C_NULL), Ref(false))
+    alive = lock(REGISTRY_LOCK) do
+        alive_ref_for_handle(lib, "rust_helpers")
+    end
+    return (pointer, alive)
+end
+
+function _ownership_free(x::Union{RustBox,RustRc,RustArc}, pointer::Ptr{Cvoid})
+    ccall(x.free_ptr, Cvoid, (Ptr{Cvoid},), pointer)
+    return nothing
+end
+
+function _ownership_free(x::RustVec, pointer::Ptr{Cvoid})
+    ccall(x.free_ptr, Cvoid, (CRustVec,), CRustVec(pointer, x.len, x.cap))
+    return nothing
+end
+
+# The atomic claim is shared by explicit drop and GC, so neither can release
+# an allocation twice. Only construction-time pointers and liveness are read.
+function _finalize_ownership!(x)
+    Threads.atomic_cas!(x.drop_claimed, false, true) && return nothing
+    x.dropped && return nothing
+    pointer = x.ptr
+    x.ptr = C_NULL
+    x.dropped = true
+    pointer == C_NULL && return nothing
+    x.free_ptr == C_NULL && return nothing
+    x.alive[] || return nothing
+    try
+        _ownership_free(x, pointer)
+    catch
+        Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
+    end
+    return nothing
+end
+
 """
     safe_dlsym(lib::Ptr{Cvoid}, sym::Symbol) -> Ptr{Cvoid}
 
@@ -40,15 +87,14 @@ end
 DeferredDrop(ptr::Ptr{Cvoid}, type_name::String, drop_symbol::Symbol) =
     DeferredDrop(ptr, type_name, drop_symbol, UInt(0), UInt(0), false)
 
-# The queue storage lives in STATE with the other mutable runtime state, but
-# the finalizer path below accesses it through `_state_value` and takes only
-# the queue's short lock. It must not take STATE, dlsym, or log (#251).
+# Explicit drops of raw pointers may be deferred. Finalizers never enqueue:
+# they use their captured target without consulting process state (#251).
 mutable struct DeferredDropQueue
     entries::Vector{DeferredDrop}
 end
 
 const DEFERRED_DROPS = _state_view(:deferred_drops, DeferredDropQueue(DeferredDrop[]))
-const DEFERRED_DROPS_LOCK = ReentrantLock()
+const DEFERRED_DROPS_LOCK = STATE.lock
 
 # Maximum number of deferred drops before a warning is issued and a flush is attempted.
 # This prevents unbounded memory growth when the Rust helpers library is unavailable.
@@ -551,20 +597,25 @@ Automatically calls the appropriate Rust Box::new function.
 """
 function create_rust_box(value::T) where T
     lib = require_rust_helpers("Create RustBox")
+    target = _ownership_drop_target(T, :box, lib)
 
     fn_ptr = safe_dlsym(lib, _rust_box_new_symbol(T))
     ptr = _ccall_box_new(fn_ptr, value)
-    return RustBox{T}(ptr)
+    return RustBox{T}(ptr, target)
 end
 
 """
     drop_rust_box(box::RustBox{T}) where T
 
 Drop a RustBox, calling the appropriate Rust drop function.
-Uses the object's drop_lock to synchronize with the GC finalizer.
+An atomic claim synchronizes with the GC finalizer; `drop_lock` serializes explicit drops.
 """
 function drop_rust_box(box::RustBox{T}) where T
     lock(box.drop_lock) do
+        if box.free_ptr != C_NULL
+            return _finalize_ownership!(box)
+        end
+        Threads.atomic_cas!(box.drop_claimed, false, true) && return nothing
         if box.dropped
             @debug "Attempted to drop an already-dropped RustBox{$T}"
             return nothing
@@ -608,10 +659,11 @@ Automatically calls the appropriate Rust Rc::new function.
 """
 function create_rust_rc(value::T) where T
     lib = require_rust_helpers("Create RustRc")
+    target = _ownership_drop_target(T, :rc, lib)
 
     fn_ptr = safe_dlsym(lib, _rust_rc_new_symbol(T))
     ptr = _ccall_rc_new(fn_ptr, value)
-    return RustRc{T}(ptr)
+    return RustRc{T}(ptr, target)
 end
 
 """
@@ -625,20 +677,25 @@ function clone(rc::RustRc{T}) where T
     end
 
     lib = require_rust_helpers("Clone RustRc")
+    target = _ownership_drop_target(T, :rc, lib)
 
     fn_ptr = safe_dlsym(lib, _rust_rc_clone_symbol(T))
     new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), rc.ptr)
-    return RustRc{T}(new_ptr)
+    return RustRc{T}(new_ptr, target)
 end
 
 """
     drop_rust_rc(rc::RustRc{T}) where T
 
 Drop a RustRc, decrementing the reference count.
-Uses the object's drop_lock to synchronize with the GC finalizer.
+An atomic claim synchronizes with the GC finalizer; `drop_lock` serializes explicit drops.
 """
 function drop_rust_rc(rc::RustRc{T}) where T
     lock(rc.drop_lock) do
+        if rc.free_ptr != C_NULL
+            return _finalize_ownership!(rc)
+        end
+        Threads.atomic_cas!(rc.drop_claimed, false, true) && return nothing
         if rc.dropped
             @debug "Attempted to drop an already-dropped RustRc{$T}"
             return nothing
@@ -689,10 +746,11 @@ Automatically calls the appropriate Rust Arc::new function.
 """
 function create_rust_arc(value::T) where T
     lib = require_rust_helpers("Create RustArc")
+    target = _ownership_drop_target(T, :arc, lib)
 
     fn_ptr = safe_dlsym(lib, _rust_arc_new_symbol(T))
     ptr = _ccall_arc_new(fn_ptr, value)
-    return RustArc{T}(ptr)
+    return RustArc{T}(ptr, target)
 end
 
 """
@@ -706,20 +764,25 @@ function clone(arc::RustArc{T}) where T
     end
 
     lib = require_rust_helpers("Clone RustArc")
+    target = _ownership_drop_target(T, :arc, lib)
 
     fn_ptr = safe_dlsym(lib, _rust_arc_clone_symbol(T))
     new_ptr = ccall(fn_ptr, Ptr{Cvoid}, (Ptr{Cvoid},), arc.ptr)
-    return RustArc{T}(new_ptr)
+    return RustArc{T}(new_ptr, target)
 end
 
 """
     drop_rust_arc(arc::RustArc{T}) where T
 
 Drop a RustArc, decrementing the atomic reference count.
-Uses the object's drop_lock to synchronize with the GC finalizer.
+An atomic claim synchronizes with the GC finalizer; `drop_lock` serializes explicit drops.
 """
 function drop_rust_arc(arc::RustArc{T}) where T
     lock(arc.drop_lock) do
+        if arc.free_ptr != C_NULL
+            return _finalize_ownership!(arc)
+        end
+        Threads.atomic_cas!(arc.drop_claimed, false, true) && return nothing
         if arc.dropped
             @debug "Attempted to drop an already-dropped RustArc{$T}"
             return nothing
@@ -789,10 +852,14 @@ RustArc(value::Float64) = create_rust_arc(value)
     drop_rust_vec(vec::RustVec{T}) -> Nothing
 
 Drop a RustVec by calling the Rust-side drop function.
-Uses the object's drop_lock to synchronize with the GC finalizer.
+An atomic claim synchronizes with the GC finalizer; `drop_lock` serializes explicit drops.
 """
 function drop_rust_vec(vec::RustVec{T}) where {T}
     lock(vec.drop_lock) do
+        if vec.free_ptr != C_NULL
+            return _finalize_ownership!(vec)
+        end
+        Threads.atomic_cas!(vec.drop_claimed, false, true) && return nothing
         if vec.dropped
             @debug "Attempted to drop an already-dropped RustVec{$T}"
             return nothing
@@ -867,13 +934,14 @@ See also: [`to_julia_vector`](@ref), [`drop!`](@ref)
 """
 function create_rust_vec(v::Vector{T}) where T
     lib = require_rust_helpers("Create RustVec")
+    target = _ownership_drop_target(T, :vec, lib)
     data_ptr = pointer(v)
     len = length(v)
 
     fn_ptr = safe_dlsym(lib, _rust_vec_new_symbol(T))
     cvec = _ccall_vec_new(fn_ptr, data_ptr, len)
 
-    return RustVec{T}(cvec.ptr, UInt(cvec.len), UInt(cvec.cap))
+    return RustVec{T}(cvec.ptr, UInt(cvec.len), UInt(cvec.cap), target)
 end
 
 # ============================================================================

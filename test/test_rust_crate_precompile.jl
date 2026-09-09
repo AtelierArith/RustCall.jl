@@ -124,6 +124,31 @@ end
                 """)
             @test out2 == "true 5 5.0 true true true true true true true true true"
 
+            @testset "a precompiled package refuses changed non-file build inputs (#355)" begin
+                for key in ("PYO3_PYTHON", "RUSTFLAGS")
+                    replacement = key == "PYO3_PYTHON" ? joinpath(root, "different-python") :
+                        (get(ENV, key, "") == "-C opt-level=1" ? "-C opt-level=2" : "-C opt-level=1")
+                    withenv(key => replacement) do
+                        changed = in_subprocess("""
+                            using RustCall
+                            id = Base.identify_package("$pkg_name")
+                            print(Base.isprecompiled(id), " ")
+                            try
+                                Base.require(id)
+                                print("loaded stale library")
+                            catch err
+                                print(err isa InitError, " ",
+                                      occursin($(repr(key)), sprint(showerror, err)))
+                            end
+                            """)
+                        # The existing image is valid according to Julia, but
+                        # __init__ refuses its stale Rust build environment.
+                        @test changed == "true true true"
+                    end
+                end
+                @test in_subprocess("using $pkg_name; print(add(Int32(2), Int32(3)))") == "5"
+            end
+
             # The library is recorded as a precompile dependency of the image,
             # which is what makes step 3 deterministic.
             cachefiles = Base.find_all_in_cache_path(pkgid)

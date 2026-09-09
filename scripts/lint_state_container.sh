@@ -4,8 +4,7 @@
 # StateView keeps the historical internal names source-compatible while making
 # every operation take the Base.Lockable state lock. This lint prevents a new
 # feature from reintroducing the independent-Dict pattern behind #251.
-# The deferred-drop queue is stored in STATE too. Its separate lock is listed
-# nowhere here because finalizers use it without taking STATE.
+# The explicit-drop queue is stored in STATE too; finalizers never access it.
 
 set -euo pipefail
 
@@ -17,7 +16,7 @@ names=(
   PANIC_CHANNELS GENERIC_FUNCTION_REGISTRY MONOMORPHIZED_FUNCTIONS IRUST_FUNCTIONS
   HOT_RELOAD_REGISTRY RELOAD_LOCKS ARTIFACT_ALIVE ARTIFACT_GENERATIONS
   DEFERRED_DROPS
-  HANDLE_MIRRORS RETIRED_HANDLES OWNED_HANDLES PRELOADED_LIBRARIES
+  HANDLE_MIRRORS RETIRED_HANDLES OWNED_HANDLES PRELOADED_LIBRARIES HANDLE_ONLY_ALIVE
   RUST_HELPERS_LIB DROP_WARNING_SHOWN FFI_TYPE_TABLE _FFI_UNKNOWN_SLOTS FFI_STRICT
   _FFI_WARNED_CONTEXTS DEFAULT_COMPILER _EXTRACTOR_PATH _EXTRACTOR_DIGEST
   _TOOLCHAIN_FINGERPRINT _EXPANSION_CACHE _RUSTC_CFG_TEXT _RUSTC_CFG_FILE

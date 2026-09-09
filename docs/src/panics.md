@@ -153,8 +153,11 @@ RustCall keeps mutable registries in one `Base.Lockable` state container,
 container, so a read cannot accidentally bypass the state lock. The state lock
 protects only short in-memory transactions: compilation, `dlopen`/`dlclose`,
 user Julia callbacks, and Rust `ccall`s happen outside it. Finalizers do not
-take the state lock, resolve symbols, or log; the deferred-drop queue is stored
-in `STATE` but uses its own short queue lock on the finalizer path.
+take locks, resolve symbols, or log. `RustBox`, `RustRc`, `RustArc`, and `RustVec`
+capture their destructor and image-liveness flag at construction, and share an
+atomic exactly-once claim with explicit `drop!`. The deferred-drop queue is
+stored in `STATE` and is used only by explicit drops of raw-pointer wrappers
+constructed without a helper target; finalizers never enqueue.
 
 If you need the Rust object to outlive the Julia wrapper, do not let the
 wrapper be collected — keep a reference, or use `GC.@preserve` around the

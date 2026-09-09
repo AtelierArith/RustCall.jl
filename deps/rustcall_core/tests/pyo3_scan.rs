@@ -644,6 +644,43 @@ fn a_module_alias_disambiguates_an_explicit_pymethods_target() {
     assert!(in_b.methods.is_empty());
 }
 
+#[test]
+fn class_return_types_resolve_module_and_type_aliases() {
+    let manifest = scan(
+        "pub mod a { #[pyclass] pub struct C {} }\n\
+         pub mod b { #[pyclass] pub struct C {} }\n\
+         pub mod uses {\n\
+            use crate::a as alias;\n\
+            use crate::a::C as Renamed;\n\
+            #[pymethods] impl Renamed {\n\
+                #[staticmethod] pub fn by_module() -> alias::C { alias::C {} }\n\
+                #[staticmethod] pub fn by_type() -> Renamed { Renamed {} }\n\
+                #[staticmethod] pub fn other() -> crate::b::C { crate::b::C {} }\n\
+            }\n\
+         }",
+    );
+    let class = manifest
+        .structs
+        .iter()
+        .find(|s| s.module_path == ["a"])
+        .unwrap();
+    assert_eq!(class.methods.len(), 3);
+    for name in ["by_module", "by_type"] {
+        let method = class.methods.iter().find(|m| m.name == name).unwrap();
+        assert!(method.returns_boxed_struct, "{name}");
+        assert!(method.skip_reason.is_empty(), "{}", method.skip_reason);
+        assert_eq!(method.symbol, format!("rustcall_a__C_{name}"));
+    }
+    assert!(
+        !class
+            .methods
+            .iter()
+            .find(|m| m.name == "other")
+            .unwrap()
+            .returns_boxed_struct
+    );
+}
+
 /// A glob import still scopes a bare `impl` to the imported module (#303).
 #[test]
 fn a_glob_import_disambiguates_a_bare_pymethods_target() {
@@ -1559,6 +1596,29 @@ fn generated_method_aggregate_names_are_reserved() {
         .find(|s| s.name == "CResult_A_checked")
         .unwrap();
     assert_eq!(class.skip_reason, "julia_name_collision:CResult_A_checked");
+}
+
+#[test]
+fn method_aggregate_reservations_keep_the_method_cfg() {
+    for (return_type, prefix) in [("Option<i32>", "COption"), ("PyResult<i32>", "CResult")] {
+        let manifest = scan(&format!(
+            "#[pyclass] pub struct C;
+             #[pymethods] impl C {{
+                 #[cfg(feature = \"choice\")]
+                 pub fn value(&self) -> {return_type} {{ todo!() }}
+             }}
+             #[cfg(not(feature = \"choice\"))]
+             #[pyclass] pub struct {prefix}_C_value;"
+        ));
+        let class = manifest
+            .structs
+            .iter()
+            .find(|s| s.name == format!("{prefix}_C_value"))
+            .unwrap();
+        assert_eq!(class.skip_reason, "");
+        let owner = manifest.structs.iter().find(|s| s.name == "C").unwrap();
+        assert_eq!(owner.methods[0].skip_reason, "");
+    }
 }
 
 /// The Julia surface is one namespace per generated module (#300): a free

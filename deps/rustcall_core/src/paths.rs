@@ -399,6 +399,25 @@ pub fn locate<T: Located>(
     header: &ImplHeader,
     imports: &[ScannedImport],
 ) -> Result<usize, Unresolved> {
+    locate_with_fallback(structs, header, imports, true)
+}
+
+/// Resolve a return type using the same imports as impl targets, but never
+/// discard a written qualifier to match an unrelated same-named class.
+pub fn locate_type<T: Located>(
+    structs: &[T],
+    header: &ImplHeader,
+    imports: &[ScannedImport],
+) -> Result<usize, Unresolved> {
+    locate_with_fallback(structs, header, imports, false)
+}
+
+fn locate_with_fallback<T: Located>(
+    structs: &[T],
+    header: &ImplHeader,
+    imports: &[ScannedImport],
+    allow_qualified_fallback: bool,
+) -> Result<usize, Unresolved> {
     let name = header.target.to_string();
     let named = |s: &T| s.name() == name;
 
@@ -451,7 +470,7 @@ pub fn locate<T: Located>(
         // with none there, attaching to a `C` in the impl's own module —
         // or to the one `C` anywhere — would be exactly the wrong struct
         // (#307 review).
-        if header.qualifier.forbids_fallback() {
+        if !allow_qualified_fallback || header.qualifier.forbids_fallback() {
             return Err(Unresolved::NotFound);
         }
     }

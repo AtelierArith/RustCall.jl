@@ -16,6 +16,16 @@ using RustCall
 const _FIN_SRC = joinpath(dirname(dirname(pathof(RustCall))), "src")
 _fin_src(name) = read(joinpath(_FIN_SRC, name), String)
 
+const _OWNERSHIP_FREES = Threads.Atomic{Int}(0)
+function _ownership_test_free(::Ptr{Cvoid})
+    Threads.atomic_add!(_OWNERSHIP_FREES, 1)
+    return nothing
+end
+function _ownership_test_vec_free(::RustCall.CRustVec)
+    Threads.atomic_add!(_OWNERSHIP_FREES, 1)
+    return nothing
+end
+
 """The body of a top-level `function <name>(` in `src/<file>`."""
 function _fin_function_body(file, name)
     src = _fin_src(file)
@@ -92,10 +102,93 @@ end
         end
 
         # The ownership types' finalizers are held to the same rule.
-        for name in ("_finalize_rust_box", "_finalize_rust_rc", "_finalize_rust_arc")
+        for name in ("_finalize_ownership!", "_ownership_free")
             b = _fin_function_body("memory.jl", name)
-            b === nothing && continue
-            @test !occursin("REGISTRY_LOCK", b)
+            @test b !== nothing
+            for forbidden in ("lock(", "dlsym", "@warn", "@info", "@error", "@debug",
+                              "STATE", "RUST_HELPERS_LIB", "get_rust_helpers_lib", "_defer_drop")
+                @test !occursin(forbidden, b)
+            end
+        end
+        types_src = _fin_src("types.jl")
+        for variable in ("box", "rc", "arc", "vec")
+            @test occursin("finalizer(_finalize_ownership!, $variable)", types_src)
+        end
+        @test !occursin("finalizer(", replace(types_src,
+            r"finalizer\(_finalize_ownership!, (box|rc|arc|vec)\)" => ""))
+    end
+
+    @testset "ownership finalizers ignore held state and object locks (#251)" begin
+        free = @cfunction(_ownership_test_free, Cvoid, (Ptr{Cvoid},))
+        free_vec = @cfunction(_ownership_test_vec_free, Cvoid, (RustCall.CRustVec,))
+        alive = Ref(true)
+        pointer = Ptr{Cvoid}(UInt(1)) # The counting destructors never dereference it.
+        objects = (RustCall.RustBox{Int32}(pointer, (free, alive)),
+                   RustCall.RustRc{Int32}(pointer, (free, alive)),
+                   RustCall.RustArc{Int32}(pointer, (free, alive)),
+                   RustCall.RustVec{Int32}(pointer, UInt(1), UInt(1), (free_vec, alive)))
+        baseline = _OWNERSHIP_FREES[]
+        for object in objects
+            task = nothing
+            lock(RustCall.STATE.lock)
+            lock(object.drop_lock)
+            try
+                task = @async finalize(object)
+                @test timedwait(() -> istaskdone(task), 5) == :ok
+            finally
+                unlock(object.drop_lock)
+                unlock(RustCall.STATE.lock)
+            end
+            wait(task)
+            @test object.dropped && object.ptr == C_NULL
+            RustCall.drop!(object)
+            finalize(object)
+        end
+        @test _OWNERSHIP_FREES[] == baseline + 4
+
+        @testset "a dead captured image is never called" begin
+            dead = Ref(false)
+            object = RustCall.RustBox{Int32}(pointer, (free, dead))
+            finalize(object)
+            @test object.dropped && object.ptr == C_NULL
+            @test _OWNERSHIP_FREES[] == baseline + 4
+        end
+
+        @testset "explicit and finalizer drops share an atomic claim" begin
+            if Threads.nthreads() > 1
+                before = _OWNERSHIP_FREES[]
+                for _ in 1:200
+                    object = RustCall.RustBox{Int32}(pointer, (free, alive))
+                    @sync begin
+                        Threads.@spawn RustCall.drop!(object)
+                        Threads.@spawn RustCall._finalize_ownership!(object)
+                    end
+                    finalize(object)
+                end
+                @test _OWNERSHIP_FREES[] == before + 200
+            else
+                @test_skip "requires multiple threads"
+            end
+        end
+    end
+
+    @testset "helper ownership retains its captured destructor" begin
+        if RustCall.is_rust_helpers_available()
+            objects = (RustCall.create_rust_box(Int32(1)), RustCall.create_rust_rc(Int32(2)),
+                       RustCall.create_rust_arc(Int32(3)), RustCall.create_rust_vec(Int32[4]))
+            saved = RustCall.RUST_HELPERS_LIB[]
+            try
+                RustCall.RUST_HELPERS_LIB[] = nothing
+                for object in objects
+                    @test object.free_ptr != C_NULL && object.alive[]
+                    finalize(object)
+                    @test object.dropped && object.ptr == C_NULL
+                end
+            finally
+                RustCall.RUST_HELPERS_LIB[] = saved
+            end
+        else
+            @test_skip "Rust helpers are required"
         end
     end
 

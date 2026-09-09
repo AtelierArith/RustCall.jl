@@ -386,10 +386,19 @@ impl Pyo3Scan {
                 // still wraps `a::C`'s methods (#300).
                 let class_path = self.classes[index].module_path.clone();
                 for func in &imp.funcs {
+                    let returns_self = matches!(
+                        &func.sig.output,
+                        syn::ReturnType::Type(_, ty) if returns_class(
+                            ty, &self.classes[index], &imp.header.module_path,
+                            &self.classes, &self.imports,
+                        )
+                    );
+                    let class_ident =
+                        syn::Ident::new(&self.classes[index].entry.name, imp.header.target.span());
                     let entry = method_entry(
-                        &imp.header.target,
+                        &class_ident,
                         &class_path,
-                        &imp.header.module_path,
+                        returns_self,
                         func,
                         &owner_skip,
                         &imp.cfg,
@@ -500,7 +509,7 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             };
             let name = format!("{prefix}_{}_{}", s.name, m.name);
             let path = s.module_path.clone();
-            let cfg = s.cfg.clone();
+            let cfg = m.cfg.clone();
             aggregate_names.push(((path, name.clone()), name, cfg));
         }
     }
@@ -1067,7 +1076,7 @@ fn class_entry(
 fn method_entry(
     struct_ident: &syn::Ident,
     class_path: &[String],
-    impl_path: &[String],
+    returns_self: bool,
     func: &ImplItemFn,
     owner_skip: &str,
     enclosing_cfg: &[syn::Attribute],
@@ -1138,12 +1147,7 @@ fn method_entry(
         // the return type, never from the method's name: a
         // `#[staticmethod] fn new() -> i32` is an ordinary method, and boxing
         // its `i32` as a `*mut Class` would not compile (#307 review).
-        returns_boxed_struct: is_constructor
-            || matches!(
-                &func.sig.output,
-                syn::ReturnType::Type(_, ty)
-                    if returns_class(ty, struct_ident, class_path, impl_path)
-            ),
+        returns_boxed_struct: is_constructor || returns_self,
         args: fn_args(&func.sig),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
@@ -1161,9 +1165,10 @@ fn method_entry(
 /// `#[julia]` path, whose items live in the crate that defines the struct.
 fn returns_class(
     ty: &Type,
-    class: &syn::Ident,
-    class_path: &[String],
+    class: &ScannedClass,
     impl_path: &[String],
+    classes: &[ScannedClass],
+    imports: &[ScannedImport],
 ) -> bool {
     let Type::Path(path) = unparen(ty) else {
         return false;
@@ -1171,49 +1176,21 @@ fn returns_class(
     if path.qself.is_some() {
         return false;
     }
-    let segments: Vec<String> = path
-        .path
-        .segments
-        .iter()
-        .map(|s| s.ident.to_string())
-        .collect();
-    match segments.as_slice() {
-        [only] => only == "Self" || class == only.as_str(),
-        [first, .., last] => {
-            if class != last.as_str() {
-                return false;
-            }
-            let mut base = match first.as_str() {
-                "crate" => Vec::new(),
-                "self" => impl_path.to_vec(),
-                "super" => {
-                    let levels = segments
-                        .iter()
-                        .take_while(|s| s.as_str() == "super")
-                        .count();
-                    if levels > impl_path.len() {
-                        return false;
-                    }
-                    impl_path[..impl_path.len() - levels].to_vec()
-                }
-                // A relative qualified path is rooted in the impl's module
-                // for this scan.  Compare the complete path, not only its
-                // final segment, so `other::C` cannot box as `a::C` (#303).
-                _ => impl_path.to_vec(),
-            };
-            let start = if first == "crate" || first == "self" || first == "super" {
-                segments
-                    .iter()
-                    .take_while(|s| matches!(s.as_str(), "crate" | "self" | "super"))
-                    .count()
-            } else {
-                0
-            };
-            base.extend(segments[start..segments.len() - 1].iter().cloned());
-            base == class_path
-        }
-        [] => false,
+    if path.path.is_ident("Self") {
+        return true;
     }
+    let Some(target) = path.path.segments.last() else {
+        return false;
+    };
+    let header = ImplHeader {
+        target: target.ident.clone(),
+        qualifier: crate::paths::type_path_qualifier(ty),
+        module_path: impl_path.to_vec(),
+    };
+    crate::paths::locate_type(classes, &header, imports).is_ok_and(|index| {
+        classes[index].entry.name == class.entry.name
+            && classes[index].module_path == class.module_path
+    })
 }
 
 /// Skip reason that follows from the item itself rather than its signature.

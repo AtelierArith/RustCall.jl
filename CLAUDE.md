@@ -104,9 +104,10 @@ independent mutable globals. `REGISTRY_LOCK` is the container's lock. The lock
 ordering rule is: take `STATE`/`REGISTRY_LOCK` only for an in-memory state
 transaction, never while calling user Julia code, compiling, opening/closing a
 library, or executing a Rust `ccall`; perform those operations before or after
-the transaction. The deferred-drop queue's storage is also in `STATE`, but its
-finalizer-safe access uses a separate short queue lock without taking the state
-lock. Finalizers remain otherwise lock-free.
+the transaction. The deferred-drop queue's storage is also in `STATE` and its
+compatibility lock aliases the state lock. Only explicit drops enqueue;
+ownership finalizers use captured destructor pointers and liveness flags,
+with an atomic exactly-once claim, and never access that queue.
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 

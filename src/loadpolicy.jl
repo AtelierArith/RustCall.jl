@@ -1180,8 +1180,15 @@ function alive_ref_for_handle(handle::Ptr{Cvoid}, lib_name::AbstractString)
     end
     retired = get(RETIRED_HANDLES, handle, nothing)
     retired === nothing || return retired.alive
+    local_alive = get(HANDLE_ONLY_ALIVE, handle, nothing)
+    local_alive === nothing || return local_alive
     return _state_read(DEAD_ARTIFACT, identity)
 end
+
+# Images loaded by helper/module-local policies still need a handle-owned
+# flag, even though they have no RUST_LIBRARIES row.
+const HANDLE_ONLY_ALIVE = _state_view(:handle_only_alive,
+    Dict{Ptr{Cvoid}, Base.RefValue{Bool}}())
 
 """
     DEAD_ARTIFACT
@@ -1622,6 +1629,11 @@ function close_artifact_handle!(handle::Ptr{Cvoid})
         remaining == 0 && return false
         remaining == 1 ? delete!(OWNED_HANDLES, handle) :
                          (OWNED_HANDLES[handle] = remaining - 1)
+        if remaining == 1
+            alive = get(HANDLE_ONLY_ALIVE, handle, nothing)
+            delete!(HANDLE_ONLY_ALIVE, handle)
+            alive === nothing || (alive[] = false)
+        end
         return true
     end
     owned || return false
@@ -1674,7 +1686,7 @@ function registered_alive_for_handle(handle::Ptr{Cvoid})
         ref = get(ARTIFACT_ALIVE, name, nothing)
         ref === nothing || return ref
     end
-    return nothing
+    return get(HANDLE_ONLY_ALIVE, handle, nothing)
 end
 
 """
@@ -1842,7 +1854,16 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
     replaced = C_NULL
     artifact = lock(REGISTRY_LOCK) do
         if !registers_in_rust_libraries(policy)
-            return LoadedArtifact(name, handle, lib_path, policy, _new_alive!(name),
+            retired = get(RETIRED_HANDLES, handle, nothing)
+            alive = something(registered_alive_for_handle(handle),
+                              retired === nothing ? nothing : retired.alive, Ref(true))
+            HANDLE_ONLY_ALIVE[handle] = alive
+            ARTIFACT_ALIVE[name] = alive
+            # A live helper/module-local owner revives the image just like a
+            # registry owner. Its old retirement must no longer flip the
+            # shared flag or reclaim the opens this owner now relies on.
+            delete!(RETIRED_HANDLES, handle)
+            return LoadedArtifact(name, handle, lib_path, policy, alive,
                                   assumed, 0)
         end
         if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)

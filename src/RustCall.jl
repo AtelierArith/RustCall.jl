@@ -101,8 +101,8 @@ Base.empty!(view::StateView) = _state_read(view) do state_value
 end
 function Base.push!(view::StateView, items...)
     if view.name === :deferred_drops
-        queue = _state_value(view)
         return lock(DEFERRED_DROPS_LOCK) do
+            queue = _state_value(view)
             push!(getfield(queue, :entries), items...)
         end
     end
@@ -115,8 +115,8 @@ Base.prepend!(view::StateView, items) = _state_read(view) do state_value
 end
 function Base.filter!(predicate::Function, view::StateView)
     if view.name === :deferred_drops
-        queue = _state_value(view)
         return lock(DEFERRED_DROPS_LOCK) do
+            queue = _state_value(view)
             filter!(predicate, getfield(queue, :entries))
         end
     end

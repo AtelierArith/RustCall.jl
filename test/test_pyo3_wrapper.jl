@@ -53,6 +53,21 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
         end
     end
 
+    @testset "a missing Python library skips before invoking the wrapper builder (#336)" begin
+        mktempdir() do dir
+            withenv("RUSTCALL_PYTHON_LIBDIR" => dir,
+                    "PYO3_PYTHON" => joinpath(dir, "missing-python")) do
+                invoked = Ref(false)
+                result = @test_logs (:info, "skipping the :link_libpython wrapper testset") _link_libpython_wrapper(
+                    PYO3_ONLY_CRATE;
+                    build_wrapper = (_; kwargs...) -> (invoked[] = true))
+                @test result === nothing
+                @test !invoked[]
+                @test !_linkable_python_library(dir)
+            end
+        end
+    end
+
     @testset "generation: what the wrapper exports, and what it refuses" begin
         if !RustCall.check_rustc_available()
             @test_skip "rustc is not available"
