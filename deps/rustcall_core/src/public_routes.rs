@@ -50,9 +50,30 @@ pub struct PublicRoutes {
     definitions: BTreeMap<RouteKey, Vec<Definition>>,
     imports: Vec<Import>,
     names: BTreeSet<String>,
+    edition_2015: bool,
 }
 
 impl PublicRoutes {
+    pub fn with_edition(edition: &str) -> Self {
+        Self {
+            edition_2015: edition == "2015",
+            ..Self::default()
+        }
+    }
+
+    fn type_alias_import(&self, item: &syn::ItemType, module: &[String]) -> Option<ScannedImport> {
+        let syn::Type::Path(path) = crate::types::unparen(&item.ty) else {
+            return None;
+        };
+        // `::name` is crate-rooted in edition 2015 and extern-prelude-rooted
+        // from edition 2018 onward. Only the former can be resolved against
+        // this crate's scanned module tree.
+        if path.path.leading_colon.is_some() && !self.edition_2015 {
+            return None;
+        }
+        import_of_type_alias(item, module)
+    }
+
     /// Resolve within one cfg variant. A public module in a mutually exclusive
     /// variant must not grant access to the private copy at the same path.
     pub fn resolve_for(&self, cfg: &str) -> BTreeMap<RouteKey, PublicRoute> {
@@ -85,7 +106,7 @@ impl PublicRoutes {
                 // exposes C to a wrapper crate (#303).
                 Item::Type(v)
                     if v.generics.params.is_empty()
-                        && import_of_type_alias(v, module).is_some() =>
+                        && self.type_alias_import(v, module).is_some() =>
                 {
                     None
                 }
@@ -184,7 +205,7 @@ impl PublicRoutes {
             }
             if let Item::Type(v) = item {
                 if v.generics.params.is_empty() {
-                    if let Some(binding) = import_of_type_alias(v, module) {
+                    if let Some(binding) = self.type_alias_import(v, module) {
                         self.names.insert(binding.alias.clone());
                         self.imports.push(Import {
                             binding,
@@ -514,10 +535,17 @@ mod tests {
         // A leading `::` is rooted in the extern prelude, never in a local
         // same-named module. The alias remains a named definition so it also
         // shadows the local glob.
-        let result = routes(
-            "mod dep { pub struct C { pub value: i32 } } pub use dep::*; pub type C = ::dep::C;",
-        );
+        let source =
+            "mod dep { pub struct C { pub value: i32 } } pub use dep::*; pub type C = ::dep::C;";
+        let result = routes(source);
         assert!(!result.contains_key(&path("dep::C")));
+        let file = syn::parse_file(source).unwrap();
+        let mut scan = PublicRoutes::with_edition("2015");
+        scan.file(&file.items, &[], &[]);
+        assert_eq!(
+            scan.resolve()[&(Namespace::Type, path("dep::C"))].path,
+            path("C")
+        );
     }
 
     #[test]

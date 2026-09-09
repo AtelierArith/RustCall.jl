@@ -1,8 +1,8 @@
 //! `rustcall-extract`: command-line front end over `rustcall_core`.
 //!
 //! ```text
-//! rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
-//! rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+//! rustcall-extract manifest   --mode <inline|crate> [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+//! rustcall-extract wrap       --crate-name NAME [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
 //! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
@@ -29,8 +29,8 @@ use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 use serde::Deserialize;
 
 const USAGE: &str = "usage:
-  rustcall-extract manifest   --mode <inline|crate> [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
-  rustcall-extract wrap       --crate-name NAME [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+  rustcall-extract manifest   --mode <inline|crate> [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+  rustcall-extract wrap       --crate-name NAME [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
   rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
@@ -48,6 +48,8 @@ from the manifest and the expanded source. Without it every item is reported.
 target_*); feature/profile predicates are unknown and keep their items (Cargo builds).
 --skip-unparsable: files that are not a complete Rust module (e.g. include!() fragments)
 are skipped with a warning instead of failing the run.
+--edition: the target crate's Rust edition (2015, 2018, 2021 or 2024). Defaults
+to 2021 when no Cargo manifest is available.
 wrap: generate the `src/lib.rs` of a wrapper crate for the PyO3 items of the crate
 scanned from FILE... (#275 Phase 2), and write it, together with the manifest that
 describes what it exports, as one TOML document to --out or stdout. Always crate
@@ -140,6 +142,15 @@ fn take_value(args: &[Arg], i: &mut usize, flag: &str) -> Result<String, String>
         .ok_or_else(|| format!("{flag} value is not valid UTF-8: {}", raw.display()))
 }
 
+fn validate_edition(edition: &str) -> Result<(), String> {
+    match edition {
+        "2015" | "2018" | "2021" | "2024" => Ok(()),
+        other => Err(format!(
+            "unknown Rust edition `{other}`; expected 2015, 2018, 2021 or 2024"
+        )),
+    }
+}
+
 /// Dispatch on an argument that must be an option or a file.
 enum Token<'a> {
     Option(&'a str),
@@ -163,6 +174,7 @@ struct ScanOptions {
     files: Vec<PathBuf>,
     build_env_file: Option<PathBuf>,
     inputs_out: Option<PathBuf>,
+    edition: String,
 }
 
 /// Run the scan `opts` describes and return the merged manifest.
@@ -202,6 +214,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                 opts.skip_unparsable,
                 &mut merged,
                 environment,
+                &opts.edition,
             )?;
             if let Some(path) = &opts.inputs_out {
                 let text = toml::to_string(&std::collections::BTreeMap::from([("files", inputs)]))
@@ -214,7 +227,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         // are still married across the files (#315) and exported symbols
         // checked crate-wide (#300).
         (Mode::Crate, None) => {
-            let mut scan = rustcall_core::extract::TreeScan::new();
+            let mut scan = rustcall_core::extract::TreeScan::with_edition(&opts.edition);
             // A listed file that is also reached through an include must not
             // win merely because it appeared in FILE...: its root position is
             // not the position Rust gives the included items. Discover those
@@ -361,6 +374,7 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
     let mut skip_unparsable = false;
     let mut crate_root: Option<PathBuf> = None;
     let mut files: Vec<PathBuf> = Vec::new();
+    let mut edition = "2021".to_string();
     let mut i = 0;
     while i < args.len() {
         match token(&args[i]) {
@@ -374,6 +388,7 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
             Token::Option("--crate-name") => {
                 crate_name = Some(take_value(args, &mut i, "--crate-name")?)
             }
+            Token::Option("--edition") => edition = take_value(args, &mut i, "--edition")?,
             Token::Option("--out") => out = Some(take_path(args, &mut i, "--out")?),
             Token::Option("--cfg-file") => cfg_file = Some(take_path(args, &mut i, "--cfg-file")?),
             Token::Option("--cfg-lenient") => cfg_lenient = true,
@@ -390,6 +405,7 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
         i += 1;
     }
     let crate_name = crate_name.ok_or("--crate-name is required")?;
+    validate_edition(&edition)?;
     check_inputs(&files, crate_root.as_deref())?;
     let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient)?;
     // Whether the scan decided every `#[cfg]` predicate. When it did not,
@@ -404,6 +420,7 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
         skip_unparsable,
         crate_root,
         files,
+        edition,
     })?;
     let wrapper = rustcall_core::wrap::wrapper_crate(&scanned, &crate_name, cfg_resolved);
     let text = wrapper
@@ -429,6 +446,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
     let mut skip_unparsable = false;
     let mut crate_root: Option<PathBuf> = None;
     let mut files: Vec<PathBuf> = Vec::new();
+    let mut edition = "2021".to_string();
     let mut i = 0;
     while i < args.len() {
         match token(&args[i]) {
@@ -443,6 +461,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
                 let v = take_value(args, &mut i, "--mode")?;
                 mode = Some(Mode::parse(&v).ok_or_else(|| format!("unknown mode `{v}`"))?);
             }
+            Token::Option("--edition") => edition = take_value(args, &mut i, "--edition")?,
             Token::Option("--out") => out = Some(take_path(args, &mut i, "--out")?),
             Token::Option("--cfg-file") => cfg_file = Some(take_path(args, &mut i, "--cfg-file")?),
             Token::Option("--cfg-lenient") => cfg_lenient = true,
@@ -459,6 +478,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
         i += 1;
     }
     let mode = mode.ok_or("--mode is required")?;
+    validate_edition(&edition)?;
     check_inputs(&files, crate_root.as_deref())?;
     if crate_root.is_some() && mode != Mode::Crate {
         return Err("--crate-root is only meaningful with --mode crate".into());
@@ -472,6 +492,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
         skip_unparsable,
         crate_root,
         files,
+        edition,
     })?;
     write_manifest(&merged, out.as_deref())
 }
@@ -675,6 +696,7 @@ fn scan_crate_tree(
     skip_unparsable: bool,
     manifest: &mut Manifest,
     environment: Option<rustcall_core::include_paths::IncludeEnvironment>,
+    edition: &str,
 ) -> Result<Vec<PathBuf>, String> {
     let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut queue = vec![QueuedFile {
@@ -697,10 +719,15 @@ fn scan_crate_tree(
     // included twice at the *same* position is still one scan.
     let mut visited: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
     let mut input_paths = std::collections::BTreeSet::new();
-    let mut scan = environment.map_or_else(
-        rustcall_core::extract::TreeScan::new,
-        rustcall_core::extract::TreeScan::with_include_environment,
-    );
+    let mut scan = match environment {
+        Some(environment) => {
+            rustcall_core::extract::TreeScan::with_include_environment_and_edition(
+                environment,
+                edition,
+            )
+        }
+        None => rustcall_core::extract::TreeScan::with_edition(edition),
+    };
 
     while let Some(QueuedFile {
         file,

@@ -102,3 +102,27 @@ end
         _public_route_wrapper303(layout === :file)
     end
 end
+
+@testset "leading-colon type aliases follow the target edition (#303)" begin
+    for (edition, routed) in (("2015", true), ("2021", false))
+        mktempdir() do root
+            mkpath(joinpath(root, "src"))
+            write(joinpath(root, "Cargo.toml"), """
+                [package]
+                name = "edition_routes_$(edition)"
+                version = "0.1.0"
+                edition = "$(edition)"
+                """)
+            write(joinpath(root, "src", "lib.rs"), raw"""
+                mod hidden {
+                    #[pyclass]
+                    pub struct Counter { pub value: i32 }
+                }
+                pub type Counter = ::hidden::Counter;
+                """)
+            info = RustCall.scan_crate(root)
+            counter = only(info.pyo3_structs)
+            @test isempty(counter.skip_reason) == routed
+        end
+    end
+end

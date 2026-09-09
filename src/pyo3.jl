@@ -1387,7 +1387,9 @@ function build_pyo3_wrapper(info::CrateInfo;
     cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
     source = wrap_crate(tree_files; crate_name = crate_rust_identifier(info.name, cargo_toml),
                         cfg = cfg, cfg_text = cfg_text,
-                        crate_root = lib_root, skip_unparsable = true, build_env = plan.build_env)
+                        crate_root = lib_root,
+                        edition = _crate_rust_edition(info.path, cargo_toml),
+                        skip_unparsable = true, build_env = plan.build_env)
 
     functions, structs, skipped, pyo3_exports = _pyo3_wrapper_items(source.manifest)
     # Nothing PyO3 to wrap under this feature set — a crate whose markers are
@@ -1938,7 +1940,9 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             source = wrap_crate(tree_files;
                                 crate_name = crate_rust_identifier(info.name, cargo_toml),
                                 cfg = cfg, cfg_text = cfg_text,
-                                crate_root = lib_root, skip_unparsable = true, build_env = plan.build_env)
+                                crate_root = lib_root,
+                                edition = _crate_rust_edition(crate_path, cargo_toml),
+                                skip_unparsable = true, build_env = plan.build_env)
             functions, structs, refused, _ = _pyo3_wrapper_items(source.manifest)
             wrapped = Any[]
             for f in functions
