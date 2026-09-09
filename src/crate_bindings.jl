@@ -169,11 +169,18 @@ function scan_crate(crate_path::String; cfg = :lenient,
 
     # Extract dependencies from Cargo.toml
     dependencies = extract_crate_dependencies(cargo_toml)
+    version = get(cargo_toml["package"], "version", "0.1.0")
+    if version isa AbstractDict && get(version, "workspace", false) === true
+        metadata = _cargo_package_metadata(crate_path)
+        manifest_path = realpath(cargo_toml_path)
+        package = only(p for p in metadata["packages"] if realpath(p["manifest_path"]) == manifest_path)
+        version = package["version"]
+    end
 
     CrateInfo(
         cargo_toml["package"]["name"],
         abspath(crate_path),
-        get(cargo_toml["package"], "version", "0.1.0"),
+        version,
         dependencies,
         all_functions,
         all_structs,

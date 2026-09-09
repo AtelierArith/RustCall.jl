@@ -486,7 +486,12 @@ function _wrapper_probe_context(crate_path::AbstractString;
                 # `pkgid` requires Cargo.lock. The successful probe first
                 # resolves it, including for a fresh crate without a lockfile.
                 package_id = strip(read(setenv(`$(cargo()) pkgid -p $package`, env; dir = dir), String))
-                _cargo_probe_context(out, package_id, path)
+                # Package metadata is independent of feature resolution. Ask
+                # Cargo to expand workspace inheritance without traversing or
+                # downloading the target's entire dependency graph.
+                metadata = _cargo_package_metadata(path; env = env, dir = dir)
+                builtins = _cargo_package_environment(metadata, package_id)
+                _cargo_probe_context(out, package_id, path; builtins = builtins)
             finally
                 rm(dir; recursive = true, force = true)
             end
@@ -499,9 +504,42 @@ function _wrapper_probe_context(crate_path::AbstractString;
     return probe()
 end
 
-function _cargo_probe_context(output::AbstractString, package_id::AbstractString, path::AbstractString)
+function _cargo_package_metadata(path::AbstractString; env = ENV, dir = path)
+    manifest = abspath(joinpath(path, "Cargo.toml"))
+    parse_json(read(setenv(`$(cargo()) metadata --no-deps --format-version=1 --manifest-path $manifest`,
+                          env; dir = dir), String))
+end
+
+function _cargo_package_environment(metadata::AbstractDict, package_id::AbstractString)
+    package = only(p for p in metadata["packages"] if p["id"] == package_id)
+    value(key) = something(get(package, key, nothing), "")
+    version = VersionNumber(package["version"])
+    environment = Dict{String, String}(
+        "CARGO" => first(cargo().exec),
+        "CARGO_PKG_VERSION" => package["version"],
+        "CARGO_PKG_VERSION_MAJOR" => string(version.major),
+        "CARGO_PKG_VERSION_MINOR" => string(version.minor),
+        "CARGO_PKG_VERSION_PATCH" => string(version.patch),
+        "CARGO_PKG_VERSION_PRE" => join(version.prerelease, "."),
+        "CARGO_PKG_AUTHORS" => join(get(package, "authors", String[]), ":"),
+    )
+    for (key, suffix) in (("name", "NAME"), ("description", "DESCRIPTION"),
+                           ("homepage", "HOMEPAGE"), ("repository", "REPOSITORY"),
+                           ("license", "LICENSE"), ("license_file", "LICENSE_FILE"),
+                           ("rust_version", "RUST_VERSION"), ("readme", "README"))
+        environment["CARGO_PKG_" * suffix] = String(value(key))
+    end
+    library_kinds = ("lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro")
+    target = only(t for t in package["targets"] if any(k in library_kinds for k in t["kind"]))
+    environment["CARGO_CRATE_NAME"] = replace(target["name"], "-" => "_")
+    environment
+end
+
+function _cargo_probe_context(output::AbstractString, package_id::AbstractString, path::AbstractString;
+                               builtins::AbstractDict = Dict{String, String}())
     environment = Dict("CARGO_MANIFEST_DIR" => String(path),
                        "CARGO_MANIFEST_PATH" => joinpath(path, "Cargo.toml"))
+    merge!(environment, builtins)
     cfg_lines = String[]
     for line in split(output, '\n')
         stripped = strip(line)

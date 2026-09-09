@@ -1,6 +1,89 @@
 using RustCall, Test
 include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
 
+@testset "Cargo built-ins include inherited package metadata (#303)" begin
+    mktempdir() do workspace
+        write(joinpath(workspace, "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+            resolver = "2"
+            [workspace.package]
+            version = "1.2.3-rc.4+build.5"
+            authors = ["First", "Second"]
+            description = "inherited description"
+            license-file = "LICENSE"
+            readme = "README.md"
+            rust-version = "1.74"
+            """)
+        write(joinpath(workspace, "LICENSE"), "test license")
+        write(joinpath(workspace, "README.md"), "test readme")
+        root = joinpath(workspace, "member")
+        mkpath(joinpath(root, "src"))
+        write(joinpath(root, "Cargo.toml"), """
+            [package]
+            name = "builtin_target303"
+            edition = "2021"
+            version.workspace = true
+            authors.workspace = true
+            description.workspace = true
+            license-file.workspace = true
+            readme.workspace = true
+            rust-version.workspace = true
+            [lib]
+            name = "builtin_api303"
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+        write(joinpath(root, "build.rs"), raw"""
+            fn main() {
+                let file = std::path::Path::new(&std::env::var("OUT_DIR").unwrap())
+                    .join(format!("{}.rs", std::env::var("CARGO_PKG_VERSION").unwrap()));
+                std::fs::write(file, r#"
+                    #[pyo3::pyfunction] pub fn metadata_values() -> String {
+                        concat!(env!("CARGO_PKG_VERSION"), "|", env!("CARGO_PKG_AUTHORS"),
+                            "|", env!("CARGO_PKG_DESCRIPTION"), "|", env!("CARGO_PKG_LICENSE_FILE"),
+                            "|", env!("CARGO_PKG_README"), "|", env!("CARGO_CRATE_NAME")).to_string()
+                    }
+                "#).unwrap();
+            }
+            """)
+        write(joinpath(root, "src", "lib.rs"),
+            raw"""include!(concat!(env!("OUT_DIR"), "/", env!("CARGO_PKG_VERSION"), ".rs"));""")
+        plan = RustCall.pyo3_link_plan(root)
+        @test RustCall.scan_crate(root).version == "1.2.3-rc.4+build.5"
+        @test plan.resolved
+        environment = plan.build_env
+        @test environment["CARGO_PKG_VERSION_MAJOR"] == "1"
+        @test environment["CARGO_PKG_VERSION_MINOR"] == "2"
+        @test environment["CARGO_PKG_VERSION_PATCH"] == "3"
+        @test environment["CARGO_PKG_VERSION_PRE"] == "rc.4"
+        @test environment["CARGO_PKG_AUTHORS"] == "First:Second"
+        @test environment["CARGO_PKG_NAME"] == "builtin_target303"
+        @test environment["CARGO_PKG_RUST_VERSION"] == "1.74"
+        @test environment["CARGO_PKG_LICENSE"] == ""
+        @test environment["CARGO_PKG_HOMEPAGE"] == ""
+        @test environment["CARGO_CRATE_NAME"] == "builtin_api303"
+        @test isfile(environment["CARGO"])
+        wrapper = _link_libpython_wrapper(root)
+        if wrapper === nothing
+            @test_skip "no linkable Python here"
+        else
+            binding = @rust_crate root
+            module_ = binding.module_ref
+            name = Base.invokelatest(getfield, module_, :_LIB_NAME)
+            try
+                expected = join((environment[key] for key in (
+                    "CARGO_PKG_VERSION", "CARGO_PKG_AUTHORS", "CARGO_PKG_DESCRIPTION",
+                    "CARGO_PKG_LICENSE_FILE", "CARGO_PKG_README", "CARGO_CRATE_NAME")), "|")
+                @test Base.invokelatest(getfield(module_, :metadata_values)) == expected
+            finally
+                RustCall.unload_library(name; close = true)
+                RustCall.close_retired_handles!(RustCall.retired_handles(name))
+            end
+        end
+    end
+end
+
 @testset "fresh crate build context does not require an existing lockfile (#303)" begin
     mktempdir() do root
         mkpath(joinpath(root, "src"))
@@ -153,7 +236,8 @@ end
         wrapped = RustCall.wrap_crate(String[]; crate_name = "generated_probe303",
                                      crate_root = source, cfg = :lenient, build_env = environment)
         @test occursin("generated_probe303::api::generated_answer", wrapped.lib_rs)
-        @test realpath(joinpath(generated, "api.rs")) in wrapped.source_files
+        @test any(path -> Base.Filesystem.samefile(path, joinpath(generated, "api.rs")),
+                  wrapped.source_files)
         identity_before = RustCall.artifact_scan_inputs(wrapped.source_files)
         write(joinpath(generated, "api.rs"), "#[pyo3::pyfunction] pub fn generated_answer() -> i32 { 43 }")
         @test RustCall.artifact_scan_inputs(wrapped.source_files) != identity_before
