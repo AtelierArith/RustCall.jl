@@ -488,7 +488,7 @@ impl Pyo3Scan {
                             let value = py_result_ok_type(ty).unwrap_or_else(|| (**ty).clone());
                             returns_class(
                                 &value, &self.classes[index], &imp.header.module_path,
-                                &self.classes, &self.imports,
+                                &self.classes, &self.imports, self.edition_2015,
                             )
                         }
                     );
@@ -1403,11 +1403,18 @@ fn returns_class(
     impl_path: &[String],
     classes: &[ScannedClass],
     imports: &[ScannedImport],
+    edition_2015: bool,
 ) -> bool {
     let Type::Path(path) = unparen(ty) else {
         return false;
     };
     if path.qself.is_some() {
+        return false;
+    }
+    // A leading `::` names the current crate only in edition 2015. In newer
+    // editions it starts in the extern prelude, which this scanner cannot
+    // resolve and must not confuse with a same-named local module.
+    if path.path.leading_colon.is_some() && !edition_2015 {
         return false;
     }
     if path.path.is_ident("Self") {
@@ -1416,9 +1423,13 @@ fn returns_class(
     let Some(target) = path.path.segments.last() else {
         return false;
     };
+    let mut qualifier = crate::paths::type_path_qualifier(ty);
+    if path.path.leading_colon.is_some() {
+        qualifier.anchor = crate::paths::PathAnchor::Crate;
+    }
     let header = ImplHeader {
         target: target.ident.clone(),
-        qualifier: crate::paths::type_path_qualifier(ty),
+        qualifier,
         module_path: impl_path.to_vec(),
     };
     crate::paths::locate_type(classes, &header, imports).is_ok_and(|index| {

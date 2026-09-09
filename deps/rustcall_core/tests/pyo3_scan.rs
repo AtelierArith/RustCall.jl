@@ -976,6 +976,28 @@ fn leading_colon_type_aliases_follow_the_rust_edition_for_impls_and_returns() {
         .is_empty());
 }
 
+#[test]
+fn leading_colon_direct_returns_follow_the_rust_edition() {
+    let source = "
+        pub mod uses {
+            pub mod dep { #[pyclass] pub struct C {} }
+            #[pymethods] impl dep::C {
+                pub fn absolute(&self) -> PyResult<::uses::dep::C> { todo!() }
+            }
+        }
+    ";
+
+    let edition_2015 = scan_with_edition(source, "2015");
+    let method = &edition_2015.structs[0].methods[0];
+    assert_eq!(method.name, "absolute");
+    assert!(method.returns_boxed_struct);
+
+    let edition_2021 = scan_with_edition(source, "2021");
+    let method = &edition_2021.structs[0].methods[0];
+    assert_eq!(method.name, "absolute");
+    assert!(!method.returns_boxed_struct);
+}
+
 /// Two `pub fn run` in different modules of one crate used to want one
 /// `rustcall_run`; the module path is part of the symbol since #300, so both
 /// are wrappable and `symbol_collision` is unreachable for them.
