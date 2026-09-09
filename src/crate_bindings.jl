@@ -967,7 +967,9 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # upgraded in place keeps its path, so only its *content* says it changed,
     # and `plan.interpreter_config` is in the wrapper's artifact identity
     # (#339 review).
-    append!(crate_inputs, _expand_precompile_inputs(extra_inputs))
+    for extra in extra_inputs
+        (isfile(extra) || isdir(extra)) && push!(crate_inputs, abspath(extra))
+    end
     unique!(crate_inputs)
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).
@@ -2686,7 +2688,8 @@ function generate_bindings(crate_path::String;
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
-                                     extra_inputs = unique(vcat(python_inputs, plan.build_inputs,
+                                     extra_inputs = unique(vcat(python_inputs,
+                                                                 _expand_precompile_inputs(plan.build_inputs),
                                                                  wrapper.source.source_files,
                                                                  dirname.(wrapper.source.source_files))),
                                      python = links_python)
