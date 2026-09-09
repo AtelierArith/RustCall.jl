@@ -1434,8 +1434,8 @@ fn crate_field_accessors(
     ffi_functions
 }
 
-fn struct_field_setter(
-    owner: &Ident,
+pub(crate) fn struct_field_setter(
+    owner: &impl quote::ToTokens,
     field: &Ident,
     ty: &Type,
     setter: &Ident,

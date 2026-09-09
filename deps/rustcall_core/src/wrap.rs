@@ -362,14 +362,6 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
                     }
                 }));
             }
-            // A `String` field is read by copying it out; writing one would
-            // need the byte-pair ABI on a setter, which no accessor shape
-            // covers yet (#303). A `set`-only `String` field therefore has no
-            // accessor at all, and the manifest says so.
-            f.setter.clear();
-            if f.getter.is_empty() {
-                f.ffi_compatible = false;
-            }
         } else {
             if !f.getter.is_empty() {
                 let getter = format_ident!("{}", f.getter);
@@ -383,15 +375,17 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
                     }
                 }));
             }
-            if !f.setter.is_empty() {
-                let setter = format_ident!("{}", f.setter);
-                out.extend(crate::codegen::guard_struct_helper(quote! {
-                    #[no_mangle]
-                    pub extern "C" fn #setter(ptr: *mut #class, value: #ty) {
-                        unsafe { (*ptr).#field = value; }
-                    }
-                }));
-            }
+        }
+        if !f.setter.is_empty() {
+            // Share byte-pair String conversion and the panic boundary with
+            // the in-crate/inline accessor generator (#303).
+            out.extend(crate::codegen::struct_field_setter(
+                &class,
+                &field,
+                &ty,
+                &format_ident!("{}", f.setter),
+                &[],
+            ));
         }
     }
 

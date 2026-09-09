@@ -49,6 +49,14 @@ depends on it and exports one `extern "C"` entry point per wrappable item:
   `rustcall_<Class>_get_<field>` / `_set_<field>` for the fields
   `#[pyo3(get, set)]`, `get_all` or `set_all` expose.
 
+Public `String` fields support both reads and writes, including a
+`#[pyo3(set)]` write-only field. Setters take a UTF-8 byte pointer and length,
+so empty strings and embedded NUL characters are preserved; Julia rejects
+invalid UTF-8 before entering Rust. Inline bindings expose `set_<field>!`
+alongside property assignment; written bindings expose property assignment.
+Private fields and setters on a `frozen` class remain inaccessible through
+this native wrapper path.
+
 A crate may carry **both** kinds of marker. `#[julia]` is additive since #279
 and exports `rustcall_<name>` from the crate itself, so the wrapper generates
 entry points for the PyO3 items and *links* the `#[julia]` ones; one
