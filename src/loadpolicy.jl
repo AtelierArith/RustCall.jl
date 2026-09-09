@@ -1057,13 +1057,13 @@ CrateGeneration() = CrateGeneration(C_NULL, Ref(false), 0)
 that the loader keeps in sync.
 
 A generated `@rust_crate` module resolves its symbols through its own
-generation record rather than through a registry lookup per call — that is the
-whole point of the module-local `Ref`. But a raw copy of a handle goes **stale**
+generation record. The module exposes an owner-qualified StateView and the
+underlying cell is owned by STATE. A raw copy of a handle goes **stale**
 the moment the library is replaced or unloaded: a hot reload closes the previous
 image, and `unload_library` drops it, after which a raw copy of the handle
 would be read against an image nothing points at any more. Registering the
-module's `Ref` here lets the transaction that swaps the handle swap the mirror
-in the same critical section, so the fast path stays a `Ref` read and can never
+module's owned cell here lets the transaction that swaps the handle swap the mirror
+in the same critical section, so a single record read can never
 point at a closed image (#277 Phase B).
 
 The mirrors survive an unload rather than being dropped with it: a hot reload is
@@ -1103,6 +1103,15 @@ function register_handle_mirror!(lib_name::AbstractString,
         end
     end
     return nothing
+end
+
+# Generated modules expose only an immutable owner-qualified view. The cell
+# itself lives in STATE; the loader's mirror list aliases that same owned cell.
+function register_handle_mirror!(lib_name::AbstractString, view::StateView)
+    view.owner !== nothing && view.name === :crate_generation ||
+        throw(ArgumentError("A crate generation mirror requires a module-owned generation view"))
+    gen_ref = _state_read(view, identity)
+    return register_handle_mirror!(lib_name, gen_ref)
 end
 
 # Publish one generation to every mirror of `name`: one pointer store each, so

@@ -992,7 +992,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # Libraries the image imports by name that the loader would not find on
         # its own — a PyO3 wrapper's `python3xy.dll` on Windows, where there is
         # no rpath — opened before it (`PyO3LinkPlan.runtime_libraries`).
-        const _PRELOAD_LIBRARIES = $preload
+        const _PRELOAD_LIBRARIES = $(Tuple(preload))
 
         # What makes a package that contains this module re-precompile, and so
         # rebuild the crate, when it should (#339). Outside precompilation
@@ -1008,7 +1008,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # cache path and the old file is still there, unchanged, so nothing
         # Julia tracks would have moved and the package would go on calling the
         # previous build (#339 review).
-        const _CRATE_INPUTS = $crate_inputs
+        const _CRATE_INPUTS = $(Tuple(crate_inputs))
         for _input in _CRATE_INPUTS
             Base.include_dependency(_input)
         end
@@ -1016,7 +1016,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # `RUSTFLAGS`, `PYO3_PYTHON`, a `PYO3_CONFIG_FILE` pointing elsewhere.
         # Julia cannot invalidate an image on those, so the values are recorded
         # and `__init__` says when they no longer match (#339 review).
-        const _BUILD_ENV = $recorded_env
+        const _BUILD_ENV = $(Tuple(recorded_env))
         const _CRATE_DIR = $crate_dir
         const _CARGO_CONFIG = $cargo_config_digest
         const _TOOLCHAIN = $toolchain
@@ -1024,7 +1024,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
-        # one `Ref`.
+        # one STATE-owned cell exposed through an immutable view.
         #
         # It used to be two `Ref`s, written by the loader under `REGISTRY_LOCK`
         # and read here under this module's own lock. Two unrelated locks over
@@ -1035,8 +1035,9 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # was closed, and its finalizer jumped through an unmapped destructor.
         # One record, published by `_update_handle_mirrors!` in the same
         # transaction that swaps the registry entry, makes every read of
-        # `_LIB_GEN[]` a consistent generation with no lock at all (#277).
-        const _LIB_GEN = Ref(RustCall.CrateGeneration())
+        # `_LIB_GEN[]` a consistent generation. The view takes STATE only to
+        # read that record; no lock is held while resolving or calling Rust.
+        const _LIB_GEN = RustCall.StateView(:crate_generation, @__MODULE__)
 
         function __init__()
             # Register *before* loading, and do not assign afterwards: the
@@ -1064,19 +1065,14 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # would be a call into code that is no longer there. Negative answers
         # are cached too — a crate built by an older RustCall exports no panic
         # channels and must not be probed on every call.
-        const _SYMBOLS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()
-        # `get!` on a `Dict` is not safe against a concurrent `get!`. This lock
-        # guards the *cache*, never the generation read: resolution happens
-        # before the Rust call, so a lock here costs nothing that matters — it
-        # is the channel read *after* the call that must not take one (#244).
-        const _SYMBOL_LOCK = ReentrantLock()
+        const _SYMBOLS = RustCall.StateView(:crate_symbols, @__MODULE__)
 
         function _symbol(handle::Ptr{Cvoid}, name::String)
-            lock(_SYMBOL_LOCK) do
-                get!(_SYMBOLS, (handle, name)) do
-                    ptr = Libdl.dlsym(handle, name; throw_error = false)
-                    ptr === nothing ? C_NULL : ptr
-                end
+            # StateView evaluates a cache default outside STATE, then performs
+            # compare-and-publish. Symbol resolution precedes every Rust call.
+            get!(_SYMBOLS, (handle, name)) do
+                ptr = Libdl.dlsym(handle, name; throw_error = false)
+                ptr === nothing ? C_NULL : ptr
             end
         end
 
@@ -2865,7 +2861,7 @@ A file emitted by an older version still *works* — it only uses public API tha
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 7
+const BINDINGS_FORMAT_VERSION = 8
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
@@ -3584,13 +3580,13 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
         push!(lines, "# Libraries the image imports by name that the loader would not find on")
         push!(lines, "# its own (a PyO3 wrapper's Python DLL on Windows, which has no rpath),")
         push!(lines, "# opened before it.")
-        push!(lines, "const _PRELOAD_LIBRARIES = $(repr(preload))")
+        push!(lines, "const _PRELOAD_LIBRARIES = $(repr(Tuple(preload)))")
     end
     push!(lines, "")
     push!(lines, "# Everything this module knows about the image it calls -- handle, liveness")
     push!(lines, "# flag and generation -- as one immutable value, published by the loader in")
     push!(lines, "# the transaction that swaps the registry entry (#277).")
-    push!(lines, "const _LIB_GEN = Ref(RustCall.CrateGeneration())")
+    push!(lines, "const _LIB_GEN = RustCall.StateView(:crate_generation, @__MODULE__)")
     push!(lines, "")
     push!(lines, "function __init__()")
     push!(lines, "    # Register before loading, and do not assign afterwards: an assignment")
@@ -3613,15 +3609,12 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "")
     push!(lines, "# Resolved symbols, memoized per handle: a reload swaps the image under the")
     push!(lines, "# same module. Negative answers are cached too.")
-    push!(lines, "const _SYMBOLS = Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}()")
-    push!(lines, "const _SYMBOL_LOCK = ReentrantLock()")
+    push!(lines, "const _SYMBOLS = RustCall.StateView(:crate_symbols, @__MODULE__)")
     push!(lines, "")
     push!(lines, "function _symbol(handle::Ptr{Cvoid}, name::String)")
-    push!(lines, "    lock(_SYMBOL_LOCK) do")
-    push!(lines, "        get!(_SYMBOLS, (handle, name)) do")
-    push!(lines, "            ptr = Libdl.dlsym(handle, name; throw_error = false)")
-    push!(lines, "            ptr === nothing ? C_NULL : ptr")
-    push!(lines, "        end")
+    push!(lines, "    get!(_SYMBOLS, (handle, name)) do")
+    push!(lines, "        ptr = Libdl.dlsym(handle, name; throw_error = false)")
+    push!(lines, "        ptr === nothing ? C_NULL : ptr")
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "")

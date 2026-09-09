@@ -373,3 +373,53 @@ end
         end
     end
 end
+
+@testset "both crate module templates keep runtime registries in STATE (#251)" begin
+    fixture = joinpath(@__DIR__, "fixtures", "sample_crate")
+    scope = Module(gensym(:CrateStateScope))
+    Core.eval(scope, :(using RustCall))
+    modules = Module[]
+    libraries = String[]
+    try
+        bindings = RustCall.load_crate_bindings(fixture;
+            submodule_name = "OwnedCrateState", target_module = scope)
+        direct = getfield(bindings, :module_ref)
+        push!(modules, direct)
+        push!(libraries, RustCall._module_binding(direct, :_LIB_NAME))
+        info = RustCall.scan_crate(fixture)
+        code = RustCall.emit_crate_module_code(info,
+            RustCall._module_binding(direct, :_LIB_PATH);
+            module_name = "OwnedEmittedState", lib_name = "owned_emitted_state_251")
+        emitted = RustCall._instantiate_runtime_bindings(Meta.parse(code);
+            target_module = scope, visible = true)
+        push!(modules, emitted)
+        push!(libraries, RustCall._module_binding(emitted, :_LIB_NAME))
+
+        for mod in modules
+            @test isempty(_mutable_module_registries(mod))
+            generation = RustCall._module_binding(mod, :_LIB_GEN)
+            symbols = RustCall._module_binding(mod, :_SYMBOLS)
+            @test generation isa RustCall.StateView
+            @test symbols isa RustCall.StateView
+            @test generation.owner === symbols.owner === mod
+            name = RustCall._module_binding(mod, :_LIB_NAME)
+            @test lock(RustCall.REGISTRY_LOCK) do
+                cell = RustCall._state_value(generation)
+                any(ref -> ref === cell, RustCall.HANDLE_MIRRORS[name])
+            end
+            multiply = RustCall._module_binding(mod, :multiply)
+            @test Base.invokelatest(multiply, 2.0, 3.0) == 6.0
+            @test !isempty(symbols)
+            readers = [Threads.@spawn Base.invokelatest(multiply, 3.0, 4.0) for _ in 1:16]
+            @test all(==(12.0), fetch.(readers))
+            RustCall.unload_library(name)
+            @test generation[].handle == C_NULL
+            @test_throws Exception Base.invokelatest(multiply, 2.0, 3.0)
+        end
+    finally
+        for name in libraries
+            RustCall.unload_library(name; close = true)
+            RustCall.close_retired_handles!(RustCall.retired_handles(name))
+        end
+    end
+end

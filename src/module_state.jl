@@ -41,7 +41,10 @@ function _ensure_module_state!(mod::Module)
         end
         active[] = record.lib_name
     end
-    candidate = Dict{Symbol, Any}(:libs => libs, :symbols => symbols, :active => active)
+    candidate = Dict{Symbol, Any}(
+        :libs => libs, :symbols => symbols, :active => active,
+        :crate_generation => Ref(CrateGeneration()),
+        :crate_symbols => Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}())
     return lock(REGISTRY_LOCK) do
         chosen = get!(MODULE_STATES, mod, candidate)
         isempty(chosen[:active][]) || get!(MODULE_ACTIVE_LIB, mod, chosen[:active][])
@@ -138,4 +141,3 @@ function _record_module_symbols_transaction!(table, lib_name, symbols, module_na
     conflict === nothing || _throw_module_symbol_conflict(conflict, module_name)
     return nothing
 end
-

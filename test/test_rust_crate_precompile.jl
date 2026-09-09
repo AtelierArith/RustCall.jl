@@ -48,7 +48,10 @@ end
         @test_skip "cargo and test/fixtures/sample_crate are required"
     else
         root = mktempdir()
-        pkg_name = "RustCratePrecomp339"
+        # Julia's compiled-cache directory is keyed by package name. A
+        # concurrent invocation must not share the directory our cleanup
+        # removes, even though each invocation already has a private source.
+        pkg_name = "RustCratePrecomp339_$(basename(root))"
         pkg_uuid = "3d2f9a71-6b0e-4c2a-9f1d-5e8b7c6a4d39"
         pkgdir_ = joinpath(root, pkg_name)
         cache_dir = joinpath(root, "rustcall-cache")
@@ -86,7 +89,7 @@ end
                 # stderr carries the precompilation progress and RustCall's
                 # `@info` lines; only stdout is the answer.
                 readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $script`;
-                                   stderr = devnull))
+                                   stderr = stderr))
             end
         end
 
@@ -123,6 +126,20 @@ end
                       occursin(".rustcall.", basename(loaded)))
                 """)
             @test out2 == "true 5 5.0 true true true true true true true true true"
+
+            @testset "precompiled crate views restore process-owned runtime state (#251)" begin
+                owned = in_subprocess("""
+                    using RustCall, $pkg_name
+                    B = $pkg_name.Bindings
+                    print(B._LIB_GEN isa RustCall.StateView, " ",
+                          B._SYMBOLS isa RustCall.StateView, " ",
+                          B._LIB_GEN.owner === B._SYMBOLS.owner === B, " ",
+                          haskey(RustCall.MODULE_STATES, B), " ",
+                          B._PRELOAD_LIBRARIES isa Tuple && B._CRATE_INPUTS isa Tuple &&
+                          B._BUILD_ENV isa Tuple, " ", add(Int32(2), Int32(3)))
+                    """)
+                @test owned == "true true true true true 5"
+            end
 
             @testset "a precompiled package refuses changed non-file build inputs (#355)" begin
                 for key in ("PYO3_PYTHON", "RUSTFLAGS")
@@ -256,7 +273,7 @@ end
         # And in a package that is precompiled and then loaded in a fresh
         # session, which is where the crash happened.
         root = mktempdir()
-        pkg_name = "RustCrateSameName339"
+        pkg_name = "RustCrateSameName339_$(basename(root))"
         pkg_uuid = "5c7e1b90-2d43-4f18-9a06-3b8e7d24c1af"
         pkgdir_ = joinpath(root, pkg_name)
         cache_dir = joinpath(root, "rustcall-cache")
@@ -285,7 +302,7 @@ end
                 readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e """
                     using $pkg_name
                     print($pkg_name.MyBindings.add(Int32(1), Int32(2)))
-                    """`; stderr = devnull))
+                    """`; stderr = stderr))
             end
             @test out == "3"
         finally
@@ -330,7 +347,7 @@ end
             """
         write(joinpath(crate, "src", "lib.rs"), source(0))
 
-        pkg_name = "RustCrateEdited339"
+        pkg_name = "RustCrateEdited339_$(basename(root))"
         pkg_uuid = "9f3c1d70-4a52-4b86-9d13-7e2c5a8b6f04"
         pkgdir_ = joinpath(root, pkg_name)
         cache_dir = joinpath(root, "rustcall-cache")
@@ -357,7 +374,7 @@ end
         run_pkg(script) = withenv("JULIA_LOAD_PATH" => join((pkgdir(RustCall), root, "@stdlib"), sep),
                                   "RUSTCALL_CACHE_DIR" => cache_dir,
                                   "RUSTCALL_SUPPRESS_HELPERS_WARNING" => "1") do
-            readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $script`; stderr = devnull))
+            readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $script`; stderr = stderr))
         end
 
         # `Base.isprecompiled` needs the package's *source* on the load path,
