@@ -1519,6 +1519,29 @@ fn generated_result_aggregate_names_are_reserved() {
 }
 
 #[test]
+fn ungenerated_aggregate_names_remain_available() {
+    for (return_type, unused_prefix) in [
+        ("PyResult<i32>", "COption"),
+        ("Result<i32, i32>", "COption"),
+        ("Option<i32>", "CResult"),
+    ] {
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn parse() -> {return_type} {{ todo!() }}
+             #[pyclass] pub struct {unused_prefix}_parse;
+             #[pyclass] pub struct A;
+             #[pymethods] impl A {{
+                 pub fn checked(&self) -> {return_type} {{ todo!() }}
+             }}
+             #[pyclass] pub struct {unused_prefix}_A_checked;"
+        ));
+        assert_eq!(function(&manifest, "parse").skip_reason, "");
+        for class in &manifest.structs {
+            assert_eq!(class.skip_reason, "", "{}", class.name);
+        }
+    }
+}
+
+#[test]
 fn generated_method_aggregate_names_are_reserved() {
     let manifest = scan(
         "#[pyclass] pub struct A;\n\

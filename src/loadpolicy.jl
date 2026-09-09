@@ -1180,7 +1180,7 @@ function alive_ref_for_handle(handle::Ptr{Cvoid}, lib_name::AbstractString)
     end
     retired = get(RETIRED_HANDLES, handle, nothing)
     retired === nothing || return retired.alive
-    return DEAD_ARTIFACT
+    return _state_read(DEAD_ARTIFACT, identity)
 end
 
 """

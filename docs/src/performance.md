@@ -357,9 +357,18 @@ The first recorded run was on macOS (`Darwin x86_64`, Julia 1.12.7, rustc
 |---|---:|---:|
 | macOS x86_64 | 406.56 ms | 1.63 ms |
 
-Run the same command on Linux and Windows when comparing toolchains; the script
-prints the platform, Julia version, rustc version, and medians so those results
-can be appended without changing the benchmark itself.
+CI measurements from commit `f6e84bd` on 2026-09-09 (Julia 1.12.7,
+rustc 1.98.1; 3 cold samples and 5 warm samples):
+
+| Platform | Cold: extract + rustc | Warm: cache + memoized expansion |
+|---|---:|---:|
+| [Linux x86_64](https://github.com/AtelierArith/RustCall.jl/actions/runs/34303413582/job/102314990683) | 140.06 ms | 35.08 ms |
+| [macOS aarch64](https://github.com/AtelierArith/RustCall.jl/actions/runs/34303413582/job/102314990577) | 264.79 ms | 3.62 ms |
+| [Windows x86_64](https://github.com/AtelierArith/RustCall.jl/actions/runs/34303413582/job/102314990769) | 256.59 ms | 1.18 ms |
+
+These are runner-specific measurements, not controlled comparisons between
+operating systems. The script prints the platform, Julia version, rustc version,
+and medians so subsequent runs can be compared with their environment recorded.
 
 ## Performance Tuning Tips
 

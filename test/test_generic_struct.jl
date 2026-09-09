@@ -2,6 +2,32 @@
 using RustCall
 using Test
 
+struct NonCopyStatePayload{T} end
+
+@testset "generic methods with stronger bounds do not block construction" begin
+    rust"""
+    #[derive(Default)]
+    pub struct NonCopyStatePayload<T> { value: Vec<T> }
+    #[julia]
+    pub struct StrongBound<T> { value: T }
+    impl<T> StrongBound<T> {
+        pub fn new() -> Self where T: Default { Self { value: T::default() } }
+        pub fn copied(&self) -> T where T: Copy { self.value }
+        pub fn len(&self) -> usize { 5 }
+    }
+    """
+    object = StrongBound{NonCopyStatePayload{Int32}}()
+    @test Base.invokelatest(len, object) == 5
+    @test getfield(object, :free_ptr) != C_NULL
+    params = Dict(:T => NonCopyStatePayload{Int32})
+    constructor = RustCall.get_monomorphized_function("StrongBound_new", params)
+    destructor = RustCall.get_monomorphized_function("StrongBound_free", params)
+    @test constructor.handle == destructor.handle
+    @test getfield(object, :lib_name) == constructor.lib_name
+    @test_throws RustCall.CompilationError RustCall.monomorphize_function("StrongBound_copied", params)
+    finalize(object)
+end
+
 @testset "Generic Struct Test" begin
     if !RustCall.check_rustc_available()
         @warn "rustc not found, skipping generic struct tests"

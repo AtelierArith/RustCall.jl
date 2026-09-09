@@ -468,15 +468,16 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
                 ReturnKind::PyResult | ReturnKind::Result | ReturnKind::Option
             )
         })
-        .flat_map(|f| {
+        .map(|f| {
             let path = f.module_path.clone();
             let cfg = f.cfg.clone();
-            let result = format!("CResult_{}", f.name);
-            let option = format!("COption_{}", f.name);
-            [
-                (path.clone(), result.clone(), result, cfg.clone()),
-                (path, option.clone(), option, cfg),
-            ]
+            let prefix = if f.return_kind == ReturnKind::Option {
+                "COption"
+            } else {
+                "CResult"
+            };
+            let name = format!("{prefix}_{}", f.name);
+            (path, name.clone(), name, cfg)
         })
         .map(|(path, name, owner, cfg)| ((path, name), owner, cfg))
         .collect();
@@ -492,12 +493,15 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
                     ReturnKind::PyResult | ReturnKind::Result | ReturnKind::Option
                 )
         }) {
-            let result = format!("CResult_{}_{}", s.name, m.name);
-            let option = format!("COption_{}_{}", s.name, m.name);
+            let prefix = if m.return_kind == ReturnKind::Option {
+                "COption"
+            } else {
+                "CResult"
+            };
+            let name = format!("{prefix}_{}_{}", s.name, m.name);
             let path = s.module_path.clone();
             let cfg = s.cfg.clone();
-            aggregate_names.push(((path.clone(), result.clone()), result, cfg.clone()));
-            aggregate_names.push(((path, option.clone()), option, cfg));
+            aggregate_names.push(((path, name.clone()), name, cfg));
         }
     }
     let aggregate_named = |path: &[String], name: &str, cfg: &str| {

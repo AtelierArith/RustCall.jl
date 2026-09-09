@@ -150,8 +150,13 @@ const _MONOMORPHIZATION_TYPE_SUFFIX = Dict{String, String}(
 
 function _rust_type_suffix(t)::String
     type_str = string(t)
-    return get(_MONOMORPHIZATION_TYPE_SUFFIX, type_str,
-               replace(type_str, "Int" => "i", "UInt" => "u", "Float" => "f"))
+    suffix = get(_MONOMORPHIZATION_TYPE_SUFFIX, type_str,
+                 replace(type_str, "Int" => "i", "UInt" => "u", "Float" => "f"))
+    # Julia's parametric type display contains braces and module separators.
+    # This readable part must be a Rust identifier; the artifact digest still
+    # distinguishes types whose display names sanitize to the same suffix.
+    return join(isascii(c) && (isletter(c) || isdigit(c) || c == '_') ? c : '_'
+                for c in suffix)
 end
 
 # ============================================================================
@@ -263,13 +268,10 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     registered.group === nothing ||
         return _monomorphize_generic_struct_group(registered.group, func_name, type_params)
 
-    lock(REGISTRY_LOCK) do
-        # Get generic function info. The declared parameter order lives here,
-        # and the key cannot be computed without it (#247).
-        generic_info = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
-        if generic_info === nothing
-            error("Function '$func_name' is not registered as a generic function")
-        end
+    begin
+        # Retain the registration snapshot, but do not hold STATE while
+        # computing identity, extracting, compiling, or opening an image.
+        generic_info = registered
 
         # Compile the specialized function with the compiler the block was
         # expanded for (its #[cfg] snapshot), falling back to the default.
@@ -277,9 +279,8 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         id = _monomorphization_id(generic_info, func_name, type_params, compiler)
         cache_key = artifact_key(id)
 
-        if haskey(MONOMORPHIZED_FUNCTIONS, cache_key)
-            return MONOMORPHIZED_FUNCTIONS[cache_key]
-        end
+        cached = get(MONOMORPHIZED_FUNCTIONS, cache_key, nothing)
+        cached === nothing || return cached
 
         isempty(generic_info.blocked) || throw(RustError(generic_info.blocked))
 
@@ -384,9 +385,9 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
                             channel, artifact.handle, artifact.generation)
 
         # Cache the monomorphized function
-        MONOMORPHIZED_FUNCTIONS[cache_key] = info
-
-        return info
+        return lock(REGISTRY_LOCK) do
+            get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
+        end
     end
 end
 
@@ -399,9 +400,11 @@ methods share the same generation snapshot (#291).
 """
 function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
                                              type_params::Dict{Symbol, <:Type})
-    return lock(REGISTRY_LOCK) do
-        members = [info for info in values(GENERIC_FUNCTION_REGISTRY)
-                   if info.group === group]
+    members = lock(REGISTRY_LOCK) do
+        sort!([info for info in values(GENERIC_FUNCTION_REGISTRY)
+               if info.group === group]; by = info -> info.name)
+    end
+    begin
         isempty(members) && error("Generic struct group '$group' is not registered")
         target = findfirst(info -> info.name == func_name, members)
         target === nothing && error("Function '$func_name' is not registered in generic struct group '$group'")
@@ -443,12 +446,34 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
         full_source = isempty(first_info.context) ? first_info.code :
                       first_info.context * "\n" * first_info.code
         specialized = specialize_generic_group(full_source, specs)
+        if !_generic_group_typechecks(specialized.source, compiler)
+            # Rust decides applicability. A concrete type can satisfy the
+            # constructor's bounds without satisfying every method's bounds.
+            # Keep all applicable wrappers together, including allocation and
+            # destruction, and report an invalid member only when requested.
+            applicable = Int[]
+            for i in eachindex(specs)
+                candidate = specialize_generic_group(full_source, [specs[i]])
+                if _generic_group_typechecks(candidate.source, compiler)
+                    push!(applicable, i)
+                elseif members[i].name == func_name
+                    # Use the normal compiler diagnostics for the requested
+                    # invalid specialization; this build is expected to fail.
+                    compile_rust_to_shared_lib(wrap_rust_code(candidate.source); compiler)
+                    error("Specialization applicability probe disagreed with compilation")
+                end
+            end
+            members = members[applicable]
+            specs = specs[applicable]
+            specialized = specialize_generic_group(full_source, specs)
+        end
         wrapped_code = wrap_rust_code(specialized.source)
         lib_path = compile_rust_to_shared_lib(wrapped_code; compiler = compiler)
         lib_name = "rust_generic_struct_$(artifact_short_id(group_key))"
         eager = [s.symbol for s in specialized.functions]
         artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager)
 
+        compiled = Dict{String, FunctionInfo}()
         for (info, sp) in zip(members, specialized.functions)
             func_ptr = Libdl.dlsym(artifact.handle, sp.symbol; throw_error = false)
             (func_ptr === nothing || func_ptr == C_NULL) &&
@@ -485,12 +510,35 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             channel = Libdl.dlsym(artifact.handle, ffi_panic_symbol(sp.symbol);
                                   throw_error = false)
             channel = (channel === nothing) ? C_NULL : channel
-            MONOMORPHIZED_FUNCTIONS[member_keys[info.name]] =
+            compiled[member_keys[info.name]] =
                 FunctionInfo(sp.symbol, lib_name, ret_type, arg_types, func_ptr,
                              sp.arg_abis, string_return, free_ptr, channel,
                              artifact.handle, artifact.generation)
         end
-        return MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
+        return lock(REGISTRY_LOCK) do
+            cached = get(MONOMORPHIZED_FUNCTIONS, member_keys[func_name], nothing)
+            cached === nothing || return cached
+            for (key, info) in compiled
+                MONOMORPHIZED_FUNCTIONS[key] = info
+            end
+            MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
+        end
+    end
+end
+
+# Compile only metadata when checking whether a set of concrete wrappers is
+# valid. This invokes Rust's trait solver without linking or loading an image.
+function _generic_group_typechecks(source::String, compiler::RustCompiler)
+    mktempdir() do dir
+        input = joinpath(dir, "generic_group.rs")
+        output = joinpath(dir, "generic_group.rmeta")
+        write(input, wrap_rust_code(source))
+        command = Cmd([string(rustc().exec[1]), "--crate-type=cdylib",
+                       "--emit=metadata", "-C", "panic=unwind",
+                       _cfg_rustc_flags(compiler)..., "-o", output, input])
+        process = run(pipeline(command; stdout = devnull, stderr = devnull); wait = false)
+        wait(process)
+        success(process)
     end
 end
 
@@ -743,8 +791,8 @@ set of bindings, or an unidentifiable toolchain all mean "not cached" rather
 than an error.
 """
 function get_monomorphized_function(func_name::String, type_params::Dict{Symbol, <:Type})
-    lock(REGISTRY_LOCK) do
-        generic_info = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+    generic_info = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+    begin
         generic_info === nothing && return nothing
         compiler = something(generic_info.compiler, get_default_compiler())
         cache_key = try
