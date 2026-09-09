@@ -1,6 +1,73 @@
 using Test
 using RustCall
 
+@testset "cold symbol resolution releases STATE and retains the captured generation (#251)" begin
+    source(type, value) = """
+        #[julia]
+        pub fn state_lookup_value() -> $type { $value }
+        #[no_mangle]
+        pub extern "C" fn state_lookup_release() {}
+        """
+    old = RustCall._compile_and_load_rust(source("i32", "111"), "state_lookup", 1)
+    replacement = RustCall._compile_and_load_rust(source("f64", "222.0"), "state_lookup", 1)
+    old_handle = RustCall.RUST_LIBRARIES[old][1]
+    replacement_handle = RustCall.RUST_LIBRARIES[replacement][1]
+    # An explicit cached signature must not override the replacement's ABI
+    # after this name is redirected to a different image.
+    registered = RustCall.register_function("state_lookup_value", old, Int32, Type[])
+    lock(RustCall.REGISTRY_LOCK) do
+        empty!(RustCall.RUST_LIBRARIES[old][2])
+        delete!(RustCall.PANIC_CHANNELS, (old, "rustcall_state_lookup_value"))
+    end
+    entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+    first_lookup = Ref(true)
+    function paused_lookup(handle, symbol; throw_error = false)
+        if first_lookup[]
+            first_lookup[] = false
+            put!(entered, nothing)
+            take!(release)
+        end
+        RustCall.Libdl.dlsym(handle, symbol; throw_error)
+    end
+    worker = Threads.@spawn RustCall.resolve_call_target(old, "state_lookup_value";
+        free_symbol = "state_lookup_release", _lookup = paused_lookup)
+    take!(entered)
+    publisher = Threads.@spawn RustCall.alias_artifact!(
+        RustCall.inline_rustc_policy(), replacement, old)
+    try
+        @test timedwait(() -> istaskdone(publisher), 5) == :ok
+    finally
+        put!(release, nothing)
+    end
+    try
+        target = fetch(worker)
+        wait(publisher)
+        @test target.handle == old_handle
+        @test target.alive[]
+        @test target.return_type === Int32
+        @test target.func_info === registered
+        @test RustCall.call_rust_function(target.func_ptr, Int32) == 111
+        @test target.channel == RustCall.Libdl.dlsym(old_handle, "rustcall_state_lookup_value_take_panic")
+        @test target.free_ptr == RustCall.Libdl.dlsym(old_handle, "state_lookup_release")
+        current = RustCall.resolve_call_target(old, "state_lookup_value";
+            free_symbol = "state_lookup_release")
+        @test current.handle == replacement_handle
+        @test current.return_type === Float64
+        @test current.func_info === nothing
+        @test RustCall._snapshot_return_type(current) === Float64
+        @test RustCall.call_rust_function(current.func_ptr, Float64) == 222.0
+        @test current.free_ptr == RustCall.Libdl.dlsym(replacement_handle, "state_lookup_release")
+        @test current.generation == target.generation + 1
+        RustCall.alias_artifact!(RustCall.inline_rustc_policy(), replacement, old)
+        @test RustCall.resolve_call_target(old, "state_lookup_value").generation == current.generation
+    finally
+        for name in (old, replacement)
+            haskey(RustCall.RUST_LIBRARIES, name) && RustCall.unload_library(name; close = true)
+            RustCall.close_retired_handles!(RustCall.retired_handles(name))
+        end
+    end
+end
+
 @testset "state filters preserve delete/reinsert updates and release mutation watches (#251)" begin
     for original in (Dict("key" => 1), [1], Set([1]))
         view = lock(RustCall.REGISTRY_LOCK) do
@@ -264,7 +331,7 @@ function _state_transaction_callouts(source::String, file = "fixture")
         (tailname(x.args[1]) == :_state_read ||
          (tailname(x.args[1]) == :lock && any(state_argument, x.args[2:end])))
     forbidden = (:ccall, :run, :read, :write, :wait, :sleep, :yield, :dlopen, :dlclose,
-                 :eval, :delete_method, :_ffi_by_value_agrees,
+                 :eval, :delete_method, :_ffi_by_value_agrees, :dlsym, :_lookup,
                  :compile_rust_to_shared_lib, :expand_inline, :extract_manifest,
                  :monomorphize_function, :toolchain_fingerprint, :artifact_compiler_identity,
                  :rebuild_callback, :invokelatest, Symbol("@warn"), Symbol("@debug"),

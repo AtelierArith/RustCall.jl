@@ -270,18 +270,23 @@ The panic-channel reader of `symbol` in `lib_name`, resolved once and cached
 function panic_channel_pointer(lib_name::AbstractString, symbol::AbstractString)
     lib = String(lib_name)
     sym = String(symbol)
-    lock(REGISTRY_LOCK) do
-        cached = get(PANIC_CHANNELS, (lib, sym), nothing)
-        cached === nothing || return cached
-        entry = get(RUST_LIBRARIES, lib, nothing)
-        ptr = C_NULL
-        if entry !== nothing
-            found = Libdl.dlsym(entry[1], ffi_panic_symbol(sym); throw_error = false)
-            (found === nothing || found == C_NULL) || (ptr = found)
-        end
-        PANIC_CHANNELS[(lib, sym)] = ptr
-        return ptr
+    cached, entry = lock(REGISTRY_LOCK) do
+        (get(PANIC_CHANNELS, (lib, sym), nothing), get(RUST_LIBRARIES, lib, nothing))
     end
+    cached === nothing || return cached
+    ptr = C_NULL
+    if entry !== nothing
+        found = Libdl.dlsym(entry[1], ffi_panic_symbol(sym); throw_error = false)
+        (found === nothing || found == C_NULL) || (ptr = found)
+    end
+    lock(REGISTRY_LOCK) do
+        # Compare only for cache publication. The answer always belongs to
+        # the image captured above, never to a replacement found by this check.
+        if get(RUST_LIBRARIES, lib, nothing) === entry
+            PANIC_CHANNELS[(lib, sym)] = ptr
+        end
+    end
+    return ptr
 end
 
 """

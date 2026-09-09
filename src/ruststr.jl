@@ -77,11 +77,12 @@ end
 
 Everything one call needs — the function pointer, its panic channel, and
 optionally the release function for an owned-`String` result — resolved from
-**one generation** of one library, under **one** `REGISTRY_LOCK` critical
-section.
+**one generation** of one library. The handle, cached pointers and return ABI
+are captured in **one** `REGISTRY_LOCK` critical section; missing pointers are
+then resolved on that captured handle outside the lock.
 
-This is the entry point every FFI call goes through, and the single lock is the
-point of it. A library can be replaced between any two lookups (that is what a
+This is the entry point every FFI call goes through. A library can be replaced
+between any two name lookups (that is what a
 hot reload is), so resolving the pointer and then the channel separately means
 the call can enter the retired image and read the replacement's channel: a
 panic raised by the call is invisible, and a panic the new image happens to
@@ -105,78 +106,83 @@ same handle is not an ambiguity. Genuinely different functions of the same name
 in different libraries are refused rather than guessed.
 """
 function resolve_call_target(lib_name::String, func_name::String;
-                             free_symbol::AbstractString = "")
-    lock(REGISTRY_LOCK) do
-        # Resolve a symbol on one library's handle, memoizing into that
-        # library's own pointer cache. Caller holds the lock.
-        resolve_in(handle, cache, symbol) = begin
-            cached = get(cache, symbol, C_NULL)
-            cached == C_NULL || return cached
-            found = Libdl.dlsym(handle, symbol; throw_error = false)
-            (found === nothing || found == C_NULL) && return C_NULL
-            cache[symbol] = found
-            found
-        end
-        # The whole target, from one library, in one place: this is what makes
-        # the pieces belong to the same generation.
-        target_in(owner, handle, cache, func_ptr) = begin
+                             free_symbol::AbstractString = "",
+                             _lookup = Libdl.dlsym)
+    release_symbol = String(free_symbol)
+    # Capture all generation-dependent metadata together. Cold symbol lookups
+    # below use only these captured handles, even if publication retires them
+    # before lookup finishes. Explicit close still requires caller quiescence.
+    snapshot = lock(REGISTRY_LOCK) do
+        capture(owner, entry) = begin
+            handle, cache = entry
             symbol = exported_symbol(owner, func_name)
-            channel = get(PANIC_CHANNELS, (owner, symbol), nothing)
-            if channel === nothing
-                channel = resolve_in(handle, cache, ffi_panic_symbol(symbol))
-                PANIC_CHANNELS[(owner, symbol)] = channel
-            end
-            free_ptr = isempty(free_symbol) ? C_NULL :
-                       resolve_in(handle, cache, String(free_symbol))
-            # The return metadata belongs to the snapshot as much as the
-            # pointers do: it decides how the `ccall` reads the return slot,
-            # and reading a retired generation's result with the replacement's
-            # ABI is memory corruption, not a wrong answer (#277).
+            panic_symbol = ffi_panic_symbol(symbol)
+            channel = get(PANIC_CHANNELS, (owner, symbol), get(cache, panic_symbol, nothing))
+            free_ptr = isempty(release_symbol) ? C_NULL : get(cache, release_symbol, nothing)
             return_type = get(FUNCTION_RETURN_TYPES_BY_LIB, (owner, func_name), nothing)
-            func_info = get(FUNCTION_REGISTRY_BY_LIB, (owner, func_name),
-                            get(FUNCTION_REGISTRY, func_name, nothing))
-            CallTarget(func_ptr, channel, free_ptr,
-                       alive_ref_for_handle(handle, owner), handle, owner,
-                       return_type, func_info,
-                       get(ARTIFACT_GENERATIONS, owner, 0))
+            valid_info(info) = info !== nothing && info.handle == handle &&
+                info.generation == get(ARTIFACT_GENERATIONS, info.lib_name, -1) &&
+                (source = get(RUST_LIBRARIES, info.lib_name, nothing);
+                 source !== nothing && source[1] == handle)
+            func_info = get(FUNCTION_REGISTRY_BY_LIB, (owner, func_name), nothing)
+            valid_info(func_info) || (func_info = get(FUNCTION_REGISTRY, func_name, nothing))
+            valid_info(func_info) || (func_info = nothing)
+            (; owner, handle, cache, symbol, panic_symbol, channel, free_ptr,
+               func_ptr = get(cache, symbol, nothing), return_type, func_info,
+               alive = alive_ref_for_handle(handle, owner),
+               generation = get(ARTIFACT_GENERATIONS, owner, 0))
         end
-
-        # First, try the specified library
-        if haskey(RUST_LIBRARIES, lib_name)
-            symbol = exported_symbol(lib_name, func_name)
-            lib_handle, func_cache = RUST_LIBRARIES[lib_name]
-            func_ptr = resolve_in(lib_handle, func_cache, symbol)
-            func_ptr == C_NULL ||
-                return target_in(lib_name, lib_handle, func_cache, func_ptr)
+        entry = get(RUST_LIBRARIES, lib_name, nothing)
+        preferred = entry === nothing ? nothing : capture(lib_name, entry)
+        # Keep the warmed preferred-library path independent of registry size.
+        if preferred !== nothing && preferred.func_ptr !== nothing &&
+           preferred.func_ptr != C_NULL && preferred.channel !== nothing &&
+           preferred.free_ptr !== nothing
+            return CallTarget(preferred.func_ptr, preferred.channel, preferred.free_ptr,
+                              preferred.alive, preferred.handle, preferred.owner,
+                              preferred.return_type, preferred.func_info, preferred.generation)
         end
+        others = [capture(owner, entry) for (owner, entry) in RUST_LIBRARIES if owner != lib_name]
+        (preferred, others)
+    end
+    snapshot isa CallTarget && return snapshot
+    preferred, others = snapshot
 
-        # Fallback: search all other loaded libraries
-        candidates = Tuple{String, Ptr{Cvoid}}[]
-        for (other_lib_name, (other_lib_handle, other_func_cache)) in RUST_LIBRARIES
-            other_lib_name == lib_name && continue   # Already checked
-            symbol = exported_symbol(other_lib_name, func_name)
-            ptr = resolve_in(other_lib_handle, other_func_cache, symbol)
-            ptr == C_NULL && continue
-            push!(candidates, (other_lib_name, ptr))
+    resolve_in(row, symbol, cached) = begin
+        cached === nothing || return cached
+        found = _lookup(row.handle, symbol; throw_error = false)
+        ptr = found === nothing ? C_NULL : found
+        lock(REGISTRY_LOCK) do
+            # Publish only into the captured image's cache. No late lookup by
+            # name can redirect this write or contribute data to the target.
+            row.cache[symbol] = ptr
         end
-
-        # Two names for one handle resolve to one pointer, and that is one
-        # candidate, not a conflict.
-        distinct = unique(last, candidates)
-        if length(distinct) == 1
-            owner, ptr = first(distinct)
-            handle, cache = RUST_LIBRARIES[owner]
-            return target_in(owner, handle, cache, ptr)
-        elseif length(distinct) > 1
-            # Ambiguous - found in genuinely different libraries
-            error("Function '$func_name' found in multiple libraries: $(join(first.(candidates), ", ")). Please use a unique function name.")
+        ptr
+    end
+    finish(row, ptr) = begin
+        channel = resolve_in(row, row.panic_symbol, row.channel)
+        free_ptr = isempty(release_symbol) ? C_NULL : resolve_in(row, release_symbol, row.free_ptr)
+        CallTarget(ptr, channel, free_ptr, row.alive, row.handle, row.owner,
+                   row.return_type, row.func_info, row.generation)
+    end
+    if preferred !== nothing
+        ptr = resolve_in(preferred, preferred.symbol, preferred.func_ptr)
+        ptr == C_NULL || return finish(preferred, ptr)
+    end
+    candidates = [(row, resolve_in(row, row.symbol, row.func_ptr)) for row in others]
+    filter!(candidate -> last(candidate) != C_NULL, candidates)
+    distinct = unique(last, candidates)
+    if length(distinct) == 1
+        row, ptr = only(distinct)
+        return finish(row, ptr)
+    elseif length(distinct) > 1
+        owners = join([row.owner for (row, _) in candidates], ", ")
+        error("Function '$func_name' found in multiple libraries: $owners. Please use a unique function name.")
+    else
+        if preferred !== nothing
+            error("Function '$func_name' not found in library '$lib_name' or any other loaded library")
         else
-            # Not found anywhere
-            if haskey(RUST_LIBRARIES, lib_name)
-                error("Function '$func_name' not found in library '$lib_name' or any other loaded library")
-            else
-                error("Library '$lib_name' not found and function '$func_name' not found in any loaded library")
-            end
+            error("Library '$lib_name' not found and function '$func_name' not found in any loaded library")
         end
     end
 end

@@ -1862,6 +1862,19 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
     assumed = snapshot_env === nothing ? must_assume_unwind(policy) :
               must_assume_unwind(policy, snapshot_env)
 
+    # Resolve on the supplied image before entering STATE. Registration still
+    # publishes the complete cache and metadata together; dynamic symbol
+    # resolution can execute loader code and must not hold the registry lock.
+    cache = Dict{String, Ptr{Cvoid}}()
+    if registers_in_rust_libraries(policy)
+        for symbol in eager
+            name_ = String(symbol)
+            found = Libdl.dlsym(handle, name_; throw_error = false)
+            (found === nothing || found == C_NULL) && continue
+            cache[name_] = found
+        end
+    end
+
     duplicate = C_NULL
     replaced = C_NULL
     artifact = lock(REGISTRY_LOCK) do
@@ -1887,12 +1900,6 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         end
         if haskey(RUST_LIBRARIES, name)
             replaced = RUST_LIBRARIES[name][1]
-        end
-        cache = Dict{String, Ptr{Cvoid}}()
-        for symbol in eager
-            found = Libdl.dlsym(handle, String(symbol); throw_error = false)
-            (found === nothing || found == C_NULL) && continue
-            cache[String(symbol)] = found
         end
         install_library_metadata!(name, symbols, return_types)
         # One flag per *image*, not per registration. Re-registering the same
@@ -2133,8 +2140,11 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         # record retired, keep the flag, close later.
         ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
-        _update_handle_mirrors!(target, entry[1], alive,
-                                get(ARTIFACT_GENERATIONS, target, 0))
+        # Generation numbers belong to the destination name. Rebinding it to
+        # another image must advance its stamp; an idempotent alias must not.
+        generation = displaced == entry[1] ? get(ARTIFACT_GENERATIONS, target, 0) :
+                     _next_artifact_generation!(target)
+        _update_handle_mirrors!(target, entry[1], alive, generation)
         # An alias that displaces a *different* image takes a name away from it
         # — and an image with no name left is unreachable: nothing can unload
         # it and `close_retired_handles!` cannot see it, so its owned `dlopen`

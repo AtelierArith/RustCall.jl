@@ -934,7 +934,8 @@ end
     artifact_generation_snapshot(lib_name, struct_name) -> ArtifactGeneration
 
 The destructor of `struct_name` **and** the liveness flag of the image that
-exports it, from one generation, under one lock.
+exports it, from one generation. The handle and flag are captured together;
+a cold destructor pointer is resolved on that handle outside STATE.
 
 This is what a `#[julia]` struct captures at construction so its finalizer
 needs no lookup (#249). The two must come from the same generation: taken
@@ -954,28 +955,30 @@ function artifact_generation_snapshot(lib_name::AbstractString,
                                       struct_name::AbstractString)
     name = String(lib_name)
     symbol = ffi_struct_free_symbol(struct_name)
-    return lock(REGISTRY_LOCK) do
+    handle, cache, free_ptr, alive, generation = lock(REGISTRY_LOCK) do
         alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
         generation = get(ARTIFACT_GENERATIONS, name, 0)
         entry = get(RUST_LIBRARIES, name, nothing)
-        entry === nothing && return ArtifactGeneration(C_NULL, C_NULL, alive, generation)
+        entry === nothing && return (C_NULL, nothing, C_NULL, alive, generation)
         handle, cache = entry
         free_ptr = get(cache, symbol, C_NULL)
-        if free_ptr == C_NULL
-            found = try
-                Libdl.dlsym(handle, symbol; throw_error = false)
-            catch
-                # Resolution failure is represented by the inert snapshot;
-                # a logger must not be invoked from this state transaction.
-                nothing
-            end
-            if !(found === nothing || found == C_NULL)
-                free_ptr = found
+        (handle, cache, free_ptr, alive, generation)
+    end
+    if handle != C_NULL && free_ptr == C_NULL
+        found = try
+            Libdl.dlsym(handle, symbol; throw_error = false)
+        catch
+            nothing
+        end
+        if !(found === nothing || found == C_NULL)
+            free_ptr = found
+            # This is the captured image's cache, not a fresh name lookup.
+            lock(REGISTRY_LOCK) do
                 cache[symbol] = found
             end
         end
-        return ArtifactGeneration(handle, free_ptr, alive, generation)
     end
+    return ArtifactGeneration(handle, free_ptr, alive, generation)
 end
 
 """
