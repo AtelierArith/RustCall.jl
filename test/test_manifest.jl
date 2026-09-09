@@ -2,6 +2,27 @@
 # the only component that interprets Rust syntax; Julia consumes its manifest.
 using RustCall
 using Test
+
+@testset "Rust source digest ignores Cargo outputs and tests" begin
+    mktempdir() do root
+        mkpath(joinpath(root, "src", "nested"))
+        mkpath(joinpath(root, "target", "debug", "build", "generated", "out"))
+        mkpath(joinpath(root, "tests"))
+        write(joinpath(root, "Cargo.toml"), "[package]\nname = \"digest\"\nversion = \"0.1.0\"\n")
+        source = joinpath(root, "src", "nested", "lib.rs")
+        output = joinpath(root, "target", "debug", "build", "generated", "out", "private.rs")
+        test_source = joinpath(root, "tests", "integration.rs")
+        write(source, "pub fn value() -> i32 { 1 }")
+        write(output, "generated one")
+        write(test_source, "test one")
+        baseline = RustCall._rust_sources_digest(root)
+        write(output, "generated two")
+        write(test_source, "test two")
+        @test RustCall._rust_sources_digest(root) == baseline
+        write(source, "pub fn value() -> i32 { 2 }")
+        @test RustCall._rust_sources_digest(root) != baseline
+    end
+end
 using TOML
 
 @testset "FFI Manifest" begin

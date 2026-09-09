@@ -126,9 +126,12 @@ function _rust_sources_digest(dirs::AbstractString...)
     ctx = IOBuffer()
     for dir in dirs
         files = String[]
-        for (root, _, names) in walkdir(dir)
+        manifest = joinpath(dir, "Cargo.toml")
+        isfile(manifest) && push!(files, manifest)
+        source = joinpath(dir, "src")
+        for (root, _, names) in (isdir(source) ? walkdir(source) : ())
             for n in names
-                if endswith(n, ".rs") || n == "Cargo.toml"
+                if endswith(n, ".rs")
                     push!(files, joinpath(root, n))
                 end
             end
@@ -178,7 +181,7 @@ function toolchain_fingerprint()
                 "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
             ]
             fingerprint = bytes2hex(sha256(join(parts, "\n")))
-            @debug "Computed RustCall toolchain fingerprint" fingerprint parts
+            @debug "Computed RustCall toolchain fingerprint" fingerprint components = join(parts, "\n")
             # A fingerprint computed without a usable toolchain describes
             # nothing that could have been compiled; never memoize it.
             identified || return fingerprint
