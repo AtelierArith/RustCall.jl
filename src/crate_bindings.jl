@@ -579,6 +579,22 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     return unique!(map(normpath, deps))
 end
 
+function _expand_precompile_inputs(paths::Vector{String})
+    expanded = String[]
+    for path in unique(abspath.(paths))
+        if isfile(path)
+            push!(expanded, path)
+        elseif isdir(path)
+            for (root, dirs, files) in walkdir(path)
+                push!(expanded, root)
+                append!(expanded, joinpath.(Ref(root), dirs))
+                append!(expanded, joinpath.(Ref(root), files))
+            end
+        end
+    end
+    unique!(map(normpath, expanded))
+end
+
 """
     _recorded_build_env() -> Vector{Pair{String, String}}
 
@@ -951,9 +967,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # upgraded in place keeps its path, so only its *content* says it changed,
     # and `plan.interpreter_config` is in the wrapper's artifact identity
     # (#339 review).
-    for extra in extra_inputs
-        (isfile(extra) || isdir(extra)) && push!(crate_inputs, abspath(extra))
-    end
+    append!(crate_inputs, _expand_precompile_inputs(extra_inputs))
     unique!(crate_inputs)
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).

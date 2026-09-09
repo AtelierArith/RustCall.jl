@@ -772,15 +772,17 @@ function _scan_input_relative(path::AbstractString, root::AbstractString)
 end
 
 function artifact_scan_inputs(files::Vector{String}; crate_root::AbstractString = "",
-                              generated_root::AbstractString = "")
+                              generated_root::AbstractString = "",
+                              external_roots::Vector{Pair{String, String}} = Pair{String, String}[])
     # The one-argument form predates generated PyO3 wrappers and retains its
     # path-sensitive labels for callers that have no stable root to name roles
     # against. Wrapper identities always pass both roots below.
-    if isempty(crate_root) && isempty(generated_root)
+    if isempty(crate_root) && isempty(generated_root) && isempty(external_roots)
         return Pair{String, String}["rustcall-scan-input:" * path => _file_content_digest(path)
                                     for path in sort!(unique(abspath.(files)))]
     end
     inputs = Pair{String, String}[]
+    external_index = 0
     for path in unique(abspath.(files))
         # OUT_DIR normally lives under `<crate>/target`; test the more specific
         # generated root first or Cargo's checkout-specific build hash leaks
@@ -790,7 +792,26 @@ function artifact_scan_inputs(files::Vector{String}; crate_root::AbstractString 
             "generated:" * relative
         else
             relative = _scan_input_relative(path, crate_root)
-            relative === nothing ? "external:" * basename(path) : "crate:" * relative
+            if relative !== nothing
+                "crate:" * relative
+            else
+                external_index += 1
+                external_role = nothing
+                for (name, root) in external_roots
+                    isabspath(root) || continue
+                    if normpath(abspath(root)) == normpath(path)
+                        external_role = "env:" * name
+                        break
+                    end
+                    candidate = _scan_input_relative(path, root)
+                    if candidate !== nothing
+                        external_role = "env:" * name * ":" * candidate
+                        break
+                    end
+                end
+                external_role === nothing ?
+                    "external:" * string(external_index) * ":" * basename(path) : external_role
+            end
         end
         push!(inputs, "rustcall-scan-input:" * role => _file_content_digest(path))
     end

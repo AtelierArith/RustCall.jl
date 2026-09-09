@@ -119,6 +119,10 @@ end
         root = joinpath(parent, "crate")
         input = joinpath(parent, "value.txt")
         write(input, "42")
+        schema_dir = joinpath(root, "schemas")
+        mkpath(schema_dir)
+        schema = joinpath(schema_dir, "api.proto")
+        write(schema, "message Answer {}")
         mkpath(joinpath(root, "src"))
         write(joinpath(root, "Cargo.toml"), """
             [package]
@@ -143,6 +147,7 @@ end
                              #[pyo3::pyfunction] pub fn generated_{}() -> i32 {{ {value} }}\n",
                              hash.finish())).unwrap();
                 println!("cargo:rerun-if-changed=generate.rs");
+                println!("cargo:rerun-if-changed=schemas");
                 println!("cargo:rerun-if-changed={}", input.display());
             }
             """)
@@ -154,12 +159,15 @@ end
             @test_skip "no linkable Python here"
         else
             @test any(path -> Base.Filesystem.samefile(path, input), wrapper.plan.build_inputs)
+            @test any(path -> Base.Filesystem.samefile(path, schema_dir), wrapper.plan.build_inputs)
             modules = Module[]
             binding = @rust_crate root
             module_ = binding.module_ref
             push!(modules, module_)
             try
                 @test any(path -> Base.Filesystem.samefile(path, input),
+                          getfield(module_, :_CRATE_INPUTS))
+                @test any(path -> Base.Filesystem.samefile(path, schema),
                           getfield(module_, :_CRATE_INPUTS))
                 @test Base.invokelatest(getfield(module_, :generated_answer)) == 42
                 path_name = Symbol(only(f.name for f in wrapper.info.julia_functions if f.name != "generated_answer"))
@@ -274,6 +282,29 @@ end
             crate_root = joinpath(parent, "second"),
             generated_root = second_generated)
         @test changed != identities[1]
+
+        for checkout in ("third", "fourth")
+            for side in ("a", "b")
+                dir = joinpath(parent, checkout, side)
+                mkpath(dir)
+                write(joinpath(dir, "api.rs"), side == "a" ? "pub fn a() {}" : "pub fn b() {}")
+            end
+        end
+        function external_identity(checkout)
+            base = joinpath(parent, checkout)
+            first = joinpath(base, "a", "api.rs")
+            second = joinpath(base, "b", "api.rs")
+            roots = ["FIRST_API" => first, "SECOND_API" => second]
+            RustCall.artifact_scan_inputs([first, second]; external_roots = roots)
+        end
+        before = external_identity("third")
+        @test before == external_identity("fourth")
+        first = joinpath(parent, "fourth", "a", "api.rs")
+        second = joinpath(parent, "fourth", "b", "api.rs")
+        first_contents, second_contents = read(first, String), read(second, String)
+        write(first, second_contents)
+        write(second, first_contents)
+        @test external_identity("fourth") != before
     end
 end
 

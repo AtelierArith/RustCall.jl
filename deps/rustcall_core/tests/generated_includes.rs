@@ -16,7 +16,7 @@ fn generated_include_keeps_its_lexical_module_and_predicate() {
         .file(
             r#"
         #[cfg(feature = "python")]
-        pub mod api { include!(concat!(env!("OUT_DIR"), "/api.rs")); }
+        pub mod api { include!(concat!(env!("OUT_DIR"), "/api.rs"),); }
     "#,
             None,
             &FilePosition::module(&[], true, &[]),

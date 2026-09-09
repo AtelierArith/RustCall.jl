@@ -1452,8 +1452,13 @@ function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String};
                                  crate_root::AbstractString = "")
     build_env = artifact_build_env()
     generated_root = plan.build_env === nothing ? "" : get(plan.build_env, "OUT_DIR", "")
+    external_roots = plan.build_env === nothing ? Pair{String, String}[] :
+        Pair{String, String}[String(name) => String(value)
+                             for (name, value) in sort!(collect(plan.build_env); by = first)
+                             if isabspath(value)]
     append!(build_env, artifact_scan_inputs(source_files; crate_root = crate_root,
-                                             generated_root = generated_root))
+                                             generated_root = generated_root,
+                                             external_roots = external_roots))
     if plan.build_env !== nothing
         append!(build_env, ["rustcall-target-env:" * name =>
                             _stable_probe_env_value(value, crate_root, generated_root)

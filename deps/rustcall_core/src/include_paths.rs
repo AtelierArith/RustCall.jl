@@ -2,14 +2,28 @@
 //! Never consult the extractor process's environment: its OUT_DIR belongs to
 //! neither the target crate nor necessarily the selected feature/profile build.
 use std::collections::BTreeMap;
-use syn::{parse::Parser, punctuated::Punctuated, Expr, Lit, Token};
+use syn::{parse::ParseStream, parse::Parser, punctuated::Punctuated, Expr, Lit, Token};
+
+fn parse_include_expression(input: ParseStream<'_>) -> syn::Result<Expr> {
+    let expression = input.parse()?;
+    if input.peek(Token![,]) {
+        input.parse::<Token![,]>()?;
+    }
+    if input.is_empty() {
+        Ok(expression)
+    } else {
+        Err(input.error("expected one include path expression"))
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct IncludeEnvironment(pub BTreeMap<String, String>);
 
 impl IncludeEnvironment {
     pub fn resolve(&self, tokens: proc_macro2::TokenStream) -> Result<String, String> {
-        let expr: Expr = syn::parse2(tokens).map_err(|e| format!("invalid include path: {e}"))?;
+        let expr = parse_include_expression
+            .parse2(tokens)
+            .map_err(|e| format!("invalid include path: {e}"))?;
         self.expression(&expr)
     }
 
@@ -69,6 +83,11 @@ mod tests {
             "/target/a b/日本語/api.rs"
         );
         assert_eq!(env.resolve(quote!("plain.rs")).unwrap(), "plain.rs");
+        assert_eq!(
+            env.resolve(quote!(concat!(env!("OUT_DIR"), "/api.rs"),))
+                .unwrap(),
+            "/target/a b/日本語/api.rs"
+        );
         assert_eq!(
             env.resolve(quote!(env!("OUT_DIR", "custom error")))
                 .unwrap(),
