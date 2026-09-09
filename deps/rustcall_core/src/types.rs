@@ -231,6 +231,52 @@ pub fn is_vec_type(ty: &Type) -> bool {
     last_ident(ty).map(|id| id == "Vec").unwrap_or(false)
 }
 
+/// The element of a `Vec<T>`, when the spelling has exactly one type argument.
+pub fn extract_vec_type(ty: &Type) -> Option<Type> {
+    let Type::Path(tp) = unparen(ty) else {
+        return None;
+    };
+    if tp.qself.is_some() {
+        return None;
+    }
+    let segments: Vec<String> = tp
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    if !matches!(segments.as_slice(), [name] if name == "Vec")
+        && !matches!(segments.as_slice(), [root, module, name]
+            if matches!(root.as_str(), "std" | "alloc") && module == "vec" && name == "Vec")
+    {
+        return None;
+    }
+    let mut args = angle_args(ty, "Vec")?;
+    (args.len() == 1).then(|| args.remove(0))
+}
+
+/// Whether `Vec<T>` can use RustCall's owned-buffer field ABI.
+///
+/// Zero-sized values and the Rust scalars for which Julia has no concrete FFI
+/// type are refused. Raw pointers and the remaining primitive scalars have a
+/// stable element size/alignment on both sides of this crate boundary.
+pub fn pyo3_vec_element_type(ty: &Type) -> Option<Type> {
+    let element = extract_vec_type(ty)?;
+    if !is_ffi_compatible_type(&element) {
+        return None;
+    }
+    let unsupported = last_ident(&element)
+        // `Vec<bool>` is bit-packed and therefore is not a contiguous `bool`
+        // buffer. The remaining exclusions have no concrete Julia FFI row.
+        .map(|id| matches!(id.to_string().as_str(), "bool" | "i128" | "u128" | "char"))
+        .unwrap_or(false);
+    if unsupported || matches!(unparen(&element), Type::Tuple(tuple) if tuple.elems.is_empty()) {
+        None
+    } else {
+        Some(element)
+    }
+}
+
 /// Check if a type is `Self` or the struct name.
 pub fn is_self_type(ty: &Type, struct_name: &Ident) -> bool {
     match unparen(ty) {

@@ -566,6 +566,16 @@ const ALL_SPELLINGS = vcat(
         plain = RustCall.ffi_return_contract("i32")
         @test !RustCall.ffi_owned_string_return(plain)
         @test !RustCall.ffi_borrowed_string_return(plain)
+        vector = RustCall.ffi_owned_vec_contract("Vec<i32>", "i32", "get_v_free_rust_vec")
+        @test RustCall.ffi_owned_vec_return(vector)
+        @test vector.aggregate_type === RustCall.CRustVec
+        @test vector.ccall_types == Type[RustCall.CRustVec]
+        @test vector.surface_type === RustCall.RustVec{Int32}
+        @test vector.ownership === :transferred_to_julia
+        @test vector.free_symbol == "get_v_free_rust_vec"
+        @test_throws ArgumentError RustCall.ffi_owned_vec_contract("Vec<i32>", "", "free")
+        @test_throws ArgumentError RustCall.ffi_owned_vec_contract("Vec<i32>", "i32", "")
+        @test_throws ArgumentError RustCall.ffi_owned_vec_contract("Vec<String>", "String", "free")
         # `Cstring` is gone from the string path: there is no `julia_to_c_type`
         # lowering of `RustString` / `RustStr` to a NUL-terminated pointer left.
         @test RustCall.julia_to_c_type(RustCall.RustString) !== Cstring

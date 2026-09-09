@@ -42,9 +42,13 @@ a method sharing its struct's buffers and a cross-module method carrying its
 own — so a schema-7 consumer, which derives the owner from the flavour, would
 release a cross-module method's `String` through a symbol the library does not
 export, and leak it. The version is what makes such a consumer refuse the
-manifest rather than get the owner wrong (#342 review).
+manifest rather than get the owner wrong (#342 review). Schema 9 adds the
+externally callable re-export path used for items defined behind private
+modules (#303). Schema 10 adds the `vec` field ABI, its `vec_element`, and its
+allocator-matched `free_symbol`; a schema-9 consumer would call the returned
+owned buffer as a Rust `Vec<T>` value and could not release it (#303).
 """
-const MANIFEST_SCHEMA_VERSION = 9
+const MANIFEST_SCHEMA_VERSION = 10
 
 """
     ExtractorError <: Exception
@@ -1229,12 +1233,18 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
         isempty(keep) || _mstr(s, "attribute") in keep || continue
         fields = Tuple{String, String}[]
         field_abis = Dict{String, String}()
+        field_vec_elements = Dict{String, String}()
+        field_free_symbols = Dict{String, String}()
         getters = Dict{String, String}()
         setters = Dict{String, String}()
         for f in _mvec(s, "fields")
             name = _mstr(f, "name")
             push!(fields, (name, _mstr(f, "rust_type")))
             field_abis[name] = _mstr(f, "abi")
+            isempty(_mstr(f, "vec_element")) ||
+                (field_vec_elements[name] = _mstr(f, "vec_element"))
+            isempty(_mstr(f, "free_symbol")) ||
+                (field_free_symbols[name] = _mstr(f, "free_symbol"))
             # Each accessor on its own: a `#[julia]` struct carries both, a
             # `#[pyclass]` field carries what `#[pyo3(get)]` / `#[pyo3(set)]`
             # declared, and a `set`-only field is a setter with no getter
@@ -1258,6 +1268,8 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             true,
             derive_options;
             field_abis = field_abis,
+            field_vec_elements = field_vec_elements,
+            field_free_symbols = field_free_symbols,
             field_getters = getters,
             field_setters = setters,
             has_clone = _mbool(s, "has_clone"),

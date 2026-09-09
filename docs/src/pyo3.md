@@ -57,6 +57,16 @@ alongside property assignment; written bindings expose property assignment.
 Private fields and setters on a `frozen` class remain inaccessible through
 this native wrapper path.
 
+Public `Vec<T>` fields are also readable and writable when `T` has a concrete
+scalar or pointer FFI representation (`i8`–`i64`, `u8`–`u64`, `isize`,
+`usize`, `f32`, `f64`, and raw pointers). A getter clones the Rust vector and
+returns a `RustVec{T}`; call `collect` to copy it into a Julia `Vector`, and
+`drop!` it when deterministic release matters. The object retains the exact
+release function and library generation that allocated the buffer, including
+across reloads. Setters accept Julia iterables and convert every element to
+`T` before entering Rust. `Vec<bool>` is excluded because Rust bit-packs it;
+nested vectors and elements without a concrete Julia FFI layout are excluded.
+
 A crate may carry **both** kinds of marker. `#[julia]` is additive since #279
 and exports `rustcall_<name>` from the crate itself, so the wrapper generates
 entry points for the PyO3 items and *links* the `#[julia]` ones; one
@@ -253,6 +263,7 @@ Manifest schema 5 adds, for every function, struct and method:
 | `python_name` | the name PyO3 exposes it under, when `#[pyo3(name = "...")]` renames it |
 | `accessor` | `getter` / `setter` for a `#[getter]` / `#[setter]` method |
 | `return_kind` + `ok_type` / `err_type` / `inner_type` | on methods too, not just free functions: a `#[pymethods]` method returning `PyResult<T>` is `py_result` with `T`, so Phase 2 never re-reads the Rust type spelling |
+| field `abi = "vec"` + `vec_element` + `free_symbol` | schema 10's owned-vector contract: the exact Julia element layout and the export that must release this getter's `(ptr, len, cap)` buffer |
 
 A scanned item's `symbol` is the wrapper a Phase-2 wrapper crate *will* export —
 `rustcall_<name>` for a function, `rustcall_<Struct>_<method>` for a method, the

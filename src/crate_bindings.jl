@@ -1142,6 +1142,18 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
              _required_symbol(handle, free_symbol))
         end
 
+        # An owned Vec outlives the getter call. Capture its release export and
+        # the producing generation's liveness flag with the getter snapshot so
+        # reload cannot pair the buffer with another allocator (#303).
+        function _vec_target(symbol::String, free_symbol::String)
+            gen = _LIB_GEN[]
+            handle = _live_handle(gen)
+            (_required_symbol(handle, symbol),
+             _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
+             _required_symbol(handle, free_symbol),
+             gen.alive)
+        end
+
         # The constructor arm: the wrapper that *allocates*, its channel, and
         # the destructor and liveness flag the resulting object will carry —
         # all from one deref. Taking the object's half after the call returned
@@ -1402,12 +1414,12 @@ end
 
 The names a generated crate module defines once, at its root, and every
 submodule imports from its parent: the library record and the snapshot
-constructors (`_call_target`, `_ctor_target`, `_struct_generation`), the
+constructors (`_call_target`, `_vec_target`, `_ctor_target`, `_struct_generation`), the
 symbol cache and the panic guard. One definition per module tree, so a reload
 swaps the image for every submodule at once.
 """
 const _CRATE_MODULE_HELPERS = (:_LIB_NAME, :_LIB_GEN, :_symbol, :_required_symbol,
-                               :_live_handle, :_get_func_ptr, :_call_target, :_ctor_target,
+                               :_live_handle, :_get_func_ptr, :_call_target, :_vec_target, :_ctor_target,
                                :_struct_generation, :_guard_panic)
 
 # `import ..name, ..name2, ...` — every helper from the enclosing module. A
@@ -1931,6 +1943,14 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
                 RustCall._take_owned_string(raw, freep)
             end
         end
+    elseif ffi_owned_vec_return(c)
+        element_type = c.surface_type.parameters[1]
+        return quote
+            let (fp, channel, freep, alive) = _vec_target($name, $(c.free_symbol))
+                raw = _guard_panic(call_rust_function(fp, RustCall.CRustVec, $self_ptr_expr), channel, $name)
+                RustCall.RustVec{$element_type}(raw.ptr, raw.len, raw.cap, (freep, alive))
+            end
+        end
     elseif ffi_borrowed_string_return(c)
         return quote
             let (fp, channel) = _call_target($name)
@@ -1964,6 +1984,19 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
                             field_type::AbstractString, setter_symbol::AbstractString,
                             self_ptr_expr, value_expr)
     name = String(setter_symbol)
+    if get(info.field_abis, field_name, "") == "vec"
+        element_type = ffi_vec_element_type(get(info.field_vec_elements, field_name, ""))
+        return quote
+            let values = collect($element_type, $value_expr),
+                (fp, channel) = _call_target($name)
+                GC.@preserve values begin
+                    _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr,
+                                                    pointer(values), Csize_t(length(values))),
+                                 channel, $name)
+                end
+            end
+        end
+    end
     c = _ffi_field_return(info, field_name, field_type)
     if ffi_owned_string_return(c)
         # Match the wrapper's byte pointer/length input; never pass Rust String
@@ -2001,6 +2034,11 @@ function _crate_field_write_source(info::RustStructInfo, field_name::AbstractStr
                                    field_type::AbstractString, setter_symbol::AbstractString,
                                    self_ptr::String, value::String; strict::Symbol = FFI_STRICT[])
     target = "(fp, channel) = _call_target(\"$setter_symbol\")"
+    if get(info.field_abis, field_name, "") == "vec"
+        element_type = string(ffi_vec_element_type(get(info.field_vec_elements, field_name, "")))
+        return "let values = collect($element_type, $value), $target; " *
+               "GC.@preserve values begin _guard_panic(call_rust_function(fp, Cvoid, $self_ptr, pointer(values), Csize_t(length(values))), channel, \"$setter_symbol\"); end; end"
+    end
     c = _ffi_field_return(info, field_name, field_type)
     if ffi_owned_string_return(c)
         return "let text = RustCall.ffi_string_argument($value, \"value\", \"$setter_symbol\"), $target; " *
@@ -2030,6 +2068,11 @@ function _crate_field_read_source(info::RustStructInfo, field_name::AbstractStri
         return "let (fp, channel, freep) = _call_target(\"$getter_symbol\", \"$(c.free_symbol)\"); " *
                "raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr), channel, \"$getter_symbol\"); " *
                "RustCall._take_owned_string(raw, freep); end"
+    elseif ffi_owned_vec_return(c)
+        element_type = string(c.surface_type.parameters[1])
+        return "let (fp, channel, freep, alive) = _vec_target(\"$getter_symbol\", \"$(c.free_symbol)\"); " *
+               "raw = _guard_panic(call_rust_function(fp, RustCall.CRustVec, $self_ptr), channel, \"$getter_symbol\"); " *
+               "RustCall.RustVec{$element_type}(raw.ptr, raw.len, raw.cap, (freep, alive)); end"
     elseif ffi_borrowed_string_return(c)
         return "let $target; raw = _guard_panic(call_rust_function(fp, RustCall.CRustStr, $self_ptr), channel, \"$getter_symbol\"); " *
                "RustCall._crust_str_to_julia(raw); end"
@@ -3713,6 +3756,16 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    (_required_symbol(handle, symbol),")
     push!(lines, "     _symbol(handle, RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "     _required_symbol(handle, free_symbol))")
+    push!(lines, "end")
+    push!(lines, "")
+    push!(lines, "# Owned Vec getter and release export from one generation (#303).")
+    push!(lines, "function _vec_target(symbol::String, free_symbol::String)")
+    push!(lines, "    gen = _LIB_GEN[]")
+    push!(lines, "    handle = _live_handle(gen)")
+    push!(lines, "    (_required_symbol(handle, symbol),")
+    push!(lines, "     _symbol(handle, RustCall.ffi_panic_symbol(symbol)),")
+    push!(lines, "     _required_symbol(handle, free_symbol),")
+    push!(lines, "     gen.alive)")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# The constructor arm: the allocating wrapper, its channel, and the")

@@ -1487,6 +1487,113 @@ pub extern "C" fn rustcall_geometry__Rect_get_name(
         }
     }
 }
+#[repr(C)]
+pub struct rustcall_geometry__Rect_get_tags_RustCallOwnedVec {
+    pub ptr: *mut i32,
+    pub len: usize,
+    pub cap: usize,
+}
+#[no_mangle]
+pub extern "C" fn rustcall_geometry__Rect_get_tags_free_rust_vec(
+    value: rustcall_geometry__Rect_get_tags_RustCallOwnedVec,
+) {
+    if !value.ptr.is_null() {
+        unsafe {
+            drop(Vec::from_raw_parts(value.ptr, value.len, value.cap));
+        }
+    }
+}
+thread_local! {
+    static
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F74616773
+    : ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
+    ::std::cell::RefCell::new(::std::option::Option::None);
+}
+#[no_mangle]
+pub extern "C" fn rustcall_geometry__Rect_get_tags_take_panic(
+    out: *mut u8,
+    cap: usize,
+) -> usize {
+    __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F74616773
+        .with(|rustcall_slot| {
+            let mut rustcall_slot = rustcall_slot.borrow_mut();
+            if out.is_null() && cap == usize::MAX {
+                return rustcall_slot.take().map_or(0, |message| message.len());
+            }
+            let rustcall_len = match rustcall_slot.as_ref() {
+                ::std::option::Option::Some(message) => {
+                    let bytes = message.as_bytes();
+                    if bytes.len() <= cap && !out.is_null() {
+                        unsafe {
+                            ::std::ptr::copy_nonoverlapping(
+                                bytes.as_ptr(),
+                                out,
+                                bytes.len(),
+                            );
+                        }
+                        Some(bytes.len())
+                    } else {
+                        return bytes.len();
+                    }
+                }
+                ::std::option::Option::None => ::std::option::Option::None,
+            };
+            match rustcall_len {
+                ::std::option::Option::Some(n) => {
+                    *rustcall_slot = ::std::option::Option::None;
+                    n
+                }
+                ::std::option::Option::None => 0,
+            }
+        })
+}
+#[no_mangle]
+pub extern "C" fn rustcall_geometry__Rect_get_tags(
+    ptr: *const user_crate::geometry::Rect,
+) -> rustcall_geometry__Rect_get_tags_RustCallOwnedVec {
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| {
+            {
+                let mut rustcall_vec = unsafe { (*ptr).tags.clone() };
+                let rustcall_ret = rustcall_geometry__Rect_get_tags_RustCallOwnedVec {
+                    ptr: rustcall_vec.as_mut_ptr(),
+                    len: rustcall_vec.len(),
+                    cap: rustcall_vec.capacity(),
+                };
+                ::std::mem::forget(rustcall_vec);
+                rustcall_ret
+            }
+        }),
+    ) {
+        ::std::result::Result::Ok(rustcall_value) => rustcall_value,
+        ::std::result::Result::Err(rustcall_payload) => {
+            let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
+                s,
+            ) = rustcall_payload.downcast_ref::<&'static str>()
+            {
+                ::std::string::ToString::to_string(s)
+            } else if let ::std::option::Option::Some(s) = rustcall_payload
+                .downcast_ref::<::std::string::String>()
+            {
+                s.clone()
+            } else {
+                ::std::string::ToString::to_string("Box<dyn Any>")
+            };
+            let rustcall_message = ::std::format!(
+                "{} panicked: {}", "rustcall_geometry__Rect_get_tags", rustcall_message
+            );
+            __RUSTCALL_HELPER_PANIC_7275737463616C6C5F67656F6D657472795F5F526563745F6765745F74616773
+                .with(|rustcall_slot| {
+                    *rustcall_slot.borrow_mut() = ::std::option::Option::Some(
+                        rustcall_message,
+                    );
+                });
+            unsafe {
+                ::std::mem::zeroed::<rustcall_geometry__Rect_get_tags_RustCallOwnedVec>()
+            }
+        }
+    }
+}
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_GEOMETRY__RECT_NEW : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =

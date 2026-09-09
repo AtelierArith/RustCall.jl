@@ -37,3 +37,45 @@ fn string_setters_keep_frozen_and_private_field_restrictions() {
         assert!(!wrapped.lib_rs.contains("fn rustcall_Text_set_value("));
     }
 }
+
+#[test]
+fn vec_fields_export_owned_buffers_and_slice_setters() {
+    let scan = extract(
+        "#[pyclass] pub struct Values { #[pyo3(get, set)] pub data: Vec<i32> }",
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let field = &wrapped.manifest.structs[0].fields[0];
+    assert_eq!(field.abi, "vec");
+    assert_eq!(field.vec_element, "i32");
+    assert_eq!(field.free_symbol, "rustcall_Values_get_data_free_rust_vec");
+    assert!(wrapped
+        .lib_rs
+        .contains("struct rustcall_Values_get_data_RustCallOwnedVec"));
+    assert!(wrapped
+        .lib_rs
+        .contains("fn rustcall_Values_get_data_free_rust_vec"));
+    assert!(wrapped
+        .lib_rs
+        .contains("drop(Vec::from_raw_parts(value.ptr, value.len, value.cap))"));
+    assert!(wrapped.lib_rs.contains("value: *const i32"));
+    assert!(wrapped
+        .lib_rs
+        .contains("from_raw_parts(value, len).to_vec()"));
+}
+
+#[test]
+fn set_only_vec_fields_need_no_return_helper() {
+    let scan = extract(
+        "#[pyclass] pub struct Values { #[pyo3(set)] pub data: Vec<f64> }",
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let field = &wrapped.manifest.structs[0].fields[0];
+    assert!(field.getter.is_empty());
+    assert!(field.free_symbol.is_empty());
+    assert!(wrapped.lib_rs.contains("fn rustcall_Values_set_data"));
+    assert!(!wrapped.lib_rs.contains("RustCallOwnedVec"));
+}

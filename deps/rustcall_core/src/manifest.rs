@@ -110,7 +110,11 @@ use serde::{Deserialize, Serialize};
 /// * **9** adds [`Function::callable_path`] and [`Struct::callable_path`]
 ///   (#303): wrappers must call the externally reachable re-export instead
 ///   of a canonical definition inside a private module.
-pub const SCHEMA_VERSION: u32 = 9;
+/// * **10** adds the owned-vector field ABI. [`Field::vec_element`] states the
+///   element spelling and [`Field::free_symbol`] names the allocator-matched
+///   release export; an older consumer would otherwise read the returned
+///   `(ptr, len, cap)` aggregate as a Rust `Vec<T>` value.
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -439,11 +443,19 @@ pub struct Field {
     pub rust_type: String,
     /// How the generated getter returns the field: `""` as written
     /// (`rust_type`), `"string"` for an owned `<Struct>_RustCallOwnedString`
-    /// released through `<Struct>_free_rust_string`. Same vocabulary as
+    /// released through `<Struct>_free_rust_string`, or `"vec"` for the
+    /// owned buffer described by [`Field::vec_element`] and [`Field::free_symbol`]. Same vocabulary as
     /// [`Arg::abi`] / [`Method::return_abi`], so Julia never has to re-derive
     /// the lowering from the type spelling (#276).
     #[serde(default)]
     pub abi: String,
+    /// Element type for the `"vec"` ABI. Empty for every other field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vec_element: String,
+    /// Export that reconstructs and drops the owned vector returned by this
+    /// getter. Empty unless `abi == "vec"` and a getter is emitted.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub free_symbol: String,
     /// Whether Julia may read this field through an exported getter.
     pub ffi_compatible: bool,
     /// Exported symbol that reads the field. Usually `<Struct>_get_<field>`; in

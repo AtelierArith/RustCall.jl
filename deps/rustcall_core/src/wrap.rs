@@ -56,7 +56,9 @@ use crate::codegen::{
     WrapperReceiver, WrapperReturn, WrapperSpec,
 };
 use crate::manifest::{skip_reason, Arg, Manifest, Method, ReturnKind, Struct};
-use crate::types::{is_ffi_compatible_type, is_str_ref_type, is_string_type};
+use crate::types::{
+    is_ffi_compatible_type, is_str_ref_type, is_string_type, pyo3_vec_element_type,
+};
 
 /// The only error value a wrapped `PyResult` reports, see the module docs.
 pub const PYERR_CODE: i32 = 1;
@@ -169,6 +171,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
                 f.ffi_compatible = false;
                 f.getter.clear();
                 f.setter.clear();
+                f.free_symbol.clear();
             }
             out.structs.push(entry);
             continue;
@@ -313,6 +316,7 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
             f.ffi_compatible = false;
             f.getter.clear();
             f.setter.clear();
+            f.free_symbol.clear();
         }
     }
 
@@ -337,14 +341,17 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
             f.ffi_compatible = false;
             f.getter.clear();
             f.setter.clear();
+            f.free_symbol.clear();
             continue;
         };
         let Ok(ty) = syn::parse_str::<Type>(&f.rust_type) else {
             f.ffi_compatible = false;
             f.getter.clear();
             f.setter.clear();
+            f.free_symbol.clear();
             continue;
         };
+        let vec_element = pyo3_vec_element_type(&ty);
         if is_string_type(&ty) {
             if !f.getter.is_empty() {
                 let getter = format_ident!("{}", f.getter);
@@ -358,6 +365,46 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
                             cap: rustcall_bytes.capacity(),
                         };
                         ::std::mem::forget(rustcall_bytes);
+                        rustcall_ret
+                    }
+                }));
+            }
+        } else if let Some(element) = &vec_element {
+            if !f.getter.is_empty() {
+                let getter = format_ident!("{}", f.getter);
+                let helper = format_ident!("{}_RustCallOwnedVec", f.getter);
+                let Ok(free) = syn::parse_str::<Ident>(&f.free_symbol) else {
+                    f.ffi_compatible = false;
+                    f.getter.clear();
+                    f.setter.clear();
+                    f.free_symbol.clear();
+                    continue;
+                };
+                out.extend(quote! {
+                    #[repr(C)]
+                    pub struct #helper {
+                        pub ptr: *mut #element,
+                        pub len: usize,
+                        pub cap: usize,
+                    }
+
+                    #[no_mangle]
+                    pub extern "C" fn #free(value: #helper) {
+                        if !value.ptr.is_null() {
+                            unsafe { drop(Vec::from_raw_parts(value.ptr, value.len, value.cap)); }
+                        }
+                    }
+                });
+                out.extend(crate::codegen::guard_struct_helper(quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #getter(ptr: *const #class) -> #helper {
+                        let mut rustcall_vec = unsafe { (*ptr).#field.clone() };
+                        let rustcall_ret = #helper {
+                            ptr: rustcall_vec.as_mut_ptr(),
+                            len: rustcall_vec.len(),
+                            cap: rustcall_vec.capacity(),
+                        };
+                        ::std::mem::forget(rustcall_vec);
                         rustcall_ret
                     }
                 }));
@@ -377,15 +424,35 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
             }
         }
         if !f.setter.is_empty() {
-            // Share byte-pair String conversion and the panic boundary with
-            // the in-crate/inline accessor generator (#303).
-            out.extend(crate::codegen::struct_field_setter(
-                &class,
-                &field,
-                &ty,
-                &format_ident!("{}", f.setter),
-                &[],
-            ));
+            if let Some(element) = &vec_element {
+                let setter = format_ident!("{}", f.setter);
+                out.extend(crate::codegen::guard_struct_helper(quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #setter(
+                        ptr: *mut #class,
+                        value: *const #element,
+                        len: usize,
+                    ) {
+                        let value = if len == 0 {
+                            Vec::new()
+                        } else {
+                            assert!(!value.is_null(), "non-empty Vec field input has a null pointer");
+                            unsafe { ::std::slice::from_raw_parts(value, len).to_vec() }
+                        };
+                        unsafe { (*ptr).#field = value; }
+                    }
+                }));
+            } else {
+                // Share byte-pair String conversion and the panic boundary with
+                // the in-crate/inline accessor generator (#303).
+                out.extend(crate::codegen::struct_field_setter(
+                    &class,
+                    &field,
+                    &ty,
+                    &format_ident!("{}", f.setter),
+                    &[],
+                ));
+            }
         }
     }
 
