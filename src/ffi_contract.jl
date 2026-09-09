@@ -1175,6 +1175,7 @@ end
 """
     ffi_owned_string_return(c) -> Bool
     ffi_borrowed_string_return(c) -> Bool
+    ffi_owned_vec_return(c) -> Bool
 
 Whether a return contract describes a lowered **owned** (`CRustString`,
 `(ptr, len, cap)`) or **borrowed** (`CRustStr`, `(ptr, len)`) string buffer.
@@ -1182,10 +1183,45 @@ Whether a return contract describes a lowered **owned** (`CRustString`,
 Every generator branches on these rather than on `return_abi == "string"`, on
 `has_owned_string_helper`, or on the Rust spelling — the three vocabularies
 #276 collapses. An owned contract also carries the `free_symbol` that releases
-it, which is the half #246 and #249 are about.
+it, which is the half #246 and #249 are about. `ffi_owned_vec_return` identifies
+the schema-10 `CRustVec` aggregate separately because it stays owned by Julia.
 """
 ffi_owned_string_return(c::FFIContract) = c.aggregate_type === CRustString
 ffi_borrowed_string_return(c::FFIContract) = c.aggregate_type === CRustStr
+ffi_owned_vec_return(c::FFIContract) = c.aggregate_type === CRustVec
+
+"""
+    ffi_owned_vec_contract(rust_type, element_type, free_symbol) -> FFIContract
+
+Build the manifest-stated contract for a `Vec<T>` field getter. Unlike an
+owned String, a vector remains live on the Julia side as `RustVec{T}`, so its
+release function accepts the complete `CRustVec` aggregate and is retained by
+the resulting object together with the producing library generation.
+"""
+function ffi_owned_vec_contract(rust_type::AbstractString,
+                                element_type::AbstractString,
+                                free_symbol::AbstractString)
+    isempty(element_type) && throw(ArgumentError(
+        "the vec field ABI for $rust_type is missing vec_element"))
+    isempty(free_symbol) && throw(ArgumentError(
+        "the vec field ABI for $rust_type is missing free_symbol"))
+    surface = Core.apply_type(RustVec, ffi_vec_element_type(element_type))
+    return FFIContract(ffi_normalize_spelling(rust_type), :return, :ptr_len_cap,
+                       Type[CRustVec], CRustVec,
+                       Type[Ptr{Cvoid}, Csize_t, Csize_t], surface,
+                       :transferred_to_julia, String(free_symbol), true)
+end
+
+function ffi_vec_element_type(element_type::AbstractString)
+    element = ffi_lookup(element_type)
+    element === nothing && throw(ArgumentError(
+        "the vec field ABI has unsupported element type `$element_type`"))
+    element.abi in (:by_value, :pointer) || throw(ArgumentError(
+        "the vec field ABI requires a scalar or pointer element, got `$element_type`"))
+    isbitstype(element.surface_type) || throw(ArgumentError(
+        "the vec field ABI requires an isbits Julia element, got $(element.surface_type)"))
+    return element.surface_type
+end
 
 """
     ffi_signature_context(name, arg_types, return_type; owner = nothing) -> String

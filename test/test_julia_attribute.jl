@@ -165,8 +165,8 @@ using Libdl
     end
 
     @testset "manifest: schema version guard" begin
-        @test RustCall.MANIFEST_SCHEMA_VERSION == 9
-        @test RustCall._parse_manifest("schema_version = 9\nmode = \"inline\"\n")["schema_version"] == 9
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 10
+        @test RustCall._parse_manifest("schema_version = 10\nmode = \"inline\"\n")["schema_version"] == 10
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 8\nmode = \"inline\"\n")
         # Schema 1 predates the string ABI columns (`abi`, `return_abi`, the
         # helper flags), schema 2 predates the additive `symbol` semantics
@@ -194,7 +194,7 @@ using Libdl
         end
         @test err isa RustCall.ExtractorError
         @test occursin("schema 1", sprint(showerror, err))
-        @test occursin("expects 9", sprint(showerror, err))
+        @test occursin("expects 10", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 3\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 4\nmode = \"inline\"\n")

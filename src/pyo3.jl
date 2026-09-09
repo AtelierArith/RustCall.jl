@@ -1565,6 +1565,8 @@ function _pyo3_wrapper_items(manifest::Dict)
             st.name, st.type_params, kept, st.context_code, st.fields,
             st.has_derive_julia_struct, st.derive_options;
             field_abis = st.field_abis, field_getters = st.field_getters,
+            field_vec_elements = st.field_vec_elements,
+            field_free_symbols = st.field_free_symbols,
             field_setters = st.field_setters, has_clone = st.has_clone,
             has_owned_string_helper = st.has_owned_string_helper,
             has_borrowed_string_helper = st.has_borrowed_string_helper,

@@ -1,4 +1,4 @@
-schema_version = 9
+schema_version = 10
 mode = "crate"
 
 [[functions]]
@@ -539,9 +539,11 @@ vis = "pub"
 [[structs.fields]]
 name = "tags"
 rust_type = "Vec<i32>"
-abi = ""
-ffi_compatible = false
-getter = ""
+abi = "vec"
+vec_element = "i32"
+free_symbol = "rustcall_geometry__Rect_get_tags_free_rust_vec"
+ffi_compatible = true
+getter = "rustcall_geometry__Rect_get_tags"
 setter = ""
 python_name = ""
 vis = "pub"

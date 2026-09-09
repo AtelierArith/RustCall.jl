@@ -1198,6 +1198,8 @@ fn crate_struct_entry(
                 name: name.to_string(),
                 rust_type: type_to_string(ty),
                 abi: crate::codegen::field_abi(ty).to_string(),
+                vec_element: String::new(),
+                free_symbol: String::new(),
                 ffi_compatible,
                 getter: if ffi_compatible {
                     crate::codegen::field_getter_symbol(&stem, &name.to_string())

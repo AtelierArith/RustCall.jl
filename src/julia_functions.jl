@@ -266,14 +266,20 @@ _ffi_function_return(sig::RustFunctionSignature) =
 """
     _ffi_field_return(info, field_name, field_type) -> FFIContract
 
-The return contract of a struct field getter. `Field.abi` (manifest schema 4)
-says whether the getter hands back an owned buffer, and the struct owns the
-`<Struct>_free_rust_string` that releases it — on both wrapper flavours, named
-after the struct's FFI name (#300).
+The return contract of a struct field getter. `Field.abi` says whether the
+getter hands back an owned String or Vec buffer. String release is derived from
+the struct's FFI name; a Vec carries its element and exact release symbol in
+schema 10 so the resulting `RustVec` retains the producing allocator (#303).
 """
-_ffi_field_return(info, field_name::AbstractString, field_type::AbstractString) =
-    ffi_return_contract(field_type; abi = get(info.field_abis, field_name, ""),
-                        owner = info.ffi_name)
+function _ffi_field_return(info, field_name::AbstractString, field_type::AbstractString)
+    abi = get(info.field_abis, field_name, "")
+    if abi == "vec"
+        element = get(info.field_vec_elements, field_name, "")
+        free_symbol = get(info.field_free_symbols, field_name, "")
+        return ffi_owned_vec_contract(field_type, element, free_symbol)
+    end
+    return ffi_return_contract(field_type; abi = abi, owner = info.ffi_name)
+end
 
 # A field getter reads as `Struct::field -> T`.
 _ffi_field_context(info, field_name::AbstractString, field_type::AbstractString) =

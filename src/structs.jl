@@ -175,9 +175,10 @@ end
 A `#[julia]` / `#[derive(JuliaStruct)]` struct as recorded in the manifest.
 
 - `fields`: `(name, rust_type)` for every named field
-- `field_abis`: manifest `Field.abi` per field — `"string"` when the getter
-  returns an owned `<Struct>_RustCallOwnedString` buffer, `""` when it returns
-  the field as written (schema 4, #276). Absent keys mean `""`
+- `field_abis`: manifest `Field.abi` per field — `"string"` for an owned UTF-8
+  buffer, `"vec"` for an owned `RustVec` buffer, `""` when returned as written
+- `field_vec_elements` / `field_free_symbols`: the element type and exact
+  allocator-matched release export of a `"vec"` getter (schema 10, #303)
 - `field_getters` / `field_setters`: exported accessor symbols per accessible field
 - `context_code`: struct + impl source (generic structs only)
 - `generic_wrappers`: `(name, source, type_params)` wrappers registered for monomorphization;
@@ -193,6 +194,8 @@ struct RustStructInfo
     context_code::String
     fields::Vector{Tuple{String, String}}
     field_abis::Dict{String, String}
+    field_vec_elements::Dict{String, String}
+    field_free_symbols::Dict{String, String}
     has_derive_julia_struct::Bool
     derive_options::Dict{String, Bool}
     field_getters::Dict{String, String}
@@ -225,6 +228,8 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         context_code::String, fields::Vector{Tuple{String, String}},
                         has_derive_julia_struct::Bool, derive_options::Dict{String, Bool};
                         field_abis::Dict{String, String} = Dict{String, String}(),
+                        field_vec_elements::Dict{String, String} = Dict{String, String}(),
+                        field_free_symbols::Dict{String, String} = Dict{String, String}(),
                         field_getters::Dict{String, String} = Dict{String, String}(),
                         field_setters::Dict{String, String} = Dict{String, String}(),
                         has_clone::Bool = get(derive_options, "Clone", false),
@@ -238,6 +243,7 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         cfg_features::Vector{String} = String[],
                         ffi_name::String = name)
     RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
+                   field_vec_elements, field_free_symbols,
                    has_derive_julia_struct,
                    derive_options, field_getters, field_setters, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,

@@ -387,6 +387,8 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
                 name: name.to_string(),
                 rust_type: type_to_string(ty),
                 abi: crate::codegen::field_abi(ty).to_string(),
+                vec_element: String::new(),
+                free_symbol: String::new(),
                 ffi_compatible: acc.is_some(),
                 getter: acc.map(|a| a.1.clone()).unwrap_or_default(),
                 setter: acc.map(|a| a.2.clone()).unwrap_or_default(),

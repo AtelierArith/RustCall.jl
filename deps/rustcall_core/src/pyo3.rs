@@ -870,6 +870,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                 f.ffi_compatible = false;
                 f.getter.clear();
                 f.setter.clear();
+                f.free_symbol.clear();
             }
             continue;
         }
@@ -928,6 +929,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
                         f.ffi_compatible = false;
                         f.getter.clear();
                         f.setter.clear();
+                        f.free_symbol.clear();
                     }
                 }
             } else {
@@ -937,20 +939,34 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             }
         }
         for f in &mut s.fields {
-            for accessor in [&mut f.getter, &mut f.setter] {
-                if accessor.is_empty() {
-                    continue;
+            if !f.getter.is_empty() {
+                let mut symbols = vec![f.getter.clone(), crate::codegen::panic_symbol(&f.getter)];
+                if f.abi == "vec" {
+                    symbols.push(format!("{}_RustCallOwnedVec", f.getter));
+                    symbols.push(f.free_symbol.clone());
                 }
-                let symbols = [accessor.clone(), crate::codegen::panic_symbol(accessor)];
-                match taken
+                if taken
                     .iter()
-                    .find(|(t, _, c)| symbols.contains(t) && cfg_clash(c, &s_cfg))
+                    .any(|(t, _, c)| symbols.contains(t) && cfg_clash(c, &s_cfg))
                 {
-                    Some(_) => accessor.clear(),
-                    None => {
-                        for symbol in symbols {
-                            taken.push((symbol, owner.clone(), s_cfg.clone()));
-                        }
+                    f.getter.clear();
+                    f.free_symbol.clear();
+                } else {
+                    for symbol in symbols {
+                        taken.push((symbol, owner.clone(), s_cfg.clone()));
+                    }
+                }
+            }
+            if !f.setter.is_empty() {
+                let symbols = [f.setter.clone(), crate::codegen::panic_symbol(&f.setter)];
+                if taken
+                    .iter()
+                    .any(|(t, _, c)| symbols.contains(t) && cfg_clash(c, &s_cfg))
+                {
+                    f.setter.clear();
+                } else {
+                    for symbol in symbols {
+                        taken.push((symbol, owner.clone(), s_cfg.clone()));
                     }
                 }
             }
@@ -1039,6 +1055,10 @@ fn struct_symbols(s: &Struct) -> Vec<String> {
         if !f.getter.is_empty() {
             out.push(f.getter.clone());
             out.push(crate::codegen::panic_symbol(&f.getter));
+            if f.abi == "vec" {
+                out.push(format!("{}_RustCallOwnedVec", f.getter));
+                out.push(f.free_symbol.clone());
+            }
         }
         if !f.setter.is_empty() {
             out.push(f.setter.clone());
@@ -1199,24 +1219,39 @@ fn class_entry(
             // only a `pub` field gets accessors. A skipped class has no handle
             // type, so its fields have none either, whatever their visibility.
             let field_is_public = matches!(f.vis, syn::Visibility::Public(_));
-            // A `String` field crosses as the owned-string ABI; a `Vec<T>`
-            // has no ABI on the Julia side yet, so advertising an accessor for
-            // it would make the whole binding fail after the wrapper built
-            // (#307 review; #303 owns an owned-vector ABI).
+            let vec_element = crate::types::pyo3_vec_element_type(&f.ty);
+            // A `String` field crosses as the owned-string ABI. A `Vec<T>` is
+            // available when T has a concrete Julia FFI scalar representation;
+            // its element and allocator-matched release export are manifest
+            // data rather than guesses made by the consumer (#303).
             let usable = reason.is_empty()
                 && field_is_public
                 && pyo3_type_in(&f.ty).is_none()
-                && (is_ffi_compatible_type(&f.ty) || is_string_type(&f.ty));
+                && (is_ffi_compatible_type(&f.ty)
+                    || is_string_type(&f.ty)
+                    || vec_element.is_some());
+            let getter = if usable && access.get {
+                crate::codegen::method_symbol_of(&stem, &format!("get_{ident}"))
+            } else {
+                String::new()
+            };
+            let vec_free = if vec_element.is_some() && !getter.is_empty() {
+                format!("{getter}_free_rust_vec")
+            } else {
+                String::new()
+            };
             fields.push(Field {
                 name: ident.to_string(),
                 rust_type: type_to_string(&f.ty),
-                abi: crate::codegen::field_abi(&f.ty).to_string(),
-                ffi_compatible: usable,
-                getter: if usable && access.get {
-                    crate::codegen::method_symbol_of(&stem, &format!("get_{ident}"))
+                abi: if vec_element.is_some() {
+                    "vec".to_string()
                 } else {
-                    String::new()
+                    crate::codegen::field_abi(&f.ty).to_string()
                 },
+                vec_element: vec_element.as_ref().map(type_to_string).unwrap_or_default(),
+                free_symbol: vec_free,
+                ffi_compatible: usable,
+                getter,
                 setter: if usable && access.set {
                     crate::codegen::method_symbol_of(&stem, &format!("set_{ident}"))
                 } else {

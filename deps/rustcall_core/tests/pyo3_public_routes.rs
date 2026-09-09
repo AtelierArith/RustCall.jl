@@ -92,7 +92,7 @@ fn public_alias_restores_only_supported_field_accessors() {
                 #[pyo3(get, set)] pub value: i32,
                 #[pyo3(get, set)] pub text: String,
                 #[pyo3(get, set)] private: i32,
-                #[pyo3(get, set)] pub unsupported: Vec<i32>,
+                #[pyo3(get, set)] pub unsupported: Vec<Vec<i32>>,
                 pub automatic: i32,
             }}
         "#
