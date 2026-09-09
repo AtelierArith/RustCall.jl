@@ -598,6 +598,23 @@ function register_generic_function(
     type_params::Vector{Symbol},
     constraints::Dict{Symbol, TypeConstraints}=Dict{Symbol, TypeConstraints}(),
     context::String="";
+    kwargs...
+)
+    info = _prepare_generic_function(func_name, code, type_params, constraints, context; kwargs...)
+    return lock(REGISTRY_LOCK) do
+        GENERIC_FUNCTION_REGISTRY[func_name] = info
+        info
+    end
+end
+
+# Parsing/preparation is separate from publication, so a struct can prepare
+# all of its wrappers before publishing a single coherent source generation.
+function _prepare_generic_function(
+    func_name::String,
+    code::String,
+    type_params::Vector{Symbol},
+    constraints::Dict{Symbol, TypeConstraints}=Dict{Symbol, TypeConstraints}(),
+    context::String="";
     arg_types::Vector{String}=String[],
     return_type::String="",
     path::String=func_name,
@@ -617,12 +634,24 @@ function register_generic_function(
             isempty(constraints) && (constraints = sig.constraints)
         end
     end
+    return GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types,
+                               return_type, path, compiler, blocked, group)
+end
+
+function _publish_generic_struct_group!(group::Symbol, members::Vector{GenericFunctionInfo})
+    names = Set(info.name for info in members)
+    all(info -> info.group === group, members) || error("Inconsistent generic struct group")
     lock(REGISTRY_LOCK) do
-        info = GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types,
-                                   return_type, path, compiler, blocked, group)
-        GENERIC_FUNCTION_REGISTRY[func_name] = info
-        return info
+        obsolete = [name for (name, info) in GENERIC_FUNCTION_REGISTRY
+                    if info.group === group && !(name in names)]
+        for name in obsolete
+            delete!(GENERIC_FUNCTION_REGISTRY, name)
+        end
+        for info in members
+            GENERIC_FUNCTION_REGISTRY[info.name] = info
+        end
     end
+    return nothing
 end
 
 # Backward compatibility: accept `Dict{Symbol, String}` bounds such as

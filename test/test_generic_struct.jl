@@ -4,6 +4,61 @@ using Test
 
 struct NonCopyStatePayload{T} end
 
+@testset "generic group registration replaces the whole member set atomically (#251, #291)" begin
+    source(member) = """
+        #[julia] pub struct AtomicGenericGroup<T> { value: T }
+        impl<T> AtomicGenericGroup<T> {
+            pub fn new(value: T) -> Self { Self { value } }
+            pub fn $(member)(&self) -> i32 { 1 }
+        }
+        """
+    versions = [RustCall.expand_inline(source(member)) for member in ("old_member", "new_member")]
+    infos = [only(RustCall.manifest_struct_infos(version.manifest)) for version in versions]
+    group = Symbol("generic_struct:AtomicGenericGroup")
+    expected = [Set(first(wrapper) for wrapper in info.generic_wrappers) for info in infos]
+    snapshot() = lock(RustCall.REGISTRY_LOCK) do
+        [info for info in values(RustCall.GENERIC_FUNCTION_REGISTRY) if info.group === group]
+    end
+    publish(index) = RustCall.register_generic_struct_wrappers(infos[index], versions[index].source)
+    publish(1)
+    @test Set(info.name for info in snapshot()) == expected[1]
+    publish(2)
+    @test Set(info.name for info in snapshot()) == expected[2]
+    @test all(info -> info.code == versions[2].source, snapshot())
+    if Threads.nthreads() > 1
+        stop = Threads.Atomic{Bool}(false)
+        ready = Channel{Nothing}(3)
+        readers = [Threads.@spawn(begin
+            valid = true
+            count = 0
+            put!(ready, nothing)
+            while !stop[]
+                observed = snapshot()
+                valid &= any(eachindex(versions)) do index
+                    Set(info.name for info in observed) == expected[index] &&
+                    all(info -> info.code == versions[index].source, observed)
+                end
+                count += 1
+                yield()
+            end
+            (valid, count)
+        end) for _ in 1:3]
+        try
+            foreach(_ -> take!(ready), 1:3)
+            for iteration in 1:20
+                publish(mod1(iteration, 2))
+            end
+        finally
+            stop[] = true
+            for reader in readers
+                valid, count = fetch(reader)
+                @test valid
+                @test count > 0
+            end
+        end
+    end
+end
+
 @testset "method-local type parameters do not block a generic constructor" begin
     rust"""
     #[julia]
@@ -89,6 +144,16 @@ end
             @test occursin("generation 111", sprint(showerror, error))
             original_free = RustCall._generic_artifact_member(old.lib_name, "GenerationStableBox_free")
             @test original_free.func_ptr == getfield(old, :free_ptr)
+            if version == 222
+                # Retire the original image while readers still enter it.
+                # Its object must not need the live-name registry or migrate
+                # to the newly published group's methods.
+                RustCall.unload_library(old.lib_name)
+                @test !haskey(RustCall.RUST_LIBRARIES, old.lib_name)
+                @test getfield(old, :alive)[]
+                @test original_free.handle in RustCall.retired_handles(old.lib_name)
+                @test Base.invokelatest(stable_stamp, old) == 111
+            end
         end
     finally
         stop[] = true
@@ -108,6 +173,10 @@ end
     end
     @test RustCall.finalizer_failure_count() == before
     @test_throws RustCall.RustError Base.invokelatest(stable_stamp, old)
+    # All readers joined and every object finalized: this is the explicit
+    # quiescence point at which reclaiming this test's old image is safe.
+    @test RustCall.close_retired_handles!(RustCall.retired_handles(old.lib_name)) > 0
+    @test !getfield(old, :alive)[]
 end
 
 @testset "generic methods with stronger bounds do not block construction" begin

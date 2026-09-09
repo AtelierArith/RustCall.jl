@@ -276,6 +276,7 @@ compiled into the library directly and need no registration.
 function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String; compiler = nothing)
     isempty(info.type_params) && return nothing
     group = Symbol("generic_struct:", qualified_name(info.module_path, info.name))
+    members = GenericFunctionInfo[]
     for (wrapper_name, _, wrapper_params) in info.generic_wrappers
         # The wrapper's own parameter names, positionally aligned with the
         # struct's parameters, so `Point{Int32}` binds the right name even when
@@ -287,11 +288,12 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
         end
         m = findfirst(mm -> "$(info.name)_$(mm.name)" == wrapper_name, info.methods)
         arg_types = m === nothing ? String[] : info.methods[m].arg_types
-        register_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
+        push!(members, _prepare_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
                                   arg_types = arg_types,
                                   path = qualified_name(info.module_path, wrapper_name), compiler,
-                                  group = group)
+                                  group = group))
     end
+    _publish_generic_struct_group!(group, members)
     return nothing
 end
 
