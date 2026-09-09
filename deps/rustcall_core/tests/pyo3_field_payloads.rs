@@ -159,3 +159,37 @@ fn py_result_self_is_an_owned_pointer_payload() {
         .lib_rs
         .contains("Box::into_raw(Box::new(rustcall_ok))"));
 }
+
+#[test]
+fn inheritance_constructor_tuple_is_not_boxed_as_the_child() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct Base;
+        #[pyclass(extends = Base)]
+        pub struct Child;
+        #[pymethods]
+        impl Child {
+            #[new]
+            pub fn new() -> PyResult<(Self, Base)> { Ok((Self, Base)) }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let method = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "Child")
+        .unwrap()
+        .methods
+        .iter()
+        .find(|method| method.name == "new")
+        .unwrap();
+    assert!(method.is_constructor);
+    assert!(!method.returns_boxed_struct);
+    assert_eq!(method.skip_reason, "py_result_payload:(Self, Base)");
+    assert!(!wrapped.lib_rs.contains("fn rustcall_Child_new"));
+}

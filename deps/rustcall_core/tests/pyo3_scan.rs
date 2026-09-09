@@ -1368,10 +1368,10 @@ fn a_crate_anchored_import_disambiguates_absolutely() {
     assert!(nested.methods.is_empty());
 }
 
-/// A `#[pymethods]` method is boxed when it is a `#[new]` or returns `Self` /
-/// the class — never because it happens to be called `new` (#307 review): a
-/// `#[staticmethod] fn new() -> i32` promised as `*mut Class` would not
-/// compile.
+/// A `#[pymethods]` method is boxed only when its return payload is `Self` /
+/// the class — never merely because it is marked `#[new]` or happens to be
+/// called `new` (#307 review, #303): either would promise the wrong pointer
+/// type for a scalar or inheritance tuple.
 #[test]
 fn boxing_follows_the_constructor_marker_not_the_name() {
     let manifest = scan(
@@ -1379,6 +1379,7 @@ fn boxing_follows_the_constructor_marker_not_the_name() {
          #[pymethods] impl P {\n\
             #[staticmethod] pub fn new() -> i32 { 0 }\n\
             #[new] pub fn create() -> Self { P {} }\n\
+            #[new] pub fn inherited() -> PyResult<(Self, i32)> { todo!() }\n\
             #[staticmethod] pub fn make() -> P { P {} }\n\
             pub fn count(&self) -> i32 { 0 }\n\
          }",
@@ -1389,6 +1390,8 @@ fn boxing_follows_the_constructor_marker_not_the_name() {
     assert!(!by("new").returns_boxed_struct);
     assert!(by("create").is_constructor);
     assert!(by("create").returns_boxed_struct);
+    assert!(by("inherited").is_constructor);
+    assert!(!by("inherited").returns_boxed_struct);
     assert!(!by("make").is_constructor);
     assert!(by("make").returns_boxed_struct);
     assert!(!by("count").returns_boxed_struct);

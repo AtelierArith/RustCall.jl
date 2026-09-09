@@ -1376,13 +1376,12 @@ fn method_entry(
         ok_abi: String::new(),
         err_abi: String::new(),
         inner_abi: String::new(),
-        // A `#[new]`, and any other method returning `Self` / the class, hands
-        // back the class itself — an opaque handle a wrapper boxes
-        // (`#[pyclass]` is never `repr(C)`). Decided from the PyO3 marker and
-        // the return type, never from the method's name: a
-        // `#[staticmethod] fn new() -> i32` is an ordinary method, and boxing
-        // its `i32` as a `*mut Class` would not compile (#307 review).
-        returns_boxed_struct: is_constructor || returns_self,
+        // Only a return payload that resolves to `Self` / the class is an
+        // opaque handle this wrapper may box (`#[pyclass]` is never `repr(C)`).
+        // The `#[new]` marker alone is insufficient: an inheritance
+        // constructor returns `(Self, Base)` (possibly inside `PyResult`),
+        // which cannot inhabit a `*mut Self` success slot (#303).
+        returns_boxed_struct: returns_self,
         args: fn_args(&func.sig),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
