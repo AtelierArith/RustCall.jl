@@ -432,6 +432,9 @@ pub(crate) enum WrapperReturn {
 pub(crate) enum WrapperPayload {
     /// Stored as written.
     Plain(Type),
+    /// A class value stored as an owning raw pointer. Julia reconstructs its
+    /// opaque handle with the destructor from the same library generation.
+    Boxed(syn::Path),
     /// `String` / `&str`, stored as `<helper> { ptr, len, cap }`.
     OwnedString {
         helper: Ident,
@@ -452,6 +455,7 @@ impl WrapperPayload {
     fn stored_type(&self) -> Type {
         match self {
             WrapperPayload::Plain(ty) => ty.clone(),
+            WrapperPayload::Boxed(ty) => syn::parse_quote!(*mut #ty),
             WrapperPayload::OwnedString { helper, .. } => syn::parse_quote!(#helper),
         }
     }
@@ -461,6 +465,7 @@ impl WrapperPayload {
     fn store_expr(&self, value: &Ident) -> TokenStream2 {
         match self {
             WrapperPayload::Plain(_) => quote! { #value },
+            WrapperPayload::Boxed(_) => quote! { Box::into_raw(Box::new(#value)) },
             WrapperPayload::OwnedString { helper, .. } => quote! {{
                 // `ToString` covers both `String` and a `&str` payload, which
                 // is always copied (see the type docs).

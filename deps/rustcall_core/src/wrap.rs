@@ -273,7 +273,8 @@ fn function_wrapper(
     let mut updated = f.clone();
     updated.exported = true;
     updated.return_abi = plan.return_abi.to_string();
-    updated.has_owned_string_helper = plan.return_abi == "string";
+    updated.ok_abi = plan.ok_abi.to_string();
+    updated.has_owned_string_helper = plan.return_abi == "string" || plan.ok_abi == "string";
     updated.has_borrowed_string_helper = plan.return_abi == "str";
     if plan.err_slot {
         updated.err_type = PYERR_SLOT.to_string();
@@ -521,6 +522,7 @@ fn method_wrapper(
         call_suffix: plan.call_suffix,
     });
     m.return_abi = plan.return_abi.to_string();
+    m.ok_abi = plan.ok_abi.to_string();
     // The wrapper this crate generates declares its own buffers, so the
     // manifest it hands Julia states their owner (#342).
     m.string_owner = owner.to_string();
@@ -541,6 +543,9 @@ struct ReturnPlan {
     call_suffix: TokenStream2,
     /// Manifest `return_abi`: `""`, `"string"` or `"str"`.
     return_abi: &'static str,
+    /// How the successful payload of a `PyResult` is stored. Empty as written,
+    /// or `"string"` for the owner's owned-string buffer.
+    ok_abi: &'static str,
     /// Whether the manifest entry's `err_type` becomes [`PYERR_SLOT`].
     err_slot: bool,
 }
@@ -607,12 +612,13 @@ fn return_plan(
         ret,
         call_suffix: TokenStream2::new(),
         return_abi: "",
+        ok_abi: "",
         err_slot: false,
     };
 
     match kind {
         ReturnKind::Unit => Ok(plain(WrapperReturn::Unit)),
-        ReturnKind::PyResult => py_result_plan(owner, ok_type),
+        ReturnKind::PyResult => py_result_plan(owner, ok_type, boxed),
         ReturnKind::Result => {
             if !wraps_aggregates {
                 return Err(skip_reason::detailed(
@@ -656,6 +662,7 @@ fn return_plan(
                     },
                     call_suffix: TokenStream2::new(),
                     return_abi: "string",
+                    ok_abi: "",
                     err_slot: false,
                 });
             }
@@ -676,6 +683,7 @@ fn return_plan(
                         },
                         call_suffix: TokenStream2::new(),
                         return_abi: "string",
+                        ok_abi: "",
                         err_slot: false,
                     });
                 }
@@ -686,6 +694,7 @@ fn return_plan(
                     },
                     call_suffix: TokenStream2::new(),
                     return_abi: "str",
+                    ok_abi: "",
                     err_slot: false,
                 });
             }
@@ -703,11 +712,14 @@ fn return_plan(
 /// `PyResult<T>`: a `CResult` whose error payload is [`PYERR_CODE`].
 ///
 /// The `PyErr` is moved into `drop` and never rendered — see the module docs.
-/// `T` must cross the C ABI as a single value: a `PyResult<String>` or a
-/// `PyResult<Self>` would need a buffer or a box *inside* the aggregate, which
-/// no `CResult` shape covers, so those are refused rather than mis-lowered
-/// (#303 tracks widening this).
-fn py_result_plan(owner: &Ident, ok_type: &str) -> Result<ReturnPlan, String> {
+/// Scalar `T` is stored directly, `String` / `&str` uses the owner's released
+/// buffer, and a class-valued `Self` is boxed inside the success slot. Other
+/// aggregate payloads remain fail-closed (#303).
+fn py_result_plan(
+    owner: &Ident,
+    ok_type: &str,
+    boxed: Option<syn::Path>,
+) -> Result<ReturnPlan, String> {
     let name = format_ident!("CResult_{}", owner);
     let err: Type = syn::parse_str(PYERR_SLOT).expect("i32 parses");
     let drop_err = quote! {
@@ -732,12 +744,44 @@ fn py_result_plan(owner: &Ident, ok_type: &str) -> Result<ReturnPlan, String> {
             },
             call_suffix: quote! { .map(|_| 0u8) #drop_err },
             return_abi: "",
+            ok_abi: "",
+            err_slot: true,
+        });
+    }
+
+    if let Some(class) = boxed {
+        return Ok(ReturnPlan {
+            ret: WrapperReturn::CResult {
+                name,
+                ok: WrapperPayload::Boxed(class),
+                err: WrapperPayload::Plain(err),
+            },
+            call_suffix: drop_err,
+            return_abi: "",
+            ok_abi: "",
             err_slot: true,
         });
     }
 
     let ok = syn::parse_str::<Type>(ok_type)
         .map_err(|_| skip_reason::detailed(skip_reason::PY_RESULT_PAYLOAD, ok_type))?;
+    if is_string_type(&ok) || is_str_ref_type(&ok) {
+        return Ok(ReturnPlan {
+            ret: WrapperReturn::CResult {
+                name,
+                ok: WrapperPayload::OwnedString {
+                    helper: format_ident!("{}_RustCallOwnedString", owner),
+                    free: format_ident!("{}_free_rust_string", owner),
+                    declare: true,
+                },
+                err: WrapperPayload::Plain(err),
+            },
+            call_suffix: drop_err,
+            return_abi: "",
+            ok_abi: "string",
+            err_slot: true,
+        });
+    }
     if !is_ffi_compatible_type(&ok) {
         return Err(skip_reason::detailed(
             skip_reason::PY_RESULT_PAYLOAD,
@@ -752,6 +796,7 @@ fn py_result_plan(owner: &Ident, ok_type: &str) -> Result<ReturnPlan, String> {
         },
         call_suffix: drop_err,
         return_abi: "",
+        ok_abi: "",
         err_slot: true,
     })
 }

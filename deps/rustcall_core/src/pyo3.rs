@@ -109,6 +109,7 @@ pub struct Pyo3Scan {
     impls: Vec<ScannedImpl>,
     imports: Vec<ScannedImport>,
     routes: crate::public_routes::PublicRoutes,
+    edition_2015: bool,
     intrinsic_skips: std::collections::BTreeMap<(Vec<String>, String, usize, String), String>,
 }
 
@@ -116,6 +117,7 @@ impl Pyo3Scan {
     pub fn with_edition(edition: &str) -> Self {
         Self {
             routes: crate::public_routes::PublicRoutes::with_edition(edition),
+            edition_2015: edition == "2015",
             ..Self::default()
         }
     }
@@ -259,7 +261,9 @@ impl Pyo3Scan {
         for item in items {
             match item {
                 Item::Type(alias) => {
-                    if let Some(import) = import_of_type_alias(alias, module_path) {
+                    if let Some(import) =
+                        import_of_type_alias(alias, module_path, self.edition_2015)
+                    {
                         self.imports.push(import);
                     }
                 }
@@ -480,10 +484,13 @@ impl Pyo3Scan {
                 for func in &imp.funcs {
                     let returns_self = matches!(
                         &func.sig.output,
-                        syn::ReturnType::Type(_, ty) if returns_class(
-                            ty, &self.classes[index], &imp.header.module_path,
-                            &self.classes, &self.imports,
-                        )
+                        syn::ReturnType::Type(_, ty) if {
+                            let value = py_result_ok_type(ty).unwrap_or_else(|| (**ty).clone());
+                            returns_class(
+                                &value, &self.classes[index], &imp.header.module_path,
+                                &self.classes, &self.imports,
+                            )
+                        }
                     );
                     let class_ident =
                         syn::Ident::new(&self.classes[index].entry.name, imp.header.target.span());

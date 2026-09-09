@@ -30,6 +30,7 @@ Sample = @rust_crate "test/fixtures/sample_crate_pyo3_only"
 Sample.add(Int32(2), Int32(3))          # 5
 Sample.shout("hello")                   # "HELLO!"
 Sample.parse("42")                      # RustResult{Int32, String}(true, 42)
+Sample.render(true)                     # RustResult{String, String}
 
 p = Sample.Point(3.0, 4.0)              # #[new]
 Sample.norm(p)                          # 5.0
@@ -37,6 +38,7 @@ p.x                                     # 3.0, through #[pyo3(get, set)]
 p.x = 6.0
 Sample.label(p)                         # a String method
 Sample.scaled(p, 2.0)                    # a PyResult method
+Sample.shifted(p, 1.0)                   # RustResult{Point, String}
 ```
 
 Nothing in the crate changes. RustCall generates a **second** crate that
@@ -144,7 +146,7 @@ one. The generator then refuses what it could not *lower*:
 | --- | --- |
 | `unsupported_arg:<T>` | an argument that is neither FFI-compatible nor a `String` / `&str` |
 | `unsupported_return:<T>` | a return value that does not cross the C ABI as a single value (a `Vec`, a struct by value, a `Result` payload that is one of those) |
-| `py_result_payload:<T>` | a `PyResult` whose `Ok` type does not fit in the `CResult` aggregate — `PyResult<String>`, `PyResult<Self>`. Widening this is tracked in [#303](https://github.com/AtelierArith/RustCall.jl/issues/303) |
+| `py_result_payload:<T>` | a `PyResult` whose `Ok` type cannot be lowered into the `CResult` aggregate, such as `PyResult<Vec<_>>` or an unrelated struct by value. Widening this is tracked in [#303](https://github.com/AtelierArith/RustCall.jl/issues/303) |
 | `unsupported_return:Result<…>` on a **method** | this wrapper crate lowers a plain `Result` / `Option` into a `CResult` / `COption` for a free function only. A `#[julia]` method does lower one too since [#268](https://github.com/AtelierArith/RustCall.jl/issues/268), through `RustCall._method_payload_plan`, but that Julia-side emitter is keyed to a `#[julia]`-attributed method and never runs for a `#[pymethods]` one scanned here; emitting the aggregate anyway would be worse than not wrapping the method. #303 owns widening the PyO3 wrapper path to match |
 | `cfg_undecided:<predicate>` | the item is behind a `#[cfg]` the scan could not decide, so whether the build the wrapper links against has it is unknown. Only reachable when Cargo could not resolve the build (`plan.resolved == false`) |
 
@@ -160,7 +162,11 @@ no symbol, and no Julia definition is generated for it.
 
 ### `PyResult<T>`: an opaque error, on purpose
 
-A `PyResult<T>` becomes a Julia `RustResult{T, String}`. On the `Err` side the
+A `PyResult<T>` becomes a Julia `RustResult{T, String}`. Scalar payloads cross
+by value, `String` / `&str` success payloads use an owned buffer released after
+Julia copies it, and a method returning `PyResult<Self>` boxes the new class
+value and retains the destructor and liveness flag from the same library
+generation. On the `Err` side the
 value is always the same sentence:
 
 ```julia

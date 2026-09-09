@@ -2,9 +2,19 @@
 
 use rustcall_core::extract::extract;
 use rustcall_core::manifest::{skip_reason, Attribute, Function, Manifest, Mode, ReturnKind};
+use rustcall_core::pyo3::Pyo3Scan;
 
 fn scan(source: &str) -> Manifest {
     extract(source, Mode::Crate).expect("failed to extract crate manifest")
+}
+
+fn scan_with_edition(source: &str, edition: &str) -> Manifest {
+    let file = syn::parse_file(source).expect("failed to parse crate source");
+    let mut manifest = Manifest::new(Mode::Crate);
+    let mut scan = Pyo3Scan::with_edition(edition);
+    scan.file(&file.items, &[], true, &[], &mut manifest);
+    scan.finish(&mut manifest);
+    manifest
 }
 
 fn function<'a>(manifest: &'a Manifest, name: &str) -> &'a Function {
@@ -901,6 +911,69 @@ fn a_type_alias_disambiguates_a_pymethods_target() {
         vec!["only_a"]
     );
     assert!(in_b.methods.is_empty());
+}
+
+#[test]
+fn leading_colon_type_aliases_follow_the_rust_edition_for_impls_and_returns() {
+    let source = "
+        pub mod dep { #[pyclass] pub struct C {} }
+        pub mod uses {
+            pub mod dep { #[pyclass] pub struct C {} }
+            type Alias = ::dep::C;
+            #[pymethods] impl Alias {
+                pub fn via_alias(&self) -> i32 { 1 }
+            }
+            #[pymethods] impl crate::dep::C {
+                #[staticmethod]
+                pub fn returns_alias() -> Alias { todo!() }
+            }
+        }
+    ";
+
+    let edition_2015 = scan_with_edition(source, "2015");
+    let root = edition_2015
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["dep"])
+        .unwrap();
+    assert_eq!(
+        root.methods
+            .iter()
+            .map(|method| method.name.as_str())
+            .collect::<Vec<_>>(),
+        ["via_alias", "returns_alias"]
+    );
+    assert!(
+        root.methods
+            .iter()
+            .find(|method| method.name == "returns_alias")
+            .unwrap()
+            .returns_boxed_struct
+    );
+    assert!(edition_2015
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["uses", "dep"])
+        .unwrap()
+        .methods
+        .is_empty());
+
+    let edition_2021 = scan_with_edition(source, "2021");
+    let root = edition_2021
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["dep"])
+        .unwrap();
+    assert_eq!(root.methods.len(), 1);
+    assert_eq!(root.methods[0].name, "returns_alias");
+    assert!(!root.methods[0].returns_boxed_struct);
+    assert!(edition_2021
+        .structs
+        .iter()
+        .find(|class| class.module_path == ["uses", "dep"])
+        .unwrap()
+        .methods
+        .is_empty());
 }
 
 /// Two `pub fn run` in different modules of one crate used to want one

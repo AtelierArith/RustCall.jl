@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use syn::{Attribute, Item, Visibility};
 
-use crate::paths::{import_of_type_alias, imports_of_use, visible_from, PathAnchor, ScannedImport};
+use crate::paths::{import_of_type_alias, imports_of_use, visible_from, ScannedImport};
 
 type Path = Vec<String>;
 
@@ -61,23 +61,6 @@ impl PublicRoutes {
         }
     }
 
-    fn type_alias_import(&self, item: &syn::ItemType, module: &[String]) -> Option<ScannedImport> {
-        let syn::Type::Path(path) = crate::types::unparen(&item.ty) else {
-            return None;
-        };
-        // `::name` is crate-rooted in edition 2015 and extern-prelude-rooted
-        // from edition 2018 onward. Only the former can be resolved against
-        // this crate's scanned module tree.
-        if path.path.leading_colon.is_some() && !self.edition_2015 {
-            return None;
-        }
-        let mut binding = import_of_type_alias(item, module)?;
-        if path.path.leading_colon.is_some() {
-            binding.qualifier.anchor = PathAnchor::Crate;
-        }
-        Some(binding)
-    }
-
     /// Resolve within one cfg variant. A public module in a mutually exclusive
     /// variant must not grant access to the private copy at the same path.
     pub fn resolve_for(&self, cfg: &str) -> BTreeMap<RouteKey, PublicRoute> {
@@ -110,7 +93,7 @@ impl PublicRoutes {
                 // exposes C to a wrapper crate (#303).
                 Item::Type(v)
                     if v.generics.params.is_empty()
-                        && self.type_alias_import(v, module).is_some() =>
+                        && import_of_type_alias(v, module, self.edition_2015).is_some() =>
                 {
                     None
                 }
@@ -209,7 +192,7 @@ impl PublicRoutes {
             }
             if let Item::Type(v) = item {
                 if v.generics.params.is_empty() {
-                    if let Some(binding) = self.type_alias_import(v, module) {
+                    if let Some(binding) = import_of_type_alias(v, module, self.edition_2015) {
                         self.names.insert(binding.alias.clone());
                         self.imports.push(Import {
                             binding,

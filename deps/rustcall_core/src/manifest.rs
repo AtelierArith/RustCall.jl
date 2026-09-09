@@ -155,7 +155,7 @@ pub mod skip_reason {
     /// single value. The spelling follows the colon (#275 Phase 2).
     pub const UNSUPPORTED_RETURN: &str = "unsupported_return";
     /// A `PyResult<T>` whose `Ok` type does not fit in the `CResult`
-    /// aggregate (`String`, `Self`, a `Vec`, ...). The spelling follows the
+    /// aggregate (a `Vec`, an unrelated struct by value, ...). The spelling follows the
     /// colon. Widening this is tracked by #303 (#275 Phase 2).
     pub const PY_RESULT_PAYLOAD: &str = "py_result_payload";
     /// The item carries a `#[cfg(...)]` predicate the scan could not decide,
