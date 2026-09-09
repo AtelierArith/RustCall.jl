@@ -192,6 +192,43 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
 
             M = @rust_crate PYO3_ONLY_CRATE
 
+            @testset "PyO3 rejects Rust-generic classes and annotated trait impls (#303)" begin
+                cases = [
+                    ("#[pyclass] pub struct Invalid<T> { value: T }",
+                     "#[pyclass] cannot have generic parameters"),
+                    ("""
+                     #[pyclass] pub struct Invalid {}
+                     trait Value { fn value(&self) -> i32; }
+                     #[pymethods] impl Value for Invalid {
+                         fn value(&self) -> i32 { 1 }
+                     }
+                     """, "#[pymethods] cannot be used on trait impl blocks"),
+                ]
+                mktempdir() do dir
+                    mkpath(joinpath(dir, "src"))
+                    write(joinpath(dir, "Cargo.toml"), """
+                        [package]
+                        name = "invalid_pyo3_shape"
+                        version = "0.1.0"
+                        edition = "2021"
+                        [dependencies]
+                        pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+                        """)
+                    for (source, diagnostic) in cases
+                        write(joinpath(dir, "src", "lib.rs"), "use pyo3::prelude::*;\n" * source)
+                        cmd = `$(RustCall.cargo()) check --offline --manifest-path $(joinpath(dir, "Cargo.toml"))`
+                        cmd = addenv(cmd, "CARGO_TARGET_DIR" => joinpath(dir, "target"))
+                        mktemp() do _, output
+                            result = run(pipeline(ignorestatus(cmd), stdout = output, stderr = output))
+                            seekstart(output)
+                            diagnostics = read(output, String)
+                            @test !success(result)
+                            @test occursin(diagnostic, diagnostics)
+                        end
+                    end
+                end
+            end
+
             # Free functions, including the string ABI.
             @test M.add(Int32(2), Int32(3)) == 5
             @test M.shout("hello") == "HELLO!"
@@ -259,12 +296,19 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
 
             # The generated `Point_free` really runs the Rust destructor: the
             # crate counts its drops.
-            before = M.dropped_points()
-            let doomed = call(M.Point, 1.0, 1.0)
-                @test M.norm(doomed) ≈ sqrt(2.0)
-                finalize(doomed)
+            @testset "class layout options, Python generic aliases and an inherent trait bridge (#303)" begin
+                before = M.dropped_points()
+                let doomed = call(M.Point, 1.0, 1.0)
+                    @test M.norm(doomed) ≈ sqrt(2.0)
+                    @test call(getproperty, doomed, :x) == 1.0
+                    call(setproperty!, doomed, :x, 2.0)
+                    @test M.norm(doomed) ≈ sqrt(5.0)
+                    finalize(doomed)
+                    @test M.dropped_points() == before + 1
+                    finalize(doomed)
+                end
+                @test M.dropped_points() == before + 1
             end
-            @test M.dropped_points() == before + 1
         end
     end
 

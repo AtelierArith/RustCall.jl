@@ -69,7 +69,10 @@ pub fn describe(py: Python<'_>) -> i32 {
 
 static DROPPED: AtomicI64 = AtomicI64::new(0);
 
-#[pyclass]
+// Python-side layout/typing options do not change the native Rust Point value
+// that the wrapper owns. `generic` here enables Python generic aliases; this
+// is not a Rust struct with unbound type parameters (#303).
+#[pyclass(subclass, dict, weakref, generic)]
 pub struct Point {
     #[pyo3(get, set)]
     pub x: f64,
@@ -85,6 +88,16 @@ pub struct Point {
 impl Drop for Point {
     fn drop(&mut self) {
         DROPPED.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+trait Norm {
+    fn norm_value(&self) -> f64;
+}
+
+impl Norm for Point {
+    fn norm_value(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
     }
 }
 
@@ -105,7 +118,8 @@ impl Point {
     }
 
     pub fn norm(&self) -> f64 {
-        (self.x * self.x + self.y * self.y).sqrt()
+        // PyO3 exposes an inherent bridge, not a #[pymethods] trait impl.
+        Norm::norm_value(self)
     }
 
     /// Reads the write-only `scale` field, so a test can prove its setter ran.

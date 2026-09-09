@@ -281,8 +281,10 @@ code must never format a `PyErr`.
 
 ### `#[pyclass]` structs are opaque handles
 
-A `#[pyclass]` is never `#[repr(C)]` — pyo3 owns its layout — so it is always
-boxed and reached through accessors. Fields are exposed only when pyo3 exposes
+RustCall does not depend on a `#[pyclass]` having `#[repr(C)]`: its wrapper
+boxes the native Rust value and accesses it through Rust-generated accessors.
+This handle is not a Python object or a pointer to Python's class allocation.
+Fields are exposed only when pyo3 exposes
 them — `#[pyo3(get)]`, `#[pyo3(set)]` or both, or `get_all` / `set_all` on the
 class — each accessor on its own, so a `set`-only field is a setter with no
 getter (`obj.field = v` works, `obj.field` is a missing field) — **and only
@@ -294,6 +296,20 @@ no setter. Methods are collected from
 `#[staticmethod]` and `#[classmethod]` are static, `#[getter]` / `#[setter]`
 are accessors. (A `#[classmethod]` takes a `&Bound<'_, PyType>` first argument,
 so it is normally skipped for using a pyo3 type.)
+
+`subclass`, `dict`, and `weakref` affect the Python object, not the native Rust
+value owned by this wrapper. The real PyO3 fixture tests these options together
+with construction, field access, method calls and exactly-once destruction.
+They do not provide Python dynamic attributes or Python inheritance on the Julia
+handle. `extends` is a separate case and is not covered by that guarantee.
+
+Likewise, `#[pyclass(generic)]` enables Python generic aliases; it does not add
+Rust type parameters. The fixture exercises this valid form. PyO3 0.29 rejects
+`#[pyclass] struct C<T>` and `#[pymethods] impl Trait for C` before a wrapper
+can be built; tests check the actual compiler diagnostics. Expose trait behavior
+through an inherent `#[pymethods]` method that delegates to the trait instead;
+the fixture's `Point::norm` uses this pattern. Ordinary Rust generic internals
+can be hidden behind a concrete, non-generic `#[pyclass]`.
 
 ### Modules are followed, not guessed
 
