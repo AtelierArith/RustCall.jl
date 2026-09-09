@@ -152,6 +152,8 @@ configuration to scan the crate under (#275 Phase 1.5).
 - `resolved::Bool`: whether Cargo answered. `false` means the plan is the
   conservative reading of `Cargo.toml` described below.
 - `reason::String`: why this mode was chosen, in words.
+- `build_inputs::Vector{String}`: target-package paths declared by its build
+  script with `rerun-if-changed`, resolved against the package root.
 
 # Cargo resolves the features, RustCall does not
 
@@ -200,6 +202,7 @@ struct PyO3LinkPlan
     interpreter_config::String
     runtime_libraries::Vector{String}
     build_env::Union{Nothing, Dict{String, String}}
+    build_inputs::Vector{String}
 end
 
 function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String,
@@ -209,10 +212,11 @@ function PyO3LinkPlan(mode::Symbol, feature_flags::Vector{String}, rpath::String
                       cfg_text::String = "", resolved::Bool = false,
                       interpreter::String = "", interpreter_config::String = "",
                       runtime_libraries::Vector{String} = String[],
-                      build_env::Union{Nothing, Dict{String, String}} = nothing)
+                      build_env::Union{Nothing, Dict{String, String}} = nothing,
+                      build_inputs::Vector{String} = String[])
     PyO3LinkPlan(mode, feature_flags, rpath, reason, dependency_default_features,
                  pyo3_features, crate_features, cfg_text, resolved, interpreter,
-                 interpreter_config, runtime_libraries, build_env)
+                 interpreter_config, runtime_libraries, build_env, build_inputs)
 end
 
 """
@@ -379,7 +383,7 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                             "with $(label), Cargo does not resolve pyo3 at all, so the wrapper " *
                             "links no libpython", !no_defaults;
                             crate_features = crate_features, cfg_text = cfg_text, resolved = true,
-                            build_env = context.build_env)
+                            build_env = context.build_env, build_inputs = context.build_inputs)
     end
 
     if "extension-module" in pyo3_features && !extension_module_is_linkable()
@@ -392,7 +396,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                             "_Py_Dealloc). `pyo3_feature_candidates` lists the features that " *
                             "activate pyo3 without it", !no_defaults;
                             pyo3_features = pyo3_features, crate_features = crate_features,
-                            cfg_text = cfg_text, resolved = true, build_env = context.build_env)
+                            cfg_text = cfg_text, resolved = true, build_env = context.build_env,
+                            build_inputs = context.build_inputs)
     end
 
     detail = isempty(rpath) ?
@@ -412,7 +417,7 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                         cfg_text = cfg_text, resolved = true, interpreter = interpreter,
                         interpreter_config = interpreter_config,
                         runtime_libraries = _python_runtime_libraries(interpreter),
-                        build_env = context.build_env)
+                        build_env = context.build_env, build_inputs = context.build_inputs)
 end
 
 """
@@ -461,7 +466,7 @@ function _wrapper_probe_context(crate_path::AbstractString;
                                  interpreter::AbstractString = "")
     path = abspath(String(crate_path))
     package = _cargo_package_name(path)
-    isempty(package) && return (cfg_text = "", build_env = nothing)
+    isempty(package) && return (cfg_text = "", build_env = nothing, build_inputs = String[])
     key = _wrapper_probe_memo_key(path, features, default_features, release;
                                   interpreter = interpreter)
     probe = () -> begin
@@ -497,7 +502,7 @@ function _wrapper_probe_context(crate_path::AbstractString;
             end
         catch e
             @debug "Could not probe the wrapper-root build cfg of $(path)" exception = e
-            (cfg_text = "", build_env = nothing)
+            (cfg_text = "", build_env = nothing, build_inputs = String[])
         end
     end
     _ = key
@@ -541,6 +546,7 @@ function _cargo_probe_context(output::AbstractString, package_id::AbstractString
                        "CARGO_MANIFEST_PATH" => joinpath(path, "Cargo.toml"))
     merge!(environment, builtins)
     cfg_lines = String[]
+    build_inputs = String[]
     for line in split(output, '\n')
         stripped = strip(line)
         if startswith(stripped, "{")
@@ -551,12 +557,30 @@ function _cargo_probe_context(output::AbstractString, package_id::AbstractString
                 environment[String(pair[1])] = String(pair[2])
             end
             out_dir = String(get(message, "out_dir", ""))
-            isempty(out_dir) || (environment["OUT_DIR"] = out_dir)
+            if !isempty(out_dir)
+                environment["OUT_DIR"] = out_dir
+                append!(build_inputs, _cargo_rerun_inputs(out_dir, path))
+            end
         elseif occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", stripped)
             push!(cfg_lines, stripped)
         end
     end
-    (cfg_text = isempty(cfg_lines) ? "" : join(cfg_lines, "\n") * "\n", build_env = environment)
+    (cfg_text = isempty(cfg_lines) ? "" : join(cfg_lines, "\n") * "\n",
+     build_env = environment, build_inputs = sort!(unique(build_inputs)))
+end
+
+function _cargo_rerun_inputs(out_dir::AbstractString, package_root::AbstractString)
+    output = joinpath(dirname(String(out_dir)), "output")
+    isfile(output) || return String[]
+    inputs = String[]
+    for line in eachline(output)
+        match_ = match(r"^cargo(?:::|:)rerun-if-changed=(.*)$", line)
+        match_ === nothing && continue
+        declared = String(only(match_.captures))
+        isempty(declared) && continue
+        push!(inputs, normpath(isabspath(declared) ? declared : joinpath(package_root, declared)))
+    end
+    sort!(unique(inputs))
 end
 
 # Memo of `_wrapper_probe_cfg_text`, keyed like `_CRATE_CFG_TEXT`.
@@ -1388,7 +1412,8 @@ function build_pyo3_wrapper(info::CrateInfo;
                              functions, structs, sort!(unique(vcat(info.source_files, source.source_files))),
                              info.pyo3_functions, info.pyo3_structs)
 
-    build_env = _pyo3_wrapper_build_env(plan, rustflags; source_files = source.source_files)
+    build_env = _pyo3_wrapper_build_env(plan, rustflags; source_files = source.source_files,
+                                        crate_root = info.path)
     key = compute_crate_hash(info; release = release, kind = "pyo3-wrapper",
                              features = features, default_features = default_features,
                              build_env = build_env)
@@ -1422,11 +1447,16 @@ and records nothing. pyo3's other build inputs (`PYO3_CONFIG_FILE`,
 `PYO3_CROSS_*`, …) reach the key through the `PYO3_*` prefix of the allowlist,
 and the contents of `PYO3_CONFIG_FILE` are hashed here on top.
 """
-function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String}; source_files::Vector{String} = String[])
+function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String};
+                                 source_files::Vector{String} = String[],
+                                 crate_root::AbstractString = "")
     build_env = artifact_build_env()
-    append!(build_env, artifact_scan_inputs(source_files))
+    generated_root = plan.build_env === nothing ? "" : get(plan.build_env, "OUT_DIR", "")
+    append!(build_env, artifact_scan_inputs(source_files; crate_root = crate_root,
+                                             generated_root = generated_root))
     if plan.build_env !== nothing
-        append!(build_env, ["rustcall-target-env:" * name => value
+        append!(build_env, ["rustcall-target-env:" * name =>
+                            _stable_probe_env_value(value, crate_root, generated_root)
                             for (name, value) in sort!(collect(plan.build_env); by = first)])
     end
     push!(build_env, "rustcall-link-flags" => join(rustflags, " "))
@@ -1443,6 +1473,15 @@ function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String}; 
     digest = _pyo3_config_file_digest()
     isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
     return build_env
+end
+
+function _stable_probe_env_value(value::AbstractString, crate_root::AbstractString,
+                                 generated_root::AbstractString)
+    isabspath(value) || return String(value)
+    relative = _scan_input_relative(value, generated_root)
+    relative === nothing || return "generated:" * relative
+    relative = _scan_input_relative(value, crate_root)
+    relative === nothing ? String(value) : "crate:" * relative
 end
 
 """

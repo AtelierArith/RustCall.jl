@@ -2672,7 +2672,8 @@ function generate_bindings(crate_path::String;
                                      build_release = build_release,
                                      lib_name = wrapper.lib_name,
                                      preload = wrapper.plan.runtime_libraries,
-                                     extra_inputs = unique(vcat(python_inputs, wrapper.source.source_files,
+                                     extra_inputs = unique(vcat(python_inputs, plan.build_inputs,
+                                                                 wrapper.source.source_files,
                                                                  dirname.(wrapper.source.source_files))),
                                      python = links_python)
         end

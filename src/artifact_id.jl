@@ -759,9 +759,43 @@ function _canonical_dir(dir::AbstractString)::String
     end
 end
 
-function artifact_scan_inputs(files::Vector{String})
-    Pair{String, String}["rustcall-scan-input:" * path => _file_content_digest(path)
-                         for path in sort!(unique(abspath.(files)))]
+function _scan_input_relative(path::AbstractString, root::AbstractString)
+    isempty(root) && return nothing
+    relative = try
+        relpath(abspath(path), abspath(root))
+    catch
+        return nothing
+    end
+    parts = splitpath(normpath(relative))
+    (!isempty(parts) && first(parts) == "..") && return nothing
+    replace(relative, '\\' => '/')
+end
+
+function artifact_scan_inputs(files::Vector{String}; crate_root::AbstractString = "",
+                              generated_root::AbstractString = "")
+    # The one-argument form predates generated PyO3 wrappers and retains its
+    # path-sensitive labels for callers that have no stable root to name roles
+    # against. Wrapper identities always pass both roots below.
+    if isempty(crate_root) && isempty(generated_root)
+        return Pair{String, String}["rustcall-scan-input:" * path => _file_content_digest(path)
+                                    for path in sort!(unique(abspath.(files)))]
+    end
+    inputs = Pair{String, String}[]
+    for path in unique(abspath.(files))
+        # OUT_DIR normally lives under `<crate>/target`; test the more specific
+        # generated root first or Cargo's checkout-specific build hash leaks
+        # into a nominally crate-relative role.
+        relative = _scan_input_relative(path, generated_root)
+        role = if relative !== nothing
+            "generated:" * relative
+        else
+            relative = _scan_input_relative(path, crate_root)
+            relative === nothing ? "external:" * basename(path) : "crate:" * relative
+        end
+        push!(inputs, "rustcall-scan-input:" * role => _file_content_digest(path))
+    end
+    unique!(inputs)
+    sort!(inputs; by = pair -> (first(pair), last(pair)))
 end
 
 """

@@ -153,11 +153,14 @@ end
         if wrapper === nothing
             @test_skip "no linkable Python here"
         else
+            @test any(path -> Base.Filesystem.samefile(path, input), wrapper.plan.build_inputs)
             modules = Module[]
             binding = @rust_crate root
             module_ = binding.module_ref
             push!(modules, module_)
             try
+                @test any(path -> Base.Filesystem.samefile(path, input),
+                          getfield(module_, :_CRATE_INPUTS))
                 @test Base.invokelatest(getfield(module_, :generated_answer)) == 42
                 path_name = Symbol(only(f.name for f in wrapper.info.julia_functions if f.name != "generated_answer"))
                 @test Base.invokelatest(getfield(module_, path_name)) == 42
@@ -206,19 +209,72 @@ end
 end
 
 @testset "Cargo build context selects the target package only (#303)" begin
-    output = """
-    {"reason":"build-script-executed","package_id":"dependency","out_dir":"/wrong","env":[["API_FILE","wrong.rs"]]}
-    {"reason":"build-script-executed","package_id":"target","out_dir":"/correct","env":[["API_FILE","correct.rs"]]}
-    unix
-    feature="python"
-    {"reason":"build-script-executed","package_id":"other","out_dir":"/also-wrong","env":[]}
-    """
-    context = RustCall._cargo_probe_context(output, "target", "/crate")
-    @test context.cfg_text == "unix\nfeature=\"python\"\n"
-    @test context.build_env["OUT_DIR"] == "/correct"
-    @test context.build_env["API_FILE"] == "correct.rs"
-    @test context.build_env["CARGO_MANIFEST_DIR"] == "/crate"
-    @test !haskey(RustCall._cargo_probe_context(output, "absent", "/crate").build_env, "OUT_DIR")
+    mktempdir() do root
+        target_out = joinpath(root, "target", "release", "build", "target-hash", "out")
+        dependency_out = joinpath(root, "target", "release", "build", "dependency-hash", "out")
+        mkpath(target_out)
+        mkpath(dependency_out)
+        write(joinpath(dirname(target_out), "output"),
+              "cargo:rerun-if-changed=relative.txt\n" *
+              "cargo::rerun-if-changed=$(joinpath(root, "external.txt"))\n")
+        write(joinpath(dirname(dependency_out), "output"),
+              "cargo:rerun-if-changed=dependency-only.txt\n")
+        output = """
+        {"reason":"build-script-executed","package_id":"dependency","out_dir":$(repr(dependency_out)),"env":[["API_FILE","wrong.rs"]]}
+        {"reason":"build-script-executed","package_id":"target","out_dir":$(repr(target_out)),"env":[["API_FILE","correct.rs"]]}
+        unix
+        feature="python"
+        """
+        context = RustCall._cargo_probe_context(output, "target", root)
+        @test context.cfg_text == "unix\nfeature=\"python\"\n"
+        @test context.build_env["OUT_DIR"] == target_out
+        @test context.build_env["API_FILE"] == "correct.rs"
+        @test context.build_env["CARGO_MANIFEST_DIR"] == root
+        @test context.build_inputs == sort([joinpath(root, "relative.txt"),
+                                            joinpath(root, "external.txt")])
+        absent = RustCall._cargo_probe_context(output, "absent", root)
+        @test !haskey(absent.build_env, "OUT_DIR")
+        @test isempty(absent.build_inputs)
+    end
+end
+
+@testset "generated scan identity is location independent (#303)" begin
+    mktempdir() do parent
+        identities = Vector{Pair{String, String}}[]
+        build_identities = Vector{Pair{String, String}}[]
+        for (checkout, build_hash) in (("first", "crate-first-hash"),
+                                       ("second", "crate-second-hash"))
+            root = joinpath(parent, checkout)
+            generated = joinpath(root, "target", "release", "build", build_hash, "out")
+            mkpath(joinpath(root, "src"))
+            mkpath(generated)
+            source = joinpath(root, "src", "lib.rs")
+            output = joinpath(generated, "api.rs")
+            write(source, "include!(concat!(env!(\"OUT_DIR\"), \"/api.rs\"));")
+            write(output, "pub fn answer() -> i32 { 42 }")
+            push!(identities, RustCall.artifact_scan_inputs([source, output];
+                                                            crate_root = root,
+                                                            generated_root = generated))
+            plan = RustCall.PyO3LinkPlan(:python_free, String[], "", "test";
+                build_env = Dict("CARGO_MANIFEST_DIR" => root,
+                                 "CARGO_MANIFEST_PATH" => joinpath(root, "Cargo.toml"),
+                                 "OUT_DIR" => generated))
+            push!(build_identities, RustCall._pyo3_wrapper_build_env(plan, String[];
+                source_files = [source, output], crate_root = root))
+        end
+        @test identities[1] == identities[2]
+        @test build_identities[1] == build_identities[2]
+        second_generated = joinpath(parent, "second", "target", "release", "build",
+                                    "crate-second-hash", "out")
+        write(joinpath(second_generated, "api.rs"),
+              "pub fn answer() -> i32 { 43 }")
+        changed = RustCall.artifact_scan_inputs(
+            [joinpath(parent, "second", "src", "lib.rs"),
+             joinpath(second_generated, "api.rs")];
+            crate_root = joinpath(parent, "second"),
+            generated_root = second_generated)
+        @test changed != identities[1]
+    end
 end
 
 @testset "generated include context crosses the Julia/extractor boundary (#303)" begin
