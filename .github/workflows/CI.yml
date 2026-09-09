@@ -111,6 +111,13 @@ jobs:
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
+      - name: Bounds-checked state and mixed reload stress
+        if: matrix.threads == '4'
+        env:
+          RUSTCALL_EXTRACT: ${{ github.workspace }}/deps/rustcall_extract/target/release/rustcall-extract
+        run: |
+          julia --threads=4 --check-bounds=yes --project test/test_state.jl
+          julia --threads=4 --check-bounds=yes --project test/test_hot_reload_transaction.jl
       - uses: julia-actions/julia-runtest@v1
         env:
           JULIA_NUM_THREADS: ${{ matrix.threads }}

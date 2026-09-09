@@ -181,6 +181,15 @@ end
             @test RustCall.is_hot_reload_enabled("SampleCrateHotReload")
             @test "SampleCrateHotReload" in RustCall.list_hot_reload_crates()
 
+            @testset "duplicate enables share one watcher (#251)" begin
+                original_task = state.watch_task
+                again = @test_logs (:warn, "Hot reload already enabled for SampleCrateHotReload") begin
+                    RustCall.enable_hot_reload("SampleCrateHotReload", SAMPLE_CRATE_PATH)
+                end
+                @test again === state
+                @test again.watch_task === original_task
+            end
+
             # Disable hot reload
             RustCall.disable_hot_reload("SampleCrateHotReload")
             sleep(0.1)  # Give task time to stop
@@ -192,6 +201,38 @@ end
             RustCall.disable_all_hot_reload()
             sleep(0.1)
             empty!(RustCall.HOT_RELOAD_REGISTRY)
+        end
+    end
+
+    @testset "racing enables publish only one watcher (#251)" begin
+        name = "ConcurrentWatcherState"
+        ready = Channel{Nothing}(8)
+        start = Channel{Nothing}(8)
+        workers = map(1:8) do _
+            Threads.@spawn begin
+                put!(ready, nothing)
+                take!(start)
+                RustCall.enable_hot_reload(name, SAMPLE_CRATE_PATH; interval = 0.01, poll = true)
+            end
+        end
+        try
+            foreach(_ -> take!(ready), 1:8)
+            foreach(_ -> put!(start, nothing), 1:8)
+            states = fetch.(workers)
+            state = first(states)
+            @test all(s -> s === state, states)
+            @test state === RustCall.HOT_RELOAD_REGISTRY[name]
+            watcher = state.watch_task
+            @test watcher isa Task
+            RustCall.disable_hot_reload(name)
+            @test istaskdone(watcher)
+            @test state.watch_task === nothing && !state.enabled
+            # A delayed start must not revive a state a concurrent stop disabled.
+            @test RustCall.start_watch_task(state; interval = 0.01, poll = true) === nothing
+            @test state.watch_task === nothing
+        finally
+            RustCall.disable_hot_reload(name)
+            delete!(RustCall.HOT_RELOAD_REGISTRY, name)
         end
     end
 

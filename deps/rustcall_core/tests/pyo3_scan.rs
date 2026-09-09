@@ -712,6 +712,89 @@ fn a_glob_import_disambiguates_a_bare_pymethods_target() {
     assert!(in_b.methods.is_empty());
 }
 
+#[test]
+fn glob_imports_do_not_select_inaccessible_classes() {
+    for private_vis in ["", "pub(self)", "pub(in crate::a)"] {
+        let manifest = scan(&format!(
+            "pub mod a {{ #[pyclass] {private_vis} struct C {{}} }}
+             pub mod b {{ #[pyclass] pub struct C {{}} }}
+             pub mod uses {{
+                use crate::a::*;
+                use crate::b::*;
+                #[pymethods] impl C {{ pub fn selected(&self) -> i32 {{ 7 }} }}
+             }}"
+        ));
+        let a = manifest
+            .structs
+            .iter()
+            .find(|s| s.module_path == ["a"])
+            .unwrap();
+        let b = manifest
+            .structs
+            .iter()
+            .find(|s| s.module_path == ["b"])
+            .unwrap();
+        assert!(a.methods.is_empty(), "{private_vis}");
+        assert_eq!(b.methods.len(), 1, "{private_vis}");
+        assert_eq!(b.methods[0].name, "selected");
+        assert!(b.methods[0].skip_reason.is_empty());
+    }
+}
+
+#[test]
+fn glob_importability_is_not_external_wrapper_reachability() {
+    let manifest = scan(
+        "pub mod a {
+            #[pyclass] struct C {}
+            pub mod nested {
+                use super::*;
+                #[pymethods] impl C { pub fn selected(&self) -> i32 { 7 } }
+            }
+         }
+         pub mod b { #[pyclass] pub(crate) struct D {} }
+         pub mod uses {
+            use crate::b::*;
+            #[pymethods] impl D { pub fn internal(&self) -> i32 { 8 } }
+         }",
+    );
+    for (name, method) in [("C", "selected"), ("D", "internal")] {
+        let class = manifest.structs.iter().find(|s| s.name == name).unwrap();
+        assert!(!class.skip_reason.is_empty());
+        assert_eq!(class.methods.len(), 1);
+        assert_eq!(class.methods[0].name, method);
+    }
+}
+
+#[test]
+fn skipped_owners_do_not_reserve_aggregate_names() {
+    for (ret, prefix, value) in [
+        ("PyResult<i32>", "CResult", "Ok(1)"),
+        ("Option<i32>", "COption", "Some(1)"),
+    ] {
+        let manifest = scan(&format!(
+            "#[pyclass] pub struct parse {{ pub value: i32 }}
+             #[pyfunction] pub fn parse() -> {ret} {{ {value} }}
+             #[pyclass] pub struct {prefix}_parse {{ pub value: i32 }}"
+        ));
+        assert!(manifest.functions[0]
+            .skip_reason
+            .starts_with("julia_name_collision:"));
+        assert!(manifest.structs.iter().all(|s| s.skip_reason.is_empty()));
+
+        let manifest = scan(&format!(
+            "#[pyfunction] pub fn parse() -> i32 {{ 1 }}
+             #[pyclass] pub struct S {{}}
+             #[pymethods] impl S {{ #[staticmethod] pub fn parse() -> {ret} {{ {value} }} }}
+             #[pyclass] pub struct {prefix}_S_parse {{ pub value: i32 }}"
+        ));
+        let s = manifest.structs.iter().find(|s| s.name == "S").unwrap();
+        assert!(s.methods[0]
+            .skip_reason
+            .starts_with("julia_name_collision:"));
+        assert!(manifest.structs.iter().all(|s| s.skip_reason.is_empty()));
+    }
+}
+
 /// A plain type alias is another way a PyO3 impl can name its class (#303).
 #[test]
 fn a_type_alias_disambiguates_a_pymethods_target() {

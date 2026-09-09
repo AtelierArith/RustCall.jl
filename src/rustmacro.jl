@@ -26,7 +26,7 @@ macro rust(expr)
     return rust_impl(__module__, expr)
 end
 
-const RUST_COMPARISON_OPS = Set{Symbol}([
+const RUST_COMPARISON_OPS = (
     Symbol("=="),
     Symbol("==="),
     Symbol("!="),
@@ -36,7 +36,7 @@ const RUST_COMPARISON_OPS = Set{Symbol}([
     Symbol(">"),
     Symbol(">="),
     Symbol("\u2248"),
-])
+)
 
 """
     _rust_comparison_operand(mod, expr)

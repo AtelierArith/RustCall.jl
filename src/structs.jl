@@ -961,8 +961,9 @@ function artifact_generation_snapshot(lib_name::AbstractString,
         if free_ptr == C_NULL
             found = try
                 Libdl.dlsym(handle, symbol; throw_error = false)
-            catch e
-                @debug "Could not resolve $(symbol) in $(name)" exception = e
+            catch
+                # Resolution failure is represented by the inert snapshot;
+                # a logger must not be invoked from this state transaction.
                 nothing
             end
             if !(found === nothing || found == C_NULL)
@@ -1067,7 +1068,7 @@ function generic_struct_generation_snapshot(free_name::AbstractString, types::Tu
     name = isempty(free_lib) ? String(fallback_lib) : free_lib
     return lock(REGISTRY_LOCK) do
         free_ptr == C_NULL &&
-            return ArtifactGeneration(C_NULL, C_NULL, DEAD_ARTIFACT, generation)
+            return ArtifactGeneration(C_NULL, C_NULL, _state_read(DEAD_ARTIFACT, identity), generation)
         return ArtifactGeneration(handle, free_ptr, alive_ref_for_handle(handle, name),
                                   generation)
     end

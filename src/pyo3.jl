@@ -20,7 +20,7 @@ Human-readable text for each `skip_reason` the extractor records
 (`rustcall_core::manifest::skip_reason`). A reason may carry a detail after a
 colon (`pyo3_type:Python<'_>`); `pyo3_skip_explanation` splits it off.
 """
-const PYO3_SKIP_REASONS = Dict{String, String}(
+const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(),
     "not_public" => "not `pub`, so a wrapper crate cannot name it (rustc E0603)",
     "pyo3_type" => "the signature uses a type that needs a live Python interpreter",
     "pymodule" => "a `#[pymodule]` initializer: it only means something to Python's import machinery",

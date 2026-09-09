@@ -165,7 +165,6 @@ function resolve_call_target(lib_name::String, func_name::String;
         distinct = unique(last, candidates)
         if length(distinct) == 1
             owner, ptr = first(distinct)
-            @debug "Function '$func_name' found in library '$owner' (fallback search)"
             handle, cache = RUST_LIBRARIES[owner]
             return target_in(owner, handle, cache, ptr)
         elseif length(distinct) > 1
@@ -1684,7 +1683,7 @@ function _julia_to_rust_type(julia_type::Type)
 end
 
 """
-    IRUST_SCALAR_TYPES :: Dict{Type, String}
+    IRUST_SCALAR_TYPES :: Base.ImmutableDict{Type, String}
 
 The scalars `@irust` passes and returns, Julia type to Rust spelling — the
 whole surface, and the same table for both directions so an argument type and a
@@ -1699,7 +1698,7 @@ reaching the `ccall` through the *return* path, since the probe would name
 `i128` and the contract would accept it — a platform ABI mismatch rather than a
 wrong answer (Codex review of PR #354).
 """
-const IRUST_SCALAR_TYPES = Dict{Type, String}(
+const IRUST_SCALAR_TYPES = Base.ImmutableDict(Base.ImmutableDict{Type, String}(),
     Int8 => "i8",
     Int16 => "i16",
     Int32 => "i32",
@@ -1714,12 +1713,12 @@ const IRUST_SCALAR_TYPES = Dict{Type, String}(
 )
 
 """
-    IRUST_SCALAR_RUST_TYPES :: Set{String}
+    IRUST_SCALAR_RUST_TYPES :: Tuple
 
 The Rust spellings `IRUST_SCALAR_TYPES` covers, for checking a *result*. `()`
 is accepted separately: a snippet whose value is unit returns `nothing`.
 """
-const IRUST_SCALAR_RUST_TYPES = Set{String}(values(IRUST_SCALAR_TYPES))
+const IRUST_SCALAR_RUST_TYPES = Tuple(values(IRUST_SCALAR_TYPES))
 
 """
     _rust_to_julia_type(rust_type::String) -> Type

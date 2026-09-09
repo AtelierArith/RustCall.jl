@@ -114,6 +114,7 @@ pub struct Pyo3Scan {
 struct ScannedClass {
     module_path: Vec<String>,
     entry: Struct,
+    visibility: syn::Visibility,
     /// The `#[cfg]` of the enclosing modules: what tells cfg-exclusive copies
     /// of one fragment apart, and what a `#[pymethods]` block written beside
     /// one copy shares with it (#357 review).
@@ -183,6 +184,10 @@ impl Located for ScannedClass {
 
     fn module_path(&self) -> &[String] {
         &self.module_path
+    }
+
+    fn visible_from(&self, module_path: &[String]) -> bool {
+        crate::paths::visible_from(&self.visibility, &self.module_path, module_path)
     }
 }
 
@@ -280,6 +285,7 @@ impl Pyo3Scan {
                         self.classes.push(ScannedClass {
                             module_path: module_path.clone(),
                             entry: class_entry(s, reachable, module_path, enclosing_cfg),
+                            visibility: s.vis.clone(),
                             cfg: enclosing_cfg.to_vec(),
                         });
                     }
@@ -440,6 +446,14 @@ impl Pyo3Scan {
 /// Constructors are named after their class and instance methods dispatch on
 /// `self::Class`; neither can collide this way.
 fn mark_julia_surface_collisions(manifest: &mut Manifest) {
+    // Resolve the user-facing owners before reserving their implementation
+    // types. An owner skipped by a class or an earlier method emits no ABI
+    // aggregate and must not take a valid class's name with it.
+    mark_julia_surface_collisions_pass(manifest, false);
+    mark_julia_surface_collisions_pass(manifest, true);
+}
+
+fn mark_julia_surface_collisions_pass(manifest: &mut Manifest, reserve_aggregates: bool) {
     // The Julia surface is one namespace *per generated module*, and the
     // bindings lay one Julia module out per Rust module (#300), so every key
     // below carries the module path: `a::parse` and `b::parse` live in
@@ -470,7 +484,7 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
     let mut aggregate_names: Vec<(Scoped, String, String)> = manifest
         .functions
         .iter()
-        .filter(|f| f.attribute.is_pyo3_scan() && f.skip_reason.is_empty())
+        .filter(|f| reserve_aggregates && f.attribute.is_pyo3_scan() && f.skip_reason.is_empty())
         .filter(|f| {
             matches!(
                 f.return_kind,
@@ -493,7 +507,7 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
     for s in manifest
         .structs
         .iter()
-        .filter(|s| s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
+        .filter(|s| reserve_aggregates && s.attribute.is_pyo3_scan() && s.skip_reason.is_empty())
     {
         for m in s.methods.iter().filter(|m| {
             m.skip_reason.is_empty()
@@ -563,23 +577,23 @@ fn mark_julia_surface_collisions(manifest: &mut Manifest) {
             if !m.skip_reason.is_empty() || !m.is_static || m.is_constructor {
                 continue;
             }
-            if let Some((_, class, _)) = class_named(&s.module_path, &m.name, &s_cfg) {
+            if let Some((_, class, _)) = class_named(&s.module_path, &m.name, &m.cfg) {
                 m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, class);
                 continue;
             }
-            if let Some((_, aggregate, _)) = aggregate_named(&s.module_path, &m.name, &s_cfg) {
+            if let Some((_, aggregate, _)) = aggregate_named(&s.module_path, &m.name, &m.cfg) {
                 m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, aggregate);
                 continue;
             }
             let key = (s.module_path.clone(), m.name.clone(), m.args.len());
             match taken
                 .iter()
-                .find(|(k, _, c)| *k == key && cfg_clash(c, &s_cfg))
+                .find(|(k, _, c)| *k == key && cfg_clash(c, &m.cfg))
             {
                 Some((_, other, _)) => {
                     m.skip_reason = skip_reason::detailed(skip_reason::JULIA_NAME_COLLISION, other);
                 }
-                None => taken.push((key, format!("{owner}::{}", m.name), s_cfg.clone())),
+                None => taken.push((key, format!("{owner}::{}", m.name), m.cfg.clone())),
             }
         }
     }

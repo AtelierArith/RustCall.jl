@@ -1404,7 +1404,7 @@ const _CRATE_MODULE_IMPORTED_MODULES = (:RustCall, :Libdl, :Base, :Core)
 # What the implicit `using Base` of every generated module brings into scope
 # (plus `Core`'s exports), computed once: a child module or struct of such a
 # name would shadow the binding the wrappers themselves use (#300 review).
-const _BASE_EXPORTED_NAMES = Set{String}(String(n) for n in vcat(names(Base), names(Core)))
+const _BASE_EXPORTED_NAMES = Tuple(unique(String(n) for n in vcat(names(Base), names(Core))))
 const _CRATE_MODULE_PRELUDE_NAMES = "call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,\n" *
     "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,\n" *
     "                 _result_payload, FFIByValue"

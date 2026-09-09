@@ -103,7 +103,7 @@ end
         alive = getfield(b, :alive)
         @test free_ptr != C_NULL
         @test alive[]
-        @test alive !== RustCall.DEAD_ARTIFACT
+        @test alive !== RustCall._state_read(RustCall.DEAD_ARTIFACT, identity)
 
         # The flag is a *registry* flag — the very `Ref` the loader holds for
         # the image that exports this destructor — and not a fresh `Ref(true)`

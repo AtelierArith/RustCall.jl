@@ -37,6 +37,13 @@ globals.  `StateView` is a compatibility handle used by the older internal
 names; every operation on it takes the state lock, including reads made by
 tests and extensions.
 
+Static lookup tables are immutable dictionaries or tuples, not mutable
+registries. `test/test_state.jl` inspects all module bindings, including values
+returned by factories and containers nested in immutable wrappers, so a newly
+named mutable registry cannot bypass the declaration guard. The compiler's
+documentation metadata and synchronization primitives are not application
+registries; captured per-object liveness flags belong to the state-owned images.
+
 The state lock is the outer lock in RustCall's lock-ordering policy.  Code
 under it may only manipulate state and resolve already-loaded pointers; it must
 not call user Julia code, compile, `dlopen`/`dlclose`, or execute a `ccall`.

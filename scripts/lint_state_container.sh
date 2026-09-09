@@ -2,8 +2,9 @@
 # Fail when a mutable runtime registry is declared outside RustCall.STATE.
 #
 # StateView keeps the historical internal names source-compatible while making
-# every operation take the Base.Lockable state lock. This lint prevents a new
-# feature from reintroducing the independent-Dict pattern behind #251.
+# every operation take the Base.Lockable state lock. This is a compatibility-
+# name smoke check. test/test_state.jl additionally inspects every module value
+# (including factory results and wrappers) to catch newly named registries.
 # The explicit-drop queue is stored in STATE too; finalizers never access it.
 
 set -euo pipefail
@@ -20,6 +21,7 @@ names=(
   RUST_HELPERS_LIB DROP_WARNING_SHOWN FFI_TYPE_TABLE _FFI_UNKNOWN_SLOTS FFI_STRICT
   _FFI_WARNED_CONTEXTS DEFAULT_COMPILER _EXTRACTOR_PATH _EXTRACTOR_DIGEST
   _TOOLCHAIN_FINGERPRINT _EXPANSION_CACHE _RUSTC_CFG_TEXT _RUSTC_CFG_FILE
+  _ARTIFACT_COMPILER_IDENTITY
   _CARGO_CFG_TEXT _CRATE_CFG_TEXT _WRAPPER_CFG_TEXT _CACHE_DIR_MEMO
   DLOPEN_GLOBAL_OVERRIDE _DLOPEN_GLOBAL_WARNED DEAD_ARTIFACT _PATH_DEP_GRAPH_CACHE
   CARGO_TREE_INVOCATIONS HOT_RELOAD_ENABLED HOT_RELOAD_DEBOUNCE_SECONDS

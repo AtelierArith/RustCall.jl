@@ -319,7 +319,7 @@ end
         @test occursin("poll::Bool", _HRT_SRC)     # the explicit fallback
         # The watch loop itself no longer sleeps; only the `poll` branch and
         # the debounce window do.
-        loop = _HRT_SRC[first(findfirst("state.watch_task = @async begin", _HRT_SRC)):end]
+        loop = _HRT_SRC[first(findfirst("function start_watch_task(", _HRT_SRC)):end]
         loop = loop[1:first(findfirst("Stopped watching", loop))]
         @test !occursin("sleep(interval)\n", loop) || occursin("if poll", loop)
 
@@ -1144,23 +1144,76 @@ end
                         end
                     end
 
-                    # ...and the reload loop they all run against.
-                    for generation in 2:5
-                        # Published *before* the source is written: the swap
-                        # commits inside `reload_library`, so a caller can
-                        # legitimately observe the new generation before that
-                        # call returns. The invariant is that no call ever
-                        # returns a value that was never written — a mixture of
-                        # two generations, or a read of freed memory.
-                        lock(published_lock) do
-                            push!(published, Int32(generation))
+                    # Exercise the complete inline front door, including cold
+                    # compilation, cache replay and @rust, while the other
+                    # tasks call/allocate/panic against the Cargo reload loop.
+                    # The four-thread CI job runs this with bounds checks (#251).
+                    nonce = time_ns()
+                    compilers = map(1:2) do worker
+                        Threads.@spawn begin
+                            scope = Module(gensym(:ConcurrentInline))
+                            Core.eval(scope, :(using RustCall))
+                            libraries = String[]
+                            checks = Bool[]
+                            try
+                                for iteration in 1:2
+                                    fname = "state_compile_$(worker)_$(iteration)_$(nonce)"
+                                    code = "#[no_mangle] pub extern \"C\" fn $fname(x: i32) -> i32 { x + $(worker + iteration) }"
+                                    literal = Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(0), code)
+                                    call = Expr(:macrocall, Symbol("@rust"), LineNumberNode(0),
+                                                Expr(:call, Symbol(fname), :(Int32(7))))
+                                    lib = Core.eval(scope, literal)
+                                    push!(libraries, lib)
+                                    handle = RustCall.RUST_LIBRARIES[lib][1]
+                                    push!(checks, Core.eval(scope, call) == Int32(7 + worker + iteration))
+                                    cached = Core.eval(scope, literal)
+                                    push!(checks, cached == lib)
+                                    push!(checks, RustCall.RUST_LIBRARIES[cached][1] == handle)
+                                    push!(checks, Core.eval(scope, call) == Int32(7 + worker + iteration))
+                                end
+                            finally
+                                for name in libraries
+                                    RustCall.unload_library(name; close = true)
+                                end
+                                delete!(RustCall.MODULE_ACTIVE_LIB, scope)
+                            end
+                            checks
                         end
-                        _hrt_write_stress(crate, generation)
-                        RustCall.reload_library(state)
                     end
 
-                    stop[] = true
-                    wait(caller); wait(panicker); wait(allocator); wait(crate_module)
+                    # ...and the reload loop they all run against.
+                    compilation_checks = Vector{Bool}[]
+                    try
+                        for generation in 2:5
+                            # Published *before* the source is written: the swap
+                            # commits inside `reload_library`, so a caller can
+                            # legitimately observe the new generation before that
+                            # call returns. The invariant is that no call ever
+                            # returns a value that was never written — a mixture of
+                            # two generations, or a read of freed memory.
+                            lock(published_lock) do
+                                push!(published, Int32(generation))
+                            end
+                            _hrt_write_stress(crate, generation)
+                            RustCall.reload_library(state)
+                        end
+                        append!(compilation_checks, fetch.(compilers))
+                    finally
+                        stop[] = true
+                        for compiler_task in compilers
+                            try
+                                wait(compiler_task)
+                            catch
+                                # fetch above reports a failing compiler task;
+                                # still drain every task before unloading.
+                            end
+                        end
+                        wait(caller); wait(panicker); wait(allocator); wait(crate_module)
+                    end
+                    @testset "inline compile, calls and cache hits overlap reloads (#251)" begin
+                        @test length(compilation_checks) == 2
+                        @test all(checks -> length(checks) == 8 && all(checks), compilation_checks)
+                    end
                     GC.gc(true)
 
                     # The loop really did run against live traffic...

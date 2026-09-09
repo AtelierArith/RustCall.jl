@@ -833,7 +833,6 @@ function register_library!(policy::LoadPolicy, lib_name::AbstractString, handle:
     handle == C_NULL && throw(ArgumentError("refusing to register a NULL handle for $(name)"))
     lock(REGISTRY_LOCK) do
         if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
-            @debug "register_library!: keeping the existing entry" lib_name=name policy=policy.name
             return
         end
         RUST_LIBRARIES[name] = (handle, Dict{String, Ptr{Cvoid}}())
@@ -1867,7 +1866,6 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
                                   assumed, 0)
         end
         if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
-            @debug "load_artifact!: keeping the existing entry" lib_name = name policy = policy.name
             duplicate = handle
             existing, _ = RUST_LIBRARIES[name]
             alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)

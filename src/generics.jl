@@ -138,7 +138,7 @@ end
 # Julia type name -> short Rust-flavoured identifier, for the human-readable
 # part of a monomorphized symbol. Never load-bearing: the artifact key decides
 # identity, this only decides how the symbol reads.
-const _MONOMORPHIZATION_TYPE_SUFFIX = Dict{String, String}(
+const _MONOMORPHIZATION_TYPE_SUFFIX = Base.ImmutableDict(Base.ImmutableDict{String, String}(),
     "Int32" => "i32",
     "Int64" => "i64",
     "UInt32" => "u32",
@@ -163,7 +163,7 @@ end
 # Julia -> Rust type names for monomorphization
 # ============================================================================
 
-const _JULIA_TO_RUST_TYPE = Dict{Type, String}(
+const _JULIA_TO_RUST_TYPE = Base.ImmutableDict(Base.ImmutableDict{Type, String}(),
     Int8 => "i8", Int16 => "i16", Int32 => "i32", Int64 => "i64",
     UInt8 => "u8", UInt16 => "u16", UInt32 => "u32", UInt64 => "u64",
     Float32 => "f32", Float64 => "f64",
@@ -774,10 +774,7 @@ end
 Check if a function is registered as a generic function.
 """
 function is_generic_function(func_name::String)
-    return lock(REGISTRY_LOCK) do
-        @debug "Checking if function is generic" func_name registry_keys=collect(keys(GENERIC_FUNCTION_REGISTRY))
-        haskey(GENERIC_FUNCTION_REGISTRY, func_name)
-    end
+    return haskey(GENERIC_FUNCTION_REGISTRY, func_name)
 end
 
 """

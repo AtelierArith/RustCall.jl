@@ -370,6 +370,40 @@ impl ImplHeader {
 pub trait Located {
     fn name(&self) -> &str;
     fn module_path(&self) -> &[String];
+    fn visible_from(&self, _module_path: &[String]) -> bool {
+        true
+    }
+}
+
+/// Whether a declaration can be imported from this module within the crate.
+/// This is distinct from external-wrapper reachability: `pub(crate)` is
+/// importable internally even though a wrapper crate cannot name it.
+pub fn visible_from(vis: &syn::Visibility, defined_in: &[String], from: &[String]) -> bool {
+    let restricted = match vis {
+        syn::Visibility::Public(_) => return true,
+        syn::Visibility::Inherited => return from.starts_with(defined_in),
+        syn::Visibility::Restricted(restricted) => restricted,
+    };
+    let parts: Vec<String> = restricted
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    let (mut scope, consumed) = match parts.first().map(String::as_str) {
+        Some("crate") => (Vec::new(), 1),
+        Some("self") => (defined_in.to_vec(), 1),
+        Some("super") => {
+            let levels = parts.iter().take_while(|s| *s == "super").count();
+            if levels > defined_in.len() {
+                return false;
+            }
+            (defined_in[..defined_in.len() - levels].to_vec(), levels)
+        }
+        _ => (Vec::new(), 0),
+    };
+    scope.extend(parts.into_iter().skip(consumed));
+    from.starts_with(&scope)
 }
 
 /// Why a header matched no struct, for the diagnostic of a scan that must not
@@ -509,10 +543,11 @@ fn locate_with_fallback<T: Located>(
             continue;
         }
         for candidate in import.qualifier.candidates(&header.module_path) {
-            if let Some(i) = structs
-                .iter()
-                .position(|s| named(s) && s.module_path() == candidate.as_slice())
-            {
+            if let Some(i) = structs.iter().position(|s| {
+                named(s)
+                    && s.module_path() == candidate.as_slice()
+                    && s.visible_from(&header.module_path)
+            }) {
                 return Ok(i);
             }
         }
