@@ -181,7 +181,9 @@ end
 """
     _module_binding(mod, name) -> Any
 
-The value bound to `name` in `mod`, or `nothing` when there is none.
+The value bound to `name` in `mod`, or `nothing` when there is none. For an
+adopted legacy caller's runtime tables, return its STATE-owned view instead
+of the historical raw constant.
 
 `getfield` is invoked in the **latest** world. A `rust\"\"\"` block defines
 `__RUSTCALL_LIBS` and `__RUSTCALL_ACTIVE_LIB` in `mod`, and a `@rust` call in
@@ -195,6 +197,14 @@ compiler should specialize on.
 """
 function _module_binding(mod::Module, name::Symbol)
     isdefined(mod, name) || return nothing
+    # Once a legacy caller is adopted, internal reads/writes use its owned
+    # copy. Its old constants are historical snapshots, not live registries.
+    kind = name === :__RUSTCALL_LIBS ? :libs :
+           name === :__RUSTCALL_SYMBOL_LIB ? :symbols :
+           name === :__RUSTCALL_ACTIVE_LIB ? :active : nothing
+    if kind !== nothing && haskey(MODULE_STATES, mod)
+        return StateView(kind, mod)
+    end
     return Base.invokelatest(getfield, mod, name)
 end
 

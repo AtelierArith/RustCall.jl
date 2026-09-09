@@ -26,14 +26,17 @@ function _ensure_module_state!(mod::Module)
     existing === nothing || return existing
 
     # Read precompile records and old-style user-provided containers outside
-    # STATE. Legacy bindings remain usable, but newly generated bindings are
-    # immutable StateViews and do not own separate Dicts or Refs.
+    # STATE. Copy legacy bindings into concrete owned storage; adopting an
+    # arbitrary AbstractDict/Ref would invoke its methods under STATE and
+    # retain an unguarded mutable alias in the caller module.
     libs = _module_binding(mod, :__RUSTCALL_LIBS)
     symbols = _module_binding(mod, :__RUSTCALL_SYMBOL_LIB)
     active = _module_binding(mod, :__RUSTCALL_ACTIVE_LIB)
-    libs = libs isa AbstractDict ? libs : Dict{String, Any}()
-    symbols = symbols isa AbstractDict ? symbols : Dict{String, String}()
-    active = active isa Ref ? active : Ref("")
+    libs = libs isa AbstractDict ? Dict{String, Any}(String(k) => v for (k, v) in libs) :
+           Dict{String, Any}()
+    symbols = symbols isa AbstractDict ? Dict{String, String}(String(k) => String(v) for (k, v) in symbols) :
+              Dict{String, String}()
+    active = Ref(active isa Ref ? String(active[]) : "")
     for record in _module_block_records(mod)
         libs[record.lib_name] = record.block
         for symbol in record.symbols

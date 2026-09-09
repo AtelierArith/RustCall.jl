@@ -139,8 +139,12 @@ both locks, with the exact method rechecked before accepting an existing
 registration. `Core.eval` and method deletion never run inside STATE.
 
 Inline `rust"""` caller modules also use owner-qualified `StateView`s for
-their library, symbol and active-library tables. `src/module_state.jl` publishes
-these tables together after validating every symbol collision. During caller
+their library, symbol and active-library tables.
+Legacy caller containers are copied into concrete STATE-owned storage outside
+the lock when adopted; internal module binding access then returns owned views.
+The caller's historical Dict/Ref constants are no longer live registry aliases.
+`src/module_state.jl` publishes these tables together after validating every
+symbol collision. During caller
 precompilation, only immutable `ModuleBlockRecord`s are serialized; a fresh
 process reconstructs the mutable tables in `STATE` before loading the recorded
 blocks. Runtime cache hits do not add precompile-record bindings. Both crate

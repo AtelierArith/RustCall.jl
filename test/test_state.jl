@@ -1,6 +1,35 @@
 using Test
 using RustCall
 
+@testset "invalid registration inputs do not acquire a loader reference (#251)" begin
+    name = RustCall._compile_and_load_rust(
+        "#[julia] pub fn metadata_open_probe() -> i32 { 251 }", "metadata_open", 1)
+    handle = RustCall.RUST_LIBRARIES[name][1]
+    path = RustCall.Libdl.dlpath(handle)
+    before = RustCall.artifact_handle_open_count(handle)
+    alive = RustCall.artifact_alive_ref(name)
+    policy = RustCall.inline_rustc_policy()
+    try
+        @test_throws ArgumentError RustCall.load_artifact!(policy, path;
+            lib_name = "invalid_metadata_open", return_types = ("value" => 123,))
+        @test RustCall.artifact_handle_open_count(handle) == before
+        @test !haskey(RustCall.RUST_LIBRARIES, "invalid_metadata_open")
+        eager = (error("eager iterator failed") for _ in 1:1)
+        @test_throws ErrorException RustCall.load_artifact!(policy, path;
+            lib_name = "invalid_metadata_open", eager)
+        @test RustCall.artifact_handle_open_count(handle) == before
+        @test alive[]
+        target = RustCall.resolve_call_target(name, "metadata_open_probe")
+        @test RustCall.call_rust_function(target.func_ptr, Int32) == 251
+    finally
+        # Also balance leaked references if this regression fails.
+        while RustCall.artifact_handle_open_count(handle) > before
+            RustCall.close_artifact_handle!(handle)
+        end
+        RustCall.unload_library(name; close = true)
+    end
+end
+
 struct PausedStateString <: AbstractString
     entered::Channel{Nothing}
     release::Channel{Nothing}
@@ -9,6 +38,57 @@ function Base.String(value::PausedStateString)
     put!(value.entered, nothing)
     take!(value.release)
     "state_string_probe_251"
+end
+
+struct PausedLegacyStateRef <: Ref{String}
+    entered::Channel{Nothing}
+    release::Channel{Nothing}
+end
+function Base.getindex(value::PausedLegacyStateRef)
+    put!(value.entered, nothing)
+    take!(value.release)
+    ""
+end
+
+@testset "legacy module adoption copies containers outside STATE (#251)" begin
+    entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+    scope = Module(:LegacyOwnedState251)
+    libs, symbols = Dict{String, Any}(), Dict{String, String}()
+    active = PausedLegacyStateRef(entered, release)
+    for (binding, value) in ((:__RUSTCALL_LIBS, libs),
+                              (:__RUSTCALL_SYMBOL_LIB, symbols),
+                              (:__RUSTCALL_ACTIVE_LIB, active))
+        Core.eval(scope, :(const $binding = $(QuoteNode(value))))
+    end
+    worker = Threads.@spawn RustCall._ensure_module_state!(scope)
+    take!(entered)
+    observer = Threads.@spawn RustCall.CURRENT_LIB[]
+    try
+        @test timedwait(() -> istaskdone(observer), 5) == :ok
+    finally
+        put!(release, nothing)
+    end
+    try
+        data = fetch(worker)
+        fetch(observer)
+        @test data[:libs] !== libs
+        @test data[:symbols] !== symbols
+        @test data[:active] !== active
+        @test data[:active][] == ""
+        block = RustCall.RustBlockSnapshot("", "", "", 0)
+        RustCall._record_module_block!(scope, "legacy_owned", block, ("value",))
+        for binding in (:__RUSTCALL_LIBS, :__RUSTCALL_SYMBOL_LIB, :__RUSTCALL_ACTIVE_LIB)
+            @test RustCall._module_binding(scope, binding) isa RustCall.StateView
+        end
+        @test RustCall._module_binding(scope, :__RUSTCALL_LIBS)["legacy_owned"] === block
+        @test RustCall._module_binding(scope, :__RUSTCALL_SYMBOL_LIB)["value"] == "legacy_owned"
+        @test RustCall._module_binding(scope, :__RUSTCALL_ACTIVE_LIB)[] == "legacy_owned"
+        @test isempty(libs) && isempty(symbols)
+        @test RustCall._ensure_module_state!(scope) === data
+    finally
+        delete!(RustCall.MODULE_STATES, scope)
+        delete!(RustCall.MODULE_ACTIVE_LIB, scope)
+    end
 end
 
 @testset "registry argument conversion and retirement iteration release STATE (#251)" begin
@@ -434,7 +514,7 @@ function _state_transaction_callouts(source::String, file = "fixture")
          (tailname(x.args[1]) == :lock && any(state_argument, x.args[2:end])))
     forbidden = (:ccall, :run, :read, :write, :wait, :sleep, :yield, :dlopen, :dlclose,
                  :eval, :delete_method, :_ffi_by_value_agrees, :dlsym, :_lookup,
-                 :prepare_library_metadata,
+                 :prepare_library_metadata, :String,
                  :compile_rust_to_shared_lib, :expand_inline, :extract_manifest,
                  :monomorphize_function, :toolchain_fingerprint, :artifact_compiler_identity,
                  :rebuild_callback, :invokelatest, Symbol("@warn"), Symbol("@debug"),

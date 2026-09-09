@@ -306,8 +306,8 @@ function module_symbol_library(mod::Module, symbol::AbstractString)
     # A generated function may be the first entry into a precompiled caller;
     # it must restore that module's blocks just as an explicit @rust call does.
     _resolve_lib(mod, "")
-    if isdefined(mod, :__RUSTCALL_SYMBOL_LIB)
-        table = getfield(mod, :__RUSTCALL_SYMBOL_LIB)
+    table = _module_binding(mod, :__RUSTCALL_SYMBOL_LIB)
+    if table !== nothing
         name = get(table, String(symbol), "")
         if !isempty(name)
             loaded = lock(REGISTRY_LOCK) do
@@ -316,8 +316,9 @@ function module_symbol_library(mod::Module, symbol::AbstractString)
             loaded && return name
         end
     end
-    if isdefined(mod, :__RUSTCALL_ACTIVE_LIB)
-        name = getfield(mod, :__RUSTCALL_ACTIVE_LIB)[]
+    active = _module_binding(mod, :__RUSTCALL_ACTIVE_LIB)
+    if active !== nothing
+        name = active[]
         if !isempty(name)
             loaded = lock(REGISTRY_LOCK) do
                 haskey(RUST_LIBRARIES, name)

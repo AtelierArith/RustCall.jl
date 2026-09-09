@@ -44,10 +44,11 @@ named mutable registry cannot bypass the declaration guard. The compiler's
 documentation metadata and synchronization primitives are not application
 registries; captured per-object liveness flags belong to the state-owned images.
 
-The state lock is the outer lock in RustCall's lock-ordering policy.  Code
-under it may only manipulate state and resolve already-loaded pointers; it must
-not call user Julia code, compile, `dlopen`/`dlclose`, or execute a `ccall`.
-Those operations happen before or after the locked transaction.
+Code under the state lock may only manipulate in-memory state. It must not
+call user Julia code, compile, resolve symbols, open/close libraries, or execute
+a `ccall`. Those operations happen before or after the locked transaction.
+Fetch the FFI method-definition gate from STATE before acquiring it; never
+acquire that gate while holding STATE, and run layout callbacks outside both.
 """
 mutable struct RustCallState
     values::Dict{Symbol, Any}

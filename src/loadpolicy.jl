@@ -1759,8 +1759,17 @@ Throws if the load fails, leaving the registry untouched.
 function load_artifact!(policy::LoadPolicy, path::AbstractString;
                         lib_name::AbstractString,
                         preload = (),
+                        symbols = (), return_types = (), eager = (),
                         kwargs...)
     lib_path = String(path)
+    name = String(lib_name)
+    # Reject caller metadata before acquiring a loader reference. Otherwise
+    # a throwing iterator or conversion in adopt_artifact! leaks this open.
+    metadata = registers_in_rust_libraries(policy) ?
+               prepare_library_metadata(symbols, return_types) :
+               prepare_library_metadata((), ())
+    prepared_eager = registers_in_rust_libraries(policy) ?
+                     String[String(symbol) for symbol in eager] : String[]
     for dependency in preload
         preload_dependency!(policy, dependency)
     end
@@ -1778,7 +1787,9 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     # registration turns out not to need it (`:insert_only` lost the race), it
     # is this call's job to close it. `adopt_artifact!` never closes a handle
     # it was merely handed.
-    return adopt_artifact!(policy, handle; lib_name, path = lib_path,
+    return adopt_artifact!(policy, handle; lib_name = name, path = lib_path,
+                           symbols = metadata.symbols, return_types = metadata.return_types,
+                           eager = prepared_eager,
                            close_duplicate = true, kwargs...)
 end
 
