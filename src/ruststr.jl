@@ -251,43 +251,12 @@ macro rust_str(code)
                                           compiler_level = $(snapshot_compiler.optimization_level),
                                           cargo_env = $cargo_env)
 
-        # Store the block (source plus the cfg/compiler snapshot it was expanded
-        # under) in the calling module for precompilation support: a reload in a
-        # later session rebuilds the very same configuration, see `ensure_loaded`.
-        if !isdefined($__module__, :__RUSTCALL_LIBS)
-            # Use Core.eval to define the constant if it doesn't exist
-            # Note: We use a Dict to support multiple blocks
-            @eval $__module__ const __RUSTCALL_LIBS = Dict{String, Any}()
-        end
-        $__module__.__RUSTCALL_LIBS[lib_name] = RustCall.RustBlockSnapshot(
+        # Publish module metadata in one STATE transaction. Only immutable
+        # block records are stored in a precompiled caller's image.
+        RustCall._record_module_block!($__module__, lib_name, RustCall.RustBlockSnapshot(
             $(esc(code)), $cfg_text,
             $(snapshot_compiler.target_triple), $(snapshot_compiler.optimization_level),
-            $cargo_env)
-
-        # Track the "current" library for this module
-        # Use Ref{String} so the binding is const but the value can be mutated
-        # This avoids Pluto's "cannot assign to imported variable" error
-        if !isdefined($__module__, :__RUSTCALL_ACTIVE_LIB)
-            @eval $__module__ const __RUSTCALL_ACTIVE_LIB = Ref("")
-        end
-        $__module__.__RUSTCALL_ACTIVE_LIB[] = lib_name
-
-        # Which library exported each of this block's symbols, per module. A
-        # generated wrapper resolves through *this* table, so two modules that
-        # each define `add` call their own `add` regardless of which block was
-        # compiled last (#250). Registering a name a second block of the same
-        # module already exported is refused here, with a message.
-        if !isdefined($__module__, :__RUSTCALL_SYMBOL_LIB)
-            @eval $__module__ const __RUSTCALL_SYMBOL_LIB = Dict{String, String}()
-        end
-        RustCall._record_module_symbols!($__module__.__RUSTCALL_SYMBOL_LIB,
-                                         lib_name, $block_symbols,
-                                         $(QuoteNode(nameof(__module__))))
-
-        # Track active library for macro expansion in this session
-        lock(REGISTRY_LOCK) do
-            MODULE_ACTIVE_LIB[$__module__] = lib_name
-        end
+            $cargo_env), $block_symbols)
 
         $(julia_defs...)
         $(julia_func_wrappers)
@@ -311,34 +280,9 @@ Re-running the *same* block is not a collision — the identity, and therefore
 the library name, is unchanged. Neither is re-running an edited block whose
 previous library has been unloaded.
 """
-function _record_module_symbols!(table::AbstractDict, lib_name::AbstractString,
+function _record_module_symbols!(table::Union{AbstractDict, StateView}, lib_name::AbstractString,
                                  symbols, module_name = :Main)
-    name = String(lib_name)
-    for symbol in symbols
-        sym = String(symbol)
-        owner = get(table, sym, "")
-        if !isempty(owner) && owner != name
-            still_loaded = lock(REGISTRY_LOCK) do
-                haskey(RUST_LIBRARIES, owner)
-            end
-            if still_loaded
-                throw(RustError("""
-                    `$(sym)` is already exported by another `rust\"\"\"` block in module $(module_name).
-
-                    Two blocks of one module exporting the same name is an ambiguity, not an
-                    override: the Julia wrapper of the second would replace the first while both
-                    libraries stayed loaded, and which one a call reached would depend on the
-                    order they were compiled in.
-
-                    Either rename the Rust function, or drop the earlier block first:
-
-                        RustCall.unload_library("$(owner)")
-                    """))
-            end
-        end
-        table[sym] = name
-    end
-    return nothing
+    return _record_module_symbols_transaction!(table, lib_name, symbols, module_name)
 end
 
 """
@@ -353,6 +297,9 @@ block was compiled last *anywhere*, so a second module defining the same Rust
 name captured the first module's calls (#250).
 """
 function module_symbol_library(mod::Module, symbol::AbstractString)
+    # A generated function may be the first entry into a precompiled caller;
+    # it must restore that module's blocks just as an explicit @rust call does.
+    _resolve_lib(mod, "")
     if isdefined(mod, :__RUSTCALL_SYMBOL_LIB)
         table = getfield(mod, :__RUSTCALL_SYMBOL_LIB)
         name = get(table, String(symbol), "")

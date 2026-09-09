@@ -57,9 +57,12 @@ const STATE = Base.Lockable(RustCallState(Dict{Symbol, Any}()))
 
 struct StateView
     name::Symbol
+    owner::Union{Nothing, Module}
 end
+StateView(name::Symbol) = StateView(name, nothing)
 
-_state_value(view::StateView) = STATE.value.values[view.name]
+_state_value(view::StateView) = view.owner === nothing ? STATE.value.values[view.name] :
+    STATE.value.values[:module_states][view.owner][view.name]
 
 function _state_view(name::Symbol, value)
     STATE.value.values[name] = value
@@ -67,8 +70,9 @@ function _state_view(name::Symbol, value)
 end
 
 function _state_read(view::StateView, f::Function)
+    view.owner === nothing || _ensure_module_state!(view.owner)
     lock(STATE.lock) do
-        f(STATE.value.values[view.name])
+        f(_state_value(view))
     end
 end
 _state_read(f::Function, view::StateView) = _state_read(view, f)
@@ -201,6 +205,7 @@ include("cargoproject.jl")
 include("cargobuild.jl")
 
 include("ruststr.jl")
+include("module_state.jl")
 include("rustmacro.jl")
 
 # Phase 2: Generics support

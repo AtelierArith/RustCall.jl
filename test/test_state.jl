@@ -220,7 +220,7 @@ end
     @test RustCall.REGISTRY_LOCK === RustCall.STATE.lock
 
     registry_views = (
-        :RUST_LIBRARIES, :CURRENT_LIB, :MODULE_ACTIVE_LIB,
+        :RUST_LIBRARIES, :CURRENT_LIB, :MODULE_ACTIVE_LIB, :MODULE_STATES, :MODULE_BLOCK_SEQUENCE,
         :FUNCTION_REGISTRY, :FUNCTION_REGISTRY_BY_LIB,
         :FUNCTION_RETURN_TYPES_BY_LIB, :FUNCTION_SYMBOLS_BY_LIB,
         :PANIC_CHANNELS, :GENERIC_FUNCTION_REGISTRY,
@@ -254,4 +254,43 @@ end
     end
     foreach(wait, tasks)
     @test !any(startswith(String(name), "state_") for name in keys(RustCall.RUST_LIBRARIES))
+end
+
+@testset "generated module registries are state-owned and publish atomically (#251)" begin
+    scopes = [Module(gensym(:ModuleState)) for _ in 1:2]
+    libraries = String[]
+    try
+        for (value, scope) in enumerate(scopes)
+            Core.eval(scope, :(using RustCall))
+            source = "#[julia] pub fn scoped_state_value() -> i32 { $value }"
+            library = Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(0), source))
+            push!(libraries, library)
+            for binding in (:__RUSTCALL_LIBS, :__RUSTCALL_SYMBOL_LIB, :__RUSTCALL_ACTIVE_LIB)
+                view = RustCall._module_binding(scope, binding)
+                @test view isa RustCall.StateView
+                @test view.owner === scope
+            end
+            @test isempty(_mutable_module_registries(scope))
+            @test isempty(RustCall._module_block_records(scope)) # no runtime metadata accumulation
+            @test Base.invokelatest(RustCall._module_binding(scope, :scoped_state_value)) == value
+        end
+        scope = scopes[1]
+        symbols = RustCall._module_binding(scope, :__RUSTCALL_SYMBOL_LIB)
+        libs = RustCall._module_binding(scope, :__RUSTCALL_LIBS)
+        active = RustCall._module_binding(scope, :__RUSTCALL_ACTIVE_LIB)
+        old_symbols, old_libs, old_active = copy(symbols), copy(libs), active[]
+        @test_throws RustCall.RustError RustCall._record_module_symbols!(
+            symbols, "other_owner", ["fresh_symbol", "rustcall_scoped_state_value"], nameof(scope))
+        @test copy(symbols) == old_symbols
+        @test_throws RustCall.RustError RustCall._record_module_block!(
+            scope, "other_owner", libs[libraries[1]], ["fresh_symbol", "rustcall_scoped_state_value"])
+        @test copy(symbols) == old_symbols
+        @test copy(libs) == old_libs
+        @test active[] == old_active
+        @test Base.invokelatest(RustCall._module_binding(scopes[2], :scoped_state_value)) == 2
+    finally
+        for library in libraries
+            RustCall.unload_library(library; close = true)
+        end
+    end
 end

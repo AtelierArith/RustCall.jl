@@ -916,7 +916,7 @@ using TOML
             reloaded = RustCall.ensure_loaded("rustcall_no_such_lib_265", block)
             @test RustCall.get_function_pointer(reloaded, "cfg_snapshot_debug_only") != C_NULL
             @test RustCall.ensure_loaded(reloaded, block) == reloaded
-            @test (@__MODULE__).__RUSTCALL_LIBS isa Dict{String, Any}
+            @test (@__MODULE__).__RUSTCALL_LIBS isa RustCall.StateView
             @test all(v -> v isa RustCall.RustBlockSnapshot, values((@__MODULE__).__RUSTCALL_LIBS))
             @test all(v -> v.cargo_env === nothing, values((@__MODULE__).__RUSTCALL_LIBS))   # direct rustc blocks
 
