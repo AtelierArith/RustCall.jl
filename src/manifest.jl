@@ -802,12 +802,13 @@ fragment rather than items, is left to the compiler.
 function extract_manifest(files::Vector{String}; mode::String, skip_unparsable::Bool = false,
                           cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
                           crate_root::Union{Nothing, AbstractString} = nothing,
+                          edition::AbstractString = "2021",
                           build_env::Union{Nothing, AbstractDict} = nothing)
     mode in ("inline", "crate") || throw(ArgumentError("mode must be \"inline\" or \"crate\""))
     isempty(files) && crate_root === nothing && return Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION, "mode" => mode,
         "functions" => Any[], "structs" => Any[])
-    args = ["manifest", "--mode", mode]
+    args = ["manifest", "--mode", mode, "--edition", String(edition)]
     skip_unparsable && push!(args, "--skip-unparsable")
     if cfg_text === nothing
         append!(args, _cfg_file_args(cfg))
@@ -894,11 +895,12 @@ Python-free wrapper build possible at all.
 function wrap_crate(files::Vector{String}; crate_name::AbstractString,
                     cfg = :strict, cfg_text::Union{Nothing, AbstractString} = nothing,
                     crate_root::Union{Nothing, AbstractString} = nothing,
+                    edition::AbstractString = "2021",
                     skip_unparsable::Bool = false,
                     build_env::Union{Nothing, AbstractDict} = nothing)
     isempty(files) && crate_root === nothing &&
         throw(ArgumentError("wrap_crate needs at least one source file"))
-    args = ["wrap", "--crate-name", String(crate_name)]
+    args = ["wrap", "--crate-name", String(crate_name), "--edition", String(edition)]
     skip_unparsable && push!(args, "--skip-unparsable")
     if cfg_text === nothing
         append!(args, _cfg_file_args(cfg))

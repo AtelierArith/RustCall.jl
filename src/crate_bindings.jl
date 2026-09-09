@@ -136,6 +136,7 @@ function scan_crate(crate_path::String; cfg = :lenient,
 
     # Parse Cargo.toml
     cargo_toml = parse_cargo_toml(cargo_toml_path)
+    edition = _crate_rust_edition(crate_path, cargo_toml)
 
     # Find all Rust source files
     source_files = sort(find_rust_sources(crate_path))
@@ -158,7 +159,8 @@ function scan_crate(crate_path::String; cfg = :lenient,
     lib_root, tree_files = _crate_scan_inputs(crate_path, cargo_toml, source_files)
     manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
                                 cfg = cfg, cfg_text = cfg_text,
-                                crate_root = lib_root, build_env = build_env)
+                                crate_root = lib_root, edition = edition,
+                                build_env = build_env)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
     # Items the crate marks only for PyO3 (#275 Phase 1). They are reported so
@@ -188,6 +190,18 @@ function scan_crate(crate_path::String; cfg = :lenient,
         pyo3_functions,
         pyo3_structs,
     )
+end
+
+function _crate_rust_edition(crate_path::AbstractString, cargo_toml::AbstractDict)
+    edition = get(cargo_toml["package"], "edition", "2015")
+    if edition isa AbstractDict && get(edition, "workspace", false) === true
+        metadata = _cargo_package_metadata(crate_path)
+        manifest_path = realpath(joinpath(crate_path, "Cargo.toml"))
+        package = only(p for p in metadata["packages"]
+                       if realpath(p["manifest_path"]) == manifest_path)
+        edition = package["edition"]
+    end
+    return String(edition)
 end
 
 """

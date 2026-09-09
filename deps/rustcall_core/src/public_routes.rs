@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use syn::{Attribute, Item, Visibility};
 
-use crate::paths::{imports_of_use, visible_from, ScannedImport};
+use crate::paths::{import_of_type_alias, imports_of_use, visible_from, PathAnchor, ScannedImport};
 
 type Path = Vec<String>;
 
@@ -30,6 +30,7 @@ struct Import {
     binding: ScannedImport,
     visibility: Visibility,
     predicates: BTreeSet<String>,
+    namespace: Option<Namespace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,9 +50,34 @@ pub struct PublicRoutes {
     definitions: BTreeMap<RouteKey, Vec<Definition>>,
     imports: Vec<Import>,
     names: BTreeSet<String>,
+    edition_2015: bool,
 }
 
 impl PublicRoutes {
+    pub fn with_edition(edition: &str) -> Self {
+        Self {
+            edition_2015: edition == "2015",
+            ..Self::default()
+        }
+    }
+
+    fn type_alias_import(&self, item: &syn::ItemType, module: &[String]) -> Option<ScannedImport> {
+        let syn::Type::Path(path) = crate::types::unparen(&item.ty) else {
+            return None;
+        };
+        // `::name` is crate-rooted in edition 2015 and extern-prelude-rooted
+        // from edition 2018 onward. Only the former can be resolved against
+        // this crate's scanned module tree.
+        if path.path.leading_colon.is_some() && !self.edition_2015 {
+            return None;
+        }
+        let mut binding = import_of_type_alias(item, module)?;
+        if path.path.leading_colon.is_some() {
+            binding.qualifier.anchor = PathAnchor::Crate;
+        }
+        Some(binding)
+    }
+
     /// Resolve within one cfg variant. A public module in a mutually exclusive
     /// variant must not grant access to the private copy at the same path.
     pub fn resolve_for(&self, cfg: &str) -> BTreeMap<RouteKey, PublicRoute> {
@@ -78,6 +104,16 @@ impl PublicRoutes {
                 Item::Fn(v) => Some((&v.sig.ident, &v.vis, &v.attrs, false)),
                 Item::Struct(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
                 Item::Enum(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
+                // A non-generic path alias is another externally callable
+                // spelling of its target, not a distinct type identity. It is
+                // recorded as an import edge below so `pub type API = hidden::C`
+                // exposes C to a wrapper crate (#303).
+                Item::Type(v)
+                    if v.generics.params.is_empty()
+                        && self.type_alias_import(v, module).is_some() =>
+                {
+                    None
+                }
                 Item::Type(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
                 Item::Const(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
                 Item::Static(v) => Some((&v.ident, &v.vis, &v.attrs, false)),
@@ -167,7 +203,21 @@ impl PublicRoutes {
                         binding,
                         visibility: v.vis.clone(),
                         predicates: predicates(&crate::cfg::effective_cfg_attrs(cfg, &v.attrs)),
+                        namespace: None,
                     });
+                }
+            }
+            if let Item::Type(v) = item {
+                if v.generics.params.is_empty() {
+                    if let Some(binding) = self.type_alias_import(v, module) {
+                        self.names.insert(binding.alias.clone());
+                        self.imports.push(Import {
+                            binding,
+                            visibility: v.vis.clone(),
+                            predicates: predicates(&crate::cfg::effective_cfg_attrs(cfg, &v.attrs)),
+                            namespace: Some(Namespace::Type),
+                        });
+                    }
                 }
             }
         }
@@ -193,7 +243,10 @@ impl PublicRoutes {
             .imports
             .iter()
             .filter(|v| {
-                v.binding.module_path == module && !v.binding.glob && v.binding.alias == name
+                v.binding.module_path == module
+                    && !v.binding.glob
+                    && v.binding.alias == name
+                    && v.namespace.is_none_or(|candidate| candidate == namespace)
             })
             .collect();
         if let Some(definitions) = direct {
@@ -206,7 +259,14 @@ impl PublicRoutes {
                 }
             }
         }
-        let mut named_present = direct.is_some();
+        // A named binding shadows globs even when its target lives outside the
+        // scanned module tree and cannot be resolved here. Treating only a
+        // successfully resolved import as present can expose a same-named
+        // glob item under a path Rust actually binds to something else.
+        let mut named_present = direct.is_some()
+            || explicit
+                .iter()
+                .any(|import| import.namespace == Some(namespace));
         for import in &explicit {
             let targets = self.import_target(import, namespace, visiting);
             named_present |= !targets.is_empty();
@@ -441,6 +501,70 @@ mod tests {
     }
 
     #[test]
+    fn path_type_aliases_are_type_namespace_routes() {
+        for (aliases, expected) in [
+            ("pub type API = hidden::C;", "API"),
+            ("type Bridge = hidden::C; pub type API = Bridge;", "API"),
+            ("pub mod api { pub type C = crate::hidden::C; }", "api::C"),
+            ("pub mod api { pub type C = super::hidden::C; }", "api::C"),
+            (
+                "pub mod api { mod bridge { pub type C = crate::hidden::C; } pub type C = self::bridge::C; }",
+                "api::C",
+            ),
+        ] {
+            let result = routes(&format!("mod hidden {{ pub struct C; }} {aliases}"));
+            assert_eq!(result[&path("hidden::C")].path, path(expected), "{aliases}");
+        }
+        assert!(
+            !routes("mod hidden { pub struct C; } type API = hidden::C;")
+                .contains_key(&path("hidden::C"))
+        );
+        // A generic alias needs type arguments and cannot be emitted as a bare
+        // callable path by the wrapper generator.
+        assert!(
+            !routes("mod hidden { pub struct C; } pub type API<T> = hidden::C;")
+                .contains_key(&path("hidden::C"))
+        );
+        // The alias is still a named binding when its target is not one of the
+        // scanner's definitions. It shadows the glob just as rustc does.
+        let file =
+            syn::parse_file("mod hidden { pub struct C; } pub use hidden::*; pub type C = i32;")
+                .unwrap();
+        let mut scan = PublicRoutes::default();
+        scan.file(&file.items, &[], &[]);
+        let result = scan.resolve();
+        assert!(!result.contains_key(&(Namespace::Type, path("hidden::C"))));
+        // The alias is type-only, so it must not shadow the tuple constructor.
+        assert!(result.contains_key(&(Namespace::Value, path("hidden::C"))));
+        // A leading `::` is rooted in the extern prelude, never in a local
+        // same-named module. The alias remains a named definition so it also
+        // shadows the local glob.
+        let source =
+            "mod dep { pub struct C { pub value: i32 } } pub use dep::*; pub type C = ::dep::C;";
+        let result = routes(source);
+        assert!(!result.contains_key(&path("dep::C")));
+        let file = syn::parse_file(source).unwrap();
+        let mut scan = PublicRoutes::with_edition("2015");
+        scan.file(&file.items, &[], &[]);
+        assert_eq!(
+            scan.resolve()[&(Namespace::Type, path("dep::C"))].path,
+            path("C")
+        );
+        let file = syn::parse_file(
+            "mod hidden { pub struct C { pub value: i32 } } pub mod api { mod hidden { pub struct C { pub nested: i32 } } pub type Alias = ::hidden::C; }",
+        )
+        .unwrap();
+        let mut scan = PublicRoutes::with_edition("2015");
+        scan.file(&file.items, &[], &[]);
+        let result = scan.resolve();
+        assert_eq!(
+            result[&(Namespace::Type, path("hidden::C"))].path,
+            path("api::Alias")
+        );
+        assert!(!result.contains_key(&(Namespace::Type, path("api::hidden::C"))));
+    }
+
+    #[test]
     fn rejects_private_ambiguous_and_cyclic_routes() {
         for export in [
             "use hidden::calculate;",
@@ -466,6 +590,11 @@ mod tests {
         let result =
             routes("mod hidden { pub fn f() {} } #[cfg(feature = \"api\")] pub use hidden::f;");
         assert!(!result[&path("hidden::f")].predicates.is_empty());
+
+        let result = routes(
+            "mod hidden { pub struct C; } #[cfg(feature = \"api\")] pub type C = hidden::C;",
+        );
+        assert!(!result[&path("hidden::C")].predicates.is_empty());
     }
 
     #[test]

@@ -112,6 +112,15 @@ pub struct Pyo3Scan {
     intrinsic_skips: std::collections::BTreeMap<(Vec<String>, String, usize, String), String>,
 }
 
+impl Pyo3Scan {
+    pub fn with_edition(edition: &str) -> Self {
+        Self {
+            routes: crate::public_routes::PublicRoutes::with_edition(edition),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ScannedClass {
     module_path: Vec<String>,
