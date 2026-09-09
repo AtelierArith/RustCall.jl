@@ -105,8 +105,9 @@ library's `f => rustcall_f` from leaking into it.
 function register_function_symbol(lib_name::AbstractString, name::AbstractString,
                                   symbol::AbstractString)
     isempty(symbol) && return nothing
+    key, exported = (String(lib_name), String(name)), String(symbol)
     lock(REGISTRY_LOCK) do
-        FUNCTION_SYMBOLS_BY_LIB[(String(lib_name), String(name))] = String(symbol)
+        FUNCTION_SYMBOLS_BY_LIB[key] = exported
     end
     return nothing
 end
@@ -120,8 +121,9 @@ manifest pipeline, or a `name` that is already the exported symbol). Never
 consults another library's mapping.
 """
 function exported_symbol(lib_name::AbstractString, name::AbstractString)
+    lib, item = String(lib_name), String(name)
     lock(REGISTRY_LOCK) do
-        get(FUNCTION_SYMBOLS_BY_LIB, (String(lib_name), String(name)), String(name))
+        get(FUNCTION_SYMBOLS_BY_LIB, (lib, item), item)
     end
 end
 
@@ -371,31 +373,41 @@ this.
 check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name::AbstractString) =
     (guard_rust_panic_ptr(nothing, channel, func_name); nothing)
 
-"""
-    install_library_metadata!(lib_name, symbols, return_types)
+struct PreparedLibraryMetadata
+    symbols::Vector{Pair{String, String}}
+    return_types::Vector{Pair{String, Type}}
+end
 
-Replace everything the registries record about `lib_name` with `symbols`
-(`name => exported symbol` pairs) and `return_types` (`name => Type` pairs).
-
-**The caller must hold `REGISTRY_LOCK`**, and must publish the library handle
-in the same critical section: a task that finds the library in
-`RUST_LIBRARIES` has to find how to resolve its names as well (#279). That is
-what `load_artifact!` does; this is its metadata half, factored out so the
-already-loaded re-registration path (`register_artifact_metadata!`) writes
-exactly the same rows.
-
-Whatever the library recorded before is dropped first, so a library
-re-registered under the same name — a re-run block, a hot reload — keeps
-nothing about a function it no longer defines or now declares differently.
-"""
-function install_library_metadata!(lib_name::AbstractString, symbols, return_types)
-    name = String(lib_name)
-    clear_library_metadata!(name)
-    for (rust_name, symbol) in symbols
-        register_function_symbol(name, rust_name, symbol)
+# Evaluate caller iterators and conversions before entering STATE. In
+# particular, malformed metadata must not erase an existing registration.
+function prepare_library_metadata(symbols, return_types)
+    prepared_symbols = Pair{String, String}[]
+    prepared_types = Pair{String, Type}[]
+    for (name, symbol) in symbols
+        push!(prepared_symbols, String(name) => String(symbol))
     end
-    for (key, ret_type) in return_types
-        FUNCTION_RETURN_TYPES_BY_LIB[(name, String(key))] = ret_type
+    for (name, type) in return_types
+        type isa Type || throw(ArgumentError("return metadata must contain Julia types"))
+        push!(prepared_types, String(name) => type)
+    end
+    PreparedLibraryMetadata(prepared_symbols, prepared_types)
+end
+
+"""
+    install_library_metadata!(name, metadata::PreparedLibraryMetadata)
+
+Replace a library's symbol mappings and return-type hints atomically.
+The caller must hold `REGISTRY_LOCK` and publish the handle in that same
+transaction. Prepare caller-supplied iterators with `prepare_library_metadata`
+outside the lock; this publication step accepts only materialized rows.
+"""
+function install_library_metadata!(name::String, metadata::PreparedLibraryMetadata)
+    clear_library_metadata!(name)
+    for (rust_name, symbol) in metadata.symbols
+        isempty(symbol) || (FUNCTION_SYMBOLS_BY_LIB[(name, rust_name)] = symbol)
+    end
+    for (key, ret_type) in metadata.return_types
+        FUNCTION_RETURN_TYPES_BY_LIB[(name, key)] = ret_type
     end
     return nothing
 end

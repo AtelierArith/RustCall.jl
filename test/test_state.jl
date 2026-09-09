@@ -1,6 +1,108 @@
 using Test
 using RustCall
 
+struct PausedStateString <: AbstractString
+    entered::Channel{Nothing}
+    release::Channel{Nothing}
+end
+function Base.String(value::PausedStateString)
+    put!(value.entered, nothing)
+    take!(value.release)
+    "state_string_probe_251"
+end
+
+@testset "registry argument conversion and retirement iteration release STATE (#251)" begin
+    operations = (
+        name -> RustCall.register_function_symbol(name, "value", "exported_value"),
+        name -> RustCall.exported_symbol(name, "value"),
+        RustCall.artifact_generation,
+        RustCall.retired_handles,
+        name -> RustCall._generic_struct_free_target(name, ()),
+    )
+    for operation in operations
+        entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+        worker = Threads.@spawn operation(PausedStateString(entered, release))
+        take!(entered)
+        observer = Threads.@spawn RustCall.CURRENT_LIB[]
+        try
+            @test timedwait(() -> istaskdone(observer), 5) == :ok
+        finally
+            put!(release, nothing)
+        end
+        fetch(worker)
+        fetch(observer)
+    end
+    RustCall.clear_library_metadata!("state_string_probe_251")
+    entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+    handles = (begin
+        put!(entered, nothing)
+        take!(release)
+        Ptr{Cvoid}(C_NULL)
+    end for _ in 1:1)
+    worker = Threads.@spawn RustCall.close_retired_handles!(handles)
+    take!(entered)
+    observer = Threads.@spawn RustCall.CURRENT_LIB[]
+    try
+        @test timedwait(() -> istaskdone(observer), 5) == :ok
+    finally
+        put!(release, nothing)
+    end
+    @test fetch(worker) == 0
+    fetch(observer)
+end
+
+@testset "metadata iterators run outside STATE and fail before publication (#251)" begin
+    policy = RustCall.inline_rustc_policy()
+    for adopt in (false, true), field in (:symbols, :return_types)
+        name = "state_metadata_$(adopt)_$(field)"
+        entered, release = Channel{Nothing}(1), Channel{Nothing}(1)
+        row = field === :symbols ? "value" => "exported_value" : "value" => Int32
+        rows = (begin
+            put!(entered, nothing)
+            take!(release)
+            row
+        end for _ in 1:1)
+        worker = Threads.@spawn begin
+            kwargs = NamedTuple{(field,)}((rows,))
+            if adopt
+                RustCall.adopt_artifact!(policy, Ptr{Cvoid}(UInt(0x251));
+                    lib_name = name, set_current = false, kwargs...)
+            else
+                RustCall.register_artifact_metadata!(policy, name;
+                    set_current = false, kwargs...)
+            end
+        end
+        ready = timedwait(() -> isready(entered) || istaskdone(worker), 10)
+        ready == :ok || error("metadata worker did not reach its iterator")
+        istaskdone(worker) && fetch(worker)
+        take!(entered)
+        observer = Threads.@spawn RustCall.CURRENT_LIB[]
+        try
+            @test timedwait(() -> istaskdone(observer), 5) == :ok
+        finally
+            put!(release, nothing)
+        end
+        try
+            fetch(worker)
+            fetch(observer)
+            @test field === :symbols ? RustCall.exported_symbol(name, "value") == "exported_value" :
+                  RustCall.get_function_return_type(name, "value") === Int32
+            @test_throws ArgumentError RustCall.register_artifact_metadata!(policy, name;
+                symbols = ("value" => "wrong",), return_types = ("value" => 123,),
+                set_current = false)
+            @test field === :symbols ? RustCall.exported_symbol(name, "value") == "exported_value" :
+                  RustCall.get_function_return_type(name, "value") === Int32
+        finally
+            if adopt
+                RustCall.unload_artifact!(policy, name)
+                RustCall.close_retired_handles!(RustCall.retired_handles(name))
+            else
+                RustCall.clear_library_metadata!(name)
+            end
+        end
+    end
+end
+
 @testset "cold symbol resolution releases STATE and retains the captured generation (#251)" begin
     source(type, value) = """
         #[julia]
@@ -332,6 +434,7 @@ function _state_transaction_callouts(source::String, file = "fixture")
          (tailname(x.args[1]) == :lock && any(state_argument, x.args[2:end])))
     forbidden = (:ccall, :run, :read, :write, :wait, :sleep, :yield, :dlopen, :dlclose,
                  :eval, :delete_method, :_ffi_by_value_agrees, :dlsym, :_lookup,
+                 :prepare_library_metadata,
                  :compile_rust_to_shared_lib, :expand_inline, :extract_manifest,
                  :monomorphize_function, :toolchain_fingerprint, :artifact_compiler_identity,
                  :rebuild_callback, :invokelatest, Symbol("@warn"), Symbol("@debug"),

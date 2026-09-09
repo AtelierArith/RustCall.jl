@@ -119,6 +119,11 @@ transactions; scheduling, waiting, source I/O and callbacks occur outside them.
 StateView cache defaults are evaluated outside STATE, then published only if
 another task has not already supplied the key. This includes the cold Cargo
 and rustc cfg probes, whose subprocess must never run inside a state transaction.
+Library metadata iterators and string conversions are materialized and validated
+before STATE is acquired. The publication helper accepts only prepared concrete
+rows, so a failing iterator or invalid return type cannot erase prior metadata.
+Explicit retirement also materializes its caller-supplied handle iterator before
+changing liveness flags under STATE.
 StateView `filter!` likewise evaluates predicates on a snapshot outside STATE.
 Active filters observe container writes in the same state transaction; key
 updates and original vector-occurrence tokens distinguish delete/reinsert from

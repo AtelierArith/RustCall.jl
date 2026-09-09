@@ -1158,8 +1158,8 @@ function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback)
     # Test and insert atomically: reading the set outside the lock let two
     # threads both see the context as new and warn twice — and raced with the
     # insert itself.
+    key = String(ctx)
     first_time = lock(REGISTRY_LOCK) do
-        key = String(ctx)
         key in _FFI_WARNED_CONTEXTS && return false
         push!(_FFI_WARNED_CONTEXTS, key)
         return true

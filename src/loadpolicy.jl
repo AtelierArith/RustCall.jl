@@ -1015,8 +1015,10 @@ end
 
 Which generation of `lib_name` is installed now; `0` if none ever was.
 """
-artifact_generation(lib_name::AbstractString) =
-    lock(() -> get(ARTIFACT_GENERATIONS, String(lib_name), 0), REGISTRY_LOCK)
+function artifact_generation(lib_name::AbstractString)
+    name = String(lib_name)
+    lock(() -> get(ARTIFACT_GENERATIONS, name, 0), REGISTRY_LOCK)
+end
 
 """
     CrateGeneration
@@ -1251,9 +1253,11 @@ those that were known by `lib_name`.
 """
 retired_handles() = lock(() -> collect(keys(RETIRED_HANDLES)), REGISTRY_LOCK)
 
-retired_handles(lib_name::AbstractString) = lock(REGISTRY_LOCK) do
+function retired_handles(lib_name::AbstractString)
     name = String(lib_name)
-    [h for (h, r) in RETIRED_HANDLES if name in r.names]
+    lock(REGISTRY_LOCK) do
+        [h for (h, r) in RETIRED_HANDLES if name in r.names]
+    end
 end
 
 # Record an image that has left the registry. Its liveness flag stays as it is
@@ -1300,9 +1304,10 @@ An image RustCall did not open is released from the bookkeeping but not
 closed: closing it belongs to whoever opened it (`OWNED_HANDLES`).
 """
 function close_retired_handles!(handles = retired_handles())
+    selected = Ptr{Cvoid}[handle for handle in handles]
     records = lock(REGISTRY_LOCK) do
         found = Pair{Ptr{Cvoid}, RetiredImage}[]
-        for handle in handles
+        for handle in selected
             record = get(RETIRED_HANDLES, handle, nothing)
             record === nothing && continue
             # Flip under the lock, before the close: an object finalized in
@@ -1877,6 +1882,8 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
 
     duplicate = C_NULL
     replaced = C_NULL
+    metadata = registers_in_rust_libraries(policy) ?
+               prepare_library_metadata(symbols, return_types) : nothing
     artifact = lock(REGISTRY_LOCK) do
         if !registers_in_rust_libraries(policy)
             retired = get(RETIRED_HANDLES, handle, nothing)
@@ -1901,7 +1908,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         if haskey(RUST_LIBRARIES, name)
             replaced = RUST_LIBRARIES[name][1]
         end
-        install_library_metadata!(name, symbols, return_types)
+        install_library_metadata!(name, metadata)
         # One flag per *image*, not per registration. Re-registering the same
         # handle — the same file opened again, which `dlopen` refcounts and
         # answers with the same image — is the same lifetime, so it keeps the
@@ -1994,11 +2001,12 @@ function register_artifact_metadata!(policy::LoadPolicy, lib_name::AbstractStrin
                                      require_loaded::Bool = false,
                                      set_current::Bool = policy.sets_current_lib)
     name = String(lib_name)
+    metadata = prepare_library_metadata(symbols, return_types)
     return lock(REGISTRY_LOCK) do
         if require_loaded && !haskey(RUST_LIBRARIES, name)
             return false
         end
-        install_library_metadata!(name, symbols, return_types)
+        install_library_metadata!(name, metadata)
         set_current && (CURRENT_LIB[] = name)
         return true
     end

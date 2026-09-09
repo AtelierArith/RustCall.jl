@@ -1049,10 +1049,10 @@ end
 
         lib_name = "test279_cfg_variant"
         try
+            metadata = RustCall.prepare_library_metadata(
+                RustCall._manifest_registry_entries(info.julia_functions)...)
             lock(RustCall.REGISTRY_LOCK) do
-                RustCall.install_library_metadata!(
-                    lib_name,
-                    RustCall._manifest_registry_entries(info.julia_functions)...)
+                RustCall.install_library_metadata!(lib_name, metadata)
             end
 
             # The symbol is unambiguous, so it is recorded ...

@@ -1036,16 +1036,17 @@ struct whose `_free` wrapper the extractor did not emit.
 """
 function _generic_struct_free_target(free_name::AbstractString, types::Tuple)
     return try
+        name = String(free_name)
         generic_info = lock(REGISTRY_LOCK) do
-            get(GENERIC_FUNCTION_REGISTRY, String(free_name), nothing)
+            get(GENERIC_FUNCTION_REGISTRY, name, nothing)
         end
         generic_info === nothing && return (C_NULL, "", C_NULL, 0)
         type_params = Dict{Symbol, Type}()
         for (i, p) in enumerate(generic_info.type_params)
             type_params[p] = types[i]
         end
-        info = get_monomorphized_function(String(free_name), type_params)
-        info === nothing && (info = monomorphize_function(String(free_name), type_params))
+        info = get_monomorphized_function(name, type_params)
+        info === nothing && (info = monomorphize_function(name, type_params))
         (info.func_ptr, info.lib_name, info.handle, info.generation)
     catch e
         @debug "Could not resolve the destructor of $(free_name)" exception = e
