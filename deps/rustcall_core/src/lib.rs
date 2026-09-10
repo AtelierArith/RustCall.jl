@@ -3,7 +3,7 @@
 //! This crate is the single place where Rust syntax is interpreted on behalf
 //! of RustCall.jl. It is consumed by two front ends:
 //!
-//! * `juliacall_macros` (proc-macro) for `@rust_crate`;
+//! * `rustcall_julia_macros` (proc-macro) for `@rust_crate`;
 //! * `rustcall_extract` (CLI) for `rust"""` blocks, `@rust_crate` scanning and
 //!   generic monomorphization.
 //!
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn crate_mode_follows_proc_macro_rules() {
         let src = r#"
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
             #[julia]
             fn add(a: i32, b: i32) -> i32 { a + b }
             #[julia]

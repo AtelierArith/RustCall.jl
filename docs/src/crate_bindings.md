@@ -6,14 +6,14 @@ RustCall.jl provides a Maturin-like feature for generating Julia bindings from e
 
 The feature consists of two components:
 
-1. **`juliacall_macros`** - A Rust proc-macro crate that provides the `#[julia]` attribute
+1. **`rustcall_julia_macros`** - A Rust proc-macro crate that provides the `#[julia]` attribute
 2. **`@rust_crate`** - A Julia macro that scans external crates and generates bindings
 
 ## Quick Start
 
 ### Rust Side
 
-Create a Rust crate with `juliacall_macros`:
+Create a Rust crate with `rustcall_julia_macros`:
 
 ```toml
 # Cargo.toml
@@ -26,14 +26,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-juliacall_macros = { path = "/path/to/RustCall.jl/deps/juliacall_macros" }
+rustcall_julia_macros = { path = "/path/to/RustCall.jl/deps/rustcall_julia_macros" }
 # Or from crates.io (when published):
-# juliacall_macros = "0.1"
+# rustcall_julia_macros = "0.1"
 ```
 
 ```rust
 // src/lib.rs
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 #[julia]
 fn add(a: i32, b: i32) -> i32 {
@@ -236,7 +236,7 @@ module an item sits in, so the module carries the marker too:
 ```rust
 #[julia]
 pub mod a {
-    use juliacall_macros::julia;
+    use rustcall_julia_macros::julia;
 
     #[julia]
     pub fn run() -> i32 { 1 }          // exported as `rustcall_a__run`
@@ -253,7 +253,7 @@ pub mod a {
 
 #[julia]
 pub mod b {
-    use juliacall_macros::julia;
+    use rustcall_julia_macros::julia;
 
     #[julia]
     pub fn run() -> i32 { 2 }          // exported as `rustcall_b__run`
@@ -457,14 +457,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-juliacall_macros = { path = "/path/to/RustCall.jl/deps/juliacall_macros" }
+rustcall_julia_macros = { path = "/path/to/RustCall.jl/deps/rustcall_julia_macros" }
 ```
 
 ### 3. Write Rust Code
 
 ```rust
 // src/lib.rs
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 #[julia]
 fn factorial(n: u64) -> u64 {
@@ -715,7 +715,7 @@ Returns the generated Julia module code as a string.
 
 Ensure your crate has:
 - `crate-type = ["cdylib"]` in `[lib]` section
-- `juliacall_macros` as a dependency
+- `rustcall_julia_macros` as a dependency
 - Valid Rust code that compiles
 
 ### Functions not found

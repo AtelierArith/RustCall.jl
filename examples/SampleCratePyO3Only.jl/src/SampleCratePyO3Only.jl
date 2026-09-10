@@ -3,7 +3,7 @@
 
 A Julia package with the Rust crate `deps/sample_crate_pyo3_only` embedded in
 it: a crate **written for PyO3 only**. It carries no RustCall attribute — no
-`#[julia]` anywhere — and does not depend on `juliacall_macros`; it is a PyO3
+`#[julia]` anywhere — and does not depend on `rustcall_julia_macros`; it is a PyO3
 extension crate as its author wrote it for Python. RustCall binds it anyway
 (#275 Phase 2): `deps/build.jl` runs `RustCall.write_bindings_to_file`, which
 scans the `pub` items PyO3 exposes, generates a **wrapper crate** that depends

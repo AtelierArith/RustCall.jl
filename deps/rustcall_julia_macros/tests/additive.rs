@@ -7,7 +7,7 @@
 #![allow(dead_code)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 #[julia]
 fn checked_halve(x: i32) -> Result<i32, i32> {

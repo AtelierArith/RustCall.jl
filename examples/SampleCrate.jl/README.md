@@ -7,9 +7,9 @@ follows RustCall's documented workflow for packages
 ([Precompilation Support](https://atelierarith.github.io/RustCall.jl/precompilation/)).
 
 The example is **self-contained**: everything it builds and tests is inside
-this directory. The one reference outside it is the `juliacall_macros` path
-dependency in `deps/sample_crate/Cargo.toml` (`../../../../deps/juliacall_macros`,
-the proc-macro crate of this checkout), because `juliacall_macros` is not on
+this directory. The one reference outside it is the `rustcall_julia_macros` path
+dependency in `deps/sample_crate/Cargo.toml` (`../../../../deps/rustcall_julia_macros`,
+the proc-macro crate of this checkout), because `rustcall_julia_macros` is not on
 crates.io yet.
 
 ## Layout: Rust and Julia in separate files

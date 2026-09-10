@@ -92,7 +92,7 @@ neutral default so a caller only names what applies to it.
 - `build_env::Vector{Pair{String, String}}`: build environment that reaches the
   compiler (`RUSTFLAGS`, `CARGO_*`, …), sorted by name.
 - `toolchain::String`: `toolchain_fingerprint` — extractor digest,
-  manifest schema, `rustcall_core` / `juliacall_macros` sources.
+  manifest schema, `rustcall_core` / `rustcall_julia_macros` sources.
 - `compiler::String`: identity of the compiler that actually runs, from
   `RustToolChain` (see `artifact_compiler_identity`).
 - `extra::Vector{Pair{String, String}}`: escape hatch for pipeline-specific

@@ -43,7 +43,7 @@ jobs:
         crate:
           - rustcall_core
           - rustcall_extract
-          - juliacall_macros
+          - rustcall_julia_macros
     defaults:
       run:
         working-directory: deps/${{ matrix.crate }}

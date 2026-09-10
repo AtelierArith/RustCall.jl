@@ -6,7 +6,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(non_snake_case)]
 
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 #[julia]
 pub mod a {

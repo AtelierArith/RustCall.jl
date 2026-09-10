@@ -203,7 +203,7 @@ pub enum Mode {
     /// before `rustc` runs, all `pub fn` methods of `#[julia]` structs are wrapped,
     /// and generic items are reported for runtime monomorphization.
     Inline,
-    /// `@rust_crate`: `#[julia]` items are expanded by the `juliacall_macros`
+    /// `@rust_crate`: `#[julia]` items are expanded by the `rustcall_julia_macros`
     /// proc-macro inside Cargo; only explicitly attributed methods are wrapped.
     Crate,
 }

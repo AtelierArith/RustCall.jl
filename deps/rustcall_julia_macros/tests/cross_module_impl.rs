@@ -8,7 +8,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(non_snake_case)]
 
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 #[julia]
 pub struct Gauge {
@@ -63,7 +63,7 @@ pub mod more {
 // An unmarked module: item-level expansion, a bare name brought in by `use`.
 pub mod plain {
     use super::Gauge;
-    use juliacall_macros::julia;
+    use rustcall_julia_macros::julia;
 
     #[julia]
     impl Gauge {

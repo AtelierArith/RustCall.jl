@@ -2,7 +2,7 @@
 #
 # Julia never parses Rust source. Every signature it needs comes from the
 # manifest produced by the `rustcall-extract` CLI (deps/rustcall_extract), which
-# shares its `syn`-based core with the `juliacall_macros` proc-macro. This module
+# shares its `syn`-based core with the `rustcall_julia_macros` proc-macro. This module
 # locates the CLI, runs it, validates the manifest schema, and converts the
 # manifest into the `RustFunctionSignature` / `RustStructInfo` values the code
 # emitters consume.
@@ -131,7 +131,7 @@ end
     _rust_sources_digest(dirs...) -> String
 
 SHA-256 over the `src/*.rs` and `Cargo.toml` files of the given crate
-directories, sorted by path. Used so that editing `juliacall_macros` or
+directories, sorted by path. Used so that editing `rustcall_julia_macros` or
 `rustcall_core` invalidates artifacts built through Cargo.
 """
 function _rust_sources_digest(dirs::AbstractString...)
@@ -162,7 +162,7 @@ end
 
 Fingerprint of everything that influences generated code besides the user's
 source: extractor binary, manifest schema, `rustcall_core` and
-`juliacall_macros` sources, the identity of the compiler that actually runs
+`rustcall_julia_macros` sources, the identity of the compiler that actually runs
 (`artifact_compiler_identity`) and the host target. Included in all cache keys.
 
 # Missing toolchain (#252)
@@ -187,7 +187,7 @@ function toolchain_fingerprint()
             parts = String[
                 "schema=$(MANIFEST_SCHEMA_VERSION)",
                 "extractor=$(extractor_digest())",
-                "core=$(_rust_sources_digest(joinpath(deps, "rustcall_core"), joinpath(deps, "juliacall_macros")))",
+                "core=$(_rust_sources_digest(joinpath(deps, "rustcall_core"), joinpath(deps, "rustcall_julia_macros")))",
                 "compiler=$(compiler)",
                 "target=$(Sys.MACHINE)",
                 "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",

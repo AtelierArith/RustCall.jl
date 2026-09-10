@@ -49,5 +49,5 @@ cargo test
 
 ## Dependencies
 
-- `juliacall_macros` (the `#[julia]` attribute), as a path dependency on
-  `../../../deps/juliacall_macros`.
+- `rustcall_julia_macros` (the `#[julia]` attribute), as a path dependency on
+  `../../../deps/rustcall_julia_macros`.

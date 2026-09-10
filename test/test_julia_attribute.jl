@@ -625,7 +625,7 @@ end
 # the extractor, not the manifest origin. A crate that still uses it must fail
 # to build, loudly, rather than be silently bound as it was.
 @testset "#[julia_pyo3] is removed (#312)" begin
-    macros_dir = joinpath(pkgdir(RustCall), "deps", "juliacall_macros")
+    macros_dir = joinpath(pkgdir(RustCall), "deps", "rustcall_julia_macros")
     @test !occursin("julia_pyo3", read(joinpath(macros_dir, "src", "lib.rs"), String))
     @test !occursin("julia_pyo3", read(joinpath(macros_dir, "Cargo.toml"), String))
     @test "julia_pyo3" ∉ RustCall.RUSTCALL_ATTRIBUTE_ORIGINS
@@ -682,12 +682,12 @@ end
                 publish = false
 
                 [dependencies]
-                juliacall_macros = { path = $(repr(macros_dir)) }
+                rustcall_julia_macros = { path = $(repr(macros_dir)) }
 
                 [workspace]
                 """)
             write(joinpath(dir, "src", "lib.rs"), """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
 
                 #[julia_pyo3]
                 pub fn add(a: i32, b: i32) -> i32 { a + b }

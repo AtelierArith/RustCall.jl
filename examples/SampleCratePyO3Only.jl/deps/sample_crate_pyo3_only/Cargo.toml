@@ -1,5 +1,5 @@
 # A crate written for PyO3 only: it knows nothing about RustCall and carries no
-# RustCall attribute anywhere, and it does not depend on `juliacall_macros`.
+# RustCall attribute anywhere, and it does not depend on `rustcall_julia_macros`.
 # RustCall binds it anyway (#275 Phase 2): `write_bindings_to_file` in
 # ../build.jl generates a *second* crate that depends on this one, builds that,
 # and binds the result. Nothing in this directory is changed for Julia's sake.

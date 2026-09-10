@@ -61,7 +61,7 @@ git ls-files 'src/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/src/*.rs' | xa
 - Coverage includes cache, ownership, arrays, generics, error handling, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
 
 ### Rust proc-macro tests
-- Location: `deps/juliacall_macros/tests/`
+- Location: `deps/rustcall_julia_macros/tests/`
 - CI runs `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-features`.
 
 ### GitHub Actions
@@ -94,7 +94,7 @@ Pkg.build("RustCall")
 - Phase 3: Cargo dependency parsing and external crate use inside inline Rust code.
 - Phase 4: Rust struct and method mapping into Julia-facing objects.
 - Phase 5: `#[julia]`-driven wrapper generation.
-- Phase 6: external crate binding generation with `@rust_crate` and the `juliacall_macros` proc-macro crate.
+- Phase 6: external crate binding generation with `@rust_crate` and the `rustcall_julia_macros` proc-macro crate.
 - Phase 7: manifest schema 4 and the FFI type contract — one table decides every Rust/Julia type mapping, unknown types fail closed instead of becoming `Any`, and an owned value always names the symbol that releases it (#276, #245, #246, #249).
 
 ## Near-Term Priorities

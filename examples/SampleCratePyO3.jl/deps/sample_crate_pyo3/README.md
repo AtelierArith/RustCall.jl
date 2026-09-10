@@ -194,7 +194,7 @@ python main.py
 
 ```toml
 [dependencies]
-juliacall_macros = { path = "../../../../deps/juliacall_macros" }
+rustcall_julia_macros = { path = "../../../../deps/rustcall_julia_macros" }
 pyo3 = { version = "0.29", features = ["extension-module"], optional = true }
 
 [features]
@@ -202,7 +202,7 @@ default = []
 python = ["pyo3"]
 ```
 
-`juliacall_macros` (the `#[julia]` attribute) is not on crates.io yet, so it is
+`rustcall_julia_macros` (the `#[julia]` attribute) is not on crates.io yet, so it is
 a path dependency into the RustCall.jl checkout — the only reference this
 example makes outside `examples/SampleCratePyO3.jl/`.
 

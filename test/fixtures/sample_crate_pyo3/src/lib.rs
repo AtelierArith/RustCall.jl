@@ -16,7 +16,7 @@
 // Struct` pointers Julia hands back; that is the FFI contract, not an oversight.
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;

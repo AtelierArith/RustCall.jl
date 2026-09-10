@@ -10,7 +10,7 @@
 //! symbol a PyO3 wrapper would want; the scan reports it through that path and
 //! does not describe a second wrapper.
 
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 use pyo3::prelude::*;
 
 /// RustCall's own: exported by this crate as `rustcall_julia_double`.

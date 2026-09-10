@@ -8,7 +8,7 @@ description = "The Rust half of examples/SampleCrate.jl: #[julia] functions and 
 crate-type = ["cdylib"]
 
 [dependencies]
-# `juliacall_macros` (the `#[julia]` attribute) is not on crates.io yet, so
+# `rustcall_julia_macros` (the `#[julia]` attribute) is not on crates.io yet, so
 # this is a path dependency into the RustCall.jl checkout. It is the only
 # reference this example makes outside its own directory.
-juliacall_macros = { path = "../../../../deps/juliacall_macros" }
+rustcall_julia_macros = { path = "../../../../deps/rustcall_julia_macros" }

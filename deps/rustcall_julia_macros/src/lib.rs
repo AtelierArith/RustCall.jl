@@ -19,7 +19,7 @@
 //! recorded in the manifest.
 //!
 //! ```rust,ignore
-//! use juliacall_macros::julia;
+//! use rustcall_julia_macros::julia;
 //!
 //! #[julia]
 //! fn add(a: i32, b: i32) -> i32 {

@@ -31,12 +31,12 @@ Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
 **self-contained**: the Rust crate it binds is a plain Cargo crate under its own
 `deps/<crate>/` (the layout the [Precompilation Support](../docs/src/precompilation.md)
 guide prescribes), and no Julia file contains Rust source. The only reference an
-example makes outside its own directory is the `juliacall_macros` path
+example makes outside its own directory is the `rustcall_julia_macros` path
 dependency in its `Cargo.toml`, because the proc-macro crate is not on crates.io
 yet — and the two PyO3-only packages, `SampleCratePyO3Only.jl` and
 `RustCrateMacroPyO3Only.jl`, make none at all: their crates depend on pyo3
 alone, and the wrapper crate RustCall generates for each is what depends on
-`juliacall_macros`. (RustCall's own test suite uses separate fixture crates
+`rustcall_julia_macros`. (RustCall's own test suite uses separate fixture crates
 under `test/fixtures/`, not the examples.)
 
 ```bash
@@ -110,7 +110,7 @@ For normal use, `Pkg.instantiate()` resolves RustCall.jl from Julia's General re
 
 ### SampleCrate.jl
 
-A Julia package with a Rust crate embedded under `deps/sample_crate/`, demonstrating the `#[julia]` attribute from `juliacall_macros` and the package workflow around it.
+A Julia package with a Rust crate embedded under `deps/sample_crate/`, demonstrating the `#[julia]` attribute from `rustcall_julia_macros` and the package workflow around it.
 
 **Features demonstrated:**
 - `#[julia]` attribute for automatic FFI generation
@@ -196,7 +196,7 @@ m.add(2, 3)  # => 5
 ### SampleCratePyO3Only.jl
 
 A Julia package with a Rust crate embedded under `deps/sample_crate_pyo3_only/`
-that was **written for PyO3 only**: no `#[julia]`, no `juliacall_macros`
+that was **written for PyO3 only**: no `#[julia]`, no `rustcall_julia_macros`
 dependency, just `#[pyfunction]`, `#[pyclass]`, `#[pymethods]` and a
 `#[pymodule]`. RustCall binds it without changing it ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)
 Phase 2): `write_bindings_to_file` scans the `pub` items PyO3 exposes,
@@ -237,7 +237,7 @@ initializer), and the link plan.
 ### RustCrateMacroPyO3Only.jl
 
 The same PyO3-only crate shape as above — `deps/macro_pyo3_only/` carries no
-RustCall attribute and no `juliacall_macros` dependency — bound through the
+RustCall attribute and no `rustcall_julia_macros` dependency — bound through the
 **other front door**: `@rust_crate ... submodule="Bindings"` at the package's
 top level, which
 [#339](https://github.com/AtelierArith/RustCall.jl/issues/339) made

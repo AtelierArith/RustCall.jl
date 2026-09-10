@@ -1,4 +1,4 @@
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 // Issue #159: Non-FFI-compatible types in Result should produce compile_error.
 // `String` / `&str` were in that set until #268, which lowers them to the
