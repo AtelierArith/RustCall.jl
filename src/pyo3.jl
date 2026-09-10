@@ -1623,7 +1623,7 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
           generate_pyo3_wrapper_cargo_toml(
               info, plan; wrapper_name = wrapper_name,
               python_dispatch = _wrapper_uses_python_dispatch(source.manifest),
-              pyo3_version = _resolved_pyo3_version(info.path)) *
+              pyo3_version = _resolved_pyo3_version(info.path, plan)) *
           _root_patch_toml(info.path))
     write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
 
@@ -1883,10 +1883,10 @@ function _wrapper_uses_python_dispatch(manifest::AbstractDict)
 end
 
 """The direct pyo3 package version used by the target library."""
-function _resolved_pyo3_version(crate_path::AbstractString)
+function _resolved_pyo3_version(crate_path::AbstractString, plan::PyO3LinkPlan)
     manifest = realpath(joinpath(String(crate_path), "Cargo.toml"))
     metadata = try
-        parse_json(read(`$(cargo()) metadata --format-version=1 --manifest-path $manifest`, String))
+        parse_json(read(`$(cargo()) metadata --format-version=1 --manifest-path $manifest $(plan.feature_flags)`, String))
     catch e
         @debug "Could not resolve the target crate's pyo3 package" crate_path exception = e
         return ""

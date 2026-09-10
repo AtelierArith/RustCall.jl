@@ -256,3 +256,52 @@ fn inheritance_constructor_tuple_becomes_a_python_owned_handle() {
         .lib_rs
         .contains("pub struct CResult_Child_replacement__default_1"));
 }
+
+#[test]
+fn python_owned_classes_keep_descriptor_and_vec_field_abis() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct Base;
+        #[pyclass(extends = Base)]
+        pub struct Child { #[pyo3(get, set)] pub values: Vec<i32>, value: i32 }
+        #[pymethods]
+        impl Child {
+            #[new]
+            pub fn new() -> (Self, Base) {
+                (Self { values: vec![1], value: 2 }, Base)
+            }
+            #[getter]
+            pub fn doubled(&self) -> i32 { self.value * 2 }
+            #[setter(doubled)]
+            pub fn set_doubled(&mut self, value: i32) { self.value = value / 2; }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let class = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "Child")
+        .unwrap();
+    let values = class
+        .fields
+        .iter()
+        .find(|field| field.name == "values")
+        .unwrap();
+    assert!(values.ffi_compatible);
+    assert_eq!(values.abi, "vec");
+    assert_eq!(
+        values.free_symbol,
+        "rustcall_Child_get_values_free_rust_vec"
+    );
+    assert!(wrapped
+        .lib_rs
+        .contains("pub struct rustcall_Child_get_values_RustCallOwnedVec"));
+    assert!(wrapped.lib_rs.contains("getattr(\"doubled\")"));
+    assert!(wrapped.lib_rs.contains("setattr(\"doubled\", value)"));
+    assert!(!wrapped.lib_rs.contains("call_method(\"doubled\""));
+}

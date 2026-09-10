@@ -820,7 +820,8 @@ fn python_field_wrappers(
     }
     let ty: Type = syn::parse_str(&field.rust_type)
         .map_err(|_| skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, &field.rust_type))?;
-    if !(is_ffi_compatible_type(&ty) || is_string_type(&ty)) {
+    let vec_element = pyo3_vec_element_type(&ty);
+    if !(is_ffi_compatible_type(&ty) || is_string_type(&ty) || vec_element.is_some()) {
         return Err(skip_reason::detailed(
             skip_reason::UNSUPPORTED_RETURN,
             &field.rust_type,
@@ -847,24 +848,59 @@ fn python_field_wrappers(
                 }).unwrap_or_else(|rustcall_py_err| panic!("PyO3 field getter failed: {}", rustcall_py_err))
             }
         });
-        let ret = if is_string_type(&ty) {
-            WrapperReturn::OwnedString {
-                helper: format_ident!("{}_RustCallOwnedString", class_name),
-                free: format_ident!("{}_free_rust_string", class_name),
-                declare: false,
-            }
+        if let Some(element) = &vec_element {
+            let owned = format_ident!("{}_RustCallOwnedVec", field.getter);
+            let free = syn::parse_str::<Ident>(&field.free_symbol).map_err(|_| {
+                skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, &field.rust_type)
+            })?;
+            out.extend(quote! {
+                #[repr(C)]
+                pub struct #owned {
+                    pub ptr: *mut #element,
+                    pub len: usize,
+                    pub cap: usize,
+                }
+
+                #[no_mangle]
+                pub extern "C" fn #free(value: #owned) {
+                    if !value.ptr.is_null() {
+                        unsafe { drop(Vec::from_raw_parts(value.ptr, value.len, value.cap)); }
+                    }
+                }
+            });
+            out.extend(crate::codegen::guard_struct_helper(quote! {
+                #[no_mangle]
+                pub extern "C" fn #symbol(ptr: *mut #handle) -> #owned {
+                    let mut rustcall_vec = #helper(ptr);
+                    let rustcall_ret = #owned {
+                        ptr: rustcall_vec.as_mut_ptr(),
+                        len: rustcall_vec.len(),
+                        cap: rustcall_vec.capacity(),
+                    };
+                    ::std::mem::forget(rustcall_vec);
+                    rustcall_ret
+                }
+            }));
         } else {
-            WrapperReturn::Plain(ty.clone())
-        };
-        out.extend(generate_wrapper(WrapperSpec {
-            symbol,
-            cfg_attrs: Vec::new(),
-            receiver: None,
-            args: vec![(format_ident!("ptr"), syn::parse_quote!(*mut #handle))],
-            ret,
-            target: CallTarget::Free(syn::Path::from(helper)),
-            call_suffix: TokenStream2::new(),
-        }));
+            let ret = if is_string_type(&ty) {
+                WrapperReturn::OwnedString {
+                    helper: format_ident!("{}_RustCallOwnedString", class_name),
+                    free: format_ident!("{}_free_rust_string", class_name),
+                    declare: false,
+                }
+            } else {
+                WrapperReturn::Plain(ty.clone())
+            };
+            out.extend(generate_wrapper(WrapperSpec {
+                symbol,
+                cfg_attrs: Vec::new(),
+                receiver: None,
+                args: vec![(format_ident!("ptr"), syn::parse_quote!(*mut #handle))],
+                ret,
+                target: CallTarget::Free(syn::Path::from(helper)),
+                call_suffix: TokenStream2::new(),
+            }));
+        }
     }
     if !field.setter.is_empty() {
         let symbol = symbol_ident(&field.setter)?;
@@ -881,18 +917,37 @@ fn python_field_wrappers(
                 }).unwrap_or_else(|rustcall_py_err| panic!("PyO3 field setter failed: {}", rustcall_py_err))
             }
         });
-        out.extend(generate_wrapper(WrapperSpec {
-            symbol,
-            cfg_attrs: Vec::new(),
-            receiver: None,
-            args: vec![
-                (format_ident!("ptr"), syn::parse_quote!(*mut #handle)),
-                (format_ident!("value"), ty),
-            ],
-            ret: WrapperReturn::Unit,
-            target: CallTarget::Free(syn::Path::from(helper)),
-            call_suffix: TokenStream2::new(),
-        }));
+        if let Some(element) = &vec_element {
+            out.extend(crate::codegen::guard_struct_helper(quote! {
+                #[no_mangle]
+                pub extern "C" fn #symbol(
+                    ptr: *mut #handle,
+                    value: *const #element,
+                    len: usize,
+                ) {
+                    let value = if len == 0 {
+                        Vec::new()
+                    } else {
+                        assert!(!value.is_null(), "non-empty Vec field input has a null pointer");
+                        unsafe { ::std::slice::from_raw_parts(value, len).to_vec() }
+                    };
+                    #helper(ptr, value)
+                }
+            }));
+        } else {
+            out.extend(generate_wrapper(WrapperSpec {
+                symbol,
+                cfg_attrs: Vec::new(),
+                receiver: None,
+                args: vec![
+                    (format_ident!("ptr"), syn::parse_quote!(*mut #handle)),
+                    (format_ident!("value"), ty),
+                ],
+                ret: WrapperReturn::Unit,
+                target: CallTarget::Free(syn::Path::from(helper)),
+                call_suffix: TokenStream2::new(),
+            }));
+        }
     }
     Ok(out)
 }
@@ -1107,15 +1162,55 @@ fn python_method_wrapper(
         return Ok(quote! { #helper_item #wrapper });
     }
 
-    let attached = quote! {
-        use ::rustcall_pyo3::types::{PyAnyMethods as _, PyDictMethods as _};
-        ::rustcall_pyo3::Python::initialize();
-        ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<#extract_type> {
-            #drain(py);
-            #call_setup
-            let rustcall_result = { #call };
-            rustcall_result.extract::<#extract_type>()
-        })
+    let attached = if entry.accessor == "getter" {
+        let descriptor = if entry.python_name.is_empty() {
+            entry.name.as_str()
+        } else {
+            entry.python_name.as_str()
+        };
+        quote! {
+            use ::rustcall_pyo3::types::PyAnyMethods as _;
+            ::rustcall_pyo3::Python::initialize();
+            ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<#extract_type> {
+                #drain(py);
+                assert!(!ptr.is_null(), "null Python-owned class handle");
+                let rustcall_object = unsafe { (*ptr).object.as_ref().expect("retired Python-owned class handle") };
+                rustcall_object.bind(py).getattr(#descriptor)?.extract::<#extract_type>()
+            })
+        }
+    } else if entry.accessor == "setter" {
+        let descriptor = if entry.python_name.is_empty() {
+            entry.name.strip_prefix("set_").unwrap_or(&entry.name)
+        } else {
+            entry.python_name.as_str()
+        };
+        let Some((value, _)) = native_args.first() else {
+            return Err(skip_reason::detailed(
+                skip_reason::UNSUPPORTED_ARG,
+                &entry.name,
+            ));
+        };
+        quote! {
+            use ::rustcall_pyo3::types::PyAnyMethods as _;
+            ::rustcall_pyo3::Python::initialize();
+            ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<()> {
+                #drain(py);
+                assert!(!ptr.is_null(), "null Python-owned class handle");
+                let rustcall_object = unsafe { (*ptr).object.as_ref().expect("retired Python-owned class handle") };
+                rustcall_object.bind(py).setattr(#descriptor, #value)
+            })
+        }
+    } else {
+        quote! {
+            use ::rustcall_pyo3::types::{PyAnyMethods as _, PyDictMethods as _};
+            ::rustcall_pyo3::Python::initialize();
+            ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<#extract_type> {
+                #drain(py);
+                #call_setup
+                let rustcall_result = { #call };
+                rustcall_result.extract::<#extract_type>()
+            })
+        }
     };
     let helper_item = if entry.return_kind == ReturnKind::PyResult {
         quote! {

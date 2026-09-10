@@ -156,6 +156,9 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
     end
 
     @testset "the optional crate, with its feature on" begin
+        selected_plan = RustCall.pyo3_link_plan(
+            PYO3_OPTIONAL_CRATE; features = ["python"], default_features = false)
+        @test RustCall._resolved_pyo3_version(PYO3_OPTIONAL_CRATE, selected_plan) == "0.29.2"
         # Everything the `#[cfg_attr]`-marked crate exposes, called through the
         # wrapper. Its plan is `:link_libpython` once the feature is on, so this
         # skips where a wrapper cannot be linked.
@@ -288,12 +291,18 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                 @test inherited_result.is_ok
                 inherited = inherited_result.value
                 @test Base.invokelatest(getproperty, inherited, :value) == 37
+                @test collect(Base.invokelatest(getproperty, inherited, :samples)) == Int32[37, 11]
+                Base.invokelatest(setproperty!, inherited, :samples, Int32[1, 2, 3])
+                @test collect(Base.invokelatest(getproperty, inherited, :samples)) == Int32[1, 2, 3]
                 @test M.increment(inherited) == 74
                 @test M.increment(inherited, Int32(5)) == 79
+                @test M.doubled(inherited) == 158
+                M.set_doubled(inherited, Int32(200))
+                @test Base.invokelatest(getproperty, inherited, :value) == 100
                 default_label = M.defaulted_label(inherited)
                 explicit_label = M.defaulted_label(inherited, Int32(5))
-                @test default_label.is_ok && default_label.value == "79:37"
-                @test explicit_label.is_ok && explicit_label.value == "79:5"
+                @test default_label.is_ok && default_label.value == "100:37"
+                @test explicit_label.is_ok && explicit_label.value == "100:5"
                 Base.invokelatest(setproperty!, inherited, :value, Int32(90))
                 @test Base.invokelatest(getproperty, inherited, :value) == 90
 

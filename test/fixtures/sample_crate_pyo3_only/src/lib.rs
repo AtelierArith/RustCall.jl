@@ -254,6 +254,8 @@ pub struct BaseCounter {
 pub struct InheritedCounter {
     #[pyo3(get, set)]
     pub value: i32,
+    #[pyo3(get, set)]
+    pub samples: Vec<i32>,
 }
 
 impl Drop for InheritedCounter {
@@ -267,7 +269,13 @@ impl InheritedCounter {
     #[new]
     #[pyo3(signature = (value = private_default()))]
     pub fn new(value: i32) -> PyResult<(Self, BaseCounter)> {
-        Ok((Self { value }, BaseCounter { base: 11 }))
+        Ok((
+            Self {
+                value,
+                samples: vec![value, 11],
+            },
+            BaseCounter { base: 11 },
+        ))
     }
 
     #[pyo3(signature = (amount = private_default()))]
@@ -279,6 +287,16 @@ impl InheritedCounter {
     #[pyo3(signature = (suffix = private_default()))]
     pub fn defaulted_label(&self, suffix: i32) -> PyResult<String> {
         Ok(format!("{}:{suffix}", self.value))
+    }
+
+    #[getter]
+    pub fn doubled(&self) -> i32 {
+        self.value * 2
+    }
+
+    #[setter(doubled)]
+    pub fn set_doubled(&mut self, value: i32) {
+        self.value = value / 2;
     }
 }
 
