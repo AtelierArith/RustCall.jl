@@ -1,6 +1,39 @@
 use rustcall_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
 
 #[test]
+fn private_defaults_use_the_original_pyo3_dispatcher_at_each_arity() {
+    let scan = extract(
+        r#"
+        fn private_default() -> i32 { 37 }
+        #[pyfunction(signature = (value = private_default()))]
+        pub fn calculate(value: i32) -> i32 { value }
+        #[pyfunction(signature = (value = private_default()))]
+        pub fn render_default(value: i32) -> PyResult<String> { Ok(value.to_string()) }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let entries: Vec<_> = wrapped
+        .manifest
+        .functions
+        .iter()
+        .filter(|function| function.name == "calculate")
+        .collect();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].args.len(), 1);
+    assert_eq!(entries[1].args.len(), 0);
+    assert_eq!(entries[1].symbol, "rustcall_calculate__default_1");
+    assert!(wrapped.lib_rs.contains("rustcall_pyo3::wrap_pyfunction!"));
+    assert!(wrapped.lib_rs.contains("user_crate::calculate, py"));
+    assert!(!wrapped.lib_rs.contains("private_default()"));
+    assert!(wrapped.lib_rs.contains("pub struct CResult_render_default"));
+    assert!(wrapped
+        .lib_rs
+        .contains("pub struct CResult_render_default__default_1"));
+}
+
+#[test]
 fn string_setters_use_the_shared_byte_pair_abi() {
     for access in ["set", "get, set"] {
         let scan = extract(
@@ -161,7 +194,7 @@ fn py_result_self_is_an_owned_pointer_payload() {
 }
 
 #[test]
-fn inheritance_constructor_tuple_is_not_boxed_as_the_child() {
+fn inheritance_constructor_tuple_becomes_a_python_owned_handle() {
     let scan = extract(
         r#"
         #[pyclass]
@@ -172,6 +205,8 @@ fn inheritance_constructor_tuple_is_not_boxed_as_the_child() {
         impl Child {
             #[new]
             pub fn new() -> PyResult<(Self, Base)> { Ok((Self, Base)) }
+            #[pyo3(signature = (value = 1))]
+            pub fn replacement(&self, value: i32) -> PyResult<Self> { let _ = value; Ok(Self) }
         }
         "#,
         Mode::Crate,
@@ -189,7 +224,35 @@ fn inheritance_constructor_tuple_is_not_boxed_as_the_child() {
         .find(|method| method.name == "new")
         .unwrap();
     assert!(method.is_constructor);
-    assert!(!method.returns_boxed_struct);
-    assert_eq!(method.skip_reason, "py_result_payload:(Self, Base)");
-    assert!(!wrapped.lib_rs.contains("fn rustcall_Child_new"));
+    assert!(method.returns_boxed_struct);
+    assert!(method.skip_reason.is_empty());
+    assert_eq!(method.err_type, "i32");
+    assert!(wrapped.lib_rs.contains("struct Child_RustCallPythonHandle"));
+    assert!(wrapped.lib_rs.contains("fn rustcall_Child_new"));
+    assert!(wrapped.lib_rs.contains("pub struct CResult_Child_new"));
+    assert!(wrapped
+        .lib_rs
+        .contains("py.get_type::<user_crate::Child>()"));
+    assert!(!wrapped.lib_rs.contains("Box::new((Self, Base))"));
+    let replacement = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "Child")
+        .unwrap()
+        .methods
+        .iter()
+        .find(|method| method.name == "replacement")
+        .unwrap();
+    assert!(replacement.returns_boxed_struct);
+    assert!(replacement.skip_reason.is_empty());
+    assert!(wrapped
+        .lib_rs
+        .contains("object: Some(rustcall_object.unbind())"));
+    assert!(wrapped
+        .lib_rs
+        .contains("ok_value: ::std::mem::MaybeUninit<*mut Child_RustCallPythonHandle>"));
+    assert!(wrapped
+        .lib_rs
+        .contains("pub struct CResult_Child_replacement__default_1"));
 }

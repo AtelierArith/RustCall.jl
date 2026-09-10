@@ -1,8 +1,9 @@
 //! Attribute inspection helpers (`#[julia]`, `#[derive(JuliaStruct)]`, and the
 //! PyO3 entry-point attributes scanned by #275).
 
+use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
-use syn::{Attribute, Expr, Lit, Meta, Token, Visibility};
+use syn::{parenthesized, Attribute, Expr, Ident, Lit, Meta, Token, Visibility};
 
 use crate::manifest::Attribute as ManifestAttribute;
 
@@ -192,9 +193,15 @@ pub struct Pyo3ClassOptions {
     /// `frozen`: the class is immutable from Python, so no setters at all —
     /// it overrides `set_all` and a field's own `set`.
     pub frozen: bool,
+    /// Rust base type named by `extends = ...`, preserving its path spelling.
+    pub extends: String,
+    /// The remaining options which change the Python object layout or type.
+    pub subclass: bool,
+    pub dict: bool,
+    pub weakref: bool,
 }
 
-/// Read `#[pyclass(get_all, set_all, frozen)]`.
+/// Read the class-shape options of `#[pyclass(...)]`.
 ///
 /// `get_all` / `set_all` expose fields *without* a per-field `#[pyo3(get, set)]`,
 /// so a scan that only looked at field attributes would drop them — including
@@ -214,11 +221,147 @@ pub fn pyo3_class_options(attrs: &[Attribute]) -> Pyo3ClassOptions {
                 options.set_all = true;
             } else if nested.path.is_ident("frozen") {
                 options.frozen = true;
+            } else if nested.path.is_ident("extends") {
+                if let Ok(value) = nested.value() {
+                    if let Ok(path) = value.parse::<syn::Path>() {
+                        options.extends = quote::quote!(#path).to_string().replace(' ', "");
+                    }
+                }
+            } else if nested.path.is_ident("subclass") {
+                options.subclass = true;
+            } else if nested.path.is_ident("dict") {
+                options.dict = true;
+            } else if nested.path.is_ident("weakref") {
+                options.weakref = true;
             }
             Ok(())
         });
     }
     options
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pyo3ParameterKind {
+    PositionalOnly,
+    PositionalOrKeyword,
+    KeywordOnly,
+    VarArgs,
+    KwArgs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pyo3Parameter {
+    pub name: String,
+    pub default: String,
+    pub kind: Pyo3ParameterKind,
+}
+
+#[derive(Default)]
+struct ParsedPyo3Signature {
+    parameters: Vec<Pyo3Parameter>,
+}
+
+impl Parse for ParsedPyo3Signature {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut parameters: Vec<Pyo3Parameter> = Vec::new();
+        let mut keyword_only = false;
+        while !input.is_empty() {
+            if input.peek(Token![/]) {
+                input.parse::<Token![/]>()?;
+                for parameter in &mut parameters {
+                    if parameter.kind == Pyo3ParameterKind::PositionalOrKeyword {
+                        parameter.kind = Pyo3ParameterKind::PositionalOnly;
+                    }
+                }
+            } else if input.peek(Token![*]) {
+                input.parse::<Token![*]>()?;
+                if input.peek(Token![*]) {
+                    input.parse::<Token![*]>()?;
+                    let name: Ident = input.parse()?;
+                    parameters.push(Pyo3Parameter {
+                        name: name.to_string(),
+                        default: String::new(),
+                        kind: Pyo3ParameterKind::KwArgs,
+                    });
+                } else if input.peek(Ident) {
+                    let name: Ident = input.parse()?;
+                    parameters.push(Pyo3Parameter {
+                        name: name.to_string(),
+                        default: String::new(),
+                        kind: Pyo3ParameterKind::VarArgs,
+                    });
+                    keyword_only = true;
+                } else {
+                    keyword_only = true;
+                }
+            } else {
+                let name: Ident = input.parse()?;
+                let default = if input.peek(Token![=]) {
+                    input.parse::<Token![=]>()?;
+                    let expr: Expr = input.parse()?;
+                    quote::quote!(#expr).to_string()
+                } else {
+                    String::new()
+                };
+                parameters.push(Pyo3Parameter {
+                    name: name.to_string(),
+                    default,
+                    kind: if keyword_only {
+                        Pyo3ParameterKind::KeywordOnly
+                    } else {
+                        Pyo3ParameterKind::PositionalOrKeyword
+                    },
+                });
+            }
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            } else if !input.is_empty() {
+                return Err(input.error("expected `,` in PyO3 signature"));
+            }
+        }
+        Ok(Self { parameters })
+    }
+}
+
+/// Structured Python call signature from `#[pyo3(signature = (...))]`, the
+/// equivalent option nested in `#[pyfunction(...)]`, or legacy `#[args(...)]`.
+pub fn pyo3_signature(attrs: &[Attribute]) -> syn::Result<Option<Vec<Pyo3Parameter>>> {
+    for meta in effective_metas(attrs) {
+        let Some(name) = pyo3_path_name(&meta) else {
+            continue;
+        };
+        if name == "args" {
+            if let Meta::List(list) = meta {
+                return syn::parse2::<ParsedPyo3Signature>(list.tokens)
+                    .map(|signature| Some(signature.parameters));
+            }
+        }
+        if !matches!(name.as_str(), "pyo3" | "pyfunction") {
+            continue;
+        }
+        let Meta::List(list) = meta else { continue };
+        let mut found = None;
+        list.parse_nested_meta(|nested| {
+            if nested.path.is_ident("signature") {
+                let value = nested.value()?;
+                let content;
+                parenthesized!(content in value);
+                found = Some(content.parse::<ParsedPyo3Signature>()?.parameters);
+            } else if nested.input.peek(Token![=]) {
+                let value = nested.value()?;
+                let _: Expr = value.parse()?;
+            } else if nested.input.peek(syn::token::Paren) {
+                let content;
+                parenthesized!(content in nested.input);
+                let _: proc_macro2::TokenStream = content.parse()?;
+            }
+            Ok(())
+        })?;
+        if found.is_some() {
+            return Ok(found);
+        }
+    }
+    Ok(None)
 }
 
 /// How a `#[pyclass]` field is exposed: `#[pyo3(get)]`, `#[pyo3(get, set)]`,
@@ -403,5 +546,47 @@ mod tests {
         let neither = attrs_of("#[inline] fn f() {}");
         assert!(!julia_owns_entry_point(&neither));
         assert!(!pyo3_scan_selects(&neither));
+    }
+
+    #[test]
+    fn pyclass_object_shape_options_are_structured() {
+        let item: syn::ItemStruct = syn::parse_str(
+            "#[pyclass(extends = crate::base::Base, subclass, dict, weakref, get_all, frozen)] struct Child {}",
+        )
+        .unwrap();
+        let options = pyo3_class_options(&item.attrs);
+        assert_eq!(options.extends, "crate::base::Base");
+        assert!(options.subclass);
+        assert!(options.dict);
+        assert!(options.weakref);
+        assert!(options.get_all);
+        assert!(options.frozen);
+        assert!(!options.set_all);
+    }
+
+    #[test]
+    fn pyo3_call_signatures_preserve_defaults_and_parameter_kinds() {
+        let attrs = attrs_of(
+            "#[pyfunction(signature = (a, b = private_default(), /, c = 3, *, d = Some(4)))] fn f(a:i32,b:i32,c:i32,d:Option<i32>) {}",
+        );
+        let parameters = pyo3_signature(&attrs).unwrap().unwrap();
+        assert_eq!(parameters.len(), 4);
+        assert_eq!(parameters[0].kind, Pyo3ParameterKind::PositionalOnly);
+        assert_eq!(parameters[1].default.replace(' ', ""), "private_default()");
+        assert_eq!(parameters[2].kind, Pyo3ParameterKind::PositionalOrKeyword);
+        assert_eq!(parameters[3].kind, Pyo3ParameterKind::KeywordOnly);
+        assert_eq!(parameters[3].default.replace(' ', ""), "Some(4)");
+
+        let attrs = attrs_of("#[pyo3(signature = (*args, **kwargs))] fn f() {}");
+        let parameters = pyo3_signature(&attrs).unwrap().unwrap();
+        assert_eq!(parameters[0].kind, Pyo3ParameterKind::VarArgs);
+        assert_eq!(parameters[1].kind, Pyo3ParameterKind::KwArgs);
+
+        let attrs = attrs_of(
+            "#[pyfunction(name = \"renamed\", signature = (value = 1), text_signature = \"(value=1)\")] fn f(value:i32) {}",
+        );
+        let parameters = pyo3_signature(&attrs).unwrap().unwrap();
+        assert_eq!(parameters[0].name, "value");
+        assert_eq!(parameters[0].default, "1");
     }
 }

@@ -52,7 +52,7 @@ to select an owned buffer, and `PyResult<Self>` carries an owned class pointer;
 a schema-10 consumer would decode either aggregate with the wrong slot type
 (#303).
 """
-const MANIFEST_SCHEMA_VERSION = 11
+const MANIFEST_SCHEMA_VERSION = 12
 
 """
     ExtractorError <: Exception
@@ -1171,6 +1171,8 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             has_owned_string_helper = _mbool(f, "has_owned_string_helper"),
             has_borrowed_string_helper = _mbool(f, "has_borrowed_string_helper"),
             arg_abis = String[_mstr(a, "abi") for a in args],
+            python_defaults = String[_mstr(a, "python_default") for a in args],
+            python_kinds = String[_mstr(a, "python_kind") for a in args],
             return_abi = _mstr(f, "return_abi"),
             vis = _mstr(f, "vis"),
             skip_reason = _mstr(f, "skip_reason"),
@@ -1194,6 +1196,8 @@ function _manifest_method(m)
         is_constructor = _mbool(m, "is_constructor"),
         generic_wrapper = _mstr(m, "generic_wrapper"),
         arg_abis = String[_mstr(a, "abi") for a in args],
+        python_defaults = String[_mstr(a, "python_default") for a in args],
+        python_kinds = String[_mstr(a, "python_kind") for a in args],
         return_abi = _mstr(m, "return_abi"),
         returns_boxed_struct = _mbool(m, "returns_boxed_struct"),
         vis = _mstr(m, "vis"),
@@ -1290,6 +1294,8 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             vis = _mstr(s, "vis"),
             skip_reason = _mstr(s, "skip_reason"),
             python_name = _mstr(s, "python_name"),
+            pyo3_extends = _mstr(s, "pyo3_extends"),
+            pyo3_options = String[String(o) for o in _mvec(s, "pyo3_options")],
             cfg_features = String[String(c) for c in _mvec(s, "cfg_features")],
             ffi_name = _ffi_name_of(s),
         ))

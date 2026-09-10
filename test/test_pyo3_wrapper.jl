@@ -273,6 +273,44 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             # Free functions, including the string ABI.
             @test M.add(Int32(2), Int32(3)) == 5
             @test M.shout("hello") == "HELLO!"
+            # Omission runs PyO3's original dispatcher, so the private Rust
+            # helper is evaluated in the target module rather than copied into
+            # the generated wrapper crate.
+            @test M.defaulted() == 37
+            @test M.defaulted(Int32(9)) == 9
+            default_result = M.defaulted_result()
+            explicit_result = M.defaulted_result(Int32(9))
+            @test default_result.is_ok && default_result.value == "defaulted:37"
+            @test explicit_result.is_ok && explicit_result.value == "defaulted:9"
+
+            @testset "Python-owned inheritance and defaulted mutation (#303)" begin
+                inherited_result = Base.invokelatest(M.InheritedCounter)
+                @test inherited_result.is_ok
+                inherited = inherited_result.value
+                @test Base.invokelatest(getproperty, inherited, :value) == 37
+                @test M.increment(inherited) == 74
+                @test M.increment(inherited, Int32(5)) == 79
+                default_label = M.defaulted_label(inherited)
+                explicit_label = M.defaulted_label(inherited, Int32(5))
+                @test default_label.is_ok && default_label.value == "79:37"
+                @test explicit_label.is_ok && explicit_label.value == "79:5"
+                Base.invokelatest(setproperty!, inherited, :value, Int32(90))
+                @test Base.invokelatest(getproperty, inherited, :value) == 90
+
+                before = M.dropped_inherited()
+                finalize(inherited)
+                # The finalizer only atomically retires its preallocated node;
+                # a pinned background safe point attaches to Python and drops
+                # the object. It must happen exactly once.
+                for _ in 1:100
+                    M.dropped_inherited() == before + 1 && break
+                    sleep(0.01)
+                end
+                @test M.dropped_inherited() == before + 1
+                finalize(inherited)
+                sleep(0.05)
+                @test M.dropped_inherited() == before + 1
+            end
 
             # `PyResult<T>` -> `RustResult{T, String}`; the error is opaque and
             # never rendered from the `PyErr`.

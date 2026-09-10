@@ -119,7 +119,13 @@ use serde::{Deserialize, Serialize};
 ///   payload, and a class-valued `PyResult<Self>` stores an owned pointer in
 ///   the success slot. A schema-10 consumer ignores those shapes and would
 ///   decode the aggregate with the wrong field type.
-pub const SCHEMA_VERSION: u32 = 11;
+/// * **12** records PyO3 class object shape (`extends`, `subclass`, `dict`,
+///   `weakref`) and each argument's Python parameter kind/default expression,
+///   so wrapper generation can select Python-owned dispatch without reparsing
+///   Rust attributes. Default expressions remain diagnostic manifest data;
+///   generated wrappers ask PyO3's in-crate dispatcher to evaluate them in
+///   their original lexical scope.
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -292,6 +298,15 @@ pub struct Arg {
     /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed).
     #[serde(default)]
     pub abi: String,
+    /// Rust expression from `#[pyo3(signature = (...))]` / `#[args(...)]`.
+    /// It is never evaluated by a manifest consumer; an empty value means the
+    /// Python argument is required.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub python_default: String,
+    /// `positional_only`, `positional_or_keyword`, `keyword_only`, `var_args`
+    /// or `kw_args`; empty outside a declared PyO3 signature.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub python_kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -632,6 +647,14 @@ pub struct Struct {
     /// empty when it is the Rust name or the item is not a PyO3 one (#275).
     #[serde(default)]
     pub python_name: String,
+    /// Base type named by `#[pyclass(extends = ...)]`; empty for ordinary
+    /// classes and non-PyO3 structs. This selects a Python-owned handle.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub pyo3_extends: String,
+    /// Object-shape flags from `#[pyclass(...)]` (`subclass`, `dict`,
+    /// `weakref`). They are data for the wrapper, not inferred from docs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pyo3_options: Vec<String>,
 
     /// `#[cfg(...)]` predicate of the struct item, see [`Function::cfg`].
     #[serde(default)]

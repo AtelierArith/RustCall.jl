@@ -459,6 +459,8 @@ fn function_entry(func: &ItemFn, module_path: &[String]) -> Function {
                 },
                 rust_type: type_to_string(&pt.ty),
                 abi: crate::extract::arg_abi(&pt.ty).to_string(),
+                python_default: String::new(),
+                python_kind: String::new(),
             }),
             syn::FnArg::Receiver(_) => None,
         })

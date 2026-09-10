@@ -137,10 +137,10 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
             out.functions.push(entry);
             continue;
         }
-        match function_wrapper(&krate, &entry) {
+        match function_wrappers(&krate, &entry) {
             Ok((tokens, updated)) => {
                 items.extend(tokens);
-                out.functions.push(updated);
+                out.functions.extend(updated);
             }
             Err(reason) => {
                 entry.skip_reason = reason;
@@ -282,6 +282,187 @@ fn function_wrapper(
     Ok((tokens, updated))
 }
 
+/// Generate the direct wrapper, or one Python-dispatched wrapper per callable
+/// positional arity when PyO3 owns default expressions. Calling the generated
+/// PyO3 dispatcher is essential: a default may name a private helper in the
+/// target module, so copying its Rust expression into this external crate
+/// would change scope (or fail to compile).
+fn function_wrappers(
+    krate: &Ident,
+    f: &crate::manifest::Function,
+) -> Result<(TokenStream2, Vec<crate::manifest::Function>), String> {
+    let defaults = trailing_default_count(&f.args);
+    let has_defaults = f.args.iter().any(|arg| !arg.python_default.is_empty());
+    if !has_defaults {
+        let (tokens, entry) = function_wrapper(krate, f)?;
+        return Ok((tokens, vec![entry]));
+    }
+
+    let mut tokens = TokenStream2::new();
+    let mut entries = Vec::new();
+    for omitted in 0..=defaults {
+        let mut entry = f.clone();
+        entry.args.truncate(f.args.len() - omitted);
+        if omitted > 0 {
+            entry.symbol = format!("{}__default_{omitted}", f.symbol);
+            entry.ffi_name = format!("{}__default_{omitted}", f.ffi_name);
+        }
+        let (generated, updated) = python_function_wrapper(krate, &entry, f)?;
+        tokens.extend(generated);
+        entries.push(updated);
+    }
+    Ok((tokens, entries))
+}
+
+fn trailing_default_count(args: &[Arg]) -> usize {
+    args.iter()
+        .rev()
+        .take_while(|arg| !arg.python_default.is_empty())
+        .count()
+}
+
+fn python_function_wrapper(
+    krate: &Ident,
+    entry: &crate::manifest::Function,
+    original: &crate::manifest::Function,
+) -> Result<(TokenStream2, crate::manifest::Function), String> {
+    // A Python call unwraps a Rust `Result<T, E>` into either a Python value
+    // or an exception, so it cannot be extracted back into the original Rust
+    // result type. `PyResult<T>` has a dedicated lowering below; ordinary
+    // `Result` defaults are refused instead of silently changing their ABI.
+    if entry.return_kind == ReturnKind::Result {
+        return Err(skip_reason::detailed(
+            skip_reason::UNSUPPORTED_RETURN,
+            &entry.return_type,
+        ));
+    }
+    let args = wrapper_args(&entry.args)?;
+    let symbol = symbol_ident(&entry.symbol)?;
+    let owner = format_ident!("{}", entry.ffi_name);
+    let plan = return_plan(
+        &owner,
+        &entry.return_type,
+        entry.return_kind,
+        &entry.ok_type,
+        &entry.err_type,
+        &entry.inner_type,
+        None,
+        true,
+        has_string_args(&entry.args),
+    )?;
+    let helper = format_ident!("__rustcall_python_dispatch_{}", entry.ffi_name);
+    let target = callable_path(
+        krate,
+        &original.callable_path,
+        &original.module_path,
+        &original.name,
+    );
+    let helper_item = python_dispatch_helper(&helper, &target, &args, entry, original)?;
+    let wrapper = generate_wrapper(WrapperSpec {
+        symbol,
+        cfg_attrs: Vec::new(),
+        receiver: None,
+        args,
+        ret: plan.ret,
+        target: CallTarget::Free(syn::Path::from(helper)),
+        call_suffix: plan.call_suffix,
+    });
+
+    let mut updated = entry.clone();
+    updated.exported = true;
+    updated.return_abi = plan.return_abi.to_string();
+    updated.ok_abi = plan.ok_abi.to_string();
+    updated.has_owned_string_helper = plan.return_abi == "string" || plan.ok_abi == "string";
+    updated.has_borrowed_string_helper = plan.return_abi == "str";
+    if plan.err_slot {
+        updated.err_type = PYERR_SLOT.to_string();
+    }
+    Ok((quote! { #helper_item #wrapper }, updated))
+}
+
+fn python_dispatch_helper(
+    helper: &Ident,
+    target: &syn::Path,
+    args: &[(Ident, Type)],
+    entry: &crate::manifest::Function,
+    original: &crate::manifest::Function,
+) -> Result<TokenStream2, String> {
+    let declarations = args.iter().map(|(name, ty)| quote! { #name: #ty });
+    let positional: Vec<_> = args
+        .iter()
+        .filter(|(name, _)| python_kind(original, name) != "keyword_only")
+        .map(|(name, _)| name)
+        .collect();
+    let keywords: Vec<_> = args
+        .iter()
+        .filter(|(name, _)| python_kind(original, name) == "keyword_only")
+        .map(|(name, _)| {
+            let key = name.to_string();
+            quote! { rustcall_kwargs.set_item(#key, #name)?; }
+        })
+        .collect();
+    let invoke = if keywords.is_empty() {
+        quote! { rustcall_callable.call1((#(#positional,)*))? }
+    } else {
+        quote! {
+            {
+                let rustcall_kwargs = ::rustcall_pyo3::types::PyDict::new(py);
+                #(#keywords)*
+                rustcall_callable.call((#(#positional,)*), Some(&rustcall_kwargs))?
+            }
+        }
+    };
+    let extract_type = python_extract_type(entry)?;
+    let attached = quote! {
+        use ::rustcall_pyo3::types::{PyAnyMethods as _, PyDictMethods as _};
+        ::rustcall_pyo3::Python::initialize();
+        ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<#extract_type> {
+            let rustcall_callable = ::rustcall_pyo3::wrap_pyfunction!(#target, py)?;
+            #invoke.extract::<#extract_type>()
+        })
+    };
+    if entry.return_kind == ReturnKind::PyResult {
+        Ok(quote! {
+            fn #helper(#(#declarations),*) -> ::rustcall_pyo3::PyResult<#extract_type> { #attached }
+        })
+    } else {
+        let return_type: Type = syn::parse_str(&entry.return_type).map_err(|_| {
+            skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, &entry.return_type)
+        })?;
+        Ok(quote! {
+            fn #helper(#(#declarations),*) -> #return_type {
+                #attached.unwrap_or_else(|rustcall_py_err| {
+                    panic!("PyO3 dispatcher failed: {}", rustcall_py_err)
+                })
+            }
+        })
+    }
+}
+
+fn python_kind<'a>(f: &'a crate::manifest::Function, name: &Ident) -> &'a str {
+    f.args
+        .iter()
+        .find(|arg| *name == arg.name)
+        .map(|arg| arg.python_kind.as_str())
+        .unwrap_or("")
+}
+
+fn python_extract_type(f: &crate::manifest::Function) -> Result<Type, String> {
+    let spelling = if f.return_kind == ReturnKind::PyResult {
+        if f.ok_type.is_empty() {
+            "()"
+        } else {
+            &f.ok_type
+        }
+    } else if f.return_kind == ReturnKind::Unit {
+        "()"
+    } else {
+        &f.return_type
+    };
+    syn::parse_str(spelling)
+        .map_err(|_| skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, spelling))
+}
+
 // ============================================================================
 // `#[pyclass]` handles
 // ============================================================================
@@ -297,6 +478,9 @@ fn function_wrapper(
 /// the build the wrapper is compiled against may not have it, and a call to a
 /// missing member is a compile error in generated code (#307 review).
 fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStream2 {
+    if python_owned_class(s) {
+        return python_class_wrappers(krate, s, cfg_resolved);
+    }
     let class = callable_path(krate, &s.callable_path, &s.module_path, &s.name);
     let mut out = TokenStream2::new();
 
@@ -472,6 +656,578 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
         }
     }
     out
+}
+
+fn python_owned_class(s: &Struct) -> bool {
+    !s.pyo3_extends.is_empty()
+        || s.methods
+            .iter()
+            .flat_map(|method| &method.args)
+            .any(|arg| !arg.python_default.is_empty())
+}
+
+/// A class whose Python object owns state beyond the Rust `Self` value. This
+/// covers inheritance initializers `(Self, Base)` and methods whose defaults
+/// are evaluated by PyO3. Julia's pointer names a preallocated queue node
+/// holding `Py<PyAny>`; the destructor only publishes that node atomically.
+fn python_class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStream2 {
+    let class = callable_path(krate, &s.callable_path, &s.module_path, &s.name);
+    let handle = format_ident!("{}_RustCallPythonHandle", s.ffi_name);
+    let pending = format_ident!("__RUSTCALL_PENDING_{}", s.ffi_name.to_uppercase());
+    let drain = format_ident!("__rustcall_drain_{}", s.ffi_name);
+    let start_drain = format_ident!("__rustcall_start_drain_{}", s.ffi_name);
+    let drain_started = format_ident!("__RUSTCALL_DRAIN_STARTED_{}", s.ffi_name.to_uppercase());
+    let free = format_ident!("{}_free", s.ffi_name);
+    let mut out = quote! {
+        struct #handle {
+            object: ::std::option::Option<::rustcall_pyo3::Py<::rustcall_pyo3::PyAny>>,
+            next: *mut #handle,
+        }
+        static #pending: ::std::sync::atomic::AtomicPtr<#handle> =
+            ::std::sync::atomic::AtomicPtr::new(::std::ptr::null_mut());
+        static #drain_started: ::std::sync::atomic::AtomicBool =
+            ::std::sync::atomic::AtomicBool::new(false);
+
+        fn #drain(_py: ::rustcall_pyo3::Python<'_>) {
+            let mut rustcall_node = #pending.swap(
+                ::std::ptr::null_mut(),
+                ::std::sync::atomic::Ordering::Acquire,
+            );
+            while !rustcall_node.is_null() {
+                let mut rustcall_box = unsafe { Box::from_raw(rustcall_node) };
+                rustcall_node = rustcall_box.next;
+                ::std::mem::drop(rustcall_box.object.take());
+            }
+        }
+
+        fn #start_drain() {
+            if #drain_started.compare_exchange(
+                false,
+                true,
+                ::std::sync::atomic::Ordering::AcqRel,
+                ::std::sync::atomic::Ordering::Acquire,
+            ).is_ok() {
+                ::std::thread::spawn(|| loop {
+                    ::std::thread::park_timeout(::std::time::Duration::from_millis(25));
+                    ::rustcall_pyo3::Python::attach(|py| #drain(py));
+                });
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn #free(ptr: *mut #handle) {
+            if ptr.is_null() { return; }
+            let mut rustcall_head = #pending.load(::std::sync::atomic::Ordering::Relaxed);
+            loop {
+                unsafe { (*ptr).next = rustcall_head; }
+                match #pending.compare_exchange_weak(
+                    rustcall_head,
+                    ptr,
+                    ::std::sync::atomic::Ordering::Release,
+                    ::std::sync::atomic::Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(rustcall_actual) => rustcall_head = rustcall_actual,
+                }
+            }
+        }
+    };
+
+    let needs_owned = s.fields.iter().any(|field| {
+        !field.getter.is_empty()
+            && syn::parse_str::<Type>(&field.rust_type).is_ok_and(|ty| is_string_type(&ty))
+    });
+    if needs_owned {
+        out.extend(owned_string_helper_items(
+            &format_ident!("{}_RustCallOwnedString", s.ffi_name),
+            &format_ident!("{}_free_rust_string", s.ffi_name),
+        ));
+    }
+
+    for field in &mut s.fields {
+        if cfg_refusal(&field.cfg, cfg_resolved).is_some() {
+            field.ffi_compatible = false;
+            field.getter.clear();
+            field.setter.clear();
+            field.free_symbol.clear();
+            continue;
+        }
+        match python_field_wrappers(&handle, &drain, field, &s.ffi_name) {
+            Ok(tokens) => out.extend(tokens),
+            Err(_) => {
+                field.ffi_compatible = false;
+                field.getter.clear();
+                field.setter.clear();
+                field.free_symbol.clear();
+            }
+        }
+    }
+    s.has_owned_string_helper = needs_owned;
+    s.has_borrowed_string_helper = false;
+    s.has_clone = false;
+
+    let originals = s.methods.clone();
+    s.methods.clear();
+    for original in originals {
+        if !original.skip_reason.is_empty() {
+            s.methods.push(original);
+            continue;
+        }
+        if let Some(reason) = cfg_refusal(&original.cfg, cfg_resolved) {
+            let mut refused = original;
+            refused.skip_reason = reason;
+            s.methods.push(refused);
+            continue;
+        }
+        let defaults = trailing_default_count(&original.args);
+        for omitted in 0..=defaults {
+            let mut entry = original.clone();
+            entry.args.truncate(original.args.len() - omitted);
+            if omitted > 0 {
+                entry.symbol = format!("{}__default_{omitted}", original.symbol);
+            }
+            match python_method_wrapper(
+                &class,
+                &handle,
+                &drain,
+                &start_drain,
+                &s.ffi_name,
+                &mut entry,
+                &original,
+            ) {
+                Ok(tokens) => {
+                    out.extend(tokens);
+                    s.methods.push(entry);
+                }
+                Err(reason) => {
+                    entry.skip_reason = reason;
+                    s.methods.push(entry);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn python_field_wrappers(
+    handle: &Ident,
+    drain: &Ident,
+    field: &mut crate::manifest::Field,
+    class_name: &str,
+) -> Result<TokenStream2, String> {
+    if !field.ffi_compatible {
+        return Ok(TokenStream2::new());
+    }
+    let ty: Type = syn::parse_str(&field.rust_type)
+        .map_err(|_| skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, &field.rust_type))?;
+    if !(is_ffi_compatible_type(&ty) || is_string_type(&ty)) {
+        return Err(skip_reason::detailed(
+            skip_reason::UNSUPPORTED_RETURN,
+            &field.rust_type,
+        ));
+    }
+    let python_name = if field.python_name.is_empty() {
+        field.name.clone()
+    } else {
+        field.python_name.clone()
+    };
+    let mut out = TokenStream2::new();
+    if !field.getter.is_empty() {
+        let symbol = symbol_ident(&field.getter)?;
+        let helper = format_ident!("__rustcall_python_{}_get_{}", class_name, field.name);
+        out.extend(quote! {
+            fn #helper(ptr: *mut #handle) -> #ty {
+                use ::rustcall_pyo3::types::PyAnyMethods as _;
+                ::rustcall_pyo3::Python::initialize();
+                ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<#ty> {
+                    #drain(py);
+                    assert!(!ptr.is_null(), "null Python-owned class handle");
+                    let rustcall_object = unsafe { (*ptr).object.as_ref().expect("retired Python-owned class handle") };
+                    rustcall_object.bind(py).getattr(#python_name)?.extract::<#ty>()
+                }).unwrap_or_else(|rustcall_py_err| panic!("PyO3 field getter failed: {}", rustcall_py_err))
+            }
+        });
+        let ret = if is_string_type(&ty) {
+            WrapperReturn::OwnedString {
+                helper: format_ident!("{}_RustCallOwnedString", class_name),
+                free: format_ident!("{}_free_rust_string", class_name),
+                declare: false,
+            }
+        } else {
+            WrapperReturn::Plain(ty.clone())
+        };
+        out.extend(generate_wrapper(WrapperSpec {
+            symbol,
+            cfg_attrs: Vec::new(),
+            receiver: None,
+            args: vec![(format_ident!("ptr"), syn::parse_quote!(*mut #handle))],
+            ret,
+            target: CallTarget::Free(syn::Path::from(helper)),
+            call_suffix: TokenStream2::new(),
+        }));
+    }
+    if !field.setter.is_empty() {
+        let symbol = symbol_ident(&field.setter)?;
+        let helper = format_ident!("__rustcall_python_{}_set_{}", class_name, field.name);
+        out.extend(quote! {
+            fn #helper(ptr: *mut #handle, value: #ty) {
+                use ::rustcall_pyo3::types::PyAnyMethods as _;
+                ::rustcall_pyo3::Python::initialize();
+                ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<()> {
+                    #drain(py);
+                    assert!(!ptr.is_null(), "null Python-owned class handle");
+                    let rustcall_object = unsafe { (*ptr).object.as_ref().expect("retired Python-owned class handle") };
+                    rustcall_object.bind(py).setattr(#python_name, value)
+                }).unwrap_or_else(|rustcall_py_err| panic!("PyO3 field setter failed: {}", rustcall_py_err))
+            }
+        });
+        out.extend(generate_wrapper(WrapperSpec {
+            symbol,
+            cfg_attrs: Vec::new(),
+            receiver: None,
+            args: vec![
+                (format_ident!("ptr"), syn::parse_quote!(*mut #handle)),
+                (format_ident!("value"), ty),
+            ],
+            ret: WrapperReturn::Unit,
+            target: CallTarget::Free(syn::Path::from(helper)),
+            call_suffix: TokenStream2::new(),
+        }));
+    }
+    Ok(out)
+}
+
+fn python_method_wrapper(
+    class: &syn::Path,
+    handle: &Ident,
+    drain: &Ident,
+    start_drain: &Ident,
+    class_name: &str,
+    entry: &mut Method,
+    original: &Method,
+) -> Result<TokenStream2, String> {
+    let native_args = wrapper_args(&entry.args)?;
+    let symbol = symbol_ident(&entry.symbol)?;
+    let helper = format_ident!(
+        "__rustcall_python_{}_{}{}",
+        class_name,
+        entry.name,
+        if entry.args.len() == original.args.len() {
+            String::new()
+        } else {
+            format!("_default_{}", original.args.len() - entry.args.len())
+        }
+    );
+    let declarations: Vec<_> = native_args
+        .iter()
+        .map(|(name, ty)| quote! { #name: #ty })
+        .collect();
+    let (call_setup, positional_args, keyword_args) =
+        python_call_arguments(&native_args, &original.args);
+    let python_name = if original.python_name.is_empty() {
+        original.name.clone()
+    } else {
+        original.python_name.clone()
+    };
+    let omitted = original.args.len() - entry.args.len();
+    let mut owner_name = crate::codegen::method_string_owner(class_name, &entry.name);
+    if omitted > 0 {
+        owner_name.push_str(&format!("__default_{omitted}"));
+    }
+
+    if entry.is_constructor {
+        let attached = quote! {
+            use ::rustcall_pyo3::types::{PyAnyMethods as _, PyDictMethods as _};
+            ::rustcall_pyo3::Python::initialize();
+            #start_drain();
+            ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<*mut #handle> {
+                #drain(py);
+                #call_setup
+                let rustcall_class = py.get_type::<#class>();
+                let rustcall_object = rustcall_class.call(#positional_args, #keyword_args)?;
+                Ok(Box::into_raw(Box::new(#handle {
+                    object: Some(rustcall_object.unbind()),
+                    next: ::std::ptr::null_mut(),
+                })))
+            })
+        };
+        let (helper_item, ret, call_suffix) = if entry.return_kind == ReturnKind::PyResult {
+            let aggregate = format_ident!("CResult_{}", owner_name);
+            let pointer: Type = syn::parse_quote!(*mut #handle);
+            let error: Type = syn::parse_str(PYERR_SLOT).expect("i32 parses");
+            (
+                quote! {
+                    fn #helper(#(#declarations),*) -> ::rustcall_pyo3::PyResult<*mut #handle> {
+                        #attached
+                    }
+                },
+                WrapperReturn::CResult {
+                    name: aggregate,
+                    ok: WrapperPayload::Plain(pointer),
+                    err: WrapperPayload::Plain(error),
+                },
+                quote! {
+                    .map_err(|rustcall_py_err| {
+                        ::std::mem::drop(rustcall_py_err);
+                        #PYERR_CODE
+                    })
+                },
+            )
+        } else {
+            (
+                quote! {
+                    fn #helper(#(#declarations),*) -> *mut #handle {
+                        #attached.unwrap_or_else(|rustcall_py_err| {
+                            panic!("PyO3 constructor failed: {}", rustcall_py_err)
+                        })
+                    }
+                },
+                WrapperReturn::Plain(syn::parse_quote!(*mut #handle)),
+                TokenStream2::new(),
+            )
+        };
+        let wrapper = generate_wrapper(WrapperSpec {
+            symbol,
+            cfg_attrs: Vec::new(),
+            receiver: None,
+            args: native_args,
+            ret,
+            target: CallTarget::Free(syn::Path::from(helper)),
+            call_suffix,
+        });
+        entry.returns_boxed_struct = true;
+        entry.return_abi.clear();
+        entry.ok_abi.clear();
+        entry.err_abi.clear();
+        entry.string_owner = owner_name;
+        if entry.return_kind == ReturnKind::PyResult {
+            entry.err_type = PYERR_SLOT.to_string();
+        }
+        return Ok(quote! { #helper_item #wrapper });
+    }
+
+    let extract_type = python_method_extract_type(entry)?;
+    let mut helper_declarations = Vec::new();
+    if !entry.is_static {
+        helper_declarations.push(quote! { ptr: *mut #handle });
+    }
+    helper_declarations.extend(declarations.iter().cloned());
+    let call = if entry.is_static {
+        quote! {
+            let rustcall_class = py.get_type::<#class>();
+            rustcall_class.getattr(#python_name)?.call(#positional_args, #keyword_args)?
+        }
+    } else {
+        quote! {
+            assert!(!ptr.is_null(), "null Python-owned class handle");
+            let rustcall_object = unsafe { (*ptr).object.as_ref().expect("retired Python-owned class handle") };
+            rustcall_object.bind(py).call_method(#python_name, #positional_args, #keyword_args)?
+        }
+    };
+
+    // A Python-owned class method returning `Self` yields a Python object, not
+    // a Rust value which can be extracted and boxed independently. Preserve
+    // that exact object (and therefore any base-class state) in a fresh opaque
+    // handle. Julia already treats `returns_boxed_struct` as an owned handle.
+    if entry.returns_boxed_struct {
+        let attached = quote! {
+            use ::rustcall_pyo3::types::{PyAnyMethods as _, PyDictMethods as _};
+            ::rustcall_pyo3::Python::initialize();
+            #start_drain();
+            ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<*mut #handle> {
+                #drain(py);
+                #call_setup
+                let rustcall_object = { #call };
+                Ok(Box::into_raw(Box::new(#handle {
+                    object: Some(rustcall_object.unbind()),
+                    next: ::std::ptr::null_mut(),
+                })))
+            })
+        };
+        let (helper_item, ret, call_suffix) = if entry.return_kind == ReturnKind::PyResult {
+            let aggregate = format_ident!("CResult_{}", owner_name);
+            let pointer: Type = syn::parse_quote!(*mut #handle);
+            let error: Type = syn::parse_str(PYERR_SLOT).expect("i32 parses");
+            (
+                quote! {
+                    fn #helper(#(#helper_declarations),*) -> ::rustcall_pyo3::PyResult<*mut #handle> {
+                        #attached
+                    }
+                },
+                WrapperReturn::CResult {
+                    name: aggregate,
+                    ok: WrapperPayload::Plain(pointer),
+                    err: WrapperPayload::Plain(error),
+                },
+                quote! {
+                    .map_err(|rustcall_py_err| {
+                        ::std::mem::drop(rustcall_py_err);
+                        #PYERR_CODE
+                    })
+                },
+            )
+        } else if entry.return_kind == ReturnKind::Plain {
+            (
+                quote! {
+                    fn #helper(#(#helper_declarations),*) -> *mut #handle {
+                        #attached.unwrap_or_else(|rustcall_py_err| {
+                            panic!("PyO3 method failed: {}", rustcall_py_err)
+                        })
+                    }
+                },
+                WrapperReturn::Plain(syn::parse_quote!(*mut #handle)),
+                TokenStream2::new(),
+            )
+        } else {
+            return Err(skip_reason::detailed(
+                skip_reason::UNSUPPORTED_RETURN,
+                &entry.return_type,
+            ));
+        };
+        let mut ffi_args = Vec::new();
+        if !entry.is_static {
+            ffi_args.push((format_ident!("ptr"), syn::parse_quote!(*mut #handle)));
+        }
+        ffi_args.extend(native_args);
+        let wrapper = generate_wrapper(WrapperSpec {
+            symbol,
+            cfg_attrs: Vec::new(),
+            receiver: None,
+            args: ffi_args,
+            ret,
+            target: CallTarget::Free(syn::Path::from(helper)),
+            call_suffix,
+        });
+        entry.return_abi.clear();
+        entry.ok_abi.clear();
+        entry.string_owner = owner_name;
+        if entry.return_kind == ReturnKind::PyResult {
+            entry.err_type = PYERR_SLOT.to_string();
+        }
+        return Ok(quote! { #helper_item #wrapper });
+    }
+
+    let attached = quote! {
+        use ::rustcall_pyo3::types::{PyAnyMethods as _, PyDictMethods as _};
+        ::rustcall_pyo3::Python::initialize();
+        ::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<#extract_type> {
+            #drain(py);
+            #call_setup
+            let rustcall_result = { #call };
+            rustcall_result.extract::<#extract_type>()
+        })
+    };
+    let helper_item = if entry.return_kind == ReturnKind::PyResult {
+        quote! {
+            fn #helper(#(#helper_declarations),*) -> ::rustcall_pyo3::PyResult<#extract_type> {
+                #attached
+            }
+        }
+    } else {
+        let ret: Type = syn::parse_str(&entry.return_type).map_err(|_| {
+            skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, &entry.return_type)
+        })?;
+        quote! {
+            fn #helper(#(#helper_declarations),*) -> #ret {
+                #attached.unwrap_or_else(|rustcall_py_err| panic!("PyO3 method failed: {}", rustcall_py_err))
+            }
+        }
+    };
+
+    let owner = format_ident!("{}", owner_name);
+    let plan = return_plan(
+        &owner,
+        &entry.return_type,
+        entry.return_kind,
+        &entry.ok_type,
+        &entry.err_type,
+        &entry.inner_type,
+        None,
+        false,
+        has_string_args(&entry.args),
+    )?;
+    let mut ffi_args = Vec::new();
+    if !entry.is_static {
+        ffi_args.push((format_ident!("ptr"), syn::parse_quote!(*mut #handle)));
+    }
+    ffi_args.extend(native_args);
+    let wrapper = generate_wrapper(WrapperSpec {
+        symbol,
+        cfg_attrs: Vec::new(),
+        receiver: None,
+        args: ffi_args,
+        ret: plan.ret,
+        target: CallTarget::Free(syn::Path::from(helper)),
+        call_suffix: plan.call_suffix,
+    });
+    entry.return_abi = plan.return_abi.to_string();
+    entry.ok_abi = plan.ok_abi.to_string();
+    entry.string_owner = owner.to_string();
+    if plan.err_slot {
+        entry.err_type = PYERR_SLOT.to_string();
+    }
+    Ok(quote! { #helper_item #wrapper })
+}
+
+/// Statements creating `rustcall_kwargs`, and `(args, kwargs)` tokens suitable
+/// for `PyAny::call` / `call_method`. Julia keeps Rust's positional surface;
+/// keyword-only parameters are placed into Python kwargs internally.
+fn python_call_arguments(
+    args: &[(Ident, Type)],
+    original: &[Arg],
+) -> (TokenStream2, TokenStream2, TokenStream2) {
+    let positional: Vec<_> = args
+        .iter()
+        .filter(|(name, _)| arg_python_kind(original, name) != "keyword_only")
+        .map(|(name, _)| name)
+        .collect();
+    let keywords: Vec<_> = args
+        .iter()
+        .filter(|(name, _)| arg_python_kind(original, name) == "keyword_only")
+        .map(|(name, _)| {
+            let key = name.to_string();
+            quote! { rustcall_kwargs.set_item(#key, #name)?; }
+        })
+        .collect();
+    if keywords.is_empty() {
+        (
+            TokenStream2::new(),
+            quote! { (#(#positional,)*) },
+            quote! { None },
+        )
+    } else {
+        (
+            quote! {
+                let rustcall_kwargs = ::rustcall_pyo3::types::PyDict::new(py);
+                #(#keywords)*
+            },
+            quote! { (#(#positional,)*) },
+            quote! { Some(&rustcall_kwargs) },
+        )
+    }
+}
+
+fn arg_python_kind<'a>(args: &'a [Arg], name: &Ident) -> &'a str {
+    args.iter()
+        .find(|arg| *name == arg.name)
+        .map(|arg| arg.python_kind.as_str())
+        .unwrap_or("")
+}
+
+fn python_method_extract_type(method: &Method) -> Result<Type, String> {
+    let spelling = if method.return_kind == ReturnKind::PyResult {
+        if method.ok_type.is_empty() {
+            "()"
+        } else {
+            &method.ok_type
+        }
+    } else if method.return_kind == ReturnKind::Unit {
+        "()"
+    } else {
+        &method.return_type
+    };
+    syn::parse_str(spelling)
+        .map_err(|_| skip_reason::detailed(skip_reason::UNSUPPORTED_RETURN, spelling))
 }
 
 fn method_wrapper(

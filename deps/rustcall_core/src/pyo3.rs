@@ -35,7 +35,7 @@ use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemStruct, ReturnType, Typ
 
 use crate::attrs::{
     julia_owns_entry_point, pyo3_field_access, pyo3_marker, pyo3_method_markers, pyo3_name,
-    visibility_string, Pyo3Marker, Pyo3MethodMarker,
+    pyo3_signature, visibility_string, Pyo3Marker, Pyo3MethodMarker, Pyo3ParameterKind,
 };
 use crate::cfg::predicate_string;
 use crate::extract::fn_args;
@@ -617,18 +617,28 @@ fn mark_julia_surface_collisions_pass(
                 ReturnKind::PyResult | ReturnKind::Result | ReturnKind::Option
             )
         })
-        .map(|f| {
-            let path = f.module_path.clone();
-            let cfg = f.cfg.clone();
+        .flat_map(|f| {
             let prefix = if f.return_kind == ReturnKind::Option {
                 "COption"
             } else {
                 "CResult"
             };
-            let name = format!("{prefix}_{}", f.name);
-            (path, name.clone(), name, cfg)
+            let defaults = f
+                .args
+                .iter()
+                .rev()
+                .take_while(|arg| !arg.python_default.is_empty())
+                .count();
+            (0..=defaults).map(move |omitted| {
+                let owner = if omitted == 0 {
+                    f.ffi_name.clone()
+                } else {
+                    format!("{}__default_{omitted}", f.ffi_name)
+                };
+                let name = format!("{prefix}_{owner}");
+                ((f.module_path.clone(), name.clone()), name, f.cfg.clone())
+            })
         })
-        .map(|(path, name, owner, cfg)| ((path, name), owner, cfg))
         .collect();
     for s in aggregate_owners
         .into_iter()
@@ -647,10 +657,22 @@ fn mark_julia_surface_collisions_pass(
             } else {
                 "CResult"
             };
-            let name = format!("{prefix}_{}_{}", s.name, m.name);
-            let path = s.module_path.clone();
-            let cfg = m.cfg.clone();
-            aggregate_names.push(((path, name.clone()), name, cfg));
+            let owner = crate::codegen::method_string_owner(&s.ffi_name, &m.name);
+            let defaults = m
+                .args
+                .iter()
+                .rev()
+                .take_while(|arg| !arg.python_default.is_empty())
+                .count();
+            for omitted in 0..=defaults {
+                let variant = if omitted == 0 {
+                    owner.clone()
+                } else {
+                    format!("{owner}__default_{omitted}")
+                };
+                let name = format!("{prefix}_{variant}");
+                aggregate_names.push(((s.module_path.clone(), name.clone()), name, m.cfg.clone()));
+            }
         }
     }
     let aggregate_named = |path: &[String], name: &str, cfg: &str| {
@@ -1171,7 +1193,7 @@ fn function_entry(
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
-        args: fn_args(&func.sig),
+        args: pyo3_args(&func.sig, &func.attrs),
         return_type,
         return_kind,
         // `Arg::abi` follows from the argument type alone, so it is filled in
@@ -1215,6 +1237,16 @@ fn class_entry(
     // `docs/src/pyo3.md` recommends is exactly that, so a scan that read only
     // field attributes would drop those fields.
     let options = crate::attrs::pyo3_class_options(&item.attrs);
+    let mut pyo3_options = Vec::new();
+    if options.subclass {
+        pyo3_options.push("subclass".to_string());
+    }
+    if options.dict {
+        pyo3_options.push("dict".to_string());
+    }
+    if options.weakref {
+        pyo3_options.push("weakref".to_string());
+    }
 
     let mut fields = Vec::new();
     if let syn::Fields::Named(named) = &item.fields {
@@ -1290,6 +1322,8 @@ fn class_entry(
         vis: visibility_string(&item.vis),
         skip_reason: reason,
         python_name: pyo3_name(&item.attrs),
+        pyo3_extends: options.extends,
+        pyo3_options,
         cfg: predicate_string(&effective_cfg),
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
         type_params: generics_to_type_params(&item.generics),
@@ -1382,12 +1416,38 @@ fn method_entry(
         // constructor returns `(Self, Base)` (possibly inside `PyResult`),
         // which cannot inhabit a `*mut Self` success slot (#303).
         returns_boxed_struct: returns_self,
-        args: fn_args(&func.sig),
+        args: pyo3_args(&func.sig, &func.attrs),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
         generic_wrapper: String::new(),
         cfg: predicate_string(&effective_cfg),
     }
+}
+
+/// Rust arguments annotated with the Python call shape PyO3 generated.
+/// Parsing failures are left to rustc/PyO3 (the target crate cannot build),
+/// while a valid signature is matched by parameter name so the receiver —
+/// absent from `fn_args` — never shifts the metadata onto another argument.
+fn pyo3_args(sig: &syn::Signature, attrs: &[syn::Attribute]) -> Vec<crate::manifest::Arg> {
+    let mut args = fn_args(sig);
+    let Ok(Some(parameters)) = pyo3_signature(attrs) else {
+        return args;
+    };
+    for parameter in parameters {
+        let Some(arg) = args.iter_mut().find(|arg| arg.name == parameter.name) else {
+            continue;
+        };
+        arg.python_default = parameter.default;
+        arg.python_kind = match parameter.kind {
+            Pyo3ParameterKind::PositionalOnly => "positional_only",
+            Pyo3ParameterKind::PositionalOrKeyword => "positional_or_keyword",
+            Pyo3ParameterKind::KeywordOnly => "keyword_only",
+            Pyo3ParameterKind::VarArgs => "var_args",
+            Pyo3ParameterKind::KwArgs => "kw_args",
+        }
+        .to_string();
+    }
+    args
 }
 
 /// Whether a method's return type names the class itself: `Self`, the bare
