@@ -31,6 +31,7 @@ Sample.add(Int32(2), Int32(3))          # 5
 Sample.shout("hello")                   # "HELLO!"
 Sample.parse("42")                      # RustResult{Int32, String}(true, 42)
 Sample.render(true)                     # RustResult{String, String}
+Sample.defaulted()                      # 37, from a private Rust default helper
 
 p = Sample.Point(3.0, 4.0)              # #[new]
 Sample.norm(p)                          # 5.0
@@ -39,6 +40,9 @@ p.x = 6.0
 Sample.label(p)                         # a String method
 Sample.scaled(p, 2.0)                    # a PyResult method
 Sample.shifted(p, 1.0)                   # RustResult{Point, String}
+
+c = Sample.InheritedCounter()           # #[pyclass(extends = BaseCounter)]
+Sample.increment(c)                     # defaulted mutating method
 ```
 
 Nothing in the crate changes. RustCall generates a **second** crate that
@@ -270,6 +274,8 @@ Manifest schema 5 adds, for every function, struct and method:
 | `accessor` | `getter` / `setter` for a `#[getter]` / `#[setter]` method |
 | `return_kind` + `ok_type` / `err_type` / `inner_type` | on methods too, not just free functions: a `#[pymethods]` method returning `PyResult<T>` is `py_result` with `T`, so Phase 2 never re-reads the Rust type spelling |
 | field `abi = "vec"` + `vec_element` + `free_symbol` | schema 10's owned-vector contract: the exact Julia element layout and the export that must release this getter's `(ptr, len, cap)` buffer |
+| argument `python_default` + `python_kind` | schema 12's PyO3 call shape; defaults remain Rust expressions and are evaluated only by PyO3's original dispatcher |
+| struct `pyo3_extends` + `pyo3_options` | schema 12's Python object shape, used to select a Python-owned inheritance handle |
 
 A scanned item's `symbol` is the wrapper a Phase-2 wrapper crate *will* export —
 `rustcall_<name>` for a function, `rustcall_<Struct>_<method>` for a method, the
@@ -301,14 +307,16 @@ adding `pub` in the target crate is the fix.
 `ok_type`, and is **not** a skip reason. Creating and dropping a `PyErr`
 without an interpreter is safe; only *rendering* one is not — `Display`/`Debug`
 on a `PyErr` panics inside pyo3, and a panic crossing `extern "C"` aborts the
-process. Phase 2 will therefore lower it to an opaque error flag, and generated
+process. Phase 2 therefore lowers it to an opaque error flag, and generated
 code must never format a `PyErr`.
 
 ### `#[pyclass]` structs are opaque handles
 
-RustCall does not depend on a `#[pyclass]` having `#[repr(C)]`: its wrapper
-boxes the native Rust value and accesses it through Rust-generated accessors.
-This handle is not a Python object or a pointer to Python's class allocation.
+RustCall does not depend on a `#[pyclass]` having `#[repr(C)]`. A plain class
+uses the fast native path: its wrapper boxes the Rust value and accesses it
+through Rust-generated accessors. A class with `extends`, or whose methods use
+PyO3 defaults, instead uses a Python-owned opaque handle. That distinction is
+manifest data; Julia still sees only `Ptr{Cvoid}`.
 Fields are exposed only when pyo3 exposes
 them — `#[pyo3(get)]`, `#[pyo3(set)]` or both, or `get_all` / `set_all` on the
 class — each accessor on its own, so a `set`-only field is a setter with no
@@ -322,11 +330,27 @@ no setter. Methods are collected from
 are accessors. (A `#[classmethod]` takes a `&Bound<'_, PyType>` first argument,
 so it is normally skipped for using a pyo3 type.)
 
-`subclass`, `dict`, and `weakref` affect the Python object, not the native Rust
-value owned by this wrapper. The real PyO3 fixture tests these options together
-with construction, field access, method calls and exactly-once destruction.
-They do not provide Python dynamic attributes or Python inheritance on the Julia
-handle. `extends` is a separate case and is not covered by that guarantee.
+`subclass`, `dict`, and `weakref` affect the Python object, not a plain native
+handle. `extends` does affect ownership: PyO3 constructors return an initializer
+containing both child and base state, so RustCall constructs the registered
+Python type and retains its `Py<PyAny>` instead of flattening the result into a
+`Box<Child>`. Calls and field access attach to Python and operate on that same
+object. Finalizers only publish a preallocated node to a lock-free queue; a
+background Python-attached safe point performs the actual decref. The wrapper
+image is process-pinned because PyO3's registered type and that safe point keep
+callbacks into it after a logical RustCall unload.
+
+### PyO3 defaults keep their original Rust scope
+
+For `#[pyo3(signature = (...))]` (including the signature nested in
+`#[pyfunction(...)]`) and legacy `#[args(...)]`, the manifest records parameter
+kinds and default expressions. The expressions are descriptive only: Julia
+never evaluates or copies them. For every callable trailing-default arity the
+generated wrapper calls PyO3's original dispatcher, which evaluates a default
+where the macro generated it. A default may therefore call a private helper,
+and a defaulted mutating method updates the original Python-owned object.
+Keyword-only parameters supplied through RustCall's positional Julia surface
+are moved into Python keyword arguments by that dispatcher bridge.
 
 Likewise, `#[pyclass(generic)]` enables Python generic aliases; it does not add
 Rust type parameters. The fixture exercises this valid form. PyO3 0.29 rejects
@@ -720,7 +744,8 @@ runnable example package is `examples/SampleCratePyO3.jl`, described last.
 
 `test/fixtures/sample_crate_pyo3_only` is a crate that carries only PyO3 attributes:
 a mandatory pyo3 dependency with `default-features = false, features =
-["macros"]`, wrappable and skipped functions, a `#[pyclass]` with `#[new]`,
+["macros"]`, wrappable and skipped functions, a private-helper default, a
+Python-owned `extends` class, and a plain `#[pyclass]` with `#[new]`,
 `#[staticmethod]`, `#[getter]`, `#[setter]`, a `String` method, a `PyResult`
 method and `#[pyo3(get, set)]` fields, and a `#[pymodule]`. Its link plan is
 `:link_libpython`. It is what `test/test_manifest.jl`,

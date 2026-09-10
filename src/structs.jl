@@ -71,6 +71,9 @@ struct RustMethod
     # The impl block's attribute (`Method.attribute`, additive within schema
     # 6, #275 Phase 3): `:julia`, `:py_methods`, or `:none`.
     attribute::Symbol
+    # Schema 12 PyO3 signature data, aligned with `arg_names`.
+    python_defaults::Vector{String}
+    python_kinds::Vector{String}
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -89,12 +92,18 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     err_abi::String = _default_payload_abi(err_type),
                     inner_abi::String = _default_payload_abi(inner_type),
                     string_owner::String = "",
-                    attribute::Symbol = :none)
+                    attribute::Symbol = :none,
+                    python_defaults::Vector{String} = fill("", length(arg_names)),
+                    python_kinds::Vector{String} = fill("", length(arg_names)))
+    length(python_defaults) == length(arg_names) ||
+        throw(ArgumentError("python_defaults must have one entry per argument"))
+    length(python_kinds) == length(arg_names) ||
+        throw(ArgumentError("python_kinds must have one entry per argument"))
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
-               string_owner, attribute)
+               string_owner, attribute, python_defaults, python_kinds)
 end
 
 """
@@ -214,6 +223,10 @@ struct RustStructInfo
     vis::String
     skip_reason::String
     python_name::String
+    # PyO3 object shape. A non-empty base requires a Python-owned handle;
+    # flattening `PyClassInitializer` into `Box{T}` loses the base object.
+    pyo3_extends::String
+    pyo3_options::Vector{String}
     # See `RustFunctionSignature.cfg_features`.
     cfg_features::Vector{String}
     # Manifest schema 7 (#300): the stem every exported symbol of the struct
@@ -240,6 +253,8 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         module_path::Vector{String} = String[],
                         attribute::Symbol = :julia, vis::String = "pub",
                         skip_reason::String = "", python_name::String = "",
+                        pyo3_extends::String = "",
+                        pyo3_options::Vector{String} = String[],
                         cfg_features::Vector{String} = String[],
                         ffi_name::String = name)
     RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
@@ -247,7 +262,8 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                    has_derive_julia_struct,
                    derive_options, field_getters, field_setters, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
-                   module_path, attribute, vis, skip_reason, python_name, cfg_features,
+                   module_path, attribute, vis, skip_reason, python_name,
+                   pyo3_extends, pyo3_options, cfg_features,
                    isempty(ffi_name) ? name : ffi_name)
 end
 

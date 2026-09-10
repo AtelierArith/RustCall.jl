@@ -52,6 +52,8 @@ pub fn fn_args(sig: &syn::Signature) -> Vec<Arg> {
                 },
                 rust_type: type_to_string(&pt.ty),
                 abi: arg_abi(&pt.ty).to_string(),
+                python_default: String::new(),
+                python_kind: String::new(),
             }),
             FnArg::Receiver(_) => None,
         })
@@ -1298,6 +1300,8 @@ fn crate_struct_entry(
         vis: crate::attrs::visibility_string(&model.item.vis),
         skip_reason: String::new(),
         python_name: String::new(),
+        pyo3_extends: String::new(),
+        pyo3_options: Vec::new(),
         type_params: generics_to_type_params(&model.item.generics),
         fields,
         methods,

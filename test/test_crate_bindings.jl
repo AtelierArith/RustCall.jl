@@ -630,10 +630,15 @@ end
 
         # A library the image imports by name that the loader would not find
         # (a PyO3 wrapper's Python DLL on Windows) is opened before it, through
-        # `load_artifact!`; a file that needs none says nothing about it, so it
-        # still reads under a RustCall without the option (#307 review).
+        # `load_artifact!`. Process pinning is a separate generated constant:
+        # plain wrappers leave the guarded preload path disabled, while a
+        # Python-owned handle enables it to keep PyO3 callbacks mapped.
         @test !occursin("_PRELOAD_LIBRARIES", code)
-        @test !occursin("preload", code)
+        @test occursin("const _PIN_LIBRARY = false", code)
+        @test occursin("_PIN_LIBRARY && RustCall.preload_dependency!", code)
+        code_pinned = RustCall.emit_crate_module_code(info, "/tmp/lib.so";
+            pin_library = true)
+        @test occursin("const _PIN_LIBRARY = true", code_pinned)
         code_preload = RustCall.emit_crate_module_code(info, "/tmp/lib.so";
             preload = ["C:\\\\Python312\\\\python312.dll"])
         @test occursin("const _PRELOAD_LIBRARIES = $(repr(("C:\\\\Python312\\\\python312.dll",)))",

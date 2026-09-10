@@ -65,6 +65,9 @@ using TOML
         @test add.exported == false
         @test add.vis == "pub"
         @test add.skip_reason == ""
+        defaulted = byname["defaulted"]
+        @test replace(defaulted.python_defaults[1], " " => "") == "private_default()"
+        @test defaulted.python_kinds == ["positional_or_keyword"]
 
         # Skip reasons: visibility, pyo3-typed signatures, `#[pymodule]`.
         @test byname["private_add"].vis == ""
@@ -84,6 +87,8 @@ using TOML
         point = only(s for s in info.pyo3_structs if s.name == "Point")
         @test point.attribute === :py_class
         @test point.skip_reason == ""
+        @test point.pyo3_extends == ""
+        @test point.pyo3_options == ["subclass", "dict", "weakref"]
         @test [f[1] for f in point.fields] == ["x", "y", "scale"]
         @test point.field_getters["x"] == "rustcall_Point_get_x"
         @test point.field_setters["x"] == "rustcall_Point_set_x"
@@ -113,6 +118,13 @@ using TOML
         @test fallible_methods["new"].is_constructor
         @test fallible_methods["new"].return_kind === :py_result
         @test fallible_methods["new"].returns_boxed_struct
+
+        inherited = only(s for s in info.pyo3_structs if s.name == "InheritedCounter")
+        @test inherited.pyo3_extends == "BaseCounter"
+        inherited_methods = Dict(m.name => m for m in inherited.methods)
+        @test replace(inherited_methods["new"].python_defaults[1], " " => "") ==
+              "private_default()"
+        @test inherited_methods["increment"].python_kinds == ["positional_or_keyword"]
 
         # A `#[pymethods]` method returning `PyResult` carries its return
         # shape, so Phase 2 never re-reads the Rust type spelling (#264).

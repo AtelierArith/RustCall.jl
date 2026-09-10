@@ -39,6 +39,31 @@ fn pyfunction_is_reported_with_the_phase_two_symbol() {
 }
 
 #[test]
+fn python_signatures_are_manifest_data_for_functions_and_methods() {
+    let manifest = scan(
+        "#[pyfunction(signature = (a, b = private_default(), /, *, c = 3))]\n\
+         pub fn calculate(a: i32, b: i32, c: i32) -> i32 { a + b + c }\n\
+         #[pyclass] pub struct Counter {}\n\
+         #[pymethods] impl Counter {\n\
+             #[pyo3(signature = (amount = private_default()))]\n\
+             pub fn increment(&mut self, amount: i32) {}\n\
+         }",
+    );
+    let args = &function(&manifest, "calculate").args;
+    assert_eq!(args[0].python_kind, "positional_only");
+    assert!(args[0].python_default.is_empty());
+    assert_eq!(args[1].python_kind, "positional_only");
+    assert_eq!(args[1].python_default.replace(' ', ""), "private_default()");
+    assert_eq!(args[2].python_kind, "keyword_only");
+    assert_eq!(args[2].python_default, "3");
+
+    let amount = &manifest.structs[0].methods[0].args[0];
+    assert_eq!(amount.name, "amount");
+    assert_eq!(amount.python_kind, "positional_or_keyword");
+    assert_eq!(amount.python_default.replace(' ', ""), "private_default()");
+}
+
+#[test]
 fn qualified_and_bare_attribute_spellings_are_both_recognised() {
     let manifest = scan(
         "#[pyo3::pyfunction] pub fn a() -> i32 { 0 }\n\
@@ -1199,6 +1224,21 @@ fn class_level_field_options_are_honoured() {
     assert!(!private.ffi_compatible);
 }
 
+#[test]
+fn pyclass_python_object_shape_is_manifest_data() {
+    let manifest = scan(
+        "#[pyclass(subclass)] pub struct Base {}\n\
+         #[pyclass(extends = crate::Base, dict, weakref)] pub struct Child {}",
+    );
+    let base = manifest.structs.iter().find(|s| s.name == "Base").unwrap();
+    assert_eq!(base.pyo3_extends, "");
+    assert_eq!(base.pyo3_options, ["subclass"]);
+
+    let child = manifest.structs.iter().find(|s| s.name == "Child").unwrap();
+    assert_eq!(child.pyo3_extends, "crate::Base");
+    assert_eq!(child.pyo3_options, ["dict", "weakref"]);
+}
+
 /// Every exported symbol lives in one `cdylib`, so the collision check is one
 /// table over functions, `#[julia]` struct wrappers and PyO3 classes alike.
 #[test]
@@ -1880,6 +1920,25 @@ fn generated_result_aggregate_names_are_reserved() {
         .unwrap();
     assert_eq!(class.skip_reason, "julia_name_collision:CResult_parse");
     assert_eq!(function(&manifest, "parse").skip_reason, "");
+}
+
+#[test]
+fn default_arity_aggregate_names_are_reserved() {
+    let manifest = scan(
+        "#[pyfunction(signature = (value = 1))]\n\
+         pub fn parse(value: i32) -> PyResult<i32> { Ok(value) }\n\
+         #[pyclass] pub struct CResult_parse__default_1;\n\
+         #[pyclass] pub struct A;\n\
+         #[pymethods] impl A {\n\
+             #[pyo3(signature = (value = 1))]\n\
+             pub fn checked(&self, value: i32) -> PyResult<i32> { Ok(value) }\n\
+         }\n\
+         #[pyclass] pub struct CResult_A_checked__default_1;",
+    );
+    for name in ["CResult_parse__default_1", "CResult_A_checked__default_1"] {
+        let class = manifest.structs.iter().find(|s| s.name == name).unwrap();
+        assert_eq!(class.skip_reason, format!("julia_name_collision:{name}"));
+    }
 }
 
 #[test]

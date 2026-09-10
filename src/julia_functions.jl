@@ -76,6 +76,11 @@ struct RustFunctionSignature
     ok_abi::String
     err_abi::String
     inner_abi::String
+    # Schema 12: PyO3's call shape, aligned with `arg_names`. Defaults are
+    # Rust expressions for diagnostics only; generated Rust dispatchers own
+    # their evaluation in the target crate's lexical scope.
+    python_defaults::Vector{String}
+    python_kinds::Vector{String}
     # Manifest schema 7 (#300): the stem of every generated symbol —
     # `rustcall_<ffi_name>`, `<ffi_name>_free_rust_string`. Equal to `name`
     # for a crate-root item; module-qualified inside modules.
@@ -102,15 +107,22 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                ok_abi::String = _default_payload_abi(ok_type),
                                err_abi::String = _default_payload_abi(err_type),
                                inner_abi::String = _default_payload_abi(inner_type),
+                               python_defaults::Vector{String} = fill("", length(arg_names)),
+                               python_kinds::Vector{String} = fill("", length(arg_names)),
                                ffi_name::String = name)
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
+    length(python_defaults) == length(arg_names) ||
+        throw(ArgumentError("python_defaults must have one entry per argument"))
+    length(python_kinds) == length(arg_names) ||
+        throw(ArgumentError("python_kinds must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
                           return_abi, vis, skip_reason, python_name, cfg_features,
-                          ok_abi, err_abi, inner_abi, isempty(ffi_name) ? name : ffi_name)
+                          ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
+                          isempty(ffi_name) ? name : ffi_name)
 end
 
 """

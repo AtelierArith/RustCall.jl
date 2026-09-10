@@ -14,10 +14,27 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 use pyo3::prelude::*;
 
+fn private_default() -> i32 {
+    37
+}
+
 /// Wrappable: `pub`, scalars only.
 #[pyfunction]
 pub fn add(a: i32, b: i32) -> i32 {
     a + b
+}
+
+/// The generated wrapper must call PyO3's original dispatcher: this default
+/// helper is private and cannot be named from the external wrapper crate.
+#[pyfunction(signature = (value = private_default()))]
+pub fn defaulted(value: i32) -> i32 {
+    value
+}
+
+/// A defaulted Python-dispatched function with an aggregate/string return.
+#[pyfunction(signature = (value = private_default()))]
+pub fn defaulted_result(value: i32) -> PyResult<String> {
+    Ok(format!("defaulted:{value}"))
 }
 
 /// Wrappable: strings travel as `(ptr, len)` pairs.
@@ -82,6 +99,12 @@ pub fn describe(py: Python<'_>) -> i32 {
 
 static DROPPED: AtomicI64 = AtomicI64::new(0);
 static FALLIBLE_DROPPED: AtomicI64 = AtomicI64::new(0);
+static INHERITED_DROPPED: AtomicI64 = AtomicI64::new(0);
+
+#[pyfunction]
+pub fn dropped_inherited() -> i64 {
+    INHERITED_DROPPED.load(Ordering::SeqCst)
+}
 
 // Python-side layout/typing options do not change the native Rust Point value
 // that the wrapper owns. `generic` here enables Python generic aliases; this
@@ -218,6 +241,62 @@ impl Fallible {
 
     pub fn fallible_value(&self) -> i32 {
         self.value
+    }
+}
+
+#[pyclass(subclass)]
+pub struct BaseCounter {
+    #[pyo3(get)]
+    pub base: i32,
+}
+
+#[pyclass(extends = BaseCounter)]
+pub struct InheritedCounter {
+    #[pyo3(get, set)]
+    pub value: i32,
+    #[pyo3(get, set)]
+    pub samples: Vec<i32>,
+}
+
+impl Drop for InheritedCounter {
+    fn drop(&mut self) {
+        INHERITED_DROPPED.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[pymethods]
+impl InheritedCounter {
+    #[new]
+    #[pyo3(signature = (value = private_default()))]
+    pub fn new(value: i32) -> PyResult<(Self, BaseCounter)> {
+        Ok((
+            Self {
+                value,
+                samples: vec![value, 11],
+            },
+            BaseCounter { base: 11 },
+        ))
+    }
+
+    #[pyo3(signature = (amount = private_default()))]
+    pub fn increment(&mut self, amount: i32) -> i32 {
+        self.value += amount;
+        self.value
+    }
+
+    #[pyo3(signature = (suffix = private_default()))]
+    pub fn defaulted_label(&self, suffix: i32) -> PyResult<String> {
+        Ok(format!("{}:{suffix}", self.value))
+    }
+
+    #[getter]
+    pub fn doubled(&self) -> i32 {
+        self.value * 2
+    }
+
+    #[setter(doubled)]
+    pub fn set_doubled(&mut self, value: i32) {
+        self.value = value / 2;
     }
 }
 
