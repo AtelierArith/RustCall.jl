@@ -305,3 +305,40 @@ fn python_owned_classes_keep_descriptor_and_vec_field_abis() {
     assert!(wrapped.lib_rs.contains("setattr(\"doubled\", value)"));
     assert!(!wrapped.lib_rs.contains("call_method(\"doubled\""));
 }
+
+#[test]
+fn python_owned_handle_decision_survives_a_skipped_defaulted_method() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct FilteredOwned;
+        #[pymethods]
+        impl FilteredOwned {
+            #[new]
+            pub fn new() -> Self { Self }
+            #[pyo3(signature = (value = None))]
+            pub fn filtered(&self, value: Option<Py<PyAny>>) { let _ = value; }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let class = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "FilteredOwned")
+        .unwrap();
+    let filtered = class
+        .methods
+        .iter()
+        .find(|method| method.name == "filtered")
+        .unwrap();
+
+    assert!(!filtered.skip_reason.is_empty());
+    assert!(class.python_owned_handle);
+    assert!(wrapped
+        .lib_rs
+        .contains("struct FilteredOwned_RustCallPythonHandle"));
+}

@@ -227,6 +227,9 @@ struct RustStructInfo
     # flattening `PyClassInitializer` into `Box{T}` loses the base object.
     pyo3_extends::String
     pyo3_options::Vector{String}
+    # Manifest schema 13 (#371): authoritative wrapper-generation decision.
+    # It survives filtering of the defaulted method that selected this handle.
+    python_owned_handle::Bool
     # See `RustFunctionSignature.cfg_features`.
     cfg_features::Vector{String}
     # Manifest schema 7 (#300): the stem every exported symbol of the struct
@@ -255,6 +258,7 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         skip_reason::String = "", python_name::String = "",
                         pyo3_extends::String = "",
                         pyo3_options::Vector{String} = String[],
+                        python_owned_handle::Bool = false,
                         cfg_features::Vector{String} = String[],
                         ffi_name::String = name)
     RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
@@ -263,7 +267,7 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                    derive_options, field_getters, field_setters, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
                    module_path, attribute, vis, skip_reason, python_name,
-                   pyo3_extends, pyo3_options, cfg_features,
+                   pyo3_extends, pyo3_options, python_owned_handle, cfg_features,
                    isempty(ffi_name) ? name : ffi_name)
 end
 

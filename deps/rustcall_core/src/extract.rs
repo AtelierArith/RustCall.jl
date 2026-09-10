@@ -1302,6 +1302,7 @@ fn crate_struct_entry(
         python_name: String::new(),
         pyo3_extends: String::new(),
         pyo3_options: Vec::new(),
+        python_owned_handle: false,
         type_params: generics_to_type_params(&model.item.generics),
         fields,
         methods,

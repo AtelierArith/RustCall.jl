@@ -1324,6 +1324,7 @@ fn class_entry(
         python_name: pyo3_name(&item.attrs),
         pyo3_extends: options.extends,
         pyo3_options,
+        python_owned_handle: false,
         cfg: predicate_string(&effective_cfg),
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
         type_params: generics_to_type_params(&item.generics),

@@ -1953,9 +1953,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
     Expr(:block, exprs...)
 end
 
-_python_owned_handle(info::RustStructInfo) =
-    !isempty(info.pyo3_extends) ||
-    any(any(!isempty, method.python_defaults) for method in info.methods)
+_python_owned_handle(info::RustStructInfo) = info.python_owned_handle
 
 """
     _crate_field_read(info, field_name, field_type, ptr_expr, self_ptr_expr) -> Expr
@@ -3035,12 +3033,19 @@ older RustCall produced.
   (`bindings.a.run`). A file emitted before this names symbols a library
   built with the current proc-macro no longer exports for any item inside a
   module.
+- `8` (#303): generated calls support defaulted PyO3 arities and Python-owned
+  class handles.
+- `9` (#303): generated modules pin wrapper images containing Python-owned
+  handles and give those objects a process-lifetime finalizer flag.
+- `10` (#371): the pin/finalizer decision comes from the wrapper manifest's
+  authoritative `python_owned_handle` field, so filtering the method that
+  selected that handle cannot silently remove the lifetime policy.
 
 A file emitted by an older version still *works* — it only uses public API that
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 9
+const BINDINGS_FORMAT_VERSION = 10
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String

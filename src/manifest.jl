@@ -50,9 +50,13 @@ owned buffer as a Rust `Vec<T>` value and could not release it (#303). Schema
 11 widens the `PyResult` ABI: `String` / `&str` success payloads use `ok_abi`
 to select an owned buffer, and `PyResult<Self>` carries an owned class pointer;
 a schema-10 consumer would decode either aggregate with the wrong slot type
-(#303).
+(#303). Schema 12 records PyO3 class object shape and callable defaults so the
+wrapper can select Python-owned dispatch. Schema 13 adds the wrapper's
+authoritative `python_owned_handle` decision: a consumer that re-infers it
+after filtering unsupported methods can unload an image whose drain thread is
+still running (#371).
 """
-const MANIFEST_SCHEMA_VERSION = 12
+const MANIFEST_SCHEMA_VERSION = 13
 
 """
     ExtractorError <: Exception
@@ -1296,6 +1300,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             python_name = _mstr(s, "python_name"),
             pyo3_extends = _mstr(s, "pyo3_extends"),
             pyo3_options = String[String(o) for o in _mvec(s, "pyo3_options")],
+            python_owned_handle = _mbool(s, "python_owned_handle"),
             cfg_features = String[String(c) for c in _mvec(s, "cfg_features")],
             ffi_name = _ffi_name_of(s),
         ))

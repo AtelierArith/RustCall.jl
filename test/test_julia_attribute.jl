@@ -165,8 +165,9 @@ using Libdl
     end
 
     @testset "manifest: schema version guard" begin
-        @test RustCall.MANIFEST_SCHEMA_VERSION == 12
-        @test RustCall._parse_manifest("schema_version = 12\nmode = \"inline\"\n")["schema_version"] == 12
+        @test RustCall.MANIFEST_SCHEMA_VERSION == 13
+        @test RustCall._parse_manifest("schema_version = 13\nmode = \"inline\"\n")["schema_version"] == 13
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 12\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 11\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 10\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 8\nmode = \"inline\"\n")
@@ -196,7 +197,7 @@ using Libdl
         end
         @test err isa RustCall.ExtractorError
         @test occursin("schema 1", sprint(showerror, err))
-        @test occursin("expects 12", sprint(showerror, err))
+        @test occursin("expects 13", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 3\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 4\nmode = \"inline\"\n")
