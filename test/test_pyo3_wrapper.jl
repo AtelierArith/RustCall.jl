@@ -109,6 +109,78 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
         end
     end
 
+    @testset "filtered defaults keep Python-owned lifetime policy (#371)" begin
+        mktempdir() do dir
+            mkpath(joinpath(dir, "src"))
+            manifest = replace(read(joinpath(PYO3_ONLY_CRATE, "Cargo.toml"), String),
+                               "sample_crate_pyo3_only" => "filtered_owned_371")
+            write(joinpath(dir, "Cargo.toml"), manifest)
+            write(joinpath(dir, "src", "lib.rs"), """
+                use pyo3::prelude::*;
+                use pyo3::types::PyAny;
+                use std::sync::atomic::{AtomicI32, Ordering};
+
+                static DROPPED: AtomicI32 = AtomicI32::new(0);
+
+                #[pyclass]
+                pub struct FilteredOwned;
+
+                impl Drop for FilteredOwned {
+                    fn drop(&mut self) { DROPPED.fetch_add(1, Ordering::SeqCst); }
+                }
+
+                #[pymethods]
+                impl FilteredOwned {
+                    #[new]
+                    pub fn new() -> Self { Self }
+
+                    #[pyo3(signature = (value = None))]
+                    pub fn filtered(&self, value: Option<Py<PyAny>>) { let _ = value; }
+                }
+
+                #[pyfunction]
+                pub fn dropped_filtered() -> i32 { DROPPED.load(Ordering::SeqCst) }
+                """)
+
+            wrapper = _link_libpython_wrapper(dir)
+            if wrapper === nothing
+                @test_skip "no linkable Python here"
+            else
+                owned = only(s for s in wrapper.info.julia_structs if s.name == "FilteredOwned")
+                @test owned.python_owned_handle
+                @test RustCall._python_owned_handle(owned)
+                @test all(m -> m.name != "filtered", owned.methods)
+
+                bindings = @rust_crate dir
+                M = getfield(bindings, :module_ref)
+                unloaded = false
+                try
+                    @test Base.invokelatest(getfield, M, :_PIN_LIBRARY)
+                    call_target = Base.invokelatest(getfield, M, :_call_target)
+                    dropped_ptr, _ = Base.invokelatest(call_target, "rustcall_dropped_filtered")
+                    before = ccall(dropped_ptr, Int32, ())
+                    object = Base.invokelatest(Base.invokelatest(getfield, M, :FilteredOwned))
+                    @test object.alive[]
+
+                    RustCall.unload_library(Base.invokelatest(getfield, M, :_LIB_NAME); close = true)
+                    unloaded = true
+                    # Python-owned objects carry a process-lifetime flag, not
+                    # the logical generation's flag that unload just cleared.
+                    @test object.alive[]
+                    finalize(object)
+                    for _ in 1:100
+                        ccall(dropped_ptr, Int32, ()) == before + 1 && break
+                        sleep(0.01)
+                    end
+                    @test ccall(dropped_ptr, Int32, ()) == before + 1
+                finally
+                    unloaded || RustCall.unload_library(
+                        Base.invokelatest(getfield, M, :_LIB_NAME); close = true)
+                end
+            end
+        end
+    end
+
     @testset "generation: what the wrapper exports, and what it refuses" begin
         if !RustCall.check_rustc_available()
             @test_skip "rustc is not available"

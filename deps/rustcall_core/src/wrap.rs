@@ -478,7 +478,8 @@ fn python_extract_type(f: &crate::manifest::Function) -> Result<Type, String> {
 /// the build the wrapper is compiled against may not have it, and a call to a
 /// missing member is a compile error in generated code (#307 review).
 fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStream2 {
-    if python_owned_class(s) {
+    s.python_owned_handle = python_owned_class(s);
+    if s.python_owned_handle {
         return python_class_wrappers(krate, s, cfg_resolved);
     }
     let class = callable_path(krate, &s.callable_path, &s.module_path, &s.name);

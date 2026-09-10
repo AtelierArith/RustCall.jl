@@ -125,7 +125,10 @@ use serde::{Deserialize, Serialize};
 ///   Rust attributes. Default expressions remain diagnostic manifest data;
 ///   generated wrappers ask PyO3's in-crate dispatcher to evaluate them in
 ///   their original lexical scope.
-pub const SCHEMA_VERSION: u32 = 12;
+/// * **13** adds [`Struct::python_owned_handle`], the wrapper generator's
+///   authoritative handle decision. Consumers must not re-infer it after
+///   skipped methods have been filtered from the binding surface.
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -655,6 +658,11 @@ pub struct Struct {
     /// `weakref`). They are data for the wrapper, not inferred from docs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pyo3_options: Vec<String>,
+    /// Whether this wrapper stores a Python object rather than a boxed Rust
+    /// `Self`. Set before wrapper generation filters unsupported methods;
+    /// consumers use it for image pinning and finalizer liveness.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub python_owned_handle: bool,
 
     /// `#[cfg(...)]` predicate of the struct item, see [`Function::cfg`].
     #[serde(default)]

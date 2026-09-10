@@ -1576,6 +1576,7 @@ function _pyo3_wrapper_items(manifest::Dict)
             module_path = st.module_path, attribute = st.attribute, vis = st.vis,
             skip_reason = st.skip_reason, python_name = st.python_name,
             pyo3_extends = st.pyo3_extends, pyo3_options = st.pyo3_options,
+            python_owned_handle = st.python_owned_handle,
             cfg_features = st.cfg_features, ffi_name = st.ffi_name))
     end
     return functions, structs, skipped, pyo3_exports

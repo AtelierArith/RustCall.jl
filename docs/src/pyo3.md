@@ -276,6 +276,7 @@ Manifest schema 5 adds, for every function, struct and method:
 | field `abi = "vec"` + `vec_element` + `free_symbol` | schema 10's owned-vector contract: the exact Julia element layout and the export that must release this getter's `(ptr, len, cap)` buffer |
 | argument `python_default` + `python_kind` | schema 12's PyO3 call shape; defaults remain Rust expressions and are evaluated only by PyO3's original dispatcher |
 | struct `pyo3_extends` + `pyo3_options` | schema 12's Python object shape, used to select a Python-owned inheritance handle |
+| struct `python_owned_handle` | schema 13's authoritative wrapper decision; retained after unsupported methods are filtered so generated modules still pin the image and keep finalizers live |
 
 A scanned item's `symbol` is the wrapper a Phase-2 wrapper crate *will* export —
 `rustcall_<name>` for a function, `rustcall_<Struct>_<method>` for a method, the
