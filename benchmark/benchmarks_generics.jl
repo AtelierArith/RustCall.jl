@@ -1,6 +1,8 @@
 # Performance benchmarks for generic functions in RustCall.jl
 # Tests monomorphization cost and performance of generic vs specialized functions
 
+include(joinpath(@__DIR__, "setup.jl"))
+
 using RustCall
 using BenchmarkTools
 

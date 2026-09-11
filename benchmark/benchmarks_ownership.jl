@@ -8,6 +8,8 @@
 #
 # Run with: julia --project benchmark/benchmarks_ownership.jl
 
+include(joinpath(@__DIR__, "setup.jl"))
+
 using RustCall
 
 # Check if Rust helpers library is available

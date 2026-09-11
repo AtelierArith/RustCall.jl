@@ -327,19 +327,19 @@ The following benchmarks were run on Julia 1.12, Rust 1.92.0, macOS.
 ```bash
 # Extractor + rustc compile-time benchmark (cold and warm)
 RUSTCALL_EXTRACT=/path/to/rustcall-extract \
-  julia --project benchmark/benchmarks_compile.jl
+  julia --project=benchmark benchmark/benchmarks_compile.jl
 
 # Basic benchmarks
-julia --project benchmark/benchmarks.jl
+julia --project=benchmark benchmark/benchmarks.jl
 
 # Ownership type benchmarks
-julia --threads=4 --project benchmark/benchmarks_ownership.jl
+julia --threads=4 --project=benchmark benchmark/benchmarks_ownership.jl
 
 # Array operation benchmarks
-julia --project benchmark/benchmarks_arrays.jl
+julia --project=benchmark benchmark/benchmarks_arrays.jl
 
 # Generics benchmarks
-julia --project benchmark/benchmarks_generics.jl
+julia --project=benchmark benchmark/benchmarks_generics.jl
 ```
 
 ### Inline compilation benchmark (#271)

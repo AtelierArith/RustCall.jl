@@ -2,6 +2,8 @@
 # Run: julia --threads=4 --project benchmark/benchmarks_retirement.jl
 # This is NOT a reclamation implementation: a correct protocol also needs
 # publication/recheck ordering, live-object pins, and safe finalizer handling.
+include(joinpath(@__DIR__, "setup.jl"))
+
 using BenchmarkTools
 using Printf
 using RustCall

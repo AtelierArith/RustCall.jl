@@ -86,10 +86,10 @@ cd deps/rustcall_julia_macros && cargo test --all-features
 The repository includes benchmark scripts comparing native Julia paths with `@rust`.
 
 ```bash
-julia --project benchmark/benchmarks.jl
-julia --project benchmark/benchmarks_arrays.jl
-julia --project benchmark/benchmarks_generics.jl
-julia --project benchmark/benchmarks_ownership.jl
+julia --project=benchmark benchmark/benchmarks.jl
+julia --project=benchmark benchmark/benchmarks_arrays.jl
+julia --project=benchmark benchmark/benchmarks_generics.jl
+julia --project=benchmark benchmark/benchmarks_ownership.jl
 ```
 
 ## Development Setup

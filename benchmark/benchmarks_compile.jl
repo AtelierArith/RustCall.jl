@@ -2,13 +2,16 @@
 #
 # Run with:
 #   RUSTCALL_EXTRACT=/path/to/rustcall-extract \
-#     julia --project benchmark/benchmarks_compile.jl
+#     julia --project=benchmark benchmark/benchmarks_compile.jl
 #
 # The cold operation uses a fresh source identity on every sample, so it pays
 # for extraction and rustc without a cache hit. The warm operation first builds
 # one source, then unloads it and measures repeated disk-cache loads; expansion
 # is memoized by that point. BenchmarkTools is used with one evaluation per
 # sample because compiling a Rust cdylib is not a nanosecond-scale operation.
+
+include(joinpath(@__DIR__, "setup.jl"))
+
 using BenchmarkTools
 using Printf
 using RustCall
