@@ -13,8 +13,9 @@
 #
 # A test that starts needing another registry crate fails here until the crate
 # is added to that manifest — a visible, reviewable act instead of a silent
-# new download on every CI run. Because CARGO_HOME is not cached, step 2 also
-# cannot be rescued by a warm cache from an earlier run.
+# new download on every CI run. Neither CARGO_HOME nor the Julia depot is
+# cached for this job, so step 2 cannot be rescued by a warm registry cache or
+# by a RustCall artifact an earlier run compiled.
 #
 # What this does and does not prove
 # ---------------------------------
@@ -52,7 +53,13 @@ jobs:
         with:
           version: '1'
       - uses: dtolnay/rust-toolchain@stable
-      - uses: julia-actions/cache@v2
+      # `julia-actions/cache@v2` is deliberately absent. It restores Julia
+      # scratchspaces, and RustCall's compiled-artifact cache lives in one
+      # (`get_cache_dir`), so a library built by an earlier run could satisfy a
+      # test without Cargo being invoked at all — the declared-closure check
+      # would be rescued by history rather than proven (#338 review of #384).
+      # Overriding `RUSTCALL_CACHE_DIR` instead is not an option: `test_cache`
+      # asserts the default scratch-space layout.
       - name: Fetch the declared dependency closure
         run: |
           cargo fetch --manifest-path deps/rustcall_extract/Cargo.toml
