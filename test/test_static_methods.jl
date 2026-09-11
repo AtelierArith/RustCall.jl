@@ -67,7 +67,7 @@ end
 
     @testset "inline rust\"\"\" path agrees" begin
         if !RustCall.check_rustc_available()
-            @warn "rustc not available, skipping the inline #323 test"
+            @test_skip "rustc not available, skipping the inline #323 test"
         else
             # A free `twice` and a static `Yeller::twice` in one block, plus a
             # static `thrice` that collides with nothing — whose argument is
@@ -109,7 +109,7 @@ end
     end
 
     if !_SM_HAVE_CARGO || !RustCall.check_rustc_available()
-        @warn "cargo/rustc not available, skipping the behavioural #323 tests"
+        @test_skip "cargo/rustc not available, skipping the behavioural #323 tests"
     else
         @testset "both `shout`s are callable, in memory" begin
             bindings = @rust_crate SM_SAMPLE_CRATE name="StaticMethodBindings"

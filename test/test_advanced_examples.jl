@@ -4,7 +4,7 @@ using Test
 
 @testset "Advanced Examples" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping advanced examples tests"
+        @test_skip "rustc not found, skipping advanced examples tests"
         return
     end
 

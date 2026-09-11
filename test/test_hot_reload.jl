@@ -11,7 +11,7 @@ const SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
 
     @testset "File discovery" begin
         if !isdir(SAMPLE_CRATE_PATH)
-            @warn "Sample crate not found, skipping file discovery tests"
+            @test_skip "Sample crate not found, skipping file discovery tests"
             return
         end
 
@@ -115,14 +115,24 @@ const SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
     end
 
     @testset "Per-library lock serializes reload across tasks" begin
-        # Verify that acquiring the lock blocks other tasks
+        # Verify that acquiring the lock blocks other tasks.
+        #
+        # No fixed sleep is used to establish state (#259): the task announces
+        # that it is about to take the lock through a channel, and the test
+        # then asserts that it does *not* get through within a generous
+        # window. A timeout asserting an absence is sound where a fixed sleep
+        # asserting a presence is a race. The far side is deterministic —
+        # `wait(t)` returns when the task really has run.
         lib_lock = RustCall._get_reload_lock("test_serialization")
         order = Int[]
+        about_to_lock = Channel{Nothing}(1)
+        # `try` opens a scope, so the task handle is bound outside it.
+        t = nothing
 
         lock(lib_lock)
         try
-            # Spawn a task that tries to acquire the same lock
             t = @async begin
+                put!(about_to_lock, nothing)
                 lock(lib_lock)
                 try
                     push!(order, 2)
@@ -131,17 +141,16 @@ const SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
                 end
             end
 
-            # Give the async task time to attempt the lock
-            sleep(0.1)
-            # Task should be blocked — order should still be empty
-            @test isempty(order)
+            take!(about_to_lock)
+            # The task is blocked on the lock we hold, so it must not push
+            # within the window; `:timed_out` is the passing outcome.
+            @test timedwait(() -> !isempty(order), 1.0) === :timed_out
             push!(order, 1)
         finally
             unlock(lib_lock)
         end
 
-        # Now the async task should complete
-        sleep(0.1)
+        wait(t)
         @test order == [1, 2]
 
         # Clean up
@@ -155,7 +164,7 @@ end
 # Integration tests with actual crate (slower)
 @testset "Hot Reload Integration" begin
     if !isdir(SAMPLE_CRATE_PATH)
-        @warn "Sample crate not found, skipping hot reload integration tests"
+        @test_skip "Sample crate not found, skipping hot reload integration tests"
         return
     end
 
@@ -163,7 +172,7 @@ end
     try
         run(pipeline(`$(cargo()) --version`, devnull))
     catch
-        @warn "Cargo not available, skipping hot reload integration tests"
+        @test_skip "Cargo not available, skipping hot reload integration tests"
         return
     end
 
@@ -192,14 +201,12 @@ end
 
             # Disable hot reload
             RustCall.disable_hot_reload("SampleCrateHotReload")
-            sleep(0.1)  # Give task time to stop
 
             @test !RustCall.HOT_RELOAD_REGISTRY["SampleCrateHotReload"].enabled
 
         finally
             # Clean up
             RustCall.disable_all_hot_reload()
-            sleep(0.1)
             empty!(RustCall.HOT_RELOAD_REGISTRY)
         end
     end
@@ -295,7 +302,6 @@ end
             @test ptr != C_NULL
         finally
             RustCall.disable_all_hot_reload()
-            sleep(0.1)
             empty!(RustCall.HOT_RELOAD_REGISTRY)
             lock(RustCall.REGISTRY_LOCK) do
                 delete!(RustCall.RUST_LIBRARIES, lib_name)
@@ -323,7 +329,6 @@ end
 
         finally
             RustCall.disable_all_hot_reload()
-            sleep(0.1)
             empty!(RustCall.HOT_RELOAD_REGISTRY)
         end
     end
@@ -351,7 +356,6 @@ end
 
         finally
             RustCall.disable_all_hot_reload()
-            sleep(0.1)
             empty!(RustCall.HOT_RELOAD_REGISTRY)
         end
     end

@@ -35,7 +35,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
     @testset "scan_crate" begin
         if !isdir(SAMPLE_CRATE_PATH)
-            @warn "Sample crate not found, skipping scan_crate tests"
+            @test_skip "Sample crate not found, skipping scan_crate tests"
             return
         end
 
@@ -65,7 +65,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
     @testset "parse_cargo_toml" begin
         cargo_toml_path = joinpath(SAMPLE_CRATE_PATH, "Cargo.toml")
         if !isfile(cargo_toml_path)
-            @warn "Cargo.toml not found, skipping test"
+            @test_skip "Cargo.toml not found, skipping test"
             return
         end
 
@@ -78,7 +78,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
     @testset "find_rust_sources" begin
         if !isdir(SAMPLE_CRATE_PATH)
-            @warn "Sample crate not found, skipping test"
+            @test_skip "Sample crate not found, skipping test"
             return
         end
 
@@ -91,7 +91,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
     @testset "scan_crate skips include!() fragments" begin
         if !RustCall.check_rustc_available()
-            @warn "rustc not found, skipping"
+            @test_skip "rustc not found, skipping"
         else
             mktempdir() do dir
                 mkpath(joinpath(dir, "src"))
@@ -119,7 +119,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
     @testset "crate-mode manifest: #[julia] structs" begin
         if !RustCall.check_rustc_available()
-            @warn "rustc not found, skipping"
+            @test_skip "rustc not found, skipping"
         else
             code = """
             use rustcall_julia_macros::julia;
@@ -151,7 +151,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
     end
     @testset "create_wrapper_crate" begin
         if !isdir(SAMPLE_CRATE_PATH)
-            @warn "Sample crate not found, skipping test"
+            @test_skip "Sample crate not found, skipping test"
             return
         end
 
@@ -178,7 +178,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
     @testset "compute_crate_hash" begin
         if !isdir(SAMPLE_CRATE_PATH)
-            @warn "Sample crate not found, skipping test"
+            @test_skip "Sample crate not found, skipping test"
             return
         end
 
@@ -245,7 +245,7 @@ end
 # This is a heavier test that requires cargo and takes longer
 @testset "Crate Bindings Integration" begin
     if !isdir(SAMPLE_CRATE_PATH)
-        @warn "Sample crate not found, skipping integration tests"
+        @test_skip "Sample crate not found, skipping integration tests"
         return
     end
 
@@ -253,7 +253,7 @@ end
     try
         run(pipeline(`$(cargo()) --version`, devnull))
     catch
-        @warn "Cargo not available, skipping integration tests"
+        @test_skip "Cargo not available, skipping integration tests"
         return
     end
 
@@ -273,7 +273,7 @@ end
 
 @testset "Result and Option Type Parsing" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping"
+        @test_skip "rustc not found, skipping"
     else
         sigs(code) = RustCall.manifest_function_signatures(RustCall.extract_manifest(code; mode = "crate"))
 
@@ -439,14 +439,14 @@ end
 
 @testset "Result and Option Runtime Wrappers" begin
     if !isdir(SAMPLE_CRATE_PATH)
-        @warn "Sample crate not found, skipping Result/Option wrapper tests"
+        @test_skip "Sample crate not found, skipping Result/Option wrapper tests"
         return
     end
 
     try
         run(pipeline(`$(cargo()) --version`, devnull))
     catch
-        @warn "Cargo not available, skipping Result/Option wrapper tests"
+        @test_skip "Cargo not available, skipping Result/Option wrapper tests"
         return
     end
 
@@ -476,14 +476,14 @@ end
 
 @testset "Function Scope Usage" begin
     if !isdir(SAMPLE_CRATE_PATH)
-        @warn "Sample crate not found, skipping function scope usage tests"
+        @test_skip "Sample crate not found, skipping function scope usage tests"
         return
     end
 
     try
         run(pipeline(`$(cargo()) --version`, devnull))
     catch
-        @warn "Cargo not available, skipping function scope usage tests"
+        @test_skip "Cargo not available, skipping function scope usage tests"
         return
     end
 
@@ -509,7 +509,7 @@ end
 
 @testset "Precompilation Support" begin
     if !isdir(SAMPLE_CRATE_PATH)
-        @warn "Sample crate not found, skipping precompilation tests"
+        @test_skip "Sample crate not found, skipping precompilation tests"
         return
     end
 
@@ -517,7 +517,7 @@ end
     try
         run(pipeline(`$(cargo()) --version`, devnull))
     catch
-        @warn "Cargo not available, skipping precompilation tests"
+        @test_skip "Cargo not available, skipping precompilation tests"
         return
     end
 

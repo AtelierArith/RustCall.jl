@@ -428,7 +428,7 @@ using Test
             end
         end
     else
-        @warn "rustc not found, skipping compilation tests"
+        @test_skip "rustc not found, skipping compilation tests"
     end
 
     @testset "Temp directory cleanup (issue #88)" begin
@@ -472,7 +472,7 @@ using Test
                 rm(debug_dir, recursive=true, force=true)
             end
         else
-            @warn "rustc not found, skipping temp directory cleanup tests"
+            @test_skip "rustc not found, skipping temp directory cleanup tests"
         end
     end
 
@@ -544,7 +544,7 @@ using Test
                 rm(dirname(lib_path), recursive=true, force=true)
             end
         else
-            @warn "rustc not found, skipping error handling enhancement tests"
+            @test_skip "rustc not found, skipping error handling enhancement tests"
         end
     end
 end

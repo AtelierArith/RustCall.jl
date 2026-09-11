@@ -552,7 +552,7 @@ _manifest(text::AbstractString) = TOML.parse(text)
     end
 
     if probe === nothing || !probe.resolved
-        @warn "Cargo could not resolve the example crates; skipping the resolved link-plan tests"
+        @test_skip "Cargo could not resolve the example crates; skipping the resolved link-plan tests"
     else
         @testset "resolved: mandatory pyo3 links libpython" begin
             plan = RustCall.pyo3_link_plan(mandatory_crate)
@@ -642,7 +642,7 @@ _manifest(text::AbstractString) = TOML.parse(text)
                 """)
                 plan = RustCall.pyo3_link_plan(dir)
                 if !plan.resolved
-                    @warn "Cargo could not resolve the dev-dependency crate; skipping"
+                    @test_skip "Cargo could not resolve the dev-dependency crate; skipping"
                 else
                     @test plan.mode === :link_libpython
                     @test !("extension-module" in plan.pyo3_features)

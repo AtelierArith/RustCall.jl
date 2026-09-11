@@ -4,7 +4,7 @@ using Test
 
 @testset "Struct Examples" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping struct examples tests"
+        @test_skip "rustc not found, skipping struct examples tests"
         return
     end
 

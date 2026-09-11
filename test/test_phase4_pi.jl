@@ -4,7 +4,7 @@ using Test
 
 @testset "Phase 4: Monte Carlo Pi Example" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping phase4_pi tests"
+        @test_skip "rustc not found, skipping phase4_pi tests"
         return
     end
 

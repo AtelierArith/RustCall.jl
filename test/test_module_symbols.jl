@@ -429,7 +429,7 @@ end
     end
 
     if !_MS_HAVE_CARGO || !RustCall.check_rustc_available()
-        @warn "cargo/rustc not available, skipping the behavioural #300 tests"
+        @test_skip "cargo/rustc not available, skipping the behavioural #300 tests"
     else
         @testset "both `run`s and both `C`s are callable through @rust_crate" begin
             mktempdir() do dir

@@ -663,6 +663,6 @@ end
             end
         end
     else
-        @warn "rustc not found, skipping cache integration tests"
+        @test_skip "rustc not found, skipping cache integration tests"
     end
 end
