@@ -789,20 +789,21 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
 
     // Items already exported by a RustCall attribute own their symbols
     // outright: a PyO3 entry that wants one is the loser whatever the order.
+    // What a RustCall-attributed entry claims is derived in exactly one place
+    // (`crate::claims`, #338), so a name added to the codegen cannot be
+    // remembered here and forgotten by the `#[julia]` duplicate check, or the
+    // other way round.
     for f in manifest
         .functions
         .iter()
         .filter(|f| !f.attribute.is_pyo3_scan())
     {
-        if f.exported && !f.symbol.is_empty() {
-            for symbol in wrapper_symbols(&f.symbol) {
-                taken.push((symbol, qualified(&f.module_path, &f.name), f.cfg.clone()));
-            }
-            if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
-                for symbol in string_helper_symbols(&f.ffi_name) {
-                    taken.push((symbol, qualified(&f.module_path, &f.name), f.cfg.clone()));
-                }
-            }
+        for claim in crate::claims::function_claims(f, crate::claims::Policy::PYO3_SCAN) {
+            taken.push((
+                claim.name,
+                qualified(&f.module_path, &f.name),
+                f.cfg.clone(),
+            ));
         }
     }
     for s in manifest
@@ -810,8 +811,12 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         .iter()
         .filter(|s| !s.attribute.is_pyo3_scan())
     {
-        for symbol in struct_symbols(s) {
-            taken.push((symbol, qualified(&s.module_path, &s.name), s.cfg.clone()));
+        for claim in crate::claims::struct_claims(s, crate::claims::Policy::PYO3_SCAN) {
+            taken.push((
+                claim.name,
+                qualified(&s.module_path, &s.name),
+                s.cfg.clone(),
+            ));
         }
     }
 
@@ -1024,11 +1029,8 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
 /// the same helpers twice and the generated crate does not compile; all three
 /// names are reserved whenever the item may declare any of them (#307 review).
 fn string_helper_symbols(owner: &str) -> [String; 3] {
-    [
-        format!("{owner}_RustCallOwnedString"),
-        format!("{owner}_free_rust_string"),
-        format!("{owner}_RustCallBorrowedString"),
-    ]
+    let [owned, free] = crate::claims::owned_string_names(owner);
+    [owned, free, crate::claims::borrowed_string_name(owner)]
 }
 
 /// Whether a wrapper for an item with these manifest types declares a string
@@ -1061,49 +1063,13 @@ fn is_string_spelling(spelling: &str) -> bool {
 /// and all are checked (#307 review). Field accessors have no reader and
 /// derive nothing.
 fn wrapper_symbols(symbol: &str) -> [String; 3] {
+    let claims = crate::claims::wrapper_claims(symbol, true);
+    let mut names = claims.into_iter().map(|c| c.name);
     [
-        symbol.to_string(),
-        format!("{symbol}{}", crate::codegen::PANIC_SYMBOL_SUFFIX),
-        format!("__RUSTCALL_PANIC_{}", symbol.to_uppercase()),
+        names.next().expect("entry point"),
+        names.next().expect("panic reader"),
+        names.next().expect("panic slot"),
     ]
-}
-
-/// Every symbol a struct entry claims: its wrappable methods (with their
-/// panic readers and string helpers), its field accessors, and the
-/// struct-level owned-string helper its `String` getters share.
-fn struct_symbols(s: &Struct) -> Vec<String> {
-    let mut out = Vec::new();
-    if s.type_params.is_empty() {
-        let free = crate::codegen::struct_free_symbol(&s.ffi_name);
-        out.push(crate::codegen::panic_symbol(&free));
-        out.push(free);
-    }
-    for m in &s.methods {
-        if m.skip_reason.is_empty() && !m.symbol.is_empty() {
-            out.extend(wrapper_symbols(&m.symbol));
-            if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
-                out.extend(string_helper_symbols(&format!("{}_{}", s.ffi_name, m.name)));
-            }
-        }
-    }
-    if s.has_owned_string_helper {
-        out.extend(string_helper_symbols(&s.ffi_name));
-    }
-    for f in &s.fields {
-        if !f.getter.is_empty() {
-            out.push(f.getter.clone());
-            out.push(crate::codegen::panic_symbol(&f.getter));
-            if f.abi == "vec" {
-                out.push(format!("{}_RustCallOwnedVec", f.getter));
-                out.push(f.free_symbol.clone());
-            }
-        }
-        if !f.setter.is_empty() {
-            out.push(f.setter.clone());
-            out.push(crate::codegen::panic_symbol(&f.setter));
-        }
-    }
-    out
 }
 
 fn merge_route_cfg(

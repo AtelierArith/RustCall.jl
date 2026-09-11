@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **One list of what a manifest entry claims**
+  ([#338](https://github.com/AtelierArith/RustCall.jl/issues/338)). The
+  `#[julia]` duplicate-symbol check and the PyO3 collision analysis each
+  derived the names an entry's generated code defines, and the two lists had
+  drifted — the `#[julia]` side forgot the panic readers, fixed in v0.3.3.
+  Both now read `rustcall_core::claims`, and the three respects in which the
+  scans genuinely differ — whether module-private names count, whether a
+  `#[cfg]`-gated entry is kept with its predicate, and whether the string
+  helpers are taken as declared or reserved because the wrapper crate has not
+  been generated yet — are a `Policy` rather than a second implementation.
+
+### Changed
 - **Skipped testsets are counted, and the hot-reload tests no longer use a
   fixed `sleep` to synchronise**
   ([#259](https://github.com/AtelierArith/RustCall.jl/issues/259)). Sixty-five
