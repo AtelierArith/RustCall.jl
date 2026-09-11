@@ -855,3 +855,82 @@ fn an_exported_clash_is_still_reported_as_an_export() {
     );
     assert!(!err.contains("duplicate generated item"), "{err}");
 }
+
+/// A private name only has to be unique in the module the wrapper is emitted
+/// into. `mod a { fn foo }` and `mod A { fn FOO }` export two different
+/// symbols and spell one slot name, but the two slots are in different Rust
+/// modules and both compile — so this is not a duplicate (#338 review).
+#[test]
+fn private_names_are_compared_within_their_module() {
+    let src = r#"
+        #[julia] pub mod a { #[julia] pub fn foo() -> i32 { 1 } }
+        #[julia] pub mod A { #[julia] pub fn FOO() -> i32 { 2 } }
+    "#;
+    let inline = rustcall_core::expand::expand(src).unwrap();
+    assert!(
+        inline.manifest.duplicate_claims().is_empty(),
+        "{:?}",
+        inline.manifest.duplicate_claims()
+    );
+    assert!(
+        !inline.source.contains("compile_error"),
+        "{}",
+        inline.source
+    );
+    // The crate scan agrees.
+    extract(src, Mode::Crate).expect("two modules may spell one slot name");
+
+    // Within *one* module they really do meet.
+    let same = rustcall_core::expand::expand(
+        r#"
+        #[julia] pub mod a {
+            #[julia] pub fn foo() -> i32 { 1 }
+            #[julia] pub fn FOO() -> i32 { 2 }
+        }
+        "#,
+    )
+    .unwrap();
+    let dups = same.manifest.duplicate_claims();
+    assert_eq!(dups.len(), 1, "{dups:?}");
+    assert!(!dups[0].0.exported);
+}
+
+/// Rust keeps types and values apart, so a generated buffer *type* and an
+/// exported *function* of one spelling may coexist. Comparing names alone
+/// refused a crate that builds (#338 review).
+#[test]
+fn claims_are_compared_within_their_rust_namespace() {
+    use rustcall_core::claims::Namespace;
+
+    let m = extract(
+        r#"
+            #[julia] pub fn peek() -> &'static str { "hi" }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let claims = m.claim_owners();
+    let view = claims
+        .iter()
+        .find(|(c, _)| c.name == "peek_RustCallBorrowedString")
+        .expect("a borrowed `&str` declares its view type");
+    assert_eq!(view.0.namespace, Namespace::Type);
+    assert!(!view.0.exported);
+
+    let wrapper = claims
+        .iter()
+        .find(|(c, _)| c.name == "rustcall_peek")
+        .unwrap();
+    assert_eq!(wrapper.0.namespace, Namespace::Value);
+
+    // A second function spelling the view type's name is a value, so the two
+    // do not meet.
+    let both = extract(
+        r#"
+            #[julia] pub fn peek() -> &'static str { "hi" }
+            #[no_mangle] pub extern "C" fn peek_RustCallBorrowedString() -> i32 { 0 }
+        "#,
+        Mode::Crate,
+    );
+    assert!(both.is_ok(), "{:?}", both.err());
+}

@@ -25,6 +25,46 @@
 use crate::codegen::{panic_symbol, struct_free_symbol};
 use crate::manifest::{Function, Struct};
 
+/// Which of Rust's two name spaces a generated item occupies. `struct Foo`
+/// and `fn Foo` may coexist in one module, so two claims of one spelling are
+/// a clash only when they are in the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Namespace {
+    /// A function or a `thread_local!` static.
+    Value,
+    /// A generated `#[repr(C)]` buffer type.
+    Type,
+}
+
+/// Where a generated name has to be unique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// The whole `cdylib`: a `#[no_mangle]` symbol, which the linker sees
+    /// once however many modules it is written across.
+    Global,
+    /// One Rust module of the crate, by path. A private item is emitted next
+    /// to its wrapper, so `mod a { fn foo }` and `mod A { fn FOO }` may spell
+    /// one slot name and still compile.
+    Module(Vec<String>),
+    /// Emitted in a module this scan cannot name — a method wrapped at a
+    /// `#[julia] impl` block in another module than its struct, whose path
+    /// the manifest does not record (#342). Never compared: rustc still
+    /// reports such a clash, and a false duplicate would refuse a crate that
+    /// builds.
+    Unknown,
+}
+
+impl Scope {
+    /// Whether two claims in these scopes can meet. `Unknown` meets nothing.
+    pub fn meets(&self, other: &Scope) -> bool {
+        match (self, other) {
+            (Scope::Global, Scope::Global) => true,
+            (Scope::Module(a), Scope::Module(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 /// One name the generated code defines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
@@ -33,22 +73,51 @@ pub struct Claim {
     /// module-private one: a panic slot or a helper type (a compile-time
     /// clash in the module the wrapper is emitted into).
     pub exported: bool,
+    pub namespace: Namespace,
+    pub scope: Scope,
 }
 
 impl Claim {
+    /// Whether these two claims are the same name in the same place — the
+    /// question both duplicate checks ask.
+    pub fn clashes_with(&self, other: &Claim) -> bool {
+        self.name == other.name
+            && self.namespace == other.namespace
+            && self.scope.meets(&other.scope)
+    }
+
     fn exported(name: String) -> Claim {
         Claim {
             name,
             exported: true,
+            namespace: Namespace::Value,
+            scope: Scope::Global,
         }
     }
 
-    fn private(name: String) -> Claim {
+    fn private(name: String, namespace: Namespace) -> Claim {
         Claim {
             name,
             exported: false,
+            namespace,
+            scope: Scope::Unknown,
         }
     }
+
+    fn in_scope(mut self, scope: &Scope) -> Claim {
+        if !self.exported {
+            self.scope = scope.clone();
+        }
+        self
+    }
+}
+
+/// Put every private claim of a list in `scope`; exported ones stay global.
+fn scoped(claims: Vec<Claim>, scope: &Scope) -> Vec<Claim> {
+    claims
+        .into_iter()
+        .map(|claim| claim.in_scope(scope))
+        .collect()
 }
 
 /// Which string helpers an entry is credited with.
@@ -161,7 +230,7 @@ fn exported_first(mut claims: Vec<Claim>) -> Vec<Claim> {
 /// the slot that reader drains.
 pub fn wrapper_claims(symbol: &str) -> Vec<Claim> {
     let mut out = helper_claims(symbol);
-    out.push(Claim::private(panic_slot(symbol)));
+    out.push(Claim::private(panic_slot(symbol), Namespace::Value));
     out
 }
 
@@ -185,11 +254,11 @@ pub fn string_claims(owner: &str, owned: bool, borrowed: bool, policy: Policy) -
     let mut out = Vec::new();
     if owned {
         let [ty, free] = owned_string_names(owner);
-        out.push(Claim::private(ty));
+        out.push(Claim::private(ty, Namespace::Type));
         out.push(Claim::exported(free));
     }
     if borrowed {
-        out.push(Claim::private(borrowed_string_name(owner)));
+        out.push(Claim::private(borrowed_string_name(owner), Namespace::Type));
     }
     out
 }
@@ -230,7 +299,8 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
             policy,
         ));
     }
-    exported_first(out)
+    // The wrapper and its private items are emitted next to the function.
+    exported_first(scoped(out, &Scope::Module(f.module_path.clone())))
 }
 
 /// The same for a PyO3-scanned function, whose ABI columns are not filled in
@@ -260,6 +330,10 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
     if (policy.skip_cfg_gated && !s.cfg.is_empty()) || s.ffi_name.is_empty() {
         return Vec::new();
     }
+    // Everything a struct's own wrappers define is emitted next to the
+    // struct; a method wrapped at a `#[julia] impl` block in another module
+    // is the exception, handled below.
+    let here = Scope::Module(s.module_path.clone());
     let mut out = Vec::new();
     // A generic struct exports nothing itself.
     if s.type_params.is_empty() {
@@ -275,7 +349,9 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             }
         }
         if field.abi == "vec" && !field.getter.is_empty() {
-            out.push(Claim::private(owned_vec_names(&field.getter)));
+            out.push(
+                Claim::private(owned_vec_names(&field.getter), Namespace::Type).in_scope(&here),
+            );
             if !field.free_symbol.is_empty() {
                 out.push(Claim::exported(field.free_symbol.clone()));
             }
@@ -309,7 +385,15 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             continue;
         }
         if !m.symbol.is_empty() {
-            out.extend(wrapper_claims(&m.symbol));
+            // A method wrapped next to its struct shares the struct's module
+            // (`string_owner == ffi_name`, #342); one wrapped at a block
+            // elsewhere is emitted in a module the manifest does not record.
+            let where_ = if m.string_owner == s.ffi_name || m.string_owner.is_empty() {
+                here.clone()
+            } else {
+                Scope::Unknown
+            };
+            out.extend(scoped(wrapper_claims(&m.symbol), &where_));
         }
         let abis = [
             m.return_abi.as_str(),
@@ -333,7 +417,15 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
         );
     }
     for (owner, owned, borrowed) in buffers {
-        out.extend(string_claims(&owner, owned, borrowed, policy));
+        let where_ = if owner == s.ffi_name {
+            here.clone()
+        } else {
+            Scope::Unknown
+        };
+        out.extend(scoped(
+            string_claims(&owner, owned, borrowed, policy),
+            &where_,
+        ));
     }
     exported_first(out)
 }

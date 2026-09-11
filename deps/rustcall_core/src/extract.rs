@@ -627,9 +627,12 @@ pub struct CrateScan {
     plain_structs: Vec<PlainStruct>,
     impls: Vec<ScannedImpl>,
     imports: Vec<ScannedImport>,
-    /// Every exported symbol seen so far and the item that claims it, so a
-    /// second claimant is reported with both locations (#300).
-    claimed: Vec<(String, String)>,
+    /// Every name the generated code defines so far and the item that claims
+    /// it, so a second claimant is reported with both locations (#300). A
+    /// claim carries its Rust namespace and the scope it has to be unique in,
+    /// because an exported symbol is crate-global while a private item only
+    /// has to be unique in its own module (#338).
+    claimed: Vec<(crate::claims::Claim, String)>,
 }
 
 #[derive(Debug)]
@@ -962,8 +965,9 @@ impl CrateScan {
         } else {
             format!("{owner} in {file}")
         };
-        let symbol = &claim.name;
-        if let Some((_, first)) = self.claimed.iter().find(|(s, _)| s == symbol) {
+        let symbol = claim.name.clone();
+        let symbol = &symbol;
+        if let Some((_, first)) = self.claimed.iter().find(|(c, _)| c.clashes_with(&claim)) {
             let kind = crate::claims::clash_kind(&claim);
             let detail = if claim.exported {
                 "Two #[julia] items of one crate export the same symbol; only inline modules \
@@ -984,7 +988,7 @@ impl CrateScan {
                 "duplicate {kind} `{symbol}`: claimed by {first} and by {here}. {detail}"
             )));
         }
-        self.claimed.push((claim.name, here));
+        self.claimed.push((claim, here));
         Ok(())
     }
 

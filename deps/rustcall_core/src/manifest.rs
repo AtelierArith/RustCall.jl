@@ -921,7 +921,10 @@ impl Manifest {
         let mut seen: Vec<(crate::claims::Claim, String)> = Vec::new();
         let mut out = Vec::new();
         for (claim, who) in self.claim_owners() {
-            match seen.iter().find(|(c, _)| c.name == claim.name) {
+            // Same name is not enough: an exported symbol is crate-global,
+            // while a private item has to be unique only in its own module
+            // and its own Rust namespace (#338 review).
+            match seen.iter().find(|(c, _)| c.clashes_with(&claim)) {
                 Some((_, first)) => out.push((claim, first.clone(), who)),
                 None => seen.push((claim, who)),
             }
