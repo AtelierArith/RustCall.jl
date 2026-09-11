@@ -38,8 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the block, which also makes its estimate reproducible. The fixture crates
   now carry a committed `Cargo.lock`, so their resolution is pinned instead of
   being whatever crates.io offers on the day.
-
-### Changed
 - **One list of what a manifest entry claims**
   ([#338](https://github.com/AtelierArith/RustCall.jl/issues/338)). The
   `#[julia]` duplicate-symbol check and the PyO3 collision analysis each
