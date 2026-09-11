@@ -77,16 +77,23 @@ every push.
   `RUSTCALL_REQUIRE_TOOLCHAIN=true` to get the same behaviour locally.
 - The **network-dependent tests are opt-in**. `test_external_crates.jl`,
   `test_ndarray.jl` and `test_phase4_ndarray.jl` build Cargo projects against
-  serde_json, regex, uuid and ndarray; they are skipped unless their variable
-  is set, and the scheduled `Network integration` workflow sets all four:
+  serde_json, regex, uuid, chrono, libc and ndarray. Every registry-backed
+  compilation in those three files sits behind a variable, so they reach
+  crates.io only when asked to; the scheduled `Network integration` workflow
+  sets all five:
 
   ```bash
   RUSTCALL_RUN_SERDE_TESTS=true \
   RUSTCALL_RUN_REGEX_TESTS=true \
   RUSTCALL_RUN_UUID_TESTS=true \
+  RUSTCALL_RUN_CHRONO_TESTS=true \
   RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS=true \
     julia --project -e 'using Pkg; Pkg.test()'
   ```
+
+  Other files still build against the registry by design — `test_cargo.jl`
+  exercises the `// cargo-deps:` path with `itoa`, and the PyO3 fixtures need
+  pyo3 — so the default run is not offline.
 
 Useful commands:
 

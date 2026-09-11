@@ -11,7 +11,14 @@ using Test
 const RUN_HEAVY_INTEGRATION_TESTS =
     get(ENV, "RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS", "false") == "true"
 
-# Lightweight integration tests with small crates (libc, etc.) - run by default
+# These are lightweight next to ndarray, but `libc` still comes from the
+# registry, so they share the gate: this file reaches crates.io only when it is
+# asked to (#259).
+if !RUN_HEAVY_INTEGRATION_TESTS
+    @testset "External Crate Integration (skipped)" begin
+        @test_skip "Set RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS=true to run external crate tests"
+    end
+else
 @testset "External Crate Integration" begin
 
     @testset "Simple crate usage (libc)" begin
@@ -84,6 +91,7 @@ const RUN_HEAVY_INTEGRATION_TESTS =
 
         @test result1 == result2 == 123
     end
+end
 end
 
 # Heavy integration tests (ndarray, bitflags, etc.) - optional

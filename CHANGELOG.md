@@ -17,8 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Pkg.build` produced the helpers library. The serde_json, regex, uuid and
   ndarray integration tests became opt-in — their variables default to `false`
   and a scheduled `Network integration` workflow, which is allowed to fail,
-  sets all four — so a crates.io hiccup no longer turns an unrelated pull
-  request red.
+  sets them — so a crates.io hiccup no longer turns an unrelated pull request
+  red. `test_external_crates.jl`, `test_ndarray.jl` and
+  `test_phase4_ndarray.jl` reach the registry only when asked to; the
+  cargo-tree regression of #278 moved to `test/test_cargo.jl`, where it keeps
+  running by default.
 
 ### Changed
 - **`BenchmarkTools` is no longer a runtime dependency, and Aqua.jl now

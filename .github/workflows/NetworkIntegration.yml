@@ -48,6 +48,7 @@ jobs:
           RUSTCALL_RUN_SERDE_TESTS: 'true'
           RUSTCALL_RUN_REGEX_TESTS: 'true'
           RUSTCALL_RUN_UUID_TESTS: 'true'
+          RUSTCALL_RUN_CHRONO_TESTS: 'true'
           RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS: 'true'
         with:
           test_args: --jobs=2 test_external_crates test_ndarray test_phase4_ndarray
