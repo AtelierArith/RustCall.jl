@@ -1,0 +1,36 @@
+# The registry crates the default `Pkg.test()` run needs, declared in one
+# place (issue #259).
+#
+# Almost everything the suite builds depends only on the repository's own
+# crates through `path =`, or on crates that are already in the dependency
+# closure of `deps/rustcall_extract`, `deps/rust_helpers` and
+# `deps/rustcall_julia_macros`. What is left is listed here:
+#
+# * `itoa` — the registry dependency `test/test_cargo.jl` builds `// cargo-deps:`
+#   blocks against, where a *registry* crate is the point of the test
+#   (lockfile identity, `cargo tree` avoidance for registry-only graphs).
+# * `pyo3` — the PyO3 fixture crates under `test/fixtures/sample_crate_pyo3*`.
+#   It is also a dependency of `deps/rustcall_julia_macros`, so it is listed
+#   here at the version range the fixtures ask for.
+#
+# The `Offline test suite` CI job fetches this manifest and the repository's
+# own, then runs the suite with `CARGO_NET_OFFLINE=true`. A test that starts
+# needing another registry crate fails that job until the crate is added here,
+# which keeps the list honest instead of letting it drift.
+#
+# This crate is never built. It exists so `cargo fetch` has something to read.
+
+[package]
+name = "rustcall_offline_prefetch"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+itoa = "1.0"
+pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+
+[workspace]

@@ -91,9 +91,31 @@ every push.
     julia --project -e 'using Pkg; Pkg.test()'
   ```
 
-  Other files still build against the registry by design — `test_cargo.jl`
+  Other files still build against the registry by design: `test_cargo.jl`
   exercises the `// cargo-deps:` path with `itoa`, and the PyO3 fixtures need
-  pyo3 — so the default run is not offline.
+  pyo3.
+- **The default run needs no crate from outside the declared closure.** Those
+  two crates are listed in `test/fixtures/offline_prefetch/Cargo.toml`, and
+  everything else the suite builds resolves through `path =` or through the
+  dependency closure of `deps/rustcall_extract`, `deps/rust_helpers` and
+  `deps/rustcall_julia_macros`. The `Offline tests` workflow fetches exactly
+  those manifests into an empty `CARGO_HOME` and then runs the whole suite
+  with `CARGO_NET_OFFLINE=true`, so a test that starts needing another
+  registry crate fails until the crate is added to that manifest. To
+  reproduce it locally:
+
+  ```bash
+  export CARGO_HOME=$(mktemp -d)
+  for m in deps/rustcall_extract deps/rust_helpers deps/rustcall_julia_macros \
+           test/fixtures/offline_prefetch; do
+    cargo fetch --manifest-path "$m/Cargo.toml"
+  done
+  (cd deps/rustcall_extract && cargo build --release)
+  julia --project -e 'using Pkg; Pkg.build("RustCall")'
+  CARGO_NET_OFFLINE=true \
+    RUSTCALL_EXTRACT=$PWD/deps/rustcall_extract/target/release/rustcall-extract \
+    julia --project -e 'using Pkg; Pkg.test()'
+  ```
 
 Useful commands:
 
