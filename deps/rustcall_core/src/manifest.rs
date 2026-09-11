@@ -739,11 +739,12 @@ fn symbol_owner(path: &[String], name: &str, line: usize) -> String {
 }
 
 impl Function {
-    /// The exported symbols this `#[julia]` function claims — its wrapper, the
-    /// reader of that wrapper's panic channel and, when it returns an owned
-    /// string, the release function of its buffer — with the owner label of
-    /// [`Manifest::symbol_owners`]; empty when it claims none (a PyO3 item, an
-    /// unexported or generic one, an undecided `#[cfg]`).
+    /// Every name this `#[julia]` function's generated code defines — its
+    /// wrapper, the reader of that wrapper's panic channel, the slot the
+    /// reader drains and, when it returns a string, the buffer type and its
+    /// release function — with the owner label of [`Manifest::symbol_owners`].
+    /// Empty when it defines none (a PyO3 item, an unexported or generic one,
+    /// an undecided `#[cfg]`).
     ///
     /// The panic reader is as much an export as the wrapper itself
     /// (`crate::codegen::panic_channel` emits it `#[no_mangle]` next to it),
@@ -754,16 +755,30 @@ impl Function {
     /// exported under its own name, and adds nothing — a hand-written
     /// `release` / `release_take_panic` pair is two unrelated exports, not a
     /// collision.
-    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
+    pub fn claims(&self) -> Vec<(crate::claims::Claim, String)> {
         if self.attribute.is_pyo3_scan() {
             return Vec::new();
         }
         let who = symbol_owner(&self.module_path, &self.name, self.line);
         crate::claims::function_claims(self, crate::claims::Policy::JULIA)
             .into_iter()
-            .map(|claim| (claim.name, who.clone()))
+            .map(|claim| (claim, who.clone()))
             .collect()
     }
+
+    /// [`Function::claims`] narrowed to the exported ones.
+    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
+        exported_only(self.claims())
+    }
+}
+
+/// Project a claim list onto the `#[no_mangle]` names alone.
+fn exported_only(claims: Vec<(crate::claims::Claim, String)>) -> Vec<(String, String)> {
+    claims
+        .into_iter()
+        .filter(|(claim, _)| claim.exported)
+        .map(|(claim, who)| (claim.name, who))
+        .collect()
 }
 
 impl Method {
@@ -790,15 +805,20 @@ impl Struct {
     /// it: an inline method wrapped next to its struct shares the struct's
     /// (`string_owner == ffi_name`), one wrapped at a `#[julia] impl` block in
     /// another module declares its own (#342).
-    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
+    pub fn claims(&self) -> Vec<(crate::claims::Claim, String)> {
         if self.attribute.is_pyo3_scan() {
             return Vec::new();
         }
         let who = symbol_owner(&self.module_path, &self.name, self.line);
         crate::claims::struct_claims(self, crate::claims::Policy::JULIA)
             .into_iter()
-            .map(|claim| (claim.name, who.clone()))
+            .map(|claim| (claim, who.clone()))
             .collect()
+    }
+
+    /// [`Struct::claims`] narrowed to the exported ones.
+    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
+        exported_only(self.claims())
     }
 }
 
@@ -857,12 +877,21 @@ impl Manifest {
     /// not a clash. PyO3-scanned items are not listed either: the scan marks
     /// their clashes with a `skip_reason` (`crate::pyo3`).
     pub fn symbol_owners(&self) -> Vec<(String, String)> {
+        exported_only(self.claim_owners())
+    }
+
+    /// The same, widened to every name the generated code defines: the
+    /// exported ones plus the module-private panic slots and helper types.
+    /// Two generated items wanting one private name is a duplicate definition
+    /// rustc reports inside generated code, which is exactly what this
+    /// machinery exists to pre-empt (#338).
+    pub fn claim_owners(&self) -> Vec<(crate::claims::Claim, String)> {
         let mut out = Vec::new();
         for f in &self.functions {
-            out.extend(f.claimed_symbols());
+            out.extend(f.claims());
         }
         for s in &self.structs {
-            out.extend(s.claimed_symbols());
+            out.extend(s.claims());
         }
         out
     }
@@ -877,12 +906,27 @@ impl Manifest {
     /// both items rather than with rustc's duplicate-symbol diagnostic
     /// pointing into generated code (#342 review).
     pub fn duplicate_symbols(&self) -> Vec<(String, String, String)> {
-        let mut seen: Vec<(String, String)> = Vec::new();
+        self.duplicate_claims()
+            .into_iter()
+            .filter(|(claim, _, _)| claim.exported)
+            .map(|(claim, first, second)| (claim.name, first, second))
+            .collect()
+    }
+
+    /// The same over every generated name, exported or not, so a caller can
+    /// tell a reader which kind of clash it is looking at: a `#[no_mangle]`
+    /// symbol the `cdylib` cannot export twice, or an internal item — a panic
+    /// slot, a string buffer type — the crate cannot define twice (#338).
+    pub fn duplicate_claims(&self) -> Vec<(crate::claims::Claim, String, String)> {
+        let mut seen: Vec<(crate::claims::Claim, String)> = Vec::new();
         let mut out = Vec::new();
-        for (symbol, who) in self.symbol_owners() {
-            match seen.iter().find(|(s, _)| *s == symbol) {
-                Some((_, first)) => out.push((symbol, first.clone(), who)),
-                None => seen.push((symbol, who)),
+        for (claim, who) in self.claim_owners() {
+            // Same name is not enough: an exported symbol is crate-global,
+            // while a private item has to be unique only in its own module
+            // and its own Rust namespace (#338 review).
+            match seen.iter().find(|(c, _)| c.clashes_with(&claim)) {
+                Some((_, first)) => out.push((claim, first.clone(), who)),
+                None => seen.push((claim, who)),
             }
         }
         out

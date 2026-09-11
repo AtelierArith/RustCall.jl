@@ -25,6 +25,46 @@
 use crate::codegen::{panic_symbol, struct_free_symbol};
 use crate::manifest::{Function, Struct};
 
+/// Which of Rust's two name spaces a generated item occupies. `struct Foo`
+/// and `fn Foo` may coexist in one module, so two claims of one spelling are
+/// a clash only when they are in the same one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Namespace {
+    /// A function or a `thread_local!` static.
+    Value,
+    /// A generated `#[repr(C)]` buffer type.
+    Type,
+}
+
+/// Where a generated name has to be unique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Scope {
+    /// The whole `cdylib`: a `#[no_mangle]` symbol, which the linker sees
+    /// once however many modules it is written across.
+    Global,
+    /// One Rust module of the crate, by path. A private item is emitted next
+    /// to its wrapper, so `mod a { fn foo }` and `mod A { fn FOO }` may spell
+    /// one slot name and still compile.
+    Module(Vec<String>),
+    /// Emitted in a module this scan cannot name — a method wrapped at a
+    /// `#[julia] impl` block in another module than its struct, whose path
+    /// the manifest does not record (#342). Never compared: rustc still
+    /// reports such a clash, and a false duplicate would refuse a crate that
+    /// builds.
+    Unknown,
+}
+
+impl Scope {
+    /// Whether two claims in these scopes can meet. `Unknown` meets nothing.
+    pub fn meets(&self, other: &Scope) -> bool {
+        match (self, other) {
+            (Scope::Global, Scope::Global) => true,
+            (Scope::Module(a), Scope::Module(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
 /// One name the generated code defines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Claim {
@@ -33,22 +73,68 @@ pub struct Claim {
     /// module-private one: a panic slot or a helper type (a compile-time
     /// clash in the module the wrapper is emitted into).
     pub exported: bool,
+    pub namespace: Namespace,
+    pub scope: Scope,
 }
 
 impl Claim {
+    /// Whether these two claims are the same name in the same place — the
+    /// question both duplicate checks ask.
+    pub fn clashes_with(&self, other: &Claim) -> bool {
+        self.name == other.name
+            && self.namespace == other.namespace
+            && self.scope.meets(&other.scope)
+    }
+
     fn exported(name: String) -> Claim {
         Claim {
             name,
             exported: true,
+            namespace: Namespace::Value,
+            scope: Scope::Global,
         }
     }
 
-    fn private(name: String) -> Claim {
+    fn private(name: String, namespace: Namespace) -> Claim {
         Claim {
             name,
             exported: false,
+            namespace,
+            scope: Scope::Unknown,
         }
     }
+
+    fn in_scope(mut self, scope: &Scope) -> Claim {
+        if !self.exported {
+            self.scope = scope.clone();
+        }
+        self
+    }
+
+    /// Replace the module a private claim was scoped to with the real Rust
+    /// module the wrapper is emitted into.
+    ///
+    /// The builders can only use the manifest's `module_path`, which is the
+    /// *symbol-qualification* path: in a crate, a file module (`mod x;`) is
+    /// transparent to the naming scheme and contributes nothing to it, while
+    /// the items of `x.rs` really do live in module `x`. The crate scan knows
+    /// the real path and stamps it here (#338 review). `Global` and `Unknown`
+    /// are left alone: an export is crate-wide however it is nested, and
+    /// `Unknown` is the deliberate "this scan cannot say" answer.
+    pub fn in_real_module(mut self, module: &[String]) -> Claim {
+        if matches!(self.scope, Scope::Module(_)) {
+            self.scope = Scope::Module(module.to_vec());
+        }
+        self
+    }
+}
+
+/// Put every private claim of a list in `scope`; exported ones stay global.
+fn scoped(claims: Vec<Claim>, scope: &Scope) -> Vec<Claim> {
+    claims
+        .into_iter()
+        .map(|claim| claim.in_scope(scope))
+        .collect()
 }
 
 /// Which string helpers an entry is credited with.
@@ -70,9 +156,6 @@ pub enum StringHelpers {
 /// How a particular scan reads the generated code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
-    /// Include module-private names — the `__RUSTCALL_PANIC_<SYMBOL>` slot and
-    /// the string / vector helper types. They are real clashes, not exports.
-    pub include_private: bool,
     pub strings: StringHelpers,
     /// Drop an entry whose `#[cfg]` the scan could not decide.
     ///
@@ -89,21 +172,21 @@ pub struct Policy {
 impl Policy {
     /// The `#[julia]` crate-wide duplicate check.
     ///
-    /// Exported names only, for now. Both diagnostics built on it say
-    /// "duplicate exported symbol" and name the item that claims it; a clash
-    /// on a private name — two wrappers whose symbols differ only in case
-    /// share one `__RUSTCALL_PANIC_<SYMBOL>` slot — is a real defect but needs
-    /// a message that does not call an internal item an export. Adding that
-    /// vocabulary is the remainder of #338.
+    /// Both scans count module-private names, so this differs from
+    /// [`Policy::PYO3_SCAN`] only in the two fields above. Two wrappers whose
+    /// symbols differ only in case share one `__RUSTCALL_PANIC_<SYMBOL>` slot,
+    /// and two items with one string-buffer owner declare one
+    /// `<owner>_RustCallOwnedString` twice; neither is an export, and both are
+    /// a duplicate definition rustc would report inside generated code, so the
+    /// diagnostics distinguish the two kinds rather than calling an internal
+    /// item an export (#338).
     pub const JULIA: Policy = Policy {
-        include_private: false,
         strings: StringHelpers::AsDeclared,
         skip_cfg_gated: true,
     };
 
     /// The PyO3 scan's collision analysis.
     pub const PYO3_SCAN: Policy = Policy {
-        include_private: true,
         strings: StringHelpers::Reserved,
         skip_cfg_gated: false,
     };
@@ -149,13 +232,22 @@ pub fn owned_vec_names(getter: &str) -> String {
     format!("{getter}_RustCallOwnedVec")
 }
 
+/// Stable partition: exported names first.
+///
+/// A clash is usually visible on both an export and the private item derived
+/// from it — a duplicated wrapper symbol duplicates its panic slot too — and
+/// the diagnostics report the first one they meet. The exported name is the
+/// one the user can look up in the naming scheme, so it goes first.
+fn exported_first(mut claims: Vec<Claim>) -> Vec<Claim> {
+    claims.sort_by_key(|claim| !claim.exported);
+    claims
+}
+
 /// The entry point exported as `symbol`, the reader of its panic channel and
 /// the slot that reader drains.
-pub fn wrapper_claims(symbol: &str, include_private: bool) -> Vec<Claim> {
+pub fn wrapper_claims(symbol: &str) -> Vec<Claim> {
     let mut out = helper_claims(symbol);
-    if include_private {
-        out.push(Claim::private(panic_slot(symbol)));
-    }
+    out.push(Claim::private(panic_slot(symbol), Namespace::Value));
     out
 }
 
@@ -179,13 +271,11 @@ pub fn string_claims(owner: &str, owned: bool, borrowed: bool, policy: Policy) -
     let mut out = Vec::new();
     if owned {
         let [ty, free] = owned_string_names(owner);
-        if policy.include_private {
-            out.push(Claim::private(ty));
-        }
+        out.push(Claim::private(ty, Namespace::Type));
         out.push(Claim::exported(free));
     }
-    if borrowed && policy.include_private {
-        out.push(Claim::private(borrowed_string_name(owner)));
+    if borrowed {
+        out.push(Claim::private(borrowed_string_name(owner), Namespace::Type));
     }
     out
 }
@@ -217,7 +307,7 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
     if !f.attribute.generates_wrapper() {
         return vec![Claim::exported(f.symbol.clone())];
     }
-    let mut out = wrapper_claims(&f.symbol, policy.include_private);
+    let mut out = wrapper_claims(&f.symbol);
     if !f.ffi_name.is_empty() {
         out.extend(string_claims(
             &f.ffi_name,
@@ -226,7 +316,8 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
             policy,
         ));
     }
-    out
+    // The wrapper and its private items are emitted next to the function.
+    exported_first(scoped(out, &Scope::Module(f.module_path.clone())))
 }
 
 /// The same for a PyO3-scanned function, whose ABI columns are not filled in
@@ -237,7 +328,7 @@ pub fn scanned_function_claims(f: &Function, owned: bool, borrowed: bool) -> Vec
         return Vec::new();
     }
     let policy = Policy::PYO3_SCAN;
-    let mut out = wrapper_claims(&f.symbol, policy.include_private);
+    let mut out = wrapper_claims(&f.symbol);
     if !f.ffi_name.is_empty() {
         out.extend(string_claims(&f.ffi_name, owned, borrowed, policy));
     }
@@ -256,6 +347,10 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
     if (policy.skip_cfg_gated && !s.cfg.is_empty()) || s.ffi_name.is_empty() {
         return Vec::new();
     }
+    // Everything a struct's own wrappers define is emitted next to the
+    // struct; a method wrapped at a `#[julia] impl` block in another module
+    // is the exception, handled below.
+    let here = Scope::Module(s.module_path.clone());
     let mut out = Vec::new();
     // A generic struct exports nothing itself.
     if s.type_params.is_empty() {
@@ -271,9 +366,9 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             }
         }
         if field.abi == "vec" && !field.getter.is_empty() {
-            if policy.include_private {
-                out.push(Claim::private(owned_vec_names(&field.getter)));
-            }
+            out.push(
+                Claim::private(owned_vec_names(&field.getter), Namespace::Type).in_scope(&here),
+            );
             if !field.free_symbol.is_empty() {
                 out.push(Claim::exported(field.free_symbol.clone()));
             }
@@ -307,7 +402,15 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             continue;
         }
         if !m.symbol.is_empty() {
-            out.extend(wrapper_claims(&m.symbol, policy.include_private));
+            // A method wrapped next to its struct shares the struct's module
+            // (`string_owner == ffi_name`, #342); one wrapped at a block
+            // elsewhere is emitted in a module the manifest does not record.
+            let where_ = if m.string_owner == s.ffi_name || m.string_owner.is_empty() {
+                here.clone()
+            } else {
+                Scope::Unknown
+            };
+            out.extend(scoped(wrapper_claims(&m.symbol), &where_));
         }
         let abis = [
             m.return_abi.as_str(),
@@ -331,7 +434,54 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
         );
     }
     for (owner, owned, borrowed) in buffers {
-        out.extend(string_claims(&owner, owned, borrowed, policy));
+        let where_ = if owner == s.ffi_name {
+            here.clone()
+        } else {
+            Scope::Unknown
+        };
+        out.extend(scoped(
+            string_claims(&owner, owned, borrowed, policy),
+            &where_,
+        ));
     }
-    out
+    exported_first(out)
+}
+
+/// What kind of clash a duplicate [`Claim`] is, as a sentence a user-facing
+/// diagnostic can build on.
+///
+/// The two are different failures: two `#[no_mangle]` items of one name cannot
+/// be exported by one `cdylib`, while two internal items of one name cannot
+/// even be defined in one module. Saying "exported symbol" for the second
+/// would be wrong, and the internal names are not ones the user wrote, so the
+/// message has to say where they come from (#338).
+pub fn clash_kind(claim: &Claim) -> &'static str {
+    if claim.exported {
+        "exported symbol"
+    } else {
+        "generated item"
+    }
+}
+
+/// Why an internal name exists, for a diagnostic that has to explain a name
+/// the user never wrote. Empty for an exported symbol, whose name the user can
+/// read off the scheme.
+pub fn internal_origin(claim: &Claim) -> &'static str {
+    if claim.exported {
+        return "";
+    }
+    if claim.name.starts_with("__RUSTCALL_PANIC_") {
+        "the thread-local slot of a wrapper's panic channel, named by \
+         upper-casing the wrapper's symbol — so two wrappers whose symbols \
+         differ only in case meet here"
+    } else if claim.name.ends_with("_RustCallOwnedString")
+        || claim.name.ends_with("_RustCallBorrowedString")
+    {
+        "the string buffer type a wrapper returns, named after the item that \
+         owns the buffer"
+    } else if claim.name.ends_with("_RustCallOwnedVec") {
+        "the owned-vector buffer type a field getter returns"
+    } else {
+        "an item RustCall generates next to the wrapper"
+    }
 }

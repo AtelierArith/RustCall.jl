@@ -627,9 +627,12 @@ pub struct CrateScan {
     plain_structs: Vec<PlainStruct>,
     impls: Vec<ScannedImpl>,
     imports: Vec<ScannedImport>,
-    /// Every exported symbol seen so far and the item that claims it, so a
-    /// second claimant is reported with both locations (#300).
-    claimed: Vec<(String, String)>,
+    /// Every name the generated code defines so far and the item that claims
+    /// it, so a second claimant is reported with both locations (#300). A
+    /// claim carries its Rust namespace and the scope it has to be unique in,
+    /// because an exported symbol is crate-global while a private item only
+    /// has to be unique in its own module (#338).
+    claimed: Vec<(crate::claims::Claim, String)>,
 }
 
 #[derive(Debug)]
@@ -776,8 +779,8 @@ impl CrateScan {
                     }
                     if attribute == Attribute::Julia {
                         let entry = function_entry(f, attribute, true, symbol_path, enclosing_cfg);
-                        for (symbol, owner) in entry.claimed_symbols() {
-                            self.claim(symbol, owner, file)?;
+                        for (claim, owner) in entry.claims() {
+                            self.claim(claim, owner, file, module_path)?;
                         }
                         manifest.functions.push(entry);
                     }
@@ -951,22 +954,46 @@ impl CrateScan {
     /// — defining the same `#[julia]` item, or a crate-root name that spells a
     /// qualified one. The `cdylib` could not export both, and a wrong binding
     /// is worse than no binding, so the scan fails closed and names the fix.
-    fn claim(&mut self, symbol: String, owner: String, file: &str) -> Result<(), ExtractError> {
+    fn claim(
+        &mut self,
+        claim: crate::claims::Claim,
+        owner: String,
+        file: &str,
+        module: &[String],
+    ) -> Result<(), ExtractError> {
+        // The manifest's module path qualifies symbols; it is empty for every
+        // file of the module tree, which is not where the wrapper's private
+        // items land (#338 review).
+        let claim = claim.in_real_module(module);
         let here = if file.is_empty() {
             owner
         } else {
             format!("{owner} in {file}")
         };
-        if let Some((_, first)) = self.claimed.iter().find(|(s, _)| *s == symbol) {
-            return Err(ExtractError::Unsupported(format!(
-                "duplicate exported symbol `{symbol}`: claimed by {first} and by {here}. \
-                 Two #[julia] items of one crate export the same symbol; only inline modules \
-                 marked `#[julia]` (`#[julia] pub mod name {{ ... }}`) qualify a symbol by \
+        let symbol = claim.name.clone();
+        let symbol = &symbol;
+        if let Some((_, first)) = self.claimed.iter().find(|(c, _)| c.clashes_with(&claim)) {
+            let kind = crate::claims::clash_kind(&claim);
+            let detail = if claim.exported {
+                "Two #[julia] items of one crate export the same symbol; only inline modules \
+                 marked `#[julia]` (`#[julia] pub mod name { ... }`) qualify a symbol by \
                  their name, while file modules (`mod name;`) do not. Wrap one of the items in \
                  a `#[julia]` module block or rename it (#300)."
+                    .to_string()
+            } else {
+                format!(
+                    "This name is not exported and not one you wrote: it is {}. Two of them in \
+                     one crate are a duplicate definition rather than a duplicate export, and \
+                     rustc would report it inside generated code. Rename one of the items \
+                     (#338).",
+                    crate::claims::internal_origin(&claim)
+                )
+            };
+            return Err(ExtractError::Unsupported(format!(
+                "duplicate {kind} `{symbol}`: claimed by {first} and by {here}. {detail}"
             )));
         }
-        self.claimed.push((symbol, here));
+        self.claimed.push((claim, here));
         Ok(())
     }
 
@@ -1039,8 +1066,8 @@ impl CrateScan {
 
         for scanned in std::mem::take(&mut self.structs) {
             let entry = crate_struct_entry(&scanned.model, &scanned.symbol_path, &scanned.cfg);
-            for (symbol, owner) in entry.claimed_symbols() {
-                self.claim(symbol, owner, &scanned.file)?;
+            for (claim, owner) in entry.claims() {
+                self.claim(claim, owner, &scanned.file, &scanned.module_path)?;
             }
             manifest.structs.push(entry);
         }

@@ -646,15 +646,37 @@ fn both_scans_read_one_claim_list() {
     assert_eq!(
         names(function_claims(shout, Policy::JULIA)),
         vec![
+            "__RUSTCALL_PANIC_RUSTCALL_SHOUT".to_string(),
+            "rustcall_shout".to_string(),
+            "rustcall_shout_take_panic".to_string(),
+            "shout_RustCallOwnedString".to_string(),
+            "shout_free_rust_string".to_string(),
+        ]
+    );
+    // Both policies count the private panic slot. They part company on the
+    // string helpers only: `shout` returns an owned `String`, so as declared
+    // it never declares a borrowed view, while the scan reserves that name
+    // too because the wrapper crate has not chosen yet.
+    let reserved = names(function_claims(shout, Policy::PYO3_SCAN));
+    assert!(reserved.contains(&"__RUSTCALL_PANIC_RUSTCALL_SHOUT".to_string()));
+    assert!(reserved.contains(&"shout_RustCallBorrowedString".to_string()));
+    assert!(!names(function_claims(shout, Policy::JULIA))
+        .contains(&"shout_RustCallBorrowedString".to_string()));
+    let mut exported: Vec<String> = m
+        .symbol_owners()
+        .into_iter()
+        .filter(|(_, who)| who.contains("`shout`"))
+        .map(|(s, _)| s)
+        .collect();
+    exported.sort();
+    assert_eq!(
+        exported,
+        vec![
             "rustcall_shout".to_string(),
             "rustcall_shout_take_panic".to_string(),
             "shout_free_rust_string".to_string(),
         ]
     );
-    // The scan reserves the helper types too, and the private panic slot.
-    let reserved = names(function_claims(shout, Policy::PYO3_SCAN));
-    assert!(reserved.contains(&"__RUSTCALL_PANIC_RUSTCALL_SHOUT".to_string()));
-    assert!(reserved.contains(&"shout_RustCallOwnedString".to_string()));
 
     // A borrowed `&str` owns nothing, so as declared it claims no release
     // function; the scan still reserves the name because the wrapper crate
@@ -663,6 +685,8 @@ fn both_scans_read_one_claim_list() {
     assert!(
         !names(function_claims(peek, Policy::JULIA)).contains(&"peek_free_rust_string".to_string())
     );
+    assert!(names(function_claims(peek, Policy::JULIA))
+        .contains(&"peek_RustCallBorrowedString".to_string()));
     assert!(names(function_claims(peek, Policy::PYO3_SCAN))
         .contains(&"peek_free_rust_string".to_string()));
 
@@ -737,7 +761,7 @@ fn helper_slots_are_injective_and_unclaimed() {
         Mode::Crate,
     )
     .unwrap();
-    let names: Vec<String> = struct_claims(&m.structs[0], Policy::PYO3_SCAN)
+    let names: Vec<String> = struct_claims(&m.structs[0], Policy::JULIA)
         .into_iter()
         .map(|c| c.name)
         .collect();
@@ -749,4 +773,216 @@ fn helper_slots_are_injective_and_unclaimed() {
         assert!(!names.contains(&helper_panic_slot(symbol)), "{names:?}");
         assert!(names.contains(&symbol.to_string()), "{names:?}");
     }
+}
+
+/// `#[julia] fn foo` next to `#[julia] fn FOO` export two different symbols,
+/// so nothing about the exports collides — but both wrappers name their panic
+/// slot by upper-casing that symbol, so the crate defines
+/// `__RUSTCALL_PANIC_RUSTCALL_FOO` twice. rustc would report it inside
+/// generated code; the scan refuses first, and says the name is an internal
+/// item rather than calling it an export (#338).
+#[test]
+fn a_duplicate_panic_slot_fails_extraction_as_an_internal_item() {
+    let err = extract(
+        r#"
+            #[julia] pub fn foo() -> i32 { 1 }
+            #[julia] pub fn FOO() -> i32 { 2 }
+        "#,
+        Mode::Crate,
+    )
+    .expect_err("two wrappers sharing a panic slot must fail the scan")
+    .to_string();
+    assert!(
+        err.contains("duplicate generated item `__RUSTCALL_PANIC_RUSTCALL_FOO`"),
+        "{err}"
+    );
+    assert!(!err.contains("duplicate exported symbol"), "{err}");
+    assert!(err.contains("`foo` (line 2)"), "{err}");
+    assert!(err.contains("`FOO` (line 3)"), "{err}");
+    // The message explains a name the user never wrote.
+    assert!(err.contains("upper-casing the wrapper's symbol"), "{err}");
+    assert!(err.contains("#338"), "{err}");
+}
+
+/// The same block inline: a `compile_error!` naming both items, with the
+/// wording for an internal item.
+#[test]
+fn an_inline_duplicate_panic_slot_is_a_compile_error() {
+    let inline = rustcall_core::expand::expand(
+        r#"
+        #[julia] pub fn foo() -> i32 { 1 }
+        #[julia] pub fn FOO() -> i32 { 2 }
+        "#,
+    )
+    .unwrap();
+    let dups = inline.manifest.duplicate_claims();
+    assert_eq!(dups.len(), 1, "{dups:?}");
+    assert_eq!(dups[0].0.name, "__RUSTCALL_PANIC_RUSTCALL_FOO");
+    assert!(!dups[0].0.exported);
+    // The exported projection sees nothing: the two wrappers differ.
+    assert!(inline.manifest.duplicate_symbols().is_empty());
+    assert!(
+        inline
+            .source
+            .contains("would define the item `__RUSTCALL_PANIC_RUSTCALL_FOO` twice"),
+        "{}",
+        inline.source
+    );
+    assert!(
+        !inline.source.contains("would export the symbol"),
+        "{}",
+        inline.source
+    );
+}
+
+/// An exported clash keeps the wording it had: a reader can look the name up
+/// in the naming scheme, and the exported name is reported even though the
+/// private item derived from it collides too.
+#[test]
+fn an_exported_clash_is_still_reported_as_an_export() {
+    let err = extract(
+        r#"
+            #[julia] pub mod a { #[julia] pub fn run() -> i32 { 1 } }
+            #[julia] pub fn a__run() -> i32 { 2 }
+        "#,
+        Mode::Crate,
+    )
+    .expect_err("a duplicate exported symbol must fail the scan")
+    .to_string();
+    assert!(
+        err.contains("duplicate exported symbol `rustcall_a__run`"),
+        "{err}"
+    );
+    assert!(!err.contains("duplicate generated item"), "{err}");
+}
+
+/// A private name only has to be unique in the module the wrapper is emitted
+/// into. `mod a { fn foo }` and `mod A { fn FOO }` export two different
+/// symbols and spell one slot name, but the two slots are in different Rust
+/// modules and both compile — so this is not a duplicate (#338 review).
+#[test]
+fn private_names_are_compared_within_their_module() {
+    let src = r#"
+        #[julia] pub mod a { #[julia] pub fn foo() -> i32 { 1 } }
+        #[julia] pub mod A { #[julia] pub fn FOO() -> i32 { 2 } }
+    "#;
+    let inline = rustcall_core::expand::expand(src).unwrap();
+    assert!(
+        inline.manifest.duplicate_claims().is_empty(),
+        "{:?}",
+        inline.manifest.duplicate_claims()
+    );
+    assert!(
+        !inline.source.contains("compile_error"),
+        "{}",
+        inline.source
+    );
+    // The crate scan agrees.
+    extract(src, Mode::Crate).expect("two modules may spell one slot name");
+
+    // Within *one* module they really do meet.
+    let same = rustcall_core::expand::expand(
+        r#"
+        #[julia] pub mod a {
+            #[julia] pub fn foo() -> i32 { 1 }
+            #[julia] pub fn FOO() -> i32 { 2 }
+        }
+        "#,
+    )
+    .unwrap();
+    let dups = same.manifest.duplicate_claims();
+    assert_eq!(dups.len(), 1, "{dups:?}");
+    assert!(!dups[0].0.exported);
+}
+
+/// Rust keeps types and values apart, so a generated buffer *type* and an
+/// exported *function* of one spelling may coexist. Comparing names alone
+/// refused a crate that builds (#338 review).
+#[test]
+fn claims_are_compared_within_their_rust_namespace() {
+    use rustcall_core::claims::Namespace;
+
+    let m = extract(
+        r#"
+            #[julia] pub fn peek() -> &'static str { "hi" }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let claims = m.claim_owners();
+    let view = claims
+        .iter()
+        .find(|(c, _)| c.name == "peek_RustCallBorrowedString")
+        .expect("a borrowed `&str` declares its view type");
+    assert_eq!(view.0.namespace, Namespace::Type);
+    assert!(!view.0.exported);
+
+    let wrapper = claims
+        .iter()
+        .find(|(c, _)| c.name == "rustcall_peek")
+        .unwrap();
+    assert_eq!(wrapper.0.namespace, Namespace::Value);
+
+    // A second function spelling the view type's name is a value, so the two
+    // do not meet.
+    let both = extract(
+        r#"
+            #[julia] pub fn peek() -> &'static str { "hi" }
+            #[no_mangle] pub extern "C" fn peek_RustCallBorrowedString() -> i32 { 0 }
+        "#,
+        Mode::Crate,
+    );
+    assert!(both.is_ok(), "{:?}", both.err());
+}
+
+/// A file module is transparent to the symbol scheme, so `x.rs` and `y.rs`
+/// both carry an empty `module_path` in the manifest — but their items really
+/// do live in modules `x` and `y`. `#[julia] fn foo` in one and `#[julia] fn
+/// FOO` in the other export different symbols and spell one panic-slot name,
+/// in two different Rust modules, and must not be refused. The crate scan
+/// stamps the real module path onto every private claim (#338 review).
+#[test]
+fn a_private_claim_is_scoped_by_the_real_module_not_the_symbol_path() {
+    use rustcall_core::extract::{FilePosition, TreeScan};
+    use rustcall_core::Manifest;
+
+    let mut scan = TreeScan::new();
+    let mut manifest = Manifest::new(Mode::Crate);
+    let pending = scan
+        .file(
+            "pub mod x;\npub mod y;",
+            None,
+            &FilePosition::module(&[], true, &[]),
+            &mut manifest,
+            "src/lib.rs",
+        )
+        .unwrap()
+        .modules;
+    assert_eq!(pending.len(), 2);
+    for (module, body) in pending.iter().zip([
+        "#[julia] pub fn foo() -> i32 { 1 }",
+        "#[julia] pub fn FOO() -> i32 { 2 }",
+    ]) {
+        scan.file(
+            body,
+            None,
+            &FilePosition::module(&module.module_path, module.reachable, &module.cfg),
+            &mut manifest,
+            &format!("src/{}.rs", module.module_path.join("/")),
+        )
+        .expect("two file modules may spell one slot name");
+    }
+    scan.finish(&mut manifest)
+        .expect("two file modules may spell one slot name");
+
+    // The manifest keeps both, under the symbol path the scheme uses (empty
+    // for a file module) and with different exported symbols.
+    let symbols: Vec<&str> = manifest
+        .functions
+        .iter()
+        .map(|f| f.symbol.as_str())
+        .collect();
+    assert!(symbols.contains(&"rustcall_foo"), "{symbols:?}");
+    assert!(symbols.contains(&"rustcall_FOO"), "{symbols:?}");
+    assert!(manifest.functions.iter().all(|f| f.module_path.is_empty()));
 }
