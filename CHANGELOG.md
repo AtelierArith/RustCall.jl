@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The crate-wide duplicate-symbol scan sees the panic readers too**
+  ([#338](https://github.com/AtelierArith/RustCall.jl/issues/338)). Every
+  generated wrapper exports a second `#[no_mangle]` item next to itself — the
+  reader of its panic channel, `<symbol>_take_panic` — and the scan did not
+  count it. A crate-root `#[julia] fn a__run_take_panic` next to `#[julia] pub
+  mod a { #[julia] pub fn run }` therefore reached the linker as two items of
+  one symbol instead of being refused with both owners named. Struct methods
+  claim their reader the same way, and inline expansion asks the same question
+  of the manifest it has just built. A plain `#[no_mangle] extern "C"`
+  function claims only its own name: RustCall generates nothing for it, so a
+  hand-written `release` / `release_take_panic` pair stays two unrelated
+  exports.
+
 ### Changed
 - **`BenchmarkTools` is no longer a runtime dependency, and Aqua.jl now
   enforces that** ([#260](https://github.com/AtelierArith/RustCall.jl/issues/260)).

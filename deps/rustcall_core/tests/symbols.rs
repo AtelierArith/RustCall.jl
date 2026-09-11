@@ -463,3 +463,154 @@ fn an_impl_the_macro_would_qualify_differently_is_refused() {
     .unwrap();
     assert_eq!(ok.structs[0].methods[0].symbol, "rustcall_a__C_run");
 }
+
+/// Every wrapper exports its panic-channel reader next to itself
+/// (`<symbol>_take_panic`, `crate::codegen::panic_channel`), so that reader is
+/// a claimed symbol like any other — for free functions and for struct
+/// methods alike (#338).
+#[test]
+fn panic_readers_are_claimed_symbols() {
+    let m = extract(
+        r#"
+            #[julia] pub mod a { #[julia] pub fn run() -> i32 { 1 } }
+            #[julia] pub struct C { pub v: i32 }
+            #[julia] impl C { #[julia] pub fn get(&self) -> i32 { self.v } }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let owners = m.symbol_owners();
+    let claims = |symbol: &str| owners.iter().filter(|(s, _)| s == symbol).count();
+    assert_eq!(claims("rustcall_a__run_take_panic"), 1, "{owners:?}");
+    assert_eq!(claims("rustcall_C_get_take_panic"), 1, "{owners:?}");
+    // The ones the struct already claimed keep their single claim.
+    assert_eq!(claims("C_free_take_panic"), 1, "{owners:?}");
+    assert_eq!(claims("C_get_v_take_panic"), 1, "{owners:?}");
+    // A string release function has no `catch_unwind` boundary and so no
+    // reader (`crate::codegen::owned_string_helper`).
+    assert_eq!(claims("C_free_rust_string_take_panic"), 0, "{owners:?}");
+    assert!(
+        m.duplicate_symbols().is_empty(),
+        "{:?}",
+        m.duplicate_symbols()
+    );
+}
+
+/// A crate-root `#[julia] fn a__run_take_panic` spells the panic reader of
+/// `a::run`. The wrappers differ, so only the derived symbols collide — the
+/// case `symbol_owners` used to miss, letting two `#[no_mangle]` items of one
+/// name reach the linker (#338).
+#[test]
+fn a_duplicate_panic_reader_fails_extraction_with_both_owners() {
+    let err = extract(
+        r#"
+            #[julia] pub mod a { #[julia] pub fn run() -> i32 { 1 } }
+            #[julia] pub fn a__run_take_panic() -> i32 { 2 }
+        "#,
+        Mode::Crate,
+    )
+    .expect_err("a duplicate panic reader must fail the scan")
+    .to_string();
+    assert!(
+        err.contains("duplicate exported symbol `rustcall_a__run_take_panic`"),
+        "{err}"
+    );
+    assert!(err.contains("`a::run` (line 2)"), "{err}");
+    assert!(err.contains("`a__run_take_panic` (line 3)"), "{err}");
+}
+
+/// The same coincidence against a struct method's reader.
+#[test]
+fn a_duplicate_method_panic_reader_fails_extraction() {
+    let err = extract(
+        r#"
+            #[julia] pub struct C { pub v: i32 }
+            #[julia] impl C { #[julia] pub fn get(&self) -> i32 { self.v } }
+            #[julia] pub fn C_get_take_panic() -> i32 { 0 }
+        "#,
+        Mode::Crate,
+    )
+    .expect_err("a duplicate method panic reader must fail the scan")
+    .to_string();
+    assert!(
+        err.contains("duplicate exported symbol `rustcall_C_get_take_panic`"),
+        "{err}"
+    );
+}
+
+/// Inline expansion asks the same question of the manifest it just built, so
+/// a `rust"""` block with the same coincidence fails with a `compile_error!`
+/// naming both items rather than with rustc's duplicate-symbol diagnostic
+/// pointing into generated code (#338, #342).
+#[test]
+fn an_inline_duplicate_panic_reader_is_a_compile_error() {
+    let inline = rustcall_core::expand::expand(
+        r#"
+        #[julia] pub mod a { #[julia] pub fn run() -> i32 { 1 } }
+        #[julia] pub fn a__run_take_panic() -> i32 { 2 }
+        "#,
+    )
+    .unwrap();
+    let dups = inline.manifest.duplicate_symbols();
+    assert_eq!(dups.len(), 1, "{dups:?}");
+    assert_eq!(dups[0].0, "rustcall_a__run_take_panic");
+    assert!(inline.source.contains("compile_error"), "{}", inline.source);
+    assert!(
+        inline.source.contains("rustcall_a__run_take_panic"),
+        "{}",
+        inline.source
+    );
+}
+
+/// A plain `#[no_mangle] extern "C"` function is reported so Julia can
+/// register its return type, but RustCall generates nothing for it: it is
+/// exported under its own name and has no panic channel. A hand-written
+/// destructor and its hand-written channel — the shape `resolve_call_target`
+/// is tested against — are therefore two unrelated exports, not a collision
+/// (#338).
+#[test]
+fn a_hand_written_function_claims_only_its_own_name() {
+    let inline = rustcall_core::expand::expand(
+        r#"
+        #[julia] pub fn value() -> i32 { 111 }
+        #[no_mangle] pub extern "C" fn release() {}
+        #[no_mangle] pub extern "C" fn release_take_panic(_out: *mut u8, _cap: usize) -> usize { 0 }
+        "#,
+    )
+    .unwrap();
+    let owners = inline.manifest.symbol_owners();
+    let claims = |symbol: &str| owners.iter().filter(|(s, _)| s == symbol).count();
+    assert_eq!(claims("release"), 1, "{owners:?}");
+    assert_eq!(claims("release_take_panic"), 1, "{owners:?}");
+    // The `#[julia]` item next to them keeps both of its own exports.
+    assert_eq!(claims("rustcall_value"), 1, "{owners:?}");
+    assert_eq!(claims("rustcall_value_take_panic"), 1, "{owners:?}");
+    assert!(
+        inline.manifest.duplicate_symbols().is_empty(),
+        "{:?}",
+        inline.manifest.duplicate_symbols()
+    );
+    assert!(
+        !inline.source.contains("compile_error"),
+        "{}",
+        inline.source
+    );
+}
+
+/// The converse: a hand-written `#[no_mangle]` function that spells the panic
+/// reader a `#[julia]` wrapper generates *is* a collision, and is reported
+/// against the item that generates it.
+#[test]
+fn a_hand_written_name_may_still_collide_with_a_generated_reader() {
+    let inline = rustcall_core::expand::expand(
+        r#"
+        #[julia] pub fn value() -> i32 { 111 }
+        #[no_mangle] pub extern "C" fn rustcall_value_take_panic(_out: *mut u8, _cap: usize) -> usize { 0 }
+        "#,
+    )
+    .unwrap();
+    let dups = inline.manifest.duplicate_symbols();
+    assert_eq!(dups.len(), 1, "{dups:?}");
+    assert_eq!(dups[0].0, "rustcall_value_take_panic");
+    assert!(inline.source.contains("compile_error"), "{}", inline.source);
+}
