@@ -58,6 +58,40 @@ julia --project=examples/pluto examples/pluto/run_notebook.jl
 The `Examples` GitHub workflow runs the same `Pkg.test()` for each package on
 every push.
 
+## Native Build Products
+
+`Pkg.build("RustCall")` compiles two crates: `deps/rust_helpers` (the ownership
+helper cdylib behind `RustBox`/`RustRc`/`RustArc`/`RustVec`) and
+`deps/rustcall_extract` (the `rustcall-extract` CLI). Since #258 there is one
+place that decides where they go and where they are found again,
+`src/native_layout.jl`, included by both `src/RustCall.jl` and `deps/build.jl`.
+
+- **A checkout** — this repository, a `Pkg.develop`ed clone, a git worktree —
+  builds into `deps/<crate>/target`, the same directory the documented
+  developer commands write to. Nothing changes for local work.
+- **An installed package** — a tree under a depot's `packages/` directory —
+  builds into a scratch space,
+  `<depot>/scratchspaces/<RustCall UUID>/native-v1/<slug>/<crate>`. The
+  installed package directory is never written to, so a read-only package
+  store (shared and HPC depots, baked container images, system images,
+  `Distributed` workers on a read-only mount) works. `<slug>` is Pkg's own
+  per-version directory name, so two installed RustCall versions in one depot
+  cannot pick up each other's extractor. (Pkg still writes its own
+  `deps/build.log` next to the build script when it can — that is Pkg's log of
+  the build, not a product of it.)
+
+The build is incremental. Through v0.3.4 `deps/build.jl` ran `cargo clean`
+first, so every build event — including the transitive ones Pkg triggers — paid
+a full Rust compile; Cargo's own fingerprint, which already covers the sources,
+the profile and the `rustc` identity, replaces it. Rebuilding both crates
+unchanged went from ~31 s to ~0.1 s of Cargo time on an M-series laptop.
+
+Lookup order for each product, most authoritative first: the environment
+override (`RUSTCALL_EXTRACT`, `RUSTCALL_RUST_HELPERS`), this tree's own build
+directory, the scratch space of every other depot on `DEPOT_PATH`, and finally
+the pre-#258 in-package location, which a tree built by an older RustCall and
+not rebuilt since still has. `test/test_native_layout.jl` pins all of it.
+
 ## Test Suite
 
 - Root entry point: `test/runtests.jl`
