@@ -4,10 +4,13 @@
 using RustCall
 using Test
 
-# Control which tests run via environment variables
-const RUN_SERDE_TESTS = get(ENV, "RUSTCALL_RUN_SERDE_TESTS", "true") == "true"
-const RUN_REGEX_TESTS = get(ENV, "RUSTCALL_RUN_REGEX_TESTS", "true") == "true"
-const RUN_UUID_TESTS = get(ENV, "RUSTCALL_RUN_UUID_TESTS", "true") == "true"
+# Network-dependent tests are opt-in (#259). They download crates from
+# crates.io on a cold cache, so a crates.io hiccup or rate limit used to turn
+# an unrelated pull request red. The scheduled `network-integration` CI job
+# sets these variables and is allowed to fail without blocking a merge.
+const RUN_SERDE_TESTS = get(ENV, "RUSTCALL_RUN_SERDE_TESTS", "false") == "true"
+const RUN_REGEX_TESTS = get(ENV, "RUSTCALL_RUN_REGEX_TESTS", "false") == "true"
+const RUN_UUID_TESTS = get(ENV, "RUSTCALL_RUN_UUID_TESTS", "false") == "true"
 
 @testset "External Crate Integration Tests" begin
 

@@ -4,8 +4,12 @@
 using RustCall
 using Test
 
-# Heavy ndarray tests (they take more time) - run by default unless disabled
-const RUN_HEAVY_INTEGRATION_TESTS = get(ENV, "RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS", "true") == "true"
+# Network-dependent tests are opt-in (#259). They download crates from
+# crates.io on a cold cache, so a crates.io hiccup or rate limit used to turn
+# an unrelated pull request red. The scheduled `network-integration` CI job
+# sets these variables and is allowed to fail without blocking a merge.
+const RUN_HEAVY_INTEGRATION_TESTS =
+    get(ENV, "RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS", "false") == "true"
 
 # Lightweight integration tests with small crates (libc, etc.) - run by default
 @testset "External Crate Integration" begin

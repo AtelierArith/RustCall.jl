@@ -1,0 +1,53 @@
+# The network-dependent integration tests (issue #259).
+#
+# `test_external_crates.jl`, `test_ndarray.jl` and `test_phase4_ndarray.jl`
+# build Cargo projects against serde_json, regex, uuid and ndarray. They used
+# to run on every push, so a crates.io hiccup or rate limit turned unrelated
+# pull requests red and every run paid for the downloads. They are opt-in now,
+# and this is the job that opts in.
+#
+# It is deliberately **not** a required check: `continue-on-error` keeps a
+# crates.io outage from showing up as a repository-wide failure, while the run
+# is still visible in the Actions tab. It can also be started by hand from
+# there (`workflow_dispatch`) before a release.
+name: Network integration
+
+on:
+  schedule:
+    # 04:00 UTC every Monday.
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+jobs:
+  network-integration:
+    name: Network integration - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: julia-actions/cache@v2
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Build the release extractor
+        working-directory: deps/rustcall_extract
+        run: cargo build --release
+      - uses: julia-actions/julia-runtest@v1
+        env:
+          JULIA_NUM_THREADS: '1'
+          RUSTCALL_EXTRACT: ${{ github.workspace }}/deps/rustcall_extract/target/release/rustcall-extract${{ runner.os == 'Windows' && '.exe' || '' }}
+          RUSTCALL_RUN_SERDE_TESTS: 'true'
+          RUSTCALL_RUN_REGEX_TESTS: 'true'
+          RUSTCALL_RUN_UUID_TESTS: 'true'
+          RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS: 'true'
+        with:
+          test_args: --jobs=2 test_external_crates test_ndarray test_phase4_ndarray

@@ -70,6 +70,23 @@ every push.
 - Coverage includes cache behavior, ownership types, arrays, generics, cargo dependencies, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
 - Documentation examples are checked by `test/test_docs_examples.jl`.
 - The proc-macro crate has its own tests in `deps/rustcall_julia_macros/tests/`.
+- The Rust toolchain is a **precondition, not a skip**, when `CI=true`:
+  `test/test_toolchain.jl` asserts that rustc and cargo resolve and that
+  `Pkg.build` produced the helpers library, so a provisioning failure fails the
+  suite instead of letting sixty testsets step aside silently. Set
+  `RUSTCALL_REQUIRE_TOOLCHAIN=true` to get the same behaviour locally.
+- The **network-dependent tests are opt-in**. `test_external_crates.jl`,
+  `test_ndarray.jl` and `test_phase4_ndarray.jl` build Cargo projects against
+  serde_json, regex, uuid and ndarray; they are skipped unless their variable
+  is set, and the scheduled `Network integration` workflow sets all four:
+
+  ```bash
+  RUSTCALL_RUN_SERDE_TESTS=true \
+  RUSTCALL_RUN_REGEX_TESTS=true \
+  RUSTCALL_RUN_UUID_TESTS=true \
+  RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS=true \
+    julia --project -e 'using Pkg; Pkg.test()'
+  ```
 
 Useful commands:
 

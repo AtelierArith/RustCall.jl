@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The test suite states its own preconditions and no longer downloads crates
+  by default** ([#259](https://github.com/AtelierArith/RustCall.jl/issues/259)).
+  Around sixty testsets step aside when `rustc` is missing, so a provisioning
+  failure on some platform could leave the suite green while asserting almost
+  nothing; `test/test_toolchain.jl` now asserts under `CI=true` (or
+  `RUSTCALL_REQUIRE_TOOLCHAIN=true`) that rustc and cargo resolve and that
+  `Pkg.build` produced the helpers library. The serde_json, regex, uuid and
+  ndarray integration tests became opt-in — their variables default to `false`
+  and a scheduled `Network integration` workflow, which is allowed to fail,
+  sets all four — so a crates.io hiccup no longer turns an unrelated pull
+  request red.
+
+### Changed
 - **`BenchmarkTools` is no longer a runtime dependency, and Aqua.jl now
   enforces that** ([#260](https://github.com/AtelierArith/RustCall.jl/issues/260)).
   It was listed in `[deps]` while only `benchmark/*.jl` used it, so every

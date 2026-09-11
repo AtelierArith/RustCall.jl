@@ -2,9 +2,19 @@
 using RustCall
 using Test
 
+# The same opt-in gate as `test_ndarray.jl`: this file builds a Cargo project
+# against ndarray, which is the heaviest crates.io download in the suite
+# (#259).
+const RUN_HEAVY_INTEGRATION_TESTS =
+    get(ENV, "RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS", "false") == "true"
+
 @testset "Phase 4: ndarray Example" begin
+    if !RUN_HEAVY_INTEGRATION_TESTS
+        @test_skip "Set RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS=true to run ndarray tests"
+        return
+    end
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping phase4_ndarray tests"
+        @test_skip "rustc is required"
         return
     end
 
