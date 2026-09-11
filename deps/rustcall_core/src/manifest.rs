@@ -258,6 +258,19 @@ impl Attribute {
     pub fn is_none(&self) -> bool {
         matches!(self, Attribute::None)
     }
+
+    /// Whether RustCall generates an `extern "C"` wrapper for an item
+    /// reported under this attribute, and with it a panic channel and any
+    /// string buffers the signature needs.
+    ///
+    /// False for [`Attribute::None`]: a plain `#[no_mangle] extern "C"`
+    /// function is reported only so Julia can register its return type. It is
+    /// exported under its own name and claims no derived name, which is why a
+    /// hand-written `release` / `release_take_panic` pair is two unrelated
+    /// exports rather than a collision (#338).
+    pub fn generates_wrapper(self) -> bool {
+        !matches!(self, Attribute::None)
+    }
 }
 
 /// The absence of an attribute, which is what a `#[serde(default)]` column
@@ -725,13 +738,6 @@ fn symbol_owner(path: &[String], name: &str, line: usize) -> String {
     format!("`{}` (line {line})", segments.join("::"))
 }
 
-/// The `#[no_mangle]` release function of an owned-string buffer owned by
-/// `owner`. The buffer *types* are not symbols; this is the only exported item
-/// the string ABI adds (`crate::codegen::owned_string_helper`).
-fn owned_string_free_symbol(owner: &str) -> String {
-    format!("{owner}_free_rust_string")
-}
-
 impl Function {
     /// The exported symbols this `#[julia]` function claims — its wrapper, the
     /// reader of that wrapper's panic channel and, when it returns an owned
@@ -749,22 +755,14 @@ impl Function {
     /// `release` / `release_take_panic` pair is two unrelated exports, not a
     /// collision.
     pub fn claimed_symbols(&self) -> Vec<(String, String)> {
-        if self.attribute.is_pyo3_scan()
-            || !self.exported
-            || self.symbol.is_empty()
-            || !self.cfg.is_empty()
-        {
+        if self.attribute.is_pyo3_scan() {
             return Vec::new();
         }
         let who = symbol_owner(&self.module_path, &self.name, self.line);
-        let mut out = vec![(self.symbol.clone(), who.clone())];
-        if self.attribute == Attribute::Julia {
-            out.push((crate::codegen::panic_symbol(&self.symbol), who.clone()));
-        }
-        if self.has_owned_string_helper && !self.ffi_name.is_empty() {
-            out.push((owned_string_free_symbol(&self.ffi_name), who));
-        }
-        out
+        crate::claims::function_claims(self, crate::claims::Policy::JULIA)
+            .into_iter()
+            .map(|claim| (claim.name, who.clone()))
+            .collect()
     }
 }
 
@@ -793,52 +791,14 @@ impl Struct {
     /// (`string_owner == ffi_name`), one wrapped at a `#[julia] impl` block in
     /// another module declares its own (#342).
     pub fn claimed_symbols(&self) -> Vec<(String, String)> {
-        if self.attribute.is_pyo3_scan() || !self.cfg.is_empty() || self.ffi_name.is_empty() {
+        if self.attribute.is_pyo3_scan() {
             return Vec::new();
         }
         let who = symbol_owner(&self.module_path, &self.name, self.line);
-        let mut out = Vec::new();
-        // A generic struct exports nothing itself.
-        if self.type_params.is_empty() {
-            let free = crate::codegen::struct_free_symbol(&self.ffi_name);
-            out.push((crate::codegen::panic_symbol(&free), who.clone()));
-            out.push((free, who.clone()));
-        }
-        for field in &self.fields {
-            for accessor in [&field.getter, &field.setter] {
-                if !accessor.is_empty() {
-                    out.push((accessor.clone(), who.clone()));
-                    out.push((crate::codegen::panic_symbol(accessor), who.clone()));
-                }
-            }
-        }
-        if self.has_clone {
-            let clone = format!("{}_clone", self.ffi_name);
-            out.push((crate::codegen::panic_symbol(&clone), who.clone()));
-            out.push((clone, who.clone()));
-        }
-        let mut buffers: Vec<String> = Vec::new();
-        if self.has_owned_string_helper {
-            buffers.push(self.ffi_name.clone());
-        }
-        for m in &self.methods {
-            if m.cfg.is_empty() {
-                if !m.symbol.is_empty() {
-                    out.push((m.symbol.clone(), who.clone()));
-                    out.push((crate::codegen::panic_symbol(&m.symbol), who.clone()));
-                }
-                if m.declares_owned_string()
-                    && !m.string_owner.is_empty()
-                    && !buffers.contains(&m.string_owner)
-                {
-                    buffers.push(m.string_owner.clone());
-                }
-            }
-        }
-        for owner in buffers {
-            out.push((owned_string_free_symbol(&owner), who.clone()));
-        }
-        out
+        crate::claims::struct_claims(self, crate::claims::Policy::JULIA)
+            .into_iter()
+            .map(|claim| (claim.name, who.clone()))
+            .collect()
     }
 }
 
