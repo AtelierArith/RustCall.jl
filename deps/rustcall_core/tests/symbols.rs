@@ -934,3 +934,55 @@ fn claims_are_compared_within_their_rust_namespace() {
     );
     assert!(both.is_ok(), "{:?}", both.err());
 }
+
+/// A file module is transparent to the symbol scheme, so `x.rs` and `y.rs`
+/// both carry an empty `module_path` in the manifest — but their items really
+/// do live in modules `x` and `y`. `#[julia] fn foo` in one and `#[julia] fn
+/// FOO` in the other export different symbols and spell one panic-slot name,
+/// in two different Rust modules, and must not be refused. The crate scan
+/// stamps the real module path onto every private claim (#338 review).
+#[test]
+fn a_private_claim_is_scoped_by_the_real_module_not_the_symbol_path() {
+    use rustcall_core::extract::{FilePosition, TreeScan};
+    use rustcall_core::Manifest;
+
+    let mut scan = TreeScan::new();
+    let mut manifest = Manifest::new(Mode::Crate);
+    let pending = scan
+        .file(
+            "pub mod x;\npub mod y;",
+            None,
+            &FilePosition::module(&[], true, &[]),
+            &mut manifest,
+            "src/lib.rs",
+        )
+        .unwrap()
+        .modules;
+    assert_eq!(pending.len(), 2);
+    for (module, body) in pending.iter().zip([
+        "#[julia] pub fn foo() -> i32 { 1 }",
+        "#[julia] pub fn FOO() -> i32 { 2 }",
+    ]) {
+        scan.file(
+            body,
+            None,
+            &FilePosition::module(&module.module_path, module.reachable, &module.cfg),
+            &mut manifest,
+            &format!("src/{}.rs", module.module_path.join("/")),
+        )
+        .expect("two file modules may spell one slot name");
+    }
+    scan.finish(&mut manifest)
+        .expect("two file modules may spell one slot name");
+
+    // The manifest keeps both, under the symbol path the scheme uses (empty
+    // for a file module) and with different exported symbols.
+    let symbols: Vec<&str> = manifest
+        .functions
+        .iter()
+        .map(|f| f.symbol.as_str())
+        .collect();
+    assert!(symbols.contains(&"rustcall_foo"), "{symbols:?}");
+    assert!(symbols.contains(&"rustcall_FOO"), "{symbols:?}");
+    assert!(manifest.functions.iter().all(|f| f.module_path.is_empty()));
+}

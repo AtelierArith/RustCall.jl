@@ -110,6 +110,23 @@ impl Claim {
         }
         self
     }
+
+    /// Replace the module a private claim was scoped to with the real Rust
+    /// module the wrapper is emitted into.
+    ///
+    /// The builders can only use the manifest's `module_path`, which is the
+    /// *symbol-qualification* path: in a crate, a file module (`mod x;`) is
+    /// transparent to the naming scheme and contributes nothing to it, while
+    /// the items of `x.rs` really do live in module `x`. The crate scan knows
+    /// the real path and stamps it here (#338 review). `Global` and `Unknown`
+    /// are left alone: an export is crate-wide however it is nested, and
+    /// `Unknown` is the deliberate "this scan cannot say" answer.
+    pub fn in_real_module(mut self, module: &[String]) -> Claim {
+        if matches!(self.scope, Scope::Module(_)) {
+            self.scope = Scope::Module(module.to_vec());
+        }
+        self
+    }
 }
 
 /// Put every private claim of a list in `scope`; exported ones stay global.

@@ -780,7 +780,7 @@ impl CrateScan {
                     if attribute == Attribute::Julia {
                         let entry = function_entry(f, attribute, true, symbol_path, enclosing_cfg);
                         for (claim, owner) in entry.claims() {
-                            self.claim(claim, owner, file)?;
+                            self.claim(claim, owner, file, module_path)?;
                         }
                         manifest.functions.push(entry);
                     }
@@ -959,7 +959,12 @@ impl CrateScan {
         claim: crate::claims::Claim,
         owner: String,
         file: &str,
+        module: &[String],
     ) -> Result<(), ExtractError> {
+        // The manifest's module path qualifies symbols; it is empty for every
+        // file of the module tree, which is not where the wrapper's private
+        // items land (#338 review).
+        let claim = claim.in_real_module(module);
         let here = if file.is_empty() {
             owner
         } else {
@@ -1062,7 +1067,7 @@ impl CrateScan {
         for scanned in std::mem::take(&mut self.structs) {
             let entry = crate_struct_entry(&scanned.model, &scanned.symbol_path, &scanned.cfg);
             for (claim, owner) in entry.claims() {
-                self.claim(claim, owner, &scanned.file)?;
+                self.claim(claim, owner, &scanned.file, &scanned.module_path)?;
             }
             manifest.structs.push(entry);
         }
