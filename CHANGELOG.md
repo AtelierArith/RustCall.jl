@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-12
+
 ### Fixed
 - **A clash on a generated internal name is refused, and named for what it is**
   ([#338](https://github.com/AtelierArith/RustCall.jl/issues/338)). A wrapper
@@ -1572,7 +1574,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.0...v0.3.1
