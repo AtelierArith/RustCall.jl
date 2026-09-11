@@ -685,30 +685,68 @@ fn both_scans_read_one_claim_list() {
     assert_eq!(from_claims, from_owners);
 }
 
-/// A `#[julia]` struct with a `Vec` field exports the buffer's release
-/// function next to the getter. `symbol_owners` missed it before the two
-/// derivations were merged (#338).
+/// The PyO3 scan keeps a `#[cfg]`-gated entry in its table, with the
+/// predicate, and decides with `cfg_exclusive` whether two claimants can ever
+/// be compiled together. The `#[julia]` duplicate check drops them instead: it
+/// has nowhere to record a predicate, and two variants of one function under
+/// mutually exclusive predicates are the normal shape of a portable crate, not
+/// a clash (#338).
 #[test]
-fn a_vec_field_claims_its_release_function() {
+fn the_two_policies_disagree_about_cfg_gated_entries() {
+    use rustcall_core::claims::{function_claims, Policy};
+
     let m = extract(
         r#"
-            #[julia] pub struct Bag { pub items: Vec<i32> }
+            #[cfg(unix)] #[julia] pub fn portable() -> i32 { 1 }
         "#,
         Mode::Crate,
     )
     .unwrap();
-    let field = &m.structs[0].fields[0];
-    if field.abi != "vec" || field.free_symbol.is_empty() {
-        // The `Vec` field ABI is not offered for this shape; nothing to pin.
-        return;
-    }
-    let owners = m.symbol_owners();
-    assert_eq!(
-        owners
-            .iter()
-            .filter(|(s, _)| *s == field.free_symbol)
-            .count(),
-        1,
-        "{owners:?}"
+    let gated = &m.functions[0];
+    assert!(!gated.cfg.is_empty(), "{gated:?}");
+    assert!(function_claims(gated, Policy::JULIA).is_empty());
+    assert!(!function_claims(gated, Policy::PYO3_SCAN).is_empty());
+    // ... which is why the crate-wide check leaves it out entirely.
+    assert!(!m
+        .symbol_owners()
+        .iter()
+        .any(|(s, _)| s == "rustcall_portable"));
+}
+
+/// A struct helper — the destructor, `clone`, a field accessor — writes a
+/// panic slot named by hex-encoding its symbol (`guard_struct_helper`), not by
+/// upper-casing it the way a function or method wrapper does. The encoding is
+/// injective, so two helpers share a slot only when they already share their
+/// exported symbol, and nothing claims it. A wrapper's slot is not injective
+/// and is claimed under the scan policy (#338).
+#[test]
+fn helper_slots_are_injective_and_unclaimed() {
+    use rustcall_core::claims::{helper_panic_slot, panic_slot, struct_claims, Policy};
+
+    assert_eq!(panic_slot("rustcall_foo"), panic_slot("rustcall_FOO"));
+    assert_ne!(
+        helper_panic_slot("Bag_get_x"),
+        helper_panic_slot("Bag_get_X")
     );
+
+    let m = extract(
+        r#"
+            #[julia] #[derive(Clone)] pub struct Bag { pub v: i32 }
+            #[julia] impl Bag { #[julia] pub fn get(&self) -> i32 { self.v } }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let names: Vec<String> = struct_claims(&m.structs[0], Policy::PYO3_SCAN)
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    // The method wrapper's slot is claimed ...
+    assert!(names.contains(&panic_slot("rustcall_Bag_get")), "{names:?}");
+    // ... the destructor's and the accessor's are not, under either spelling.
+    for symbol in ["Bag_free", "Bag_get_v"] {
+        assert!(!names.contains(&panic_slot(symbol)), "{names:?}");
+        assert!(!names.contains(&helper_panic_slot(symbol)), "{names:?}");
+        assert!(names.contains(&symbol.to_string()), "{names:?}");
+    }
 }

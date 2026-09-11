@@ -74,6 +74,16 @@ pub struct Policy {
     /// the string / vector helper types. They are real clashes, not exports.
     pub include_private: bool,
     pub strings: StringHelpers,
+    /// Drop an entry whose `#[cfg]` the scan could not decide.
+    ///
+    /// The `#[julia]` duplicate check does: two variants of one function under
+    /// mutually exclusive predicates are the normal shape of a portable crate,
+    /// and it has nowhere to record the predicate. The PyO3 scan keeps them —
+    /// it carries each claim's predicate alongside and asks `cfg_exclusive`
+    /// whether two claimants can ever be compiled together, so a gated
+    /// `#[julia] fn run` and a gated `#[pyfunction] fn run_take_panic` under
+    /// the same feature still collide.
+    pub skip_cfg_gated: bool,
 }
 
 impl Policy {
@@ -88,20 +98,34 @@ impl Policy {
     pub const JULIA: Policy = Policy {
         include_private: false,
         strings: StringHelpers::AsDeclared,
+        skip_cfg_gated: true,
     };
 
     /// The PyO3 scan's collision analysis.
     pub const PYO3_SCAN: Policy = Policy {
         include_private: true,
         strings: StringHelpers::Reserved,
+        skip_cfg_gated: false,
     };
 }
 
-/// The private thread-local slot a wrapper's panic channel writes. The symbol
-/// is upper-cased, so `foo` and `FOO` would share one slot — a duplicate
-/// `thread_local!` in the same module.
+/// The private thread-local slot the panic channel of a **function or method
+/// wrapper** writes (`codegen::function_wrapper`). The symbol is upper-cased,
+/// so `foo` and `FOO` would share one slot — a duplicate `thread_local!` in
+/// the same module, which their differing exported symbols would not catch.
 pub fn panic_slot(symbol: &str) -> String {
     format!("__RUSTCALL_PANIC_{}", symbol.to_uppercase())
+}
+
+/// The slot of a **struct helper** — a destructor, `clone`, or a field
+/// accessor (`codegen::guard_struct_helper`). Unlike [`panic_slot`] it hex-
+/// encodes the symbol rather than upper-casing it, so it is injective: two
+/// helpers share a slot only when they already share their exported symbol.
+/// Nothing claims it for that reason; this exists so the difference is
+/// written down rather than rediscovered.
+pub fn helper_panic_slot(symbol: &str) -> String {
+    let suffix: String = symbol.bytes().map(|b| format!("{b:02X}")).collect();
+    format!("__RUSTCALL_HELPER_PANIC_{suffix}")
 }
 
 /// The owned string buffer of `owner`: the `#[repr(C)]` type and the
@@ -128,14 +152,20 @@ pub fn owned_vec_names(getter: &str) -> String {
 /// The entry point exported as `symbol`, the reader of its panic channel and
 /// the slot that reader drains.
 pub fn wrapper_claims(symbol: &str, include_private: bool) -> Vec<Claim> {
-    let mut out = vec![
-        Claim::exported(symbol.to_string()),
-        Claim::exported(panic_symbol(symbol)),
-    ];
+    let mut out = helper_claims(symbol);
     if include_private {
         out.push(Claim::private(panic_slot(symbol)));
     }
     out
+}
+
+/// The same for a struct helper — destructor, `clone`, field accessor — whose
+/// slot is [`helper_panic_slot`] and therefore needs no claim of its own.
+pub fn helper_claims(symbol: &str) -> Vec<Claim> {
+    vec![
+        Claim::exported(symbol.to_string()),
+        Claim::exported(panic_symbol(symbol)),
+    ]
 }
 
 pub fn string_claims(owner: &str, owned: bool, borrowed: bool, policy: Policy) -> Vec<Claim> {
@@ -181,7 +211,7 @@ pub fn declares_borrowed_string(abis: [&str; 4]) -> bool {
 /// wrapper at all — a hand-written `release` / `release_take_panic` pair is
 /// two unrelated exports, not a collision (#338).
 pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
-    if !f.exported || f.symbol.is_empty() || !f.cfg.is_empty() {
+    if !f.exported || f.symbol.is_empty() || (policy.skip_cfg_gated && !f.cfg.is_empty()) {
         return Vec::new();
     }
     if !f.attribute.generates_wrapper() {
@@ -223,27 +253,21 @@ pub fn scanned_function_claims(f: &Function, owned: bool, borrowed: bool) -> Vec
 /// one wrapped at a `#[julia] impl` block in another module declares its own
 /// (#342).
 pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
-    if !s.cfg.is_empty() || s.ffi_name.is_empty() {
+    if (policy.skip_cfg_gated && !s.cfg.is_empty()) || s.ffi_name.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
     // A generic struct exports nothing itself.
     if s.type_params.is_empty() {
-        out.extend(wrapper_claims(
-            &struct_free_symbol(&s.ffi_name),
-            policy.include_private,
-        ));
+        out.extend(helper_claims(&struct_free_symbol(&s.ffi_name)));
     }
     if s.has_clone {
-        out.extend(wrapper_claims(
-            &format!("{}_clone", s.ffi_name),
-            policy.include_private,
-        ));
+        out.extend(helper_claims(&format!("{}_clone", s.ffi_name)));
     }
     for field in &s.fields {
         for accessor in [&field.getter, &field.setter] {
             if !accessor.is_empty() {
-                out.extend(wrapper_claims(accessor, policy.include_private));
+                out.extend(helper_claims(accessor));
             }
         }
         if field.abi == "vec" && !field.getter.is_empty() {
@@ -279,7 +303,7 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
         &mut buffers,
     );
     for m in &s.methods {
-        if !m.cfg.is_empty() {
+        if policy.skip_cfg_gated && !m.cfg.is_empty() {
             continue;
         }
         if !m.symbol.is_empty() {
