@@ -141,7 +141,7 @@ end
     end
 
     if !_CMI_HAVE_CARGO || !RustCall.check_rustc_available()
-        @warn "cargo/rustc not available, skipping the behavioural #315 tests"
+        @test_skip "cargo/rustc not available, skipping the behavioural #315 tests"
     else
         @testset "the methods are callable through @rust_crate" begin
             mktempdir() do dir
@@ -200,7 +200,7 @@ end
 
 @testset "A literal include! is part of the including module (#315 review)" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping the include! scan test"
+        @test_skip "rustc not found, skipping the include! scan test"
     else
         mktempdir() do dir
             mkpath(joinpath(dir, "src"))
@@ -461,7 +461,7 @@ end
 # of the crate root here, not of anything called `frag`.
 @testset "A mod declared inside an include! fragment is followed (#343)" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping the include!-plus-mod scan test"
+        @test_skip "rustc not found, skipping the include!-plus-mod scan test"
     else
         mktempdir() do dir
             mkpath(joinpath(dir, "src", "frag"))
@@ -522,7 +522,7 @@ end
 # see rather than failing (#343).
 @testset "A mod inside a fragment that names no file is skipped (#343)" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping the missing-mod-in-fragment test"
+        @test_skip "rustc not found, skipping the missing-mod-in-fragment test"
     else
         mktempdir() do dir
             mkpath(joinpath(dir, "src"))
@@ -563,7 +563,7 @@ end
 # review).
 @testset "A fragment included under two modules is scanned twice (#343 review)" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping the twice-included fragment test"
+        @test_skip "rustc not found, skipping the twice-included fragment test"
     else
         mktempdir() do dir
             write(joinpath(dir, "frag.rs"), """
@@ -599,7 +599,7 @@ end
 # review).
 @testset "A mod declared inside a fragment is followed without a crate root (#343 review)" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping the no-root fragment-module test"
+        @test_skip "rustc not found, skipping the no-root fragment-module test"
     else
         mktempdir() do dir
             mkpath(joinpath(dir, "frag"))
@@ -648,7 +648,7 @@ end
 # module position (#356).
 @testset "a listed include fragment keeps its module position (#356)" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping the listed-fragment position test"
+        @test_skip "rustc not found, skipping the listed-fragment position test"
     else
         mktempdir() do dir
             frag = joinpath(dir, "frag.rs")
@@ -704,7 +704,7 @@ end
 # last — the *off* branch, for a build that enables the feature (#357).
 @testset "cfg-exclusive modules including one fragment are both scanned (#357)" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping the cfg-exclusive fragment test"
+        @test_skip "rustc not found, skipping the cfg-exclusive fragment test"
     else
         mktempdir() do dir
             mkpath(joinpath(dir, "src"))

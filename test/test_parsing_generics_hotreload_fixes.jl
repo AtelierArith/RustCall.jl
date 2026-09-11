@@ -10,7 +10,7 @@ using RustCall
     # #168 - Field type parsing regex fails for generic types with commas
     # ========================================================================
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping manifest-based parsing tests"
+        @test_skip "rustc not found, skipping manifest-based parsing tests"
         return
     end
 
@@ -173,7 +173,10 @@ using RustCall
             nothing
         )
 
-        # Start a task that runs briefly
+        # Start a task that runs briefly. The sleep is this stand-in
+        # watcher's own poll interval, not test synchronisation (#259): the
+        # test below waits for the task through `stop_watch_task`, which
+        # returns only once it has really finished.
         state.watch_task = @async begin
             while state.enabled
                 sleep(0.05)

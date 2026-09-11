@@ -539,7 +539,7 @@ end
 # is gone.
 @testset "#279: name -> symbol resolution is scoped to one library" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping per-library symbol resolution test"
+        @test_skip "rustc not found, skipping per-library symbol resolution test"
         return
     end
 
@@ -607,7 +607,7 @@ end
 # but not the mapping, and resolved `f` to `f` instead of `rustcall_f`.
 @testset "#279: a library and its symbol mappings are published together" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping concurrent publication test"
+        @test_skip "rustc not found, skipping concurrent publication test"
         return
     end
 
@@ -651,7 +651,7 @@ end
 # cross-library search.
 @testset "#279: an aliased library keeps its symbol mappings" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping alias mapping test"
+        @test_skip "rustc not found, skipping alias mapping test"
         return
     end
 
@@ -698,7 +698,7 @@ end
 # none at all, instead of the type the aliased block declared.
 @testset "#279: an aliased library keeps its return-type hints" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping alias return-type test"
+        @test_skip "rustc not found, skipping alias return-type test"
         return
     end
 
@@ -751,7 +751,7 @@ end
 # library that is no longer in `RUST_LIBRARIES`.
 @testset "#279: re-registering an unloaded library is refused" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping unload-race test"
+        @test_skip "rustc not found, skipping unload-race test"
         return
     end
 
@@ -800,7 +800,7 @@ end
 # same name.
 @testset "#279: return-type hints do not outlive their library" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping stale return-type test"
+        @test_skip "rustc not found, skipping stale return-type test"
         return
     end
 
@@ -866,7 +866,7 @@ end
 # ambiguity error after any identity change.
 @testset "#279: an aliased handle is one candidate, not an ambiguity" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping alias ambiguity test"
+        @test_skip "rustc not found, skipping alias ambiguity test"
         return
     end
 
@@ -942,7 +942,7 @@ end
 # wrong ABI.
 @testset "#279: a return-type hint is never borrowed across libraries" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping cross-library ABI test"
+        @test_skip "rustc not found, skipping cross-library ABI test"
         return
     end
 
@@ -1007,7 +1007,7 @@ end
 # features exactly belongs to #277 Phase B.)
 @testset "#279: ambiguous cfg variants register no return type" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping ambiguous cfg variant test"
+        @test_skip "rustc not found, skipping ambiguous cfg variant test"
         return
     end
 
@@ -1725,7 +1725,7 @@ end
 # allocated the value.
 @testset "#249: the free symbol is resolved inside the allocating library" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping per-library free-symbol test"
+        @test_skip "rustc not found, skipping per-library free-symbol test"
     else
         source = n -> """
         #[julia]

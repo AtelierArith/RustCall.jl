@@ -110,7 +110,7 @@ using Test
             compiler = RustCall.RustCompiler(debug_mode=false)
             @test_throws RustCall.CompilationError RustCall.compile_rust_to_shared_lib(invalid_code; compiler=compiler)
         else
-            @warn "rustc not available, skipping CompilationError display test"
+            @test_skip "rustc not available, skipping CompilationError display test"
         end
     end
 
@@ -136,7 +136,7 @@ using Test
                 rm(debug_dir, recursive=true, force=true)
             end
         else
-            @warn "rustc not available, skipping debug mode test"
+            @test_skip "rustc not available, skipping debug mode test"
         end
     end
 

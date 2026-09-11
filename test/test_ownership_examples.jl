@@ -4,7 +4,7 @@ using Test
 
 @testset "Ownership Examples" begin
     if !RustCall.is_rust_helpers_available()
-        @warn "Rust helpers library not available, skipping ownership examples tests"
+        @test_skip "Rust helpers library not available, skipping ownership examples tests"
         return
     end
 

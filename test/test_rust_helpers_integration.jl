@@ -78,7 +78,7 @@ end
                 end
             end
         else
-            @warn "Rust helpers library not loaded. Skipping integration tests."
+            @test_skip "Rust helpers library not loaded. Skipping integration tests."
             @warn "Build with: using Pkg; Pkg.build(\"RustCall\")"
         end
     end
@@ -154,7 +154,7 @@ end
                 end
             end
         else
-            @warn "Rust helpers library not available. Skipping end-to-end tests."
+            @test_skip "Rust helpers library not available. Skipping end-to-end tests."
         end
     end
 

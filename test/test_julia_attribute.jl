@@ -8,7 +8,7 @@ using Libdl
     # Signatures come from the FFI manifest produced by rustcall-extract; Julia
     # never parses Rust source. These tests exercise the manifest round trip.
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping manifest tests"
+        @test_skip "rustc not found, skipping manifest tests"
         return
     end
 

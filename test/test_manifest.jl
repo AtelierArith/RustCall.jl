@@ -27,7 +27,7 @@ using TOML
 
 @testset "FFI Manifest" begin
     if !RustCall.check_rustc_available()
-        @warn "rustc not found, skipping manifest tests"
+        @test_skip "rustc not found, skipping manifest tests"
         return
     end
 
@@ -381,7 +381,7 @@ using TOML
 
             off = RustCall.pyo3_link_plan(dir)
             if !off.resolved
-                @warn "Cargo could not resolve the temp crate; skipping the resolved half"
+                @test_skip "Cargo could not resolve the temp crate; skipping the resolved half"
             else
                 # Defaults: no pyo3 in the graph at all, and the gated item is
                 # gone — pruned by the extractor's evaluator, not by a guess.

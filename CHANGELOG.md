@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Skipped testsets are counted, and the hot-reload tests no longer use a
+  fixed `sleep` to synchronise**
+  ([#259](https://github.com/AtelierArith/RustCall.jl/issues/259)). Sixty-five
+  testsets announced a missing toolchain with `@warn` and returned, so they
+  vanished from the summary rather than appearing as skips; they use
+  `@test_skip` now. In `test/test_hot_reload.jl`, the five sleeps that waited
+  for a watcher to stop are gone — `disable_hot_reload` already waits for the
+  task through `stop_watch_task` — and the lock-serialisation test hands off
+  through a channel and `wait(t)` instead of two fixed sleeps.
+
 ## [0.3.3] - 2026-09-11
 
 ### Fixed

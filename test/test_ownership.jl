@@ -126,7 +126,7 @@ using Test
             @test !isdefined(RustCall, :update_arc_finalizer)
         end
 
-        @warn "Rust helpers library not available, skipping full integration tests"
+        @test_skip "Rust helpers library not available, skipping full integration tests"
         @warn "To enable these tests, build the library with: using Pkg; Pkg.build(\"RustCall\")"
     else
         # Full integration tests with actual Rust library

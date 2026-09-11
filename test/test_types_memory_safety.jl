@@ -210,7 +210,7 @@ using Test
             @test isfile(lib_path)
             rm(dirname(lib_path), recursive=true, force=true)
         else
-            @warn "rustc not found, skipping IOBuffer leak test"
+            @test_skip "rustc not found, skipping IOBuffer leak test"
         end
     end
 
