@@ -61,11 +61,20 @@ jobs:
       # Overriding `RUSTCALL_CACHE_DIR` instead is not an option: `test_cache`
       # asserts the default scratch-space layout.
       - name: Fetch the declared dependency closure
+        # Every manifest that pins a lockfile is fetched with `--locked`, so
+        # the versions the tests will actually build are the versions that
+        # land in CARGO_HOME. Fetching only the repository's own manifests
+        # would rely on their freshly resolved graph happening to overlap the
+        # fixtures' pinned one, which it does today and need not tomorrow
+        # (#384 review). `--locked` also fails loudly when a lockfile has gone
+        # stale against its Cargo.toml, which is the right moment to notice.
         run: |
           cargo fetch --manifest-path deps/rustcall_extract/Cargo.toml
           cargo fetch --manifest-path deps/rust_helpers/Cargo.toml
           cargo fetch --manifest-path deps/rustcall_julia_macros/Cargo.toml
-          cargo fetch --manifest-path test/fixtures/offline_prefetch/Cargo.toml
+          for fixture in test/fixtures/*/Cargo.lock; do
+            cargo fetch --locked --manifest-path "$(dirname "$fixture")/Cargo.toml"
+          done
       - name: Build the release extractor
         working-directory: deps/rustcall_extract
         run: cargo build --release

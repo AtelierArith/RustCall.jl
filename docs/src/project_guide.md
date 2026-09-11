@@ -114,9 +114,15 @@ every push.
 
   ```bash
   export CARGO_HOME=$(mktemp -d)
-  for m in deps/rustcall_extract deps/rust_helpers deps/rustcall_julia_macros \
-           test/fixtures/offline_prefetch; do
+  # A fresh first depot, so RustCall's artifact cache starts empty too: a
+  # library an earlier run compiled would otherwise satisfy a Cargo-backed
+  # test without Cargo being invoked at all.
+  export JULIA_DEPOT_PATH="$(mktemp -d):$HOME/.julia"
+  for m in deps/rustcall_extract deps/rust_helpers deps/rustcall_julia_macros; do
     cargo fetch --manifest-path "$m/Cargo.toml"
+  done
+  for lock in test/fixtures/*/Cargo.lock; do
+    cargo fetch --locked --manifest-path "$(dirname "$lock")/Cargo.toml"
   done
   (cd deps/rustcall_extract && cargo build --release)
   julia --project -e 'using Pkg; Pkg.build("RustCall")'
