@@ -317,39 +317,16 @@ end
 """
     get_rust_helpers_lib_path() -> Union{String, Nothing}
 
-Get the path to the Rust helpers library if it exists (either built or in a standard location).
-Returns nothing if the library is not found.
+Path to the ownership helper library built by `Pkg.build("RustCall")`, or
+`nothing` when no copy of it exists.
+
+Every candidate location, and their order, is `native_product_candidates`
+(#258): `RUSTCALL_RUST_HELPERS` first, then this package tree's own build
+directory — a scratch space for an installed package, `deps/rust_helpers/target`
+for a checkout — then the legacy in-package locations a pre-v0.3.5 build left
+behind.
 """
-function get_rust_helpers_lib_path()
-    # Try to find the library relative to the package directory
-    # @__DIR__ points to src/, so dirname(@__DIR__) gives package root
-    pkg_dir = dirname(@__DIR__)  # Go up from src/ to package root
-    deps_dir = joinpath(pkg_dir, "deps")
-    helpers_dir = joinpath(deps_dir, "rust_helpers")
-    lib_ext = get_library_extension()
-    target_dir = joinpath(helpers_dir, "target", "release")
-
-    # Library name
-    if Sys.iswindows()
-        lib_name = "rust_helpers.dll"
-    else
-        lib_name = "librust_helpers$(lib_ext)"
-    end
-
-    lib_path = joinpath(target_dir, lib_name)
-
-    if isfile(lib_path)
-        return lib_path
-    end
-
-    # Also try in the deps directory directly (for development)
-    alt_path = joinpath(deps_dir, lib_name)
-    if isfile(alt_path)
-        return alt_path
-    end
-
-    return nothing
-end
+get_rust_helpers_lib_path() = native_product_path(:rust_helpers)
 
 """
     verify_rust_helpers_functions(lib::Ptr{Cvoid}) -> Bool

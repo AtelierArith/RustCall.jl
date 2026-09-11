@@ -155,6 +155,12 @@ include("rustc_json.jl")
 include("compiler.jl")
 include("codegen.jl")
 include("exceptions.jl")
+
+# Where `Pkg.build` puts the two native build products, and where they are
+# looked up again (#258). Included before cache.jl, which shares its depot
+# selection, and written so `deps/build.jl` can include the same file.
+include("native_layout.jl")
+
 include("cache.jl")
 
 # Explicit load/compile policy object (#277, Phase A). Additive: not yet used

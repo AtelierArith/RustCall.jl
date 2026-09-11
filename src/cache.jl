@@ -153,47 +153,9 @@ function _cache_dir_override()
     return isempty(raw) ? "" : abspath(expanduser(raw))
 end
 
-"""
-    _depot_is_writable(depot) -> Bool
-
-Whether a scratch space can actually be created under `depot`.
-
-`mkpath` succeeding is not enough — it is a no-op on an existing directory
-whatever its mode — so this creates the `scratchspaces` directory and then
-writes and removes a uniquely named probe file inside it. A read-only
-`DEPOT_PATH[1]` (shared/HPC depots, baked container images) fails here and the
-next depot is tried.
-"""
-function _depot_is_writable(depot::AbstractString)
-    dir = joinpath(depot, "scratchspaces")
-    try
-        mkpath(dir)
-        probe = joinpath(dir, ".rustcall-write-probe-$(getpid())-$(rand(UInt64))")
-        touch(probe)
-        rm(probe; force = true)
-        return true
-    catch e
-        @debug "Depot is not writable for RustCall's cache" depot exception = e
-        return false
-    end
-end
-
-"""
-    _writable_depot() -> Union{String, Nothing}
-
-The first entry of `DEPOT_PATH` a scratch space can be created in, or `nothing`
-when there is none.
-
-`Scratch.get_scratch!` defaults to `first(DEPOT_PATH)`; RustCall scans instead,
-so a read-only first depot with a writable one behind it still works (#252).
-"""
-function _writable_depot()
-    for depot in DEPOT_PATH
-        isempty(depot) && continue
-        _depot_is_writable(depot) && return String(depot)
-    end
-    return nothing
-end
+# `_depot_is_writable` and `_writable_depot` moved to src/native_layout.jl in
+# #258: the native build products choose a depot by the same rule, and that
+# file is the one both the module and `deps/build.jl` can include.
 
 """
     get_cache_dir() -> String

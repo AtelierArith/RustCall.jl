@@ -82,20 +82,15 @@ const _EXTRACTOR_LOCK = ReentrantLock()
     extractor_path() -> String
 
 Path to the `rustcall-extract` binary. Honors the `RUSTCALL_EXTRACT` environment
-variable, otherwise uses the binary built by `Pkg.build("RustCall")`.
+variable, otherwise uses the binary built by `Pkg.build("RustCall")`, whose
+location `native_product_candidates(:extractor)` decides (#258).
 """
 function extractor_path()
     lock(_EXTRACTOR_LOCK) do
         if !isempty(_EXTRACTOR_PATH[]) && isfile(_EXTRACTOR_PATH[])
             return _EXTRACTOR_PATH[]
         end
-        candidates = String[]
-        env = get(ENV, "RUSTCALL_EXTRACT", "")
-        isempty(env) || push!(candidates, env)
-        bin = Sys.iswindows() ? "rustcall-extract.exe" : "rustcall-extract"
-        root = joinpath(dirname(@__DIR__), "deps", "rustcall_extract", "target")
-        push!(candidates, joinpath(root, "release", bin))
-        push!(candidates, joinpath(root, "debug", bin))
+        candidates = native_product_candidates(:extractor)
         for c in candidates
             if isfile(c)
                 _EXTRACTOR_PATH[] = c

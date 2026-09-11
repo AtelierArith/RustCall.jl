@@ -1,7 +1,30 @@
 # Build script for RustCall.jl
-# This script verifies that the required tools are available and builds Rust helpers
+#
+# Builds the two native products the package needs and reports where they went:
+#
+#   * `deps/rust_helpers`     → the ownership helper cdylib (Box / Rc / Arc / Vec)
+#   * `deps/rustcall_extract` → `rustcall-extract`, the only component that
+#     interprets Rust syntax on behalf of Julia (FFI manifests, inline
+#     expansion of `#[julia]` items, generic specialization)
+#
+# Two things changed in #258:
+#
+#   * **No `cargo clean`.** Through v0.3.4 every `Pkg.build("RustCall")` wiped
+#     both target directories first, so every build event — including the
+#     transitive ones Pkg triggers — paid a full Rust compile. Cargo already
+#     knows which of its inputs changed, down to the `rustc` version and the
+#     profile; a forced clean only throws that knowledge away. A rebuild with
+#     unchanged sources is now a fraction of a second.
+#   * **Nothing is written into an installed package.** `native_target_dir`
+#     (src/native_layout.jl) sends an installed package's build products to a
+#     scratch space and leaves a checkout building in `deps/<crate>/target`,
+#     where the documented developer commands already put them.
 
 using RustToolChain: rustc, cargo
+
+# The one place that knows where these products live; `src/RustCall.jl`
+# includes the same file, so the build and the lookup cannot drift apart.
+include(joinpath(@__DIR__, "..", "src", "native_layout.jl"))
 
 """
     check_rust_toolchain() -> Bool
@@ -36,202 +59,63 @@ function check_rust_toolchain()
 end
 
 """
-    get_library_extension() -> String
+    build_native_product(kind::Symbol, what::String) -> String
 
-Get the shared library extension for the current platform.
+Build `kind` with Cargo and return the path to the product.
+
+The build is incremental: Cargo decides what to redo from its own fingerprint
+of the sources, the profile and the `rustc` identity. The target directory
+comes from `native_target_dir`, so the same `CARGO_TARGET_DIR` is used on every
+build and an installed package's tree is never written to.
 """
-function get_library_extension()
-    if Sys.iswindows()
-        return ".dll"
-    elseif Sys.isapple()
-        return ".dylib"
-    else
-        return ".so"
-    end
-end
+function build_native_product(kind::Symbol, what::AbstractString)
+    crate_dir = native_crate_dir(kind)
+    cargo_toml = joinpath(crate_dir, "Cargo.toml")
+    isfile(cargo_toml) || error("Cargo.toml not found at: $cargo_toml")
 
-"""
-    build_rust_helpers() -> String
+    target_dir = native_target_dir(kind; create = true)
+    println("Building $what...")
+    println("  Crate: $crate_dir")
+    println("  Target directory: $target_dir")
 
-Build the Rust helpers library and return the path to the compiled library.
-Throws an error if the build fails.
-"""
-function clean_rust_helpers(cargo_toml::String)
-    println("  Running: $(cargo()) clean --manifest-path $cargo_toml")
-    run(`$(cargo()) clean --manifest-path $cargo_toml`)
-    println("  ✓ Cargo clean completed successfully")
-end
+    build_env = copy(ENV)
+    build_env["CARGO_TARGET_DIR"] = target_dir
+    # `panic = "unwind"` is pinned in deps/rust_helpers/Cargo.toml; setting it
+    # here too means an inherited CARGO_PROFILE_RELEASE_PANIC cannot decide it
+    # either (#244). The two agree by construction: the manifest is what
+    # `helper_library_policy()` describes.
+    build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
 
-function build_rust_helpers()
-    deps_dir = @__DIR__
-    helpers_dir = joinpath(deps_dir, "rust_helpers")
-    cargo_toml = joinpath(helpers_dir, "Cargo.toml")
-
-    if !isfile(cargo_toml)
-        error("Cargo.toml not found at: $cargo_toml")
-    end
-
-    if !isdir(helpers_dir)
-        error("Rust helpers directory not found at: $helpers_dir")
-    end
-
-    println("Building Rust helpers library...")
-    println("  Directory: $helpers_dir")
-    println("  Cargo.toml: $cargo_toml")
-
-    # Clean first so Pkg.build() always performs a fresh Cargo rebuild.
-    try
-        clean_rust_helpers(cargo_toml)
-    catch e
-        error("""
-        Failed to clean Rust helpers build artifacts: $e
-
-        Try running manually:
-            cd $helpers_dir
-            cargo clean
-        """)
-    end
-
-    # Build with cargo using RustToolChain.jl
     try
         println("  Running: $(cargo()) build --release --manifest-path $cargo_toml")
-        # `panic = "unwind"` is pinned in deps/rust_helpers/Cargo.toml; setting
-        # it here too means an inherited CARGO_PROFILE_RELEASE_PANIC cannot
-        # decide it either (#244). The two agree by construction: the manifest
-        # is what `helper_library_policy()` describes.
-        build_env = copy(ENV)
-        build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
         run(setenv(`$(cargo()) build --release --manifest-path $cargo_toml`, build_env))
         println("  ✓ Cargo build completed successfully")
     catch e
         error("""
-        Failed to build Rust helpers library: $e
+        Failed to build $what: $e
 
         Common issues:
         1. Rust toolchain not installed - install from https://rustup.rs/
         2. Cargo.toml has syntax errors
         3. Missing dependencies in Cargo.toml
-        4. Insufficient permissions to write to target directory
+        4. Insufficient permissions to write to $target_dir
 
         Try running manually:
-            cd $helpers_dir
-            cargo build --release
+            CARGO_TARGET_DIR=$target_dir cargo build --release --manifest-path $cargo_toml
         """)
     end
 
-    # Find the compiled library
-    # Cargo builds to target/release/ on Unix and target/release/ on Windows
-    lib_ext = get_library_extension()
-    target_dir = joinpath(helpers_dir, "target", "release")
-
-    # Library name is "rust_helpers" (from Cargo.toml) with platform extension
-    if Sys.iswindows()
-        lib_name = "rust_helpers.dll"
-    else
-        lib_name = "librust_helpers$(lib_ext)"
-    end
-
-    lib_path = joinpath(target_dir, lib_name)
-
-    if !isfile(lib_path)
+    path = joinpath(target_dir, "release", native_product_filename(kind))
+    if !isfile(path)
         error("""
-        Built library not found at expected path: $lib_path
+        Built product not found at expected path: $path
 
-        The build may have succeeded but the library was not created.
+        The build may have succeeded but the file was not created.
         Check the cargo build output for errors.
-
-        Expected location: $target_dir
-        Library name: $lib_name
         """)
     end
-
-    # Verify library is readable
-    try
-        stat(lib_path)
-    catch e
-        error("Built library exists but cannot be accessed: $lib_path ($e)")
-    end
-
-    println("  ✓ Built library: $lib_path")
-    println("  ✓ Library size: $(filesize(lib_path)) bytes")
-    return lib_path
-end
-
-"""
-    build_rustcall_extract() -> String
-
-Build the `rustcall-extract` CLI (deps/rustcall_extract) and return the path to the
-binary. The CLI is the only component that interprets Rust syntax on behalf of
-Julia: it produces the FFI manifest, expands `#[julia]` items in inline
-`rust\"\"\"` blocks, and instantiates generic functions.
-"""
-function build_rustcall_extract()
-    deps_dir = @__DIR__
-    extract_dir = joinpath(deps_dir, "rustcall_extract")
-    cargo_toml = joinpath(extract_dir, "Cargo.toml")
-
-    if !isfile(cargo_toml)
-        error("Cargo.toml not found at: $cargo_toml")
-    end
-
-    println("Building rustcall-extract CLI...")
-    println("  Directory: $extract_dir")
-
-    try
-        println("  Running: $(cargo()) build --release --manifest-path $cargo_toml")
-        # `panic = "unwind"` is pinned in deps/rust_helpers/Cargo.toml; setting
-        # it here too means an inherited CARGO_PROFILE_RELEASE_PANIC cannot
-        # decide it either (#244). The two agree by construction: the manifest
-        # is what `helper_library_policy()` describes.
-        build_env = copy(ENV)
-        build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
-        run(setenv(`$(cargo()) build --release --manifest-path $cargo_toml`, build_env))
-        println("  ✓ Cargo build completed successfully")
-    catch e
-        error("""
-        Failed to build rustcall-extract CLI: $e
-
-        Try running manually:
-            cd $extract_dir
-            cargo build --release
-        """)
-    end
-
-    bin_name = Sys.iswindows() ? "rustcall-extract.exe" : "rustcall-extract"
-    bin_path = joinpath(extract_dir, "target", "release", bin_name)
-    if !isfile(bin_path)
-        error("Built binary not found at expected path: $bin_path")
-    end
-
-    println("  ✓ Built binary: $bin_path")
-    return bin_path
-end
-
-"""
-    get_rust_helpers_lib_path() -> Union{String, Nothing}
-
-Get the path to the Rust helpers library if it exists (either built or in a standard location).
-"""
-function get_rust_helpers_lib_path()
-    deps_dir = @__DIR__
-    helpers_dir = joinpath(deps_dir, "rust_helpers")
-    lib_ext = get_library_extension()
-    target_dir = joinpath(helpers_dir, "target", "release")
-
-    # Library name
-    if Sys.iswindows()
-        lib_name = "rust_helpers.dll"
-    else
-        lib_name = "librust_helpers$(lib_ext)"
-    end
-
-    lib_path = joinpath(target_dir, lib_name)
-
-    if isfile(lib_path)
-        return lib_path
-    end
-
-    return nothing
+    println("  ✓ Built: $path ($(filesize(path)) bytes)")
+    return path
 end
 
 # Main build process
@@ -247,22 +131,17 @@ function main()
     end
     println()
 
-    existing_lib = get_rust_helpers_lib_path()
-    if existing_lib !== nothing
-        println("Found existing Rust helpers library: $existing_lib")
-        println("Rebuilding from a clean Cargo state...")
-        println()
+    if native_is_installed_package()
+        println("Installed package: build products go to a scratch space, ",
+                "not into $(native_package_root()).")
     else
-        println("Building Rust helpers library...")
-        println()
+        println("Checkout at $(native_package_root()): build products stay in deps/.")
     end
-
-    # Build the library (always clean + rebuild)
-    lib_path = build_rust_helpers()
     println()
 
-    # Build the extractor CLI used by rust"" blocks, @rust_crate and generics
-    build_rustcall_extract()
+    lib_path = build_native_product(:rust_helpers, "the Rust helpers library")
+    println()
+    build_native_product(:extractor, "the rustcall-extract CLI")
     println()
     println("=" ^ 60)
     println("✓ RustCall.jl build completed successfully!")
