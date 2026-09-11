@@ -18,7 +18,13 @@
 #   * **Nothing is written into an installed package.** `native_target_dir`
 #     (src/native_layout.jl) sends an installed package's build products to a
 #     scratch space and leaves a checkout building in `deps/<crate>/target`,
-#     where the documented developer commands already put them.
+#     where the documented developer commands already put them. Redirecting
+#     `CARGO_TARGET_DIR` is not enough on its own: Cargo writes `Cargo.lock`
+#     beside the manifest, inside the package tree, whatever the target
+#     directory is. Both crates therefore commit their lockfile and are built
+#     with `--locked`, which asserts the resolution is final and leaves the
+#     file untouched — and fails loudly, in CI, the moment a lockfile goes
+#     stale against its `Cargo.toml`.
 
 using RustToolChain: rustc, cargo
 
@@ -66,7 +72,8 @@ Build `kind` with Cargo and return the path to the product.
 The build is incremental: Cargo decides what to redo from its own fingerprint
 of the sources, the profile and the `rustc` identity. The target directory
 comes from `native_target_dir`, so the same `CARGO_TARGET_DIR` is used on every
-build and an installed package's tree is never written to.
+build, and `--locked` keeps Cargo from writing a lockfile beside the manifest;
+together they leave an installed package's tree untouched.
 """
 function build_native_product(kind::Symbol, what::AbstractString)
     crate_dir = native_crate_dir(kind)
@@ -86,9 +93,10 @@ function build_native_product(kind::Symbol, what::AbstractString)
     # `helper_library_policy()` describes.
     build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
 
+    args = `build --release --locked --manifest-path $cargo_toml`
     try
-        println("  Running: $(cargo()) build --release --manifest-path $cargo_toml")
-        run(setenv(`$(cargo()) build --release --manifest-path $cargo_toml`, build_env))
+        println("  Running: $(cargo()) $args")
+        run(setenv(`$(cargo()) $args`, build_env))
         println("  ✓ Cargo build completed successfully")
     catch e
         error("""
@@ -96,12 +104,17 @@ function build_native_product(kind::Symbol, what::AbstractString)
 
         Common issues:
         1. Rust toolchain not installed - install from https://rustup.rs/
-        2. Cargo.toml has syntax errors
+        2. $(joinpath(crate_dir, "Cargo.lock")) is out of date with its
+           Cargo.toml. The lockfile is committed and the build passes
+           `--locked` so that no lockfile is ever written into an installed
+           package tree; regenerate it with
+               cargo update --manifest-path $cargo_toml
+           and commit the result.
         3. Missing dependencies in Cargo.toml
         4. Insufficient permissions to write to $target_dir
 
         Try running manually:
-            CARGO_TARGET_DIR=$target_dir cargo build --release --manifest-path $cargo_toml
+            CARGO_TARGET_DIR=$target_dir cargo build --release --locked --manifest-path $cargo_toml
         """)
     end
 

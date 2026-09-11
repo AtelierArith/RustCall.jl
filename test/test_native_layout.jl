@@ -171,6 +171,18 @@ _toolchain_required() =
         @test occursin("CARGO_PROFILE_RELEASE_PANIC", build_jl)
     end
 
+    @testset "the build writes no lockfile into the package tree" begin
+        # `CARGO_TARGET_DIR` does not move `Cargo.lock`: Cargo writes it beside
+        # the manifest, inside the package directory, wherever the target
+        # directory points. Both crates therefore commit their resolution and
+        # are built with `--locked`, so Cargo asserts it rather than writes it.
+        build_jl = read(joinpath(_REPO_ROOT, "deps", "build.jl"), String)
+        @test occursin("--locked", build_jl)
+        for kind in (:rust_helpers, :extractor)
+            @test isfile(joinpath(RustCall.native_crate_dir(kind), "Cargo.lock"))
+        end
+    end
+
     @testset "a second build with unchanged sources rebuilds nothing" begin
         if !_toolchain_required()
             @test_skip "needs a Rust toolchain; set RUSTCALL_REQUIRE_TOOLCHAIN=true"
@@ -182,9 +194,13 @@ _toolchain_required() =
             products = [RustCall.native_product_path(kind)
                         for kind in (:rust_helpers, :extractor)]
             @test all(p -> p !== nothing, products)
-            # A no-op Cargo build writes nothing, so the products keep both
-            # their timestamps and their bytes.
-            before = [(p, mtime(p), filesize(p)) for p in products]
+            # A no-op Cargo build writes nothing: not the products, and not
+            # the lockfiles, which `--locked` keeps Cargo from touching even
+            # though they sit inside the package tree.
+            watched = vcat(products,
+                           [joinpath(RustCall.native_crate_dir(kind), "Cargo.lock")
+                            for kind in (:rust_helpers, :extractor)])
+            before = [(p, mtime(p), filesize(p)) for p in watched]
             run(pipeline(cmd; stdout = devnull, stderr = devnull))
             for (path, stamp, size) in before
                 @test mtime(path) == stamp

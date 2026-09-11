@@ -25,7 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory is never written to — so a read-only package store works, and two
   installed RustCall versions in one depot cannot pick up each other's
   extractor. `RUSTCALL_EXTRACT` still overrides the CLI outright, and
-  `RUSTCALL_RUST_HELPERS` now does the same for the helper library.
+  `RUSTCALL_RUST_HELPERS` now does the same for the helper library. Moving
+  `CARGO_TARGET_DIR` is not enough by itself — Cargo writes `Cargo.lock` beside
+  the manifest whatever the target directory says, which on a read-only tree
+  fails the build outright — so both crates commit their lockfile and are built
+  with `--locked`.
 
 ## [0.3.4] - 2026-09-12
 

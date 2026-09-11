@@ -80,6 +80,13 @@ place that decides where they go and where they are found again,
   `deps/build.log` next to the build script when it can — that is Pkg's log of
   the build, not a product of it.)
 
+Both crates commit their `Cargo.lock` and are built with `--locked`. Moving
+`CARGO_TARGET_DIR` does not move the lockfile: Cargo writes it beside the
+manifest, inside the package tree, and on a read-only tree that fails the build
+before anything is compiled. `--locked` asserts the resolution instead of
+writing it — and fails loudly, in CI, the moment a lockfile goes stale against
+its `Cargo.toml`, which is the right moment to notice.
+
 The build is incremental. Through v0.3.4 `deps/build.jl` ran `cargo clean`
 first, so every build event — including the transitive ones Pkg triggers — paid
 a full Rust compile; Cargo's own fingerprint, which already covers the sources,
