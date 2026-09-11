@@ -17,7 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names, and its two diagnostics tell the kinds apart: an exported symbol
   keeps the message it had, while an internal item says so and explains where
   the name comes from, instead of being called an export. The same covers the
-  string buffer types two items with one buffer owner would declare twice.
+  string buffer types two items with one buffer owner would declare twice. A
+  private name is compared only within the module its wrapper is emitted into
+  and within its own Rust namespace, so two modules may spell one slot name
+  and a generated buffer type may share a spelling with an exported function.
 
 ### Changed
 - **One list of what a manifest entry claims**
