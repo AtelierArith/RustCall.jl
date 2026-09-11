@@ -91,9 +91,45 @@ every push.
     julia --project -e 'using Pkg; Pkg.test()'
   ```
 
-  Other files still build against the registry by design — `test_cargo.jl`
+  Other files still build against the registry by design: `test_cargo.jl`
   exercises the `// cargo-deps:` path with `itoa`, and the PyO3 fixtures need
-  pyo3 — so the default run is not offline.
+  pyo3.
+- **The default run needs no crate from outside the declared closure.** Those
+  two crates are listed in `test/fixtures/offline_prefetch/Cargo.toml`, and
+  everything else the suite builds resolves through `path =` or through the
+  dependency closure of `deps/rustcall_extract`, `deps/rust_helpers` and
+  `deps/rustcall_julia_macros`. The `Offline tests` workflow fetches exactly
+  those manifests into an empty `CARGO_HOME` and then runs the whole suite
+  with `CARGO_NET_OFFLINE=true`, so a test that starts needing another
+  registry crate fails until the crate is added to that manifest. The fixture
+  crates carry a committed `Cargo.lock` so their resolution is pinned rather
+  than being whatever crates.io offers today.
+
+  What that job proves is that the declared closure is *sufficient*, not that
+  Cargo makes no request at all: a test that builds a freshly generated Cargo
+  project makes Cargo resolve a graph it has never seen, and resolving queries
+  the index. Measured with a refusing proxy instead of offline mode, the
+  testsets that still reach out are exactly those, and none of them wants an
+  undeclared crate. To reproduce the job locally:
+
+  ```bash
+  export CARGO_HOME=$(mktemp -d)
+  # A fresh first depot, so RustCall's artifact cache starts empty too: a
+  # library an earlier run compiled would otherwise satisfy a Cargo-backed
+  # test without Cargo being invoked at all.
+  export JULIA_DEPOT_PATH="$(mktemp -d):$HOME/.julia"
+  for m in deps/rustcall_extract deps/rust_helpers deps/rustcall_julia_macros; do
+    cargo fetch --manifest-path "$m/Cargo.toml"
+  done
+  for lock in test/fixtures/*/Cargo.lock; do
+    cargo fetch --locked --manifest-path "$(dirname "$lock")/Cargo.toml"
+  done
+  (cd deps/rustcall_extract && cargo build --release)
+  julia --project -e 'using Pkg; Pkg.build("RustCall")'
+  CARGO_NET_OFFLINE=true \
+    RUSTCALL_EXTRACT=$PWD/deps/rustcall_extract/target/release/rustcall-extract \
+    julia --project -e 'using Pkg; Pkg.test()'
+  ```
 
 Useful commands:
 

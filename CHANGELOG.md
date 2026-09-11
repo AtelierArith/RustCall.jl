@@ -23,6 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a generated buffer type may share a spelling with an exported function.
 
 ### Changed
+- **The default test run needs no crate from outside the repository's declared
+  dependency closure, and CI proves it**
+  ([#259](https://github.com/AtelierArith/RustCall.jl/issues/259)). The two
+  registry crates the suite genuinely needs — `itoa` for the `// cargo-deps:`
+  tests and `pyo3` for the fixtures — are declared in
+  `test/fixtures/offline_prefetch/Cargo.toml`; everything else resolves
+  through `path =` or through the closure of the repository's own crates. The
+  new `Offline tests` workflow fetches exactly those manifests into an empty
+  `CARGO_HOME` and runs the whole suite with `CARGO_NET_OFFLINE=true`, so a
+  test that starts needing another registry crate fails until the crate is
+  added there. `test/test_phase4_pi.jl` was the one outlier and no longer
+  uses `rand`: it samples from a seeded linear congruential generator written
+  in the block, which also makes its estimate reproducible. The fixture crates
+  now carry a committed `Cargo.lock`, so their resolution is pinned instead of
+  being whatever crates.io offers on the day.
 - **One list of what a manifest entry claims**
   ([#338](https://github.com/AtelierArith/RustCall.jl/issues/338)). The
   `#[julia]` duplicate-symbol check and the PyO3 collision analysis each

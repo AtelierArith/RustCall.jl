@@ -1,0 +1,87 @@
+# Prove that the default test suite needs no crate from outside the
+# repository's declared dependency closure (issue #259).
+#
+# The suite used to reach crates.io wherever a test happened to name a crate,
+# so a registry hiccup could turn an unrelated pull request red and nobody
+# could say which tests were exposed. This job answers that question by
+# construction rather than by inspection:
+#
+# 1. `cargo fetch` the repository's own manifests and
+#    `test/fixtures/offline_prefetch/Cargo.toml`, which declares the registry
+#    crates the tests need (`itoa`, `pyo3`), into an empty CARGO_HOME.
+# 2. Run the whole suite with `CARGO_NET_OFFLINE=true`.
+#
+# A test that starts needing another registry crate fails here until the crate
+# is added to that manifest — a visible, reviewable act instead of a silent
+# new download on every CI run. Neither CARGO_HOME nor the Julia depot is
+# cached for this job, so step 2 cannot be rescued by a warm registry cache or
+# by a RustCall artifact an earlier run compiled.
+#
+# What this does and does not prove
+# ---------------------------------
+#
+# It proves the declared closure is sufficient: nothing the suite builds needs
+# a crate that is not listed. It does not prove that Cargo makes no request at
+# all, and that stronger claim is not available. Measured with a proxy that
+# refuses every connection instead of `CARGO_NET_OFFLINE`, eleven testsets
+# still fail — every one of them a test that builds a *freshly generated*
+# Cargo project (`test_pyo3_resolver_context`, `test_manifest`, the Cargo
+# built-in cases of `test_cargo`), where Cargo queries the index to resolve a
+# graph it has never seen. That is Cargo resolving, not RustCall reaching for
+# an undeclared crate, and no test suite that generates projects can promise
+# otherwise.
+#
+# The fixture crates carry a committed `Cargo.lock` so their own resolution is
+# pinned and needs no index round-trip.
+name: Offline tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  offline:
+    name: Offline test suite
+    runs-on: ubuntu-latest
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cargo-offline
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: dtolnay/rust-toolchain@stable
+      # `julia-actions/cache@v2` is deliberately absent. It restores Julia
+      # scratchspaces, and RustCall's compiled-artifact cache lives in one
+      # (`get_cache_dir`), so a library built by an earlier run could satisfy a
+      # test without Cargo being invoked at all — the declared-closure check
+      # would be rescued by history rather than proven (#338 review of #384).
+      # Overriding `RUSTCALL_CACHE_DIR` instead is not an option: `test_cache`
+      # asserts the default scratch-space layout.
+      - name: Fetch the declared dependency closure
+        # Every manifest that pins a lockfile is fetched with `--locked`, so
+        # the versions the tests will actually build are the versions that
+        # land in CARGO_HOME. Fetching only the repository's own manifests
+        # would rely on their freshly resolved graph happening to overlap the
+        # fixtures' pinned one, which it does today and need not tomorrow
+        # (#384 review). `--locked` also fails loudly when a lockfile has gone
+        # stale against its Cargo.toml, which is the right moment to notice.
+        run: |
+          cargo fetch --manifest-path deps/rustcall_extract/Cargo.toml
+          cargo fetch --manifest-path deps/rust_helpers/Cargo.toml
+          cargo fetch --manifest-path deps/rustcall_julia_macros/Cargo.toml
+          for fixture in test/fixtures/*/Cargo.lock; do
+            cargo fetch --locked --manifest-path "$(dirname "$fixture")/Cargo.toml"
+          done
+      - name: Build the release extractor
+        working-directory: deps/rustcall_extract
+        run: cargo build --release
+      - uses: julia-actions/julia-buildpkg@v1
+      - name: Run the suite with cargo offline
+        env:
+          JULIA_NUM_THREADS: '1'
+          CARGO_NET_OFFLINE: 'true'
+          RUSTCALL_EXTRACT: ${{ github.workspace }}/deps/rustcall_extract/target/release/rustcall-extract
+        run: julia --project -e 'using Pkg; Pkg.test(; test_args = ["--jobs=2"])'
