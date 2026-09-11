@@ -101,8 +101,16 @@ every push.
   `deps/rustcall_julia_macros`. The `Offline tests` workflow fetches exactly
   those manifests into an empty `CARGO_HOME` and then runs the whole suite
   with `CARGO_NET_OFFLINE=true`, so a test that starts needing another
-  registry crate fails until the crate is added to that manifest. To
-  reproduce it locally:
+  registry crate fails until the crate is added to that manifest. The fixture
+  crates carry a committed `Cargo.lock` so their resolution is pinned rather
+  than being whatever crates.io offers today.
+
+  What that job proves is that the declared closure is *sufficient*, not that
+  Cargo makes no request at all: a test that builds a freshly generated Cargo
+  project makes Cargo resolve a graph it has never seen, and resolving queries
+  the index. Measured with a refusing proxy instead of offline mode, the
+  testsets that still reach out are exactly those, and none of them wants an
+  undeclared crate. To reproduce the job locally:
 
   ```bash
   export CARGO_HOME=$(mktemp -d)

@@ -15,6 +15,23 @@
 # is added to that manifest — a visible, reviewable act instead of a silent
 # new download on every CI run. Because CARGO_HOME is not cached, step 2 also
 # cannot be rescued by a warm cache from an earlier run.
+#
+# What this does and does not prove
+# ---------------------------------
+#
+# It proves the declared closure is sufficient: nothing the suite builds needs
+# a crate that is not listed. It does not prove that Cargo makes no request at
+# all, and that stronger claim is not available. Measured with a proxy that
+# refuses every connection instead of `CARGO_NET_OFFLINE`, eleven testsets
+# still fail — every one of them a test that builds a *freshly generated*
+# Cargo project (`test_pyo3_resolver_context`, `test_manifest`, the Cargo
+# built-in cases of `test_cargo`), where Cargo queries the index to resolve a
+# graph it has never seen. That is Cargo resolving, not RustCall reaching for
+# an undeclared crate, and no test suite that generates projects can promise
+# otherwise.
+#
+# The fixture crates carry a committed `Cargo.lock` so their own resolution is
+# pinned and needs no index round-trip.
 name: Offline tests
 
 on:

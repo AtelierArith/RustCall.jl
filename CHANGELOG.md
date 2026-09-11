@@ -35,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test that starts needing another registry crate fails until the crate is
   added there. `test/test_phase4_pi.jl` was the one outlier and no longer
   uses `rand`: it samples from a seeded linear congruential generator written
-  in the block, which also makes its estimate reproducible.
+  in the block, which also makes its estimate reproducible. The fixture crates
+  now carry a committed `Cargo.lock`, so their resolution is pinned instead of
+  being whatever crates.io offers on the day.
 
 ### Changed
 - **One list of what a manifest entry claims**
