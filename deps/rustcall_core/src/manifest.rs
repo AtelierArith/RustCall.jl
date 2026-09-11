@@ -733,11 +733,21 @@ fn owned_string_free_symbol(owner: &str) -> String {
 }
 
 impl Function {
-    /// The exported symbols this `#[julia]` function claims — its wrapper and,
-    /// when it returns an owned string, the release function of its buffer —
-    /// with the owner label of [`Manifest::symbol_owners`]; empty when it
-    /// claims none (a PyO3 item, an unexported or generic one, an undecided
-    /// `#[cfg]`).
+    /// The exported symbols this `#[julia]` function claims — its wrapper, the
+    /// reader of that wrapper's panic channel and, when it returns an owned
+    /// string, the release function of its buffer — with the owner label of
+    /// [`Manifest::symbol_owners`]; empty when it claims none (a PyO3 item, an
+    /// unexported or generic one, an undecided `#[cfg]`).
+    ///
+    /// The panic reader is as much an export as the wrapper itself
+    /// (`crate::codegen::panic_channel` emits it `#[no_mangle]` next to it),
+    /// so a crate-root `#[julia] fn a__run_take_panic` next to `a::run` is a
+    /// duplicate symbol even though the two wrappers differ (#338). Only a
+    /// wrapper RustCall generates has one: a plain `#[no_mangle] extern "C"`
+    /// function is reported so Julia can register its return type, is
+    /// exported under its own name, and adds nothing — a hand-written
+    /// `release` / `release_take_panic` pair is two unrelated exports, not a
+    /// collision.
     pub fn claimed_symbols(&self) -> Vec<(String, String)> {
         if self.attribute.is_pyo3_scan()
             || !self.exported
@@ -748,6 +758,9 @@ impl Function {
         }
         let who = symbol_owner(&self.module_path, &self.name, self.line);
         let mut out = vec![(self.symbol.clone(), who.clone())];
+        if self.attribute == Attribute::Julia {
+            out.push((crate::codegen::panic_symbol(&self.symbol), who.clone()));
+        }
         if self.has_owned_string_helper && !self.ffi_name.is_empty() {
             out.push((owned_string_free_symbol(&self.ffi_name), who));
         }
@@ -770,7 +783,8 @@ impl Method {
 
 impl Struct {
     /// The exported symbols this `#[julia]` struct claims — `free`, the field
-    /// accessors, the method wrappers and the release functions of the
+    /// accessors, the method wrappers, the panic-channel reader every one of
+    /// those wrappers exports next to itself, and the release functions of the
     /// owned-string buffers they use — with the owner label of
     /// [`Manifest::symbol_owners`].
     ///
@@ -811,6 +825,7 @@ impl Struct {
             if m.cfg.is_empty() {
                 if !m.symbol.is_empty() {
                     out.push((m.symbol.clone(), who.clone()));
+                    out.push((crate::codegen::panic_symbol(&m.symbol), who.clone()));
                 }
                 if m.declares_owned_string()
                     && !m.string_owner.is_empty()

@@ -344,6 +344,42 @@ end
         end
     end
 
+    @testset "a derived symbol coincidence fails closed (#338)" begin
+        # A wrapper exports more than its entry point: the reader of its panic
+        # channel (`<symbol>_take_panic`) is `#[no_mangle]` too. A crate-root
+        # `a__run_take_panic` therefore spells the reader of `a::run` even
+        # though the two wrappers differ, and the scan must say so rather than
+        # let rustc report a duplicate symbol in generated code.
+        mktempdir() do dir
+            _ms_write_two_module_crate(dir)
+            write(joinpath(dir, "src", "lib.rs"), """
+                use rustcall_julia_macros::julia;
+
+                #[julia]
+                pub mod a {
+                    use rustcall_julia_macros::julia;
+
+                    #[julia]
+                    pub fn run() -> i32 { 1 }
+                }
+
+                #[julia]
+                pub fn a__run_take_panic() -> i32 { 2 }
+                """)
+            err = try
+                RustCall.scan_crate(dir)
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.ExtractorError
+            msg = sprint(showerror, err)
+            @test occursin("duplicate exported symbol `rustcall_a__run_take_panic`", msg)
+            @test occursin("`a::run`", msg)
+            @test occursin("`a__run_take_panic`", msg)
+        end
+    end
+
     @testset "inline rust\"\"\" blocks qualify by the module they walk" begin
         if !RustCall.check_rustc_available()
             @test_skip "rustc is required"
