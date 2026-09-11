@@ -1,4 +1,4 @@
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 // Issue #159: Non-FFI-compatible types in Option should produce compile_error
 #[julia]

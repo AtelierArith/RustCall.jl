@@ -118,7 +118,7 @@ end
 @testset "both crate emitters capture destructor panic channels (#291)" begin
     mktempdir() do root
         mkpath(joinpath(root, "src"))
-        macros = RustCall.escape_toml_string(joinpath(dirname(@__DIR__), "deps", "juliacall_macros"))
+        macros = RustCall.escape_toml_string(joinpath(dirname(@__DIR__), "deps", "rustcall_julia_macros"))
         write(joinpath(root, "Cargo.toml"), """
             [package]
             name = "destructor_panic_291"
@@ -127,10 +127,10 @@ end
             [lib]
             crate-type = ["cdylib"]
             [dependencies]
-            juliacall_macros = { path = "$macros" }
+            rustcall_julia_macros = { path = "$macros" }
             """)
         write(joinpath(root, "src", "lib.rs"), raw"""
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
             #[julia]
             pub struct CrateDropBomb291 { fail: bool }
             #[julia]

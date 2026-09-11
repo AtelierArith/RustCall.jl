@@ -2,7 +2,7 @@
 
 A Julia **package** with the Rust crate [`deps/sample_crate_pyo3_only`](./deps/sample_crate_pyo3_only/)
 embedded in it: a crate **written for PyO3 only**. There is no RustCall
-attribute anywhere in it — no `#[julia]`, no `juliacall_macros` dependency —
+attribute anywhere in it — no `#[julia]`, no `rustcall_julia_macros` dependency —
 just `#[pyfunction]`, `#[pyclass]` and `#[pymethods]`, the way its author
 wrote it for Python. RustCall binds it as is
 ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275) Phase 2): the
@@ -17,7 +17,7 @@ not yours to annotate.
 
 The example is **self-contained**: everything it builds and tests is inside
 this directory. The crate itself refers to nothing outside it; the wrapper
-crate RustCall generates depends on `juliacall_macros` from this checkout, and
+crate RustCall generates depends on `rustcall_julia_macros` from this checkout, and
 is written under the crate's own `target/`.
 
 ## Layout: Rust and Julia in separate files
@@ -129,9 +129,9 @@ a `PyResult` *method*: `scaled(p, 2.0)` is `RustResult{Float64, String}`.
 
 ## Notes
 
-- **`juliacall_macros` is not needed by the crate.** `deps/sample_crate_pyo3_only/Cargo.toml`
+- **`rustcall_julia_macros` is not needed by the crate.** `deps/sample_crate_pyo3_only/Cargo.toml`
   depends on pyo3 and nothing else. The wrapper crate RustCall generates does
-  depend on `juliacall_macros`, from this checkout — that is where the
+  depend on `rustcall_julia_macros`, from this checkout — that is where the
   `extern "C"` entry points, the string ABI and the panic channel come from —
   but that is RustCall's business, not the crate's.
 - **What a PyO3 crate needs to be wrappable**: every item Julia should see must

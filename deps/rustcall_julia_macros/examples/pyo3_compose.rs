@@ -15,8 +15,8 @@
 #![allow(dead_code)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use juliacall_macros::julia;
 use pyo3::prelude::*;
+use rustcall_julia_macros::julia;
 
 /// The error type is a plain FFI-compatible newtype: RustCall needs a payload
 /// that survives the C ABI, PyO3 needs `Into<PyErr>`.

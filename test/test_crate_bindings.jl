@@ -103,7 +103,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
                 """)
                 write(joinpath(dir, "src", "table.rs"), "[1, 2, 3]\n")
                 write(joinpath(dir, "src", "lib.rs"), """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 const TABLE: [i32; 3] = include!("table.rs");
                 #[julia]
                 fn table_sum() -> i32 { TABLE.iter().sum() }
@@ -122,7 +122,7 @@ const _SRC_DIR_CB = joinpath(dirname(dirname(pathof(RustCall))), "src")
             @warn "rustc not found, skipping"
         else
             code = """
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
 
             #[julia]
             pub struct Counter { count: u32, name: String }

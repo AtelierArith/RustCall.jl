@@ -7,7 +7,7 @@ This page collects repository-oriented information that no longer lives in the t
 - `src/`: main implementation. `src/RustCall.jl` is the package entry point.
 - `test/`: package test suite. `test/runtests.jl` is the main entry point.
 - `docs/`: Documenter sources and generated-site configuration.
-- `deps/`: Rust helper/runtime code and the `juliacall_macros` proc-macro crate.
+- `deps/`: Rust helper/runtime code and the `rustcall_julia_macros` proc-macro crate.
 - `examples/`: runnable examples covering inline Rust, crate bindings, Pluto, and package-style usage.
 - `benchmark/`: benchmark scripts for core calls, arrays, generics, and ownership helpers.
 
@@ -33,9 +33,9 @@ This page collects repository-oriented information that no longer lives in the t
 Every `examples/*.jl` directory is a Julia package, and each is self-contained:
 the crate it binds lives under its own `deps/<crate>/`, in the layout the
 [Precompilation Support](precompilation.md) guide prescribes, and the only
-reference it makes outside its directory is the `juliacall_macros` path
+reference it makes outside its directory is the `rustcall_julia_macros` path
 dependency (the proc-macro crate is not on crates.io yet; the PyO3-only crate
-has none, its generated wrapper being what depends on `juliacall_macros`). Run
+has none, its generated wrapper being what depends on `rustcall_julia_macros`). Run
 its tests against the RustCall of this checkout from the repository root:
 
 ```bash
@@ -69,16 +69,16 @@ every push.
   material, not examples; the examples under `examples/` embed their own crates.
 - Coverage includes cache behavior, ownership types, arrays, generics, cargo dependencies, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
 - Documentation examples are checked by `test/test_docs_examples.jl`.
-- The proc-macro crate has its own tests in `deps/juliacall_macros/tests/`.
+- The proc-macro crate has its own tests in `deps/rustcall_julia_macros/tests/`.
 
 Useful commands:
 
 ```bash
 julia --project -e 'using Pkg; Pkg.test()'
 julia --project test/test_cache.jl
-cd deps/juliacall_macros && cargo fmt --check
-cd deps/juliacall_macros && cargo clippy --all-targets --all-features -- -D warnings
-cd deps/juliacall_macros && cargo test --all-features
+cd deps/rustcall_julia_macros && cargo fmt --check
+cd deps/rustcall_julia_macros && cargo clippy --all-targets --all-features -- -D warnings
+cd deps/rustcall_julia_macros && cargo test --all-features
 ```
 
 ## Benchmarks

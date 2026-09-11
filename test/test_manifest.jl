@@ -456,7 +456,7 @@ using TOML
 
     @testset "schema 4: crate-mode String fields are lowered too (#246)" begin
         manifest = RustCall.extract_manifest("""
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
         #[julia]
         pub struct Counter { count: u32, name: String }
         """; mode = "crate")

@@ -327,7 +327,7 @@ end
         root = mktempdir()
         crate = joinpath(root, "edited_crate")
         mkpath(joinpath(crate, "src"))
-        macros = replace(joinpath(dirname(@__DIR__), "deps", "juliacall_macros"), "\\" => "/")
+        macros = replace(joinpath(dirname(@__DIR__), "deps", "rustcall_julia_macros"), "\\" => "/")
         write(joinpath(crate, "Cargo.toml"), """
             [package]
             name = "edited_crate"
@@ -338,10 +338,10 @@ end
             crate-type = ["cdylib"]
 
             [dependencies]
-            juliacall_macros = { path = "$macros" }
+            rustcall_julia_macros = { path = "$macros" }
             """)
         source(offset) = """
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
             #[julia]
             pub fn total(a: i32, b: i32) -> i32 { a + b + $offset }
             """
@@ -605,7 +605,7 @@ end
         mkpath(joinpath(crate, ".cargo"))
         config = joinpath(crate, ".cargo", "config.toml")
         write(config, "# empty\n")
-        macros = replace(joinpath(dirname(@__DIR__), "deps", "juliacall_macros"), "\\" => "/")
+        macros = replace(joinpath(dirname(@__DIR__), "deps", "rustcall_julia_macros"), "\\" => "/")
         write(joinpath(crate, "Cargo.toml"), """
             [package]
             name = "configured_crate"
@@ -616,10 +616,10 @@ end
             crate-type = ["cdylib"]
 
             [dependencies]
-            juliacall_macros = { path = "$macros" }
+            rustcall_julia_macros = { path = "$macros" }
             """)
         write(joinpath(crate, "src", "lib.rs"), """
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
             #[julia]
             pub fn one() -> i32 { 1 }
             """)

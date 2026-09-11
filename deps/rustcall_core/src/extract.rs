@@ -1,7 +1,7 @@
 //! Manifest extraction.
 //!
 //! * `extract_crate(source)`: manifest for a crate source file, following the
-//!   proc-macro's rules (what `juliacall_macros` would actually generate).
+//!   proc-macro's rules (what `rustcall_julia_macros` would actually generate).
 //! * `extract_inline(source)`: manifest for a `rust"""` block; delegates to
 //!   [`crate::expand::expand`] so the manifest and the expanded code cannot
 //!   disagree.

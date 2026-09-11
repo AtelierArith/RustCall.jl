@@ -10,7 +10,7 @@
 #   4. no polling loop when idle.
 #
 # The test crate is deliberately dependency-free: `#[julia]` is not what is
-# under test here, and a crate that pulls in `juliacall_macros` would compile
+# under test here, and a crate that pulls in `rustcall_julia_macros` would compile
 # `syn` from scratch into its own target directory on every CI run.
 
 using Test
@@ -1011,7 +1011,7 @@ end
     #
     # The wrappers are hand-written rather than macro-generated for the
     # reason given at the top of this file: the ABI is what is under test,
-    # not `#[julia]`, and pulling in `juliacall_macros` would compile `syn`
+    # not `#[julia]`, and pulling in `rustcall_julia_macros` would compile `syn`
     # from scratch on every CI run.
     # ------------------------------------------------------------------
     if !_HRT_CARGO

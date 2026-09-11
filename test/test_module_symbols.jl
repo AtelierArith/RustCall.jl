@@ -16,7 +16,7 @@ using RustCall
 include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
 using RustToolChain: cargo
 
-const MS_MACROS_PATH = joinpath(dirname(@__DIR__), "deps", "juliacall_macros")
+const MS_MACROS_PATH = joinpath(dirname(@__DIR__), "deps", "rustcall_julia_macros")
 
 const _MS_HAVE_CARGO = try
     success(run(pipeline(`$(cargo()) --version`, devnull, devnull); wait = true))
@@ -39,19 +39,19 @@ function _ms_write_two_module_crate(dir::AbstractString)
         crate-type = ["cdylib"]
 
         [dependencies]
-        juliacall_macros = { path = "$macros" }
+        rustcall_julia_macros = { path = "$macros" }
 
         [workspace]
         """)
     write(joinpath(dir, "src", "lib.rs"), """
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
 
         #[julia]
         pub fn run() -> i32 { 0 }
 
         #[julia]
         pub mod a {
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
 
             #[julia]
             pub fn run() -> i32 { 1 }
@@ -75,7 +75,7 @@ function _ms_write_two_module_crate(dir::AbstractString)
 
             #[julia]
             pub mod deep_er {
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
 
                 #[julia]
                 pub fn run() -> i32 { 3 }
@@ -87,7 +87,7 @@ function _ms_write_two_module_crate(dir::AbstractString)
 
         #[julia]
         pub mod b {
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
 
             #[julia]
             pub fn run() -> i32 { 2 }
@@ -324,7 +324,7 @@ end
             write(joinpath(dir, "src", "lib.rs"), "pub mod x;\npub mod y;\n")
             for m in ("x", "y")
                 write(joinpath(dir, "src", "$m.rs"), """
-                    use juliacall_macros::julia;
+                    use rustcall_julia_macros::julia;
                     #[julia]
                     pub fn run() -> i32 { 1 }
                     """)

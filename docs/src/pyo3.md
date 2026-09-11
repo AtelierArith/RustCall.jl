@@ -777,7 +777,7 @@ to (the test suite keeps its own copy as `test/fixtures/sample_crate_pyo3`).
 `#[julia_pyo3]` was deprecated in 0.2.0
 ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275) Phase 3) and
 **removed in 0.3.0** ([#312](https://github.com/AtelierArith/RustCall.jl/issues/312)).
-The proc-macro is gone from `juliacall_macros`, so a crate that still uses it
+The proc-macro is gone from `rustcall_julia_macros`, so a crate that still uses it
 fails to build with ``cannot find attribute `julia_pyo3` `` at every use site;
 the extractor no longer knows the attribute either (manifest schema 7), so
 nothing binds such an item. This section stays for one release to say what to

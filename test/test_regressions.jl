@@ -1026,7 +1026,7 @@ end
         crate-type = ["cdylib"]
         """)
         write(joinpath(dir, "src", "lib.rs"), """
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
 
         #[cfg(feature = "a")]
         #[julia]
@@ -1335,7 +1335,7 @@ end
         @test_skip "rustc is required"
     else
         info = only(RustCall.manifest_struct_infos(RustCall.extract_manifest("""
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
         #[julia]
         pub struct Rc246Counter { count: u32, name: String }
         """; mode = "crate")))
@@ -2005,7 +2005,7 @@ end
         @test_skip "rustc is required"
     else
         sigs = RustCall.manifest_function_signatures(RustCall.extract_manifest("""
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
         #[julia]
         pub fn rc276_crate_res() -> Result<char, i32> { Ok('a') }
         #[julia]

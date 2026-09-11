@@ -134,7 +134,7 @@ const MyCrate = @rust_crate "/path/to/my_crate"
 MyCrate.add(Int32(1), Int32(2)) # 3
 ```
 
-For crate-side bindings, use the companion `juliacall_macros` crate and mark exported items with `#[julia]`.
+For crate-side bindings, use the companion `rustcall_julia_macros` crate and mark exported items with `#[julia]`.
 
 ## Documentation And Examples
 

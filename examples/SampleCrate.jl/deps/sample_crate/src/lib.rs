@@ -8,7 +8,7 @@
 //! A trimmed twin of RustCall's own test fixture `test/fixtures/sample_crate`,
 //! which carries extra items the test suite needs (`panicky_*`, `Divider`, …).
 
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 // ============================================================================
 // Simple Functions

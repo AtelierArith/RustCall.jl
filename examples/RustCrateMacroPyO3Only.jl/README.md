@@ -3,7 +3,7 @@
 A Julia **package** that binds a **PyO3-only** Rust crate with the
 **`@rust_crate` macro**, at the package's top level. The crate
 [`deps/macro_pyo3_only`](./deps/macro_pyo3_only/) carries no RustCall attribute
-— no `#[julia]`, no `juliacall_macros` dependency — just `#[pyfunction]`,
+— no `#[julia]`, no `rustcall_julia_macros` dependency — just `#[pyfunction]`,
 `#[pyclass]` and `#[pymethods]`, the way its author wrote it for Python.
 RustCall binds it as is
 ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275) Phase 2) by
@@ -52,7 +52,7 @@ There is no `deps/build.jl` and no `src/generated/`.
 
 The example is **self-contained**: everything it builds and tests is inside
 this directory. The crate itself refers to nothing outside it; the wrapper
-crate RustCall generates depends on `juliacall_macros` from this checkout, and
+crate RustCall generates depends on `rustcall_julia_macros` from this checkout, and
 is written under the crate's own `target/`.
 
 ## The one line
@@ -197,9 +197,9 @@ The same lowering applies to a `PyResult` *method*: `advance(c, 3)` is
 
 ## Notes
 
-- **`juliacall_macros` is not needed by the crate.**
+- **`rustcall_julia_macros` is not needed by the crate.**
   `deps/macro_pyo3_only/Cargo.toml` depends on pyo3 and nothing else. The
-  wrapper crate RustCall generates does depend on `juliacall_macros`, from this
+  wrapper crate RustCall generates does depend on `rustcall_julia_macros`, from this
   checkout — that is where the `extern "C"` entry points, the string ABI and
   the panic channel come from — but that is RustCall's business, not the
   crate's.

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`deps/juliacall_macros` renamed to `deps/rustcall_julia_macros`.** The
+  crate's name suggested a companion to the unrelated `juliacall` PyPI
+  package (the Python-side counterpart of `PythonCall.jl`) rather than a
+  RustCall.jl crate; it also broke the `rustcall_` prefix shared by
+  `rustcall_core` and `rustcall_extract`. This is a rename only — the
+  `#[julia]` attribute macro it exports is unchanged, and it is still not
+  published to crates.io, so consumers keep depending on it via a `path`
+  dependency (now pointing at `deps/rustcall_julia_macros`).
+
 ## [0.3.2] - 2026-09-10
 
 ### Fixed
@@ -238,7 +248,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`examples/RustCrateMacroPyO3Only.jl`**, a Julia package that binds a
   **PyO3-only** Rust crate with the **`@rust_crate` macro**. Its crate
   `deps/macro_pyo3_only` carries no RustCall attribute and no
-  `juliacall_macros` dependency — `#[pyfunction] scale` / `join_words` /
+  `rustcall_julia_macros` dependency — `#[pyfunction] scale` / `join_words` /
   `checked_div`, a `#[pyclass(get_all, set_all)] Counter` with `#[new]`, a
   `#[staticmethod]`, `&self` / `&mut self` / `String` / `PyResult` methods, and
   a `#[pymodule]` initializer the scan skips — so RustCall binds it through the
@@ -331,7 +341,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`examples/SampleCratePyO3Only.jl`**, a third example package: a Julia
   package with a crate **written for PyO3 only** embedded under
   `deps/sample_crate_pyo3_only` — no RustCall attribute anywhere, no
-  `juliacall_macros` dependency — bound through the wrapper crate RustCall
+  `rustcall_julia_macros` dependency — bound through the wrapper crate RustCall
   generates (`write_bindings_to_file`, [#275](https://github.com/AtelierArith/RustCall.jl/issues/275)
   Phase 2). It shows `#[pyfunction]` / `#[pyclass(get_all, set_all)]` /
   `#[new]` / `#[staticmethod]` bindings without `#[julia]`, `PyResult<T>`
@@ -344,7 +354,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - **`#[julia_pyo3]`** ([#312](https://github.com/AtelierArith/RustCall.jl/issues/312)),
   deprecated in 0.2.0 (#275 Phase 3). The proc-macro is gone from
-  `juliacall_macros`, so a crate that still uses it fails to build with
+  `rustcall_julia_macros`, so a crate that still uses it fails to build with
   ``cannot find attribute `julia_pyo3` `` at every use site, and with it goes
   everything that existed only for it: the frozen lowering
   (`transform_function_julia_pyo3` / `transform_struct_julia_pyo3` /
@@ -354,7 +364,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   off), the `julia_pyo3` value of the manifest's `attribute` origin
   (**manifest schema 6 → 7**, `RustCall.MANIFEST_SCHEMA_VERSION` /
   `rustcall_core::manifest::SCHEMA_VERSION`, so a stale extractor is rejected
-  as before), the inert `python` feature of `juliacall_macros`
+  as before), the inert `python` feature of `rustcall_julia_macros`
   (`examples/sample_crate_pyo3` enables `pyo3` alone now), and the Julia-side
   deprecation notice — the `@rust_crate` / `write_bindings_to_file` warning and
   the `scan_report` marker — together with its fixtures. Write `#[julia]` next
@@ -402,7 +412,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `deps/sample_crate_pyo3/` (with `main.py`) — and `deps/build.jl` builds that;
   the embedded `sample_crate` is trimmed to what the package exports and tests.
   The only reference an example makes outside its directory is the
-  `juliacall_macros` path dependency, because the proc-macro crate is not on
+  `rustcall_julia_macros` path dependency, because the proc-macro crate is not on
   crates.io yet. The fixtures moved to `test/fixtures/sample_crate`,
   `test/fixtures/sample_crate_pyo3`, `test/fixtures/sample_crate_pyo3_only`,
   `_mixed` and `_optional`, and `cargo test` passes again in `sample_crate`:

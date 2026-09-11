@@ -2,7 +2,7 @@
 //!
 //! Two flavours share this module:
 //!
-//! * **crate** codegen, used by the `juliacall_macros` proc-macro for
+//! * **crate** codegen, used by the `rustcall_julia_macros` proc-macro for
 //!   `@rust_crate` (`transform_function`, `transform_struct_crate`,
 //!   `transform_impl_crate`);
 //! * **inline** codegen, used by the extractor CLI's `expand` command for

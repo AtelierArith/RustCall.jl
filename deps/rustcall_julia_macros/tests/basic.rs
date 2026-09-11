@@ -1,6 +1,6 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use juliacall_macros::julia;
+use rustcall_julia_macros::julia;
 
 // Test that #[julia] on functions compiles correctly
 #[julia]

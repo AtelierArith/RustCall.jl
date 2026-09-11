@@ -22,11 +22,11 @@ julia --project test/test_cache.jl
 # Build documentation
 julia --project=docs docs/make.jl
 
-# Rust crates (deps/rustcall_core, deps/rustcall_extract, deps/juliacall_macros)
+# Rust crates (deps/rustcall_core, deps/rustcall_extract, deps/rustcall_julia_macros)
 cd deps/rustcall_core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 UPDATE_GOLDEN=1 cargo test          # in deps/rustcall_core: regenerate tests/corpus/*.toml and *.expanded.rs
 cd deps/rustcall_extract && cargo build --release   # the CLI Julia calls; also built by Pkg.build
-cd deps/juliacall_macros && cargo test --all-features
+cd deps/rustcall_julia_macros && cargo test --all-features
 
 # Lints run in CI
 bash scripts/lint_interpolation.sh src
@@ -42,7 +42,7 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 
 - `deps/rustcall_core` — `syn`-based core: FFI manifest model (`manifest.rs`), extraction (`extract.rs`), inline expansion of `#[julia]` items (`expand.rs`), wrapper codegen for both the proc-macro and inline flavours (`codegen.rs`), AST-level generic instantiation (`specialize.rs`). Golden tests in `tests/corpus/`.
 - `deps/rustcall_extract` — the `rustcall-extract` CLI (`manifest`, `expand`, `specialize` subcommands; `--cfg-file` takes `rustc --print cfg` so `#[cfg]`-disabled items are dropped). Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
-- `deps/juliacall_macros` — thin proc-macro wrapper over `rustcall_core::codegen` for `@rust_crate` crates.
+- `deps/rustcall_julia_macros` — thin proc-macro wrapper over `rustcall_core::codegen` for `@rust_crate` crates.
 - `src/manifest.jl` — runs the CLI, validates `schema_version`, converts the TOML manifest into `RustFunctionSignature` / `RustStructInfo` / `RustMethod`, and computes `toolchain_fingerprint()` (extractor digest + core sources + `artifact_compiler_identity()`) that is part of every cache key.
 - **Exported symbols are derived in exactly one place** (#300): `rustcall_core::codegen::symbol_stem(module_path, name)` — the bare name at the crate root, otherwise the module path folded in (`a::run` → `a__run`, `_` inside a segment spelled `_0`). `function_symbol` / `method_symbol` and every struct-level symbol (`<stem>_free`, accessors, string helpers) hang off it; the manifest carries it as `ffi_name` and Julia passes `ffi_name`, never `name`, to `ffi_struct_free_symbol` / `ffi_free_symbol`. The proc-macro learns the path from `#[julia]` on inline modules (`transform_module`); crate extraction refuses a `#[julia]` item in an unmarked inline module, and `rustcall-extract` fails closed on a crate-wide duplicate symbol. Julia binds one submodule per Rust module (`bindings.a.run()`).
 - Do not add regexes over Rust source in `src/`; `scripts/lint_rust_syntax_regex.sh` fails CI. Allowlisted: `$var` interpolation in `@irust` (`ruststr.jl`), the `// cargo-deps:` DSL (`dependencies.jl`), and the brace-count hint in `exceptions.jl` (diagnostics only).
@@ -196,14 +196,14 @@ the entire test worker.
 - Entry point: `test/runtests.jl` (includes 30+ test files)
 - Tests are organized by feature: ownership, arrays, generics, cargo, crate bindings, hot reload, etc.
 - `test/test_regressions.jl` holds regression tests for fixed issues
-- Proc-macro tests: `deps/juliacall_macros/tests/`
+- Proc-macro tests: `deps/rustcall_julia_macros/tests/`
 - Many tests require `rustc` and skip gracefully if unavailable
 - **PyO3 wrapper tests that link libpython skip only when the prerequisite is absent.** A crate whose pyo3 dependency is mandatory is wrapped as a `:link_libpython` build (`docs/src/pyo3.md`). The shared `_link_libpython_wrapper` helper first requires `plan.mode === :link_libpython` and a linkable library in the directory selected by `python_link_source()`; it logs the reason and skips only then. Once that prerequisite holds, wrapper generation, Cargo, compiler, loading, and calls are hard failures. The helper is shared by `test/test_pyo3_wrapper.jl` and the PyO3 cross-module case in `test/test_module_symbols.jl`. A skipped testset is not a pass: on a machine whose Python ships a linkable library — `libpython3.x.so` (Linux, `python3-dev`), `libpython3.x.dylib` or a `Python3.framework` bundle (macOS), `python3xy.lib` (Windows) — or with `PYO3_PYTHON` / `RUSTCALL_PYTHON_LIBDIR` pointing at one, they run in full, and the Ubuntu CI jobs do run them. `test/test_pyo3_link_plan.jl` and `test/test_manifest.jl` only *compute* the plan (`plan.mode === :link_libpython`) and always run; so do the scan-level assertions and every `:python_free` case (`test/fixtures/sample_crate_pyo3_optional`, `sample_crate_pyo3`), which need no Python at all.
 
 ## CI
 
 `.github/workflows/CI.yml`:
-- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/rustcall_core`, `deps/rustcall_extract`, `deps/juliacall_macros` (stable + beta, Linux/macOS/Windows)
+- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/rustcall_core`, `deps/rustcall_extract`, `deps/rustcall_julia_macros` (stable + beta, Linux/macOS/Windows)
 - **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64) with `JULIA_NUM_THREADS=1`, plus **one Ubuntu job with `JULIA_NUM_THREADS=4`**
 - **Code Lint**: every `scripts/lint_*.sh`
 

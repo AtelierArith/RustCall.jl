@@ -3,7 +3,7 @@
 Julia never parses Rust source. Signatures, struct layouts and generic
 parameters come from the FFI manifest produced by the `rustcall-extract` CLI
 (`deps/rustcall_extract`), which shares its `syn`-based core
-(`deps/rustcall_core`) with the `juliacall_macros` proc-macro.
+(`deps/rustcall_core`) with the `rustcall_julia_macros` proc-macro.
 
 Items disabled by `#[cfg(...)]` are dropped from manifests and expanded
 sources: the extractor evaluates the predicates against `rustc --print cfg`

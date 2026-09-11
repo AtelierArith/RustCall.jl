@@ -1,6 +1,6 @@
 # External crate bindings generator (Maturin-like feature)
 # This module provides automatic Julia bindings generation for external Rust crates
-# that use the #[julia] attribute from juliacall_macros.
+# that use the #[julia] attribute from rustcall_julia_macros.
 #
 # Dependencies (must be included before this file in RustCall.jl):
 #   - structs.jl / julia_functions.jl: RustStructInfo, RustFunctionSignature, emitters
@@ -373,12 +373,12 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
         (dep *= ", features = [" *
                 join(("\"$(escape_toml_string(f))\"" for f in opts.features), ", ") * "]")
     push!(lines, dep * " }")
-    # Add juliacall_macros (use path for now, will be crates.io later)
-    juliacall_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "juliacall_macros")
-    if isdir(juliacall_macros_path)
-        push!(lines, "juliacall_macros = { path = \"$(escape_toml_string(juliacall_macros_path))\" }")
+    # Add rustcall_julia_macros (use path for now, will be crates.io later)
+    rustcall_julia_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "rustcall_julia_macros")
+    if isdir(rustcall_julia_macros_path)
+        push!(lines, "rustcall_julia_macros = { path = \"$(escape_toml_string(rustcall_julia_macros_path))\" }")
     else
-        push!(lines, "juliacall_macros = \"0.1\"")
+        push!(lines, "rustcall_julia_macros = \"0.1\"")
     end
     push!(lines, "")
 

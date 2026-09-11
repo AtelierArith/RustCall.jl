@@ -20,7 +20,7 @@ using RustCall
 using Libdl
 using RustToolChain: cargo
 
-const CMI_MACROS_PATH = joinpath(dirname(@__DIR__), "deps", "juliacall_macros")
+const CMI_MACROS_PATH = joinpath(dirname(@__DIR__), "deps", "rustcall_julia_macros")
 
 const _CMI_HAVE_CARGO = try
     success(run(pipeline(`$(cargo()) --version`, devnull, devnull); wait = true))
@@ -44,12 +44,12 @@ function _cmi_write_split_crate(dir::AbstractString; ops_header::AbstractString 
         crate-type = ["cdylib"]
 
         [dependencies]
-        juliacall_macros = { path = "$macros" }
+        rustcall_julia_macros = { path = "$macros" }
 
         [workspace]
         """)
     write(joinpath(dir, "src", "lib.rs"), """
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
 
         mod more;
         mod ops;
@@ -65,7 +65,7 @@ function _cmi_write_split_crate(dir::AbstractString; ops_header::AbstractString 
 
         #[julia]
         pub mod nested {
-            use juliacall_macros::julia;
+            use rustcall_julia_macros::julia;
 
             #[julia]
             impl super::Gauge {
@@ -77,7 +77,7 @@ function _cmi_write_split_crate(dir::AbstractString; ops_header::AbstractString 
         }
         """)
     write(joinpath(dir, "src", "ops.rs"), """
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
 
         #[julia]
         $ops_header {
@@ -89,7 +89,7 @@ function _cmi_write_split_crate(dir::AbstractString; ops_header::AbstractString 
         }
         """)
     write(joinpath(dir, "src", "more.rs"), """
-        use juliacall_macros::julia;
+        use rustcall_julia_macros::julia;
         use crate::Gauge;
 
         #[julia]
@@ -215,7 +215,7 @@ end
                 crate-type = ["cdylib"]
 
                 [dependencies]
-                juliacall_macros = { path = "$macros" }
+                rustcall_julia_macros = { path = "$macros" }
                 """)
             # `api.rs` is reached by no `mod` declaration: rustc compiles its
             # items into the crate root, and so must the scan.
@@ -225,7 +225,7 @@ end
                 """)
             write(joinpath(dir, "src", "table.rs"), "[1, 2, 3]\n")
             write(joinpath(dir, "src", "lib.rs"), """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 include!("api.rs");
                 const TABLE: [i32; 3] = include!("table.rs");
                 #[julia]
@@ -476,7 +476,7 @@ end
                 crate-type = ["cdylib"]
 
                 [dependencies]
-                juliacall_macros = { path = "$macros" }
+                rustcall_julia_macros = { path = "$macros" }
                 """)
             write(joinpath(dir, "src", "frag", "api.rs"), """
                 pub mod nested;
@@ -487,12 +487,12 @@ end
             # module of its own, so it brings its own `use` — the fragment
             # above inherits the crate root's, because it is compiled into it.
             write(joinpath(dir, "src", "frag", "nested.rs"), """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[julia]
                 pub fn deep() -> i32 { 7 }
                 """)
             write(joinpath(dir, "src", "lib.rs"), """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 include!("frag/api.rs");
                 #[julia]
                 pub fn root_one() -> i32 { 1 }
@@ -537,7 +537,7 @@ end
                 crate-type = ["cdylib"]
 
                 [dependencies]
-                juliacall_macros = { path = "$macros" }
+                rustcall_julia_macros = { path = "$macros" }
                 """)
             write(joinpath(dir, "src", "api.rs"), """
                 #[cfg(feature = "never")]
@@ -546,7 +546,7 @@ end
                 pub fn present() -> i32 { 3 }
                 """)
             write(joinpath(dir, "src", "lib.rs"), """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 include!("api.rs");
                 """)
 
@@ -572,7 +572,7 @@ end
                 """)
             lib = joinpath(dir, "lib.rs")
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[julia]
                 pub mod a { include!("frag.rs"); }
                 #[julia]
@@ -609,13 +609,13 @@ end
                 pub fn from_api() -> i32 { 1 }
                 """)
             write(joinpath(dir, "frag", "nested.rs"), """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[julia]
                 pub fn deep() -> i32 { 2 }
                 """)
             lib = joinpath(dir, "lib.rs")
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 include!("frag/api.rs");
                 """)
 
@@ -655,7 +655,7 @@ end
             write(frag, "#[julia] pub fn shout() -> i32 { 1 }\n")
             lib = joinpath(dir, "lib.rs")
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[julia]
                 pub mod api { include!("frag.rs"); }
                 """)
@@ -714,13 +714,13 @@ end
                 """)
             lib = joinpath(dir, "src", "lib.rs")
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[cfg(feature = "x")]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 #[cfg(not(feature = "x"))]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 """)
             # A lenient scan, as `scan_crate` runs for an external crate: the
             # host's cfg decides target predicates, feature predicates are
@@ -850,13 +850,13 @@ end
             # compiles, so it attaches to every one, in both scans (#357
             # review).
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[cfg(feature = "x")]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 #[cfg(not(feature = "x"))]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 #[julia]
                 impl api::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }
                 """)
@@ -892,16 +892,16 @@ end
             # `Gauge` the `x` state compiles, so it attaches to every copy its
             # predicate can coexist with — in both scans (#357 review).
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[cfg(feature = "x")]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 #[cfg(not(feature = "x"))]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 #[cfg(feature = "y")]
                 mod ops {
-                    use juliacall_macros::julia;
+                    use rustcall_julia_macros::julia;
                     #[julia]
                     impl crate::api::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }
                 }
@@ -956,13 +956,13 @@ end
             end
 
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[cfg(feature = "x")]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 #[cfg(not(feature = "x"))]
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 """)
             write(joinpath(dir, "src", "frag.rs"), """
                 #[julia]
@@ -972,9 +972,9 @@ end
             # One fragment included twice at the *same* position is still one
             # scan — the duplicate-symbol case of #343.
             write(lib, """
-                use juliacall_macros::julia;
+                use rustcall_julia_macros::julia;
                 #[julia]
-                pub mod api { use juliacall_macros::julia; include!("frag.rs"); }
+                pub mod api { use rustcall_julia_macros::julia; include!("frag.rs"); }
                 """)
             once = RustCall.extract_manifest(String[]; mode = "crate", crate_root = lib)
             @test count(f -> f["name"] == "run", once["functions"]) == 1
