@@ -1063,7 +1063,7 @@ fn is_string_spelling(spelling: &str) -> bool {
 /// and all are checked (#307 review). Field accessors have no reader and
 /// derive nothing.
 fn wrapper_symbols(symbol: &str) -> [String; 3] {
-    let claims = crate::claims::wrapper_claims(symbol, true);
+    let claims = crate::claims::wrapper_claims(symbol);
     let mut names = claims.into_iter().map(|c| c.name);
     [
         names.next().expect("entry point"),

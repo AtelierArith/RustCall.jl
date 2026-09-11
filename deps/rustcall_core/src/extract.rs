@@ -776,8 +776,8 @@ impl CrateScan {
                     }
                     if attribute == Attribute::Julia {
                         let entry = function_entry(f, attribute, true, symbol_path, enclosing_cfg);
-                        for (symbol, owner) in entry.claimed_symbols() {
-                            self.claim(symbol, owner, file)?;
+                        for (claim, owner) in entry.claims() {
+                            self.claim(claim, owner, file)?;
                         }
                         manifest.functions.push(entry);
                     }
@@ -951,22 +951,40 @@ impl CrateScan {
     /// — defining the same `#[julia]` item, or a crate-root name that spells a
     /// qualified one. The `cdylib` could not export both, and a wrong binding
     /// is worse than no binding, so the scan fails closed and names the fix.
-    fn claim(&mut self, symbol: String, owner: String, file: &str) -> Result<(), ExtractError> {
+    fn claim(
+        &mut self,
+        claim: crate::claims::Claim,
+        owner: String,
+        file: &str,
+    ) -> Result<(), ExtractError> {
         let here = if file.is_empty() {
             owner
         } else {
             format!("{owner} in {file}")
         };
-        if let Some((_, first)) = self.claimed.iter().find(|(s, _)| *s == symbol) {
-            return Err(ExtractError::Unsupported(format!(
-                "duplicate exported symbol `{symbol}`: claimed by {first} and by {here}. \
-                 Two #[julia] items of one crate export the same symbol; only inline modules \
-                 marked `#[julia]` (`#[julia] pub mod name {{ ... }}`) qualify a symbol by \
+        let symbol = &claim.name;
+        if let Some((_, first)) = self.claimed.iter().find(|(s, _)| s == symbol) {
+            let kind = crate::claims::clash_kind(&claim);
+            let detail = if claim.exported {
+                "Two #[julia] items of one crate export the same symbol; only inline modules \
+                 marked `#[julia]` (`#[julia] pub mod name { ... }`) qualify a symbol by \
                  their name, while file modules (`mod name;`) do not. Wrap one of the items in \
                  a `#[julia]` module block or rename it (#300)."
+                    .to_string()
+            } else {
+                format!(
+                    "This name is not exported and not one you wrote: it is {}. Two of them in \
+                     one crate are a duplicate definition rather than a duplicate export, and \
+                     rustc would report it inside generated code. Rename one of the items \
+                     (#338).",
+                    crate::claims::internal_origin(&claim)
+                )
+            };
+            return Err(ExtractError::Unsupported(format!(
+                "duplicate {kind} `{symbol}`: claimed by {first} and by {here}. {detail}"
             )));
         }
-        self.claimed.push((symbol, here));
+        self.claimed.push((claim.name, here));
         Ok(())
     }
 
@@ -1039,8 +1057,8 @@ impl CrateScan {
 
         for scanned in std::mem::take(&mut self.structs) {
             let entry = crate_struct_entry(&scanned.model, &scanned.symbol_path, &scanned.cfg);
-            for (symbol, owner) in entry.claimed_symbols() {
-                self.claim(symbol, owner, &scanned.file)?;
+            for (claim, owner) in entry.claims() {
+                self.claim(claim, owner, &scanned.file)?;
             }
             manifest.structs.push(entry);
         }

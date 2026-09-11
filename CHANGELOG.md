@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A clash on a generated internal name is refused, and named for what it is**
+  ([#338](https://github.com/AtelierArith/RustCall.jl/issues/338)). A wrapper
+  defines more than its exports: the thread-local slot of its panic channel is
+  the wrapper's symbol upper-cased, so `#[julia] fn foo` next to `#[julia] fn
+  FOO` export two different symbols and still define
+  `__RUSTCALL_PANIC_RUSTCALL_FOO` twice. The duplicate check now counts those
+  names, and its two diagnostics tell the kinds apart: an exported symbol
+  keeps the message it had, while an internal item says so and explains where
+  the name comes from, instead of being called an export. The same covers the
+  string buffer types two items with one buffer owner would declare twice.
+
 ### Changed
 - **One list of what a manifest entry claims**
   ([#338](https://github.com/AtelierArith/RustCall.jl/issues/338)). The

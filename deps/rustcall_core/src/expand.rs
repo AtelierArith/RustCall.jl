@@ -77,15 +77,26 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
     // struct `Foo_bar` next to a `Foo::bar` that hands back an owned string,
     // both wanting `Foo_bar_free_rust_string`. rustc would report it inside
     // generated code; say which two items collide instead.
-    for (symbol, first, second) in manifest.duplicate_symbols() {
-        let msg = format!(
-            "RustCall would export the symbol `{symbol}` twice in this block: for {first} and \
-             for {second}. The scheme derives every symbol from the item's name and module \
-             path (`rustcall_<fn>`, `rustcall_<Struct>_<method>`, `<Struct>_free`, \
-             `<Struct>_get_<field>`, `<owner>_free_rust_string`, ... — #300), so two items \
-             whose names differ only where the scheme joins them meet here. Rename one of \
-             them."
-        );
+    for (claim, first, second) in manifest.duplicate_claims() {
+        let symbol = &claim.name;
+        let msg = if claim.exported {
+            format!(
+                "RustCall would export the symbol `{symbol}` twice in this block: for {first} \
+                 and for {second}. The scheme derives every symbol from the item's name and \
+                 module path (`rustcall_<fn>`, `rustcall_<Struct>_<method>`, `<Struct>_free`, \
+                 `<Struct>_get_<field>`, `<owner>_free_rust_string`, ... — #300), so two items \
+                 whose names differ only where the scheme joins them meet here. Rename one of \
+                 them."
+            )
+        } else {
+            format!(
+                "RustCall would define the item `{symbol}` twice in this block: for {first} \
+                 and for {second}. It is not exported and not one you wrote — it is {}. Two of \
+                 them in one module are a duplicate definition rustc would report inside \
+                 generated code. Rename one of the items (#338).",
+                crate::claims::internal_origin(&claim)
+            )
+        };
         out.insert(0, syn::parse_quote! { compile_error!(#msg); });
     }
 
