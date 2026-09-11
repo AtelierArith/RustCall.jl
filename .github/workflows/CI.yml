@@ -150,7 +150,7 @@ jobs:
         shell: bash
         env:
           RUSTCALL_EXTRACT: ${{ github.workspace }}/deps/rustcall_extract/target/release/rustcall-extract${{ runner.os == 'Windows' && '.exe' || '' }}
-        run: julia --project benchmark/benchmarks_compile.jl | tee benchmark-${{ runner.os }}.txt
+        run: julia --project=benchmark benchmark/benchmarks_compile.jl | tee benchmark-${{ runner.os }}.txt
       - name: Publish benchmark result
         if: always()
         shell: bash

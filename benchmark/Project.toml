@@ -1,0 +1,14 @@
+# Environment for the benchmark scripts (issue #260).
+#
+# `BenchmarkTools` is not a runtime dependency of RustCall — only these
+# scripts use it — so it lives here rather than in the package's `[deps]`.
+# `RustCall` itself is resolved from the repository checkout by
+# `benchmark/setup.jl`, which every script loads first.
+
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
+
+[compat]
+BenchmarkTools = "1.6.3"
+julia = "1.12"

@@ -1,6 +1,8 @@
 # Cost of always asking Cargo for current cfg (#291).
 # Run: julia --project benchmark/benchmarks_cfg_probe.jl
 # An isolated, dependency-free crate: not a prediction for large workspaces.
+include(joinpath(@__DIR__, "setup.jl"))
+
 using RustCall, Statistics
 
 mktempdir() do root

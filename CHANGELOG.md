@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`BenchmarkTools` is no longer a runtime dependency, and Aqua.jl now
+  enforces that** ([#260](https://github.com/AtelierArith/RustCall.jl/issues/260)).
+  It was listed in `[deps]` while only `benchmark/*.jl` used it, so every
+  installation of RustCall pulled it and its transitive dependencies into the
+  runtime graph. It moves to a `benchmark/Project.toml` of its own; the
+  benchmark scripts are now run with `--project=benchmark` and resolve the
+  repository checkout through `benchmark/setup.jl`. `test/test_aqua.jl` runs
+  `Aqua.test_all`, which fails on a stale dependency, a missing `[compat]`
+  bound, type piracy, an unbound type parameter or an undefined export, so the
+  class cannot come back silently.
 - **`deps/juliacall_macros` renamed to `deps/rustcall_julia_macros`.** The
   crate's name suggested a companion to the unrelated `juliacall` PyPI
   package (the Python-side counterpart of `PythonCall.jl`) rather than a

@@ -1,6 +1,8 @@
 # Performance benchmarks for array operations in RustCall.jl
 # Tests RustVec, RustSlice, and Julia Vector performance
 
+include(joinpath(@__DIR__, "setup.jl"))
+
 using RustCall
 using BenchmarkTools
 

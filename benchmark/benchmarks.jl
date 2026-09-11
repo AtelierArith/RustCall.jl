@@ -1,6 +1,8 @@
 # Benchmarks for RustCall.jl
 # Performance comparison between native Julia and @rust
 
+include(joinpath(@__DIR__, "setup.jl"))
+
 using RustCall
 using BenchmarkTools
 
