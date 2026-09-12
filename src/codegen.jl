@@ -605,9 +605,19 @@ normalize_arg_type(::Type{R}, ::Type{T}) where {R,T<:AbstractFloat} = T  # Prese
 normalize_arg_type(::Type{R}, ::Type{Ptr{T}}) where {R,T} = Ptr{T}  # Preserve pointer types
 normalize_arg_type(::Type{R}, ::Type{Ref{T}}) where {R,T} = Ref{T}  # Preserve Ref types
 
-function normalize_arg_types(::Type{R}, argt::Type{<:Tuple}) where {R}
-    normalized = map(t -> normalize_arg_type(R, t), argt.parameters)
-    return Core.apply_type(Tuple, normalized...)
+# `@generated`, because this is pure type arithmetic on the hot path (#253).
+#
+# Every method of `normalize_arg_type` above dispatches on types alone and reads
+# no runtime state, so the answer for a given `(R, A)` can never change within a
+# session and belongs at compile time. Computing it per call cost 529 ns and
+# three allocations — a hundred times the 5.1 ns `ccall` it was preparing.
+#
+# This is deliberately *not* what `ffi_check_by_value` does: that one consults
+# layouts `register_ffi_struct` may add later in the session, so it stays a
+# runtime check. The two look similar and are not.
+@generated function normalize_arg_types(::Type{R}, ::Type{A}) where {R, A <: Tuple}
+    normalized = map(t -> normalize_arg_type(R, t), A.parameters)
+    return :($(Core.apply_type(Tuple, normalized...)))
 end
 
 is_supported_arg_type(::Type{T}) where {T<:Integer} = true
@@ -700,8 +710,11 @@ function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, args...)
     # Fail closed on an aggregate nobody asserted a layout for (#245 item 3).
     # Checked here rather than inside `_call_rust_function`, which is
     # `@generated`: a generated method is not re-generated when
-    # `register_ffi_struct` is called later in the session.
-    ffi_check_by_value(ret_type, argt.parameters)
+    # `register_ffi_struct` is called later in the session. The signature form
+    # keeps that property — it falls back to the runtime check for any
+    # signature containing an aggregate, and elides it only where no
+    # registration could ever be consulted (#253).
+    ffi_check_by_value_signature(ret_type, argt)
     return _call_rust_function(func_ptr, ret_type, argt, args...)
 end
 

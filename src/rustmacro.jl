@@ -136,16 +136,19 @@ function rust_impl_call(mod, expr, ret_type)
     func_name_str = string(func_name)
     escaped_args = [esc(arg) for arg in args]
 
+    # One cache per expansion, spliced in as a constant: the call site keeps the
+    # snapshot it resolved and re-resolves only when the artifact epoch moves
+    # (#253). `_resolve_lib` moves with it onto the slow path — it walked every
+    # block of the module, on every call.
+    cache = CallTargetCache()
     if ret_type === nothing
         # Dynamic dispatch based on argument types
-        return Expr(:call, GlobalRef(RustCall, :_rust_call_dynamic),
-                    Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, ""),
-                    func_name_str, escaped_args...)
+        return Expr(:call, GlobalRef(RustCall, :_rust_call_dynamic_cached),
+                    cache, mod, "", func_name_str, escaped_args...)
     else
         # Static dispatch with known return type
-        return Expr(:call, GlobalRef(RustCall, :_rust_call_typed),
-                    Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, ""),
-                    func_name_str, esc(ret_type), escaped_args...)
+        return Expr(:call, GlobalRef(RustCall, :_rust_call_typed_cached),
+                    cache, mod, "", func_name_str, esc(ret_type), escaped_args...)
     end
 end
 
@@ -276,11 +279,12 @@ function rust_impl_qualified(mod, lib_name, call_expr, ret_type)
     func_name_str = string(func_name)
     escaped_args = map(esc, args)
 
+    cache = CallTargetCache()
     if ret_type === nothing
         return Expr(
             :call,
-            GlobalRef(RustCall, :_rust_call_from_lib),
-            Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, lib_name_str),
+            GlobalRef(RustCall, :_rust_call_dynamic_cached),
+            cache, mod, lib_name_str,
             func_name_str,
             escaped_args...
         )
@@ -288,8 +292,8 @@ function rust_impl_qualified(mod, lib_name, call_expr, ret_type)
 
     return Expr(
         :call,
-        GlobalRef(RustCall, :_rust_call_typed),
-        Expr(:call, GlobalRef(RustCall, :_resolve_lib), mod, lib_name_str),
+        GlobalRef(RustCall, :_rust_call_typed_cached),
+        cache, mod, lib_name_str,
         func_name_str,
         esc(ret_type),
         escaped_args...
@@ -347,6 +351,41 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     # same library. Resolving them separately let a reload land in between, so
     # the call entered the retired image and read the replacement's channel.
     target = resolve_call_target(lib_name, func_name)
+    return _dispatch_with_target(target, lib_name, func_name, args...)
+end
+
+"""
+    _call_and_guard(func_ptr, R, channel, func_name, args...)
+
+Make the call and read its channel, with the return type as a **type
+parameter**.
+
+`@rust f(a, b)` without an annotation learns its return type from the snapshot,
+so that type is a runtime value and the call through it is a dynamic dispatch.
+This is the barrier that keeps it to exactly one: everything inside is
+specialised on `R` and on the argument arity, where calling `call_rust_function`
+with a runtime `Type` left the whole chain behind it dynamic — the `@generated`
+`_call_rust_function` reached by a specialisation lookup on every call (#253).
+
+An annotated call (`::T`) and a `#[julia]` wrapper know their type statically and
+do not come through here.
+"""
+@noinline function _call_and_guard(func_ptr::Ptr{Cvoid}, ::Type{R}, channel::Ptr{Cvoid},
+                                   func_name::String, args::Vararg{Any, N}) where {R, N}
+    return guard_rust_panic_ptr(call_rust_function(func_ptr, R, args...), channel, func_name)
+end
+
+"""
+    _dispatch_with_target(target, lib_name, func_name, args...)
+
+The half of `_rust_call_dynamic` that runs once a snapshot is in hand: pick the
+return type the snapshot recorded, call, and read that snapshot's channel.
+
+Shared with the cached call sites (#253), which reach the same snapshot without
+re-resolving it, so the two cannot drift in what they do with one.
+"""
+function _dispatch_with_target(target, lib_name::String, func_name::String,
+                               args::Vararg{Any, N}) where {N}
     func_ptr = target.func_ptr
     channel = target.channel
     owning_lib = target.lib_name
@@ -368,8 +407,7 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     # replacement's return type — a scalar read as a struct (#277).
     func_info = target.func_info
     if func_info !== nothing && func_info.return_type !== Any
-        return guard_rust_panic_ptr(call_rust_function(func_ptr, func_info.return_type, args...),
-                                    channel, func_name)
+        return _call_and_guard(func_ptr, func_info.return_type, channel, func_name, args...)
     end
 
     # Try to get the return type the owning library registered — again, the one
@@ -377,8 +415,7 @@ function _rust_call_dynamic(lib_name::String, func_name::String, args...)
     ret_type = target.return_type
     if ret_type !== nothing
         @debug "Using registered return type for $func_name: $ret_type"
-        return guard_rust_panic_ptr(call_rust_function(func_ptr, ret_type, args...),
-                                    channel, func_name)
+        return _call_and_guard(func_ptr, ret_type, channel, func_name, args...)
     end
 
     # No last resort. Guessing the return type from the first argument was the
@@ -493,6 +530,81 @@ function _check_return_annotation(target, func_name::AbstractString, declared::T
         "a conversion. Drop the annotation and let the manifest decide, " *
         "write `::$recorded`, or change the Rust signature — and convert the " *
         "result on the Julia side if you wanted a `$declared`."))
+end
+
+"""
+    _rust_call_dynamic_cached(cache, mod, lib_name, func_name, args...)
+
+`@rust f(a, b)` with this call site's snapshot cache (#253).
+
+The generic check stays on the slow path deliberately. A name registered as
+generic is routed to `call_generic_function` before anything is resolved, so it
+never populates the cache — which means a cache hit is by construction a name
+that already answered the generic question with "no", and the per-call
+registry lookup it used to cost is gone for everyone else.
+"""
+function _rust_call_dynamic_cached(cache::CallTargetCache, mod::Module, lib_name::String,
+                                   func_name::String, args::Vararg{Any, N}) where {N}
+    hit = cached_target_hit(cache)
+    hit === nothing || return _dispatch_with_target(hit, hit.lib_name, func_name, args...)
+    is_generic_function(func_name) && return call_generic_function(func_name, args...)
+    target = cached_macro_call_target(cache, mod, lib_name, func_name)
+    return _dispatch_with_target(target, target.lib_name, func_name, args...)
+end
+
+"""
+    _rust_call_typed_cached(cache, mod, lib_name, func_name, ret_type, args...)
+
+`@rust f(a, b)::T` with this call site's snapshot cache (#253).
+"""
+# `args::Vararg{Any, N}) where {N}`, not `args...`: a plain vararg method gets one
+# specialization shared by every arity, so the argument tuple stays abstract and
+# the `ccall` behind `call_rust_function` is reached by dynamic dispatch — 590 ns
+# and four allocations, against 10 ns once `N` makes the arity part of the
+# signature. Every cached entry point below is annotated for that reason (#253).
+function _rust_call_typed_cached(cache::CallTargetCache, mod::Module, lib_name::String,
+                                 func_name::String, ::Type{R},
+                                 args::Vararg{Any, N}) where {R, N}
+    target = cached_target_hit(cache)
+    target === nothing &&
+        return _rust_call_typed_uncached(cache, mod, lib_name, func_name, R, args...)
+    return guard_rust_panic_ptr(call_rust_function(target.func_ptr, R, args...),
+                                target.channel, func_name)
+end
+
+# The `try` lives here rather than in the caller above, and that is the whole
+# reason this is a second function: a variable assigned inside a `try` block is
+# boxed, so keeping the generic-function fallback next to the fast path cost it
+# four allocations and 550 ns — fifty times the call it was making (#253).
+@noinline function _rust_call_typed_uncached(cache::CallTargetCache, mod::Module,
+                                             lib_name::String, func_name::String,
+                                             ::Type{R},
+                                             args::Vararg{Any, N}) where {R, N}
+    local epoch, target
+    try
+        epoch, target = resolve_macro_call_target(mod, lib_name, func_name)
+    catch e
+        # Same fallback as the uncached path: a name the libraries do not
+        # export may still be a generic awaiting monomorphization.
+        is_generic_function(func_name) && return call_generic_function(func_name, args...)
+        rethrow(e)
+    end
+    # Checked here rather than on the fast path, and **before** publishing.
+    #
+    # Both inputs are fixed for as long as the entry lives — the snapshot is the
+    # one just resolved, and `R` is this call site's annotation, spliced in by
+    # the macro — so checking once per snapshot is checking every call, and a
+    # new snapshot is a new check. It cost 550 ns per call where it stood,
+    # because comparing two runtime `Type` values through `ccall_return_type`
+    # is a dynamic call and the annotation check makes two of them.
+    #
+    # Publishing only after it passes is what keeps that true: an entry that
+    # failed the check must not be left behind for later calls to hit, which
+    # would skip the check for the rest of the session (#245, #253).
+    _check_return_annotation(target, func_name, R)
+    publish_call_target!(cache, epoch, target)
+    return guard_rust_panic_ptr(call_rust_function(target.func_ptr, R, args...),
+                                target.channel, func_name)
 end
 
 """

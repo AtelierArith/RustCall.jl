@@ -56,6 +56,46 @@ end
 
 const STATE = Base.Lockable(RustCallState(Dict{Symbol, Any}()))
 
+"""
+    ARTIFACT_EPOCH
+
+A counter bumped by **every** write to the state container, so a caller that
+resolved something out of it can tell, without taking a lock, whether its answer
+is still the current one (#253).
+
+# Why a counter and not a flag
+
+A call site may keep the `CallTarget` it resolved (`cached_call_target`,
+`src/ruststr.jl`) and reuse it instead of paying `resolve_call_target` again —
+7 µs and a hundred allocations, on the way to a 5 ns `ccall`. That is only sound
+while nothing the snapshot captured has changed: a hot reload, an adoption, an
+alias, a retirement, a newly registered return type or panic channel all make a
+kept snapshot a pointer into the wrong generation, which is the #277 bug class.
+
+So the reuse has to be invalidated, and *nothing may be allowed to forget to
+invalidate it*. The bump therefore lives in `_state_mutate_storage!`
+(`src/state_filter.jl`) — the one helper every state-container write already
+goes through — rather than at the mutation sites, which are many and which grow.
+A write that does not actually change what a snapshot would say costs a
+re-resolution and nothing else; a write that does and went unnoticed would be a
+call into an unmapped image. The counter is deliberately conservative in the
+only direction that is safe.
+
+It is read with a plain atomic load and never taken under `REGISTRY_LOCK`, which
+is what takes the lock off the calling path entirely.
+"""
+const ARTIFACT_EPOCH = Threads.Atomic{Int}(1)
+
+"""
+    artifact_epoch() -> Int
+
+The current value of [`ARTIFACT_EPOCH`](@ref). Read this **before** resolving
+anything that will be cached against it: a mutation landing between the read and
+the resolution then invalidates the cached answer, where reading it afterwards
+could stamp a stale snapshot with a current epoch.
+"""
+artifact_epoch() = ARTIFACT_EPOCH[]
+
 struct StateView
     name::Symbol
     owner::Union{Nothing, Module}

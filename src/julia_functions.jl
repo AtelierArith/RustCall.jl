@@ -401,14 +401,19 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     # actually holds the wrapper — otherwise a panic is looked for in the
     # wrong image and silently missed (#244).
     channel_sym = _generated_local("panic_channel", sig.arg_names)
+    # This call site's own cache, spliced into the body as a constant: one
+    # object per generated wrapper, no binding in the caller's module, and a
+    # fresh one if the wrapper is generated again (#253).
+    cache = RustCall.CallTargetCache()
     return quote
         function $func_name($(arg_syms...))
             # One snapshot: pointer and panic channel from the same
             # generation, resolved before the call (the channel is a
             # thread-local, so nothing may yield between call and read) — #244,
-            # #277.
-            $channel_sym =
-                RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str)
+            # #277. Reused across calls only while the artifact epoch says no
+            # state write has happened since it was taken (#253) — still one
+            # snapshot of one image per call, never reassembled from pieces.
+            $channel_sym = RustCall.cached_call_target($cache, @__MODULE__, $symbol_str)
             RustCall.guard_rust_panic_ptr(
                 RustCall.call_rust_function($channel_sym.func_ptr, $julia_ret_type, $(converted_args...)),
                 $channel_sym.channel, $rust_name)
@@ -444,14 +449,18 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
               RustCall.call_rust_function($channel_sym.func_ptr, $ret, $(call_args...)),
               $channel_sym.channel, $rust_name))
     end
+    string_cache = RustCall.CallTargetCache()
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
             # The owning library is resolved once; the string helpers take
-            # their own single snapshot, free pointer included (#277).
-            $lib_sym = RustCall.resolve_call_target(
-                RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str).lib_name
-            $channel_sym = RustCall.resolve_call_target($lib_sym, $symbol_str)
+            # their own single snapshot, free pointer included (#277). One
+            # snapshot serves as both, where this used to resolve twice: the
+            # second call re-resolved the same symbol in the library the first
+            # had already named as its owner, so it could only return the same
+            # target (#253).
+            $channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str)
+            $lib_sym = $channel_sym.lib_name
             GC.@preserve $(preserved...) begin
                 $call
             end
