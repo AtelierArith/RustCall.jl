@@ -91,8 +91,8 @@ pub extern "C" fn raw_increment(value: u32) -> u32 {
     value + 1
 }
 thread_local! {
-    static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > =
-    ::std::cell::Cell::new(0);
+    static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > = const {
+    ::std::cell::Cell::new(0) };
 }
 /// `true` while this image's hook is the one std will call. A mutex, not a
 /// `Once`: installing again after an uninstall has to work.

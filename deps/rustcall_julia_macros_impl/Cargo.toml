@@ -1,0 +1,18 @@
+[package]
+name = "rustcall_julia_macros_impl"
+version = "0.1.0"
+edition = "2021"
+description = "Proc-macro implementation behind rustcall_julia_macros; do not depend on this crate directly"
+license = "MIT"
+repository = "https://github.com/atelierarith/RustCall.jl"
+keywords = ["julia", "ffi", "proc-macro"]
+categories = ["development-tools::ffi"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+rustcall_core = { path = "../rustcall_core" }
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
+proc-macro2 = "1.0"

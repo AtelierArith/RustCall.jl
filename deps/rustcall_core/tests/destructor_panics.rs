@@ -1,6 +1,8 @@
 use std::fs;
 use std::process::Command;
 
+mod support;
+
 use rustcall_core::codegen::transform_struct_crate;
 use rustcall_core::expand::expand;
 use rustcall_core::extract::extract;
@@ -87,6 +89,8 @@ fn generated_destructors_contain_panics_in_both_flavours() {
         fs::write(&input, source).unwrap();
         let compile = Command::new("rustc")
             .args(["--edition=2021", "-C", "panic=unwind"])
+            .arg("--extern")
+            .arg(support::runtime_extern_arg(&dir))
             .arg(&input)
             .arg("-o")
             .arg(&binary)

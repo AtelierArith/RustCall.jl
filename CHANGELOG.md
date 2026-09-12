@@ -19,13 +19,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still prints. Julia installs it once per image right after `dlopen`, which is
   what removes the install race the per-wrapper attempt in #302 had, and removes
   it in `close_artifact_handle!` before the image is unmapped. This covers every
-  artifact whose source RustCall writes in full — inline blocks, `@irust`,
-  monomorphized generics, the generated `@rust_crate` wrapper crate; a crate you
-  wrote yourself and annotated with `#[julia]` keeps the default hook, because an
-  attribute proc macro has nowhere to put state shared by the whole crate.
+  artifact RustCall loads that has a generated wrapper — inline blocks, `@irust`,
+  monomorphized generics, the generated `@rust_crate` wrapper crate, **and a
+  crate you wrote yourself and annotated with `#[julia]`**.
   `RUSTCALL_PANIC_HOOK=default` turns the hook off, and `-C prefer-dynamic`
   builds never get one, because a shared `std` shares the hook registry too.
   See `docs/src/panics.md`.
+- **`rustcall_julia_macros` is a normal library crate, not a proc-macro crate**
+  ([#304](https://github.com/AtelierArith/RustCall.jl/issues/304)). Nothing in
+  your `Cargo.toml` changes — the dependency keeps its name, version and path,
+  and `use rustcall_julia_macros::julia;` keeps working — but the package is now
+  a facade that re-exports `#[julia]` from the new
+  `deps/rustcall_julia_macros_impl` and adds a runtime module. That module is
+  what makes the paragraph above true for hand-written crates: the quiet hook
+  needs a thread-local depth counter shared by every wrapper in the image, an
+  attribute proc macro is handed one item at a time and can emit no crate-wide
+  state, and a proc-macro crate is compiled for the host and linked into no
+  `cdylib` — so the state lives in the crate `#[julia]` itself comes from, which
+  every such crate already depends on, and a wrapper names its guard
+  `::rustcall_julia_macros::__RustCallBoundary`. `#[no_mangle]` items of a
+  dependency rlib are exported from the `cdylib` that links it, so the image
+  still answers to `__rustcall_install_panic_hook` and the loader is unchanged.
+  The runtime module (`deps/rustcall_julia_macros/src/rt.rs`) is generated from
+  the same `rustcall_core` definition the inline flavours use and asserted
+  against it by `deps/rustcall_core/tests/runtime_crate.rs`. The one thing this
+  costs: **renaming** the `rustcall_julia_macros` dependency in your
+  `Cargo.toml` no longer compiles, because the generated guard names the crate
+  literally.
 - **`Pkg.build("RustCall")` no longer wipes its Cargo state, and no longer
   writes into an installed package**
   ([#258](https://github.com/AtelierArith/RustCall.jl/issues/258)). Through

@@ -342,6 +342,33 @@ function create_wrapper_crate(info::CrateInfo, opts::CrateBindingOptions)
 end
 
 """
+    rustcall_runtime_crate_path() -> String
+
+This installation's `deps/rustcall_julia_macros`, the crate every generated
+wrapper names for its quiet-panic boundary guard (`PanicHook::Runtime`, #304).
+
+Every `Cargo.toml` RustCall writes for a crate that contains generated wrappers
+declares this dependency, and they all have to declare the **same** one: two
+packages of this name from different sources would each bring a copy of
+`#[no_mangle] __rustcall_install_panic_hook` into one `cdylib`, which is a
+duplicate symbol at link time. A crate of the user's that also uses `#[julia]`
+therefore has to point at this same directory — `docs/src/panics.md` says so.
+
+Raises when the directory is missing rather than falling back to a registry
+version. The generated source names `::rustcall_julia_macros` unconditionally,
+so a manifest without this entry does not compile, and a `rustc` resolution
+error naming a crate the user never wrote is a much worse way to learn that this
+installation is incomplete.
+"""
+function rustcall_runtime_crate_path()
+    path = joinpath(dirname(dirname(@__FILE__)), "deps", "rustcall_julia_macros")
+    isdir(path) && return path
+    throw(RustError("RustCall's runtime crate is missing: expected it at $(path). " *
+                    "Every generated wrapper depends on it for the quiet panic hook " *
+                    "(#304). Reinstall the package, or check out `deps/`."))
+end
+
+"""
     generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions) -> String
 
 Generate Cargo.toml content for the wrapper crate.
@@ -373,13 +400,15 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
         (dep *= ", features = [" *
                 join(("\"$(escape_toml_string(f))\"" for f in opts.features), ", ") * "]")
     push!(lines, dep * " }")
-    # Add rustcall_julia_macros (use path for now, will be crates.io later)
-    rustcall_julia_macros_path = joinpath(dirname(dirname(@__FILE__)), "deps", "rustcall_julia_macros")
-    if isdir(rustcall_julia_macros_path)
-        push!(lines, "rustcall_julia_macros = { path = \"$(escape_toml_string(rustcall_julia_macros_path))\" }")
-    else
-        push!(lines, "rustcall_julia_macros = \"0.1\"")
-    end
+    # `rustcall_julia_macros` is load-bearing for this crate, not a leftover: the
+    # wrappers below take their quiet-panic boundary guard from it
+    # (`rustcall_core::codegen::PanicHook::Runtime`), and its rlib is what
+    # exports `__rustcall_install_panic_hook` from the `cdylib` for
+    # `load_artifact!` to call. It is the same rlib the wrapped crate's own
+    # `#[julia]` items use, so both share one hook and one depth counter — and
+    # emitting the items here as well would define the symbol twice (#304).
+    runtime = rustcall_runtime_crate_path()
+    push!(lines, "rustcall_julia_macros = { path = \"$(escape_toml_string(runtime))\" }")
     push!(lines, "")
 
     # Profile for release builds

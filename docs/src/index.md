@@ -23,7 +23,7 @@
 - **Function registration**: Register and cache compiled Rust functions
 
 ### Phase 6: External Crate Bindings (Maturin-like) ✅
-- **`rustcall_julia_macros` crate**: Proc-macro crate for `#[julia]` attribute
+- **`rustcall_julia_macros` crate**: The `#[julia]` attribute and its runtime
 - **`@rust_crate` macro**: Generate Julia bindings for external Rust crates
 - **Crate scanning**: Detect `#[julia]` marked functions and structs
 - **Automatic building**: Build crates and generate Julia modules

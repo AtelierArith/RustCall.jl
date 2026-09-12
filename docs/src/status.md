@@ -61,7 +61,7 @@ git ls-files 'src/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/src/*.rs' | xa
 - Coverage includes cache, ownership, arrays, generics, error handling, external crates, `#[julia]`, crate bindings, hot reload, and regressions.
 
 ### Rust proc-macro tests
-- Location: `deps/rustcall_julia_macros/tests/`
+- Location: `deps/rustcall_julia_macros/tests/` (the attribute itself lives in `deps/rustcall_julia_macros_impl`)
 - CI runs `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-features`.
 
 ### GitHub Actions

@@ -3,14 +3,15 @@
 #
 # Almost everything the suite builds depends only on the repository's own
 # crates through `path =`, or on crates that are already in the dependency
-# closure of `deps/rustcall_extract`, `deps/rust_helpers` and
-# `deps/rustcall_julia_macros`. What is left is listed here:
+# closure of `deps/rustcall_extract`, `deps/rust_helpers`,
+# `deps/rustcall_julia_macros` and `deps/rustcall_julia_macros_impl`. What is
+# left is listed here:
 #
 # * `itoa` — the registry dependency `test/test_cargo.jl` builds `// cargo-deps:`
 #   blocks against, where a *registry* crate is the point of the test
 #   (lockfile identity, `cargo tree` avoidance for registry-only graphs).
 # * `pyo3` — the PyO3 fixture crates under `test/fixtures/sample_crate_pyo3*`.
-#   It is also a dependency of `deps/rustcall_julia_macros`, so it is listed
+#   It is also a dev-dependency of `deps/rustcall_julia_macros`, so it is listed
 #   here at the version range the fixtures ask for.
 #
 # The `Offline test suite` CI job fetches this manifest and the repository's

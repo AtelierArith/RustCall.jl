@@ -6,7 +6,7 @@ RustCall.jl provides a Maturin-like feature for generating Julia bindings from e
 
 The feature consists of two components:
 
-1. **`rustcall_julia_macros`** - A Rust proc-macro crate that provides the `#[julia]` attribute
+1. **`rustcall_julia_macros`** - The Rust crate that provides the `#[julia]` attribute (and the runtime state its wrappers need; see [Panics](panics.md))
 2. **`@rust_crate`** - A Julia macro that scans external crates and generates bindings
 
 ## Quick Start

@@ -10,16 +10,19 @@ using RustCall
 # The hook is the only lever — stable Rust has no per-call or thread-scoped way
 # to silence one — and a correct hook needs a thread-local depth counter shared
 # by every wrapper in the image, because the one installed hook can only see the
-# counter it captured. That sharing is why the quiet hook exists exactly where a
-# generator writes the whole file (`rustcall_core::codegen::PanicHook`), and why
-# a user's hand-written `#[julia]` crate keeps the default hook
-# (`docs/src/panics.md`).
+# counter it captured. That sharing is what decides *where* the counter lives
+# (`rustcall_core::codegen::PanicHook`): at the root of a file RustCall writes
+# whole, or — for `#[julia]`, which is handed one item at a time and can emit no
+# crate-wide state — in the `rustcall_julia_macros` rlib the crate already
+# depends on, whose `#[no_mangle]` items the `cdylib` re-exports. Both ways the
+# image answers to the same symbol and Julia does not care which it is.
 #
 # Rust writes to file descriptor 2 directly, so `redirect_stderr` to an
 # `IOBuffer` cannot see it: every assertion here runs a child process whose
 # stderr is a file.
 
 const _PANICKED_AT = "panicked at"
+const SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
 
 """
     _run_child(body; threads = 1, env = [])
@@ -363,6 +366,66 @@ pub fn hook_probe_two(n: i32) -> i32 {
             @test occursin("b(2)=2", out)
             @test occursin("kind=RustCall.RustPanicError", out)
             @test !occursin(_PANICKED_AT, err)
+        end
+
+        @testset "a hand-written #[julia] crate is quiet too" begin
+            # The tier `#[julia]` could not reach while the hook had to be
+            # emitted into the file: a crate RustCall does not write. The proc
+            # macro cannot put crate-wide state anywhere, so the state lives in
+            # `rustcall_julia_macros` — the crate `#[julia]` itself comes from,
+            # therefore already a dependency — and the wrappers name the guard
+            # by path. `#[no_mangle]` items of a dependency rlib are exported
+            # from the `cdylib` that links it, so the image answers to exactly
+            # the symbol `load_artifact!` already resolves (#304).
+            code, out, err = _run_child("""
+            using RustCall
+            bindings = @rust_crate $(repr(SAMPLE_CRATE_PATH)) name="QuietHandWritten"
+            println("installs=", RustCall.QUIET_PANIC_HOOK_INSTALLS[])
+            # `@rust_crate` defines the wrappers at run time, so every call
+            # here crosses a world age.
+            println("ok=", Base.invokelatest(bindings.panicky, Int32(3)))
+            try
+                Base.invokelatest(bindings.panicky, Int32(-1))
+                println("NOT RAISED")
+            catch e
+                println("kind=", typeof(e))
+                println("message=", sprint(showerror, e))
+            end
+            # A method wrapper of a `#[julia]` struct takes the same guard.
+            d = Base.invokelatest(bindings.Divider, Int32(10))
+            try
+                Base.invokelatest(bindings.panicky_div, d, Int32(-1))
+                println("NOT RAISED")
+            catch e
+                println("method=", typeof(e))
+            end
+            """)
+            @test code == 0
+            @test occursin("installs=1", out)
+            @test occursin("ok=6", out)
+            @test occursin("kind=RustCall.RustPanicError", out)
+            @test occursin("panicky called with a negative value: -1", out)
+            @test occursin("method=RustCall.RustPanicError", out)
+            @test !occursin(_PANICKED_AT, err)
+        end
+
+        @testset "the runtime crate is the only definition in such an image" begin
+            # One image, one hook, one depth counter. The generated PyO3 wrapper
+            # crate links the same rlib as the crate it wraps, so it must *not*
+            # emit `panic_hook_items()` as well: that would be a duplicate
+            # `#[no_mangle]` symbol, and two counters neither hook can see.
+            # Asserted on the generated artifact, not on the generator's source:
+            # the golden wrapper crate of the corpus is what a `:link_libpython`
+            # build compiles.
+            golden = read(joinpath(dirname(@__DIR__), "deps", "rustcall_core", "tests",
+                                   "corpus", "pyo3_wrap.wrap.rs"), String)
+            @test occursin("::rustcall_julia_macros::__RustCallBoundary::enter()", golden)
+            @test !occursin("fn $(RustCall.QUIET_PANIC_INSTALL_SYMBOL)", golden)
+            @test !occursin("pub struct __RustCallBoundary", golden)
+            # And the wrapper crate is given that dependency.
+            bindings_jl = read(joinpath(dirname(@__DIR__), "src", "crate_bindings.jl"),
+                               String)
+            @test occursin("rustcall_julia_macros = { path =", bindings_jl)
         end
     end
 end

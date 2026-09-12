@@ -63,20 +63,59 @@ stays silent while the thread is inside a wrapper boundary and delegates to the
 hook it replaced otherwise, so a panic *outside* a boundary — on a thread the
 artifact's own code spawned, say — still prints exactly as before.
 
-Mechanically: the artifact keeps a thread-local depth counter at its crate root,
-every wrapper raises it for the duration of its body, and the artifact exports
+Mechanically: the image keeps one thread-local depth counter, every wrapper
+raises it for the duration of its body, and the image exports
 `__rustcall_install_panic_hook` / `__rustcall_uninstall_panic_hook`. Julia calls the
 installer **once per image, immediately after `dlopen`** (`load_artifact!`), so
 no first call can race another to install it, and calls the uninstaller from
 `close_artifact_handle!` before the image is unmapped, so std's registry never
 points at a closure whose code is gone.
 
-**Where it applies.** Only to artifacts whose source RustCall generates in full:
-inline `rust"""` blocks (both the direct-`rustc` and the Cargo flavour),
-`@irust`, monomorphized generics and the generated `@rust_crate` wrapper crate.
-Nothing has to declare that: `__rustcall_install_panic_hook` is exported exactly by
-those artifacts, so the loader asks the image rather than a policy, and a door
-cannot forget to opt in.
+**Where it applies.** To every artifact RustCall loads that has at least one
+generated wrapper: inline `rust"""` blocks (both the direct-`rustc` and the Cargo
+flavour), `@irust`, monomorphized generics, the generated `@rust_crate` wrapper
+crate, **and a crate of your own annotated with `#[julia]`**. Nothing has to
+declare that: `__rustcall_install_panic_hook` is exported exactly by those
+artifacts, so the loader asks the image rather than a policy, and a door cannot
+forget to opt in.
+
+**Where the counter lives.** Two places, for one reason. The hook can only
+consult the counter it captured, so every wrapper in an image must raise the
+*same* one.
+
+* When RustCall writes the whole file — the inline flavours and monomorphized
+  generics — it puts the counter and the two entry points at the file's root and
+  every wrapper takes its guard as `crate::__RustCallBoundary`.
+* `#[julia]` cannot do that. An attribute proc macro is handed a single item and
+  may only replace that item; it cannot see the crate's other `#[julia]` items,
+  and has no reliable place to remember whether it already emitted shared state.
+  It does not have to. Your crate already depends on `rustcall_julia_macros` —
+  that is where `#[julia]` comes from — so the counter lives *there*, compiled
+  once, and a wrapper names its guard `::rustcall_julia_macros::__RustCallBoundary`
+  like any other path. `#[no_mangle]` items of a dependency rlib are exported
+  from the `cdylib` that links it, so the image still answers to the symbol the
+  loader resolves.
+
+The generated `@rust_crate` wrapper crate is a file RustCall writes whole and
+still uses the second route: it links the same `rustcall_julia_macros` rlib as
+the crate it wraps, so emitting the items itself would define
+`__rustcall_install_panic_hook` twice in one `cdylib` — and would give that
+image two counters, neither of which the one installed hook could see in full.
+One image, one hook, one counter, shared between the wrapper crate and the
+`#[julia]` items of the crate it wraps.
+
+The `rustcall_julia_macros` package is a normal library crate (its `#[julia]`
+attribute is re-exported from `rustcall_julia_macros_impl`), so nothing in your
+`Cargo.toml` changes. Two things to know about the dependency:
+
+* **Do not rename it.** The generated guard names `::rustcall_julia_macros`
+  literally, so a `[dependencies]` entry under another key does not compile.
+* **Point it at the RustCall.jl that loads your crate** — the
+  `deps/rustcall_julia_macros` of that checkout. When RustCall generates a
+  wrapper crate around yours it declares the same dependency from its own tree;
+  if your crate names a *different* copy, both end up in one `cdylib`, each with
+  its own `#[no_mangle] __rustcall_install_panic_hook`, and the link fails with a
+  duplicate symbol.
 
 The doubled prefix is deliberate. Julia calls whatever it finds under that name
 as a zero-argument `extern "C"` function, so the name has to be one the symbol
@@ -85,17 +124,10 @@ scheme can never produce for an item of yours: a wrapper is `rustcall_<stem>`, s
 symbol. **Names beginning with `__rustcall_` are reserved for RustCall** — do not
 define one with `#[no_mangle]`.
 
-**Where it does not.** A crate *you* wrote and annotate with `#[julia]` keeps
-the default hook, and its panics still print. The hook needs a depth counter
-shared by every wrapper in the image — the one installed hook can only consult
-the counter it captured — and an attribute proc macro cannot provide one: it is
-handed a single item and may only replace that item, it cannot see the crate's
-other `#[julia]` items, and it has no reliable place to remember whether it
-already emitted the shared state. Reaching a shared item across modules is not
-open to it either, because a `#[no_mangle]` name is a linker symbol and not a
-Rust path: naming it would need an `extern "C"` block, which edition 2024 spells
-`unsafe extern`, making the generated code depend on your crate's edition. This
-is the same constraint that makes the panic *channel* per wrapper.
+**Where it does not.** Code of yours that RustCall never wrapped: a thread your
+crate spawned, a `#[no_mangle]` function you exported yourself, a panic in a
+constructor called outside a wrapper. Those are outside every boundary, so the
+hook delegates and they print exactly as before — which is the point.
 
 **Turning it off.** `RUSTCALL_PANIC_HOOK=default` keeps the default hook for
 every artifact in the process. It is the answer to the one thing the hook costs:
