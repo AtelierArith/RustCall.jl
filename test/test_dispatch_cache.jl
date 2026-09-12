@@ -173,6 +173,94 @@ using RustCall
             @test fetch(result) == 1
         end
 
+        @testset "a generic is still found on its first call in a fresh process" begin
+            # `_resolve_lib` replays a precompiled caller's recorded blocks, and
+            # those blocks are what register the module's generic functions. It
+            # used to run before the call by construction — the macro put it in
+            # the argument list. Moving library resolution onto the call site's
+            # slow path (#253) put it *after* the generic check, so in a fresh
+            # process every generic looked like a plain symbol that no library
+            # exports, and an unannotated `@rust` on one failed on first call
+            # instead of monomorphizing (#390 review).
+            root = mktempdir()
+            pkg_name = "DispatchCacheGeneric"
+            pkg_uuid = "b1d54f26-0a83-4c71-9e52-7d38a0c6b415"
+            pkgdir_ = joinpath(root, pkg_name)
+            mkpath(joinpath(pkgdir_, "src"))
+            write(joinpath(pkgdir_, "Project.toml"), """
+            name = "$pkg_name"
+            uuid = "$pkg_uuid"
+            version = "0.1.0"
+
+            [deps]
+            RustCall = "$(Base.PkgId(RustCall).uuid)"
+            """)
+            write(joinpath(pkgdir_, "src", "$pkg_name.jl"), """
+            module $pkg_name
+            using RustCall
+            rust\"\"\"
+            #[julia]
+            pub fn dispatch_cache_generic<T: std::fmt::Display>(x: T) -> String {
+                format!("<{x}>")
+            }
+            \"\"\"
+            # `@rust` without an annotation, inside the package, so the call site
+            # belongs to the precompiled module.
+            call_it(x) = @rust dispatch_cache_generic(x)
+            end
+            """)
+            project = pkgdir(RustCall)
+            sep = Sys.iswindows() ? ";" : ":"
+            cache_dir = joinpath(root, "rustcall-cache")
+            function in_child(script::AbstractString)
+                withenv("JULIA_LOAD_PATH" => join((project, root, "@stdlib"), sep),
+                        "RUSTCALL_CACHE_DIR" => cache_dir,
+                        "RUSTCALL_SUPPRESS_HELPERS_WARNING" => "1") do
+                    readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $script`;
+                                       stderr = stderr))
+                end
+            end
+            try
+                # Precompile first, so the second session is the fresh process
+                # that loads a `.ji` and has an empty generic registry.
+                in_child("using $pkg_name")
+                @test in_child("using $pkg_name; print($pkg_name.call_it(Int32(7)))") ==
+                      "<7>"
+            finally
+                rm(root; force = true, recursive = true)
+            end
+        end
+
+        @testset "restoring a module is not a symbol resolution" begin
+            # The other half of the same ordering. `_resolve_lib` must sit
+            # *outside* the fallback `try`: a block that fails to compile or load
+            # is not "this name is a generic", and catching it there let an
+            # earlier block's generic of the same name swallow the real error and
+            # leave the module half restored (#390 review).
+            #
+            # Asserted on the source because the failure needs a package whose
+            # *second* recorded block fails to load in a fresh process, which
+            # cannot be staged without making the test depend on how a build is
+            # made to fail.
+            source = read(joinpath(dirname(@__DIR__), "src", "rustmacro.jl"), String)
+            # Comments only: the prose below explains this ordering and names
+            # both `try` and `_resolve_lib`, so searching the raw text would
+            # measure the comment rather than the code.
+            code_of(name) = begin
+                body = source[findfirst("function $(name)", source)[1]:end]
+                body = body[1:findfirst("\nend", body)[1]]
+                join((line for line in split(body, '\n')
+                      if !startswith(strip(line), "#")), '\n')
+            end
+            typed = code_of("_rust_call_typed_uncached")
+            @test findfirst("_resolve_lib(", typed)[1] < findfirst("try", typed)[1]
+            # And the dynamic path resolves the library before it asks whether
+            # the name is generic.
+            dynamic = code_of("_rust_call_dynamic_cached")
+            @test findfirst("_resolve_lib(", dynamic)[1] <
+                  findfirst("is_generic_function(", dynamic)[1]
+        end
+
         @testset "a call site whose annotation varies is checked every time" begin
             # `::T` is an expression, not a literal, so this is *one* call site —
             # one spliced cache — asked for a different type on each call. An
