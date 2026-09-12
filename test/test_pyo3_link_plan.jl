@@ -945,6 +945,38 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a dispatcher wrapper refuses a pyo3 older than it needs (#370)" begin
+        # `Python::initialize` / `Python::attach` arrived in pyo3 0.26 — checked
+        # against the `marker.rs` of 0.24, 0.25 and 0.26, not the changelog.
+        # Before this the generator happily emitted them and the *wrapper build*
+        # failed with rustc errors about code the user never wrote.
+        @test RustCall.PYO3_DISPATCHER_MINIMUM == v"0.26"
+        for old in ("0.22.3", "0.24.0", "0.25.0", "0.25.1")
+            err = try
+                RustCall._require_dispatcher_pyo3_version(old, "old_crate")
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.RustError
+            message = sprint(showerror, err)
+            # The three things a reader needs: which crate, what it has, and
+            # what it would take.
+            @test occursin("old_crate", message)
+            @test occursin(old, message)
+            @test occursin("0.26", message)
+            @test occursin("Python::attach", message)
+        end
+        # The floor itself and anything above it are fine.
+        for ok in ("0.26.0", "0.26.1", "0.29.2", "1.0.0")
+            @test RustCall._require_dispatcher_pyo3_version(ok, "new_crate") === nothing
+        end
+        # An unparseable version is not evidence of anything: let the build speak
+        # rather than refuse on a guess.
+        @test RustCall._require_dispatcher_pyo3_version("", "odd") === nothing
+        @test RustCall._require_dispatcher_pyo3_version("not-a-version", "odd") === nothing
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`

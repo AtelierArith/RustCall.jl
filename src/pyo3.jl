@@ -1818,6 +1818,54 @@ function _pyo3_wrapper_build_script(plan::PyO3LinkPlan)
 end
 
 """
+    PYO3_DISPATCHER_MINIMUM
+
+The oldest PyO3 a **dispatcher-using** wrapper can be generated against (#370).
+
+A wrapper that reaches Python — a defaulted callable, or a class made
+Python-owned by inheritance — is emitted with `Python::initialize` and
+`Python::attach`. Those names arrived in PyO3 0.26; 0.25 and earlier spell the
+same operations `pyo3::prepare_freethreaded_python` and `Python::with_gil`, so
+the generated source does not compile against them. Determined by reading the
+`marker.rs` of 0.24, 0.25 and 0.26 rather than from the changelog.
+
+Everything else RustCall generates for a PyO3 crate calls the crate's own
+functions and is unaffected, which is why the floor is checked only where the
+dispatcher is actually used.
+"""
+const PYO3_DISPATCHER_MINIMUM = v"0.26"
+
+"""
+    _require_dispatcher_pyo3_version(version, crate_name)
+
+Refuse a dispatcher-using wrapper whose PyO3 predates
+[`PYO3_DISPATCHER_MINIMUM`](@ref), naming the version, the floor and the way out.
+
+Before this, generation succeeded and the *wrapper build* failed with rustc
+errors about `Python::attach` — an error about generated code the user never
+wrote, for a crate that is otherwise wrappable (#370).
+"""
+function _require_dispatcher_pyo3_version(version::AbstractString,
+                                          crate_name::AbstractString)
+    parsed = tryparse(VersionNumber, String(version))
+    # An unparseable version is not evidence of anything; the build will say so
+    # far better than a guess here would.
+    parsed === nothing && return nothing
+    parsed >= PYO3_DISPATCHER_MINIMUM && return nothing
+    throw(RustError(
+        "`$(crate_name)` resolves pyo3 $(version), and this wrapper needs at least " *
+        "$(PYO3_DISPATCHER_MINIMUM). The crate has a defaulted callable or an " *
+        "inherited `#[pyclass]`, so its wrapper calls Python through " *
+        "`Python::initialize` / `Python::attach`; those names arrived in pyo3 " *
+        "$(PYO3_DISPATCHER_MINIMUM), and earlier releases spell them " *
+        "`pyo3::prepare_freethreaded_python` / `Python::with_gil` (#370).\n" *
+        "Either raise the crate's pyo3 dependency to $(PYO3_DISPATCHER_MINIMUM) " *
+        "or later, or wrap it without the items that need the dispatcher — a " *
+        "`#[pyfunction]` with no defaults and a `#[pyclass]` with no `extends` " *
+        "are generated as direct calls and work on older pyo3."))
+end
+
+"""
     generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan) -> String
 
 The `Cargo.toml` of a #275 Phase-2 wrapper crate.
@@ -1856,6 +1904,7 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
         isempty(pyo3_version) && throw(RustError(
             "the generated wrapper needs PyO3's dispatcher, but Cargo metadata did not " *
             "identify the target crate's direct pyo3 version"))
+        _require_dispatcher_pyo3_version(pyo3_version, info.name)
         append!(lines, [
             "",
             "[dependencies.rustcall_pyo3]",
