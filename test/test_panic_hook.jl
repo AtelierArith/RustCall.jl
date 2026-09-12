@@ -1,0 +1,235 @@
+using Test
+using RustCall
+
+# A caught panic is not an incident (#304). The generated wrapper records the
+# message in its channel and Julia raises `RustCall.RustPanicError`, but Rust
+# runs the panic **hook** before the unwind `catch_unwind` catches, so every
+# panic RustCall handles correctly still printed `thread '<unnamed>' panicked
+# at ...` to stderr first.
+#
+# The hook is the only lever — stable Rust has no per-call or thread-scoped way
+# to silence one — and a correct hook needs a thread-local depth counter shared
+# by every wrapper in the image, because the one installed hook can only see the
+# counter it captured. That sharing is why the quiet hook exists exactly where a
+# generator writes the whole file (`rustcall_core::codegen::PanicHook`), and why
+# a user's hand-written `#[julia]` crate keeps the default hook
+# (`docs/src/panics.md`).
+#
+# Rust writes to file descriptor 2 directly, so `redirect_stderr` to an
+# `IOBuffer` cannot see it: every assertion here runs a child process whose
+# stderr is a file.
+
+const _PANICKED_AT = "panicked at"
+
+"""
+    _run_child(body; threads = 1, env = [])
+
+Run `body` (Julia source) in a child process that uses this checkout, and return
+`(exitcode, stdout, stderr)` with stderr captured at the file-descriptor level.
+"""
+function _run_child(body::AbstractString; threads::Int = 1, env = [])
+    dir = mktempdir()
+    script = joinpath(dir, "child.jl")
+    out_path = joinpath(dir, "out.txt")
+    err_path = joinpath(dir, "err.txt")
+    write(script, body)
+    project = dirname(@__DIR__)
+    cmd = `$(Base.julia_cmd()) --project=$(project) --startup-file=no --threads=$(threads) $(script)`
+    code = withenv(env...) do
+        process = run(pipeline(ignorestatus(cmd); stdout = out_path, stderr = err_path))
+        process.exitcode
+    end
+    return (code, read(out_path, String), read(err_path, String))
+end
+
+const _BLOCK = """
+using RustCall
+rust\"\"\"
+#[julia]
+pub fn hook_probe_one(n: i32) -> i32 {
+    if n < 0 { panic!("hook_probe_one refuses {}", n); }
+    n
+}
+
+#[julia]
+pub fn hook_probe_two(n: i32) -> i32 {
+    if n < 0 { panic!("hook_probe_two refuses {}", n); }
+    n
+}
+\"\"\"
+"""
+
+@testset "quiet panic hook" begin
+    @testset "the two symbol names agree with the generator" begin
+        # Julia resolves what `rustcall_core::codegen` exports; a rename on
+        # either side would show up as a hook that is never installed, which is
+        # silent by nature.
+        codegen = read(joinpath(dirname(@__DIR__), "deps", "rustcall_core", "src",
+                                "codegen.rs"), String)
+        for symbol in (RustCall.QUIET_PANIC_INSTALL_SYMBOL,
+                       RustCall.QUIET_PANIC_UNINSTALL_SYMBOL)
+            @test occursin("\"$(symbol)\"", codegen)
+        end
+    end
+
+    @testset "only the file-owned doors ask for it" begin
+        # `#[julia]` in a crate RustCall does not write has nowhere to put the
+        # shared items, so those doors must not try to install anything.
+        for policy in (RustCall.inline_rustc_policy(), RustCall.inline_cargo_policy(),
+                       RustCall.irust_policy(), RustCall.generics_policy(),
+                       RustCall.crate_wrapper_policy())
+            @test policy.quiet_panic_hook
+        end
+        for policy in (RustCall.crate_direct_policy(), RustCall.hot_reload_policy(),
+                       RustCall.helper_library_policy())
+            @test !policy.quiet_panic_hook
+        end
+        # Nothing is installed into a handle that exports no installer.
+        @test RustCall.install_quiet_panic_hook!(RustCall.inline_rustc_policy(), C_NULL) ===
+              false
+        @test RustCall.uninstall_quiet_panic_hook!(C_NULL) === false
+    end
+
+    if !RustCall.check_rustc_available()
+        @info "Skipping the quiet panic hook: no Rust toolchain"
+        @test_skip "needs rustc"
+    else
+        @testset "a panicking #[julia] function prints nothing and still raises" begin
+            code, out, err = _run_child("""
+            $(_BLOCK)
+            println("installs=", RustCall.QUIET_PANIC_HOOK_INSTALLS[])
+            try
+                hook_probe_one(Int32(-1))
+                println("NOT RAISED")
+            catch e
+                println("kind=", typeof(e))
+                println("message=", sprint(showerror, e))
+            end
+            """)
+            @test code == 0
+            @test occursin("installs=1", out)
+            @test occursin("kind=RustCall.RustPanicError", out)
+            # The message survives in full...
+            @test occursin("hook_probe_one refuses -1", out)
+            # ...and stderr says nothing about it.
+            @test !occursin(_PANICKED_AT, err)
+        end
+
+        @testset "two wrappers first called from two threads are both quiet" begin
+            # Nothing is installed lazily — `load_artifact!` installs once, per
+            # image, before any wrapper can run — so there is no first call for
+            # a race to lose. This asserts the property that design buys.
+            code, out, err = _run_child("""
+            $(_BLOCK)
+            one = Ref{Any}(:not_raised)
+            two = Ref{Any}(:not_raised)
+            ready = Threads.Atomic{Int}(0)
+            first_task = Threads.@spawn begin
+                Threads.atomic_add!(ready, 1)
+                while ready[] < 2; end
+                try; hook_probe_one(Int32(-3)); catch e; one[] = typeof(e); end
+            end
+            second_task = Threads.@spawn begin
+                Threads.atomic_add!(ready, 1)
+                while ready[] < 2; end
+                try; hook_probe_two(Int32(-3)); catch e; two[] = typeof(e); end
+            end
+            wait(first_task); wait(second_task)
+            println("one=", one[], " two=", two[])
+            """; threads = 2)
+            @test code == 0
+            @test occursin("one=RustCall.RustPanicError two=RustCall.RustPanicError", out)
+            @test !occursin(_PANICKED_AT, err)
+        end
+
+        @testset "the escape hatch brings the default hook back" begin
+            # `RUSTCALL_PANIC_HOOK=default` is the answer to the one thing the
+            # hook costs: a panic inside the artifact but outside any wrapper
+            # boundary has no channel to be read from, so its message is gone.
+            code, out, err = _run_child("""
+            $(_BLOCK)
+            println("installs=", RustCall.QUIET_PANIC_HOOK_INSTALLS[])
+            try; hook_probe_one(Int32(-1)); catch; end
+            """; env = ["RUSTCALL_PANIC_HOOK" => "default"])
+            @test code == 0
+            @test occursin("installs=0", out)
+            @test occursin(_PANICKED_AT, err)
+        end
+
+        @testset "a prefer-dynamic build keeps the default hook" begin
+            # With `-C prefer-dynamic` the `std` that owns the hook registry is
+            # shared between images, so a hook installed from a cdylib can
+            # outlive the cdylib and a later panic anywhere would jump into
+            # unmapped code. The decision is taken from the build environment,
+            # which is part of every artifact's identity.
+            code, out, _ = _run_child("""
+            using RustCall
+            println("prefer_dynamic=", RustCall.prefer_dynamic_build())
+            println("enabled=", RustCall.quiet_panic_hooks_enabled())
+            """; env = ["RUSTFLAGS" => "-C prefer-dynamic"])
+            @test code == 0
+            @test occursin("prefer_dynamic=true", out)
+            @test occursin("enabled=false", out)
+
+            code, out, _ = _run_child("""
+            using RustCall
+            println("prefer_dynamic=", RustCall.prefer_dynamic_build())
+            println("enabled=", RustCall.quiet_panic_hooks_enabled())
+            """; env = ["CARGO_ENCODED_RUSTFLAGS" => "-C\x1fprefer-dynamic"])
+            @test code == 0
+            @test occursin("prefer_dynamic=true", out)
+            @test occursin("enabled=false", out)
+        end
+
+        @testset "closing an artifact removes its hook before unmapping it" begin
+            # The hook is a closure that lives in the image. std's registry must
+            # not still point at it when the image is unmapped — under a shared
+            # `std` that would be a jump into freed memory on the next panic
+            # anywhere in the process. A second library stays loaded and keeps
+            # working across the close.
+            code, out, err = _run_child("""
+            using RustCall
+            rust\"\"\"
+            #[julia]
+            pub fn hook_close_a(n: i32) -> i32 {
+                if n < 0 { panic!("hook_close_a refuses {}", n); }
+                n
+            }
+            \"\"\"
+            rust\"\"\"
+            #[julia]
+            pub fn hook_close_b(n: i32) -> i32 {
+                if n < 0 { panic!("hook_close_b refuses {}", n); }
+                n
+            }
+            \"\"\"
+            println("installs=", RustCall.QUIET_PANIC_HOOK_INSTALLS[])
+            # Find A by a symbol only A exports: the registry is keyed by content
+            # hash, so its iteration order says nothing about which block is which
+            # — and closing the wrong one would leave this test calling into an
+            # image it just closed.
+            using Libdl
+            owner = only(name for (name, (handle, _)) in RustCall.RUST_LIBRARIES
+                         if Libdl.dlsym(handle, :rustcall_hook_close_a;
+                                        throw_error = false) !== nothing)
+            RustCall.unload_library(owner; close = true)
+            println("removals=", RustCall.QUIET_PANIC_HOOK_REMOVALS[])
+            # The other image is untouched: it still answers, and its own hook
+            # still governs its panics.
+            println("b(2)=", hook_close_b(Int32(2)))
+            try
+                hook_close_b(Int32(-1))
+                println("NOT RAISED")
+            catch e
+                println("kind=", typeof(e))
+            end
+            """)
+            @test code == 0
+            @test occursin("installs=2", out)
+            @test occursin("removals=1", out)
+            @test occursin("b(2)=2", out)
+            @test occursin("kind=RustCall.RustPanicError", out)
+            @test !occursin(_PANICKED_AT, err)
+        end
+    end
+end

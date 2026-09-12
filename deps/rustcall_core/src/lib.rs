@@ -404,7 +404,72 @@ mod tests {
             .iter()
             .all(|f| !f.exported && f.is_generic));
         assert_eq!(e.source.matches("compile_error!").count(), 3);
-        assert!(!e.source.contains("extern \"C\""));
+        // No wrapper for any of the three. The file-level quiet-panic hook of
+        // #304 is `extern "C"` and always there, so the absence is asserted of
+        // the wrappers themselves.
+        for name in ["rustcall_f", "rustcall_g", "rustcall_h"] {
+            assert!(!e.source.contains(name), "{name} should not be exported");
+        }
+    }
+
+    /// #304: the quiet panic hook exists exactly where a generator writes the
+    /// whole file, and the crate flavour does not so much as name it.
+    #[test]
+    fn only_the_file_owned_flavour_takes_a_boundary_guard() {
+        let e = expand::expand("#[julia] pub fn f() -> i32 { 1 }").unwrap();
+        // One guard in the wrapper, one set of shared items at the root.
+        assert_eq!(
+            e.source
+                .matches("crate::__RustCallBoundary::enter()")
+                .count(),
+            1,
+            "{}",
+            e.source
+        );
+        assert_eq!(e.source.matches("pub struct __RustCallBoundary").count(), 1);
+        assert_eq!(
+            e.source.matches("fn rustcall_install_panic_hook").count(),
+            1
+        );
+        assert_eq!(
+            e.source.matches("fn rustcall_uninstall_panic_hook").count(),
+            1
+        );
+
+        // The proc-macro flavour: `#[julia]` is handed one item and has nowhere
+        // to put the shared items, so it must not reference them either.
+        let item: syn::ItemFn = syn::parse_str("#[julia] pub fn f() -> i32 { 1 }").unwrap();
+        let crate_flavour =
+            codegen::transform_function(item, &[], codegen::PanicHook::External).to_string();
+        assert!(crate_flavour.contains("catch_unwind"));
+        assert!(!crate_flavour.contains("__RustCallBoundary"));
+        assert!(!crate_flavour.contains("rustcall_install_panic_hook"));
+    }
+
+    /// Every wrapper of a block shares the one counter, whichever module it
+    /// sits in: that is what the file-level placement buys, and what a
+    /// per-wrapper counter could not give.
+    #[test]
+    fn every_wrapper_of_a_block_guards_against_the_same_counter() {
+        let src = "#[julia] pub fn a() -> i32 { 1 }\n                   pub mod m { #[julia] pub fn b() -> i32 { 2 } }\n                   #[julia] pub struct S { pub v: i32 }";
+        let e = expand::expand(src).unwrap();
+        // Two functions, the struct's free, its accessors: every one of them.
+        assert!(
+            e.source
+                .matches("crate::__RustCallBoundary::enter()")
+                .count()
+                >= 4,
+            "{}",
+            e.source
+        );
+        // ...and there is still exactly one of everything shared.
+        assert_eq!(e.source.matches("pub struct __RustCallBoundary").count(), 1);
+        assert_eq!(
+            e.source
+                .matches("static __RUSTCALL_QUIET_HOOK_ONCE")
+                .count(),
+            1
+        );
     }
 
     #[test]

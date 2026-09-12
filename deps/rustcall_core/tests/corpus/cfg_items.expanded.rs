@@ -50,6 +50,7 @@ pub extern "C" fn rustcall_unix_only_take_panic(out: *mut u8, cap: usize) -> usi
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_unix_only(x: i32) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { unix_only(x) }),
     ) {
@@ -195,6 +196,7 @@ impl CResult_windows_wide {
 #[cfg(all(windows, feature = "wide"))]
 #[no_mangle]
 pub extern "C" fn rustcall_windows_wide() -> CResult_windows_wide {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { CResult_windows_wide::new(windows_wide()) }),
     ) {
@@ -321,6 +323,7 @@ impl COption_maybe {
 #[cfg(not(target_os = "freebsd"))]
 #[no_mangle]
 pub extern "C" fn rustcall_maybe(x: f64) -> COption_maybe {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { COption_maybe::new(maybe(x)) }),
     ) {
@@ -399,6 +402,7 @@ pub extern "C" fn Handle_free_take_panic(out: *mut u8, cap: usize) -> usize {
 }
 #[no_mangle]
 pub extern "C" fn Handle_free(ptr: *mut Handle) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             if !ptr.is_null() {
@@ -476,6 +480,7 @@ pub extern "C" fn Handle_get_fd_take_panic(out: *mut u8, cap: usize) -> usize {
 }
 #[no_mangle]
 pub extern "C" fn Handle_get_fd(ptr: *const Handle) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).fd } } }),
     ) {
@@ -548,6 +553,7 @@ pub extern "C" fn Handle_set_fd_take_panic(out: *mut u8, cap: usize) -> usize {
 }
 #[no_mangle]
 pub extern "C" fn Handle_set_fd(ptr: *mut Handle, value: i32) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             {
@@ -625,6 +631,7 @@ pub extern "C" fn Handle_get_epoll_take_panic(out: *mut u8, cap: usize) -> usize
 }
 #[no_mangle]
 pub extern "C" fn Handle_get_epoll(ptr: *const Handle) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).epoll } } }),
     ) {
@@ -697,6 +704,7 @@ pub extern "C" fn Handle_set_epoll_take_panic(out: *mut u8, cap: usize) -> usize
 }
 #[no_mangle]
 pub extern "C" fn Handle_set_epoll(ptr: *mut Handle, value: i32) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             {
@@ -774,6 +782,7 @@ pub extern "C" fn rustcall_Handle_fd_take_panic(out: *mut u8, cap: usize) -> usi
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Handle_fd(ptr: *const Handle) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -852,6 +861,7 @@ pub extern "C" fn rustcall_Handle_epoll_take_panic(out: *mut u8, cap: usize) -> 
 #[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn rustcall_Handle_epoll(ptr: *const Handle) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -944,6 +954,7 @@ mod extra {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_extra__bonus() -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| { bonus() }),
         ) {
@@ -973,5 +984,53 @@ mod extra {
                 unsafe { ::std::mem::zeroed::<i32>() }
             }
         }
+    }
+}
+thread_local! {
+    static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > =
+    ::std::cell::Cell::new(0);
+}
+static __RUSTCALL_QUIET_HOOK_ONCE: ::std::sync::Once = ::std::sync::Once::new();
+static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::atomic::AtomicBool = ::std::sync::atomic::AtomicBool::new(
+    false,
+);
+/// Raises the boundary depth for as long as a wrapper body runs, so the
+/// hook above knows the panic it is about to print is one Julia will
+/// raise as `RustCall.RustPanicError` instead.
+pub struct __RustCallBoundary;
+impl __RustCallBoundary {
+    pub fn enter() -> Self {
+        let _ = __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+impl ::std::ops::Drop for __RustCallBoundary {
+    fn drop(&mut self) {
+        let _ = __RUSTCALL_QUIET_DEPTH
+            .try_with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+#[no_mangle]
+pub extern "C" fn rustcall_install_panic_hook() {
+    __RUSTCALL_QUIET_HOOK_ONCE
+        .call_once(|| {
+            let rustcall_previous = ::std::panic::take_hook();
+            ::std::panic::set_hook(
+                ::std::boxed::Box::new(move |rustcall_info| {
+                    if __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.get()).unwrap_or(0)
+                        == 0
+                    {
+                        rustcall_previous(rustcall_info);
+                    }
+                }),
+            );
+            __RUSTCALL_QUIET_HOOK_LIVE
+                .store(true, ::std::sync::atomic::Ordering::Release);
+        });
+}
+#[no_mangle]
+pub extern "C" fn rustcall_uninstall_panic_hook() {
+    if __RUSTCALL_QUIET_HOOK_LIVE.swap(false, ::std::sync::atomic::Ordering::AcqRel) {
+        let _ = ::std::panic::take_hook();
     }
 }

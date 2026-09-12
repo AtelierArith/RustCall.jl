@@ -420,6 +420,21 @@ pub fn specialize(
         items.insert(position + 1 + offset, item);
     }
 
+    // The instantiation is compiled as its own cdylib from this file, so the
+    // file carries the quiet panic hook its `extern "C"` entry point takes a
+    // boundary guard from (#304). It goes to the root, not into `module_path`:
+    // `crate::__RustCallBoundary` is how every wrapper names it.
+    //
+    // Guarded, because the source handed to `specialize` is sometimes already a
+    // generated file: a generic struct registers its *expansion*, wrappers and
+    // hook included, and `specialize_many` re-specializes that same source once
+    // per instantiation.
+    if !crate::codegen::panic_hook_items_present(&file.items) {
+        let hook: syn::File = syn::parse2(crate::codegen::panic_hook_items())
+            .map_err(|e| SpecializeError::Parse(e.to_string()))?;
+        file.items.extend(hook.items);
+    }
+
     let mut manifest = Manifest::new(Mode::Inline);
     manifest.functions.push(entry);
 
@@ -626,6 +641,22 @@ mod tests {
         assert!(out.source.contains("rustcall_Boxed_new_i32"));
         assert!(out.source.contains("rustcall_Boxed_free_i32"));
         assert_eq!(out.source.matches("static __RUSTCALL_PANIC").count(), 2);
+        // The group is one file, so the quiet-panic items (#304) are merged to
+        // exactly one copy however many instantiations it carries.
+        assert_eq!(
+            out.source.matches("fn rustcall_install_panic_hook").count(),
+            1
+        );
+        assert_eq!(
+            out.source.matches("pub struct __RustCallBoundary").count(),
+            1
+        );
+        assert_eq!(
+            out.source
+                .matches("crate::__RustCallBoundary::enter()")
+                .count(),
+            2
+        );
     }
 
     #[test]

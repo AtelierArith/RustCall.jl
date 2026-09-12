@@ -60,6 +60,7 @@ pub extern "C" fn rustcall_shout(
     input_ptr: *const u8,
     input_len: usize,
 ) -> shout_RustCallOwnedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let input = unsafe {
@@ -178,6 +179,7 @@ pub extern "C" fn rustcall_concat(
     b_len: usize,
     times: u32,
 ) -> concat_RustCallOwnedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let a_bytes = unsafe { std::slice::from_raw_parts(a_ptr, a_len) };
@@ -273,6 +275,7 @@ pub extern "C" fn rustcall_byte_len_take_panic(out: *mut u8, cap: usize) -> usiz
 }
 #[no_mangle]
 pub extern "C" fn rustcall_byte_len(s_ptr: *const u8, s_len: usize) -> usize {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
@@ -358,6 +361,7 @@ pub struct greeting_RustCallBorrowedString {
 }
 #[no_mangle]
 pub extern "C" fn rustcall_greeting() -> greeting_RustCallBorrowedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let rustcall_value = greeting();
@@ -465,6 +469,7 @@ pub extern "C" fn rustcall_unix_name(
     s_ptr: *const u8,
     s_len: usize,
 ) -> unix_name_RustCallOwnedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s = unsafe {
@@ -558,6 +563,7 @@ pub extern "C" fn rustcall_consume_take_panic(out: *mut u8, cap: usize) -> usize
 }
 #[no_mangle]
 pub extern "C" fn rustcall_consume(s_ptr: *const u8, s_len: usize) -> usize {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s = unsafe {
@@ -639,6 +645,7 @@ pub extern "C" fn rustcall_paren_ref_take_panic(out: *mut u8, cap: usize) -> usi
 }
 #[no_mangle]
 pub extern "C" fn rustcall_paren_ref(s_ptr: *const u8, s_len: usize) -> (usize) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
@@ -723,6 +730,7 @@ pub extern "C" fn rustcall_collide(
     s_len: usize,
     s_ptr: usize,
 ) -> usize {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s = unsafe {
@@ -804,6 +812,7 @@ pub extern "C" fn Greeter_free_take_panic(out: *mut u8, cap: usize) -> usize {
 }
 #[no_mangle]
 pub extern "C" fn Greeter_free(ptr: *mut Greeter) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             if !ptr.is_null() {
@@ -900,6 +909,7 @@ pub extern "C" fn Greeter_get_count_take_panic(out: *mut u8, cap: usize) -> usiz
 }
 #[no_mangle]
 pub extern "C" fn Greeter_get_count(ptr: *const Greeter) -> u32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).count } } }),
     ) {
@@ -972,6 +982,7 @@ pub extern "C" fn Greeter_set_count_take_panic(out: *mut u8, cap: usize) -> usiz
 }
 #[no_mangle]
 pub extern "C" fn Greeter_set_count(ptr: *mut Greeter, value: u32) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             {
@@ -1049,6 +1060,7 @@ pub extern "C" fn rustcall_Greeter_new_take_panic(out: *mut u8, cap: usize) -> u
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_new(count: u32) -> *mut Greeter {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let obj = Greeter::new(count);
@@ -1128,6 +1140,7 @@ pub extern "C" fn rustcall_Greeter_shout(
     suffix_ptr: *const u8,
     suffix_len: usize,
 ) -> Greeter_RustCallOwnedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let suffix_bytes = unsafe {
@@ -1222,6 +1235,7 @@ pub extern "C" fn rustcall_Greeter_label_take_panic(out: *mut u8, cap: usize) ->
 pub extern "C" fn rustcall_Greeter_label(
     ptr: *const Greeter,
 ) -> Greeter_RustCallBorrowedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -1308,6 +1322,7 @@ pub extern "C" fn rustcall_Greeter_take(
     s_ptr: *const u8,
     s_len: usize,
 ) -> usize {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s = unsafe {
@@ -1358,5 +1373,53 @@ impl Greeter {
     pub fn take(&mut self, s: String) -> usize {
         self.count += 1;
         s.len()
+    }
+}
+thread_local! {
+    static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > =
+    ::std::cell::Cell::new(0);
+}
+static __RUSTCALL_QUIET_HOOK_ONCE: ::std::sync::Once = ::std::sync::Once::new();
+static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::atomic::AtomicBool = ::std::sync::atomic::AtomicBool::new(
+    false,
+);
+/// Raises the boundary depth for as long as a wrapper body runs, so the
+/// hook above knows the panic it is about to print is one Julia will
+/// raise as `RustCall.RustPanicError` instead.
+pub struct __RustCallBoundary;
+impl __RustCallBoundary {
+    pub fn enter() -> Self {
+        let _ = __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+impl ::std::ops::Drop for __RustCallBoundary {
+    fn drop(&mut self) {
+        let _ = __RUSTCALL_QUIET_DEPTH
+            .try_with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+#[no_mangle]
+pub extern "C" fn rustcall_install_panic_hook() {
+    __RUSTCALL_QUIET_HOOK_ONCE
+        .call_once(|| {
+            let rustcall_previous = ::std::panic::take_hook();
+            ::std::panic::set_hook(
+                ::std::boxed::Box::new(move |rustcall_info| {
+                    if __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.get()).unwrap_or(0)
+                        == 0
+                    {
+                        rustcall_previous(rustcall_info);
+                    }
+                }),
+            );
+            __RUSTCALL_QUIET_HOOK_LIVE
+                .store(true, ::std::sync::atomic::Ordering::Release);
+        });
+}
+#[no_mangle]
+pub extern "C" fn rustcall_uninstall_panic_hook() {
+    if __RUSTCALL_QUIET_HOOK_LIVE.swap(false, ::std::sync::atomic::Ordering::AcqRel) {
+        let _ = ::std::panic::take_hook();
     }
 }

@@ -50,6 +50,7 @@ pub extern "C" fn rustcall_add_take_panic(out: *mut u8, cap: usize) -> usize {
 }
 #[no_mangle]
 pub extern "C" fn rustcall_add(a: i32, b: i32) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { user_crate::add(a, b) }),
     ) {
@@ -138,6 +139,7 @@ pub extern "C" fn rustcall_shout(
     s_ptr: *const u8,
     s_len: usize,
 ) -> shout_RustCallOwnedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s = unsafe {
@@ -228,6 +230,7 @@ pub extern "C" fn rustcall_double_take_panic(out: *mut u8, cap: usize) -> usize 
 }
 #[no_mangle]
 pub extern "C" fn rustcall_double(x: f64) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { user_crate::double(x) }),
     ) {
@@ -363,6 +366,7 @@ impl CResult_parse {
 }
 #[no_mangle]
 pub extern "C" fn rustcall_parse(s_ptr: *const u8, s_len: usize) -> CResult_parse {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
@@ -446,6 +450,7 @@ pub extern "C" fn rustcall_nested__deep_take_panic(out: *mut u8, cap: usize) -> 
 }
 #[no_mangle]
 pub extern "C" fn rustcall_nested__deep(a: i32) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { user_crate::nested::deep(a) }),
     ) {
@@ -518,6 +523,7 @@ pub extern "C" fn rustcall_gated_add_take_panic(out: *mut u8, cap: usize) -> usi
 }
 #[no_mangle]
 pub extern "C" fn rustcall_gated_add(a: i32, b: i32) -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { user_crate::gated_add(a, b) }),
     ) {
@@ -590,6 +596,7 @@ pub extern "C" fn Point_free_take_panic(out: *mut u8, cap: usize) -> usize {
 }
 #[no_mangle]
 pub extern "C" fn Point_free(ptr: *mut user_crate::Point) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             if !ptr.is_null() {
@@ -681,6 +688,7 @@ pub extern "C" fn rustcall_Point_get_x_take_panic(out: *mut u8, cap: usize) -> u
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_get_x(ptr: *const user_crate::Point) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).x } } }),
     ) {
@@ -753,6 +761,7 @@ pub extern "C" fn rustcall_Point_get_y_take_panic(out: *mut u8, cap: usize) -> u
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_get_y(ptr: *const user_crate::Point) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).y } } }),
     ) {
@@ -827,6 +836,7 @@ pub extern "C" fn rustcall_Point_get_tag_take_panic(out: *mut u8, cap: usize) ->
 pub extern "C" fn rustcall_Point_get_tag(
     ptr: *const user_crate::Point,
 ) -> Point_RustCallOwnedString {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             {
@@ -915,6 +925,7 @@ pub extern "C" fn rustcall_Point_new(
     tag_ptr: *const u8,
     tag_len: usize,
 ) -> *mut user_crate::Point {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let tag = unsafe {
@@ -994,6 +1005,7 @@ pub extern "C" fn rustcall_Point_norm_take_panic(out: *mut u8, cap: usize) -> us
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_norm(ptr: *const user_crate::Point) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -1069,6 +1081,7 @@ pub extern "C" fn rustcall_Point_scale_take_panic(out: *mut u8, cap: usize) -> u
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_scale(ptr: *mut user_crate::Point, factor: f64) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &mut *ptr };
@@ -1143,6 +1156,7 @@ pub extern "C" fn rustcall_Point_origin_take_panic(out: *mut u8, cap: usize) -> 
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_origin() -> *mut user_crate::Point {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let obj = user_crate::Point::origin();
@@ -1218,6 +1232,7 @@ pub extern "C" fn rustcall_Point_sum_take_panic(out: *mut u8, cap: usize) -> usi
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_sum(ptr: *const user_crate::Point) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -1293,6 +1308,7 @@ pub extern "C" fn rustcall_Point_set_x_take_panic(out: *mut u8, cap: usize) -> u
 }
 #[no_mangle]
 pub extern "C" fn rustcall_Point_set_x(ptr: *mut user_crate::Point, value: f64) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &mut *ptr };
@@ -1367,6 +1383,7 @@ pub extern "C" fn shapes__Circle_free_take_panic(out: *mut u8, cap: usize) -> us
 }
 #[no_mangle]
 pub extern "C" fn shapes__Circle_free(ptr: *mut user_crate::shapes::Circle) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             if !ptr.is_null() {
@@ -1450,6 +1467,7 @@ pub extern "C" fn rustcall_shapes__Circle_get_r_take_panic(
 pub extern "C" fn rustcall_shapes__Circle_get_r(
     ptr: *const user_crate::shapes::Circle,
 ) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).r } } }),
     ) {
@@ -1527,6 +1545,7 @@ pub extern "C" fn rustcall_shapes__Circle_new_take_panic(
 pub extern "C" fn rustcall_shapes__Circle_new(
     r: f64,
 ) -> *mut user_crate::shapes::Circle {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let obj = user_crate::shapes::Circle::new(r);
@@ -1607,6 +1626,7 @@ pub extern "C" fn rustcall_shapes__Circle_area_take_panic(
 pub extern "C" fn rustcall_shapes__Circle_area(
     ptr: *const user_crate::shapes::Circle,
 ) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -1682,6 +1702,7 @@ pub extern "C" fn GatedPoint_free_take_panic(out: *mut u8, cap: usize) -> usize 
 }
 #[no_mangle]
 pub extern "C" fn GatedPoint_free(ptr: *mut user_crate::GatedPoint) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             if !ptr.is_null() {
@@ -1762,6 +1783,7 @@ pub extern "C" fn rustcall_GatedPoint_get_x_take_panic(
 }
 #[no_mangle]
 pub extern "C" fn rustcall_GatedPoint_get_x(ptr: *const user_crate::GatedPoint) -> f64 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).x } } }),
     ) {
@@ -1840,6 +1862,7 @@ pub extern "C" fn rustcall_GatedPoint_set_x(
     ptr: *mut user_crate::GatedPoint,
     value: f64,
 ) {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             {
@@ -1917,6 +1940,7 @@ pub extern "C" fn rustcall_GatedPoint_new_take_panic(out: *mut u8, cap: usize) -
 }
 #[no_mangle]
 pub extern "C" fn rustcall_GatedPoint_new(x: f64) -> *mut user_crate::GatedPoint {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let obj = user_crate::GatedPoint::new(x);
@@ -2061,6 +2085,7 @@ impl CResult_GatedPoint_checked {
 pub extern "C" fn rustcall_GatedPoint_checked(
     ptr: *const user_crate::GatedPoint,
 ) -> CResult_GatedPoint_checked {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
@@ -2099,5 +2124,53 @@ pub extern "C" fn rustcall_GatedPoint_checked(
                 });
             CResult_GatedPoint_checked::panicked()
         }
+    }
+}
+thread_local! {
+    static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > =
+    ::std::cell::Cell::new(0);
+}
+static __RUSTCALL_QUIET_HOOK_ONCE: ::std::sync::Once = ::std::sync::Once::new();
+static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::atomic::AtomicBool = ::std::sync::atomic::AtomicBool::new(
+    false,
+);
+/// Raises the boundary depth for as long as a wrapper body runs, so the
+/// hook above knows the panic it is about to print is one Julia will
+/// raise as `RustCall.RustPanicError` instead.
+pub struct __RustCallBoundary;
+impl __RustCallBoundary {
+    pub fn enter() -> Self {
+        let _ = __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+impl ::std::ops::Drop for __RustCallBoundary {
+    fn drop(&mut self) {
+        let _ = __RUSTCALL_QUIET_DEPTH
+            .try_with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+#[no_mangle]
+pub extern "C" fn rustcall_install_panic_hook() {
+    __RUSTCALL_QUIET_HOOK_ONCE
+        .call_once(|| {
+            let rustcall_previous = ::std::panic::take_hook();
+            ::std::panic::set_hook(
+                ::std::boxed::Box::new(move |rustcall_info| {
+                    if __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.get()).unwrap_or(0)
+                        == 0
+                    {
+                        rustcall_previous(rustcall_info);
+                    }
+                }),
+            );
+            __RUSTCALL_QUIET_HOOK_LIVE
+                .store(true, ::std::sync::atomic::Ordering::Release);
+        });
+}
+#[no_mangle]
+pub extern "C" fn rustcall_uninstall_panic_hook() {
+    if __RUSTCALL_QUIET_HOOK_LIVE.swap(false, ::std::sync::atomic::Ordering::AcqRel) {
+        let _ = ::std::panic::take_hook();
     }
 }

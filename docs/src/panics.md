@@ -53,6 +53,57 @@ crate", and a shared item in one module could not be named from another — a
 `#[no_mangle]` symbol is not a Rust path. Per-wrapper channels need no
 crate-wide coordination, and they make every generated library self-contained.
 
+### The quiet hook
+
+Rust runs the panic **hook** before the unwind `catch_unwind` catches, so a
+panic RustCall handles correctly still printed
+`thread '<unnamed>' panicked at ...` to stderr first: a non-incident that looked
+like a crash in every log. Since #304 a generated artifact installs a hook that
+stays silent while the thread is inside a wrapper boundary and delegates to the
+hook it replaced otherwise, so a panic *outside* a boundary — on a thread the
+artifact's own code spawned, say — still prints exactly as before.
+
+Mechanically: the artifact keeps a thread-local depth counter at its crate root,
+every wrapper raises it for the duration of its body, and the artifact exports
+`rustcall_install_panic_hook` / `rustcall_uninstall_panic_hook`. Julia calls the
+installer **once per image, immediately after `dlopen`** (`load_artifact!`), so
+no first call can race another to install it, and calls the uninstaller from
+`close_artifact_handle!` before the image is unmapped, so std's registry never
+points at a closure whose code is gone.
+
+**Where it applies.** Only to artifacts whose source RustCall generates in full:
+inline `rust"""` blocks (both the direct-`rustc` and the Cargo flavour),
+`@irust`, monomorphized generics and the generated `@rust_crate` wrapper crate.
+Those are the doors whose `LoadPolicy` carries `quiet_panic_hook = true`.
+
+**Where it does not.** A crate *you* wrote and annotate with `#[julia]` keeps
+the default hook, and its panics still print. The hook needs a depth counter
+shared by every wrapper in the image — the one installed hook can only consult
+the counter it captured — and an attribute proc macro cannot provide one: it is
+handed a single item and may only replace that item, it cannot see the crate's
+other `#[julia]` items, and it has no reliable place to remember whether it
+already emitted the shared state. Reaching a shared item across modules is not
+open to it either, because a `#[no_mangle]` name is a linker symbol and not a
+Rust path: naming it would need an `extern "C"` block, which edition 2024 spells
+`unsafe extern`, making the generated code depend on your crate's edition. This
+is the same constraint that makes the panic *channel* per wrapper.
+
+**Turning it off.** `RUSTCALL_PANIC_HOOK=default` keeps the default hook for
+every artifact in the process. It is the answer to the one thing the hook costs:
+a panic inside a generated artifact but outside any wrapper boundary is silent,
+and there is no channel for Julia to read its message from. Reach for the
+variable when a panic seems to vanish.
+
+**`-C prefer-dynamic` keeps the default hook.** With the default static `std`
+every image owns its own hook registry, so the closure is dropped together with
+the image that installed it and cannot be reached from anywhere else. With a
+shared `std` the registry is shared too: a hook installed from a `cdylib` can
+outlive the `cdylib`, and any later panic anywhere in the process would jump
+into unmapped code. RustCall therefore installs nothing when `RUSTFLAGS` or
+`CARGO_ENCODED_RUSTFLAGS` asks for `prefer-dynamic`. Both variables are part of
+every artifact's identity, so the value read at load time is the value the
+artifact was built with.
+
 ### Why unwinding is pinned
 
 `catch_unwind` can only catch a panic that unwinds. RustCall therefore pins

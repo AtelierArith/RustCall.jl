@@ -506,6 +506,9 @@ pub(crate) struct WrapperSpec {
     pub args: Vec<(Ident, Type)>,
     pub ret: WrapperReturn,
     pub target: CallTarget,
+    /// Whether this wrapper may take a boundary guard from the file-level
+    /// quiet-panic items (#304); see [`PanicHook`].
+    pub panic_hook: PanicHook,
     /// Tokens appended to the call expression before the return lowering sees
     /// its value. Empty for every in-crate flavour; the PyO3 wrapper crate of
     /// #275 uses it to turn a `PyResult<T>` into a `Result<T, i32>` by
@@ -514,8 +517,45 @@ pub(crate) struct WrapperSpec {
     pub call_suffix: TokenStream2,
 }
 
+/// Whether a generated wrapper may use the file-level quiet-panic items (#304).
+///
+/// Rust runs the panic *hook* before the unwind `catch_unwind` catches, so a
+/// panic RustCall handles correctly still prints `thread '<unnamed>' panicked
+/// at ...` first. Silencing it needs a replacement hook that can tell "inside a
+/// wrapper boundary" from "anywhere else", which in turn needs a thread-local
+/// depth counter **shared by every wrapper in the image**: the one installed
+/// hook can only see the counter it captured.
+///
+/// That sharing is what splits the two flavours apart.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PanicHook {
+    /// The generator emits the whole file and puts [`panic_hook_items`] at its
+    /// root, so every wrapper in it — including wrappers in submodules, which
+    /// reach the items as `crate::__RustCallBoundary` — takes a boundary guard.
+    /// The inline `rust"""` path, monomorphized generics and the generated
+    /// wrapper crates are all of this kind.
+    FileOwned,
+    /// `#[julia]` expanded one item at a time inside a crate RustCall does not
+    /// write. There is nowhere to put the shared items: an attribute proc macro
+    /// is handed one item and may only replace that item, cannot see the crate's
+    /// other `#[julia]` items, and has no reliable place to remember whether it
+    /// already emitted them. A `#[no_mangle]` name in another module is not a
+    /// Rust path either, so reaching shared items across modules would need an
+    /// `extern "C"` block — which edition 2024 spells `unsafe extern`, making
+    /// the generated code depend on the user crate's edition. The default hook
+    /// stays; `docs/src/panics.md` says so.
+    External,
+}
+
 /// Suffix of the panic-channel reader a wrapper exports next to itself.
 pub const PANIC_SYMBOL_SUFFIX: &str = "_take_panic";
+
+/// The symbol a file-owned artifact exports to install its quiet panic hook.
+/// Julia resolves it once per image, at load time (`src/loadpolicy.jl`).
+pub const INSTALL_PANIC_HOOK_SYMBOL: &str = "rustcall_install_panic_hook";
+
+/// The symbol that removes the hook again, called before `dlclose`.
+pub const UNINSTALL_PANIC_HOOK_SYMBOL: &str = "rustcall_uninstall_panic_hook";
 
 /// The panic-channel reader of the wrapper exported as `symbol`.
 pub fn panic_symbol(symbol: &str) -> String {
@@ -600,6 +640,107 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
     }
 }
 
+/// The four items a file-owned artifact keeps at its root so that a panic
+/// RustCall catches leaves no `panicked at` line on stderr (#304).
+///
+/// * a thread-local **depth counter**, raised while a thread is inside any
+///   wrapper's boundary;
+/// * the **hook**: silent while the depth is non-zero, delegating to the hook
+///   it replaced otherwise, so a panic *outside* a boundary — on a thread the
+///   artifact's own code spawned, say — still prints exactly as before;
+/// * `rustcall_install_panic_hook`, which Julia calls once per image right
+///   after `dlopen`, before any wrapper can run. Installing from Julia rather
+///   than lazily from the first wrapper call is what removes the race #302's
+///   attempt had: there is no first call to lose it;
+/// * `rustcall_uninstall_panic_hook`, called before `dlclose` so the closure is
+///   out of the registry before its code is unmapped.
+///
+/// The uninstaller restores std's **default** hook rather than the exact hook
+/// that was replaced: naming the hook's argument type (`PanicHookInfo`, renamed
+/// from `PanicInfo` in 1.81) to store it would pin a minimum Rust version on
+/// every generated artifact. The two differ only if the artifact's own code
+/// installed a hook before RustCall's load-time install, which runs before any
+/// of that code does; what matters for safety is that *our* closure leaves the
+/// registry, and `take_hook` does that.
+/// No item here carries an `allow` attribute, and none needs one: every
+/// artifact these items land in is a `cdylib`, where a `pub` item at the crate
+/// root is externally reachable and never reported as dead. Attributes and doc
+/// text emitted here also land in the generated source, where the `#[cfg_attr]`
+/// tests count what a user's own attribute did (`tests/cfg_pruning.rs`).
+/// Whether `items` already declares the quiet-panic hook.
+///
+/// `specialize` is handed a source that is sometimes the *expanded* form of a
+/// block — a generic struct registers the expansion, wrappers and all — so
+/// adding the items unconditionally would define them twice. Asking first makes
+/// the insertion idempotent for any input that is already a generated file.
+pub fn panic_hook_items_present(items: &[Item]) -> bool {
+    items.iter().any(|item| match item {
+        Item::Struct(s) => s.ident == "__RustCallBoundary",
+        Item::Fn(f) => f.sig.ident == INSTALL_PANIC_HOOK_SYMBOL,
+        _ => false,
+    })
+}
+
+pub fn panic_hook_items() -> TokenStream2 {
+    let install = format_ident!("{}", INSTALL_PANIC_HOOK_SYMBOL);
+    let uninstall = format_ident!("{}", UNINSTALL_PANIC_HOOK_SYMBOL);
+    // `__RUSTCALL_PANIC_*` is the panic-channel slot namespace — the slot of a
+    // wrapper named `hook_once` would be `__RUSTCALL_PANIC_HOOK_ONCE` — so these
+    // statics take a namespace of their own (#338).
+    quote! {
+        thread_local! {
+            static __RUSTCALL_QUIET_DEPTH: ::std::cell::Cell<usize> =
+                ::std::cell::Cell::new(0);
+        }
+
+        static __RUSTCALL_QUIET_HOOK_ONCE: ::std::sync::Once = ::std::sync::Once::new();
+        static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::atomic::AtomicBool =
+            ::std::sync::atomic::AtomicBool::new(false);
+
+        /// Raises the boundary depth for as long as a wrapper body runs, so the
+        /// hook above knows the panic it is about to print is one Julia will
+        /// raise as `RustCall.RustPanicError` instead.
+        pub struct __RustCallBoundary;
+
+        impl __RustCallBoundary {
+            pub fn enter() -> Self {
+                // `try_with`, not `with`: a wrapper may run while this thread's
+                // TLS is being torn down, and a boundary that cannot count is
+                // better than a panic inside the panic machinery.
+                let _ = __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.set(depth.get() + 1));
+                Self
+            }
+        }
+
+        impl ::std::ops::Drop for __RustCallBoundary {
+            fn drop(&mut self) {
+                let _ = __RUSTCALL_QUIET_DEPTH
+                    .try_with(|depth| depth.set(depth.get().saturating_sub(1)));
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn #install() {
+            __RUSTCALL_QUIET_HOOK_ONCE.call_once(|| {
+                let rustcall_previous = ::std::panic::take_hook();
+                ::std::panic::set_hook(::std::boxed::Box::new(move |rustcall_info| {
+                    if __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.get()).unwrap_or(0) == 0 {
+                        rustcall_previous(rustcall_info);
+                    }
+                }));
+                __RUSTCALL_QUIET_HOOK_LIVE.store(true, ::std::sync::atomic::Ordering::Release);
+            });
+        }
+
+        #[no_mangle]
+        pub extern "C" fn #uninstall() {
+            if __RUSTCALL_QUIET_HOOK_LIVE.swap(false, ::std::sync::atomic::Ordering::AcqRel) {
+                let _ = ::std::panic::take_hook();
+            }
+        }
+    }
+}
+
 /// The body of a generated wrapper, with the user's code inside
 /// `catch_unwind`.
 ///
@@ -626,6 +767,7 @@ fn guarded_body(
     body: TokenStream2,
     sentinel: TokenStream2,
     returns_unit: bool,
+    hook: PanicHook,
 ) -> TokenStream2 {
     // A unit-returning wrapper must not *evaluate* to `()`: clippy's
     // `unused_unit` fires on the generated `Ok(v) => v` arm, and the match is a
@@ -635,7 +777,17 @@ fn guarded_body(
     } else {
         quote! { ::std::result::Result::Ok(rustcall_value) => rustcall_value, }
     };
+    // The guard is taken *outside* `catch_unwind`, so the prologue — string
+    // conversions, receiver binding — is inside the boundary too, and it is
+    // dropped after the message has been recorded.
+    let boundary = match hook {
+        PanicHook::FileOwned => quote! {
+            let _rustcall_boundary = crate::__RustCallBoundary::enter();
+        },
+        PanicHook::External => TokenStream2::new(),
+    };
     quote! {
+        #boundary
         match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
             #prologue
             #body
@@ -681,6 +833,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         ret,
         target,
         call_suffix,
+        panic_hook,
     } = spec;
 
     let taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
@@ -746,6 +899,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 quote! { #call },
                 quote! {},
                 true,
+                panic_hook,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -768,6 +922,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 quote! { #call },
                 sentinel,
                 false,
+                panic_hook,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -789,6 +944,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 body,
                 quote! { ::std::ptr::null_mut() },
                 false,
+                panic_hook,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -825,7 +981,15 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             let sentinel = quote! {
                 #helper { ptr: ::std::ptr::null_mut(), len: 0, cap: 0 }
             };
-            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                body,
+                sentinel,
+                false,
+                panic_hook,
+            );
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -848,7 +1012,15 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             let sentinel = quote! {
                 #helper { ptr: ::std::ptr::null(), len: 0 }
             };
-            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                body,
+                sentinel,
+                false,
+                panic_hook,
+            );
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -886,7 +1058,15 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                     })
                 }
             };
-            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                body,
+                sentinel,
+                false,
+                panic_hook,
+            );
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -916,7 +1096,15 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                     })
                 }
             };
-            let guarded = guarded_body(&julia_name, &slot, &prologue, body, sentinel, false);
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                body,
+                sentinel,
+                false,
+                panic_hook,
+            );
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
@@ -1117,11 +1305,19 @@ fn generate_c_option_type(
 struct FreeFnOptions {
     /// Wrap a `Result` / `Option` return into `CResult_<fn>` / `COption_<fn>`.
     wrap_result: bool,
+    /// See [`PanicHook`]: whether the wrapper may take a boundary guard.
+    panic_hook: PanicHook,
 }
 
 impl Default for FreeFnOptions {
     fn default() -> Self {
-        FreeFnOptions { wrap_result: true }
+        FreeFnOptions {
+            wrap_result: true,
+            // The conservative half of the pair: a wrapper that takes no guard
+            // merely keeps the default hook, while one that takes a guard the
+            // file does not define will not compile.
+            panic_hook: PanicHook::External,
+        }
     }
 }
 
@@ -1147,6 +1343,7 @@ fn free_function_wrapper(
         ret,
         target: CallTarget::Free(name.into()),
         call_suffix: TokenStream2::new(),
+        panic_hook: options.panic_hook,
     })
 }
 
@@ -1244,7 +1441,11 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
 /// Transform a `#[julia]` function: the annotated item is kept as written (the
 /// attribute itself is already gone) and the `extern "C"` entry point is
 /// emitted next to it under `rustcall_<fn>` (#279).
-pub fn transform_function(func: ItemFn, module_path: &[String]) -> TokenStream2 {
+pub fn transform_function(
+    func: ItemFn,
+    module_path: &[String],
+    panic_hook: PanicHook,
+) -> TokenStream2 {
     if func.sig.unsafety.is_some() {
         return quote! {
             compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
@@ -1254,7 +1455,14 @@ pub fn transform_function(func: ItemFn, module_path: &[String]) -> TokenStream2 
         return error;
     }
 
-    let wrapper = free_function_wrapper(&func, module_path, &FreeFnOptions::default());
+    let wrapper = free_function_wrapper(
+        &func,
+        module_path,
+        &FreeFnOptions {
+            panic_hook,
+            ..FreeFnOptions::default()
+        },
+    );
     quote! {
         #func
         #wrapper
@@ -1310,7 +1518,16 @@ fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
 /// instantiation of a generic function, whose fixed `String` / `&str`
 /// parameters still get the byte-pair ABI (#242).
 pub fn plain_function_wrapper(func: &ItemFn, module_path: &[String]) -> TokenStream2 {
-    free_function_wrapper(func, module_path, &FreeFnOptions { wrap_result: false })
+    free_function_wrapper(
+        func,
+        module_path,
+        &FreeFnOptions {
+            // `specialize` re-emits the whole block with the instantiation
+            // inserted and puts `panic_hook_items()` at its root (#304).
+            panic_hook: PanicHook::FileOwned,
+            wrap_result: false,
+        },
+    )
 }
 
 // ============================================================================
@@ -1334,7 +1551,7 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
 /// Apply the common boundary to generated field/clone helpers. These helpers
 /// return only unit, primitives, raw pointers, owned-string buffers or Vec.
 /// In particular, Vec must use an empty vector, not an invalid zeroed value.
-pub(crate) fn guard_struct_helper(tokens: TokenStream2) -> TokenStream2 {
+pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> TokenStream2 {
     let mut function: ItemFn = syn::parse2(tokens).expect("generated struct helper is a function");
     let symbol = &function.sig.ident;
     let suffix: String = symbol
@@ -1361,6 +1578,7 @@ pub(crate) fn guard_struct_helper(tokens: TokenStream2) -> TokenStream2 {
         quote! { #original },
         sentinel,
         unit,
+        hook,
     );
     function.block = syn::parse_quote!({ #body });
     quote! { #channel #function }
@@ -1373,6 +1591,9 @@ fn crate_field_accessors(
     stem: &Ident,
     cfgs: &[Attribute],
 ) -> TokenStream2 {
+    // `#[julia]` on a struct expands inside a crate RustCall does not write,
+    // so its accessors keep the default hook (#304).
+    let hook = PanicHook::External;
     let struct_name = &item_struct.ident;
     let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
     let owned_free = format_ident!("{}_free_rust_string", stem);
@@ -1408,23 +1629,29 @@ fn crate_field_accessors(
                         std::mem::forget(rustcall_bytes);
                         rustcall_ret
                     }
-                }));
+                }, hook));
             } else if needs_clone_for_getter(field_ty) {
-                ffi_functions.extend(guard_struct_helper(quote! {
-                    #(#cfgs)*
-                    #[no_mangle]
-                    pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
-                        unsafe { (*ptr).#field_name.clone() }
-                    }
-                }));
+                ffi_functions.extend(guard_struct_helper(
+                    quote! {
+                        #(#cfgs)*
+                        #[no_mangle]
+                        pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
+                            unsafe { (*ptr).#field_name.clone() }
+                        }
+                    },
+                    hook,
+                ));
             } else {
-                ffi_functions.extend(guard_struct_helper(quote! {
-                    #(#cfgs)*
-                    #[no_mangle]
-                    pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
-                        unsafe { (*ptr).#field_name }
-                    }
-                }));
+                ffi_functions.extend(guard_struct_helper(
+                    quote! {
+                        #(#cfgs)*
+                        #[no_mangle]
+                        pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
+                            unsafe { (*ptr).#field_name }
+                        }
+                    },
+                    hook,
+                ));
             }
             let setter_name = format_ident!("{}_set_{}", stem, field_name);
             ffi_functions.extend(struct_field_setter(
@@ -1433,6 +1660,7 @@ fn crate_field_accessors(
                 field_ty,
                 &setter_name,
                 cfgs,
+                hook,
             ));
         }
     }
@@ -1445,6 +1673,7 @@ pub(crate) fn struct_field_setter(
     ty: &Type,
     setter: &Ident,
     cfgs: &[Attribute],
+    hook: PanicHook,
 ) -> TokenStream2 {
     let value = format_ident!("value");
     let (args, conversion) = if is_string_type(ty) {
@@ -1452,20 +1681,24 @@ pub(crate) fn struct_field_setter(
     } else {
         (vec![quote! { value: #ty }], None)
     };
-    guard_struct_helper(quote! {
-        #(#cfgs)*
-        #[no_mangle]
-        pub extern "C" fn #setter(ptr: *mut #owner, #(#args),*) {
-            #conversion
-            unsafe { (*ptr).#field = value; }
-        }
-    })
+    guard_struct_helper(
+        quote! {
+            #(#cfgs)*
+            #[no_mangle]
+            pub extern "C" fn #setter(ptr: *mut #owner, #(#args),*) {
+                #conversion
+                unsafe { (*ptr).#field = value; }
+            }
+        },
+        hook,
+    )
 }
 
 pub(crate) fn struct_free_wrapper(
     struct_type: &syn::Path,
     stem: &Ident,
     cfgs: &[Attribute],
+    hook: PanicHook,
 ) -> TokenStream2 {
     let free_fn_name = format_ident!("{}_free", stem);
     // Unlike case folding, byte encoding keeps distinct struct names such as
@@ -1489,6 +1722,7 @@ pub(crate) fn struct_free_wrapper(
         },
         quote! {},
         true,
+        hook,
     );
     quote! {
         #channel
@@ -1515,7 +1749,12 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String
     // The struct's `#[cfg]` gates its helpers too (#300 review).
     let cfgs = cfg_attrs(&item_struct.attrs);
     let struct_name = &item_struct.ident;
-    let free = struct_free_wrapper(&syn::parse_quote!(#struct_name), &stem, &cfgs);
+    let free = struct_free_wrapper(
+        &syn::parse_quote!(#struct_name),
+        &stem,
+        &cfgs,
+        PanicHook::External,
+    );
     let accessors = crate_field_accessors(&item_struct, &stem, &cfgs);
 
     quote! {
@@ -1636,7 +1875,7 @@ fn expand_marked_item(item: Item, module_path: &[String]) -> TokenStream2 {
     match item {
         Item::Fn(mut f) => {
             if take_julia(&mut f.attrs) {
-                transform_function(f, module_path)
+                transform_function(f, module_path, PanicHook::External)
             } else {
                 quote! { #f }
             }
@@ -1708,7 +1947,13 @@ pub fn generate_method_wrapper_crate(
             compile_error!("#[julia] on impl block requires a simple type path");
         };
     };
-    method_wrapper_at_impl_site(self_ty, struct_name, module_path, &model)
+    method_wrapper_at_impl_site(
+        self_ty,
+        struct_name,
+        module_path,
+        &model,
+        PanicHook::External,
+    )
 }
 
 /// The FFI wrapper of a method emitted **at its impl block** rather than next
@@ -1733,6 +1978,7 @@ pub fn method_wrapper_at_impl_site(
     struct_name: &Ident,
     struct_module_path: &[String],
     m: &MethodModel,
+    panic_hook: PanicHook,
 ) -> TokenStream2 {
     let Type::Path(self_path) = unparen(self_ty) else {
         return quote! {
@@ -1753,6 +1999,7 @@ pub fn method_wrapper_at_impl_site(
         &owned_free,
         &borrowed_helper,
         true,
+        panic_hook,
     ))
 }
 
@@ -1780,7 +2027,13 @@ pub fn inline_foreign_method_wrapper(
         .func
         .attrs
         .splice(0..0, m.enclosing_cfg.iter().cloned());
-    method_wrapper_at_impl_site(self_ty, struct_name, struct_module_path, &gated)
+    method_wrapper_at_impl_site(
+        self_ty,
+        struct_name,
+        struct_module_path,
+        &gated,
+        PanicHook::FileOwned,
+    )
 }
 
 // ============================================================================
@@ -1875,6 +2128,7 @@ pub fn inline_struct_wrappers(
         &syn::parse_quote!(#struct_name),
         &stem,
         &[],
+        PanicHook::FileOwned,
     ));
 
     let fields = model.named_fields();
@@ -1937,33 +2191,42 @@ pub fn inline_struct_wrappers(
             setter.to_string(),
         ));
         if is_string_type(field_ty) {
-            out.extend(guard_struct_helper(quote! {
-                #[no_mangle]
-                pub extern "C" fn #getter(ptr: *const #struct_name) -> #owned_helper {
-                    let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
-                    let rustcall_ret = #owned_helper {
-                        ptr: rustcall_bytes.as_mut_ptr(),
-                        len: rustcall_bytes.len(),
-                        cap: rustcall_bytes.capacity(),
-                    };
-                    std::mem::forget(rustcall_bytes);
-                    rustcall_ret
-                }
-            }));
+            out.extend(guard_struct_helper(
+                quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #getter(ptr: *const #struct_name) -> #owned_helper {
+                        let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
+                        let rustcall_ret = #owned_helper {
+                            ptr: rustcall_bytes.as_mut_ptr(),
+                            len: rustcall_bytes.len(),
+                            cap: rustcall_bytes.capacity(),
+                        };
+                        std::mem::forget(rustcall_bytes);
+                        rustcall_ret
+                    }
+                },
+                PanicHook::FileOwned,
+            ));
         } else if is_vec_type(field_ty) {
-            out.extend(guard_struct_helper(quote! {
-                #[no_mangle]
-                pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
-                    unsafe { (*ptr).#field_name.clone() }
-                }
-            }));
+            out.extend(guard_struct_helper(
+                quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
+                        unsafe { (*ptr).#field_name.clone() }
+                    }
+                },
+                PanicHook::FileOwned,
+            ));
         } else {
-            out.extend(guard_struct_helper(quote! {
-                #[no_mangle]
-                pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
-                    unsafe { (*ptr).#field_name }
-                }
-            }));
+            out.extend(guard_struct_helper(
+                quote! {
+                    #[no_mangle]
+                    pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
+                        unsafe { (*ptr).#field_name }
+                    }
+                },
+                PanicHook::FileOwned,
+            ));
         }
         out.extend(struct_field_setter(
             struct_name,
@@ -1971,18 +2234,22 @@ pub fn inline_struct_wrappers(
             field_ty,
             &setter,
             &[],
+            PanicHook::FileOwned,
         ));
     }
 
     if model.derives.iter().any(|d| d == "Clone") {
         meta.has_clone = true;
         let clone_name = format_ident!("{}_clone", stem);
-        out.extend(guard_struct_helper(quote! {
-            #[no_mangle]
-            pub extern "C" fn #clone_name(ptr: *const #struct_name) -> *mut #struct_name {
-                unsafe { Box::into_raw(Box::new((*ptr).clone())) }
-            }
-        }));
+        out.extend(guard_struct_helper(
+            quote! {
+                #[no_mangle]
+                pub extern "C" fn #clone_name(ptr: *const #struct_name) -> *mut #struct_name {
+                    unsafe { Box::into_raw(Box::new((*ptr).clone())) }
+                }
+            },
+            PanicHook::FileOwned,
+        ));
     }
 
     for m in &local {
@@ -2017,6 +2284,7 @@ fn method_spec(
     owned_free: &Ident,
     borrowed_helper: &Ident,
     declare: bool,
+    panic_hook: PanicHook,
 ) -> WrapperSpec {
     let method_name = m.func.sig.ident.clone();
     let method_name_str = method_name.to_string();
@@ -2076,6 +2344,7 @@ fn method_spec(
         ret,
         target,
         call_suffix: TokenStream2::new(),
+        panic_hook,
     }
 }
 
@@ -2098,6 +2367,7 @@ fn inline_method_wrapper(
         owned_free,
         borrowed_helper,
         false,
+        PanicHook::FileOwned,
     ))
 }
 

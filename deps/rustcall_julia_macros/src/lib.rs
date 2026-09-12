@@ -80,7 +80,10 @@ pub fn julia(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // symbol scheme is concerned; items inside a `#[julia] mod` are expanded by
     // the module's own expansion with its path (#300).
     if let Ok(func) = syn::parse::<ItemFn>(item.clone()) {
-        return codegen::transform_function(func, &[]).into();
+        // `PanicHook::External`: this is the proc macro, handed one item of a
+        // crate RustCall does not write, so there is nowhere to put the shared
+        // quiet-hook state and the default hook stays (#304).
+        return codegen::transform_function(func, &[], codegen::PanicHook::External).into();
     }
     if let Ok(item_struct) = syn::parse::<ItemStruct>(item.clone()) {
         return codegen::transform_struct_crate(item_struct, &[]).into();
