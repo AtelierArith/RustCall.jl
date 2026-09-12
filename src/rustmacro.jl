@@ -547,8 +547,17 @@ function _rust_call_dynamic_cached(cache::CallTargetCache, mod::Module, lib_name
                                    func_name::String, args::Vararg{Any, N}) where {N}
     hit = cached_target_hit(cache)
     hit === nothing || return _dispatch_with_target(hit, hit.lib_name, func_name, args...)
+    # `_resolve_lib` first, before the generic check. It is what replays a
+    # precompiled caller's recorded blocks, and those blocks are what register
+    # the module's generic functions: asking `is_generic_function` before it has
+    # run answers "no" for every generic in a fresh process, and the symbol
+    # resolution below then fails on a name that only needed monomorphizing
+    # (#390 review). It used to run first by construction — the macro put it in
+    # the argument list, evaluated before the call.
+    resolved = _resolve_lib(mod, lib_name)
     is_generic_function(func_name) && return call_generic_function(func_name, args...)
-    target = cached_macro_call_target(cache, mod, lib_name, func_name)
+    epoch, target = resolve_macro_call_target(resolved, func_name)
+    publish_call_target!(cache, epoch, target)
     return _dispatch_with_target(target, target.lib_name, func_name, args...)
 end
 
@@ -584,9 +593,16 @@ end
                                              lib_name::String, func_name::String,
                                              ::Type{R},
                                              args::Vararg{Any, N}) where {R, N}
+    # Outside the `try`, and before it: restoring a precompiled caller's blocks
+    # is not a symbol resolution, and a block that fails to compile or load must
+    # say so. Inside the `try` below, such a failure was caught and then hidden
+    # by the generic fallback whenever an *earlier* block had already registered
+    # a generic of this name — leaving the module half restored and the real
+    # error swallowed (#390 review).
+    resolved = _resolve_lib(mod, lib_name)
     local epoch, target
     try
-        epoch, target = resolve_macro_call_target(mod, lib_name, func_name)
+        epoch, target = resolve_macro_call_target(resolved, func_name)
     catch e
         # Same fallback as the uncached path: a name the libraries do not
         # export may still be a generic awaiting monomorphization.

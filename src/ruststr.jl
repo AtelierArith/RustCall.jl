@@ -215,32 +215,26 @@ end
 end
 
 """
-    cached_macro_call_target(cache, mod, lib_name, func_name) -> CallTarget
-
-`cached_call_target` for an `@rust` call site, which names its library
-the way the macro does (`_resolve_lib`) rather than through the symbol table.
-"""
-@noinline function cached_macro_call_target(cache::CallTargetCache, mod::Module,
-                                            lib_name::String, func_name::String)
-    epoch, target = resolve_macro_call_target(mod, lib_name, func_name)
-    return publish_call_target!(cache, epoch, target)
-end
-
-"""
-    resolve_macro_call_target(mod, lib_name, func_name) -> (epoch, CallTarget)
+    resolve_macro_call_target(lib_name, func_name) -> (epoch, CallTarget)
 
 Resolve an `@rust` call site's snapshot **without** publishing it, returning the
 epoch it was resolved at alongside it.
+
+`lib_name` is already resolved: `_resolve_lib` is the caller's job and must run
+**before** this, because it is what replays a precompiled caller's recorded
+blocks — and therefore what registers that module's generic functions and
+reports a block that fails to load. Doing it here, inside the callers' fallback
+`try`, made a generic invisible on its first call in a fresh process and turned a
+block that failed to load into a "missing symbol" (#390 review).
 
 A caller that has something to verify about the snapshot — `@rust f(x)::T`
 checks the annotation against it — must verify *before* publishing, or a
 rejected snapshot would sit in the cache and be reused by later calls without
 the check ever running again.
 """
-@noinline function resolve_macro_call_target(mod::Module, lib_name::String,
-                                             func_name::String)
+@noinline function resolve_macro_call_target(lib_name::String, func_name::String)
     epoch = artifact_epoch()
-    return (epoch, resolve_call_target(_resolve_lib(mod, lib_name), func_name))
+    return (epoch, resolve_call_target(lib_name, func_name))
 end
 
 """
