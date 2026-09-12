@@ -344,6 +344,12 @@ fn python_function_wrapper(
             &entry.return_type,
         ));
     }
+    // Before anything reads the return type: this wrapper answers from inside
+    // `Python::attach`, where a `&str` cannot be returned (`python_owned_returns`).
+    // Lowering it here rather than at each use keeps the helper's signature, the
+    // ABI plan and the manifest entry describing the same thing.
+    let lowered = python_owned_returns(entry);
+    let entry = &lowered;
     let args = wrapper_args(&entry.args)?;
     let symbol = symbol_ident(&entry.symbol)?;
     let owner = format_ident!("{}", entry.ffi_name);
@@ -454,6 +460,41 @@ fn python_kind<'a>(f: &'a crate::manifest::Function, name: &Ident) -> &'a str {
         .find(|arg| *name == arg.name)
         .map(|arg| arg.python_kind.as_str())
         .unwrap_or("")
+}
+
+/// The spelling a **Python-owned** wrapper must return in place of `spelling`.
+///
+/// `Some("String")` for a borrowed `&str`, `None` for anything else.
+///
+/// A Python-owned wrapper produces its result inside `Python::attach`, and a
+/// `&str` extracted there borrows the Python string bound to `py`. It cannot
+/// leave the closure — the generated helper did not compile at all, so one
+/// `&str`-returning method failed the whole wrapper crate even though borrowed
+/// strings are otherwise supported (#370). Nor should it: the buffer belongs to
+/// a Python object the attachment is the only thing keeping alive, so a pointer
+/// to it is dangling by the time Julia reads it.
+///
+/// Extracting an owned `String` instead costs a copy and puts the value on the
+/// existing owned-string ABI, which Julia already releases through
+/// `<owner>_free_rust_string`. Only the Python-owned flavours go through here;
+/// a plain `#[pyfunction]` returning `&str` still uses the borrowed ABI, where
+/// the buffer is the crate's own and outlives the call.
+fn python_owned_string_return(spelling: &str) -> Option<String> {
+    let ty: Type = syn::parse_str(spelling).ok()?;
+    is_str_ref_type(&ty).then(|| "String".to_string())
+}
+
+/// `f` with every borrowed-string return lowered to an owned one
+/// ([`python_owned_string_return`]).
+fn python_owned_returns(f: &crate::manifest::Function) -> crate::manifest::Function {
+    let mut lowered = f.clone();
+    if let Some(owned) = python_owned_string_return(&lowered.return_type) {
+        lowered.return_type = owned;
+    }
+    if let Some(owned) = python_owned_string_return(&lowered.ok_type) {
+        lowered.ok_type = owned;
+    }
+    lowered
 }
 
 fn python_extract_type(f: &crate::manifest::Function) -> Result<Type, String> {
@@ -987,6 +1028,15 @@ fn python_method_wrapper(
     entry: &mut Method,
     original: &Method,
 ) -> Result<TokenStream2, String> {
+    // As for free functions: a method answering from inside `Python::attach`
+    // cannot return a borrowed string (`python_owned_returns`). A getter is the
+    // same shape — `getattr(...).extract::<&str>()` borrows `py` too.
+    if let Some(owned) = python_owned_string_return(&entry.return_type) {
+        entry.return_type = owned;
+    }
+    if let Some(owned) = python_owned_string_return(&entry.ok_type) {
+        entry.ok_type = owned;
+    }
     let native_args = wrapper_args(&entry.args)?;
     let symbol = symbol_ident(&entry.symbol)?;
     let helper = format_ident!(

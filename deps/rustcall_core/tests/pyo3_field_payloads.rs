@@ -306,6 +306,88 @@ fn python_owned_classes_keep_descriptor_and_vec_field_abis() {
     assert!(!wrapped.lib_rs.contains("call_method(\"doubled\""));
 }
 
+/// A Python-owned method returning `&str` used to fail the whole wrapper crate
+/// (#370): the reference is extracted inside `Python::attach` and borrows the
+/// Python string bound to `py`, so the helper could not return it — and had it
+/// compiled, the buffer belongs to an object only the attachment keeps alive.
+#[test]
+fn python_owned_borrowed_string_returns_are_lowered_to_owned() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct Base;
+        #[pyclass(extends = Base)]
+        pub struct Child { label: String }
+        #[pymethods]
+        impl Child {
+            #[new]
+            pub fn new() -> (Self, Base) { (Self { label: String::from("x") }, Base) }
+            pub fn name(&self) -> &str { &self.label }
+            #[getter]
+            pub fn tag(&self) -> &str { &self.label }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let class = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "Child")
+        .unwrap();
+    // A plain method and a getter take the same route.
+    for name in ["name", "tag"] {
+        let method = class
+            .methods
+            .iter()
+            .find(|method| method.name == name)
+            .unwrap();
+        assert_eq!(method.skip_reason, "", "{name} was refused");
+        // The manifest describes the wrapper, not the user's signature: this
+        // one hands Julia an owned buffer to release, not a borrowed pointer.
+        assert_eq!(method.return_type, "String", "{name}");
+        assert_eq!(method.return_abi, "string", "{name}");
+        assert_eq!(method.string_owner, format!("Child_{name}"));
+        assert!(
+            wrapped
+                .lib_rs
+                .contains(&format!("pub struct Child_{name}_RustCallOwnedString")),
+            "{name} has no owned-string buffer"
+        );
+    }
+    // The shape that did not compile, in the exact place it appeared.
+    assert!(!wrapped.lib_rs.contains("PyResult<&str>"));
+    assert!(wrapped
+        .lib_rs
+        .contains("::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<String>"));
+}
+
+/// ...and the lowering stays inside the Python-owned flavours. A plain
+/// `#[pyfunction]` returning `&str` is called directly, and its buffer is the
+/// crate's own, so it keeps the borrowed ABI and the copy it saves.
+#[test]
+fn a_plain_pyfunction_keeps_the_borrowed_string_abi() {
+    let scan = extract(
+        r#"
+        #[pyfunction]
+        pub fn label() -> &'static str { "x" }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let label = wrapped
+        .manifest
+        .functions
+        .iter()
+        .find(|f| f.name == "label")
+        .unwrap();
+    assert_eq!(label.return_abi, "str");
+    assert_eq!(label.return_type, "&'static str");
+}
+
 #[test]
 fn python_owned_handle_decision_survives_a_skipped_defaulted_method() {
     let scan = extract(

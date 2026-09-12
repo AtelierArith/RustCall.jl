@@ -375,6 +375,14 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                 explicit_label = M.defaulted_label(inherited, Int32(5))
                 @test default_label.is_ok && default_label.value == "100:37"
                 @test explicit_label.is_ok && explicit_label.value == "100:5"
+                # A borrowed `&str` return on a Python-owned class: extracted as
+                # an owned `String` inside the attachment and released through
+                # this method's own buffer. Before #370 the crate did not
+                # compile at all, so reaching this line is half the assertion.
+                @test M.borrowed_label(inherited) == "inherited"
+                # A getter with no backing field surfaces as a function here, the
+                # same way `doubled` above does.
+                @test M.borrowed_tag(inherited) == "tag"
                 Base.invokelatest(setproperty!, inherited, :value, Int32(90))
                 @test Base.invokelatest(getproperty, inherited, :value) == 90
 

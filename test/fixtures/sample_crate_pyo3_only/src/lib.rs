@@ -182,7 +182,9 @@ impl Point {
         if factor.is_finite() {
             Ok(self.norm() * factor)
         } else {
-            Err(pyo3::exceptions::PyValueError::new_err("factor must be finite"))
+            Err(pyo3::exceptions::PyValueError::new_err(
+                "factor must be finite",
+            ))
         }
     }
 
@@ -202,7 +204,9 @@ impl Point {
                 scale: self.scale,
             })
         } else {
-            Err(pyo3::exceptions::PyValueError::new_err("shift must be finite"))
+            Err(pyo3::exceptions::PyValueError::new_err(
+                "shift must be finite",
+            ))
         }
     }
 
@@ -297,6 +301,24 @@ impl InheritedCounter {
     #[setter(doubled)]
     pub fn set_doubled(&mut self, value: i32) {
         self.value = value / 2;
+    }
+
+    /// A borrowed `&str` return on a **Python-owned** class (#370).
+    ///
+    /// The wrapper for this reaches Julia through `Python::attach`, and a
+    /// `&str` extracted there borrows the Python string bound to `py`: it
+    /// cannot leave the closure, so before #370 one method of this shape made
+    /// the whole generated wrapper crate fail to compile. It is here to be
+    /// compiled, not only generated.
+    pub fn borrowed_label(&self) -> &str {
+        "inherited"
+    }
+
+    /// The same through a getter, which extracts with `getattr` rather than
+    /// `call_method` and so reaches a different branch of the generator.
+    #[getter]
+    pub fn borrowed_tag(&self) -> &str {
+        "tag"
     }
 }
 
