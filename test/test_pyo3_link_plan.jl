@@ -945,6 +945,92 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "the dispatcher alias names the resolved pyo3, not a registry copy (#370)" begin
+        # A version-only alias resolves a *second* pyo3 from crates.io whenever
+        # the crate gets its own from a path or a git checkout. Two instances in
+        # one build is not duplicated work: the target's macro metadata carries
+        # types from its instance while the generated dispatcher supplies
+        # `Python` and the traits from the other, so nothing that uses the
+        # dispatcher builds.
+        registry = (; version = "0.29.2",
+                    source = "registry+https://github.com/rust-lang/crates.io-index",
+                    dir = "/registry/pyo3-0.29.2")
+        toml = join(RustCall._pyo3_alias_toml(registry), "\n")
+        @test occursin("version = \"=0.29.2\"", toml)
+        @test !occursin("path =", toml)
+
+        # A path dependency is named by the directory Cargo resolved.
+        path_dep = (; version = "0.29.2", source = "", dir = "/vendor/pyo3")
+        toml = join(RustCall._pyo3_alias_toml(path_dep), "\n")
+        @test occursin("path = \"/vendor/pyo3\"", toml)
+        @test !occursin("version =", toml)
+
+        # A git dependency is pinned to the commit Cargo resolved, so the alias
+        # cannot drift to another checkout of the same branch.
+        git_dep = (; version = "0.30.0",
+                   source = "git+https://github.com/PyO3/pyo3?branch=main#deadbeefcafe",
+                   dir = "/git/pyo3")
+        toml = join(RustCall._pyo3_alias_toml(git_dep), "\n")
+        @test occursin("git = \"https://github.com/PyO3/pyo3\"", toml)
+        @test occursin("rev = \"deadbeefcafe\"", toml)
+        @test !occursin("branch=main", toml)
+        @test !occursin("version =", toml)
+
+        # Every form still aliases the package and keeps the feature set.
+        for dep in (registry, path_dep, git_dep)
+            toml = join(RustCall._pyo3_alias_toml(dep), "\n")
+            @test occursin("[dependencies.rustcall_pyo3]", toml)
+            @test occursin("package = \"pyo3\"", toml)
+            @test occursin("features = [\"macros\"]", toml)
+        end
+    end
+
+    @testset "a real path dependency resolves as one (#370)" begin
+        # The acceptance criterion asks for a path dependency tested for real.
+        # Rather than vendor pyo3 into the repository, this points a crate at
+        # the copy Cargo already unpacked into its registry source cache: a
+        # genuine `path =` dependency on a genuine pyo3.
+        candidates = String[]
+        registry_src = joinpath(homedir(), ".cargo", "registry", "src")
+        if isdir(registry_src)
+            for index in readdir(registry_src; join = true), entry in readdir(index; join = true)
+                occursin(r"^pyo3-\d", basename(entry)) && isdir(entry) &&
+                    push!(candidates, entry)
+            end
+        end
+        if isempty(candidates)
+            @info "Skipping the real path-dependency check: no unpacked pyo3 in the registry cache"
+            @test_skip "needs an unpacked pyo3"
+        else
+            vendored = last(sort!(candidates))
+            root = mktempdir()
+            try
+                write(joinpath(root, "Cargo.toml"), """
+                [package]
+                name = "pyo3_path_probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                pyo3 = { path = "$(RustCall.escape_toml_string(vendored))", default-features = false, features = ["macros"] }
+                """)
+                mkpath(joinpath(root, "src"))
+                write(joinpath(root, "src", "lib.rs"), "")
+                plan = RustCall.pyo3_link_plan(root)
+                dep = RustCall._resolved_pyo3_dependency(root, plan)
+                # Cargo reports a path dependency with no source, and that is
+                # exactly what has to reach the alias.
+                @test dep.source == ""
+                @test realpath(dep.dir) == realpath(vendored)
+                toml = join(RustCall._pyo3_alias_toml(dep), "\n")
+                @test occursin("path =", toml)
+                @test !occursin("version =", toml)
+            finally
+                rm(root; force = true, recursive = true)
+            end
+        end
+    end
+
     @testset "a dispatcher wrapper refuses a pyo3 older than it needs (#370)" begin
         # `Python::initialize` / `Python::attach` arrived in pyo3 0.26 — checked
         # against the `marker.rs` of 0.24, 0.25 and 0.26, not the changelog.
