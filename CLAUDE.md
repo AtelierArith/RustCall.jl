@@ -22,11 +22,12 @@ julia --project test/test_cache.jl
 # Build documentation
 julia --project=docs docs/make.jl
 
-# Rust crates (deps/rustcall_core, deps/rustcall_extract, deps/rustcall_julia_macros)
+# Rust crates (deps/rustcall_core, deps/rustcall_extract, deps/rustcall_julia_macros{,_impl})
 cd deps/rustcall_core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 UPDATE_GOLDEN=1 cargo test          # in deps/rustcall_core: regenerate tests/corpus/*.toml and *.expanded.rs
 cd deps/rustcall_extract && cargo build --release   # the CLI Julia calls; also built by Pkg.build
 cd deps/rustcall_julia_macros && cargo test --all-features
+cd deps/rustcall_julia_macros_impl && cargo test
 
 # Lints run in CI
 bash scripts/lint_interpolation.sh src
@@ -42,7 +43,7 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 
 - `deps/rustcall_core` — `syn`-based core: FFI manifest model (`manifest.rs`), extraction (`extract.rs`), inline expansion of `#[julia]` items (`expand.rs`), wrapper codegen for both the proc-macro and inline flavours (`codegen.rs`), AST-level generic instantiation (`specialize.rs`). Golden tests in `tests/corpus/`.
 - `deps/rustcall_extract` — the `rustcall-extract` CLI (`manifest`, `expand`, `specialize` subcommands; `--cfg-file` takes `rustc --print cfg` so `#[cfg]`-disabled items are dropped). Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
-- `deps/rustcall_julia_macros` — thin proc-macro wrapper over `rustcall_core::codegen` for `@rust_crate` crates.
+- `deps/rustcall_julia_macros` — the crate a user's `#[julia]` crate depends on. It is a **normal library**, not a proc-macro crate: it re-exports the attribute from `deps/rustcall_julia_macros_impl` (the thin proc-macro wrapper over `rustcall_core::codegen`) and carries the one thing a proc macro cannot emit for itself — the crate-wide quiet-panic state of #304, in `src/rt.rs`. That file is **generated** from `rustcall_core::codegen::runtime_module_source()` and asserted against it by `deps/rustcall_core/tests/runtime_crate.rs` (regenerate with `UPDATE_GOLDEN=1 cargo test`, then `cargo fmt`), so the hook a `#[julia]` crate gets and the hook an inline block gets cannot drift apart.
 - `src/native_layout.jl` — the one place that decides where `Pkg.build` puts the two native products and where they are found again (#258). Included by `src/RustCall.jl` **and** by `deps/build.jl`, which runs before the module exists, so the build and the lookup cannot drift. A checkout builds into `deps/<crate>/target`; an installed package (a tree under a depot's `packages/`) builds into `<depot>/scratchspaces/<UUID>/native-v1/<slug>/<crate>` and its package directory is never written to. `deps/build.jl` runs no `cargo clean` (Cargo's own fingerprint decides what to redo) and passes `--locked`, because Cargo writes `Cargo.lock` beside the manifest whatever `CARGO_TARGET_DIR` says; `deps/rust_helpers/Cargo.lock` and `deps/rustcall_extract/Cargo.lock` are committed for that reason, and a stale one fails the build. Overrides: `RUSTCALL_EXTRACT`, `RUSTCALL_RUST_HELPERS`.
 - `src/manifest.jl` — runs the CLI, validates `schema_version`, converts the TOML manifest into `RustFunctionSignature` / `RustStructInfo` / `RustMethod`, and computes `toolchain_fingerprint()` (extractor digest + core sources + `artifact_compiler_identity()`) that is part of every cache key.
 - **Exported symbols are derived in exactly one place** (#300): `rustcall_core::codegen::symbol_stem(module_path, name)` — the bare name at the crate root, otherwise the module path folded in (`a::run` → `a__run`, `_` inside a segment spelled `_0`). `function_symbol` / `method_symbol` and every struct-level symbol (`<stem>_free`, accessors, string helpers) hang off it; the manifest carries it as `ffi_name` and Julia passes `ffi_name`, never `name`, to `ffi_struct_free_symbol` / `ffi_free_symbol`. The proc-macro learns the path from `#[julia]` on inline modules (`transform_module`); crate extraction refuses a `#[julia]` item in an unmarked inline module, and `rustcall-extract` fails closed on a crate-wide duplicate symbol. Julia binds one submodule per Rust module (`bindings.a.run()`).
@@ -171,15 +172,28 @@ so a reopened image can restore its own hook. Names beginning with
 `__rustcall_` are reserved: Julia calls the installer it finds under that name as
 `extern "C" fn()`, so the name must be one the symbol scheme cannot produce for a
 user's item. The hook is
-silent inside a boundary and delegates to the hook it replaced outside one. It
-exists only where a generator writes the whole file
-(`rustcall_core::codegen::PanicHook::FileOwned`: inline blocks, `@irust`,
-generics, the generated wrapper crate), and the loader asks the **image** for the
-installer symbol rather than asking the policy — every `@rust_crate` module loads
-with `crate_direct_policy()`, so a policy flag would miss the generated wrapper
-crate. `#[julia]` in a crate RustCall does not write keeps the default hook,
-because an attribute proc macro has nowhere to put crate-wide state. `RUSTCALL_PANIC_HOOK=default` and `-C prefer-dynamic` both keep the
-default hook. See `docs/src/panics.md`.
+silent inside a boundary and delegates to the hook it replaced outside one. The counter lives in one of
+two places, and `rustcall_core::codegen::PanicHook` is the choice:
+`FileOwned` puts it at the root of a file RustCall writes whole (inline blocks,
+`@irust`, generics) and the guard reads `crate::__RustCallBoundary`; `Runtime`
+takes it from the `rustcall_julia_macros` rlib the crate already links
+(`::rustcall_julia_macros::__RustCallBoundary`), which is the only route open to
+`#[julia]` — an attribute proc macro is handed one item and can emit no
+crate-wide state. **The generated `@rust_crate` wrapper crate uses `Runtime` too**,
+although RustCall writes it whole: it links the same rlib as the crate it wraps,
+so emitting the items as well would define `#[no_mangle]`
+`__rustcall_install_panic_hook` twice in one `cdylib` and split the image's
+wrappers across two counters. `#[no_mangle]` items of a dependency rlib are
+exported from the `cdylib` that links it — that is what makes the `Runtime`
+route work at all — but only when something references the crate, so an artifact
+with no generated wrapper exports no installer and gets no hook, which is
+correct. The loader asks the **image** for the installer symbol rather than
+asking the policy: every `@rust_crate` module loads with `crate_direct_policy()`,
+so a policy flag would miss both the generated wrapper crate and every
+hand-written `#[julia]` crate. `RUSTCALL_PANIC_HOOK=default` and
+`-C prefer-dynamic` both keep the default hook; so does renaming the
+`rustcall_julia_macros` dependency, which does not compile. See
+`docs/src/panics.md`.
 
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 
@@ -229,7 +243,7 @@ the entire test worker.
 ## CI
 
 `.github/workflows/CI.yml`:
-- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/rustcall_core`, `deps/rustcall_extract`, `deps/rustcall_julia_macros` (stable + beta, Linux/macOS/Windows)
+- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/rustcall_core`, `deps/rustcall_extract`, `deps/rustcall_julia_macros`, `deps/rustcall_julia_macros_impl` (stable + beta, Linux/macOS/Windows)
 - **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64) with `JULIA_NUM_THREADS=1`, plus **one Ubuntu job with `JULIA_NUM_THREADS=4`**
 - **Code Lint**: every `scripts/lint_*.sh`
 

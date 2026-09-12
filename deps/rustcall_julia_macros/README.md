@@ -1,6 +1,13 @@
 # rustcall_julia_macros
 
-Proc macros for [RustCall.jl](https://github.com/atelierarith/RustCall.jl) - Julia-Rust FFI.
+The `#[julia]` attribute for [RustCall.jl](https://github.com/atelierarith/RustCall.jl) - Julia-Rust FFI.
+
+This crate is a **library**, not a proc-macro crate: the attribute itself lives
+in `rustcall_julia_macros_impl` and is re-exported here, and this crate adds the
+runtime state `#[julia]` wrappers need but a proc macro cannot emit — the
+thread-local panic-boundary depth that keeps a caught panic from printing
+`panicked at` to stderr (RustCall.jl #304). Depend on it under its own name:
+the generated wrappers name `::rustcall_julia_macros` literally.
 
 ## Installation
 

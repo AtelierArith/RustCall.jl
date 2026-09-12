@@ -1,11 +1,14 @@
-//! Proc macros for RustCall.jl - Julia-Rust FFI
+//! `#[julia]` for RustCall.jl - Julia-Rust FFI
 //!
 //! This crate provides the `#[julia]` attribute macro that simplifies creating
 //! FFI-compatible functions and structs for use with Julia through RustCall.jl.
 //!
 //! All code generation lives in the `rustcall_core` crate, which is shared with
-//! the `rustcall-extract` CLI used for inline `rust"""` blocks. This crate is a
-//! thin adapter so that both front ends emit identical wrappers.
+//! the `rustcall-extract` CLI used for inline `rust"""` blocks;
+//! `rustcall_julia_macros_impl` is the thin proc-macro adapter over it, so that
+//! both front ends emit identical wrappers. This crate re-exports the attribute
+//! and adds the one thing a proc macro cannot emit for itself: the crate-wide
+//! quiet-panic state its wrappers take a boundary guard from (see [`rt`]).
 //!
 //! # Usage
 //!
@@ -65,40 +68,7 @@
 //! attribute cannot be placed on a file module (`mod a;`), and RustCall.jl
 //! refuses a `#[julia]` item inside an inline module that is not marked.
 
-use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
-use syn::{ItemFn, ItemImpl, ItemMod, ItemStruct};
+mod rt;
 
-use rustcall_core::codegen;
-
-/// The `#[julia]` attribute macro for FFI-compatible functions, structs, impl
-/// blocks and inline modules.
-#[proc_macro_attribute]
-pub fn julia(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // An item the macro meets directly is at the crate root as far as the
-    // symbol scheme is concerned; items inside a `#[julia] mod` are expanded by
-    // the module's own expansion with its path (#300).
-    if let Ok(func) = syn::parse::<ItemFn>(item.clone()) {
-        // `PanicHook::External`: this is the proc macro, handed one item of a
-        // crate RustCall does not write, so there is nowhere to put the shared
-        // quiet-hook state and the default hook stays (#304).
-        return codegen::transform_function(func, &[], codegen::PanicHook::External).into();
-    }
-    if let Ok(item_struct) = syn::parse::<ItemStruct>(item.clone()) {
-        return codegen::transform_struct_crate(item_struct, &[]).into();
-    }
-    if let Ok(item_impl) = syn::parse::<ItemImpl>(item.clone()) {
-        return codegen::transform_impl_crate(item_impl, &[]).into();
-    }
-    if let Ok(item_mod) = syn::parse::<ItemMod>(item.clone()) {
-        return codegen::transform_module(item_mod, &[]).into();
-    }
-
-    let item2: TokenStream2 = item.into();
-    quote! {
-        compile_error!("#[julia] can only be applied to functions, structs, impl blocks, or inline modules");
-        #item2
-    }
-    .into()
-}
+pub use rt::__RustCallBoundary;
+pub use rustcall_julia_macros_impl::julia;

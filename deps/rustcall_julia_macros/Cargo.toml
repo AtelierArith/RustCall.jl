@@ -2,21 +2,22 @@
 name = "rustcall_julia_macros"
 version = "0.1.0"
 edition = "2021"
-description = "Proc macros for RustCall.jl - Julia-Rust FFI"
+description = "The #[julia] attribute and its runtime for RustCall.jl - Julia-Rust FFI"
 license = "MIT"
 repository = "https://github.com/atelierarith/RustCall.jl"
 keywords = ["julia", "ffi", "proc-macro"]
 categories = ["development-tools::ffi"]
 readme = "README.md"
 
-[lib]
-proc-macro = true
-
+# Not a proc-macro crate any more (#304). A proc-macro crate is compiled for the
+# host and linked into no `cdylib`, so it can carry only proc macros — and
+# `#[julia]` needs one crate-wide item its wrappers can name: the quiet-panic
+# boundary. That state lives in `src/rt.rs` here, the attribute itself is
+# re-exported from `rustcall_julia_macros_impl`, and a crate that depends on
+# `rustcall_julia_macros` (which every `#[julia]` crate already does) is
+# unchanged.
 [dependencies]
-rustcall_core = { path = "../rustcall_core" }
-quote = "1.0"
-syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
-proc-macro2 = "1.0"
+rustcall_julia_macros_impl = { path = "../rustcall_julia_macros_impl" }
 
 [dev-dependencies]
 trybuild = "1.0"

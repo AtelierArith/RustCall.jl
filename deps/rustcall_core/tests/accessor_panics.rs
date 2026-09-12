@@ -1,5 +1,7 @@
 use std::{fs, process::Command};
 
+mod support;
+
 use rustcall_core::{
     codegen::transform_struct_crate, expand::expand, extract::extract, manifest::Mode,
 };
@@ -44,6 +46,8 @@ fn string_setters_copy_byte_pairs_in_both_flavours() {
         fs::write(&input, source).unwrap();
         let compile = Command::new("rustc")
             .args(["--edition=2021", "-C", "panic=unwind"])
+            .arg("--extern")
+            .arg(support::runtime_extern_arg(&dir))
             .arg(&input)
             .arg("-o")
             .arg(&binary)
@@ -159,6 +163,8 @@ fn generated_accessors_contain_clone_and_drop_panics() {
         fs::write(&input, source).unwrap();
         let compile = Command::new("rustc")
             .args(["--edition=2021", "-C", "panic=unwind"])
+            .arg("--extern")
+            .arg(support::runtime_extern_arg(&dir))
             .arg(&input)
             .arg("-o")
             .arg(&binary)

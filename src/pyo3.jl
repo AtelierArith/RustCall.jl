@@ -1865,6 +1865,18 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
             "features = [\"macros\"]",
         ])
     end
+    # The generated wrappers take their quiet-panic boundary guard from this
+    # crate rather than defining the hook items here: this wrapper links the
+    # same rlib as the crate it wraps, so a second `#[no_mangle]`
+    # `__rustcall_install_panic_hook` in this `cdylib` would be a duplicate
+    # symbol — and would split the image's wrappers across two depth counters,
+    # neither of which the one installed hook could see in full (#304). Declared
+    # as its own table so it cannot collide with `pyo3_dependency_toml`'s block.
+    append!(lines, [
+        "",
+        "[dependencies.rustcall_julia_macros]",
+        "path = \"$(escape_toml_string(rustcall_runtime_crate_path()))\"",
+    ])
     append!(lines, ["", "[profile.release]", "opt-level = 3"])
     # Pinned for the same reason every RustCall build pins it: the generated
     # `catch_unwind` boundary can only catch a panic that unwinds (#244).

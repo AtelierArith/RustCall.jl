@@ -74,8 +74,8 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    Attribute, FnArg, Ident, Item, ItemFn, ItemImpl, ItemMod, ItemStruct, Pat, ReturnType, Type,
-    Visibility,
+    Attribute, File, FnArg, Ident, Item, ItemFn, ItemImpl, ItemMod, ItemStruct, Pat, ReturnType,
+    Type, Visibility,
 };
 
 use crate::cfg::cfg_attrs;
@@ -526,29 +526,60 @@ pub(crate) struct WrapperSpec {
 /// depth counter **shared by every wrapper in the image**: the one installed
 /// hook can only see the counter it captured.
 ///
-/// That sharing is what splits the two flavours apart.
+/// That sharing is what decides where the items live.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum PanicHook {
     /// The generator emits the whole file and puts [`panic_hook_items`] at its
     /// root, so every wrapper in it — including wrappers in submodules, which
     /// reach the items as `crate::__RustCallBoundary` — takes a boundary guard.
-    /// The inline `rust"""` path, monomorphized generics and the generated
-    /// wrapper crates are all of this kind.
+    /// The inline `rust"""` path and monomorphized generics are of this kind:
+    /// they are compiled by `rustc` directly, with no dependency to reach.
     FileOwned,
-    /// `#[julia]` expanded one item at a time inside a crate RustCall does not
-    /// write. There is nowhere to put the shared items: an attribute proc macro
-    /// is handed one item and may only replace that item, cannot see the crate's
-    /// other `#[julia]` items, and has no reliable place to remember whether it
-    /// already emitted them. A `#[no_mangle]` name in another module is not a
-    /// Rust path either, so reaching shared items across modules would need an
-    /// `extern "C"` block — which edition 2024 spells `unsafe extern`, making
-    /// the generated code depend on the user crate's edition. The default hook
-    /// stays; `docs/src/panics.md` says so.
+    /// The items live in the [`RUNTIME_CRATE`] rlib the wrapper's crate already
+    /// depends on, and the guard is taken through its path.
+    ///
+    /// This is what `#[julia]` uses. An attribute proc macro is handed one item
+    /// and may only replace that item: it cannot see the crate's other
+    /// `#[julia]` items, and has no reliable place to remember whether it
+    /// already emitted the shared state, so it can never emit
+    /// [`panic_hook_items`] itself. It does not have to. The crate already
+    /// depends on `rustcall_julia_macros` — that is where `#[julia]` comes from
+    /// — so the items can sit *there*, compiled once, and the wrapper names the
+    /// guard by a Rust path like any other dependency. `#[no_mangle]` items of a
+    /// dependency rlib are exported from the `cdylib` that links it, so Julia
+    /// still finds [`INSTALL_PANIC_HOOK_SYMBOL`] on the image (#304).
+    ///
+    /// The generated PyO3 wrapper crate uses this too, even though it is a whole
+    /// file RustCall writes: it links the same rlib, so emitting
+    /// [`panic_hook_items`] as well would define `#[no_mangle]`
+    /// [`INSTALL_PANIC_HOOK_SYMBOL`] twice in one `cdylib`. One image, one hook,
+    /// one depth counter — shared with the `#[julia]` wrappers of the crate it
+    /// wraps, which is exactly what makes both quiet.
+    Runtime,
+    /// No boundary guard at all: the default hook stays. Nothing RustCall
+    /// generates chooses this today; it is the conservative default of
+    /// [`FreeFnOptions`], because a wrapper that takes no guard merely keeps the
+    /// default hook while one that takes a guard it cannot name does not
+    /// compile.
     External,
 }
 
 /// Suffix of the panic-channel reader a wrapper exports next to itself.
 pub const PANIC_SYMBOL_SUFFIX: &str = "_take_panic";
+
+/// The crate that carries [`panic_hook_items`] for [`PanicHook::Runtime`].
+///
+/// Every crate that uses `#[julia]` depends on it already — it is where the
+/// attribute comes from — and every `Cargo.toml` RustCall writes for a crate
+/// with generated wrappers declares it too (`rustcall_runtime_crate_path`, used
+/// by `generate_wrapper_cargo_toml` in `src/crate_bindings.jl` and
+/// `generate_pyo3_wrapper_cargo_toml` in `src/pyo3.jl`), all pointing at the one
+/// directory — two copies in one `cdylib` would each define
+/// [`INSTALL_PANIC_HOOK_SYMBOL`]. The path is spelled `::rustcall_julia_macros`,
+/// so a module of any depth reaches it and no local item can shadow it; the one
+/// thing that breaks is renaming the dependency in `Cargo.toml`, which
+/// `docs/src/panics.md` records.
+pub const RUNTIME_CRATE: &str = "rustcall_julia_macros";
 
 /// The symbol a file-owned artifact exports to install its quiet panic hook.
 /// Julia resolves it once per image, at load time (`src/loadpolicy.jl`).
@@ -708,8 +739,11 @@ pub fn panic_hook_items() -> TokenStream2 {
     // statics take a namespace of their own (#338).
     quote! {
         thread_local! {
+            // `const`-initialised: the runtime crate is real source that CI
+            // runs clippy over, and `thread_local_initializer_can_be_made_const`
+            // fires otherwise. It is also the faster access path.
             static __RUSTCALL_QUIET_DEPTH: ::std::cell::Cell<usize> =
-                ::std::cell::Cell::new(0);
+                const { ::std::cell::Cell::new(0) };
         }
 
         /// `true` while this image's hook is the one std will call. A mutex, not a
@@ -772,6 +806,37 @@ pub fn panic_hook_items() -> TokenStream2 {
     }
 }
 
+/// The source of the [`RUNTIME_CRATE`]'s runtime module: exactly the items
+/// [`panic_hook_items`] emits, formatted.
+///
+/// `deps/rustcall_julia_macros/src/rt.rs` is this string run through `rustfmt`,
+/// checked in, and compared against the generator by `tests/runtime_crate.rs` —
+/// as syntax trees, since the two formatters disagree about layout and nothing
+/// else (regenerate with `UPDATE_GOLDEN=1 cargo test`, then `cargo fmt`). It is
+/// a checked-in file rather than a
+/// `build.rs` output because the crate is compiled into every user `cdylib`
+/// and must stay readable, buildable and diffable without running a generator —
+/// but it is generated from the one definition, so the hook a `#[julia]` crate
+/// gets and the hook an inline block gets cannot drift apart.
+pub fn runtime_module_source() -> String {
+    let file: File =
+        syn::parse2(panic_hook_items()).expect("the quiet-hook items are not a valid Rust file");
+    format!(
+        "// GENERATED by `rustcall_core::codegen::runtime_module_source`. DO NOT EDIT.\n\
+         // Regenerate with `UPDATE_GOLDEN=1 cargo test` in `deps/rustcall_core`,\n\
+         // then `cargo fmt` here;\n\
+         // `tests/runtime_crate.rs` fails if this file and the generator disagree.\n\
+         //\n\
+         // These are the same items `panic_hook_items()` puts at the root of a file\n\
+         // RustCall writes whole (#304). Here they are compiled once, into the crate\n\
+         // every `#[julia]` crate already depends on, so a `#[julia]` wrapper can take\n\
+         // the boundary guard by path and the `cdylib` still exports\n\
+         // `__rustcall_install_panic_hook` for Julia to call.\n\
+         \n{}",
+        prettyplease::unparse(&file)
+    )
+}
+
 /// The body of a generated wrapper, with the user's code inside
 /// `catch_unwind`.
 ///
@@ -815,6 +880,12 @@ fn guarded_body(
         PanicHook::FileOwned => quote! {
             let _rustcall_boundary = crate::__RustCallBoundary::enter();
         },
+        PanicHook::Runtime => {
+            let krate = format_ident!("{}", RUNTIME_CRATE);
+            quote! {
+                let _rustcall_boundary = ::#krate::__RustCallBoundary::enter();
+            }
+        }
         PanicHook::External => TokenStream2::new(),
     };
     quote! {
@@ -1623,8 +1694,8 @@ fn crate_field_accessors(
     cfgs: &[Attribute],
 ) -> TokenStream2 {
     // `#[julia]` on a struct expands inside a crate RustCall does not write,
-    // so its accessors keep the default hook (#304).
-    let hook = PanicHook::External;
+    // so its accessors take the boundary guard from the runtime crate (#304).
+    let hook = PanicHook::Runtime;
     let struct_name = &item_struct.ident;
     let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
     let owned_free = format_ident!("{}_free_rust_string", stem);
@@ -1784,7 +1855,7 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String
         &syn::parse_quote!(#struct_name),
         &stem,
         &cfgs,
-        PanicHook::External,
+        PanicHook::Runtime,
     );
     let accessors = crate_field_accessors(&item_struct, &stem, &cfgs);
 
@@ -1906,7 +1977,7 @@ fn expand_marked_item(item: Item, module_path: &[String]) -> TokenStream2 {
     match item {
         Item::Fn(mut f) => {
             if take_julia(&mut f.attrs) {
-                transform_function(f, module_path, PanicHook::External)
+                transform_function(f, module_path, PanicHook::Runtime)
             } else {
                 quote! { #f }
             }
@@ -1983,7 +2054,7 @@ pub fn generate_method_wrapper_crate(
         struct_name,
         module_path,
         &model,
-        PanicHook::External,
+        PanicHook::Runtime,
     )
 }
 

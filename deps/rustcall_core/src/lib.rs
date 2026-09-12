@@ -438,14 +438,22 @@ mod tests {
             1
         );
 
-        // The proc-macro flavour: `#[julia]` is handed one item and has nowhere
-        // to put the shared items, so it must not reference them either.
+        // The proc-macro flavour: `#[julia]` is handed one item and cannot emit
+        // the shared items, so it takes the guard from the runtime crate the
+        // user's crate already depends on and defines nothing itself (#304).
         let item: syn::ItemFn = syn::parse_str("#[julia] pub fn f() -> i32 { 1 }").unwrap();
         let crate_flavour =
-            codegen::transform_function(item, &[], codegen::PanicHook::External).to_string();
+            codegen::transform_function(item, &[], codegen::PanicHook::Runtime).to_string();
         assert!(crate_flavour.contains("catch_unwind"));
-        assert!(!crate_flavour.contains("__RustCallBoundary"));
-        assert!(!crate_flavour.contains("__rustcall_install_panic_hook"));
+        assert!(crate_flavour.contains(":: rustcall_julia_macros :: __RustCallBoundary :: enter"));
+        assert!(!crate_flavour.contains("crate :: __RustCallBoundary"));
+        assert!(!crate_flavour.contains("fn __rustcall_install_panic_hook"));
+
+        // `External` is still the one flavour that takes no guard at all.
+        let item: syn::ItemFn = syn::parse_str("#[julia] pub fn f() -> i32 { 1 }").unwrap();
+        let bare = codegen::transform_function(item, &[], codegen::PanicHook::External).to_string();
+        assert!(bare.contains("catch_unwind"));
+        assert!(!bare.contains("__RustCallBoundary"));
     }
 
     /// Every wrapper of a block shares the one counter, whichever module it
