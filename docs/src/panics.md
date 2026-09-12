@@ -95,14 +95,26 @@ and there is no channel for Julia to read its message from. Reach for the
 variable when a panic seems to vanish.
 
 **`-C prefer-dynamic` keeps the default hook.** With the default static `std`
-every image owns its own hook registry, so the closure is dropped together with
-the image that installed it and cannot be reached from anywhere else. With a
-shared `std` the registry is shared too: a hook installed from a `cdylib` can
-outlive the `cdylib`, and any later panic anywhere in the process would jump
-into unmapped code. RustCall therefore installs nothing when `RUSTFLAGS` or
-`CARGO_ENCODED_RUSTFLAGS` asks for `prefer-dynamic`. Both variables are part of
-every artifact's identity, so the value read at load time is the value the
-artifact was built with.
+every image owns its own hook registry, so one image's hook is invisible to
+every other and is dropped together with the image. With a shared `std` the
+registry is shared too, and then the hooks of different artifacts interleave:
+closing one artifact would replace whatever hook another had installed, leaving
+that one's caught panics printing again. RustCall therefore installs nothing
+when the build asks for `prefer-dynamic`.
+
+The decision is taken from the environment the artifact was **built** under —
+recorded at macro-expansion time and replayed by the Cargo build — falling back
+to the live environment for the doors that build in this process, and it reads
+`RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` and the per-target
+`CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, tokenised, so `-C prefer-dynamic=no` counts
+as the "no" it is.
+
+A `prefer-dynamic` that reaches `rustc` some other way — `build.rustflags` in a
+Cargo configuration file, which RustCall does not read anywhere — is invisible
+to that check, and the hook is then installed after all. What that costs is the
+interleaving above, **not** memory safety: the hook is removed from the registry
+before its image is unmapped (`close_artifact_handle!`, on the last loader
+reference), so no panic ever reaches a closure whose code is gone.
 
 ### Why unwinding is pinned
 

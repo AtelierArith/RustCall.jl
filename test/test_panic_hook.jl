@@ -90,6 +90,29 @@ pub fn hook_probe_two(n: i32) -> i32 {
         @test RustCall.uninstall_quiet_panic_hook!(C_NULL) === false
     end
 
+    @testset "the prefer-dynamic decision reads flags, not substrings" begin
+        # `-C prefer-dynamic=no` asks for the opposite, and the flag arrives in
+        # any of four spellings plus the \x1f-separated encoded form.
+        for flags in ("-C prefer-dynamic", "-Cprefer-dynamic", "--codegen prefer-dynamic",
+                      "--codegen=prefer-dynamic", "-C\x1fprefer-dynamic",
+                      "-C opt-level=3 -C prefer-dynamic", "-C prefer-dynamic=yes")
+            @test RustCall.prefer_dynamic_flag(flags)
+        end
+        for flags in ("", "-C opt-level=3", "-C prefer-dynamic=no",
+                      "-C prefer-dynamic=off", "-C prefer-dynamic=false",
+                      "-C target-cpu=native")
+            @test !RustCall.prefer_dynamic_flag(flags)
+        end
+        # Cargo honours the per-target variable too, and the decision is asked of
+        # the environment the artifact was *built* under when one was recorded.
+        @test RustCall.prefer_dynamic_build(;
+            env = Dict("CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS" => "-C prefer-dynamic"))
+        @test RustCall.prefer_dynamic_build("RUSTFLAGS=-C prefer-dynamic\nOTHER=1")
+        @test !RustCall.prefer_dynamic_build(; env = Dict("RUSTFLAGS" => "-C prefer-dynamic=no"))
+        @test !RustCall.quiet_panic_hooks_enabled("RUSTFLAGS=-C prefer-dynamic")
+        @test RustCall.quiet_panic_hooks_enabled(; env = Dict{String, String}())
+    end
+
     if !RustCall.check_rustc_available()
         @info "Skipping the quiet panic hook: no Rust toolchain"
         @test_skip "needs rustc"
@@ -179,6 +202,56 @@ pub fn hook_probe_two(n: i32) -> i32 {
             @test code == 0
             @test occursin("prefer_dynamic=true", out)
             @test occursin("enabled=false", out)
+        end
+
+        @testset "a close that is not the last reference keeps the hook" begin
+            # `close_artifact_handle!` decrements the loader reference count and
+            # only the last one unmaps the image. Removing the hook on an earlier
+            # decrement un-silences an image that is still mapped and in use —
+            # and for good, because the generated installer is `Once`-guarded
+            # (#388 review).
+            code, out, err = _run_child("""
+            using RustCall
+            source = \"\"\"
+            #[julia]
+            pub fn dup_boom(n: i32) -> i32 {
+                if n < 0 { panic!("dup_boom refuses {}", n); }
+                n
+            }
+            \"\"\"
+            expanded = RustCall.expand_inline(source)
+            lib = RustCall.compile_rust_to_shared_lib(RustCall.wrap_rust_code(expanded.source))
+            policy = RustCall.inline_rustc_policy()
+            first_ref = RustCall.load_artifact!(policy, lib; lib_name = "dup_one")
+            second_ref = RustCall.load_artifact!(policy, lib; lib_name = "dup_two")
+            println("one_image=", first_ref.handle == second_ref.handle)
+            # The wrapper and its channel, resolved on the handle: this load
+            # registered no symbol table, and the point is the image, not the
+            # registry.
+            using Libdl
+            wrapper = Libdl.dlsym(first_ref.handle, :rustcall_dup_boom)
+            reader = Libdl.dlsym(first_ref.handle, :rustcall_dup_boom_take_panic)
+            function panic_message()
+                @ccall \$wrapper(Int32(-1)::Int32)::Int32
+                len = @ccall \$reader(C_NULL::Ptr{UInt8}, 0::Csize_t)::Csize_t
+                buffer = Vector{UInt8}(undef, len)
+                taken = @ccall \$reader(buffer::Ptr{UInt8}, len::Csize_t)::Csize_t
+                return String(buffer[1:taken])
+            end
+            RustCall.close_artifact_handle!(first_ref.handle)
+            println("removals_after_first=", RustCall.QUIET_PANIC_HOOK_REMOVALS[])
+            println("still_records=", panic_message())
+            RustCall.close_artifact_handle!(first_ref.handle)
+            println("removals_after_last=", RustCall.QUIET_PANIC_HOOK_REMOVALS[])
+            """)
+            @test code == 0
+            @test occursin("one_image=true", out)
+            @test occursin("removals_after_first=0", out)
+            @test occursin("still_records=dup_boom panicked: dup_boom refuses -1", out)
+            @test occursin("removals_after_last=1", out)
+            # The image was still mapped across the first close, so it was still
+            # quiet.
+            @test !occursin(_PANICKED_AT, err)
         end
 
         @testset "closing an artifact removes its hook before unmapping it" begin
