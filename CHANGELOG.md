@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **PyO3 wrapper follow-ups**
+  ([#370](https://github.com/AtelierArith/RustCall.jl/issues/370)). Four edge
+  cases deferred from #369, each of which made an otherwise wrappable crate fail:
+  a **Python-owned class method returning `&str`** produced a helper that could
+  not compile — the reference borrows the Python string bound to `py` and cannot
+  leave `Python::attach` — and is now extracted as an owned `String` and carried
+  on the existing owned-string ABI; the `rustcall_pyo3` alias now names the
+  **package Cargo resolved** rather than a registry release of the same version,
+  so a crate taking pyo3 from a `path` or `git` dependency no longer ends up with
+  two pyo3 instances in one build; every **default-arity** entry point
+  (`rustcall_foo__default_1` and its panic and string helpers) is reserved during
+  collision analysis, so `foo(value = 1)` alongside a function named
+  `foo__default_1` is refused instead of defining one symbol twice; and a crate
+  whose pyo3 predates **0.26** — where `Python::initialize` / `Python::attach`
+  arrived — is refused with a diagnostic naming the version, the floor and the
+  way out, instead of failing later with rustc errors about generated code. See
+  `docs/src/pyo3.md`.
+
 ### Changed
 - **A `@rust` call no longer re-resolves everything on every call**
   ([#253](https://github.com/AtelierArith/RustCall.jl/issues/253)). Each call

@@ -20,6 +20,29 @@ This page describes what is available today:
   link plan, and bind the result. **This is the part you use**; the two above
   are what it is built on, and what you reach for when it refuses.
 
+## Which pyo3 versions work
+
+Most of what RustCall generates for a PyO3 crate calls the crate's own functions
+and works on any pyo3 the crate itself builds against.
+
+Two shapes are different, because their wrappers have to reach Python
+themselves — a **defaulted callable** (`#[pyo3(signature = (x = 1))]`) and a
+**class made Python-owned by inheritance** (`#[pyclass(extends = ...)]`). Those
+are emitted with `Python::initialize` and `Python::attach`, which arrived in
+**pyo3 0.26**; 0.25 and earlier spell the same operations
+`pyo3::prepare_freethreaded_python` and `Python::with_gil`. A crate on an older
+pyo3 is refused *before* the wrapper is built, naming the version it resolved
+and the floor, rather than failing later with rustc errors about generated code
+you never wrote.
+
+RustCall also aliases the crate's own pyo3 as `rustcall_pyo3` for those
+wrappers, and names the **package Cargo resolved** — by exact version for a
+registry release, by directory for a `path` dependency, and by resolved commit
+for a `git` one. That matters: two pyo3 instances in one build do not merely
+duplicate work, they produce a dispatcher whose `Python` and traits come from a
+different crate instance than the types in your macro metadata, and nothing
+using the dispatcher compiles.
+
 ## Using it
 
 ```julia
