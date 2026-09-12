@@ -352,6 +352,56 @@ fn default_arity_symbols_are_reserved_against_a_natural_name() {
     );
 }
 
+/// The same for a class: a defaulted method also defines
+/// `rustcall_C_foo__default_1`, so a method literally named `foo__default_1` in
+/// that class is a collision (#392 review — the first fix covered only free
+/// functions).
+#[test]
+fn method_default_arity_symbols_are_reserved_too() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct C { value: i32 }
+        #[pymethods]
+        impl C {
+            #[new]
+            pub fn new() -> Self { Self { value: 0 } }
+            #[pyo3(signature = (value = 1))]
+            pub fn foo(&self, value: i32) -> i32 { value }
+            pub fn foo__default_1(&self) -> i32 { 0 }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let class = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "C")
+        .unwrap();
+    let refused: Vec<_> = class
+        .methods
+        .iter()
+        .filter(|m| !m.skip_reason.is_empty())
+        .collect();
+    assert_eq!(refused.len(), 1, "expected exactly one refusal");
+    assert!(
+        refused[0].skip_reason.contains("symbol"),
+        "refused for the wrong reason: {}",
+        refused[0].skip_reason
+    );
+    assert_eq!(
+        wrapped
+            .lib_rs
+            .matches("fn rustcall_C_foo__default_1(")
+            .count(),
+        1,
+        "the contested symbol is defined more than once"
+    );
+}
+
 /// A defaulted function on its own still gets every arity.
 #[test]
 fn default_arity_symbols_are_emitted_when_nothing_collides() {

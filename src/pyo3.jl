@@ -1623,7 +1623,7 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     write(joinpath(wrapper_path, "Cargo.toml"),
           generate_pyo3_wrapper_cargo_toml(
               info, plan; wrapper_name = wrapper_name,
-              python_dispatch = _wrapper_uses_python_dispatch(source.manifest),
+              python_dispatch = _wrapper_uses_python_dispatch(source.lib_rs),
               pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
           _root_patch_toml(info.path))
     write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
@@ -1930,14 +1930,26 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
     return join(lines, "\n") * "\n"
 end
 
-function _wrapper_uses_python_dispatch(manifest::AbstractDict)
-    has_default(args) = any(a -> !isempty(_mstr(a, "python_default")), args)
-    any(f -> has_default(_mvec(f, "args")), _mvec(manifest, "functions")) && return true
-    for st in _mvec(manifest, "structs")
-        !isempty(_mstr(st, "pyo3_extends")) && return true
-        any(m -> has_default(_mvec(m, "args")), _mvec(st, "methods")) && return true
-    end
-    return false
+"""
+    _wrapper_uses_python_dispatch(lib_rs) -> Bool
+
+Whether the generated wrapper actually names `rustcall_pyo3`.
+
+Read from the emitted source, not inferred from the manifest. The manifest
+records what the scan *saw*, and neither "has a defaulted callable" nor "has one
+the generator emitted" answers this question:
+
+* a defaulted callable the generator **refused** keeps its `python_default` in
+  the manifest while no dispatcher is emitted for it — counting it refuses a
+  whole wrapper on an older pyo3 over code that is not there (#392 review);
+* a class made Python-owned by exactly such a refused method keeps its handle,
+  and *that* handle is `Py<PyAny>` — it does need the alias, with no emitted
+  defaulted method anywhere to infer it from (#371).
+
+The source is the one thing that cannot be wrong about what the source needs.
+"""
+function _wrapper_uses_python_dispatch(lib_rs::AbstractString)
+    return occursin("rustcall_pyo3", lib_rs)
 end
 
 """
@@ -1992,6 +2004,11 @@ dependency can name with a bare version requirement.
 
 Cargo reports the registry protocol it used, and the sparse protocol has been
 the default since 1.70, so both spellings occur.
+
+Compared for **equality**, never as a prefix: a custom registry whose URL merely
+begins with one of these — `...crates.io-index-mirror` — would otherwise be
+taken for crates.io and aliased by bare version, which is the second-instance
+failure the refusal exists to prevent (#392 review).
 """
 const CRATES_IO_SOURCES = ("registry+https://github.com/rust-lang/crates.io-index",
                            "sparse+https://index.crates.io/")
@@ -2068,7 +2085,7 @@ function _pyo3_alias_toml(dependency)
         # the very same package rather than a registry release that happens to
         # share its version.
         push!(lines, "path = \"$(escape_toml_string(dependency.dir))\"")
-    elseif any(crates_io -> startswith(source, crates_io), CRATES_IO_SOURCES)
+    elseif source in CRATES_IO_SOURCES
         push!(lines, "version = \"=$(dependency.version)\"")
     else
         # A registry that is not crates.io. A bare `version` would select

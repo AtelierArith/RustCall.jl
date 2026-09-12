@@ -991,6 +991,15 @@ _manifest(text::AbstractString) = TOML.parse(text)
         @test !occursin("rev =", toml)
         @test !occursin("branch =", toml)
 
+        # A URL that merely *starts* with a crates.io index is a different
+        # registry, and taking it for crates.io would alias by bare version —
+        # the second-instance failure again (#392 review). Compared for
+        # equality, not prefix.
+        mirror = (; version = "0.29.2",
+                  source = "registry+https://github.com/rust-lang/crates.io-index-mirror",
+                  dir = "/mirror/pyo3")
+        @test_throws RustCall.RustError RustCall._pyo3_alias_toml(mirror)
+
         # A registry that is not crates.io cannot be named in a generated
         # dependency — `registry = "<name>"` needs a name from the user's Cargo
         # configuration — and a bare version would quietly select crates.io.
@@ -1067,6 +1076,22 @@ _manifest(text::AbstractString) = TOML.parse(text)
                 rm(root; force = true, recursive = true)
             end
         end
+    end
+
+    @testset "the dispatcher alias follows the emitted source (#392 review)" begin
+        # Not inferred from the manifest. A defaulted callable the generator
+        # refused keeps its `python_default` there while no dispatcher is
+        # emitted for it — and, the other way, a class made Python-owned by
+        # exactly such a refused method keeps a `Py<PyAny>` handle that *does*
+        # need the alias, with no emitted default anywhere to infer it from
+        # (#371). The source answers both without a heuristic.
+        @test RustCall._wrapper_uses_python_dispatch(
+            "pub extern \"C\" fn rustcall_add(a: i32) -> i32 { a }") === false
+        @test RustCall._wrapper_uses_python_dispatch(
+            "use ::rustcall_pyo3::types::PyAnyMethods as _;") === true
+        # The #371 shape: a Python-owned handle and nothing else.
+        @test RustCall._wrapper_uses_python_dispatch(
+            "object: ::std::option::Option<::rustcall_pyo3::Py<::rustcall_pyo3::PyAny>>,") === true
     end
 
     @testset "a dispatcher wrapper refuses a pyo3 older than it needs (#370)" begin

@@ -939,9 +939,24 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             if !m.skip_reason.is_empty() || m.symbol.is_empty() {
                 continue;
             }
-            let mut symbols = wrapper_symbols(&m.symbol).to_vec();
-            if declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type) {
-                symbols.extend(string_helper_symbols(&format!("{}_{}", class_name, m.name)));
+            // Every arity, exactly as for free functions above: a defaulted
+            // method also defines `rustcall_C_foo__default_1` and its helpers,
+            // so a method literally named `foo__default_1` in the same class is
+            // a collision (#370, #392 review).
+            let strings =
+                declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type);
+            let string_owner = format!("{}_{}", class_name, m.name);
+            let mut symbols = Vec::new();
+            for omitted in 0..=crate::claims::trailing_default_count(&m.args) {
+                symbols.extend(wrapper_symbols(&crate::claims::default_arity_name(
+                    &m.symbol, omitted,
+                )));
+                if strings {
+                    symbols.extend(string_helper_symbols(&crate::claims::default_arity_name(
+                        &string_owner,
+                        omitted,
+                    )));
+                }
             }
             match taken
                 .iter()
