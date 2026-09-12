@@ -466,7 +466,7 @@ mod tests {
         assert_eq!(e.source.matches("pub struct __RustCallBoundary").count(), 1);
         assert_eq!(
             e.source
-                .matches("static __RUSTCALL_QUIET_HOOK_ONCE")
+                .matches("static __RUSTCALL_QUIET_HOOK_LIVE")
                 .count(),
             1
         );

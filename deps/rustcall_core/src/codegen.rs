@@ -655,6 +655,11 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
 /// * `rustcall_uninstall_panic_hook`, called before `dlclose` so the closure is
 ///   out of the registry before its code is unmapped.
 ///
+/// Install and uninstall are **repeatable**, guarded by one mutex rather than a
+/// `Once`: an image can be reopened while it is still mapped — a `dlopen` of the
+/// same path racing the last `dlclose` — and a `Once` would leave that reopened
+/// image without a hook for the rest of the process (#388 review).
+///
 /// The uninstaller restores std's **default** hook rather than the exact hook
 /// that was replaced: naming the hook's argument type (`PanicHookInfo`, renamed
 /// from `PanicInfo` in 1.81) to store it would pin a minimum Rust version on
@@ -693,9 +698,10 @@ pub fn panic_hook_items() -> TokenStream2 {
                 ::std::cell::Cell::new(0);
         }
 
-        static __RUSTCALL_QUIET_HOOK_ONCE: ::std::sync::Once = ::std::sync::Once::new();
-        static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::atomic::AtomicBool =
-            ::std::sync::atomic::AtomicBool::new(false);
+        /// `true` while this image's hook is the one std will call. A mutex, not a
+        /// `Once`: installing again after an uninstall has to work.
+        static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::Mutex<bool> =
+            ::std::sync::Mutex::new(false);
 
         /// Raises the boundary depth for as long as a wrapper body runs, so the
         /// hook above knows the panic it is about to print is one Julia will
@@ -721,21 +727,32 @@ pub fn panic_hook_items() -> TokenStream2 {
 
         #[no_mangle]
         pub extern "C" fn #install() {
-            __RUSTCALL_QUIET_HOOK_ONCE.call_once(|| {
-                let rustcall_previous = ::std::panic::take_hook();
-                ::std::panic::set_hook(::std::boxed::Box::new(move |rustcall_info| {
-                    if __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.get()).unwrap_or(0) == 0 {
-                        rustcall_previous(rustcall_info);
-                    }
-                }));
-                __RUSTCALL_QUIET_HOOK_LIVE.store(true, ::std::sync::atomic::Ordering::Release);
-            });
+            // A poisoned lock means a panic inside this function, which cannot
+            // happen; leaving the default hook in place is the safe answer.
+            if let ::std::result::Result::Ok(mut rustcall_live) =
+                __RUSTCALL_QUIET_HOOK_LIVE.lock()
+            {
+                if !*rustcall_live {
+                    let rustcall_previous = ::std::panic::take_hook();
+                    ::std::panic::set_hook(::std::boxed::Box::new(move |rustcall_info| {
+                        if __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.get()).unwrap_or(0) == 0 {
+                            rustcall_previous(rustcall_info);
+                        }
+                    }));
+                    *rustcall_live = true;
+                }
+            }
         }
 
         #[no_mangle]
         pub extern "C" fn #uninstall() {
-            if __RUSTCALL_QUIET_HOOK_LIVE.swap(false, ::std::sync::atomic::Ordering::AcqRel) {
-                let _ = ::std::panic::take_hook();
+            if let ::std::result::Result::Ok(mut rustcall_live) =
+                __RUSTCALL_QUIET_HOOK_LIVE.lock()
+            {
+                if *rustcall_live {
+                    let _ = ::std::panic::take_hook();
+                    *rustcall_live = false;
+                }
             }
         }
     }

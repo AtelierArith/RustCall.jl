@@ -160,14 +160,16 @@ publication takes the state lock.
 thread-local boundary depth at its crate root and exports
 `rustcall_install_panic_hook` / `rustcall_uninstall_panic_hook`; `load_artifact!`
 installs once per image right after `dlopen` (never lazily — that is what removes
-the race) and `close_artifact_handle!` removes it before `dlclose`. The hook is
+the race) and `close_artifact_handle!` removes it before `dlclose`, on the last
+loader reference and only while the handle still has none left. The hook is
 silent inside a boundary and delegates to the hook it replaced outside one. It
 exists only where a generator writes the whole file
 (`rustcall_core::codegen::PanicHook::FileOwned`: inline blocks, `@irust`,
-generics, the generated wrapper crate — the policies with
-`quiet_panic_hook = true`); `#[julia]` in a crate RustCall does not write keeps
-the default hook, because an attribute proc macro has nowhere to put crate-wide
-state. `RUSTCALL_PANIC_HOOK=default` and `-C prefer-dynamic` both keep the
+generics, the generated wrapper crate), and the loader asks the **image** for the
+installer symbol rather than asking the policy — every `@rust_crate` module loads
+with `crate_direct_policy()`, so a policy flag would miss the generated wrapper
+crate. `#[julia]` in a crate RustCall does not write keeps the default hook,
+because an attribute proc macro has nowhere to put crate-wide state. `RUSTCALL_PANIC_HOOK=default` and `-C prefer-dynamic` both keep the
 default hook. See `docs/src/panics.md`.
 
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.

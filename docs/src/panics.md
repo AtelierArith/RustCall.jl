@@ -74,7 +74,9 @@ points at a closure whose code is gone.
 **Where it applies.** Only to artifacts whose source RustCall generates in full:
 inline `rust"""` blocks (both the direct-`rustc` and the Cargo flavour),
 `@irust`, monomorphized generics and the generated `@rust_crate` wrapper crate.
-Those are the doors whose `LoadPolicy` carries `quiet_panic_hook = true`.
+Nothing has to declare that: `rustcall_install_panic_hook` is exported exactly by
+those artifacts, so the loader asks the image rather than a policy, and a door
+cannot forget to opt in.
 
 **Where it does not.** A crate *you* wrote and annotate with `#[julia]` keeps
 the default hook, and its panics still print. The hook needs a depth counter

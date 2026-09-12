@@ -270,8 +270,9 @@ thread_local! {
     static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > =
     ::std::cell::Cell::new(0);
 }
-static __RUSTCALL_QUIET_HOOK_ONCE: ::std::sync::Once = ::std::sync::Once::new();
-static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::atomic::AtomicBool = ::std::sync::atomic::AtomicBool::new(
+/// `true` while this image's hook is the one std will call. A mutex, not a
+/// `Once`: installing again after an uninstall has to work.
+static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::Mutex<bool> = ::std::sync::Mutex::new(
     false,
 );
 /// Raises the boundary depth for as long as a wrapper body runs, so the
@@ -292,8 +293,10 @@ impl ::std::ops::Drop for __RustCallBoundary {
 }
 #[no_mangle]
 pub extern "C" fn rustcall_install_panic_hook() {
-    __RUSTCALL_QUIET_HOOK_ONCE
-        .call_once(|| {
+    if let ::std::result::Result::Ok(mut rustcall_live) = __RUSTCALL_QUIET_HOOK_LIVE
+        .lock()
+    {
+        if !*rustcall_live {
             let rustcall_previous = ::std::panic::take_hook();
             ::std::panic::set_hook(
                 ::std::boxed::Box::new(move |rustcall_info| {
@@ -304,13 +307,18 @@ pub extern "C" fn rustcall_install_panic_hook() {
                     }
                 }),
             );
-            __RUSTCALL_QUIET_HOOK_LIVE
-                .store(true, ::std::sync::atomic::Ordering::Release);
-        });
+            *rustcall_live = true;
+        }
+    }
 }
 #[no_mangle]
 pub extern "C" fn rustcall_uninstall_panic_hook() {
-    if __RUSTCALL_QUIET_HOOK_LIVE.swap(false, ::std::sync::atomic::Ordering::AcqRel) {
-        let _ = ::std::panic::take_hook();
+    if let ::std::result::Result::Ok(mut rustcall_live) = __RUSTCALL_QUIET_HOOK_LIVE
+        .lock()
+    {
+        if *rustcall_live {
+            let _ = ::std::panic::take_hook();
+            *rustcall_live = false;
+        }
     }
 }

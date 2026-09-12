@@ -72,21 +72,20 @@ pub fn hook_probe_two(n: i32) -> i32 {
         end
     end
 
-    @testset "only the file-owned doors ask for it" begin
-        # `#[julia]` in a crate RustCall does not write has nowhere to put the
-        # shared items, so those doors must not try to install anything.
-        for policy in (RustCall.inline_rustc_policy(), RustCall.inline_cargo_policy(),
-                       RustCall.irust_policy(), RustCall.generics_policy(),
-                       RustCall.crate_wrapper_policy())
-            @test policy.quiet_panic_hook
-        end
-        for policy in (RustCall.crate_direct_policy(), RustCall.hot_reload_policy(),
-                       RustCall.helper_library_policy())
-            @test !policy.quiet_panic_hook
-        end
-        # Nothing is installed into a handle that exports no installer.
-        @test RustCall.install_quiet_panic_hook!(RustCall.inline_rustc_policy(), C_NULL) ===
-              false
+    @testset "the image decides, not the policy" begin
+        # `rustcall_install_panic_hook` exists exactly when RustCall generated the
+        # source in full, so the installer is resolved on the handle. A policy flag
+        # was tried first and was wrong: every `@rust_crate` module loads with
+        # `crate_direct_policy()`, the generated PyO3 wrapper crate included, so
+        # the flag excluded the one wrapper flavour that does carry a hook
+        # (#388 review).
+        @test !any(name -> occursin("quiet_panic_hook", name),
+                   string.(fieldnames(RustCall.LoadPolicy)))
+        loadpolicy = read(joinpath(dirname(@__DIR__), "src", "loadpolicy.jl"), String)
+        @test occursin("Libdl.dlsym(handle, QUIET_PANIC_INSTALL_SYMBOL", loadpolicy)
+        # Nothing is installed into, or removed from, a handle that has no such
+        # symbol.
+        @test RustCall.install_quiet_panic_hook!(C_NULL) === false
         @test RustCall.uninstall_quiet_panic_hook!(C_NULL) === false
     end
 
@@ -252,6 +251,34 @@ pub fn hook_probe_two(n: i32) -> i32 {
             # The image was still mapped across the first close, so it was still
             # quiet.
             @test !occursin(_PANICKED_AT, err)
+        end
+
+        @testset "a hook can be installed again after it was removed" begin
+            # An image can be reopened while it is still mapped — a `dlopen` of
+            # the same path racing the last `dlclose` — and the reopen's own
+            # installer call has to be able to restore the hook. A `Once` could
+            # not, which left such an image noisy for the rest of the process
+            # (#388 review).
+            code, out, err = _run_child("""
+            using RustCall, Libdl
+            $(_BLOCK)
+            handle = only(h for (_, (h, _)) in RustCall.RUST_LIBRARIES
+                          if Libdl.dlsym(h, :rustcall_hook_probe_one;
+                                         throw_error = false) !== nothing)
+            println("removed=", RustCall.uninstall_quiet_panic_hook!(handle))
+            try; hook_probe_one(Int32(-1)); catch; end   # prints: no hook
+            println("reinstalled=", RustCall.install_quiet_panic_hook!(handle))
+            try; hook_probe_one(Int32(-2)); catch; end   # must be quiet again
+            println("done")
+            """)
+            @test code == 0
+            @test occursin("removed=true", out)
+            @test occursin("reinstalled=true", out)
+            @test occursin("done", out)
+            # Exactly one line, from the window with no hook: the reinstall took.
+            @test count("panicked at", err) == 1
+            @test occursin("hook_probe_one refuses -1", err)
+            @test !occursin("hook_probe_one refuses -2", err)
         end
 
         @testset "closing an artifact removes its hook before unmapping it" begin
