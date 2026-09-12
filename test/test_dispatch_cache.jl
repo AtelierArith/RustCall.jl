@@ -95,13 +95,38 @@ using RustCall
         # `test_hot_reload_transaction.jl`, which runs against this same path and
         # is where a stale snapshot would actually show up as a wrong answer.
 
+        @testset "unloading a library moves the epoch" begin
+            # The property the whole scheme rests on, pinned against the one
+            # event that would actually hurt: a snapshot kept across an unload
+            # is a pointer into an image the registry no longer names. The bump
+            # is not written at the unload site — it comes from the state writes
+            # the unload performs — so this asserts the consequence rather than
+            # the mechanism, and keeps holding if the mechanism is rewritten.
+            rust"""
+            #[julia]
+            pub fn dispatch_cache_unload() -> i32 { 7 }
+            """
+            name = RustCall.get_current_library()
+            before = RustCall.artifact_epoch()
+            RustCall.unload_library(name)
+            @test RustCall.artifact_epoch() > before
+        end
+
         @testset "the fast path takes no lock" begin
             # #253's second acceptance criterion, as a property rather than a
             # timing: a warmed call site must complete while another task holds
             # `REGISTRY_LOCK`. Before the cache it could not — every call took
             # that lock on the way to the snapshot, which is why four threads
             # ran slower than one.
-            call_site()   # warm it
+            #
+            # Warmed *twice*, deliberately. The first resolution of a symbol
+            # publishes its pointer into the image's own cache, and that
+            # publication is itself a state write, so it bumps the epoch and
+            # leaves the entry it just produced stale. The second call finds the
+            # pointer already there, writes nothing, and its entry sticks. One
+            # extra resolution per call site, once.
+            call_site()
+            call_site()
             held = Channel{Nothing}(1)
             release = Channel{Nothing}(1)
             holder = Threads.@spawn lock(RustCall.REGISTRY_LOCK) do
@@ -110,13 +135,14 @@ using RustCall
             end
             take!(held)
             result = Threads.@spawn call_site()
-            try
-                @test timedwait(() -> istaskdone(result), 20.0) === :ok
-                @test fetch(result) == 1
-            finally
-                put!(release, nothing)
-                wait(holder)
-            end
+            finished = timedwait(() -> istaskdone(result), 20.0)
+            # Released before anything waits on `result`: if the call did take
+            # the lock, `fetch` would block until the holder let go, and the
+            # holder is waiting for this.
+            put!(release, nothing)
+            wait(holder)
+            @test finished === :ok
+            @test fetch(result) == 1
         end
 
         @testset "a return annotation is still checked after a cache hit" begin
