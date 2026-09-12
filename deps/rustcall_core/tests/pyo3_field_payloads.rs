@@ -306,6 +306,74 @@ fn python_owned_classes_keep_descriptor_and_vec_field_abis() {
     assert!(!wrapped.lib_rs.contains("call_method(\"doubled\""));
 }
 
+/// The generated default-arity entry points are symbols like any other, and have
+/// to be reserved before wrappers are emitted (#370). `foo(value = 1)` also
+/// defines `rustcall_foo__default_1`, so a root function actually *named*
+/// `foo__default_1` is a collision — and reserving only `rustcall_foo` let both
+/// items through to define the same symbol twice.
+#[test]
+fn default_arity_symbols_are_reserved_against_a_natural_name() {
+    let scan = extract(
+        r#"
+        #[pyfunction]
+        #[pyo3(signature = (value = 1))]
+        pub fn foo(value: i32) -> i32 { value }
+
+        #[pyfunction]
+        pub fn foo__default_1() -> i32 { 0 }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let refused: Vec<_> = wrapped
+        .manifest
+        .functions
+        .iter()
+        .filter(|f| !f.skip_reason.is_empty())
+        .collect();
+    // One of the two has to lose; which one is the existing ordering rule's
+    // business. What must not happen is both being emitted.
+    assert_eq!(refused.len(), 1, "expected exactly one refusal");
+    assert!(
+        refused[0].skip_reason.contains("symbol"),
+        "refused for the wrong reason: {}",
+        refused[0].skip_reason
+    );
+    // Exactly one definition of the contested symbol. The open paren matters:
+    // without it this also counts `rustcall_foo__default_1_take_panic`.
+    assert_eq!(
+        wrapped
+            .lib_rs
+            .matches("fn rustcall_foo__default_1(")
+            .count(),
+        1,
+        "the contested symbol is defined more than once"
+    );
+}
+
+/// A defaulted function on its own still gets every arity.
+#[test]
+fn default_arity_symbols_are_emitted_when_nothing_collides() {
+    let scan = extract(
+        r#"
+        #[pyfunction]
+        #[pyo3(signature = (value = 1))]
+        pub fn solo(value: i32) -> i32 { value }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    assert!(wrapped
+        .manifest
+        .functions
+        .iter()
+        .all(|f| f.skip_reason.is_empty()));
+    assert!(wrapped.lib_rs.contains("fn rustcall_solo("));
+    assert!(wrapped.lib_rs.contains("fn rustcall_solo__default_1("));
+}
+
 /// A Python-owned method returning `&str` used to fail the whole wrapper crate
 /// (#370): the reference is extracted inside `Python::attach` and borrows the
 /// Python string bound to `py`, so the helper could not return it — and had it

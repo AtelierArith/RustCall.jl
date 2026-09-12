@@ -299,7 +299,7 @@ fn function_wrappers(
     krate: &Ident,
     f: &crate::manifest::Function,
 ) -> Result<(TokenStream2, Vec<crate::manifest::Function>), String> {
-    let defaults = trailing_default_count(&f.args);
+    let defaults = crate::claims::trailing_default_count(&f.args);
     let has_defaults = f.args.iter().any(|arg| !arg.python_default.is_empty());
     if !has_defaults {
         let (tokens, entry) = function_wrapper(krate, f)?;
@@ -312,21 +312,14 @@ fn function_wrappers(
         let mut entry = f.clone();
         entry.args.truncate(f.args.len() - omitted);
         if omitted > 0 {
-            entry.symbol = format!("{}__default_{omitted}", f.symbol);
-            entry.ffi_name = format!("{}__default_{omitted}", f.ffi_name);
+            entry.symbol = crate::claims::default_arity_name(&f.symbol, omitted);
+            entry.ffi_name = crate::claims::default_arity_name(&f.ffi_name, omitted);
         }
         let (generated, updated) = python_function_wrapper(krate, &entry, f)?;
         tokens.extend(generated);
         entries.push(updated);
     }
     Ok((tokens, entries))
-}
-
-fn trailing_default_count(args: &[Arg]) -> usize {
-    args.iter()
-        .rev()
-        .take_while(|arg| !arg.python_default.is_empty())
-        .count()
 }
 
 fn python_function_wrapper(
@@ -841,12 +834,12 @@ fn python_class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> T
             s.methods.push(refused);
             continue;
         }
-        let defaults = trailing_default_count(&original.args);
+        let defaults = crate::claims::trailing_default_count(&original.args);
         for omitted in 0..=defaults {
             let mut entry = original.clone();
             entry.args.truncate(original.args.len() - omitted);
             if omitted > 0 {
-                entry.symbol = format!("{}__default_{omitted}", original.symbol);
+                entry.symbol = crate::claims::default_arity_name(&original.symbol, omitted);
             }
             match python_method_wrapper(
                 &class,
@@ -1061,10 +1054,10 @@ fn python_method_wrapper(
         original.python_name.clone()
     };
     let omitted = original.args.len() - entry.args.len();
-    let mut owner_name = crate::codegen::method_string_owner(class_name, &entry.name);
-    if omitted > 0 {
-        owner_name.push_str(&format!("__default_{omitted}"));
-    }
+    let owner_name = crate::claims::default_arity_name(
+        &crate::codegen::method_string_owner(class_name, &entry.name),
+        omitted,
+    );
 
     if entry.is_constructor {
         let attached = quote! {

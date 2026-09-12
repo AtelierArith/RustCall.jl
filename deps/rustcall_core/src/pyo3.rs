@@ -630,11 +630,7 @@ fn mark_julia_surface_collisions_pass(
                 .take_while(|arg| !arg.python_default.is_empty())
                 .count();
             (0..=defaults).map(move |omitted| {
-                let owner = if omitted == 0 {
-                    f.ffi_name.clone()
-                } else {
-                    format!("{}__default_{omitted}", f.ffi_name)
-                };
+                let owner = crate::claims::default_arity_name(&f.ffi_name, omitted);
                 let name = format!("{prefix}_{owner}");
                 ((f.module_path.clone(), name.clone()), name, f.cfg.clone())
             })
@@ -665,11 +661,7 @@ fn mark_julia_surface_collisions_pass(
                 .take_while(|arg| !arg.python_default.is_empty())
                 .count();
             for omitted in 0..=defaults {
-                let variant = if omitted == 0 {
-                    owner.clone()
-                } else {
-                    format!("{owner}__default_{omitted}")
-                };
+                let variant = crate::claims::default_arity_name(&owner, omitted);
                 let name = format!("{prefix}_{variant}");
                 aggregate_names.push(((s.module_path.clone(), name.clone()), name, m.cfg.clone()));
             }
@@ -834,9 +826,24 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !f.attribute.is_pyo3_scan() || !f.skip_reason.is_empty() || f.symbol.is_empty() {
             continue;
         }
-        let mut symbols = wrapper_symbols(&f.symbol).to_vec();
-        if declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type) {
-            symbols.extend(string_helper_symbols(&f.ffi_name));
+        let strings =
+            declares_string_helpers(&f.return_type, &f.ok_type, &f.err_type, &f.inner_type);
+        // Every arity the wrapper crate will emit for this entry, not just the
+        // full one. A defaulted `foo(value = 1)` also defines
+        // `rustcall_foo__default_1` and its panic and string helpers, so a root
+        // function named `foo__default_1` is a collision — and reserving only
+        // `rustcall_foo` let both items through to emit the same symbol (#370).
+        let mut symbols = Vec::new();
+        for omitted in 0..=crate::claims::trailing_default_count(&f.args) {
+            symbols.extend(wrapper_symbols(&crate::claims::default_arity_name(
+                &f.symbol, omitted,
+            )));
+            if strings {
+                symbols.extend(string_helper_symbols(&crate::claims::default_arity_name(
+                    &f.ffi_name,
+                    omitted,
+                )));
+            }
         }
         let f_cfg = f.cfg.clone();
         if let Some((_, owner, _)) = taken
