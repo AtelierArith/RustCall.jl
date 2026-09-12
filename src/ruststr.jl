@@ -93,7 +93,12 @@ mutable struct CallTargetCache
     # A single atomic field holding an immutable record, so a reader sees either
     # the whole previous answer or the whole new one. Reading is one atomic
     # pointer load; writing allocates, and happens only when the epoch moved.
-    @atomic entry::Union{Nothing, Tuple{Int, CallTarget}}
+    #
+    # The record carries the process that wrote it as well as the epoch. This
+    # object is spliced into a method body, so it is serialised with everything
+    # else when a package that calls the wrapper during precompilation is
+    # precompiled — pointers included. See `SESSION_TOKEN`.
+    @atomic entry::Union{Nothing, Tuple{SessionToken, Int, CallTarget}}
     CallTargetCache() = new(nothing)
 end
 
@@ -122,8 +127,12 @@ path: one atomic load and one integer comparison, no lock.
 @inline function cached_target_hit(cache::CallTargetCache)
     entry = @atomic :acquire cache.entry
     entry === nothing && return nothing
-    entry[1] === artifact_epoch() || return nothing
-    return entry[2]
+    # This process first: an entry deserialised from a precompiled module holds
+    # pointers from the process that wrote it, and the epoch alone would let one
+    # through whenever the two counters happened to agree.
+    entry[1] === session_token() || return nothing
+    entry[2] === artifact_epoch() || return nothing
+    return entry[3]
 end
 
 """
@@ -133,7 +142,7 @@ Record `target` as `cache`'s answer for `epoch`. `epoch` must have been sampled
 **before** `target` was resolved.
 """
 @inline function publish_call_target!(cache::CallTargetCache, epoch::Int, target::CallTarget)
-    @atomic :release cache.entry = (epoch, target)
+    @atomic :release cache.entry = (session_token(), epoch, target)
     return target
 end
 

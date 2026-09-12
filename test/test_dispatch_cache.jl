@@ -112,6 +112,34 @@ using RustCall
             @test RustCall.artifact_epoch() > before
         end
 
+        @testset "an entry from another process is never a hit" begin
+            # A `CallTargetCache` is spliced into the body of the wrapper it
+            # belongs to, so a package that calls a generated wrapper from a
+            # precompile workload serialises it — pointers and all — into its
+            # `.ji`. The epoch cannot tell: it starts at the same value in every
+            # process, so a deserialised one can equal a live one. Only the
+            # session token can, and it does so by identity rather than by luck
+            # (#390 review).
+            cache = RustCall.CallTargetCache()
+            target = RustCall.CallTarget(Ptr{Cvoid}(1), Ptr{Cvoid}(2), C_NULL, Ref(true),
+                                         Ptr{Cvoid}(3), "lib", nothing, nothing, 0, C_NULL)
+            RustCall.publish_call_target!(cache, RustCall.artifact_epoch(), target)
+            @test RustCall.cached_target_hit(cache) === target
+            # Exactly what loading into a fresh process does: a new token, while
+            # the epoch is left alone so that it *would* have matched.
+            previous = RustCall.session_token()
+            epoch_then = RustCall.artifact_epoch()
+            try
+                @eval RustCall SESSION_TOKEN = SessionToken()
+                @test RustCall.session_token() !== previous
+                @test RustCall.artifact_epoch() === epoch_then
+                @test RustCall.cached_target_hit(cache) === nothing
+            finally
+                @eval RustCall SESSION_TOKEN = $previous
+            end
+            @test RustCall.cached_target_hit(cache) === target
+        end
+
         @testset "the fast path takes no lock" begin
             # #253's second acceptance criterion, as a property rather than a
             # timing: a warmed call site must complete while another task holds
@@ -143,6 +171,72 @@ using RustCall
             wait(holder)
             @test finished === :ok
             @test fetch(result) == 1
+        end
+
+        @testset "a wrapper called during precompilation still calls correctly" begin
+            # The end-to-end form of the test above, and the scenario that makes
+            # it matter: a package whose module body *calls* a generated wrapper
+            # is precompiled with that call's cache entry — native pointers and
+            # all — written into its `.ji` file.
+            #
+            # What makes this a test rather than a coincidence is the third
+            # line of the child script. A fresh process would normally be at a
+            # different epoch, and the entry would be rejected for the wrong
+            # reason; putting the counter back where it stood when the entry was
+            # written removes that accident, so the only thing that can reject it
+            # is the session token. Before the token, this printed garbage or
+            # crashed the child.
+            root = mktempdir()
+            pkg_name = "DispatchCachePrecomp"
+            # Hard-coded, like the other precompilation tests: `UUIDs` is not a
+            # test dependency, and a fixed id is fine for a package that is
+            # created, loaded and deleted inside one testset.
+            pkg_uuid = "4e6b2c18-9d07-4a35-8f21-6c3d9b5e7a02"
+            pkgdir_ = joinpath(root, pkg_name)
+            mkpath(joinpath(pkgdir_, "src"))
+            write(joinpath(pkgdir_, "Project.toml"), """
+            name = "$pkg_name"
+            uuid = "$pkg_uuid"
+            version = "0.1.0"
+
+            [deps]
+            RustCall = "$(Base.PkgId(RustCall).uuid)"
+            """)
+            write(joinpath(pkgdir_, "src", "$pkg_name.jl"), """
+            module $pkg_name
+            using RustCall
+            rust\"\"\"
+            #[julia]
+            pub fn dispatch_cache_precomp(a: i32) -> i32 { a + 1 }
+            \"\"\"
+            # Called here, while the package is being precompiled: this is what
+            # populates the wrapper's cache and serialises it.
+            const AT_PRECOMPILE = dispatch_cache_precomp(Int32(41))
+            const EPOCH_AT_PRECOMPILE = RustCall.artifact_epoch()
+            end
+            """)
+            project = pkgdir(RustCall)
+            sep = Sys.iswindows() ? ";" : ":"
+            cache_dir = joinpath(root, "rustcall-cache")
+            function in_child(script::AbstractString)
+                withenv("JULIA_LOAD_PATH" => join((project, root, "@stdlib"), sep),
+                        "RUSTCALL_CACHE_DIR" => cache_dir,
+                        "RUSTCALL_SUPPRESS_HELPERS_WARNING" => "1") do
+                    readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $script`;
+                                       stderr = stderr))
+                end
+            end
+            try
+                @test in_child("using $pkg_name; print($pkg_name.AT_PRECOMPILE)") == "42"
+                out = in_child("""
+                    using RustCall, $pkg_name
+                    RustCall.ARTIFACT_EPOCH[] = $pkg_name.EPOCH_AT_PRECOMPILE
+                    print($pkg_name.dispatch_cache_precomp(Int32(41)))
+                    """)
+                @test out == "42"
+            finally
+                rm(root; force = true, recursive = true)
+            end
         end
 
         @testset "a return annotation is still checked after a cache hit" begin

@@ -57,6 +57,44 @@ end
 const STATE = Base.Lockable(RustCallState(Dict{Symbol, Any}()))
 
 """
+    SessionToken
+
+The identity of one Julia process, for a cached answer that must not outlive it.
+"""
+mutable struct SessionToken end
+
+"""
+    SESSION_TOKEN
+
+A freshly allocated [`SessionToken`](@ref), replaced by `__init__` in every
+process, and the first half of what makes a cached `CallTarget` valid.
+
+# Why an object and not a number
+
+A `CallTargetCache` is spliced into the body of the wrapper it belongs to, so a
+package that calls a generated wrapper **from a precompile workload** serialises
+that cache into its `.ji` file with a populated entry — and the entry holds raw
+pointers belonging to the process that wrote them. [`ARTIFACT_EPOCH`](@ref)
+cannot tell: it starts at the same value in every process, so a deserialised
+epoch can equal a live one, and the entry would be accepted and its pointer
+called. That is a `ccall` into a process that no longer exists (#390 review).
+
+Identity settles it with certainty rather than probability. A deserialised entry
+carries the token object of the process that wrote it; this process allocated its
+own in `__init__`, and two distinct objects are never `===`. No counter
+collision, and no random seed that is merely unlikely to repeat, can make a
+foreign entry validate.
+"""
+global SESSION_TOKEN::SessionToken = SessionToken()
+
+"""
+    session_token() -> SessionToken
+
+This process's [`SESSION_TOKEN`](@ref).
+"""
+session_token() = SESSION_TOKEN
+
+"""
     ARTIFACT_EPOCH
 
 A counter bumped by **every** write to the state container, so a caller that
@@ -258,6 +296,12 @@ export @register_ffi_struct
 
 # Module initialization
 function __init__()
+    # A new identity for this process, before anything can consult a cache: a
+    # `CallTargetCache` deserialised from a precompiled module carries the token
+    # of the process that populated it, and must never be mistaken for a live
+    # one (#253, #390 review).
+    global SESSION_TOKEN = SessionToken()
+
     # The deprecated RTLD_GLOBAL escape hatch (#250, #277 Phase B2), read once:
     # a load policy must not change halfway through a session.
     _init_dlopen_global_override!()

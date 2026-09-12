@@ -207,6 +207,15 @@ happened since. Four rules hold this together:
   the mutation sites, which are many and which grow. Over-invalidating costs a
   re-resolution; under-invalidating is a call into a retired image, so the
   counter is conservative in the only direction that is safe.
+* **A cached entry carries the process that wrote it, not just the epoch.** The
+  cache object is spliced into its wrapper's method body, so a package that calls
+  a generated wrapper **from a precompile workload** serialises a populated entry
+  — native pointers included — into its `.ji`. `ARTIFACT_EPOCH` starts at the
+  same value in every process and cannot tell; a matching counter made the child
+  `ccall` a pointer from the process that wrote it (`signal 10: Bus error`,
+  reproduced). `SESSION_TOKEN` is a freshly allocated object replaced in
+  `__init__` and compared by `===`, so a foreign entry can never validate — an
+  identity, not a random seed that is merely unlikely to repeat.
 * **Sample the epoch before resolving, never after.** `_refresh_call_target!`
   reads it first; a write landing in between then leaves the entry stamped with
   the older epoch and it is re-resolved, where sampling afterwards could stamp a
