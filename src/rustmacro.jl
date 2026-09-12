@@ -565,7 +565,11 @@ end
 function _rust_call_typed_cached(cache::CallTargetCache, mod::Module, lib_name::String,
                                  func_name::String, ::Type{R},
                                  args::Vararg{Any, N}) where {R, N}
-    target = cached_target_hit(cache)
+    # `R` is part of the hit: the annotation is an expression, so one call site
+    # can ask for a different type on each call while sharing this cache, and an
+    # entry validated for another type would be read at the wrong width
+    # (#245, #390 review).
+    target = cached_target_hit(cache, R)
     target === nothing &&
         return _rust_call_typed_uncached(cache, mod, lib_name, func_name, R, args...)
     return guard_rust_panic_ptr(call_rust_function(target.func_ptr, R, args...),
@@ -602,7 +606,7 @@ end
     # failed the check must not be left behind for later calls to hit, which
     # would skip the check for the rest of the session (#245, #253).
     _check_return_annotation(target, func_name, R)
-    publish_call_target!(cache, epoch, target)
+    publish_call_target!(cache, epoch, target, R)
     return guard_rust_panic_ptr(call_rust_function(target.func_ptr, R, args...),
                                 target.channel, func_name)
 end

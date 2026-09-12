@@ -89,6 +89,25 @@ A cache belongs to a call site, not to a name: the generated wrapper of a
 spliced into the expansion rather than bound in the caller's module, so it needs
 no name of its own, cannot collide, and a redefinition gets a fresh one.
 """
+struct CachedTarget
+    """The process that resolved this. See `SESSION_TOKEN`."""
+    token::SessionToken
+    """The artifact epoch it was resolved at."""
+    epoch::Int
+    target::CallTarget
+    """
+    The `::T` annotation this entry was validated against, or `nothing` for a
+    call site that has none.
+
+    A `@rust` annotation is an *expression*, not a literal: `f(T) = @rust g()::T`
+    is one call site whose `T` changes between calls, sharing one cache. An entry
+    validated for `Int32` must not be handed to a call that asked for `Float64`,
+    which is the very confusion `_check_return_annotation` exists to refuse
+    (#245) — so the type it was checked for is part of what makes it valid.
+    """
+    checked::Any
+end
+
 mutable struct CallTargetCache
     # A single atomic field holding an immutable record, so a reader sees either
     # the whole previous answer or the whole new one. Reading is one atomic
@@ -98,7 +117,7 @@ mutable struct CallTargetCache
     # object is spliced into a method body, so it is serialised with everything
     # else when a package that calls the wrapper during precompilation is
     # precompiled — pointers included. See `SESSION_TOKEN`.
-    @atomic entry::Union{Nothing, Tuple{SessionToken, Int, CallTarget}}
+    @atomic entry::Union{Nothing, CachedTarget}
     CallTargetCache() = new(nothing)
 end
 
@@ -130,19 +149,43 @@ path: one atomic load and one integer comparison, no lock.
     # This process first: an entry deserialised from a precompiled module holds
     # pointers from the process that wrote it, and the epoch alone would let one
     # through whenever the two counters happened to agree.
-    entry[1] === session_token() || return nothing
-    entry[2] === artifact_epoch() || return nothing
-    return entry[3]
+    entry.token === session_token() || return nothing
+    entry.epoch === artifact_epoch() || return nothing
+    return entry.target
 end
 
 """
-    publish_call_target!(cache, epoch, target) -> CallTarget
+    cached_target_hit(cache, R) -> Union{CallTarget, Nothing}
+
+The same, for a call site that declared `::R` — a hit also requires the entry to
+have been validated against *this* `R`.
+
+`@rust f(x)::T` takes its annotation from an expression, so one call site can ask
+for a different type on every call while sharing one cache. Handing it an entry
+checked for another type would read the return slot at the wrong width, which is
+undefined behaviour rather than a conversion (#245, #390 review).
+"""
+@inline function cached_target_hit(cache::CallTargetCache, ::Type{R}) where {R}
+    entry = @atomic :acquire cache.entry
+    entry === nothing && return nothing
+    entry.token === session_token() || return nothing
+    entry.epoch === artifact_epoch() || return nothing
+    entry.checked === R || return nothing
+    return entry.target
+end
+
+"""
+    publish_call_target!(cache, epoch, target, checked = nothing) -> CallTarget
 
 Record `target` as `cache`'s answer for `epoch`. `epoch` must have been sampled
 **before** `target` was resolved.
+
+`checked` is the `::T` annotation the caller validated this snapshot against, and
+a later call asking for a different one will not be given this entry.
 """
-@inline function publish_call_target!(cache::CallTargetCache, epoch::Int, target::CallTarget)
-    @atomic :release cache.entry = (session_token(), epoch, target)
+@inline function publish_call_target!(cache::CallTargetCache, epoch::Int,
+                                      target::CallTarget, checked = nothing)
+    @atomic :release cache.entry = CachedTarget(session_token(), epoch, target, checked)
     return target
 end
 
@@ -174,7 +217,7 @@ end
 """
     cached_macro_call_target(cache, mod, lib_name, func_name) -> CallTarget
 
-[`cached_call_target`](@ref) for an `@rust` call site, which names its library
+`cached_call_target` for an `@rust` call site, which names its library
 the way the macro does (`_resolve_lib`) rather than through the symbol table.
 """
 @noinline function cached_macro_call_target(cache::CallTargetCache, mod::Module,

@@ -66,7 +66,7 @@ mutable struct SessionToken end
 """
     SESSION_TOKEN
 
-A freshly allocated [`SessionToken`](@ref), replaced by `__init__` in every
+A freshly allocated `SessionToken`, replaced by `__init__` in every
 process, and the first half of what makes a cached `CallTarget` valid.
 
 # Why an object and not a number
@@ -74,7 +74,7 @@ process, and the first half of what makes a cached `CallTarget` valid.
 A `CallTargetCache` is spliced into the body of the wrapper it belongs to, so a
 package that calls a generated wrapper **from a precompile workload** serialises
 that cache into its `.ji` file with a populated entry — and the entry holds raw
-pointers belonging to the process that wrote them. [`ARTIFACT_EPOCH`](@ref)
+pointers belonging to the process that wrote them. `ARTIFACT_EPOCH`
 cannot tell: it starts at the same value in every process, so a deserialised
 epoch can equal a live one, and the entry would be accepted and its pointer
 called. That is a `ccall` into a process that no longer exists (#390 review).
@@ -90,7 +90,7 @@ global SESSION_TOKEN::SessionToken = SessionToken()
 """
     session_token() -> SessionToken
 
-This process's [`SESSION_TOKEN`](@ref).
+This process's `SESSION_TOKEN`.
 """
 session_token() = SESSION_TOKEN
 
@@ -127,7 +127,7 @@ const ARTIFACT_EPOCH = Threads.Atomic{Int}(1)
 """
     artifact_epoch() -> Int
 
-The current value of [`ARTIFACT_EPOCH`](@ref). Read this **before** resolving
+The current value of `ARTIFACT_EPOCH`. Read this **before** resolving
 anything that will be cached against it: a mutation landing between the read and
 the resolution then invalidates the cached answer, where reading it afterwards
 could stamp a stale snapshot with a current epoch.

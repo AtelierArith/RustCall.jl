@@ -173,6 +173,23 @@ using RustCall
             @test fetch(result) == 1
         end
 
+        @testset "a call site whose annotation varies is checked every time" begin
+            # `::T` is an expression, not a literal, so this is *one* call site —
+            # one spliced cache — asked for a different type on each call. An
+            # entry validated for `Int32` handed to the `Float64` call would read
+            # an `i32` return slot as a `Float64`: undefined behaviour, and
+            # exactly what `_check_return_annotation` exists to refuse (#245).
+            # The declared type is therefore part of what makes an entry a hit
+            # (#390 review).
+            @noinline varying(::Type{T}) where {T} = @rust dispatch_cache_value()::T
+            @test varying(Int32) == 1
+            @test_throws RustCall.RustError varying(Float64)
+            # Both orders: the warm entry must not be a way past the check, and
+            # the rejected one must not have displaced the good entry either.
+            @test varying(Int32) == 1
+            @test_throws RustCall.RustError varying(Float64)
+        end
+
         @testset "a wrapper called during precompilation still calls correctly" begin
             # The end-to-end form of the test above, and the scenario that makes
             # it matter: a package whose module body *calls* a generated wrapper

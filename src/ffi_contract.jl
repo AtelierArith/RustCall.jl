@@ -1809,7 +1809,7 @@ end
 """
     ffi_check_by_value_signature(R, A)
 
-[`ffi_check_by_value`](@ref) for a call whose whole signature is known as a
+`ffi_check_by_value` for a call whose whole signature is known as a
 type: the return type `R` and the argument tuple type `A`.
 
 Same decision, taken at compile time in the case where it cannot depend on
