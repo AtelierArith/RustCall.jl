@@ -189,17 +189,70 @@ and was removed in 0.3.0 (see above).
 result = @rust add(Int32(10), Int32(20))::Int32
 ```
 
-### Type Inference Optimization
+### What a call costs
 
-Explicit type specification can reduce type inference overhead:
+Measured by `benchmark/benchmarks_dispatch.jl`, against a raw `ccall` through a
+pointer resolved once by hand — the floor, since that is what every path
+eventually does (macOS, Julia 1.12, two-instruction Rust body, so what is left
+above the floor is dispatch and nothing else):
+
+| call path | before #253 | now | × raw `ccall` |
+| --- | --- | --- | --- |
+| raw `ccall` (the floor) | 5.2 ns | 5.4 ns | 1.0 |
+| a `#[julia]` function's generated wrapper | 9891 ns | 10.0 ns | 1.9 |
+| `@rust f(a, b)::Int32` | 8940 ns | 11.9 ns | 2.2 |
+| `@rust f(a, b)` (no annotation) | 9945 ns | 360 ns | 68 |
+
+and across threads, as calls per second against the same path's one-task figure:
+
+| tasks | raw `ccall` | generated wrapper, before | now |
+| --- | --- | --- | --- |
+| 1 | 1.00× | 1.00× | 1.00× |
+| 2 | 2.06× | 0.94× | 2.24× |
+| 4 | 4.01× | 0.85× | 5.18× |
+
+A call used to re-resolve everything it needed, every time: walk the calling
+module's blocks, take `REGISTRY_LOCK`, rebuild the symbol strings, look up the
+handle, the pointer, the panic channel and the return ABI, then compute the
+`ccall` signature from the argument types. That was ~9.9 µs and about a hundred
+allocations in front of a 5 ns call, and because it all happened under one
+global lock, adding threads made it *slower* rather than faster.
+
+Since #253 a call site keeps the snapshot it resolved and reuses it while
+`RustCall.ARTIFACT_EPOCH` — a counter bumped by every write to RustCall's state —
+says nothing has changed. The fast path is an atomic load, an integer
+comparison, and the `ccall`. This does not weaken the generation rule of #277:
+what is kept is one whole snapshot, taken under one lock in the one place
+allowed to take one, and it is dropped the moment the epoch moves, so a call can
+still never mix an old pointer with a new channel.
+
+### Annotate the return type, or use `#[julia]`
+
+The one path that is still far from the floor is `@rust f(a, b)` with **no**
+return-type annotation, and it is inherent rather than unfinished: the return
+type is read out of the snapshot at run time, so the `ccall` behind it is
+reached by a dynamic dispatch and its result cannot be inferred in the caller.
+
+Both ways out are cheap:
 
 ```julia
-# With type inference (slightly slower)
-result = @rust add(10, 20)
-
-# Explicit type specification (recommended)
-result = @rust add(Int32(10), Int32(20))::Int32
+result = @rust add(Int32(10), Int32(20))::Int32   # 2.2× a raw ccall
 ```
+
+or mark the Rust function `#[julia]` and call the wrapper RustCall generates for
+it, which knows its own signature at definition time:
+
+```julia
+rust"""
+#[julia]
+pub fn add(a: i32, b: i32) -> i32 { a + b }
+"""
+
+result = add(Int32(10), Int32(20))                # 1.9× a raw ccall
+```
+
+This is the same advice as before #253 — it is just no longer "slightly
+slower", it is thirty times slower, and now measured.
 
 ### No registration step
 

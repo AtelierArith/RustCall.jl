@@ -195,6 +195,57 @@ hand-written `#[julia]` crate. `RUSTCALL_PANIC_HOOK=default` and
 `rustcall_julia_macros` dependency, which does not compile. See
 `docs/src/panics.md`.
 
+**A call site keeps its snapshot (#253).** Re-resolving everything on every call
+cost ~9.9 µs and ~100 allocations in front of a 5 ns `ccall`, and did it all
+under `REGISTRY_LOCK`, so four threads calling Rust ran *slower* than one. A
+call site now keeps the `CallTarget` it resolved in a `CallTargetCache` spliced
+into its expansion, and reuses it while `ARTIFACT_EPOCH` says no state write has
+happened since. Four rules hold this together:
+
+* **The epoch is bumped in `_state_mutate_storage!`** (`src/state_filter.jl`),
+  the one helper every state-container write already passes through — never at
+  the mutation sites, which are many and which grow. Over-invalidating costs a
+  re-resolution; under-invalidating is a call into a retired image, so the
+  counter is conservative in the only direction that is safe.
+* **A cached entry carries the process that wrote it, not just the epoch.** The
+  cache object is spliced into its wrapper's method body, so a package that calls
+  a generated wrapper **from a precompile workload** serialises a populated entry
+  — native pointers included — into its `.ji`. `ARTIFACT_EPOCH` starts at the
+  same value in every process and cannot tell; a matching counter made the child
+  `ccall` a pointer from the process that wrote it (`signal 10: Bus error`,
+  reproduced). `SESSION_TOKEN` is a freshly allocated object replaced in
+  `__init__` and compared by `===`, so a foreign entry can never validate — an
+  identity, not a random seed that is merely unlikely to repeat.
+* **Sample the epoch before resolving, never after.** `_refresh_call_target!`
+  reads it first; a write landing in between then leaves the entry stamped with
+  the older epoch and it is re-resolved, where sampling afterwards could stamp a
+  pre-write snapshot as current and keep it forever.
+* **Verify before publishing.** `@rust f(x)::T` checks the annotation against the
+  snapshot (#245); that check moved to publication time, because both its inputs
+  are fixed for the life of an entry. It must therefore run *before*
+  `publish_call_target!`, or a rejected snapshot would sit in the cache and be
+  reused with the check never running again.
+* **The generation rule of #277 is unchanged.** What is cached is one whole
+  snapshot, taken under one lock by `resolve_call_target`; nothing is ever
+  reassembled from pieces, and `scripts/lint_generation_snapshot.sh` still
+  forbids that everywhere.
+
+Three smaller costs were on the same path and are gone: `normalize_arg_types` is
+`@generated` (pure type arithmetic, 529 ns per call); `ffi_check_by_value_signature`
+decides at compile time for any signature with no aggregate in it, and falls back
+to the runtime check for one that has (so a later `register_ffi_struct` still
+takes effect); and every cached entry point takes `args::Vararg{Any, N}) where {N}`
+rather than `args...`, because a plain vararg method shares one specialisation
+across arities and left the `ccall` behind a dynamic dispatch (590 ns).
+
+`@rust f(a, b)` with no return-type annotation stays ~68× a raw `ccall`: its
+return type is read from the snapshot at run time, so the call is a dynamic
+dispatch by construction. `_call_and_guard` keeps it to exactly one.
+`docs/src/performance.md` says to annotate it or use `#[julia]`.
+`benchmark/benchmarks_dispatch.jl` is the instrument; `test/test_dispatch_cache.jl`
+asserts the invalidation contract, including that a warmed call site completes
+while another task holds `REGISTRY_LOCK`.
+
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 
 **One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point captures its handle, cached pointers, liveness `Ref` and **return ABI** in **one** locked step. Cold function, panic-channel and release/destructor pointers are then resolved on that captured handle outside STATE. No later name lookup may supply any part of the returned target: that could cross a swap and pair an old call with a replacement's channel, allocator or ABI. Cache publication writes only to the captured image's cache. The legacy name-keyed panic cache compares its captured registry entry before publishing, but that comparison never changes the pointer returned to its caller. Explicit closing requires quiescence of the entire FFI operation, including target resolution.

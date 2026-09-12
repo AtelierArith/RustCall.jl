@@ -73,6 +73,177 @@ function _resolve_call(lib_name::String, func_name::String)
 end
 
 """
+    CallTargetCache()
+
+One call site's memory of the `CallTarget` it last resolved (#253).
+
+Not a second way to resolve a call: the thing it holds is a whole
+`resolve_call_target` snapshot, taken under one lock in the one place allowed to
+take one, and it is handed back only while `ARTIFACT_EPOCH` proves no state
+write has happened since. The generation rule of #277 is therefore unchanged —
+a call still uses one snapshot of one image, and still never assembles one from
+pieces. What changes is only how often an unchanged answer is recomputed.
+
+A cache belongs to a call site, not to a name: the generated wrapper of a
+`#[julia]` item gets one, and so does every `@rust` expansion. The object is
+spliced into the expansion rather than bound in the caller's module, so it needs
+no name of its own, cannot collide, and a redefinition gets a fresh one.
+"""
+struct CachedTarget
+    """The process that resolved this. See `SESSION_TOKEN`."""
+    token::SessionToken
+    """The artifact epoch it was resolved at."""
+    epoch::Int
+    target::CallTarget
+    """
+    The `::T` annotation this entry was validated against, or `nothing` for a
+    call site that has none.
+
+    A `@rust` annotation is an *expression*, not a literal: `f(T) = @rust g()::T`
+    is one call site whose `T` changes between calls, sharing one cache. An entry
+    validated for `Int32` must not be handed to a call that asked for `Float64`,
+    which is the very confusion `_check_return_annotation` exists to refuse
+    (#245) — so the type it was checked for is part of what makes it valid.
+    """
+    checked::Any
+end
+
+mutable struct CallTargetCache
+    # A single atomic field holding an immutable record, so a reader sees either
+    # the whole previous answer or the whole new one. Reading is one atomic
+    # pointer load; writing allocates, and happens only when the epoch moved.
+    #
+    # The record carries the process that wrote it as well as the epoch. This
+    # object is spliced into a method body, so it is serialised with everything
+    # else when a package that calls the wrapper during precompilation is
+    # precompiled — pointers included. See `SESSION_TOKEN`.
+    @atomic entry::Union{Nothing, CachedTarget}
+    CallTargetCache() = new(nothing)
+end
+
+"""
+    cached_call_target(cache, mod, func_name) -> CallTarget
+
+The `CallTarget` for `func_name` as called from `mod`, reusing `cache` while the
+artifact epoch it was resolved at still stands.
+
+The fast path is an atomic load, an integer comparison and nothing else — no
+lock, which is what lets `@rust` calls from several threads proceed at once
+instead of queueing on `REGISTRY_LOCK`.
+"""
+function cached_call_target(cache::CallTargetCache, mod::Module, func_name::String)
+    hit = cached_target_hit(cache)
+    hit === nothing || return hit
+    return _refresh_call_target!(cache, mod, func_name)
+end
+
+"""
+    cached_target_hit(cache) -> Union{CallTarget, Nothing}
+
+`cache`'s snapshot if it is still current, `nothing` otherwise. The whole fast
+path: one atomic load and one integer comparison, no lock.
+"""
+@inline function cached_target_hit(cache::CallTargetCache)
+    entry = @atomic :acquire cache.entry
+    entry === nothing && return nothing
+    # This process first: an entry deserialised from a precompiled module holds
+    # pointers from the process that wrote it, and the epoch alone would let one
+    # through whenever the two counters happened to agree.
+    entry.token === session_token() || return nothing
+    entry.epoch === artifact_epoch() || return nothing
+    return entry.target
+end
+
+"""
+    cached_target_hit(cache, R) -> Union{CallTarget, Nothing}
+
+The same, for a call site that declared `::R` — a hit also requires the entry to
+have been validated against *this* `R`.
+
+`@rust f(x)::T` takes its annotation from an expression, so one call site can ask
+for a different type on every call while sharing one cache. Handing it an entry
+checked for another type would read the return slot at the wrong width, which is
+undefined behaviour rather than a conversion (#245, #390 review).
+"""
+@inline function cached_target_hit(cache::CallTargetCache, ::Type{R}) where {R}
+    entry = @atomic :acquire cache.entry
+    entry === nothing && return nothing
+    entry.token === session_token() || return nothing
+    entry.epoch === artifact_epoch() || return nothing
+    entry.checked === R || return nothing
+    return entry.target
+end
+
+"""
+    publish_call_target!(cache, epoch, target, checked = nothing) -> CallTarget
+
+Record `target` as `cache`'s answer for `epoch`. `epoch` must have been sampled
+**before** `target` was resolved.
+
+`checked` is the `::T` annotation the caller validated this snapshot against, and
+a later call asking for a different one will not be given this entry.
+"""
+@inline function publish_call_target!(cache::CallTargetCache, epoch::Int,
+                                      target::CallTarget, checked = nothing)
+    @atomic :release cache.entry = CachedTarget(session_token(), epoch, target, checked)
+    return target
+end
+
+# Out of line: the hot path above should be small enough to inline into the
+# generated wrapper, and this half runs only when the epoch moved.
+@noinline function _refresh_call_target!(cache::CallTargetCache, mod::Module,
+                                         func_name::String)
+    # Sampled **before** resolving. A write landing between here and the
+    # snapshot leaves this entry stamped with the older epoch, so the next call
+    # re-resolves; sampling afterwards could stamp a pre-write snapshot with the
+    # post-write epoch and keep it forever.
+    epoch = artifact_epoch()
+    # `module_symbol_library` also restores a precompiled caller's blocks, which
+    # is why it stays on the slow path rather than being hoisted away: the first
+    # call through this cache must still do it, and a load is a state write, so
+    # it bumps the epoch and is resolved again on the next call.
+    #
+    # A cold call site therefore resolves twice before it settles: `dlsym`ing a
+    # symbol for the first time publishes its pointer into the image's own
+    # cache, which is a state write like any other, so the entry this call is
+    # about to publish is stale before it is read. The next call finds the
+    # pointer already there, writes nothing, and sticks. Two resolutions once,
+    # rather than a special case in the invalidation rule that would have to
+    # know which writes "do not count".
+    target = resolve_call_target(module_symbol_library(mod, func_name), func_name)
+    return publish_call_target!(cache, epoch, target)
+end
+
+"""
+    cached_macro_call_target(cache, mod, lib_name, func_name) -> CallTarget
+
+`cached_call_target` for an `@rust` call site, which names its library
+the way the macro does (`_resolve_lib`) rather than through the symbol table.
+"""
+@noinline function cached_macro_call_target(cache::CallTargetCache, mod::Module,
+                                            lib_name::String, func_name::String)
+    epoch, target = resolve_macro_call_target(mod, lib_name, func_name)
+    return publish_call_target!(cache, epoch, target)
+end
+
+"""
+    resolve_macro_call_target(mod, lib_name, func_name) -> (epoch, CallTarget)
+
+Resolve an `@rust` call site's snapshot **without** publishing it, returning the
+epoch it was resolved at alongside it.
+
+A caller that has something to verify about the snapshot — `@rust f(x)::T`
+checks the annotation against it — must verify *before* publishing, or a
+rejected snapshot would sit in the cache and be reused by later calls without
+the check ever running again.
+"""
+@noinline function resolve_macro_call_target(mod::Module, lib_name::String,
+                                             func_name::String)
+    epoch = artifact_epoch()
+    return (epoch, resolve_call_target(_resolve_lib(mod, lib_name), func_name))
+end
+
+"""
     resolve_call_target(lib_name, func_name; free_symbol = "") -> CallTarget
 
 Everything one call needs — the function pointer, its panic channel, and

@@ -110,9 +110,20 @@ signature_for(code, name; mode = "inline") = only(
 
     @testset "Qualified @rust calls resolve libraries consistently" begin
         qualified = Expr(:call, Expr(:(::), :fake_lib, :fake_fn), :(Int32(1)))
-        expanded = sprint(show, RustCall.rust_impl(@__MODULE__, qualified))
-        @test occursin("_rust_call_from_lib", expanded)
-        @test occursin("_resolve_lib", expanded)
+        expansion = RustCall.rust_impl(@__MODULE__, qualified)
+        expanded = sprint(show, expansion)
+        # `lib::f(x)` must reach the dispatcher *naming its library*, so the
+        # resolution starts there rather than at the module's active one. Since
+        # #253 the library is resolved on the call site's slow path — the
+        # expansion carries the name and a cache of its own instead of calling
+        # `_resolve_lib` inline on every call — so this asserts the name is
+        # carried, not which function carries it.
+        @test occursin("_rust_call_dynamic_cached", expanded)
+        @test occursin("\"fake_lib\"", expanded)
+        @test any(arg -> arg isa RustCall.CallTargetCache, expansion.args)
+        # And the dispatcher it names still resolves through `_resolve_lib`.
+        @test occursin("_resolve_lib",
+                       read(joinpath(dirname(@__DIR__), "src", "ruststr.jl"), String))
     end
 
     @testset "Manifest handles strings, chars, comments, and closures (#85/#124)" begin

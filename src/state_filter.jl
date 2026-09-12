@@ -70,6 +70,16 @@ function _state_mutate_storage!(value, op::Symbol, args...)
             end
         end
         rethrow()
+    finally
+        # Every state write invalidates every cached `CallTarget` (#253). Here,
+        # rather than at the mutation sites, because this is the one helper they
+        # all already pass through — a new registry or a new call to an existing
+        # one cannot forget to do it. In `finally`, so the partially-applied
+        # write of the `catch` branch above invalidates too, and **after** the
+        # write: a reader that sampled the epoch before it and resolved before
+        # the write now holds a stale epoch and will re-resolve, where bumping
+        # first would let that reader stamp a stale snapshot as current.
+        Threads.atomic_add!(ARTIFACT_EPOCH, 1)
     end
 end
 

@@ -1805,3 +1805,33 @@ function ffi_check_by_value(@nospecialize(R::Type), arg_types)
     end
     return nothing
 end
+
+"""
+    ffi_check_by_value_signature(R, A)
+
+`ffi_check_by_value` for a call whose whole signature is known as a
+type: the return type `R` and the argument tuple type `A`.
+
+Same decision, taken at compile time in the case where it cannot depend on
+runtime state (#253). `ffi_by_value_allowed` is
+`!ffi_is_aggregate(T) || T <: FFIByValue || ffi_by_value_registered(T)`, and only
+the last of those three reads state `register_ffi_struct` may add to later — it
+is reached only for an *aggregate*. So when no type in the signature is an
+aggregate, the answer is `true` for every element, unconditionally and for the
+whole session; a signature that does contain one keeps the runtime check in
+full, which is what makes a later `register_ffi_struct` still take effect.
+
+This is not a second copy of the policy: the predicate it branches on is
+`ffi_is_aggregate`, the same one `ffi_by_value_allowed` consults.
+
+Scalar calls paid 128 ns per call for this, against the 5.1 ns `ccall` it
+guards.
+"""
+@generated function ffi_check_by_value_signature(::Type{R}, ::Type{A}) where {R, A <: Tuple}
+    if !ffi_is_aggregate(R) && !any(ffi_is_aggregate, A.parameters)
+        return :(nothing)
+    end
+    # An aggregate is in play, so the registration table decides and must be
+    # read on every call.
+    return :(ffi_check_by_value($R, $(A.parameters)))
+end

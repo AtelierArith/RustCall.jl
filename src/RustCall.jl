@@ -56,6 +56,84 @@ end
 
 const STATE = Base.Lockable(RustCallState(Dict{Symbol, Any}()))
 
+"""
+    SessionToken
+
+The identity of one Julia process, for a cached answer that must not outlive it.
+"""
+mutable struct SessionToken end
+
+"""
+    SESSION_TOKEN
+
+A freshly allocated `SessionToken`, replaced by `__init__` in every
+process, and the first half of what makes a cached `CallTarget` valid.
+
+# Why an object and not a number
+
+A `CallTargetCache` is spliced into the body of the wrapper it belongs to, so a
+package that calls a generated wrapper **from a precompile workload** serialises
+that cache into its `.ji` file with a populated entry — and the entry holds raw
+pointers belonging to the process that wrote them. `ARTIFACT_EPOCH`
+cannot tell: it starts at the same value in every process, so a deserialised
+epoch can equal a live one, and the entry would be accepted and its pointer
+called. That is a `ccall` into a process that no longer exists (#390 review).
+
+Identity settles it with certainty rather than probability. A deserialised entry
+carries the token object of the process that wrote it; this process allocated its
+own in `__init__`, and two distinct objects are never `===`. No counter
+collision, and no random seed that is merely unlikely to repeat, can make a
+foreign entry validate.
+"""
+global SESSION_TOKEN::SessionToken = SessionToken()
+
+"""
+    session_token() -> SessionToken
+
+This process's `SESSION_TOKEN`.
+"""
+session_token() = SESSION_TOKEN
+
+"""
+    ARTIFACT_EPOCH
+
+A counter bumped by **every** write to the state container, so a caller that
+resolved something out of it can tell, without taking a lock, whether its answer
+is still the current one (#253).
+
+# Why a counter and not a flag
+
+A call site may keep the `CallTarget` it resolved (`cached_call_target`,
+`src/ruststr.jl`) and reuse it instead of paying `resolve_call_target` again —
+7 µs and a hundred allocations, on the way to a 5 ns `ccall`. That is only sound
+while nothing the snapshot captured has changed: a hot reload, an adoption, an
+alias, a retirement, a newly registered return type or panic channel all make a
+kept snapshot a pointer into the wrong generation, which is the #277 bug class.
+
+So the reuse has to be invalidated, and *nothing may be allowed to forget to
+invalidate it*. The bump therefore lives in `_state_mutate_storage!`
+(`src/state_filter.jl`) — the one helper every state-container write already
+goes through — rather than at the mutation sites, which are many and which grow.
+A write that does not actually change what a snapshot would say costs a
+re-resolution and nothing else; a write that does and went unnoticed would be a
+call into an unmapped image. The counter is deliberately conservative in the
+only direction that is safe.
+
+It is read with a plain atomic load and never taken under `REGISTRY_LOCK`, which
+is what takes the lock off the calling path entirely.
+"""
+const ARTIFACT_EPOCH = Threads.Atomic{Int}(1)
+
+"""
+    artifact_epoch() -> Int
+
+The current value of `ARTIFACT_EPOCH`. Read this **before** resolving
+anything that will be cached against it: a mutation landing between the read and
+the resolution then invalidates the cached answer, where reading it afterwards
+could stamp a stale snapshot with a current epoch.
+"""
+artifact_epoch() = ARTIFACT_EPOCH[]
+
 struct StateView
     name::Symbol
     owner::Union{Nothing, Module}
@@ -218,6 +296,12 @@ export @register_ffi_struct
 
 # Module initialization
 function __init__()
+    # A new identity for this process, before anything can consult a cache: a
+    # `CallTargetCache` deserialised from a precompiled module carries the token
+    # of the process that populated it, and must never be mistaken for a live
+    # one (#253, #390 review).
+    global SESSION_TOKEN = SessionToken()
+
     # The deprecated RTLD_GLOBAL escape hatch (#250, #277 Phase B2), read once:
     # a load policy must not change halfway through a session.
     _init_dlopen_global_override!()

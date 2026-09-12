@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **A `@rust` call no longer re-resolves everything on every call**
+  ([#253](https://github.com/AtelierArith/RustCall.jl/issues/253)). Each call
+  walked the calling module's blocks, took the global `REGISTRY_LOCK`, rebuilt
+  the symbol strings, looked up handle, pointer, panic channel and return ABI,
+  and then computed the `ccall` signature from the argument types — about 9.9 µs
+  and a hundred allocations in front of a 5 ns call, all under one lock, so four
+  threads calling Rust ran *slower* than one. A call site now keeps the snapshot
+  it resolved and reuses it while `RustCall.ARTIFACT_EPOCH`, bumped by every
+  write to RustCall's state, says nothing has changed. Measured against a raw
+  `ccall` into the same library (`benchmark/benchmarks_dispatch.jl`): a
+  `#[julia]` function's generated wrapper 9891 ns → **10.0 ns**,
+  `@rust f(a, b)::Int32` 8940 ns → **11.9 ns**, and throughput across four
+  threads from 0.85× one thread to 5.18×. This does not weaken the generation
+  rule of #277: what is cached is one whole snapshot, and it is dropped the
+  moment the epoch moves — and an entry carries the process that wrote it, so a
+  cache serialised into a precompiled package (a downstream package that calls a
+  generated wrapper from a precompile workload does exactly that) can never be
+  mistaken for a live one. `@rust f(a, b)` **without** a return-type annotation
+  stays about 68× a raw `ccall` and is the one shape that cannot be fixed — its
+  return type is read from the snapshot at run time, so the call is a dynamic
+  dispatch by construction; annotate it, or mark the Rust function `#[julia]`
+  and call the wrapper. See `docs/src/performance.md`.
 - **A panic RustCall catches no longer prints `panicked at` to stderr**
   ([#304](https://github.com/AtelierArith/RustCall.jl/issues/304)). Rust runs
   the panic hook before the unwind `catch_unwind` catches, so every panic the
