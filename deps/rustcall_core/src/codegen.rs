@@ -552,10 +552,24 @@ pub const PANIC_SYMBOL_SUFFIX: &str = "_take_panic";
 
 /// The symbol a file-owned artifact exports to install its quiet panic hook.
 /// Julia resolves it once per image, at load time (`src/loadpolicy.jl`).
-pub const INSTALL_PANIC_HOOK_SYMBOL: &str = "rustcall_install_panic_hook";
+///
+/// # Why the `__rustcall_` prefix
+///
+/// Julia calls whatever it finds under this name as `extern "C" fn()`, so the
+/// name must be one the symbol scheme can never produce for a user's item. A
+/// wrapper is `rustcall_<stem>` — so `#[julia] fn install_panic_hook` would have
+/// exported `rustcall_install_panic_hook`, and calling *that* through a
+/// zero-argument signature crosses the boundary wrongly (#388 review). Every
+/// name the scheme derives is `rustcall_<stem>` or `<stem>_<known suffix>`
+/// (`_free`, `_clone`, `_get_<field>`, `_set_<field>`, `_free_rust_string`,
+/// `_take_panic`), and `_hook` is not among the suffixes, so a doubled prefix is
+/// unreachable from any Rust identifier. `__rustcall_` is reserved for RustCall;
+/// `docs/src/panics.md` says so.
+pub const INSTALL_PANIC_HOOK_SYMBOL: &str = "__rustcall_install_panic_hook";
 
-/// The symbol that removes the hook again, called before `dlclose`.
-pub const UNINSTALL_PANIC_HOOK_SYMBOL: &str = "rustcall_uninstall_panic_hook";
+/// The symbol that removes the hook again, called before `dlclose`. Named like
+/// [`INSTALL_PANIC_HOOK_SYMBOL`], for the same reason.
+pub const UNINSTALL_PANIC_HOOK_SYMBOL: &str = "__rustcall_uninstall_panic_hook";
 
 /// The panic-channel reader of the wrapper exported as `symbol`.
 pub fn panic_symbol(symbol: &str) -> String {
@@ -648,11 +662,11 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
 /// * the **hook**: silent while the depth is non-zero, delegating to the hook
 ///   it replaced otherwise, so a panic *outside* a boundary — on a thread the
 ///   artifact's own code spawned, say — still prints exactly as before;
-/// * `rustcall_install_panic_hook`, which Julia calls once per image right
+/// * `__rustcall_install_panic_hook`, which Julia calls once per image right
 ///   after `dlopen`, before any wrapper can run. Installing from Julia rather
 ///   than lazily from the first wrapper call is what removes the race #302's
 ///   attempt had: there is no first call to lose it;
-/// * `rustcall_uninstall_panic_hook`, called before `dlclose` so the closure is
+/// * `__rustcall_uninstall_panic_hook`, called before `dlclose` so the closure is
 ///   out of the registry before its code is unmapped.
 ///
 /// Install and uninstall are **repeatable**, guarded by one mutex rather than a

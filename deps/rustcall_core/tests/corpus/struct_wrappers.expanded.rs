@@ -2102,7 +2102,7 @@ impl ::std::ops::Drop for __RustCallBoundary {
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_install_panic_hook() {
+pub extern "C" fn __rustcall_install_panic_hook() {
     if let ::std::result::Result::Ok(mut rustcall_live) = __RUSTCALL_QUIET_HOOK_LIVE
         .lock()
     {
@@ -2122,7 +2122,7 @@ pub extern "C" fn rustcall_install_panic_hook() {
     }
 }
 #[no_mangle]
-pub extern "C" fn rustcall_uninstall_panic_hook() {
+pub extern "C" fn __rustcall_uninstall_panic_hook() {
     if let ::std::result::Result::Ok(mut rustcall_live) = __RUSTCALL_QUIET_HOOK_LIVE
         .lock()
     {

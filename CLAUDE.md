@@ -158,10 +158,19 @@ publication takes the state lock.
 
 **A caught panic prints nothing (#304).** A generated artifact keeps a
 thread-local boundary depth at its crate root and exports
-`rustcall_install_panic_hook` / `rustcall_uninstall_panic_hook`; `load_artifact!`
+`__rustcall_install_panic_hook` / `__rustcall_uninstall_panic_hook`; `load_artifact!`
 installs once per image right after `dlopen` (never lazily — that is what removes
 the race) and `close_artifact_handle!` removes it before `dlclose`, on the last
-loader reference and only while the handle still has none left. The hook is
+loader reference and only while the handle still has none left. Those two
+transitions — record-a-reference-then-install and confirm-none-left-then-uninstall
+— are serialized by `QUIET_HOOK_LOCK`, **taken before `REGISTRY_LOCK`, never
+after**; the only foreign code called under it is the artifact's own
+installer/uninstaller, and `REGISTRY_LOCK` is never held across that call.
+Install and uninstall are repeatable on the Rust side (one mutex, not a `Once`),
+so a reopened image can restore its own hook. Names beginning with
+`__rustcall_` are reserved: Julia calls the installer it finds under that name as
+`extern "C" fn()`, so the name must be one the symbol scheme cannot produce for a
+user's item. The hook is
 silent inside a boundary and delegates to the hook it replaced outside one. It
 exists only where a generator writes the whole file
 (`rustcall_core::codegen::PanicHook::FileOwned`: inline blocks, `@irust`,

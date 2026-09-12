@@ -1636,8 +1636,29 @@ its quiet panic hook (#304). They are spelled in
 would show up as the hook never being installed, which
 `test/test_panic_hook.jl` asserts against.
 """
-const QUIET_PANIC_INSTALL_SYMBOL = :rustcall_install_panic_hook
-const QUIET_PANIC_UNINSTALL_SYMBOL = :rustcall_uninstall_panic_hook
+const QUIET_PANIC_INSTALL_SYMBOL = :__rustcall_install_panic_hook
+const QUIET_PANIC_UNINSTALL_SYMBOL = :__rustcall_uninstall_panic_hook
+
+"""
+    QUIET_HOOK_LOCK
+
+Serialises the quiet panic hook's lifecycle for one process (#304).
+
+Two transitions must not interleave: *record a loader reference, then install*
+(`load_artifact!`) and *confirm no reference is left, then uninstall*
+(`close_artifact_handle!`). Without this lock a `dlopen` of a still-mapped path
+could record its reference and call the installer — a no-op, because the hook is
+still marked live — in the window between the other task's zero-count check and
+its uninstall, leaving a live image with no hook and nothing to restore it
+(#388 review).
+
+**Lock ordering: this lock is taken *before* `REGISTRY_LOCK`, never after.**
+Only the two paths above take it, and the only foreign code called under it is
+the artifact's own installer/uninstaller — a thread-local read and a
+`set_hook`/`take_hook`, with no allocation of ours and no call back into Julia.
+`REGISTRY_LOCK` is never held across that call.
+"""
+const QUIET_HOOK_LOCK = ReentrantLock()
 
 """
     prefer_dynamic_flag(flags) -> Bool
@@ -1763,7 +1784,7 @@ installer is called by the loader rather than lazily by the first wrapper call, 
 two first calls to two wrappers cannot race to install it — the defect that sank
 the per-wrapper attempt in #302.
 
-**The image decides, not the policy.** `rustcall_install_panic_hook` exists
+**The image decides, not the policy.** `__rustcall_install_panic_hook` exists
 exactly when the source was generated in full — `#[julia]` in a crate RustCall
 does not write never emits it — so asking the image cannot be wrong, and no
 door can forget to opt in. A `LoadPolicy` flag was tried first and was exactly
@@ -1865,11 +1886,17 @@ function close_artifact_handle!(handle::Ptr{Cvoid})
     # reference stays mapped and in use. The count is re-read here because a
     # `dlopen` of the same path can land between the decision above and this
     # point, receive this same still-mapped handle and record a reference of its
-    # own; letting that reopen keep its hook is the whole point (#388 review).
-    # Should the two cross the other way, the reopen's own installer call
-    # reinstalls — install and uninstall are repeatable on the Rust side.
-    if final && lock(() -> get(OWNED_HANDLES, handle, 0) == 0, REGISTRY_LOCK)
-        uninstall_quiet_panic_hook!(handle)
+    # own. The check runs under `QUIET_HOOK_LOCK`, which `load_artifact!` holds
+    # across *its* record-then-install, so such a reopen either records before
+    # this check — and keeps its hook, because the check then sees it — or
+    # installs after the uninstall, which works because install and uninstall are
+    # repeatable on the Rust side. What the lock rules out is the reopen
+    # finishing a no-op install in between (#388 review).
+    if final
+        lock(QUIET_HOOK_LOCK) do
+            lock(() -> get(OWNED_HANDLES, handle, 0) == 0, REGISTRY_LOCK) &&
+                uninstall_quiet_panic_hook!(handle)
+        end
     end
     Threads.atomic_add!(DLCLOSE_COUNT, 1)
     Libdl.dlclose(handle)
@@ -1998,16 +2025,19 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     # This call opened the image, so this package may close it later
     # (`OWNED_HANDLES`). A handle that merely arrives through
     # `adopt_artifact!` is never closed by RustCall.
-    lock(REGISTRY_LOCK) do
-        OWNED_HANDLES[handle] = get(OWNED_HANDLES, handle, 0) + 1
-    end
-    # The quiet panic hook (#304), before any wrapper of this image can be
-    # called and *after* the reference is recorded: a concurrent last close
-    # re-reads that count before uninstalling, so recording first is what makes
-    # the two orders equivalent. The eligibility question is asked of the
+    # Recording the reference and installing the quiet panic hook (#304) are one
+    # transition: a concurrent last close confirms the count is still zero under
+    # the same lock before it uninstalls, so the two can only happen in one order
+    # or the other, never interleaved. The install happens before any wrapper of
+    # this image can be called, and the eligibility question is asked of the
     # environment the artifact was *built* under when the caller recorded one.
-    install_quiet_panic_hook!(handle;
-                              snapshot_env = get(kwargs, :snapshot_env, nothing))
+    lock(QUIET_HOOK_LOCK) do
+        lock(REGISTRY_LOCK) do
+            OWNED_HANDLES[handle] = get(OWNED_HANDLES, handle, 0) + 1
+        end
+        install_quiet_panic_hook!(handle;
+                                  snapshot_env = get(kwargs, :snapshot_env, nothing))
+    end
     # `load_artifact!` opened this handle, so `load_artifact!` owns it: if the
     # registration turns out not to need it (`:insert_only` lost the race), it
     # is this call's job to close it. `adopt_artifact!` never closes a handle

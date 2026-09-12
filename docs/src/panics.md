@@ -65,7 +65,7 @@ artifact's own code spawned, say — still prints exactly as before.
 
 Mechanically: the artifact keeps a thread-local depth counter at its crate root,
 every wrapper raises it for the duration of its body, and the artifact exports
-`rustcall_install_panic_hook` / `rustcall_uninstall_panic_hook`. Julia calls the
+`__rustcall_install_panic_hook` / `__rustcall_uninstall_panic_hook`. Julia calls the
 installer **once per image, immediately after `dlopen`** (`load_artifact!`), so
 no first call can race another to install it, and calls the uninstaller from
 `close_artifact_handle!` before the image is unmapped, so std's registry never
@@ -74,9 +74,16 @@ points at a closure whose code is gone.
 **Where it applies.** Only to artifacts whose source RustCall generates in full:
 inline `rust"""` blocks (both the direct-`rustc` and the Cargo flavour),
 `@irust`, monomorphized generics and the generated `@rust_crate` wrapper crate.
-Nothing has to declare that: `rustcall_install_panic_hook` is exported exactly by
+Nothing has to declare that: `__rustcall_install_panic_hook` is exported exactly by
 those artifacts, so the loader asks the image rather than a policy, and a door
 cannot forget to opt in.
+
+The doubled prefix is deliberate. Julia calls whatever it finds under that name
+as a zero-argument `extern "C"` function, so the name has to be one the symbol
+scheme can never produce for an item of yours: a wrapper is `rustcall_<stem>`, so
+`#[julia] fn install_panic_hook` would otherwise have exported exactly this
+symbol. **Names beginning with `__rustcall_` are reserved for RustCall** — do not
+define one with `#[no_mangle]`.
 
 **Where it does not.** A crate *you* wrote and annotate with `#[julia]` keeps
 the default hook, and its panics still print. The hook needs a depth counter

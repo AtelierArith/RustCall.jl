@@ -644,7 +644,9 @@ mod tests {
         // The group is one file, so the quiet-panic items (#304) are merged to
         // exactly one copy however many instantiations it carries.
         assert_eq!(
-            out.source.matches("fn rustcall_install_panic_hook").count(),
+            out.source
+                .matches("fn __rustcall_install_panic_hook")
+                .count(),
             1
         );
         assert_eq!(

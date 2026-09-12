@@ -428,11 +428,13 @@ mod tests {
         );
         assert_eq!(e.source.matches("pub struct __RustCallBoundary").count(), 1);
         assert_eq!(
-            e.source.matches("fn rustcall_install_panic_hook").count(),
+            e.source.matches("fn __rustcall_install_panic_hook").count(),
             1
         );
         assert_eq!(
-            e.source.matches("fn rustcall_uninstall_panic_hook").count(),
+            e.source
+                .matches("fn __rustcall_uninstall_panic_hook")
+                .count(),
             1
         );
 
@@ -443,7 +445,7 @@ mod tests {
             codegen::transform_function(item, &[], codegen::PanicHook::External).to_string();
         assert!(crate_flavour.contains("catch_unwind"));
         assert!(!crate_flavour.contains("__RustCallBoundary"));
-        assert!(!crate_flavour.contains("rustcall_install_panic_hook"));
+        assert!(!crate_flavour.contains("__rustcall_install_panic_hook"));
     }
 
     /// Every wrapper of a block shares the one counter, whichever module it

@@ -73,7 +73,7 @@ pub fn hook_probe_two(n: i32) -> i32 {
     end
 
     @testset "the image decides, not the policy" begin
-        # `rustcall_install_panic_hook` exists exactly when RustCall generated the
+        # `__rustcall_install_panic_hook` exists exactly when RustCall generated the
         # source in full, so the installer is resolved on the handle. A policy flag
         # was tried first and was wrong: every `@rust_crate` module loads with
         # `crate_direct_policy()`, the generated PyO3 wrapper crate included, so
@@ -87,6 +87,39 @@ pub fn hook_probe_two(n: i32) -> i32 {
         # symbol.
         @test RustCall.install_quiet_panic_hook!(C_NULL) === false
         @test RustCall.uninstall_quiet_panic_hook!(C_NULL) === false
+    end
+
+    @testset "no user item can be mistaken for the installer" begin
+        # Julia calls whatever it finds under the installer's name as
+        # `extern "C" fn()`. A wrapper is `rustcall_<stem>`, so
+        # `#[julia] fn install_panic_hook` exports `rustcall_install_panic_hook`
+        # — which is what the loader used to look up, so loading such a crate
+        # would have called a user function through the wrong signature
+        # (#388 review). The doubled prefix makes the collision unreachable: every
+        # name the scheme derives is `rustcall_<stem>` or `<stem>_<known suffix>`,
+        # and `_hook` is not one of the suffixes.
+        for symbol in (RustCall.QUIET_PANIC_INSTALL_SYMBOL,
+                       RustCall.QUIET_PANIC_UNINSTALL_SYMBOL)
+            @test startswith(string(symbol), "__rustcall_")
+        end
+        expanded = RustCall.expand_inline("""
+        #[julia]
+        pub fn install_panic_hook(n: i32) -> i32 { n }
+
+        #[julia]
+        pub fn uninstall_panic_hook(n: i32) -> i32 { n }
+        """)
+        exported = [f["symbol"] for f in expanded.manifest["functions"]]
+        # The scheme really does want these two names...
+        @test "rustcall_install_panic_hook" in exported
+        @test "rustcall_uninstall_panic_hook" in exported
+        # ...and neither is the name the loader resolves.
+        for symbol in (RustCall.QUIET_PANIC_INSTALL_SYMBOL,
+                       RustCall.QUIET_PANIC_UNINSTALL_SYMBOL)
+            @test !(string(symbol) in exported)
+            # Defined exactly once in the file, by the hook and with no arguments.
+            @test count("pub extern \"C\" fn $(symbol)()", expanded.source) == 1
+        end
     end
 
     @testset "the prefer-dynamic decision reads flags, not substrings" begin
