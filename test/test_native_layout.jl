@@ -156,6 +156,88 @@ _toolchain_required() =
                   candidates)
     end
 
+    @testset "a read-only depot in front cannot shadow the build" begin
+        # `Pkg.build` lands in the first *writable* depot. Enumerating
+        # DEPOT_PATH in order for the lookup would prefer whatever the
+        # read-only depot in front of it happens to carry for the same slug —
+        # an older or wrong-architecture product — and silently ignore a
+        # successful build. The lookup therefore asks the same function the
+        # build asks, first.
+        if Sys.iswindows()
+            @test_skip "needs POSIX directory permissions"
+        else
+            root = mktempdir()
+            frozen, live = joinpath(root, "frozen"), joinpath(root, "live")
+            pkg = joinpath(live, "packages", "RustCall", "AbCdE")
+            mkpath(joinpath(pkg, "src"))
+            for kind in (:rust_helpers, :extractor)
+                crate = joinpath(pkg, "deps", RustCall.NATIVE_PRODUCTS[kind].crate)
+                mkpath(crate)
+                write(joinpath(crate, "Cargo.toml"), "")
+            end
+            cp(joinpath(_REPO_ROOT, "src", "native_layout.jl"),
+               joinpath(pkg, "src", "native_layout.jl"))
+
+            # A stale product sitting in the depot that cannot be built into.
+            stale_dir = joinpath(frozen, "scratchspaces",
+                                 string(RustCall.RUSTCALL_UUID),
+                                 RustCall.NATIVE_SCRATCH_NAME, "AbCdE",
+                                 "rustcall_extract", "release")
+            mkpath(stale_dir)
+            stale = joinpath(stale_dir, RustCall.native_product_filename(:extractor))
+            write(stale, "stale")
+            chmod(joinpath(frozen, "scratchspaces"), 0o555)
+            chmod(frozen, 0o555)
+
+            # Running as root ignores the mode bits; then there is nothing to
+            # assert, because the first depot really is writable.
+            writable = try
+                probe = joinpath(frozen, "scratchspaces", "probe")
+                touch(probe)
+                rm(probe; force = true)
+                true
+            catch
+                false
+            end
+
+            if writable
+                @test_skip "the frozen depot is writable (running as root?)"
+            else
+                script = """
+                import Scratch
+                empty!(DEPOT_PATH)
+                append!(DEPOT_PATH, [$(repr(frozen)), $(repr(live))])
+                m = Module(:NativeLayoutProbe)
+                Base.include(m, $(repr(joinpath(pkg, "src", "native_layout.jl"))))
+                println(m.native_target_dir(:extractor; create = true))
+                for c in m.native_product_candidates(:extractor)
+                    println("candidate: ", c)
+                end
+                """
+                out = withenv("RUSTCALL_EXTRACT" => nothing,
+                              "RUSTCALL_RUST_HELPERS" => nothing) do
+                    read(`$(Base.julia_cmd()) --project=$(_REPO_ROOT) --startup-file=no -e $script`,
+                         String)
+                end
+                lines = split(strip(out), '\n')
+                built = lines[1]
+                candidates = [replace(l, "candidate: " => "") for l in lines[2:end]]
+
+                # The build goes to the writable depot behind the frozen one...
+                @test startswith(built, joinpath(live, "scratchspaces"))
+                # ...and that is the first place the lookup looks, ahead of the
+                # stale copy, which is still reachable as a later candidate.
+                @test first(candidates) ==
+                      joinpath(built, "release",
+                               RustCall.native_product_filename(:extractor))
+                @test stale in candidates
+                @test findfirst(==(stale), candidates) > 1
+            end
+            chmod(frozen, 0o755)
+            chmod(joinpath(frozen, "scratchspaces"), 0o755)
+        end
+    end
+
     @testset "the build script never throws Cargo's knowledge away" begin
         # Through v0.3.4 every `Pkg.build("RustCall")` ran `cargo clean` first,
         # so each build event paid a full Rust compile. Cargo already knows

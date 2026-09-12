@@ -257,16 +257,23 @@ Every path `kind` may be found at, most authoritative first:
 
 1. its environment override (`RUSTCALL_EXTRACT` / `RUSTCALL_RUST_HELPERS`),
    when set to a non-empty value;
-2. for a checkout, `deps/<crate>/target/release`, where its build goes;
-3. for an installed package, its scratch directory under every depot on
-   `DEPOT_PATH` — every depot, not only the writable one, so a package
-   installed in a depot that has since moved behind another still finds its
-   products;
+2. **`native_target_dir(kind)` — the directory a build would write to right
+   now.** Asking the same function the build asks is what keeps the two from
+   drifting: with a read-only `DEPOT_PATH[1]` in front of a writable depot,
+   `Pkg.build` lands in the writable one, and enumerating `DEPOT_PATH` in
+   order would otherwise prefer a stale product the first depot happens to
+   carry for the same slug;
+3. for an installed package, its scratch directory under every *other* depot
+   on `DEPOT_PATH`, so a package installed in a depot that has since moved
+   behind another still finds its products;
 4. the legacy in-package location `deps/<crate>/target/release`, for an
    installed tree built by RustCall ≤ v0.3.4 and not rebuilt since;
 5. for the extractor only, the `debug` profile of each directory above.
 
-Paths are returned whether or not they exist; callers filter.
+Paths are returned whether or not they exist; callers filter. Deciding (2) for
+an installed package probes each depot for writability, which creates that
+depot's `scratchspaces` directory — the one `Scratch` would create anyway — and
+writes nothing else.
 """
 function native_product_candidates(kind::Symbol)
     file = native_product_filename(kind)
@@ -276,21 +283,21 @@ function native_product_candidates(kind::Symbol)
 
     # Only the extractor has ever been used from a `debug` build.
     profiles = kind === :extractor ? ("release", "debug") : ("release",)
-    legacy = joinpath(native_crate_dir(kind), "target")
-    dirs = String[]
+    # The build's own answer comes first, so a fresh `Pkg.build` always wins
+    # over whatever another depot happens to carry for the same slug.
+    dirs = String[native_target_dir(kind)]
     slug = native_installed_slug()
-    if slug === nothing
-        push!(dirs, legacy)
-    else
-        # Every depot, not just the writable one: a package installed in a
-        # depot that has since moved behind another one still finds its build.
+    if slug !== nothing
+        # Then every depot, not just the writable one: a package installed in
+        # a depot that has since moved behind another still finds its build.
         for depot in DEPOT_PATH
             isempty(depot) && continue
             push!(dirs, joinpath(native_scratch_dir(String(depot)), slug,
                                  NATIVE_PRODUCTS[kind].crate))
         end
-        push!(dirs, legacy)
+        push!(dirs, joinpath(native_crate_dir(kind), "target"))
     end
+    unique!(dirs)
     for dir in dirs, profile in profiles
         push!(out, joinpath(dir, profile, file))
     end

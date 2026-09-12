@@ -94,10 +94,13 @@ the profile and the `rustc` identity, replaces it. Rebuilding both crates
 unchanged went from ~31 s to ~0.1 s of Cargo time on an M-series laptop.
 
 Lookup order for each product, most authoritative first: the environment
-override (`RUSTCALL_EXTRACT`, `RUSTCALL_RUST_HELPERS`), this tree's own build
-directory, the scratch space of every other depot on `DEPOT_PATH`, and finally
-the pre-#258 in-package location, which a tree built by an older RustCall and
-not rebuilt since still has. `test/test_native_layout.jl` pins all of it.
+override (`RUSTCALL_EXTRACT`, `RUSTCALL_RUST_HELPERS`); **the directory a build
+would write to right now**, asked of the same function the build asks, so a
+read-only `DEPOT_PATH[1]` carrying an older product for the same slug cannot
+shadow a successful `Pkg.build` into the writable depot behind it; the scratch
+space of every other depot on `DEPOT_PATH`; and finally the pre-#258 in-package
+location, which a tree built by an older RustCall and not rebuilt since still
+has. `test/test_native_layout.jl` pins all of it.
 
 ## Test Suite
 
