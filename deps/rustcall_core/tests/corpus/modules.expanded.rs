@@ -49,6 +49,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_a__run() -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { run() })) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
@@ -123,6 +124,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn a__C_free(ptr: *mut C) {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 if !ptr.is_null() {
@@ -214,6 +216,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn a__C_get_v(ptr: *const C) -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).v } } }),
         ) {
@@ -286,6 +289,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn a__C_set_v(ptr: *mut C, value: i32) {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 {
@@ -363,6 +367,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn a__C_get_label(ptr: *const C) -> a__C_RustCallOwnedString {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 {
@@ -452,6 +457,7 @@ pub mod a {
         value_ptr: *const u8,
         value_len: usize,
     ) {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 {
@@ -533,6 +539,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_new(v: i32) -> *mut C {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let obj = C::new(v);
@@ -608,6 +615,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_get(ptr: *const C) -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
@@ -686,6 +694,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_describe(ptr: *const C) -> a__C_RustCallOwnedString {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
@@ -841,6 +850,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_checked(ptr: *const C) -> CResult_a__C_checked {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
@@ -956,6 +966,7 @@ pub mod a {
         }
         #[no_mangle]
         pub extern "C" fn rustcall_a__deep_0er__run() -> i32 {
+            let _rustcall_boundary = crate::__RustCallBoundary::enter();
             match ::std::panic::catch_unwind(
                 ::std::panic::AssertUnwindSafe(|| { run() }),
             ) {
@@ -1034,6 +1045,7 @@ pub mod a {
         }
         #[no_mangle]
         pub extern "C" fn rustcall_a__deep_0er__snake_0case_0fn(x_1: i32) -> i32 {
+            let _rustcall_boundary = crate::__RustCallBoundary::enter();
             match ::std::panic::catch_unwind(
                 ::std::panic::AssertUnwindSafe(|| { snake_case_fn(x_1) }),
             ) {
@@ -1112,6 +1124,7 @@ pub mod b {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_b__run() -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { run() })) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
@@ -1185,6 +1198,7 @@ pub mod b {
     }
     #[no_mangle]
     pub extern "C" fn b__C_free(ptr: *mut C) {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 if !ptr.is_null() {
@@ -1262,6 +1276,7 @@ pub mod b {
     }
     #[no_mangle]
     pub extern "C" fn b__C_get_v(ptr: *const C) -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).v } } }),
         ) {
@@ -1334,6 +1349,7 @@ pub mod b {
     }
     #[no_mangle]
     pub extern "C" fn b__C_set_v(ptr: *mut C, value: i32) {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 {
@@ -1411,6 +1427,7 @@ pub mod b {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_b__C_new(v: i32) -> *mut C {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let obj = C::new(v);
@@ -1486,6 +1503,7 @@ pub mod b {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_b__C_get(ptr: *const C) -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
@@ -1572,6 +1590,7 @@ pub extern "C" fn rustcall_run_take_panic(out: *mut u8, cap: usize) -> usize {
 }
 #[no_mangle]
 pub extern "C" fn rustcall_run() -> i32 {
+    let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { run() })) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -1646,6 +1665,7 @@ pub mod a_b {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_a_0b__c() -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { c() })) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
@@ -1721,6 +1741,7 @@ pub mod a {
     }
     #[no_mangle]
     pub extern "C" fn rustcall_a__b_0c() -> i32 {
+        let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { b_c() })) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
@@ -1747,6 +1768,62 @@ pub mod a {
                     });
                 unsafe { ::std::mem::zeroed::<i32>() }
             }
+        }
+    }
+}
+thread_local! {
+    static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > =
+    ::std::cell::Cell::new(0);
+}
+/// `true` while this image's hook is the one std will call. A mutex, not a
+/// `Once`: installing again after an uninstall has to work.
+static __RUSTCALL_QUIET_HOOK_LIVE: ::std::sync::Mutex<bool> = ::std::sync::Mutex::new(
+    false,
+);
+/// Raises the boundary depth for as long as a wrapper body runs, so the
+/// hook above knows the panic it is about to print is one Julia will
+/// raise as `RustCall.RustPanicError` instead.
+pub struct __RustCallBoundary;
+impl __RustCallBoundary {
+    pub fn enter() -> Self {
+        let _ = __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+impl ::std::ops::Drop for __RustCallBoundary {
+    fn drop(&mut self) {
+        let _ = __RUSTCALL_QUIET_DEPTH
+            .try_with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+#[no_mangle]
+pub extern "C" fn __rustcall_install_panic_hook() {
+    if let ::std::result::Result::Ok(mut rustcall_live) = __RUSTCALL_QUIET_HOOK_LIVE
+        .lock()
+    {
+        if !*rustcall_live {
+            let rustcall_previous = ::std::panic::take_hook();
+            ::std::panic::set_hook(
+                ::std::boxed::Box::new(move |rustcall_info| {
+                    if __RUSTCALL_QUIET_DEPTH.try_with(|depth| depth.get()).unwrap_or(0)
+                        == 0
+                    {
+                        rustcall_previous(rustcall_info);
+                    }
+                }),
+            );
+            *rustcall_live = true;
+        }
+    }
+}
+#[no_mangle]
+pub extern "C" fn __rustcall_uninstall_panic_hook() {
+    if let ::std::result::Result::Ok(mut rustcall_live) = __RUSTCALL_QUIET_HOOK_LIVE
+        .lock()
+    {
+        if *rustcall_live {
+            let _ = ::std::panic::take_hook();
+            *rustcall_live = false;
         }
     }
 }

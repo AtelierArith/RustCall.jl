@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **A panic RustCall catches no longer prints `panicked at` to stderr**
+  ([#304](https://github.com/AtelierArith/RustCall.jl/issues/304)). Rust runs
+  the panic hook before the unwind `catch_unwind` catches, so every panic the
+  generated wrapper handled correctly — recorded in its channel, raised as
+  `RustCall.RustPanicError` — still looked like a crash in the log first. A
+  generated artifact now keeps a thread-local boundary depth at its crate root
+  and installs a hook that is silent while a wrapper body is running and
+  delegates to the hook it replaced otherwise, so a panic outside a boundary
+  still prints. Julia installs it once per image right after `dlopen`, which is
+  what removes the install race the per-wrapper attempt in #302 had, and removes
+  it in `close_artifact_handle!` before the image is unmapped. This covers every
+  artifact whose source RustCall writes in full — inline blocks, `@irust`,
+  monomorphized generics, the generated `@rust_crate` wrapper crate; a crate you
+  wrote yourself and annotated with `#[julia]` keeps the default hook, because an
+  attribute proc macro has nowhere to put state shared by the whole crate.
+  `RUSTCALL_PANIC_HOOK=default` turns the hook off, and `-C prefer-dynamic`
+  builds never get one, because a shared `std` shares the hook registry too.
+  See `docs/src/panics.md`.
 - **`Pkg.build("RustCall")` no longer wipes its Cargo state, and no longer
   writes into an installed package**
   ([#258](https://github.com/AtelierArith/RustCall.jl/issues/258)). Through

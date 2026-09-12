@@ -17,7 +17,10 @@ use syn::{Item, Visibility};
 
 use crate::attrs::{rustcall_attribute, strip_julia_struct_derive, strip_rustcall_attrs};
 use crate::cfg::{predicate_string, CfgSet};
-use crate::codegen::{inline_generic_wrappers, inline_struct_wrappers, transform_function};
+use crate::codegen::{
+    inline_generic_wrappers, inline_struct_wrappers, panic_hook_items, transform_function,
+    PanicHook,
+};
 use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
 use crate::model::{ModelTree, StructModel};
@@ -100,6 +103,12 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
         out.insert(0, syn::parse_quote! { compile_error!(#msg); });
     }
 
+    // The quiet panic hook (#304). This is the half the proc-macro cannot do:
+    // the expander sees the whole block, so the depth counter and the hook that
+    // reads it are placed once, at the root, where every wrapper in the block —
+    // submodules included — reaches them as `crate::__RustCallBoundary`.
+    out.extend(items_of(panic_hook_items())?);
+
     Ok(Expanded {
         // Crate-level inner attributes (`#![allow(...)]`, `//!` docs) are kept;
         // ordinary comments are not part of the AST and are dropped.
@@ -171,7 +180,11 @@ fn expand_items(
                                 manifest,
                                 function_entry(&f, attribute, true, module_path, enclosing_cfg),
                             );
-                            out.extend(items_of(transform_function(f, module_path))?);
+                            out.extend(items_of(transform_function(
+                                f,
+                                module_path,
+                                PanicHook::FileOwned,
+                            ))?);
                         }
                     }
                     _ => {

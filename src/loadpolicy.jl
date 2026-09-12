@@ -1627,6 +1627,229 @@ Guarded by `REGISTRY_LOCK`.
 const OWNED_HANDLES = _state_view(:owned_handles, Dict{Ptr{Cvoid}, Int}())
 
 """
+    QUIET_PANIC_INSTALL_SYMBOL
+    QUIET_PANIC_UNINSTALL_SYMBOL
+
+The two symbols an artifact whose source RustCall generated in full exports for
+its quiet panic hook (#304). They are spelled in
+`rustcall_core::codegen::{INSTALL,UNINSTALL}_PANIC_HOOK_SYMBOL`; a mismatch
+would show up as the hook never being installed, which
+`test/test_panic_hook.jl` asserts against.
+"""
+const QUIET_PANIC_INSTALL_SYMBOL = :__rustcall_install_panic_hook
+const QUIET_PANIC_UNINSTALL_SYMBOL = :__rustcall_uninstall_panic_hook
+
+"""
+    QUIET_HOOK_LOCK
+
+Serialises the quiet panic hook's lifecycle for one process (#304).
+
+Two transitions must not interleave: *record a loader reference, then install*
+(`load_artifact!`) and *confirm no reference is left, then uninstall*
+(`close_artifact_handle!`). Without this lock a `dlopen` of a still-mapped path
+could record its reference and call the installer — a no-op, because the hook is
+still marked live — in the window between the other task's zero-count check and
+its uninstall, leaving a live image with no hook and nothing to restore it
+(#388 review).
+
+**Lock ordering: this lock is taken *before* `REGISTRY_LOCK`, never after.**
+Only the two paths above take it, and the only foreign code called under it is
+the artifact's own installer/uninstaller — a thread-local read and a
+`set_hook`/`take_hook`, with no allocation of ours and no call back into Julia.
+`REGISTRY_LOCK` is never held across that call.
+"""
+const QUIET_HOOK_LOCK = ReentrantLock()
+
+"""
+    prefer_dynamic_flag(flags) -> Bool
+
+Whether one `rustc` flag string asks for a shared `std`.
+
+Tokenised rather than searched for a substring, so `-C prefer-dynamic`,
+`-Cprefer-dynamic`, `--codegen prefer-dynamic` and the `\x1f`-separated
+`CARGO_ENCODED_RUSTFLAGS` form all count, and `-C prefer-dynamic=no` — which
+asks for the opposite — does not.
+"""
+function prefer_dynamic_flag(flags::AbstractString)
+    for raw in eachsplit(flags, r"[\s\x1f]+")
+        token = String(raw)
+        for prefix in ("--codegen=", "--codegen", "-C=", "-C")
+            if startswith(token, prefix) && length(token) > length(prefix)
+                token = token[(length(prefix) + 1):end]
+                break
+            end
+        end
+        startswith(token, "prefer-dynamic") || continue
+        value = token[(length("prefer-dynamic") + 1):end]
+        isempty(value) && return true
+        startswith(value, "=") || continue
+        # `-C prefer-dynamic=no` is the default spelled out.
+        lowercase(value[2:end]) in ("no", "n", "off", "false", "0") || return true
+    end
+    return false
+end
+
+"""
+    effective_rustflags(env) -> Vector{String}
+
+The flag strings Cargo would actually hand `rustc`, given `env`.
+
+Cargo takes rustflags from **one** source, not their union, in this order:
+`CARGO_ENCODED_RUSTFLAGS`, `RUSTFLAGS`, the per-target
+`CARGO_TARGET_<TRIPLE>_RUSTFLAGS` (`target.<triple>.rustflags`), and
+`CARGO_BUILD_RUSTFLAGS` (`build.rustflags`). *Set* is what counts, not
+non-empty: an empty `RUSTFLAGS` deliberately suppresses what a Cargo
+configuration would otherwise contribute, which is why
+`ARTIFACT_ENV_ABSENT` keeps "absent" and "set to empty" apart at all
+(`src/artifact_id.jl`).
+
+Every per-target variable at that level is returned rather than the one for the
+triple being built, which is not known here: erring towards finding a flag errs
+towards *not* installing a hook (#388 review).
+"""
+function effective_rustflags(env)
+    for name in ("CARGO_ENCODED_RUSTFLAGS", "RUSTFLAGS")
+        haskey(env, name) && return String[String(env[name])]
+    end
+    per_target = String[String(value) for (name, value) in env
+                        if startswith(uppercase(String(name)), "CARGO_TARGET_") &&
+                           endswith(uppercase(String(name)), "_RUSTFLAGS")]
+    isempty(per_target) || return per_target
+    haskey(env, "CARGO_BUILD_RUSTFLAGS") &&
+        return String[String(env["CARGO_BUILD_RUSTFLAGS"])]
+    return String[]
+end
+
+"""
+    prefer_dynamic_build(; env = ENV) -> Bool
+    prefer_dynamic_build(snapshot_env) -> Bool
+
+Whether the build `env` asks `rustc` for a **shared** `std`
+(`-C prefer-dynamic`).
+
+It decides whether the quiet hook may be installed at all. With the default
+static `std` every image owns its own hook registry, so one image's hook is
+another image's business only if the registry is shared — and with
+`prefer-dynamic` it is: the hook installed from a `cdylib` is reachable, and
+droppable, from any other image in the process (#302 review, #304).
+
+`snapshot_env` is the environment the artifact was **built** under, recorded at
+macro-expansion time and replayed by the Cargo build (#272); it is what
+`load_artifact!` passes, exactly as `effective_panic_strategy` takes it. Falling
+back to the live `ENV` is right for the direct-`rustc` doors, which build in this
+process.
+
+Which variable decides is `effective_rustflags`, following Cargo's own
+precedence. A `prefer-dynamic` that reaches `rustc` from a place no environment
+variable mirrors — `build.rustflags` written in a Cargo configuration *file*,
+which RustCall reads nowhere — is invisible here; what that costs is described in
+`docs/src/panics.md`, and it is not memory safety: `close_artifact_handle!`
+removes the hook before the image is unmapped either way.
+"""
+function prefer_dynamic_build(; env = ENV)
+    return any(prefer_dynamic_flag, effective_rustflags(env))
+end
+
+prefer_dynamic_build(snapshot_env::Union{AbstractDict, AbstractString}) =
+    prefer_dynamic_build(; env = _as_env(snapshot_env))
+
+"""
+    quiet_panic_hooks_enabled() -> Bool
+
+Whether RustCall may install quiet panic hooks in this process.
+
+`RUSTCALL_PANIC_HOOK=default` turns them off — the escape hatch for the one
+thing the hook costs: a panic *inside* a generated artifact but *outside* any
+wrapper boundary, on a thread the artifact's own code spawned, is printed by the
+hook RustCall replaced, and if that hook is gone so is the message. It is also
+off under `prefer_dynamic_build`.
+"""
+function quiet_panic_hooks_enabled(; env = ENV)
+    setting = lowercase(strip(get(ENV, "RUSTCALL_PANIC_HOOK", "")))
+    setting in ("default", "off", "0", "false") && return false
+    return !prefer_dynamic_build(; env = env)
+end
+
+quiet_panic_hooks_enabled(snapshot_env::Union{AbstractDict, AbstractString}) =
+    quiet_panic_hooks_enabled(; env = _as_env(snapshot_env))
+
+"""
+    install_quiet_panic_hook!(handle; snapshot_env = nothing) -> Bool
+
+Install the artifact's quiet panic hook, and say whether it was installed.
+
+Called by `load_artifact!` right after `dlopen` and after the loader reference is
+recorded, before any wrapper of the image can run. That timing is the design: the
+installer is called by the loader rather than lazily by the first wrapper call, so
+two first calls to two wrappers cannot race to install it — the defect that sank
+the per-wrapper attempt in #302.
+
+**The image decides, not the policy.** `__rustcall_install_panic_hook` exists
+exactly when the source was generated in full — `#[julia]` in a crate RustCall
+does not write never emits it — so asking the image cannot be wrong, and no
+door can forget to opt in. A `LoadPolicy` flag was tried first and was exactly
+that mistake: every `@rust_crate` module loads with `crate_direct_policy()`, the
+generated PyO3 wrapper crate included, so the flag silently excluded the one
+wrapper flavour that does carry a hook (#388 review). The doors are listed in
+`docs/src/panics.md` for readers; nothing branches on the list.
+
+Returns `false` — silently, it is not an error — when hooks are disabled for this
+process, or when the image exports no installer (a user crate, the hand-written
+helper library, or an artifact built by RustCall ≤ v0.3.4).
+"""
+function install_quiet_panic_hook!(handle::Ptr{Cvoid}; snapshot_env = nothing)
+    handle == C_NULL && return false
+    enabled = snapshot_env === nothing ? quiet_panic_hooks_enabled() :
+              quiet_panic_hooks_enabled(snapshot_env)
+    enabled || return false
+    install = Libdl.dlsym(handle, QUIET_PANIC_INSTALL_SYMBOL; throw_error = false)
+    (install === nothing || install == C_NULL) && return false
+    ccall(install, Cvoid, ())
+    Threads.atomic_add!(QUIET_PANIC_HOOK_INSTALLS, 1)
+    return true
+end
+
+"""
+    uninstall_quiet_panic_hook!(handle) -> Bool
+
+Remove the artifact's quiet panic hook before its code is unmapped, and say
+whether it was removed.
+
+Called by `close_artifact_handle!`, the one place an image is closed, so the
+closure leaves std's registry before the memory it lives in does. Asking the
+image rather than the policy is deliberate: closing goes through one handle-only
+path, and the exported symbol is a more reliable question than a policy the
+caller would have to carry along. The generated uninstaller is a no-op when that
+image never installed anything.
+"""
+function uninstall_quiet_panic_hook!(handle::Ptr{Cvoid})
+    handle == C_NULL && return false
+    uninstall = Libdl.dlsym(handle, QUIET_PANIC_UNINSTALL_SYMBOL; throw_error = false)
+    (uninstall === nothing || uninstall == C_NULL) && return false
+    ccall(uninstall, Cvoid, ())
+    Threads.atomic_add!(QUIET_PANIC_HOOK_REMOVALS, 1)
+    return true
+end
+
+"""
+    QUIET_PANIC_HOOK_INSTALLS
+    QUIET_PANIC_HOOK_REMOVALS
+
+How many times this process called an artifact's quiet-hook installer and
+uninstaller (#304). Counters, not registries: a test asserts that closing an
+artifact removed its hook without having to reach into the image.
+
+`INSTALLS` counts *calls*, and the generated installer is `Once`-guarded, so
+loading one image twice calls it twice and installs once. Calling it on every
+load rather than only on the reference that opened the image is deliberate: two
+tasks racing on one path would otherwise let the loser call a wrapper before the
+winner had installed anything. `REMOVALS` counts only the last reference, because
+that is the close that unmaps.
+"""
+const QUIET_PANIC_HOOK_INSTALLS = Threads.Atomic{Int}(0)
+const QUIET_PANIC_HOOK_REMOVALS = Threads.Atomic{Int}(0)
+
+"""
     close_artifact_handle!(handle) -> Bool
 
 Close an image RustCall opened, once. The single close point of the package.
@@ -1639,9 +1862,11 @@ function close_artifact_handle!(handle::Ptr{Cvoid})
     handle == C_NULL && return false
     # Ownership is checked and *given up* in one locked step, so a handle can
     # be closed at most once however many callers race to close it.
-    owned = lock(REGISTRY_LOCK) do
+    # `owned` says this call may close; `final` says it is releasing the last
+    # reference RustCall holds, which is the only close that unmaps the image.
+    owned, final = lock(REGISTRY_LOCK) do
         remaining = get(OWNED_HANDLES, handle, 0)
-        remaining == 0 && return false
+        remaining == 0 && return (false, false)
         remaining == 1 ? delete!(OWNED_HANDLES, handle) :
                          (OWNED_HANDLES[handle] = remaining - 1)
         if remaining == 1
@@ -1652,9 +1877,27 @@ function close_artifact_handle!(handle::Ptr{Cvoid})
                 _forget_generic_image!(alive)
             end
         end
-        return true
+        return (true, remaining == 1)
     end
     owned || return false
+    # Only on the last reference, and only if it is *still* the last: the panic
+    # hook is a closure living in the image, and std's registry must not keep
+    # pointing at it once the code is unmapped (#304), but an image that keeps a
+    # reference stays mapped and in use. The count is re-read here because a
+    # `dlopen` of the same path can land between the decision above and this
+    # point, receive this same still-mapped handle and record a reference of its
+    # own. The check runs under `QUIET_HOOK_LOCK`, which `load_artifact!` holds
+    # across *its* record-then-install, so such a reopen either records before
+    # this check — and keeps its hook, because the check then sees it — or
+    # installs after the uninstall, which works because install and uninstall are
+    # repeatable on the Rust side. What the lock rules out is the reopen
+    # finishing a no-op install in between (#388 review).
+    if final
+        lock(QUIET_HOOK_LOCK) do
+            lock(() -> get(OWNED_HANDLES, handle, 0) == 0, REGISTRY_LOCK) &&
+                uninstall_quiet_panic_hook!(handle)
+        end
+    end
     Threads.atomic_add!(DLCLOSE_COUNT, 1)
     Libdl.dlclose(handle)
     return true
@@ -1778,11 +2021,22 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     if handle == C_NULL
         throw(RustError("Failed to load $(policy.name) library: $(lib_path)"))
     end
+
     # This call opened the image, so this package may close it later
     # (`OWNED_HANDLES`). A handle that merely arrives through
     # `adopt_artifact!` is never closed by RustCall.
-    lock(REGISTRY_LOCK) do
-        OWNED_HANDLES[handle] = get(OWNED_HANDLES, handle, 0) + 1
+    # Recording the reference and installing the quiet panic hook (#304) are one
+    # transition: a concurrent last close confirms the count is still zero under
+    # the same lock before it uninstalls, so the two can only happen in one order
+    # or the other, never interleaved. The install happens before any wrapper of
+    # this image can be called, and the eligibility question is asked of the
+    # environment the artifact was *built* under when the caller recorded one.
+    lock(QUIET_HOOK_LOCK) do
+        lock(REGISTRY_LOCK) do
+            OWNED_HANDLES[handle] = get(OWNED_HANDLES, handle, 0) + 1
+        end
+        install_quiet_panic_hook!(handle;
+                                  snapshot_env = get(kwargs, :snapshot_env, nothing))
     end
     # `load_artifact!` opened this handle, so `load_artifact!` owns it: if the
     # registration turns out not to need it (`:insert_only` lost the race), it

@@ -156,6 +156,31 @@ publication takes the state lock.
 
 **Finalizers must never take `REGISTRY_LOCK`, do a registry lookup, resolve a symbol, or log.** A finalizer runs at an arbitrary point on an arbitrary thread, possibly while that thread already holds the lock — taking it deadlocks, a `dlsym` plus method compilation inside a finalizer is a crash, and `@warn` allocates and can yield. Everything a finalizer needs is captured at construction: the destructor pointer and the library's liveness `Ref{Bool}` (`RustCall.artifact_alive_ref`). The shared body is `finalize_rust_object!` in `src/structs.jl`; a destructor that raises is counted (`finalizer_failure_count()`), not logged. `test/test_finalizers.jl` asserts this at the source level, so a new finalizer that breaks the rule fails CI.
 
+**A caught panic prints nothing (#304).** A generated artifact keeps a
+thread-local boundary depth at its crate root and exports
+`__rustcall_install_panic_hook` / `__rustcall_uninstall_panic_hook`; `load_artifact!`
+installs once per image right after `dlopen` (never lazily — that is what removes
+the race) and `close_artifact_handle!` removes it before `dlclose`, on the last
+loader reference and only while the handle still has none left. Those two
+transitions — record-a-reference-then-install and confirm-none-left-then-uninstall
+— are serialized by `QUIET_HOOK_LOCK`, **taken before `REGISTRY_LOCK`, never
+after**; the only foreign code called under it is the artifact's own
+installer/uninstaller, and `REGISTRY_LOCK` is never held across that call.
+Install and uninstall are repeatable on the Rust side (one mutex, not a `Once`),
+so a reopened image can restore its own hook. Names beginning with
+`__rustcall_` are reserved: Julia calls the installer it finds under that name as
+`extern "C" fn()`, so the name must be one the symbol scheme cannot produce for a
+user's item. The hook is
+silent inside a boundary and delegates to the hook it replaced outside one. It
+exists only where a generator writes the whole file
+(`rustcall_core::codegen::PanicHook::FileOwned`: inline blocks, `@irust`,
+generics, the generated wrapper crate), and the loader asks the **image** for the
+installer symbol rather than asking the policy — every `@rust_crate` module loads
+with `crate_direct_policy()`, so a policy flag would miss the generated wrapper
+crate. `#[julia]` in a crate RustCall does not write keeps the default hook,
+because an attribute proc macro has nowhere to put crate-wide state. `RUSTCALL_PANIC_HOOK=default` and `-C prefer-dynamic` both keep the
+default hook. See `docs/src/panics.md`.
+
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 
 **One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point captures its handle, cached pointers, liveness `Ref` and **return ABI** in **one** locked step. Cold function, panic-channel and release/destructor pointers are then resolved on that captured handle outside STATE. No later name lookup may supply any part of the returned target: that could cross a swap and pair an old call with a replacement's channel, allocator or ABI. Cache publication writes only to the captured image's cache. The legacy name-keyed panic cache compares its captured registry entry before publishing, but that comparison never changes the pointer returned to its caller. Explicit closing requires quiescence of the entire FFI operation, including target resolution.
