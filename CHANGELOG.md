@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`Pkg.build("RustCall")` no longer wipes its Cargo state, and no longer
+  writes into an installed package**
+  ([#258](https://github.com/AtelierArith/RustCall.jl/issues/258)). Through
+  v0.3.4 the build script ran `cargo clean` before every build, so each build
+  event — including the transitive ones Pkg triggers — paid a full Rust
+  compile of `deps/rust_helpers` and `deps/rustcall_extract`. Cargo already
+  knows which of its inputs changed, down to the `rustc` identity and the
+  profile; rebuilding both crates unchanged went from ~31 s to ~0.1 s of Cargo
+  time. The products' location is now decided in one place,
+  `src/native_layout.jl`, which `deps/build.jl` includes rather than
+  reimplements: a checkout keeps building in `deps/<crate>/target`, where the
+  documented developer commands already put them, while an **installed**
+  package builds into
+  `<depot>/scratchspaces/<UUID>/native-v1/<slug>/<crate>` and its package
+  directory is never written to — so a read-only package store works, and two
+  installed RustCall versions in one depot cannot pick up each other's
+  extractor. `RUSTCALL_EXTRACT` still overrides the CLI outright, and
+  `RUSTCALL_RUST_HELPERS` now does the same for the helper library. Moving
+  `CARGO_TARGET_DIR` is not enough by itself — Cargo writes `Cargo.lock` beside
+  the manifest whatever the target directory says, which on a read-only tree
+  fails the build outright — so both crates commit their lockfile and are built
+  with `--locked`.
+
 ## [0.3.4] - 2026-09-12
 
 ### Fixed

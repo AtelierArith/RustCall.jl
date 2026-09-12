@@ -69,15 +69,13 @@ jobs:
         # (#384 review). `--locked` also fails loudly when a lockfile has gone
         # stale against its Cargo.toml, which is the right moment to notice.
         run: |
-          cargo fetch --manifest-path deps/rustcall_extract/Cargo.toml
-          cargo fetch --manifest-path deps/rust_helpers/Cargo.toml
           cargo fetch --manifest-path deps/rustcall_julia_macros/Cargo.toml
-          for fixture in test/fixtures/*/Cargo.lock; do
-            cargo fetch --locked --manifest-path "$(dirname "$fixture")/Cargo.toml"
+          for lock in deps/*/Cargo.lock test/fixtures/*/Cargo.lock; do
+            cargo fetch --locked --manifest-path "$(dirname "$lock")/Cargo.toml"
           done
       - name: Build the release extractor
         working-directory: deps/rustcall_extract
-        run: cargo build --release
+        run: cargo build --release --locked
       - uses: julia-actions/julia-buildpkg@v1
       - name: Run the suite with cargo offline
         env:

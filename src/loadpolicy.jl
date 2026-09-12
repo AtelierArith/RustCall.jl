@@ -376,7 +376,8 @@ crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
     helper_library_policy() -> LoadPolicy
 
 The ownership helper library `deps/rust_helpers`, loaded by
-`src/memory.jl:215` and `:321` into `RUST_HELPERS_LIB`.
+`load_rust_helpers_lib` and `try_load_rust_helpers` (`src/memory.jl`) into
+`RUST_HELPERS_LIB`.
 
 It looked like the one library other artifacts could legitimately need to
 resolve symbols against, and is not: every user goes through
@@ -386,14 +387,12 @@ against it, so nothing would resolve anything against it even if it were
 artifacts" category is therefore empty, and this policy stays `RTLD_LOCAL`
 (#277 Phase B2).
 
-Panic strategy is `:cargo_default`, not `:abort`: the helper library is built by
-`deps/build.jl:97-98` with a plain `cargo build --release --manifest-path ...`,
-and `deps/rust_helpers/Cargo.toml` (9 lines, `[package]`/`[lib]`/`[dependencies]`
-only) declares no `[profile.release]` and therefore no `panic` key, so Cargo's
-release default (`unwind`) applies — unless `CARGO_PROFILE_RELEASE_PANIC` is set
-in the environment `Pkg.build` inherits, in which case the same source produces
-an aborting artifact.  Either way no `catch_unwind` boundary contains it (#244);
-`effective_panic_strategy` resolves the value.
+Panic strategy is `:unwind`, and pinned twice over: `deps/rust_helpers/Cargo.toml`
+declares `[profile.release] panic = "unwind"`, and `build_native_product`
+(`deps/build.jl`) passes `CARGO_PROFILE_RELEASE_PANIC=unwind` to Cargo, so an
+inherited `CARGO_PROFILE_RELEASE_PANIC=abort` cannot decide it either (#244).
+No `catch_unwind` boundary contains this library, so an aborting build would
+take the Julia process with it; `effective_panic_strategy` resolves the value.
 """
 helper_library_policy() = LoadPolicy("helper-library";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
@@ -404,14 +403,16 @@ helper_library_policy() = LoadPolicy("helper-library";
     registry_key_kind = :none,
     sets_current_lib = false,
     finalizer_frees = true,
-    call_sites = ["src/memory.jl:215", "src/memory.jl:321",
-                  "deps/build.jl:97-98", "deps/rust_helpers/Cargo.toml"],
+    call_sites = ["src/memory.jl (load_rust_helpers_lib)",
+                  "src/memory.jl (try_load_rust_helpers)",
+                  "deps/build.jl (build_native_product)",
+                  "deps/rust_helpers/Cargo.toml"],
     issues = [244, 250],
     notes = "Every user reaches it through RUST_HELPERS_LIB[] and dlsym and " *
             "nothing links against it, so RTLD_LOCAL is right after all " *
-            "(B2); built by plain `cargo build --release`, so it takes " *
-            "Cargo's release default like the other Cargo-backed artifacts, " *
-            "environment overrides included.")
+            "(B2); its panic strategy is pinned by both its own manifest and " *
+            "the environment deps/build.jl passes to Cargo, so no inherited " *
+            "CARGO_PROFILE_RELEASE_PANIC can turn it into an aborting build.")
 
 """
     generics_policy() -> LoadPolicy
@@ -666,9 +667,9 @@ Resolve `policy.panic_strategy` against the environment a build would inherit.
   anything else — unset, empty, unrecognised — gives `:unwind`, Cargo's default
   for the `release` profile.  Both doors that carry `:cargo_default` let the
   Julia process environment reach the build (`src/cargobuild.jl` only calls
-  `setenv` to replay a captured snapshot, #272; `deps/build.jl:97-98` never
-  does), so `CARGO_PROFILE_RELEASE_PANIC=abort` really does change the
-  artifact.
+  `setenv` to replay a captured snapshot, #272), so
+  `CARGO_PROFILE_RELEASE_PANIC=abort` really does change the artifact.
+  `deps/build.jl` is not one of them: it pins the variable itself.
 - `:crate_profile` is returned unchanged: the environment is only one of the
   inputs there, and the user's manifest — which Phase A does not read — can
   pin `panic`.  Still unknowable without reading it.
