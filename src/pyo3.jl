@@ -1985,6 +1985,69 @@ function _resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPla
 end
 
 """
+    CRATES_IO_SOURCES
+
+The `source` spellings Cargo uses for crates.io, the one registry a generated
+dependency can name with a bare version requirement.
+
+Cargo reports the registry protocol it used, and the sparse protocol has been
+the default since 1.70, so both spellings occur.
+"""
+const CRATES_IO_SOURCES = ("registry+https://github.com/rust-lang/crates.io-index",
+                           "sparse+https://index.crates.io/")
+
+"""
+    _git_dependency_keys(source) -> Vector{String}
+
+The `git = ...` dependency keys that reproduce Cargo's git `source` string
+**exactly**, selector included.
+
+A git source is `git+<url>[?<selector>]#<commit>`, and the selector is part of
+the package's identity: `git+URL?branch=main` and `git+URL?rev=SHA` are two
+different sources to Cargo *even when they resolve to the same commit*. So the
+selector is copied as it stands and the commit is **not** turned into a `rev` —
+pinning that way would create the second pyo3 instance this is here to avoid
+(#392 review). The commit does not need repeating: the wrapper is seeded with
+the target crate's own `Cargo.lock` (`_wrapper_shaped_project`), which pins it.
+"""
+function _git_dependency_keys(source::AbstractString)
+    rest = source[5:end]
+    hash_at = findlast('#', rest)
+    hash_at === nothing || (rest = rest[1:(hash_at - 1)])
+    url = rest
+    selector = ""
+    query_at = findfirst('?', rest)
+    if query_at !== nothing
+        url = rest[1:(query_at - 1)]
+        selector = rest[(query_at + 1):end]
+    end
+    keys = ["git = \"$(escape_toml_string(url))\""]
+    isempty(selector) && return keys
+    key, _, value = partition_first(selector, '=')
+    if !(key in ("branch", "tag", "rev")) || isempty(value)
+        throw(RustError(
+            "the target crate resolves pyo3 from the git source $(source), whose " *
+            "`$(selector)` selector RustCall does not know how to reproduce. " *
+            "Reproducing it exactly is what keeps Cargo from treating the " *
+            "wrapper's alias as a second package (#370)."))
+    end
+    push!(keys, "$(key) = \"$(escape_toml_string(value))\"")
+    return keys
+end
+
+"""
+    partition_first(text, delimiter) -> (before, found, after)
+
+Split `text` at the first `delimiter`. `found` is `false` when there is none, in
+which case `before` is all of `text`.
+"""
+function partition_first(text::AbstractString, delimiter::Char)
+    at = findfirst(delimiter, text)
+    at === nothing && return (String(text), false, "")
+    return (String(text[1:(at - 1)]), true, String(text[(at + 1):end]))
+end
+
+"""
     _pyo3_alias_toml(dependency) -> Vector{String}
 
 The `[dependencies.rustcall_pyo3]` table naming the *same* pyo3 package the
@@ -1999,24 +2062,30 @@ function _pyo3_alias_toml(dependency)
     lines = ["", "[dependencies.rustcall_pyo3]", "package = \"pyo3\""]
     source = dependency.source
     if startswith(source, "git+")
-        url = source[5:end]
-        rev = ""
-        hash_at = findlast('#', url)
-        if hash_at !== nothing
-            rev = url[(hash_at + 1):end]
-            url = url[1:(hash_at - 1)]
-        end
-        query_at = findfirst('?', url)
-        query_at === nothing || (url = url[1:(query_at - 1)])
-        push!(lines, "git = \"$(escape_toml_string(url))\"")
-        isempty(rev) || push!(lines, "rev = \"$(escape_toml_string(rev))\"")
+        append!(lines, _git_dependency_keys(source))
     elseif isempty(source)
         # A path dependency: name the directory Cargo resolved, so the alias is
         # the very same package rather than a registry release that happens to
         # share its version.
         push!(lines, "path = \"$(escape_toml_string(dependency.dir))\"")
-    else
+    elseif any(crates_io -> startswith(source, crates_io), CRATES_IO_SOURCES)
         push!(lines, "version = \"=$(dependency.version)\"")
+    else
+        # A registry that is not crates.io. A bare `version` would select
+        # crates.io and hand the wrapper a *different* pyo3 — the very failure
+        # this function exists to prevent — and the alternative, `registry =
+        # "<name>"`, needs a name from the user's Cargo configuration that
+        # nothing in the metadata gives us. Refuse rather than silently build
+        # against the wrong package (#370, #392 review).
+        throw(RustError(
+            "the target crate resolves pyo3 $(dependency.version) from $(source), " *
+            "and RustCall cannot name that registry in the generated wrapper: a " *
+            "plain version requirement would select crates.io and put a second " *
+            "pyo3 in the build, whose `Python` and traits would not match the " *
+            "types in your crate's macro metadata.\n" *
+            "Depend on pyo3 from crates.io, or by `path` or `git`, for the items " *
+            "that need RustCall's dispatcher (a defaulted callable, or a " *
+            "`#[pyclass(extends = ...)]`)."))
     end
     append!(lines, ["default-features = false", "features = [\"macros\"]"])
     return lines

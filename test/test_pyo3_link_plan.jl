@@ -965,16 +965,54 @@ _manifest(text::AbstractString) = TOML.parse(text)
         @test occursin("path = \"/vendor/pyo3\"", toml)
         @test !occursin("version =", toml)
 
-        # A git dependency is pinned to the commit Cargo resolved, so the alias
-        # cannot drift to another checkout of the same branch.
+        # A git dependency reproduces Cargo's source *exactly*, selector and
+        # all. Turning `?branch=main` into `rev = <the resolved commit>` looks
+        # like a tighter pin and is in fact a different source ID — Cargo would
+        # build a second pyo3, which is the failure this is here to prevent
+        # (#392 review). The commit needs no repeating: the wrapper is seeded
+        # with the target crate's own `Cargo.lock`.
+        for (selector, key, value) in (("?branch=main", "branch", "main"),
+                                       ("?tag=v0.26.0", "tag", "v0.26.0"),
+                                       ("?rev=abc123", "rev", "abc123"))
+            git_dep = (; version = "0.30.0",
+                       source = "git+https://github.com/PyO3/pyo3$(selector)#deadbeefcafe",
+                       dir = "/git/pyo3")
+            toml = join(RustCall._pyo3_alias_toml(git_dep), "\n")
+            @test occursin("git = \"https://github.com/PyO3/pyo3\"", toml)
+            @test occursin("$(key) = \"$(value)\"", toml)
+            @test !occursin("version =", toml)
+        end
+        # No selector: the default branch, and nothing to reproduce.
         git_dep = (; version = "0.30.0",
-                   source = "git+https://github.com/PyO3/pyo3?branch=main#deadbeefcafe",
+                   source = "git+https://github.com/PyO3/pyo3#deadbeefcafe",
                    dir = "/git/pyo3")
         toml = join(RustCall._pyo3_alias_toml(git_dep), "\n")
         @test occursin("git = \"https://github.com/PyO3/pyo3\"", toml)
-        @test occursin("rev = \"deadbeefcafe\"", toml)
-        @test !occursin("branch=main", toml)
-        @test !occursin("version =", toml)
+        @test !occursin("rev =", toml)
+        @test !occursin("branch =", toml)
+
+        # A registry that is not crates.io cannot be named in a generated
+        # dependency — `registry = "<name>"` needs a name from the user's Cargo
+        # configuration — and a bare version would quietly select crates.io.
+        # Refused, rather than built against the wrong package (#392 review).
+        other = (; version = "0.29.2", source = "registry+https://example.invalid/index",
+                 dir = "/other/pyo3")
+        err = try
+            RustCall._pyo3_alias_toml(other)
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        @test occursin("example.invalid", sprint(showerror, err))
+
+        # Both crates.io spellings are fine: the sparse protocol has been the
+        # default since Cargo 1.70.
+        for source in RustCall.CRATES_IO_SOURCES
+            sparse = (; version = "0.29.2", source = source, dir = "/registry/pyo3-0.29.2")
+            @test occursin("version = \"=0.29.2\"",
+                           join(RustCall._pyo3_alias_toml(sparse), "\n"))
+        end
 
         # Every form still aliases the package and keeps the feature set.
         for dep in (registry, path_dep, git_dep)
