@@ -10,7 +10,7 @@
 # "scales with thread count"), so it reports a ratio against a raw `ccall` into
 # the same library and a scaling factor across threads, not just absolute times.
 #
-# Four call paths, floor first:
+# Five call paths, floor first:
 #
 #   raw        `ccall` on a pointer resolved once, by hand. The floor: no
 #              lookup, no lock, no panic-channel read.
@@ -18,6 +18,10 @@
 #              code calls, and the path `src/julia_functions.jl` emits.
 #   typed      `@rust f(a, b)::T`.
 #   dynamic    `@rust f(a, b)`, the return type taken from the snapshot.
+#   crate      a wrapper of a `@rust_crate` module. A separate code path with a
+#              separate cache (`CrateTargetCache`, #253), because a generated
+#              crate module is also emitted as *source text* by
+#              `write_bindings_to_file` and cannot splice an object into itself.
 #
 # and then the pieces each of them is made of, so the ratio has an address.
 
@@ -60,6 +64,21 @@ const CHANNEL = TARGET.channel
 @assert typed_call(A, B) == 300
 @assert dynamic_call(A, B) == 300
 
+# The `@rust_crate` path, against the same shape of Rust body: `add(a, b)` of
+# `test/fixtures/sample_crate`. Its wrapper lives in a generated module, so its
+# floor is that module's own `ccall` on a pointer resolved by hand once.
+const CRATE_PATH = normpath(joinpath(@__DIR__, "..", "test", "fixtures", "sample_crate"))
+const CRATE = @rust_crate CRATE_PATH
+const CRATE_MODULE = getfield(CRATE, :module_ref)
+const CRATE_ADD = getfield(CRATE_MODULE, :add)
+const CRATE_PTR = RustCall._module_binding(CRATE_MODULE, :_get_func_ptr)("rustcall_add")
+
+@noinline crate_raw_call(ptr, a, b) = ccall(ptr, Int32, (Int32, Int32), a, b)
+@noinline crate_call(a, b) = CRATE_ADD(a, b)
+
+@assert crate_raw_call(CRATE_PTR, A, B) == 300
+@assert crate_call(A, B) == 300
+
 # ---------------------------------------------------------------------------
 # Per-call cost
 # ---------------------------------------------------------------------------
@@ -69,6 +88,8 @@ paths = [
     ("generated #[julia] fn", @benchmark generated_call($A, $B)),
     ("@rust f(a,b)::Int32", @benchmark typed_call($A, $B)),
     ("@rust f(a,b)", @benchmark dynamic_call($A, $B)),
+    ("@rust_crate raw ccall", @benchmark crate_raw_call($CRATE_PTR, $A, $B)),
+    ("@rust_crate wrapper", @benchmark crate_call($A, $B)),
 ]
 
 # The pieces. Each is called the way the call paths call it, so the parts are
@@ -79,12 +100,25 @@ paths = [
 @noinline piece_call_rust_function(ptr, a, b) = RustCall.call_rust_function(ptr, Int32, a, b)
 @noinline piece_guard(v, ch) = RustCall.guard_rust_panic_ptr(v, ch, "rustcall_dispatch_add")
 
+# The two pieces the `@rust_crate` wrapper is made of: the generation mirror
+# deref (a `StateView`, so it takes `REGISTRY_LOCK`) and the memoized symbol
+# lookup. Both used to run on every call; since #253 they run only when the
+# artifact epoch has moved.
+const CRATE_GEN_VIEW = RustCall._module_binding(CRATE_MODULE, :_LIB_GEN)
+const CRATE_SYMBOL = RustCall._module_binding(CRATE_MODULE, :_symbol)
+@noinline piece_crate_generation() = CRATE_GEN_VIEW[]
+@noinline piece_crate_symbol(handle) = CRATE_SYMBOL(handle, "rustcall_add")
+@noinline piece_panic_symbol() = RustCall.ffi_panic_symbol("rustcall_add")
+
 pieces = [
     ("_resolve_lib (per call)", @benchmark piece_resolve_lib()),
     ("module_symbol_library", @benchmark piece_symbol_library()),
     ("resolve_call_target", @benchmark piece_resolve_target($LIB)),
     ("call_rust_function (dyn ret)", @benchmark piece_call_rust_function($PTR, $A, $B)),
     ("guard_rust_panic_ptr", @benchmark piece_guard(Int32(300), $CHANNEL)),
+    ("crate _LIB_GEN[] (locked)", @benchmark piece_crate_generation()),
+    ("crate _symbol (locked)", @benchmark piece_crate_symbol($(CRATE_GEN_VIEW[].handle))),
+    ("ffi_panic_symbol (String)", @benchmark piece_panic_symbol()),
 ]
 
 # ---------------------------------------------------------------------------
@@ -125,7 +159,8 @@ raw_bound(a, b) = raw_call(PTR, a, b)
 nthreads = Threads.nthreads()
 task_counts = filter(<=(max(nthreads, 1)), [1, 2, 4])
 
-const SCALING_PATHS = [("raw ccall", raw_bound), ("generated #[julia] fn", generated_call)]
+const SCALING_PATHS = [("raw ccall", raw_bound), ("generated #[julia] fn", generated_call),
+                       ("@rust_crate wrapper", crate_call)]
 
 # Every (path, task count) pair is run once and discarded first. Otherwise the
 # first timed region of each path pays the compilation of `burn` and of the
