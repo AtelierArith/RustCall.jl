@@ -1078,20 +1078,55 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
-    @testset "the dispatcher alias follows the emitted source (#392 review)" begin
-        # Not inferred from the manifest. A defaulted callable the generator
-        # refused keeps its `python_default` there while no dispatcher is
-        # emitted for it — and, the other way, a class made Python-owned by
-        # exactly such a refused method keeps a `Py<PyAny>` handle that *does*
-        # need the alias, with no emitted default anywhere to infer it from
-        # (#371). The source answers both without a heuristic.
-        @test RustCall._wrapper_uses_python_dispatch(
-            "pub extern \"C\" fn rustcall_add(a: i32) -> i32 { a }") === false
-        @test RustCall._wrapper_uses_python_dispatch(
-            "use ::rustcall_pyo3::types::PyAnyMethods as _;") === true
-        # The #371 shape: a Python-owned handle and nothing else.
-        @test RustCall._wrapper_uses_python_dispatch(
-            "object: ::std::option::Option<::rustcall_pyo3::Py<::rustcall_pyo3::PyAny>>,") === true
+    @testset "the generator reports dispatcher use, Julia does not guess (#392 review)" begin
+        # Julia does not parse Rust (#264), and every proxy is wrong one way or
+        # the other: a defaulted callable the generator refused leaves a
+        # `python_default` in the manifest with no dispatcher emitted, while a
+        # class made Python-owned by exactly such a refused method has a
+        # `Py<PyAny>` handle with no emitted default to infer from (#371).
+        # Scanning the source is wrong too — `#[pyfunction] fn
+        # rustcall_pyo3_status` puts those characters in a symbol. The generator
+        # is the only thing that knows, because it is what writes the path.
+        wrapped(code) = mktempdir() do dir
+            path = joinpath(dir, "lib.rs")
+            write(path, code)
+            RustCall.wrap_crate([path]; crate_name = "probe")
+        end
+
+        direct = wrapped("""
+            #[pyfunction]
+            pub fn plain(a: i32) -> i32 { a }
+            """)
+        @test direct.uses_python_dispatch === false
+
+        # A name that merely contains the alias is still not dispatcher use.
+        lookalike = wrapped("""
+            #[pyfunction]
+            pub fn rustcall_pyo3_status() -> i32 { 1 }
+            """)
+        @test lookalike.uses_python_dispatch === false
+
+        # A defaulted callable does use it.
+        defaulted = wrapped("""
+            #[pyfunction]
+            #[pyo3(signature = (value = 1))]
+            pub fn defaulted(value: i32) -> i32 { value }
+            """)
+        @test defaulted.uses_python_dispatch === true
+
+        # And so does a class made Python-owned by inheritance.
+        inherited = wrapped("""
+            #[pyclass]
+            pub struct Base;
+            #[pyclass(extends = Base)]
+            pub struct Child { value: i32 }
+            #[pymethods]
+            impl Child {
+                #[new]
+                pub fn new() -> (Self, Base) { (Self { value: 1 }, Base) }
+            }
+            """)
+        @test inherited.uses_python_dispatch === true
     end
 
     @testset "a dispatcher wrapper refuses a pyo3 older than it needs (#370)" begin

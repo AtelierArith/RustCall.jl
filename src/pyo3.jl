@@ -1623,7 +1623,7 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     write(joinpath(wrapper_path, "Cargo.toml"),
           generate_pyo3_wrapper_cargo_toml(
               info, plan; wrapper_name = wrapper_name,
-              python_dispatch = _wrapper_uses_python_dispatch(source.lib_rs),
+              python_dispatch = source.uses_python_dispatch,
               pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
           _root_patch_toml(info.path))
     write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
@@ -1930,27 +1930,6 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
     return join(lines, "\n") * "\n"
 end
 
-"""
-    _wrapper_uses_python_dispatch(lib_rs) -> Bool
-
-Whether the generated wrapper actually names `rustcall_pyo3`.
-
-Read from the emitted source, not inferred from the manifest. The manifest
-records what the scan *saw*, and neither "has a defaulted callable" nor "has one
-the generator emitted" answers this question:
-
-* a defaulted callable the generator **refused** keeps its `python_default` in
-  the manifest while no dispatcher is emitted for it — counting it refuses a
-  whole wrapper on an older pyo3 over code that is not there (#392 review);
-* a class made Python-owned by exactly such a refused method keeps its handle,
-  and *that* handle is `Py<PyAny>` — it does need the alias, with no emitted
-  defaulted method anywhere to infer it from (#371).
-
-The source is the one thing that cannot be wrong about what the source needs.
-"""
-function _wrapper_uses_python_dispatch(lib_rs::AbstractString)
-    return occursin("rustcall_pyo3", lib_rs)
-end
 
 """
     _resolved_pyo3_dependency(crate_path, plan) -> NamedTuple
@@ -1987,6 +1966,22 @@ function _resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPla
     for dep in node["deps"]
         package = package_by_id[dep["pkg"]]
         package["name"] == "pyo3" || continue
+        # The *normal*, unconditional edge only. A crate may also take pyo3 as a
+        # `[build-dependencies]` or `[dev-dependencies]` entry, or under a
+        # `[target.'cfg(...)'.dependencies]` table, and those edges all appear
+        # here: collecting them by package name alone made a perfectly
+        # unambiguous crate look like it resolved several pyo3s, and the
+        # dispatcher then refused to generate for want of a version (#392
+        # review). A `dep_kinds` entry with a null `kind` is the normal
+        # dependency; a null `target` is the unconditional one, which is what
+        # the wrapper links.
+        kinds = get(dep, "dep_kinds", nothing)
+        # `dep_kinds` is absent from very old `cargo metadata` output; there is
+        # nothing to filter on then, so the edge is taken as it was before.
+        normal = kinds === nothing || isempty(kinds) ||
+                 any(k -> get(k, "kind", nothing) === nothing &&
+                          get(k, "target", nothing) === nothing, kinds)
+        normal || continue
         source = get(package, "source", nothing)
         push!(found, (; version = String(package["version"]),
                       source = source === nothing ? "" : String(source),

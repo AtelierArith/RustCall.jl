@@ -87,8 +87,30 @@ pub struct WrapperCrate {
     pub crate_name: String,
     /// Source of the generated `src/lib.rs`.
     pub lib_rs: String,
+    /// Whether `lib_rs` names `::rustcall_pyo3` — the alias the wrapper's
+    /// `Cargo.toml` must then declare (`generate_pyo3_wrapper_cargo_toml`), and
+    /// the reason such a wrapper needs pyo3 0.26 or later.
+    ///
+    /// Reported here rather than inferred on the Julia side. Julia does not
+    /// parse Rust (#264), and every proxy for this is wrong in one direction or
+    /// the other: a defaulted callable the generator **refused** leaves a
+    /// `python_default` in the manifest and no dispatcher in the source, while a
+    /// class made Python-owned by exactly such a refused method has a
+    /// `Py<PyAny>` handle and no emitted default to infer it from (#371). Even
+    /// scanning this string is wrong — a `#[pyfunction] fn rustcall_pyo3_status`
+    /// puts those characters in a symbol (#392 review). The generator is the
+    /// only thing that knows, because it is what writes the path.
+    #[serde(default = "default_true")]
+    pub uses_python_dispatch: bool,
     /// What the generated crate exports.
     pub manifest: Manifest,
+}
+
+/// `true`, for `serde(default)` on a field an older manifest may not carry.
+/// Declaring the alias when it is not needed only adds a dependency; omitting
+/// one that is needed does not compile.
+fn default_true() -> bool {
+    true
 }
 
 impl WrapperCrate {
@@ -186,10 +208,18 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
         .any(|f| !f.attribute.is_pyo3_scan() && f.exported)
         || scanned.structs.iter().any(|s| !s.attribute.is_pyo3_scan());
 
+    let lib_rs = render(&krate, items, uses_user_crate);
+    // Decided on the token path the generator itself emits, not on a name that
+    // may appear for other reasons: `::rustcall_pyo3::` is what `wrapper_args`,
+    // the handles and the dispatch helpers write, and nothing else can produce
+    // a leading `::` before it.
+    let uses_python_dispatch =
+        lib_rs.contains(":: rustcall_pyo3 ::") || lib_rs.contains("::rustcall_pyo3::");
     WrapperCrate {
         schema_version: out.schema_version,
         crate_name: krate.to_string(),
-        lib_rs: render(&krate, items, uses_user_crate),
+        lib_rs,
+        uses_python_dispatch,
         manifest: out,
     }
 }
