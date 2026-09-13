@@ -128,20 +128,48 @@ function _compile_generic_source(source::String, compiler::RustCompiler, context
 end
 
 """
-    _restore_generic_artifact(cache_key) -> Union{Nothing, NamedTuple}
+    _cached_generic_artifact(cache_key, member) -> Union{Nothing, NamedTuple}
 
-The compiled library and the specialization metadata of an artifact an earlier
-session already produced for `cache_key`, or `nothing` when there is none
-(#254).
+The record and the verified cached library an earlier session left for
+`cache_key`, or `nothing` when there is none that covers `member` (#254).
 
 Both halves are required. The library is verified against its checksum by
 `load_cached_library`; a record with no library, a library with no record, an
-unreadable record and a record of another format version all read as a miss,
-and a miss only costs the rebuild that used to happen unconditionally.
+unreadable record, a record of another format version and a record that does
+not carry `member` all read as a miss, and a miss only costs the rebuild that
+used to happen unconditionally.
 
 `artifact_key` decides identity, and it folds in the toolchain fingerprint —
 the extractor digest and the `rustcall_core` sources — so a cached library can
 never have been emitted by a different symbol scheme than the record describes.
+
+This is the **probe**: it materializes nothing, so asking whether an
+instantiation is already cached costs a TOML parse and a checksum, not a copy
+of the library. `_restore_generic_artifact` is the half that produces a file to
+open.
+"""
+function _cached_generic_artifact(cache_key::String, member::AbstractString)
+    record = load_specialization_record(cache_key)
+    record === nothing && return nothing
+    # Checked before the checksum: a record that does not describe the member
+    # being asked for is a miss whatever its library turns out to be.
+    any(p -> first(p) == member, record.members) || return nothing
+    get_cached_library(record.library_key) === nothing && return nothing
+    cached = try
+        load_cached_library(record.library_key)
+    catch e
+        @debug "Ignoring a cached monomorphization that failed verification" cache_key exception = e
+        return nothing
+    end
+    return (; record, cached)
+end
+
+"""
+    _restore_generic_artifact(cache_key, member) -> Union{Nothing, NamedTuple}
+
+The file to open and the specialization metadata for an artifact an earlier
+session already produced for `cache_key`, or `nothing` when
+`_cached_generic_artifact` finds none covering `member`.
 
 # Which file is opened, and why it matters
 
@@ -161,28 +189,21 @@ fresh one.
   is what a batch *is*, so they share one mapped image — in the session that
   built it and in every later one.
 """
-function _restore_generic_artifact(cache_key::String)
-    record = load_specialization_record(cache_key)
-    record === nothing && return nothing
-    get_cached_library(record.library_key) === nothing && return nothing
-    cached = try
-        load_cached_library(record.library_key)
-    catch e
-        @debug "Ignoring a cached monomorphization that failed verification" cache_key exception = e
-        return nothing
-    end
-    lib_path = cached
-    if record.library_key == cache_key
-        private = joinpath(mktempdir(), basename(cached))
+function _restore_generic_artifact(cache_key::String, member::AbstractString)
+    found = _cached_generic_artifact(cache_key, member)
+    found === nothing && return nothing
+    lib_path = found.cached
+    if found.record.library_key == cache_key
+        private = joinpath(mktempdir(), basename(found.cached))
         try
-            cp(cached, private)
+            cp(found.cached, private)
             lib_path = private
         catch e
             @debug "Could not copy a restored monomorphization" cache_key exception = e
             return nothing
         end
     end
-    return (; lib_path, members = record.members)
+    return (; lib_path, members = found.record.members)
 end
 
 """
@@ -495,10 +516,8 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         # An instantiation an earlier session already built is reused whole
         # (#254): the record beside the cached library carries everything the
         # extractor said about it, so neither the extractor nor `rustc` runs.
-        restored = _restore_generic_artifact(cache_key)
-        hit = restored === nothing ? nothing :
-              findfirst(p -> first(p) == func_name, restored.members)
-        if hit === nothing
+        restored = _restore_generic_artifact(cache_key, func_name)
+        if restored === nothing
             # Instantiate through the extractor: the specialized function is added
             # to the registered source (context + generic code) with the concrete
             # types substituted at the AST level and exported as
@@ -516,6 +535,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
                 _record_generic_specialization(cache_key, cache_key, members)
             end
         else
+            hit = findfirst(p -> first(p) == func_name, restored.members)
             specialized = last(restored.members[hit])
             lib_path = restored.lib_path
         end
@@ -664,10 +684,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
         # record that does not cover the member being asked for is a miss: the
         # rebuild recomputes applicability and reports an inapplicable member
         # with the compiler's own diagnostics, exactly as before.
-        restored = _restore_generic_artifact(group_key)
-        if restored !== nothing && !any(p -> first(p) == func_name, restored.members)
-            restored = nothing
-        end
+        restored = _restore_generic_artifact(group_key, func_name)
         if restored === nothing
             type_suffix = join([_rust_type_suffix(t) for (_, t) in group_id.type_params], "_")
             specs = NamedTuple[]
@@ -784,8 +801,14 @@ end
 
 One instantiation of `precompile_generics`, normalized to the parameter map
 `monomorphize_function` takes. A bare `Type` binds a single-parameter generic, a
-`Tuple` of types binds the parameters in **declaration order**, and a mapping is
-taken as-is after checking that it binds exactly the declared parameters.
+`Tuple` of types binds the parameters in **declaration order**, and a mapping —
+a `Dict`, a single `param => type` pair, or any collection of them — binds them
+by name.
+
+Every spelling is checked against the declared parameters before it is used: a
+map that leaves one unbound or names one that does not exist is an
+`ArgumentError` here, rather than a specialization the extractor is asked to
+produce for a parameter the generic does not have.
 """
 function _generic_binding(generic_info, instantiation)
     params = generic_info.type_params
@@ -794,6 +817,11 @@ function _generic_binding(generic_info, instantiation)
             "'$(generic_info.name)' has $(length(params)) type parameters; " *
             "pass a tuple of $(length(params)) types, not a single type"))
         return Dict{Symbol, Type}(only(params) => instantiation)
+    elseif instantiation isa Tuple && !isempty(instantiation) && all(p -> p isa Pair, instantiation)
+        # `(:T => Int32, :U => Int64)` reads as a mapping, not as two positional
+        # types: a `Pair` is not a type, so the positional branch below could
+        # only reject it.
+        return _generic_binding_map(generic_info, instantiation)
     elseif instantiation isa Tuple
         length(instantiation) == length(params) || throw(ArgumentError(
             "'$(generic_info.name)' has $(length(params)) type parameters but " *
@@ -801,16 +829,36 @@ function _generic_binding(generic_info, instantiation)
         all(t -> t isa Type, instantiation) ||
             throw(ArgumentError("a generic instantiation must be given as types"))
         return Dict{Symbol, Type}(p => instantiation[i] for (i, p) in enumerate(params))
-    elseif instantiation isa AbstractDict
-        bound = Dict{Symbol, Type}(Symbol(k) => v for (k, v) in instantiation)
-        missing_params = [p for p in params if !haskey(bound, p)]
-        isempty(missing_params) || throw(ArgumentError(
-            "instantiation of '$(generic_info.name)' does not bind " *
-            "$(join(string.(missing_params), ", "))"))
-        return bound
+    elseif instantiation isa AbstractDict || instantiation isa Pair ||
+           instantiation isa AbstractVector{<:Pair}
+        return _generic_binding_map(generic_info, instantiation)
     end
     throw(ArgumentError("cannot read $(repr(instantiation)) as a generic instantiation; " *
                         "pass a type, a tuple of types, or a parameter mapping"))
+end
+
+# The mapping spellings, all reduced to `param => type` pairs. Values are
+# checked to be types here, so a wrong one names itself instead of failing as a
+# `convert` deep inside the `Dict` constructor.
+function _generic_binding_map(generic_info, mapping)
+    params = generic_info.type_params
+    pairs = mapping isa Pair ? (mapping,) : mapping
+    bound = Dict{Symbol, Type}()
+    for (k, v) in pairs
+        name = Symbol(k)
+        v isa Type || throw(ArgumentError(
+            "instantiation of '$(generic_info.name)' binds $(name) to " *
+            "$(repr(v)), which is not a type"))
+        name in params || throw(ArgumentError(
+            "'$(generic_info.name)' has no type parameter $(name); it declares " *
+            "$(join(string.(params), ", "))"))
+        bound[name] = v
+    end
+    missing_params = [p for p in params if !haskey(bound, p)]
+    isempty(missing_params) || throw(ArgumentError(
+        "instantiation of '$(generic_info.name)' does not bind " *
+        "$(join(string.(missing_params), ", "))"))
+    return bound
 end
 
 """
@@ -870,7 +918,10 @@ function _batch_monomorphize(generic_info, func_name::String,
         key in seen && continue
         push!(seen, key)
         haskey(MONOMORPHIZED_FUNCTIONS, key) && continue
-        _restore_generic_artifact(key) === nothing || continue
+        # The probe, not the restore: this only asks whether the instantiation
+        # is already cached, and materializing a private copy of every cached
+        # library just to answer that would copy a dylib per skipped type.
+        _cached_generic_artifact(key, func_name) === nothing || continue
         push!(todo, (; key, id, params))
     end
     length(todo) < 2 && return nothing  # nothing to gain from a batch of one

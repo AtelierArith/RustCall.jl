@@ -46,7 +46,8 @@ elseif mode == "restore"
     # Asked *before* anything is monomorphized: a restorable artifact is what
     # makes the compile in `monomorphize_function` unreachable.
     for T in TYPES
-        emit("restorable_$(T)", RustCall._restore_generic_artifact(instantiation_key(T)) !== nothing)
+        emit("restorable_$(T)",
+             RustCall._restore_generic_artifact(instantiation_key(T), "gc254_add") !== nothing)
     end
 end
 
@@ -184,7 +185,8 @@ end
                     @test RustCall._restore_generic_artifact(
                         RustCall.artifact_key(RustCall._monomorphization_id(
                             RustCall.GENERIC_FUNCTION_REGISTRY["gc254_image"], "gc254_image",
-                            bind, RustCall.get_default_compiler()))) !== nothing
+                            bind, RustCall.get_default_compiler())),
+                        "gc254_image") !== nothing
                     second = RustCall.monomorphize_function("gc254_image", bind)
                     @test second.handle != first_info.handle
                     @test RustCall.call_generic_function("gc254_image", Int32(2), Int32(3)) == Int32(5)
@@ -237,7 +239,12 @@ end
 
                 # A record with no library beside it never claims a hit.
                 RustCall.save_specialization_record(key, record)
-                @test RustCall._restore_generic_artifact(key) === nothing
+                @test RustCall._restore_generic_artifact(key, "f") === nothing
+                @test RustCall._cached_generic_artifact(key, "f") === nothing
+                # ...and neither does one that does not name the member asked
+                # for. The probe answers that without touching the library, so
+                # `precompile_generics` does not copy a dylib per skipped type.
+                @test RustCall._cached_generic_artifact(key, "other") === nothing
             finally
                 RustCall._reset_cache_dir_memo!()
             end
@@ -259,11 +266,22 @@ end
           Dict{Symbol, Type}(:T => Int32, :U => Int64)
     @test RustCall._generic_binding(double, Dict(:T => Int32, :U => Int64)) ==
           Dict{Symbol, Type}(:T => Int32, :U => Int64)
+    # A tuple of pairs is a mapping, not two positional types.
+    @test RustCall._generic_binding(double, (:T => Int32, :U => Int64)) ==
+          Dict{Symbol, Type}(:T => Int32, :U => Int64)
+    @test RustCall._generic_binding(double, [:T => Int32, :U => Int64]) ==
+          Dict{Symbol, Type}(:T => Int32, :U => Int64)
+    @test RustCall._generic_binding(single, :T => Int32) == Dict{Symbol, Type}(:T => Int32)
     # A bare type cannot bind two parameters, and the arity is checked.
     @test_throws ArgumentError RustCall._generic_binding(double, Int32)
     @test_throws ArgumentError RustCall._generic_binding(double, (Int32,))
     @test_throws ArgumentError RustCall._generic_binding(double, Dict(:T => Int32))
     @test_throws ArgumentError RustCall._generic_binding(single, "i32")
+    # A map naming a parameter the generic does not declare is refused here
+    # rather than asking the extractor to specialize a parameter that is not
+    # there, and a non-type value names itself.
+    @test_throws ArgumentError RustCall._generic_binding(single, Dict(:T => Int32, :Z => Int64))
+    @test_throws ArgumentError RustCall._generic_binding(single, Dict(:T => "i32"))
 
     @test_throws ErrorException RustCall.precompile_generics("gc254_not_registered", Int32)
 end
