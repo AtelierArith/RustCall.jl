@@ -46,7 +46,8 @@ using RustCall
             """
         @test fresh(probe) == "true true 33 2 2"
         # No library from either previous process survives. Rebuild from the
-        # recorded source/config after clearing only this test's Rust cache.
+        # recorded source and config after emptying the Rust cache — the whole
+        # of it, which is why this file is in `test/serial_tests.jl` (#394).
         @test fresh("using RustCall; RustCall.clear_cache(); " * probe) == "true true 33 2 2"
     end
 end
