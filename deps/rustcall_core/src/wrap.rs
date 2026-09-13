@@ -158,6 +158,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
     // would stop while a valid fifth was still marked as their loser (#392
     // review).
     let mut current = scanned.clone();
+    let mut known = crate::pyo3::Emitted::new();
     let bound = scanned.functions.len()
         + scanned.structs.len()
         + scanned
@@ -169,7 +170,9 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
     for _ in 0..bound {
         let lowered = lower_once(&current, &krate, cfg_resolved);
         let mut next = scanned.clone();
-        if !crate::pyo3::remark_collisions(&mut next, &lowered.manifest) || next == current {
+        if !crate::pyo3::remark_collisions(&mut next, &lowered.manifest, &mut known)
+            || next == current
+        {
             return lowered;
         }
         current = next;

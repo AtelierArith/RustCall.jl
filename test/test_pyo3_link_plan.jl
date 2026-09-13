@@ -1078,6 +1078,79 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "several refused entries do not trap a valid one (#392 review)" begin
+        # The relowering loop drops an entry from the report when *it* was the
+        # analysis's own loser, so that it is reconsidered. A generator refusal
+        # must survive that: several mutually colliding entries the generator
+        # refuses have to clear out of the way of a valid one behind them,
+        # rather than taking turns owning the name until the bound runs out.
+        wrapped = code -> begin
+            dir = mktempdir()
+            try
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "src", "lib.rs"), code)
+                RustCall.wrap_crate([joinpath(dir, "src", "lib.rs")]; crate_name = "probe")
+            finally
+                rm(dir; force = true, recursive = true)
+            end
+        end
+
+        # A panic slot is the symbol upper-cased, so every case variant of one
+        # name wants the same one. Two refused, one valid behind them.
+        source = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyfunction]
+        #[pyo3(signature = (v = vec![]))]
+        pub fn foo(v: Vec<i32>) -> i32 { v.len() as i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        #[pyo3(signature = (v = vec![]))]
+        pub fn FOO(v: Vec<i32>) -> i32 { v.len() as i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        pub fn Foo(x: i32) -> i32 { x }
+        """)
+        by_name = Dict(String(get(f, "name", "")) => String(get(f, "skip_reason", ""))
+                       for f in source.manifest["functions"])
+        @test startswith(by_name["foo"], "unsupported_arg")
+        @test startswith(by_name["FOO"], "unsupported_arg")
+        @test by_name["Foo"] == ""
+
+        # The same on a class, with four refused ahead of the valid one — each
+        # pass can only release one, so this needs the loop to keep going *and*
+        # to remember every refusal it has already been told about.
+        source = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyclass]
+        pub struct C { pub v: i32 }
+
+        #[allow(non_snake_case)]
+        #[pymethods]
+        impl C {
+            #[new]
+            pub fn new() -> Self { C { v: 0 } }
+            pub fn abc(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn abC(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn aBc(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn aBC(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn Abc(&self, x: i32) -> i32 { x }
+        }
+        """)
+        class = only(st for st in source.manifest["structs"]
+                     if get(st, "name", "") == "C")
+        @test String(get(class, "skip_reason", "")) == ""
+        methods = Dict(String(get(m, "name", "")) => String(get(m, "skip_reason", ""))
+                       for m in get(class, "methods", []))
+        for refused in ("abc", "abC", "aBc", "aBC")
+            @test startswith(methods[refused], "unsupported_arg")
+        end
+        @test methods["Abc"] == ""
+    end
+
     @testset "a refused wrapper build leaves no project behind (#392 review)" begin
         # Writing the wrapper's manifest can refuse outright — a pyo3 older
         # than the dispatcher needs, or one from a registry the alias cannot

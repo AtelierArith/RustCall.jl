@@ -844,7 +844,7 @@ fn clear_collision_reasons(manifest: &mut Manifest) {
 /// Returns whether anything changed. `lowered` is the manifest `wrapper_crate`
 /// produced; the owners it reports with an empty `skip_reason` are the ones
 /// that really exist, and only those reserve a symbol here.
-pub fn remark_collisions(manifest: &mut Manifest, lowered: &Manifest) -> bool {
+pub fn remark_collisions(manifest: &mut Manifest, lowered: &Manifest, known: &mut Emitted) -> bool {
     let mut emitted: Emitted = Emitted::new();
     for f in &lowered.functions {
         if !f.attribute.is_pyo3_scan() {
@@ -881,9 +881,21 @@ pub fn remark_collisions(manifest: &mut Manifest, lowered: &Manifest) -> bool {
             }
         }
     }
+    // Accumulate, never replace. A generator refusal is a property of the entry
+    // and does not change between passes, so once one is reported it holds for
+    // good; a pass in which that entry happened not to be lowered simply says
+    // nothing about it. Today such an entry cannot be skipped — claiming
+    // nothing, it can neither win a symbol nor lose one, so it is lowered every
+    // pass and re-reports — but that is an invariant of `mark_symbol_collisions`
+    // rather than of this function, and relying on it silently is how the set
+    // would start oscillating if it ever changed (#392 review).
+    for (owner, symbols) in emitted {
+        known.entry(owner).or_insert(symbols);
+    }
+
     let before = manifest.clone();
     clear_collision_reasons(manifest);
-    mark_julia_surface_collisions(manifest, &emitted);
+    mark_julia_surface_collisions(manifest, known);
     *manifest != before
 }
 
