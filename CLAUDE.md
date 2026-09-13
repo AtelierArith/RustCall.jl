@@ -261,7 +261,13 @@ work:
   helper, `:prop` a `getproperty` branch. Each emits a given symbol at most once
   per module, so no `const` is ever declared twice — a field getter reached
   through the accessor *and* through `getproperty` is two call sites with two
-  caches, which is what the split kinds are for.
+  caches, which is what the split kinds are for. The name is spelled
+  `var"#TC#<kind>#<symbol>"`, and the `#` is load-bearing: a generated module
+  also binds whatever the crate exports, so a plain `_TC_fn_rustcall_foo` would
+  collide with a crate exporting a Rust function of that name — legal Rust, and
+  the module would redefine a `const` or define methods on a `CrateTargetCache`
+  and fail to load. `#` cannot occur in a Rust identifier, so the two namespaces
+  are disjoint by construction rather than by diagnosis.
 * **`_symbol` / `_required_symbol` are declared `::Ptr{Cvoid}`.** The symbol
   memo is a `StateView` and hands back an `Any`; without the declaration every
   snapshot is a tuple of `Any`, and the cached fast path still boxes the

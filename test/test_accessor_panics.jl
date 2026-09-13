@@ -33,7 +33,7 @@ using Test
             if flavour !== :inline
                 body = flavour === :ast ?
                     RustCall._crate_field_write(info, "text", "String", "TextSetter291_set_text", :ptr, :value, :cache) :
-                    Meta.parse(RustCall._crate_field_write_source(info, "text", "String", "TextSetter291_set_text", "ptr", "value", :cache))
+                    Meta.parse(RustCall._crate_field_write_source(info, "text", "String", "TextSetter291_set_text", "ptr", "value", "cache"))
                 Core.eval(scope, :(function set_text(ptr, value); $body; end))
             end
             setter(value) = flavour === :inline ?
@@ -98,13 +98,13 @@ end
                 Core.eval(scope, :(const $cache = RustCall.CrateTargetCache()))
                 body = flavour === :ast ?
                     RustCall._crate_field_read(info, field, type, symbol, :ptr, cache) :
-                    Meta.parse(RustCall._crate_field_read_source(info, field, type, symbol, "ptr", cache))
+                    Meta.parse(RustCall._crate_field_read_source(info, field, type, symbol, "ptr", String(cache)))
                 Core.eval(scope, :(function $name(ptr); $body; end))
             end
             Core.eval(scope, :(const cache_set_number = RustCall.CrateTargetCache()))
             body = flavour === :ast ?
                 RustCall._crate_field_write(info, "number", "i32", "rustcall_fail_set", :ptr, :value, :cache_set_number) :
-                Meta.parse(RustCall._crate_field_write_source(info, "number", "i32", "rustcall_fail_set", "ptr", "value", :cache_set_number))
+                Meta.parse(RustCall._crate_field_write_source(info, "number", "i32", "rustcall_fail_set", "ptr", "value", "cache_set_number"))
             Core.eval(scope, :(function set_number(ptr, value); $body; end))
             storage = Ref{Int32}(42)
             GC.@preserve storage begin

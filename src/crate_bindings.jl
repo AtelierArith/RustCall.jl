@@ -1548,8 +1548,35 @@ given FFI symbol at most once per module — a field's getter appears in the
 accessor *and* in `getproperty`, which is exactly why those two are different
 kinds rather than one — so no two call sites ever ask for the same name, and
 `const` is never declared twice.
+
+# Why the name cannot be a user's
+
+A generated module also binds whatever the crate exports: a function `foo`
+becomes Julia's `foo`. A cache spelled `_TC_fn_rustcall_foo` would therefore
+collide with a crate that exports a Rust function of exactly that name — legal
+Rust, and the module would then either redefine a `const` or define methods on a
+`CrateTargetCache`, taking the whole bindings module down (#253 review).
+
+`#` is what makes that impossible rather than merely unlikely: it cannot appear
+in a Rust identifier, and so cannot appear in a name the crate contributes.
+Julia is happy to bind it — `var"#TC#fn#rustcall_foo"` — which is also how
+`Base.show` spells the symbol, so both emitters write the same characters.
 """
-_target_cache_name(kind::Symbol, symbol::AbstractString) = Symbol("_TC_", kind, "_", symbol)
+_target_cache_name(kind::Symbol, symbol::AbstractString) = Symbol("#TC#", kind, "#", symbol)
+
+"""
+    _target_cache_ref(kind, symbol) -> String
+
+How `_target_cache_name(kind, symbol)` is *spelled* in Julia source:
+`var"#TC#fn#rustcall_add"`. The AST emitter splices the `Symbol` and never needs
+this; the file emitter writes text and does.
+
+It is the same spelling `Base.show` gives that symbol, so the two emitters'
+output stays comparable character for character — which is what
+`test/test_crate_bindings.jl` checks them with.
+"""
+_target_cache_ref(kind::Symbol, symbol::AbstractString) =
+    "var\"$(_target_cache_name(kind, symbol))\""
 
 # `const <name> = RustCall.CrateTargetCache()`, for the expression emitter and
 # for the source-text one. Two spellings of one declaration, next to each other
@@ -1558,7 +1585,7 @@ _target_cache_const(kind::Symbol, symbol::AbstractString) =
     Expr(:const, Expr(:(=), _target_cache_name(kind, symbol), :(RustCall.CrateTargetCache())))
 
 _target_cache_source(kind::Symbol, symbol::AbstractString) =
-    "const $(_target_cache_name(kind, symbol)) = RustCall.CrateTargetCache()"
+    "const $(_target_cache_ref(kind, symbol)) = RustCall.CrateTargetCache()"
 
 # `import ..name, ..name2, ...` — every helper from the enclosing module. A
 # submodule two levels down imports from *its* parent, which imported them
@@ -2196,7 +2223,7 @@ Source-text counterpart of `_crate_field_write` for the file emitter.
 """
 function _crate_field_write_source(info::RustStructInfo, field_name::AbstractString,
                                    field_type::AbstractString, setter_symbol::AbstractString,
-                                   self_ptr::String, value::String, cache::Symbol;
+                                   self_ptr::String, value::String, cache::AbstractString;
                                    strict::Symbol = FFI_STRICT[])
     target = "(fp, channel) = _call_target($cache, \"$setter_symbol\")"
     if get(info.field_abis, field_name, "") == "vec"
@@ -2225,7 +2252,7 @@ Source-text counterpart of `_crate_field_read` for the file emitter.
 """
 function _crate_field_read_source(info::RustStructInfo, field_name::AbstractString,
                                   field_type::AbstractString, getter_symbol::AbstractString,
-                                  self_ptr::String, cache::Symbol; strict::Symbol = FFI_STRICT[])
+                                  self_ptr::String, cache::AbstractString; strict::Symbol = FFI_STRICT[])
     c = _ffi_field_return(info, field_name, field_type)
     target = "(fp, channel) = _call_target($cache, \"$getter_symbol\")"
     if ffi_owned_string_return(c)
@@ -4130,7 +4157,7 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     ptr_var = _generated_local("func_ptr", arg_names)
     free_var = _generated_local("free_ptr", arg_names)
     # This call site's snapshot cache (#253), declared beside the wrapper.
-    cache_var = _target_cache_name(:fn, sym)
+    cache_var = _target_cache_ref(:fn, sym)
 
     # Build argument conversions (string arguments become (ptr, len) pairs)
     arg_syms = join(arg_names, ", ")
@@ -4194,7 +4221,7 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     channel_var = _generated_local("panic_channel", func.arg_names)
     free_var = _generated_local("free_ptr", func.arg_names)
     free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi, func.err_abi))
-    cache_var = _target_cache_name(:fn, sym)
+    cache_var = _target_cache_ref(:fn, sym)
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
@@ -4241,7 +4268,7 @@ function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::St
     channel_var = _generated_local("panic_channel", func.arg_names)
     free_var = _generated_local("free_ptr", func.arg_names)
     free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi,))
-    cache_var = _target_cache_name(:fn, sym)
+    cache_var = _target_cache_ref(:fn, sym)
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
@@ -4286,7 +4313,7 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     channel_var = _generated_local("panic_channel", func.arg_names)
     free_var = _generated_local("free_ptr", func.arg_names)
     free_str = _payload_free_symbol(func.ffi_name, (func.inner_abi,))
-    cache_var = _target_cache_name(:fn, sym)
+    cache_var = _target_cache_ref(:fn, sym)
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
@@ -4322,7 +4349,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
     struct_name = info.name
     release_alive = _python_owned_handle(info) ? "Ref(true)" : "alive"
     free_symbol = ffi_struct_free_symbol(info.ffi_name)
-    free_cache = _target_cache_name(:free, free_symbol)
+    free_cache = _target_cache_ref(:free, free_symbol)
 
     lines = String[]
 
@@ -4395,7 +4422,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
             getter_fn = info.field_getters[field_name]
             read = _crate_field_read_source(info, field_name, field_type, getter_fn,
                                             "getfield(self, :ptr)",
-                                            _target_cache_name(:prop, getter_fn); strict = strict)
+                                            _target_cache_ref(:prop, getter_fn); strict = strict)
             push!(lines, "    if field === :$field_name")
             push!(lines, "        return $read")
             push!(lines, "    end")
@@ -4414,7 +4441,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
             setter_fn = info.field_setters[field_name]
             write = _crate_field_write_source(info, field_name, field_type, setter_fn,
                                               "getfield(self, :ptr)", "value",
-                                              _target_cache_name(:prop, setter_fn); strict = strict)
+                                              _target_cache_ref(:prop, setter_fn); strict = strict)
             push!(lines, "    if field === :$field_name")
             push!(lines, "        $write")
             push!(lines, "        return value")
@@ -4500,7 +4527,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     free_var = _generated_local("free_ptr", method.arg_names)
     channel_var = _generated_local("panic_channel", method.arg_names)
     free_channel_var = _generated_local("free_panic_channel", method.arg_names)
-    cache_var = _target_cache_name(:m, wrapper_name)
+    cache_var = _target_cache_ref(:m, wrapper_name)
     target = "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")"
     alive_var = _generated_local("alive", method.arg_names)
     release_alive = _python_owned_handle(struct_info) ? "Ref(true)" : string(alive_var)
@@ -4647,7 +4674,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     args_str = join(all_args, ", ")
     method_label = "$(struct_name)::$(method_name)"
     payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
-    cache_var = _target_cache_name(:m, wrapper_name)
+    cache_var = _target_cache_ref(:m, wrapper_name)
     target = if boxed
         "$ptr_var, $channel_var, $free_var, $alive_var, $free_channel_var = " *
         "_ctor_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(info.ffi_name))\")"

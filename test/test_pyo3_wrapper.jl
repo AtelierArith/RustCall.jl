@@ -583,9 +583,9 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             @test occursin("ok_value::RustCall.CRustString", code)
             @test occursin("struct CResult_Point_shifted <: FFIByValue", code)
             @test occursin("ok_value::Ptr{Cvoid}", code)
-            @test occursin("_ctor_target(_TC_m_rustcall_Point_shifted, \"rustcall_Point_shifted\"", code)
+            @test occursin("_ctor_target(var\"#TC#m#rustcall_Point_shifted\", \"rustcall_Point_shifted\"", code)
             @test occursin("function Fallible(value)", code)
-            @test occursin("_ctor_target(_TC_m_rustcall_Fallible_new, \"rustcall_Fallible_new\"", code)
+            @test occursin("_ctor_target(var\"#TC#m#rustcall_Fallible_new\", \"rustcall_Fallible_new\"", code)
 
             expr = RustCall.emit_crate_module(wrapped, "/nonexistent/lib.so";
                                               lib_name = "rust_crate_byvalue_probe")

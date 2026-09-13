@@ -467,12 +467,49 @@ const CRATE_SHAPE = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}
                     # `helper("sym"` — the pre-#253 spelling.
                     @test !occursin("$helper(\"", text)
                 end
-                used = Set(m.match for m in eachmatch(r"_TC_[A-Za-z0-9_]+", text))
+                used = Set(m.match for m in eachmatch(r"var\"#TC#[A-Za-z0-9_#]+\"", text))
                 declared = Set(m.captures[1]
-                               for m in eachmatch(r"const (_TC_[A-Za-z0-9_]+) = RustCall\.CrateTargetCache\(\)", text))
+                               for m in eachmatch(r"const (var\"#TC#[A-Za-z0-9_#]+\") = RustCall\.CrateTargetCache\(\)", text))
                 @test !isempty(used)
                 @test isempty(setdiff(used, declared))
+                # A `#` cannot occur in a Rust identifier, so no name the crate
+                # contributes can ever be one of these; the pre-review spelling
+                # could be, and `_TC_fn_rustcall_foo` is a legal Rust item name.
+                @test !occursin("_TC_", text)
             end
+        end
+
+        @testset "a crate item named like a cache does not collide" begin
+            # A generated module binds whatever the crate exports, so a cache
+            # named `_TC_fn_rustcall_foo` collided with a crate exporting a Rust
+            # function of exactly that name: the module then redefined a `const`
+            # or defined methods on a `CrateTargetCache`, and failed to load
+            # (#253 review). `#` makes the two namespaces disjoint.
+            sig(name, symbol) = RustCall.RustFunctionSignature(
+                name, String[], String[], "i32", false, String[];
+                symbol = symbol, ffi_name = name)
+            info = RustCall.CrateInfo(
+                "collide_tc", "/tmp/collide_tc", "0.1.0", RustCall.DependencySpec[],
+                RustCall.RustFunctionSignature[
+                    sig("foo", "rustcall_foo"),
+                    # Exactly the name `foo`'s cache used to take.
+                    sig("_TC_fn_rustcall_foo", "rustcall__TC_fn_rustcall_foo"),
+                ],
+                RustCall.RustStructInfo[], String[])
+            code = RustCall.emit_crate_module_code(info, "/tmp/libcollide_tc.so")
+            ast = string(RustCall.emit_crate_module(info, "/tmp/libcollide_tc.so"))
+            for text in (code, ast)
+                # The user's item keeps its own name...
+                @test occursin("function _TC_fn_rustcall_foo(", text)
+                # ...and `foo`'s cache is not it.
+                @test occursin("const var\"#TC#fn#rustcall_foo\" = RustCall.CrateTargetCache()", text)
+            end
+            # The file emitter's output still parses — before this it declared
+            # one binding twice.
+            @test Meta.parse(code) isa Expr
+            # `_check_module_names` has nothing to say about it: the collision
+            # is gone by construction, not diagnosed.
+            @test RustCall._check_module_names(RustCall._module_tree(info)) === nothing
         end
 
         @testset "a crate call site drops its snapshot when the image is replaced" begin
