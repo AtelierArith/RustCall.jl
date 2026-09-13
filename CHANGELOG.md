@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **A `@rust_crate` wrapper no longer re-resolves its target on every call**
+  ([#253](https://github.com/AtelierArith/RustCall.jl/issues/253)). The inline
+  and `#[julia]` paths stopped doing that in 0.3.5; a generated crate module
+  still took `REGISTRY_LOCK` to deref its generation mirror and looked its
+  wrapper and panic-channel symbols up again on every call — about 1.0 µs and 14
+  allocations in front of a 6.5 ns `ccall`, and calls from several threads ran
+  *slower* than one (0.70× at four tasks). Each call site now keeps the snapshot
+  it resolved in a `RustCall.CrateTargetCache` of its own and reuses it while
+  `ARTIFACT_EPOCH` and `SESSION_TOKEN` say it is still this process's current
+  answer: **21.8 ns and no allocations**, and 3.89× at four tasks. What is kept
+  is one whole snapshot from one `_LIB_GEN` deref, never reassembled from
+  pieces, so the generation rule of #277 is unchanged — an unload, a reload or
+  an alias drops every kept snapshot, and the two mirror helpers bump the epoch
+  themselves rather than relying on a neighbouring registry write to do it.
+  Because a generated module is also written out as Julia source, its caches are
+  named `const`s of the module rather than spliced objects, and
+  `BINDINGS_FORMAT_VERSION` is **11**: regenerate any file written by
+  `write_bindings_to_file`. See `docs/src/performance.md`.
+
 ## [0.3.5] - 2026-09-13
 
 ### Fixed
