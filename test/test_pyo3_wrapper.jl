@@ -230,7 +230,13 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
     @testset "the optional crate, with its feature on" begin
         selected_plan = RustCall.pyo3_link_plan(
             PYO3_OPTIONAL_CRATE; features = ["python"], default_features = false)
-        @test RustCall._resolved_pyo3_version(PYO3_OPTIONAL_CRATE, selected_plan) == "0.29.2"
+        # The resolved pyo3 now carries its source as well as its version, so the
+        # generated alias can name the same package rather than a registry copy
+        # that happens to share the version (#370).
+        resolved = RustCall._resolved_pyo3_dependency(PYO3_OPTIONAL_CRATE, selected_plan)
+        @test resolved.version == "0.29.2"
+        @test startswith(resolved.source, "registry+")
+        @test occursin("pyo3-0.29.2", resolved.dir)
         # Everything the `#[cfg_attr]`-marked crate exposes, called through the
         # wrapper. Its plan is `:link_libpython` once the feature is on, so this
         # skips where a wrapper cannot be linked.
@@ -375,6 +381,14 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                 explicit_label = M.defaulted_label(inherited, Int32(5))
                 @test default_label.is_ok && default_label.value == "100:37"
                 @test explicit_label.is_ok && explicit_label.value == "100:5"
+                # A borrowed `&str` return on a Python-owned class: extracted as
+                # an owned `String` inside the attachment and released through
+                # this method's own buffer. Before #370 the crate did not
+                # compile at all, so reaching this line is half the assertion.
+                @test M.borrowed_label(inherited) == "inherited"
+                # A getter with no backing field surfaces as a function here, the
+                # same way `doubled` above does.
+                @test M.borrowed_tag(inherited) == "tag"
                 Base.invokelatest(setproperty!, inherited, :value, Int32(90))
                 @test Base.invokelatest(getproperty, inherited, :value) == 90
 

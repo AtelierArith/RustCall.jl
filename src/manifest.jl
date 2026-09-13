@@ -872,10 +872,22 @@ struct WrapperCrateSource
     lib_rs::String
     manifest::Dict{String, Any}
     source_files::Vector{String}
+    """
+    Whether the generated `lib_rs` names `::rustcall_pyo3`, as reported by the
+    generator (`rustcall_core::wrap::WrapperCrate`).
+
+    Not inferred here: Julia does not parse Rust (#264), and every proxy is wrong
+    in one direction or the other — a refused defaulted callable leaves a
+    `python_default` in the manifest and no dispatcher in the source, while a
+    class made Python-owned by such a method has a `Py<PyAny>` handle and no
+    emitted default to infer from (#371, #392 review).
+    """
+    uses_python_dispatch::Bool
 end
 
-WrapperCrateSource(name::String, source::String, manifest::Dict{String, Any}) =
-    WrapperCrateSource(name, source, manifest, String[])
+WrapperCrateSource(name::String, source::String, manifest::Dict{String, Any},
+                   files::Vector{String} = String[]) =
+    WrapperCrateSource(name, source, manifest, files, true)
 
 """
     wrap_crate(files; crate_name, cfg=:strict, cfg_text=nothing,
@@ -931,7 +943,10 @@ function wrap_crate(files::Vector{String}; crate_name::AbstractString,
     return WrapperCrateSource(String(get(doc, "crate_name", String(crate_name))),
                               String(get(doc, "lib_rs", "")),
                               Dict{String, Any}(manifest),
-                              source_inputs === nothing ? copy(files) : source_inputs)
+                              source_inputs === nothing ? copy(files) : source_inputs,
+                              # Declaring an alias that is not needed only adds a
+                              # dependency; omitting a needed one does not compile.
+                              Bool(get(doc, "uses_python_dispatch", true)))
 end
 
 """

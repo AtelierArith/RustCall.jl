@@ -1265,6 +1265,7 @@ fn crate_struct_entry(
                 python_name: String::new(),
                 vis: String::new(),
                 cfg: String::new(),
+                precollision: None,
             }
         })
         .collect();

@@ -945,6 +945,632 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "the dispatcher alias names the resolved pyo3, not a registry copy (#370)" begin
+        # A version-only alias resolves a *second* pyo3 from crates.io whenever
+        # the crate gets its own from a path or a git checkout. Two instances in
+        # one build is not duplicated work: the target's macro metadata carries
+        # types from its instance while the generated dispatcher supplies
+        # `Python` and the traits from the other, so nothing that uses the
+        # dispatcher builds.
+        registry = (; version = "0.29.2",
+                    source = "registry+https://github.com/rust-lang/crates.io-index",
+                    dir = "/registry/pyo3-0.29.2")
+        toml = join(RustCall._pyo3_alias_toml(registry), "\n")
+        @test occursin("version = \"=0.29.2\"", toml)
+        @test !occursin("path =", toml)
+
+        # A path dependency is named by the directory Cargo resolved.
+        path_dep = (; version = "0.29.2", source = "", dir = "/vendor/pyo3")
+        toml = join(RustCall._pyo3_alias_toml(path_dep), "\n")
+        @test occursin("path = \"/vendor/pyo3\"", toml)
+        @test !occursin("version =", toml)
+
+        # A git dependency reproduces Cargo's source *exactly*, selector and
+        # all. Turning `?branch=main` into `rev = <the resolved commit>` looks
+        # like a tighter pin and is in fact a different source ID — Cargo would
+        # build a second pyo3, which is the failure this is here to prevent
+        # (#392 review). The commit needs no repeating: the wrapper is seeded
+        # with the target crate's own `Cargo.lock`.
+        for (selector, key, value) in (("?branch=main", "branch", "main"),
+                                       ("?tag=v0.26.0", "tag", "v0.26.0"),
+                                       ("?rev=abc123", "rev", "abc123"))
+            git_dep = (; version = "0.30.0",
+                       source = "git+https://github.com/PyO3/pyo3$(selector)#deadbeefcafe",
+                       dir = "/git/pyo3")
+            toml = join(RustCall._pyo3_alias_toml(git_dep), "\n")
+            @test occursin("git = \"https://github.com/PyO3/pyo3\"", toml)
+            @test occursin("$(key) = \"$(value)\"", toml)
+            @test !occursin("version =", toml)
+        end
+        # No selector: the default branch, and nothing to reproduce.
+        git_dep = (; version = "0.30.0",
+                   source = "git+https://github.com/PyO3/pyo3#deadbeefcafe",
+                   dir = "/git/pyo3")
+        toml = join(RustCall._pyo3_alias_toml(git_dep), "\n")
+        @test occursin("git = \"https://github.com/PyO3/pyo3\"", toml)
+        @test !occursin("rev =", toml)
+        @test !occursin("branch =", toml)
+
+        # A URL that merely *starts* with a crates.io index is a different
+        # registry, and taking it for crates.io would alias by bare version —
+        # the second-instance failure again (#392 review). Compared for
+        # equality, not prefix.
+        mirror = (; version = "0.29.2",
+                  source = "registry+https://github.com/rust-lang/crates.io-index-mirror",
+                  dir = "/mirror/pyo3")
+        @test_throws RustCall.RustError RustCall._pyo3_alias_toml(mirror)
+
+        # A registry that is not crates.io cannot be named in a generated
+        # dependency — `registry = "<name>"` needs a name from the user's Cargo
+        # configuration — and a bare version would quietly select crates.io.
+        # Refused, rather than built against the wrong package (#392 review).
+        other = (; version = "0.29.2", source = "registry+https://example.invalid/index",
+                 dir = "/other/pyo3")
+        err = try
+            RustCall._pyo3_alias_toml(other)
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        @test occursin("example.invalid", sprint(showerror, err))
+
+        # Both crates.io spellings are fine: the sparse protocol has been the
+        # default since Cargo 1.70.
+        for source in RustCall.CRATES_IO_SOURCES
+            sparse = (; version = "0.29.2", source = source, dir = "/registry/pyo3-0.29.2")
+            @test occursin("version = \"=0.29.2\"",
+                           join(RustCall._pyo3_alias_toml(sparse), "\n"))
+        end
+
+        # Every form still aliases the package and keeps the feature set.
+        for dep in (registry, path_dep, git_dep)
+            toml = join(RustCall._pyo3_alias_toml(dep), "\n")
+            @test occursin("[dependencies.rustcall_pyo3]", toml)
+            @test occursin("package = \"pyo3\"", toml)
+            @test occursin("features = [\"macros\"]", toml)
+        end
+    end
+
+    @testset "a real path dependency resolves as one (#370)" begin
+        # The acceptance criterion asks for a path dependency tested for real.
+        # Rather than vendor pyo3 into the repository, this points a crate at
+        # the copy Cargo already unpacked into its registry source cache: a
+        # genuine `path =` dependency on a genuine pyo3.
+        candidates = String[]
+        registry_src = joinpath(homedir(), ".cargo", "registry", "src")
+        if isdir(registry_src)
+            for index in readdir(registry_src; join = true), entry in readdir(index; join = true)
+                occursin(r"^pyo3-\d", basename(entry)) && isdir(entry) &&
+                    push!(candidates, entry)
+            end
+        end
+        if isempty(candidates)
+            @info "Skipping the real path-dependency check: no unpacked pyo3 in the registry cache"
+            @test_skip "needs an unpacked pyo3"
+        else
+            vendored = last(sort!(candidates))
+            root = mktempdir()
+            try
+                write(joinpath(root, "Cargo.toml"), """
+                [package]
+                name = "pyo3_path_probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                pyo3 = { path = "$(RustCall.escape_toml_string(vendored))", default-features = false, features = ["macros"] }
+                """)
+                mkpath(joinpath(root, "src"))
+                write(joinpath(root, "src", "lib.rs"), "")
+                plan = RustCall.pyo3_link_plan(root)
+                dep = RustCall._resolved_pyo3_dependency(root, plan)
+                # Cargo reports a path dependency with no source, and that is
+                # exactly what has to reach the alias.
+                @test dep.source == ""
+                @test realpath(dep.dir) == realpath(vendored)
+                toml = join(RustCall._pyo3_alias_toml(dep), "\n")
+                @test occursin("path =", toml)
+                @test !occursin("version =", toml)
+            finally
+                rm(root; force = true, recursive = true)
+            end
+        end
+    end
+
+    @testset "pyo3 metadata runs in the crate's config scope (#392 review)" begin
+        # Cargo finds `.cargo/config.toml` by walking up from its *working
+        # directory*; `--manifest-path` does not move that root. The cfg probe
+        # and the wrapper build both run beneath the target crate so its
+        # configuration applies, and this resolution has to agree with them —
+        # otherwise a crate whose config replaces a source or names a private
+        # registry resolves differently here, or not at all, and is refused for
+        # having no identifiable pyo3.
+        #
+        # The marker is a source replacement pointing at a directory that does
+        # not exist: Cargo honours it only when it reads the config, so the call
+        # fails loudly from inside the crate and would quietly succeed from
+        # anywhere else.
+        root = mktempdir()
+        try
+            mkpath(joinpath(root, "src"))
+            mkpath(joinpath(root, ".cargo"))
+            write(joinpath(root, "Cargo.toml"), """
+            [package]
+            name = "pyo3_config_probe"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.26", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(root, "src", "lib.rs"), "")
+            write(joinpath(root, ".cargo", "config.toml"), """
+            [source.crates-io]
+            replace-with = "rustcall-test-missing"
+
+            [source.rustcall-test-missing]
+            directory = "$(RustCall.escape_toml_string(joinpath(root, "no-such-vendor")))"
+            """)
+            plan = RustCall.PyO3LinkPlan(:python_free, String[], "", "test")
+            # Read from inside the crate, the replacement applies and there is
+            # no vendor directory, so nothing resolves. That is the *positive*
+            # signal that the config was read at all.
+            @test isempty(RustCall._resolved_pyo3_dependency(root, plan).version)
+
+            # Control: the identical crate without the config resolves normally
+            # wherever a fresh pyo3 can be resolved at all. Skipped offline.
+            plainroot = mktempdir()
+            try
+                cp(joinpath(root, "Cargo.toml"), joinpath(plainroot, "Cargo.toml"))
+                mkpath(joinpath(plainroot, "src"))
+                write(joinpath(plainroot, "src", "lib.rs"), "")
+                control = RustCall._resolved_pyo3_dependency(plainroot, plan)
+                if isempty(control.version)
+                    @info "Skipping the config-scope control: no fresh pyo3 resolves here"
+                    @test_skip "needs a resolvable pyo3"
+                else
+                    @test startswith(control.version, "0.26")
+                end
+            finally
+                rm(plainroot; force = true, recursive = true)
+            end
+        finally
+            rm(root; force = true, recursive = true)
+        end
+    end
+
+    @testset "a field accessor comes back when its taker is refused (#392 review)" begin
+        # A symbol collision *erases* a field's accessors rather than leaving a
+        # skip reason on them, so there is nothing to re-derive from when the
+        # entry that took the name is later refused by the generator. The
+        # original has to be remembered at the moment it is cleared.
+        wrapped = code -> begin
+            dir = mktempdir()
+            try
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "src", "lib.rs"), code)
+                RustCall.wrap_crate([joinpath(dir, "src", "lib.rs")]; crate_name = "probe")
+            finally
+                rm(dir; force = true, recursive = true)
+            end
+        end
+        field_of = source -> begin
+            class = only(st for st in source.manifest["structs"]
+                         if get(st, "name", "") == "C")
+            only(f for f in get(class, "fields", []) if get(f, "name", "") == "x")
+        end
+
+        # `C_get_x` wants `rustcall_C_get_x`, which is also the getter of `C.x`.
+        # The free function claims it first — and is then refused for its
+        # `Vec<i32>` argument, so the getter is valid again.
+        refused = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyclass]
+        pub struct C { #[pyo3(get)] pub x: i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        #[pyo3(signature = (v = vec![]))]
+        pub fn C_get_x(v: Vec<i32>) -> i32 { v.len() as i32 }
+        """)
+        fn_reason = only(String(get(f, "skip_reason", ""))
+                         for f in refused.manifest["functions"]
+                         if get(f, "name", "") == "C_get_x")
+        @test startswith(fn_reason, "unsupported_arg")
+        field = field_of(refused)
+        @test String(get(field, "getter", "")) == "rustcall_C_get_x"
+        @test get(field, "ffi_compatible", false)
+
+        # The converse: a taker the generator *does* emit keeps the name, and
+        # the accessor stays cleared. Restoring must not undo a live collision.
+        emitted = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyclass]
+        pub struct C { #[pyo3(get)] pub x: i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        pub fn C_get_x(v: i32) -> i32 { v }
+        """)
+        fn_reason = only(String(get(f, "skip_reason", ""))
+                         for f in emitted.manifest["functions"]
+                         if get(f, "name", "") == "C_get_x")
+        @test fn_reason == ""
+        field = field_of(emitted)
+        @test String(get(field, "getter", "")) == ""
+        @test !get(field, "ffi_compatible", false)
+    end
+
+    @testset "several refused entries do not trap a valid one (#392 review)" begin
+        # The relowering loop drops an entry from the report when *it* was the
+        # analysis's own loser, so that it is reconsidered. A generator refusal
+        # must survive that: several mutually colliding entries the generator
+        # refuses have to clear out of the way of a valid one behind them,
+        # rather than taking turns owning the name until the bound runs out.
+        wrapped = code -> begin
+            dir = mktempdir()
+            try
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "src", "lib.rs"), code)
+                RustCall.wrap_crate([joinpath(dir, "src", "lib.rs")]; crate_name = "probe")
+            finally
+                rm(dir; force = true, recursive = true)
+            end
+        end
+
+        # A panic slot is the symbol upper-cased, so every case variant of one
+        # name wants the same one. Two refused, one valid behind them.
+        source = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyfunction]
+        #[pyo3(signature = (v = vec![]))]
+        pub fn foo(v: Vec<i32>) -> i32 { v.len() as i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        #[pyo3(signature = (v = vec![]))]
+        pub fn FOO(v: Vec<i32>) -> i32 { v.len() as i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        pub fn Foo(x: i32) -> i32 { x }
+        """)
+        by_name = Dict(String(get(f, "name", "")) => String(get(f, "skip_reason", ""))
+                       for f in source.manifest["functions"])
+        @test startswith(by_name["foo"], "unsupported_arg")
+        @test startswith(by_name["FOO"], "unsupported_arg")
+        @test by_name["Foo"] == ""
+
+        # The same on a class, with four refused ahead of the valid one — each
+        # pass can only release one, so this needs the loop to keep going *and*
+        # to remember every refusal it has already been told about.
+        source = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyclass]
+        pub struct C { pub v: i32 }
+
+        #[allow(non_snake_case)]
+        #[pymethods]
+        impl C {
+            #[new]
+            pub fn new() -> Self { C { v: 0 } }
+            pub fn abc(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn abC(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn aBc(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn aBC(&self, v: Vec<i32>) -> i32 { v.len() as i32 }
+            pub fn Abc(&self, x: i32) -> i32 { x }
+        }
+        """)
+        class = only(st for st in source.manifest["structs"]
+                     if get(st, "name", "") == "C")
+        @test String(get(class, "skip_reason", "")) == ""
+        methods = Dict(String(get(m, "name", "")) => String(get(m, "skip_reason", ""))
+                       for m in get(class, "methods", []))
+        for refused in ("abc", "abC", "aBc", "aBC")
+            @test startswith(methods[refused], "unsupported_arg")
+        end
+        @test methods["Abc"] == ""
+    end
+
+    @testset "a refused wrapper build leaves no project behind (#392 review)" begin
+        # Writing the wrapper's manifest can refuse outright — a pyo3 older
+        # than the dispatcher needs, or one from a registry the alias cannot
+        # name. Those are expected outcomes, and the project directory
+        # `_wrapper_shaped_project` has already created must go with them
+        # rather than accumulating under the crate's `target/` for the life of
+        # the process.
+        root = mktempdir()
+        try
+            mkpath(joinpath(root, "src"))
+            write(joinpath(root, "Cargo.toml"), """
+            [package]
+            name = "refused_probe"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+            write(joinpath(root, "src", "lib.rs"), "")
+            info = RustCall.CrateInfo("refused_probe", root, "0.1.0",
+                                      RustCall.DependencySpec[],
+                                      RustCall.RustFunctionSignature[],
+                                      RustCall.RustStructInfo[], String[])
+            plan = RustCall.PyO3LinkPlan(:python_free, String[], "", "test")
+            # `uses_python_dispatch` with no resolvable pyo3 is the refusal: the
+            # wrapper needs the dispatcher and Cargo names no direct pyo3.
+            source = RustCall.WrapperCrateSource("refused_probe", "", Dict{String, Any}(),
+                                                 String[], true)
+            parent = joinpath(root, "target", "rustcall-pyo3-wrapper")
+            @test_throws RustCall.RustError RustCall._build_pyo3_wrapper_project(
+                info, plan, source, String[], true, "deadbeef", false)
+            # The parent may exist; what must not survive is a project tree.
+            leftovers = isdir(parent) ?
+                filter(startswith("project_"), readdir(parent)) : String[]
+            @test isempty(leftovers)
+        finally
+            rm(root; force = true, recursive = true)
+        end
+    end
+
+    @testset "a refused entry does not keep a valid name (#392 review)" begin
+        # The symbol table reserves every arity an entry *will* emit, and it
+        # runs in the scan — before the generator has had the chance to refuse
+        # that entry. A reservation left standing for an entry that then emits
+        # nothing used to cost a valid item its own name.
+        wrapped = code -> begin
+            dir = mktempdir()
+            try
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "src", "lib.rs"), code)
+                RustCall.wrap_crate([joinpath(dir, "src", "lib.rs")]; crate_name = "probe")
+            finally
+                rm(dir; force = true, recursive = true)
+            end
+        end
+        # A defaulted entry the generator emits appears once per arity, all
+        # under the same `name`, so this collects rather than picking one.
+        reasons = (source, name) -> unique!(String[String(get(f, "skip_reason", ""))
+                                                   for f in source.manifest["functions"]
+                                                   if get(f, "name", "") == name])
+        reason = (source, name) -> only(reasons(source, name))
+
+        # `foo` is refused for its `Vec<i32>` argument, so `rustcall_foo__default_1`
+        # is a symbol nothing defines and `foo__default_1` may have it.
+        source = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyfunction]
+        #[pyo3(signature = (a, values = vec![]))]
+        pub fn foo(a: i32, values: Vec<i32>) -> i32 { a + values.len() as i32 }
+
+        #[pyfunction]
+        pub fn foo__default_1(x: i32) -> i32 { x }
+        """)
+        @test startswith(reason(source, "foo"), "unsupported_arg")
+        @test reason(source, "foo__default_1") == ""
+
+        # The converse still holds: when the defaulted entry *is* emitted, the
+        # arity is a real symbol and the lookalike is the one that gives way.
+        source = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyfunction]
+        #[pyo3(signature = (a, b = 1))]
+        pub fn foo(a: i32, b: i32) -> i32 { a + b }
+
+        #[pyfunction]
+        pub fn foo__default_1(x: i32) -> i32 { x }
+        """)
+        # Both arities are emitted, so both claim, and the lookalike gives way.
+        @test reasons(source, "foo") == [""]
+        @test count(f -> get(f, "name", "") == "foo", source.manifest["functions"]) == 2
+        @test startswith(reason(source, "foo__default_1"), "symbol_collision")
+
+        # And a collision between two entries the generator accepts is decided
+        # exactly as before — the analysis must not read "lost a collision" as
+        # "the generator refuses it" and hand the symbol back.
+        source = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyfunction]
+        pub fn add(a: i32, b: i32) -> i32 { a + b }
+
+        #[pyfunction]
+        pub fn add_take_panic() -> i32 { 0 }
+        """)
+        @test reason(source, "add") == ""
+        @test startswith(reason(source, "add_take_panic"), "symbol_collision")
+    end
+
+    @testset "a target crate named like a wrapper's own dependency (#392 review)" begin
+        # Nothing reserves a crate *name*: the crate being wrapped is the
+        # user's, and it may be called `rustcall_pyo3` or
+        # `rustcall_julia_macros` — the two names the generated wrapper spends
+        # on itself. The dependency is renamed rather than written twice.
+        plain = Dict{String, Any}()
+        @test RustCall.wrapper_target_identifier("some_crate", plain) == ("some_crate", false)
+        @test RustCall.wrapper_target_identifier("some-crate", plain) == ("some_crate", false)
+        for reserved in RustCall.WRAPPER_RESERVED_CRATE_NAMES
+            identifier, renamed = RustCall.wrapper_target_identifier(reserved, plain)
+            @test renamed
+            @test identifier == "rustcall_target_" * reserved
+            @test !(identifier in RustCall.WRAPPER_RESERVED_CRATE_NAMES)
+        end
+        # A `[lib] name` that spells a reserved name counts too: that is the
+        # identifier the generated Rust would use.
+        lib_named = Dict{String, Any}("lib" => Dict{String, Any}("name" => "rustcall_pyo3"))
+        identifier, renamed = RustCall.wrapper_target_identifier("innocent", lib_named)
+        @test renamed
+        @test identifier == "rustcall_target_rustcall_pyo3"
+
+        # The generated manifest keeps one table per name, and the renamed one
+        # names the real package.
+        info = RustCall.CrateInfo("rustcall_pyo3", "/tmp/does-not-exist", "0.1.0",
+                                  RustCall.DependencySpec[],
+                                  RustCall.RustFunctionSignature[],
+                                  RustCall.RustStructInfo[], String[])
+        plan = RustCall.PyO3LinkPlan(:python_free, String[], "", "test")
+        toml = RustCall.generate_pyo3_wrapper_cargo_toml(
+            info, plan; wrapper_name = "w", python_dispatch = true,
+            target_identifier = "rustcall_target_rustcall_pyo3", target_renamed = true,
+            pyo3_dependency = (; version = "0.26.0",
+                               source = first(RustCall.CRATES_IO_SOURCES),
+                               dir = "/registry/pyo3-0.26.0"))
+        # A crate that needs no rename keeps the *package* name as the table
+        # key — Cargo keys on the package, not on the crate identifier, and a
+        # `-` in the name or a `[lib] name` of its own makes the two differ.
+        plain_info = RustCall.CrateInfo("builtin-api", "/tmp/does-not-exist", "0.1.0",
+                                        RustCall.DependencySpec[],
+                                        RustCall.RustFunctionSignature[],
+                                        RustCall.RustStructInfo[], String[])
+        plain_toml = RustCall.generate_pyo3_wrapper_cargo_toml(
+            plain_info, plan; wrapper_name = "w",
+            target_identifier = "builtin_api", target_renamed = false)
+        @test occursin("[dependencies.builtin-api]", plain_toml)
+        @test !occursin("package =", plain_toml)
+
+        @test occursin("[dependencies.rustcall_target_rustcall_pyo3]", toml)
+        @test occursin("package = \"rustcall_pyo3\"", toml)
+        @test count(==("[dependencies.rustcall_pyo3]"), split(toml, "\n")) == 1
+    end
+
+    @testset "a live target-conditional pyo3 still resolves (#392 review)" begin
+        # `[target.'cfg(...)'.dependencies] pyo3` links exactly like a plain
+        # dependency on the platforms whose `cfg` it matches. An earlier fix for
+        # the dev/build-dependency case required a null `target` in `dep_kinds`
+        # and so discarded these edges outright, and the dispatcher then refused
+        # every such crate for want of a version. Cargo prunes the inactive ones
+        # itself (`--filter-platform`), so the live edge has to survive.
+        probe = table -> begin
+            root = mktempdir()
+            try
+                write(joinpath(root, "Cargo.toml"), """
+                [package]
+                name = "pyo3_target_probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                $(table)
+                pyo3 = { version = "0.26", default-features = false, features = ["macros"] }
+                """)
+                mkpath(joinpath(root, "src"))
+                write(joinpath(root, "src", "lib.rs"), "")
+                return RustCall._resolved_pyo3_dependency(root, RustCall.pyo3_link_plan(root))
+            finally
+                rm(root; force = true, recursive = true)
+            end
+        end
+
+        # The control decides whether this environment can resolve a fresh pyo3
+        # at all: the offline CI job runs with `CARGO_NET_OFFLINE=true` and an
+        # empty `CARGO_HOME` seeded only from `test/fixtures/offline_prefetch`,
+        # where a temporary crate asking the registry for a version resolves
+        # nothing. `_resolved_pyo3_dependency` fails *closed* — it reports an
+        # empty result rather than raising — so without a control an
+        # unresolvable environment is indistinguishable from the regression
+        # this test exists to catch (#259, #392 review).
+        plain = probe("[dependencies]")
+        if isempty(plain.version)
+            @info "Skipping the target-conditional probe: this environment resolves no fresh pyo3"
+            @test_skip "needs a resolvable pyo3"
+        else
+            # `cfg(any(unix, windows))` is live on every platform the suite runs
+            # on, and is still spelled as a target-conditional table — so this
+            # asserts the shape, not the host. Whatever the control resolved,
+            # the target-conditional form has to resolve the same thing.
+            targeted = probe("[target.'cfg(any(unix, windows))'.dependencies]")
+            @test targeted == plain
+            @test !isempty(targeted.version)
+            @test startswith(targeted.version, "0.26")
+        end
+    end
+
+    @testset "the generator reports dispatcher use, Julia does not guess (#392 review)" begin
+        # Julia does not parse Rust (#264), and every proxy is wrong one way or
+        # the other: a defaulted callable the generator refused leaves a
+        # `python_default` in the manifest with no dispatcher emitted, while a
+        # class made Python-owned by exactly such a refused method has a
+        # `Py<PyAny>` handle with no emitted default to infer from (#371).
+        # Scanning the source is wrong too — `#[pyfunction] fn
+        # rustcall_pyo3_status` puts those characters in a symbol. The generator
+        # is the only thing that knows, because it is what writes the path.
+        wrapped(code) = mktempdir() do dir
+            path = joinpath(dir, "lib.rs")
+            write(path, code)
+            RustCall.wrap_crate([path]; crate_name = "probe")
+        end
+
+        direct = wrapped("""
+            #[pyfunction]
+            pub fn plain(a: i32) -> i32 { a }
+            """)
+        @test direct.uses_python_dispatch === false
+
+        # A name that merely contains the alias is still not dispatcher use.
+        lookalike = wrapped("""
+            #[pyfunction]
+            pub fn rustcall_pyo3_status() -> i32 { 1 }
+            """)
+        @test lookalike.uses_python_dispatch === false
+
+        # A defaulted callable does use it.
+        defaulted = wrapped("""
+            #[pyfunction]
+            #[pyo3(signature = (value = 1))]
+            pub fn defaulted(value: i32) -> i32 { value }
+            """)
+        @test defaulted.uses_python_dispatch === true
+
+        # And so does a class made Python-owned by inheritance.
+        inherited = wrapped("""
+            #[pyclass]
+            pub struct Base;
+            #[pyclass(extends = Base)]
+            pub struct Child { value: i32 }
+            #[pymethods]
+            impl Child {
+                #[new]
+                pub fn new() -> (Self, Base) { (Self { value: 1 }, Base) }
+            }
+            """)
+        @test inherited.uses_python_dispatch === true
+    end
+
+    @testset "a dispatcher wrapper refuses a pyo3 older than it needs (#370)" begin
+        # `Python::initialize` / `Python::attach` arrived in pyo3 0.26 — checked
+        # against the `marker.rs` of 0.24, 0.25 and 0.26, not the changelog.
+        # Before this the generator happily emitted them and the *wrapper build*
+        # failed with rustc errors about code the user never wrote.
+        @test RustCall.PYO3_DISPATCHER_MINIMUM == v"0.26"
+        for old in ("0.22.3", "0.24.0", "0.25.0", "0.25.1")
+            err = try
+                RustCall._require_dispatcher_pyo3_version(old, "old_crate")
+                nothing
+            catch e
+                e
+            end
+            @test err isa RustCall.RustError
+            message = sprint(showerror, err)
+            # The three things a reader needs: which crate, what it has, and
+            # what it would take.
+            @test occursin("old_crate", message)
+            @test occursin(old, message)
+            @test occursin("0.26", message)
+            @test occursin("Python::attach", message)
+        end
+        # The floor itself and anything above it are fine.
+        for ok in ("0.26.0", "0.26.1", "0.29.2", "1.0.0")
+            @test RustCall._require_dispatcher_pyo3_version(ok, "new_crate") === nothing
+        end
+        # An unparseable version is not evidence of anything: let the build speak
+        # rather than refuse on a guess.
+        @test RustCall._require_dispatcher_pyo3_version("", "odd") === nothing
+        @test RustCall._require_dispatcher_pyo3_version("not-a-version", "odd") === nothing
+    end
+
     @testset "a plan whose cfg probe failed is not `resolved`" begin
         # `cargo tree` can succeed while `cargo rustc -- --print cfg` fails.
         # Saying `resolved = true` with an empty `cfg_text` made `scan_report`

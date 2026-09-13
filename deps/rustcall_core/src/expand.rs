@@ -419,6 +419,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
                 python_name: String::new(),
                 vis: String::new(),
                 cfg: String::new(),
+                precollision: None,
             }
         })
         .collect()

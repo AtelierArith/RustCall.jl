@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **PyO3 wrapper follow-ups**
+  ([#370](https://github.com/AtelierArith/RustCall.jl/issues/370)). Four edge
+  cases deferred from #369, each of which made an otherwise wrappable crate fail:
+  a **Python-owned class method returning `&str`** produced a helper that could
+  not compile — the reference borrows the Python string bound to `py` and cannot
+  leave `Python::attach` — and is now extracted as an owned `String` and carried
+  on the existing owned-string ABI; the `rustcall_pyo3` alias now names the
+  **package Cargo resolved** rather than a registry release of the same version,
+  so a crate taking pyo3 from a `path` or `git` dependency no longer ends up with
+  two pyo3 instances in one build; every **default-arity** entry point
+  (`rustcall_foo__default_1` and its panic and string helpers) is reserved during
+  collision analysis, so `foo(value = 1)` alongside a function named
+  `foo__default_1` is refused instead of defining one symbol twice; and a crate
+  whose pyo3 predates **0.26** — where `Python::initialize` / `Python::attach`
+  arrived — is refused with a diagnostic naming the version, the floor and the
+  way out, instead of failing later with rustc errors about generated code. See
+  `docs/src/pyo3.md`.
+
+  Four more corners found while reviewing that work, each one a name or a fact
+  taken from the wrong place: whether a wrapper needs the pyo3 alias is now
+  **reported by the generator** rather than inferred by scanning the Rust it
+  emitted; the pyo3 the alias names is the crate's *normal* dependency, with
+  Cargo's own `--filter-platform` deciding which `[target.'cfg(...)']` edges are
+  live, so neither a `dev-dependencies` pyo3 of another version nor a live
+  Unix-only one is mistaken for it; a wrapped crate whose own name is
+  `rustcall_pyo3` or `rustcall_julia_macros` — the two the wrapper spends on
+  itself — is depended on under `rustcall_target_<name>` instead of writing one
+  dependency table twice; and an entry the generator **refuses** no longer keeps
+  the symbols it would have exported, so `foo(values = vec![])` refused for its
+  `Vec<i32>` argument no longer costs a function actually named
+  `foo__default_1` its own name. That last one makes generation and the symbol
+  analysis a fixpoint: the wrapper is lowered, what came out is reported back,
+  and the analysis runs again while the answer keeps changing.
+
 ### Changed
 - **A `@rust` call no longer re-resolves everything on every call**
   ([#253](https://github.com/AtelierArith/RustCall.jl/issues/253)). Each call

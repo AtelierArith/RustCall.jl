@@ -226,9 +226,13 @@ The `[dependencies.<name>]` entry a Phase-2 wrapper crate must write for `plan`
 to hold. This is where `dependency_default_features` takes effect: nothing on
 the `cargo build` command line can turn off a *dependency's* default features.
 """
-function pyo3_dependency_toml(plan::PyO3LinkPlan, name::AbstractString, path::AbstractString)
+function pyo3_dependency_toml(plan::PyO3LinkPlan, name::AbstractString, path::AbstractString;
+                              package::AbstractString = "")
     io = IOBuffer()
     println(io, "[dependencies.", name, "]")
+    # A renamed dependency: `name` is what the generated Rust says, `package`
+    # is what Cargo resolves (`wrapper_target_identifier`).
+    isempty(package) || println(io, "package = ", repr(String(package)))
     println(io, "path = ", repr(String(path)))
     plan.dependency_default_features || println(io, "default-features = false")
     isempty(plan.crate_features) ||
@@ -1385,7 +1389,8 @@ function build_pyo3_wrapper(info::CrateInfo;
     # does refuse such an item (`cfg_undecided`) rather than call something the
     # build may not have.
     cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
-    source = wrap_crate(tree_files; crate_name = crate_rust_identifier(info.name, cargo_toml),
+    target_identifier, target_renamed = wrapper_target_identifier(info.name, cargo_toml)
+    source = wrap_crate(tree_files; crate_name = target_identifier,
                         cfg = cfg, cfg_text = cfg_text,
                         crate_root = lib_root,
                         edition = _crate_rust_edition(info.path, cargo_toml),
@@ -1509,6 +1514,47 @@ function crate_rust_identifier(package_name::AbstractString, cargo_toml::Abstrac
 end
 
 """
+    WRAPPER_RESERVED_CRATE_NAMES
+
+The crate names a generated wrapper spends on itself: `rustcall_pyo3` is the
+alias for the PyO3 the target crate resolved, and `rustcall_julia_macros` is
+the runtime the quiet-panic guard comes from. Both are written into the
+wrapper's `Cargo.toml` and named literally by the generated Rust.
+
+Nothing reserves a crate *name* — the crate being wrapped is the user's — so a
+target crate may legitimately be called either of these. See
+`wrapper_target_identifier`.
+"""
+const WRAPPER_RESERVED_CRATE_NAMES = ("rustcall_pyo3", "rustcall_julia_macros")
+
+"""
+    wrapper_target_identifier(package_name, cargo_toml) -> (identifier, renamed)
+
+The name the generated wrapper depends on the target crate under, which is also
+the identifier its generated Rust names the crate by.
+
+Normally that is `crate_rust_identifier`. When it — or the package name Cargo
+would key the dependency table on — is one of `WRAPPER_RESERVED_CRATE_NAMES`,
+the dependency is **renamed**: `[dependencies.rustcall_pyo3]` would otherwise
+be written twice into one `Cargo.toml` (invalid TOML), and `use
+rustcall_pyo3::*` in the generated `lib.rs` would resolve to the wrapped crate
+rather than to PyO3 (#392 review).
+
+A rename is a plain Cargo feature: the table keeps `package = "<real name>"`
+and the crate is available in Rust under the key. `renamed` says whether the
+caller has to emit that key.
+"""
+function wrapper_target_identifier(package_name::AbstractString, cargo_toml::AbstractDict)
+    identifier = crate_rust_identifier(package_name, cargo_toml)
+    key = replace(String(package_name), '-' => '_')
+    (identifier in WRAPPER_RESERVED_CRATE_NAMES || key in WRAPPER_RESERVED_CRATE_NAMES) ||
+        return (identifier, false)
+    # The wrapper has exactly three dependencies, and the other two are the
+    # reserved names themselves, so one prefix is enough to be unique.
+    return ("rustcall_target_" * identifier, true)
+end
+
+"""
     _pyo3_wrapper_items(manifest) -> (functions, structs, skipped, pyo3_exports)
 
 Split the wrapper crate's manifest into what Julia binds and what it reports.
@@ -1620,36 +1666,50 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     # Dependency outputs are shared with the probe. Distinct wrapper artifacts
     # must not overwrite one shared cdylib between Cargo exiting and our copy.
     wrapper_name = "rustcall_wrapper_$(key)"
-    write(joinpath(wrapper_path, "Cargo.toml"),
-          generate_pyo3_wrapper_cargo_toml(
-              info, plan; wrapper_name = wrapper_name,
-              python_dispatch = _wrapper_uses_python_dispatch(source.manifest),
-              pyo3_version = _resolved_pyo3_version(info.path, plan)) *
-          _root_patch_toml(info.path))
-    write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
-
-    # The link options travel in the wrapper's own build script, not in
-    # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
-    # `[build] rustflags` from config, and is itself ignored whenever
-    # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the wrong
-    # place or none. `cargo:rustc-link-search` / `cargo:rustc-link-arg` from
-    # `build.rs` apply to exactly this cdylib's link step and to nothing else
-    # (#307 review). `rustflags` stays the identity input it always was.
-    script = _pyo3_wrapper_build_script(plan)
-    isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
-
     project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
                            "2021", wrapper_path)
-    env = Dict{String, String}(ENV)
-    # Only where pyo3 is actually in the graph: a `:python_free` build has no
-    # pyo3 build script to configure, and pinning an interpreter it will never
-    # consult would misdescribe the build. The interpreter is the plan's — it
-    # honours a caller's own `PYO3_PYTHON`, was chosen next to `plan.rpath`,
-    # and is already in the artifact key (`_pyo3_wrapper_build_env`).
-    if plan.mode === :link_libpython && !isempty(plan.interpreter)
-        env["PYO3_PYTHON"] = plan.interpreter
-    end
+    # The cleanup scope opens here, at the directory that already exists, not at
+    # the build. Writing the manifest can *refuse* — a pyo3 older than the
+    # dispatcher needs, or one from a registry the alias cannot name — and those
+    # are expected outcomes, not crashes. Entering the `try` only at
+    # `build_cargo_project` left a project tree under the crate's `target/` for
+    # every refused attempt, for the life of the process (#392 review).
     try
+        # The same choice `wrap_crate` was given, from the same function: the
+        # dependency table has to be keyed on the identifier the generated
+        # `lib.rs` names the crate by, or the two disagree about what
+        # `use <crate>::*` means.
+        target_identifier, target_renamed =
+            wrapper_target_identifier(info.name,
+                                      parse_cargo_toml(joinpath(info.path, "Cargo.toml")))
+        write(joinpath(wrapper_path, "Cargo.toml"),
+              generate_pyo3_wrapper_cargo_toml(
+                  info, plan; wrapper_name = wrapper_name,
+                  python_dispatch = source.uses_python_dispatch,
+                  target_identifier = target_identifier, target_renamed = target_renamed,
+                  pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
+              _root_patch_toml(info.path))
+        write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
+
+        # The link options travel in the wrapper's own build script, not in
+        # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
+        # `[build] rustflags` from config, and is itself ignored whenever
+        # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the wrong
+        # place or none. `cargo:rustc-link-search` / `cargo:rustc-link-arg` from
+        # `build.rs` apply to exactly this cdylib's link step and to nothing else
+        # (#307 review). `rustflags` stays the identity input it always was.
+        script = _pyo3_wrapper_build_script(plan)
+        isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
+
+        env = Dict{String, String}(ENV)
+        # Only where pyo3 is actually in the graph: a `:python_free` build has no
+        # pyo3 build script to configure, and pinning an interpreter it will never
+        # consult would misdescribe the build. The interpreter is the plan's — it
+        # honours a caller's own `PYO3_PYTHON`, was chosen next to `plan.rpath`,
+        # and is already in the artifact key (`_pyo3_wrapper_build_env`).
+        if plan.mode === :link_libpython && !isempty(plan.interpreter)
+            env["PYO3_PYTHON"] = plan.interpreter
+        end
         built = build_cargo_project(project; release = release, env = env,
                                     policy = crate_wrapper_policy(),
                                     target_directory = joinpath(info.path, "target", "rustcall-pyo3-probe", "target"))
@@ -1818,6 +1878,54 @@ function _pyo3_wrapper_build_script(plan::PyO3LinkPlan)
 end
 
 """
+    PYO3_DISPATCHER_MINIMUM
+
+The oldest PyO3 a **dispatcher-using** wrapper can be generated against (#370).
+
+A wrapper that reaches Python — a defaulted callable, or a class made
+Python-owned by inheritance — is emitted with `Python::initialize` and
+`Python::attach`. Those names arrived in PyO3 0.26; 0.25 and earlier spell the
+same operations `pyo3::prepare_freethreaded_python` and `Python::with_gil`, so
+the generated source does not compile against them. Determined by reading the
+`marker.rs` of 0.24, 0.25 and 0.26 rather than from the changelog.
+
+Everything else RustCall generates for a PyO3 crate calls the crate's own
+functions and is unaffected, which is why the floor is checked only where the
+dispatcher is actually used.
+"""
+const PYO3_DISPATCHER_MINIMUM = v"0.26"
+
+"""
+    _require_dispatcher_pyo3_version(version, crate_name)
+
+Refuse a dispatcher-using wrapper whose PyO3 predates
+`PYO3_DISPATCHER_MINIMUM`, naming the version, the floor and the way out.
+
+Before this, generation succeeded and the *wrapper build* failed with rustc
+errors about `Python::attach` — an error about generated code the user never
+wrote, for a crate that is otherwise wrappable (#370).
+"""
+function _require_dispatcher_pyo3_version(version::AbstractString,
+                                          crate_name::AbstractString)
+    parsed = tryparse(VersionNumber, String(version))
+    # An unparseable version is not evidence of anything; the build will say so
+    # far better than a guess here would.
+    parsed === nothing && return nothing
+    parsed >= PYO3_DISPATCHER_MINIMUM && return nothing
+    throw(RustError(
+        "`$(crate_name)` resolves pyo3 $(version), and this wrapper needs at least " *
+        "$(PYO3_DISPATCHER_MINIMUM). The crate has a defaulted callable or an " *
+        "inherited `#[pyclass]`, so its wrapper calls Python through " *
+        "`Python::initialize` / `Python::attach`; those names arrived in pyo3 " *
+        "$(PYO3_DISPATCHER_MINIMUM), and earlier releases spell them " *
+        "`pyo3::prepare_freethreaded_python` / `Python::with_gil` (#370).\n" *
+        "Either raise the crate's pyo3 dependency to $(PYO3_DISPATCHER_MINIMUM) " *
+        "or later, or wrap it without the items that need the dispatcher — a " *
+        "`#[pyfunction]` with no defaults and a `#[pyclass]` with no `extends` " *
+        "are generated as direct calls and work on older pyo3."))
+end
+
+"""
     generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan) -> String
 
 The `Cargo.toml` of a #275 Phase-2 wrapper crate.
@@ -1833,7 +1941,10 @@ release.
 function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
                                          wrapper_name::AbstractString = "$(info.name)_rustcall_wrapper",
                                          python_dispatch::Bool = false,
-                                         pyo3_version::AbstractString = "")
+                                         target_identifier::AbstractString = "",
+                                         target_renamed::Bool = false,
+                                         pyo3_dependency = (; version = "", source = "",
+                                                            dir = ""))
     lines = String[
         "# Generated by RustCall.jl for the PyO3 crate `$(info.name)` (#275 Phase 2).",
         "# Link plan: $(plan.mode) — $(plan.reason)",
@@ -1850,20 +1961,23 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
         "# the workspace and reject a crate it does not list (#307 review).",
         "[workspace]",
         "",
-        rstrip(pyo3_dependency_toml(plan, info.name, info.path)),
+        # Cargo keys an ordinary dependency table on the **package** name, which
+        # is not the crate identifier: a `-` in the name, or a `[lib] name` of
+        # its own, makes the two differ. Only a rename replaces the key, and
+        # then `package =` carries the real name.
+        rstrip(target_renamed ?
+               pyo3_dependency_toml(plan, target_identifier, info.path;
+                                    package = String(info.name)) :
+               pyo3_dependency_toml(plan, info.name, info.path)),
     ]
     if python_dispatch
-        isempty(pyo3_version) && throw(RustError(
+        isempty(pyo3_dependency.version) && throw(RustError(
             "the generated wrapper needs PyO3's dispatcher, but Cargo metadata did not " *
             "identify the target crate's direct pyo3 version"))
-        append!(lines, [
-            "",
-            "[dependencies.rustcall_pyo3]",
-            "package = \"pyo3\"",
-            "version = \"=$(pyo3_version)\"",
-            "default-features = false",
-            "features = [\"macros\"]",
-        ])
+        _require_dispatcher_pyo3_version(pyo3_dependency.version, info.name)
+        # The *same* package the crate resolved, by source and not only by
+        # version (#370).
+        append!(lines, _pyo3_alias_toml(pyo3_dependency))
     end
     # The generated wrappers take their quiet-panic boundary guard from this
     # crate rather than defining the hook items here: this wrapper links the
@@ -1885,35 +1999,199 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
     return join(lines, "\n") * "\n"
 end
 
-function _wrapper_uses_python_dispatch(manifest::AbstractDict)
-    has_default(args) = any(a -> !isempty(_mstr(a, "python_default")), args)
-    any(f -> has_default(_mvec(f, "args")), _mvec(manifest, "functions")) && return true
-    for st in _mvec(manifest, "structs")
-        !isempty(_mstr(st, "pyo3_extends")) && return true
-        any(m -> has_default(_mvec(m, "args")), _mvec(st, "methods")) && return true
-    end
-    return false
-end
 
-"""The direct pyo3 package version used by the target library."""
-function _resolved_pyo3_version(crate_path::AbstractString, plan::PyO3LinkPlan)
+"""
+    _resolved_pyo3_dependency(crate_path, plan) -> NamedTuple
+
+The pyo3 package the target crate actually resolves, as
+`(; version, source, dir)`.
+
+`source` is Cargo's own spelling — `registry+...`, `git+...`, or empty for a
+path dependency — and `dir` is the directory of the resolved package's
+manifest. Both are needed, not just the version: the wrapper's `rustcall_pyo3`
+alias has to name the **same** package, and a version-only alias silently
+resolves a second copy from crates.io whenever the crate gets pyo3 from a path
+or a git checkout. Two pyo3 instances in one build is not a duplicate-work
+problem: the target's macro metadata carries types from its instance while the
+generated dispatcher supplies `Python` and the traits from the other, so the
+defaults and inherited classes do not build (#370).
+
+All-empty when Cargo could not be asked, or when the crate resolves more than
+one pyo3, in which case nothing is claimed.
+"""
+function _resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPlan)
+    empty_result = (; version = "", source = "", dir = "")
     manifest = realpath(joinpath(String(crate_path), "Cargo.toml"))
     metadata = try
-        parse_json(read(`$(cargo()) metadata --format-version=1 --manifest-path $manifest $(plan.feature_flags)`, String))
+        # `--filter-platform` makes Cargo prune the resolve graph to the
+        # platform the wrapper is actually built for, so a
+        # `[target.'cfg(...)'.dependencies]` edge survives exactly when it is
+        # live. Deciding that here would mean evaluating `cfg` predicates in
+        # Julia; Cargo already knows.
+        #
+        # Run it **from the crate**, like the cfg probe and the wrapper build.
+        # Cargo discovers `.cargo/config.toml` by walking up from its working
+        # directory, and `--manifest-path` does not move that root: a crate
+        # whose config names a private registry, replaces a source, or carries
+        # credentials would otherwise be resolved from wherever Julia happens to
+        # have been started — failing, or naming a different source than the
+        # build will use, and either way caught below as "no pyo3" and turned
+        # into a refusal of every dispatcher-using wrapper (#392 review).
+        #
+        # The environment is the process's, as before. Nothing the probe adds to
+        # it (`CARGO_TARGET_DIR`, the panic profile, `PYO3_PYTHON`) takes part in
+        # resolving a dependency graph; the configuration that does is what the
+        # working directory reaches.
+        parse_json(read(setenv(`$(cargo()) metadata --format-version=1 --manifest-path $manifest --filter-platform $(get_default_target()) $(plan.feature_flags)`,
+                               ENV; dir = dirname(manifest)), String))
     catch e
         @debug "Could not resolve the target crate's pyo3 package" crate_path exception = e
-        return ""
+        return empty_result
     end
     target = only(p for p in metadata["packages"] if realpath(p["manifest_path"]) == manifest)
     node = only(n for n in metadata["resolve"]["nodes"] if n["id"] == target["id"])
     package_by_id = Dict(p["id"] => p for p in metadata["packages"])
-    versions = String[]
+    found = NamedTuple[]
     for dep in node["deps"]
         package = package_by_id[dep["pkg"]]
-        package["name"] == "pyo3" && push!(versions, String(package["version"]))
+        package["name"] == "pyo3" || continue
+        # The *normal* edge only. A crate may also take pyo3 as a
+        # `[build-dependencies]` or `[dev-dependencies]` entry — a different
+        # version by construction, and neither is linked into the wrapper —
+        # and both appear here: collecting edges by package name alone made an
+        # unambiguous crate look like it resolved several pyo3s, and the
+        # dispatcher then refused to generate for want of a version (#392
+        # review). A `dep_kinds` entry with a null `kind` is the normal
+        # dependency. Its `target` is *not* examined: `--filter-platform` above
+        # has already dropped the target-conditional edges that are not live,
+        # and requiring a null target here instead discarded every crate whose
+        # pyo3 sits under `[target.'cfg(unix)'.dependencies]` — a shape that
+        # links pyo3 perfectly normally on Unix.
+        kinds = get(dep, "dep_kinds", nothing)
+        # `dep_kinds` is absent from very old `cargo metadata` output; there is
+        # nothing to filter on then, so the edge is taken as it was before.
+        normal = kinds === nothing || isempty(kinds) ||
+                 any(k -> get(k, "kind", nothing) === nothing, kinds)
+        normal || continue
+        source = get(package, "source", nothing)
+        push!(found, (; version = String(package["version"]),
+                      source = source === nothing ? "" : String(source),
+                      dir = dirname(String(package["manifest_path"]))))
     end
-    unique!(versions)
-    return length(versions) == 1 ? only(versions) : ""
+    unique!(found)
+    return length(found) == 1 ? only(found) : empty_result
+end
+
+"""
+    CRATES_IO_SOURCES
+
+The `source` spellings Cargo uses for crates.io, the one registry a generated
+dependency can name with a bare version requirement.
+
+Cargo reports the registry protocol it used, and the sparse protocol has been
+the default since 1.70, so both spellings occur.
+
+Compared for **equality**, never as a prefix: a custom registry whose URL merely
+begins with one of these — `...crates.io-index-mirror` — would otherwise be
+taken for crates.io and aliased by bare version, which is the second-instance
+failure the refusal exists to prevent (#392 review).
+"""
+const CRATES_IO_SOURCES = ("registry+https://github.com/rust-lang/crates.io-index",
+                           "sparse+https://index.crates.io/")
+
+"""
+    _git_dependency_keys(source) -> Vector{String}
+
+The `git = ...` dependency keys that reproduce Cargo's git `source` string
+**exactly**, selector included.
+
+A git source is `git+<url>[?<selector>]#<commit>`, and the selector is part of
+the package's identity: `git+URL?branch=main` and `git+URL?rev=SHA` are two
+different sources to Cargo *even when they resolve to the same commit*. So the
+selector is copied as it stands and the commit is **not** turned into a `rev` —
+pinning that way would create the second pyo3 instance this is here to avoid
+(#392 review). The commit does not need repeating: the wrapper is seeded with
+the target crate's own `Cargo.lock` (`_wrapper_shaped_project`), which pins it.
+"""
+function _git_dependency_keys(source::AbstractString)
+    rest = source[5:end]
+    hash_at = findlast('#', rest)
+    hash_at === nothing || (rest = rest[1:(hash_at - 1)])
+    url = rest
+    selector = ""
+    query_at = findfirst('?', rest)
+    if query_at !== nothing
+        url = rest[1:(query_at - 1)]
+        selector = rest[(query_at + 1):end]
+    end
+    keys = ["git = \"$(escape_toml_string(url))\""]
+    isempty(selector) && return keys
+    key, _, value = partition_first(selector, '=')
+    if !(key in ("branch", "tag", "rev")) || isempty(value)
+        throw(RustError(
+            "the target crate resolves pyo3 from the git source $(source), whose " *
+            "`$(selector)` selector RustCall does not know how to reproduce. " *
+            "Reproducing it exactly is what keeps Cargo from treating the " *
+            "wrapper's alias as a second package (#370)."))
+    end
+    push!(keys, "$(key) = \"$(escape_toml_string(value))\"")
+    return keys
+end
+
+"""
+    partition_first(text, delimiter) -> (before, found, after)
+
+Split `text` at the first `delimiter`. `found` is `false` when there is none, in
+which case `before` is all of `text`.
+"""
+function partition_first(text::AbstractString, delimiter::Char)
+    at = findfirst(delimiter, text)
+    at === nothing && return (String(text), false, "")
+    return (String(text[1:(at - 1)]), true, String(text[(at + 1):end]))
+end
+
+"""
+    _pyo3_alias_toml(dependency) -> Vector{String}
+
+The `[dependencies.rustcall_pyo3]` table naming the *same* pyo3 package the
+target crate resolved (`_resolved_pyo3_dependency`).
+
+A registry package is pinned by exact version, a path dependency by its
+directory, and a git dependency by the commit Cargo resolved — the fragment of
+`git+<url>#<sha>` — so the alias cannot drift to another checkout of the same
+branch.
+"""
+function _pyo3_alias_toml(dependency)
+    lines = ["", "[dependencies.rustcall_pyo3]", "package = \"pyo3\""]
+    source = dependency.source
+    if startswith(source, "git+")
+        append!(lines, _git_dependency_keys(source))
+    elseif isempty(source)
+        # A path dependency: name the directory Cargo resolved, so the alias is
+        # the very same package rather than a registry release that happens to
+        # share its version.
+        push!(lines, "path = \"$(escape_toml_string(dependency.dir))\"")
+    elseif source in CRATES_IO_SOURCES
+        push!(lines, "version = \"=$(dependency.version)\"")
+    else
+        # A registry that is not crates.io. A bare `version` would select
+        # crates.io and hand the wrapper a *different* pyo3 — the very failure
+        # this function exists to prevent — and the alternative, `registry =
+        # "<name>"`, needs a name from the user's Cargo configuration that
+        # nothing in the metadata gives us. Refuse rather than silently build
+        # against the wrong package (#370, #392 review).
+        throw(RustError(
+            "the target crate resolves pyo3 $(dependency.version) from $(source), " *
+            "and RustCall cannot name that registry in the generated wrapper: a " *
+            "plain version requirement would select crates.io and put a second " *
+            "pyo3 in the build, whose `Python` and traits would not match the " *
+            "types in your crate's macro metadata.\n" *
+            "Depend on pyo3 from crates.io, or by `path` or `git`, for the items " *
+            "that need RustCall's dispatcher (a defaulted callable, or a " *
+            "`#[pyclass(extends = ...)]`)."))
+    end
+    append!(lines, ["default-features = false", "features = [\"macros\"]"])
+    return lines
 end
 
 # ----------------------------------------------------------------------------
@@ -2002,7 +2280,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             lib_root, tree_files = _crate_scan_inputs(String(crate_path), cargo_toml, source_files)
             cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
             source = wrap_crate(tree_files;
-                                crate_name = crate_rust_identifier(info.name, cargo_toml),
+                                crate_name = first(wrapper_target_identifier(info.name, cargo_toml)),
                                 cfg = cfg, cfg_text = cfg_text,
                                 crate_root = lib_root,
                                 edition = _crate_rust_edition(crate_path, cargo_toml),
