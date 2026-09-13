@@ -1066,6 +1066,145 @@ function specialize_generic_group(source::String, specs)
 end
 
 # ----------------------------------------------------------------------------
+# Persisting a specialization beside its compiled library (#254)
+# ----------------------------------------------------------------------------
+
+"""
+    SPECIALIZATION_RECORD_SCHEMA
+
+Version of the sidecar record `save_specialization_record` writes next to a
+cached monomorphization (`<artifact key>.spec.toml` in `get_metadata_dir()`).
+
+A record older or newer than this reads as *no record at all*, so the only
+consequence of a format change is that the extractor and `rustc` run once more.
+Bump it whenever the meaning of a field changes.
+"""
+const SPECIALIZATION_RECORD_SCHEMA = 1
+
+"""
+    SpecializationRecord
+
+What an earlier session learned about one compiled monomorphization artifact:
+the cache key of the **library** that holds it (not necessarily the key the
+record itself is filed under — a batched build files several records against one
+library) and, per member, the registered generic name and the
+`SpecializedFunction` the extractor produced for it.
+
+`SpecializedFunction.source` is *not* persisted: the record exists precisely so
+that the source never has to be produced again. It reads back as `""`.
+"""
+struct SpecializationRecord
+    library_key::String
+    members::Vector{Pair{String, SpecializedFunction}}
+end
+
+_specialization_record_path(cache_key::AbstractString) =
+    joinpath(get_metadata_dir(), "$(cache_key).spec.toml")
+
+"""
+    save_specialization_record(cache_key, record)
+
+Write `record` for `cache_key` atomically (temp file plus rename), so a reader
+never sees a half-written record. Called under `CACHE_LOCK`, like every other
+cache write.
+"""
+function save_specialization_record(cache_key::AbstractString, record::SpecializationRecord)
+    lock(CACHE_LOCK) do
+        path = _specialization_record_path(cache_key)
+        doc = Dict{String, Any}(
+            "schema_version" => SPECIALIZATION_RECORD_SCHEMA,
+            "library_key" => String(record.library_key),
+            "functions" => [Dict{String, Any}(
+                "member" => member,
+                "name" => fn.name,
+                "symbol" => fn.symbol,
+                "ffi_name" => fn.ffi_name,
+                "return_type" => fn.return_type,
+                "arg_types" => fn.arg_types,
+                "arg_abis" => fn.arg_abis,
+                "has_owned_string_helper" => fn.has_owned_string_helper,
+                "has_borrowed_string_helper" => fn.has_borrowed_string_helper,
+            ) for (member, fn) in record.members],
+        )
+        tmp = path * ".tmp"
+        open(io -> TOML.print(io, doc), tmp, "w")
+        mv(tmp, path, force = true)
+        return path
+    end
+end
+
+"""
+    load_specialization_record(cache_key) -> Union{SpecializationRecord, Nothing}
+
+The record filed under `cache_key`, or `nothing` when there is none, it is
+unreadable, or it was written by another format version. Never throws: a
+damaged record is a cache miss, and a cache miss only costs a rebuild.
+
+"Damaged" includes a file that parses as TOML but says something a record
+cannot mean — `arg_types = [1]`, a string where a list belongs. Every field is
+checked for its type rather than converted and hoped for, because the callers
+in `src/generics.jl` treat this as a lookup: a throw here would abort a
+monomorphization that the cache exists only to *speed up* (#254 review).
+"""
+function load_specialization_record(cache_key::AbstractString)
+    path = _specialization_record_path(cache_key)
+    isfile(path) || return nothing
+    doc = try
+        TOML.parsefile(path)
+    catch e
+        @debug "Ignoring an unreadable specialization record" path exception = e
+        return nothing
+    end
+    get(doc, "schema_version", nothing) == SPECIALIZATION_RECORD_SCHEMA || return nothing
+    library_key = get(doc, "library_key", nothing)
+    library_key isa AbstractString || return nothing
+    entries = get(doc, "functions", nothing)
+    entries isa AbstractVector && !isempty(entries) || return nothing
+    members = Pair{String, SpecializedFunction}[]
+    for entry in entries
+        entry isa AbstractDict || return nothing
+        member = _record_string(entry, "member")
+        member === nothing && return nothing
+        symbol = _record_string(entry, "symbol")
+        (symbol === nothing || isempty(symbol)) && return nothing
+        name = _record_string(entry, "name", "")
+        return_type = _record_string(entry, "return_type", "")
+        ffi_name = _record_string(entry, "ffi_name", "")
+        (name === nothing || return_type === nothing || ffi_name === nothing) && return nothing
+        arg_types = _record_strings(entry, "arg_types")
+        arg_abis = _record_strings(entry, "arg_abis")
+        (arg_types === nothing || arg_abis === nothing) && return nothing
+        length(arg_types) == length(arg_abis) || return nothing
+        owned = get(entry, "has_owned_string_helper", false)
+        borrowed = get(entry, "has_borrowed_string_helper", false)
+        (owned isa Bool && borrowed isa Bool) || return nothing
+        push!(members, member => SpecializedFunction(
+            "", name, symbol, arg_types, return_type, arg_abis, owned, borrowed, ffi_name))
+    end
+    return SpecializationRecord(String(library_key), members)
+end
+
+# A record field that must be a string, or `nothing` when it is anything else.
+# `default` is returned for an absent key; pass none to require the key.
+function _record_string(entry::AbstractDict, key::AbstractString,
+                        default::Union{String, Nothing} = nothing)
+    value = get(entry, key, nothing)
+    value === nothing && return default
+    value isa AbstractString || return nothing
+    return String(value)
+end
+
+# ...and a field that must be a list of strings. An absent key is an empty list;
+# a list with one non-string element is a damaged record, not an empty one.
+function _record_strings(entry::AbstractDict, key::AbstractString)
+    value = get(entry, key, nothing)
+    value === nothing && return String[]
+    value isa AbstractVector || return nothing
+    all(v -> v isa AbstractString, value) || return nothing
+    return String[String(v) for v in value]
+end
+
+# ----------------------------------------------------------------------------
 # Conversion to the emitter-facing types
 # ----------------------------------------------------------------------------
 

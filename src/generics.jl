@@ -128,6 +128,161 @@ function _compile_generic_source(source::String, compiler::RustCompiler, context
 end
 
 """
+    _cached_generic_artifact(cache_key, member) -> Union{Nothing, NamedTuple}
+
+The record and the verified cached library an earlier session left for
+`cache_key`, or `nothing` when there is none that covers `member` (#254).
+
+Both halves are required. The library is verified against its checksum by
+`load_cached_library`; a record with no library, a library with no record, an
+unreadable record, a record of another format version and a record that does
+not carry `member` all read as a miss, and a miss only costs the rebuild that
+used to happen unconditionally.
+
+`artifact_key` decides identity, and it folds in the toolchain fingerprint —
+the extractor digest and the `rustcall_core` sources — so a cached library can
+never have been emitted by a different symbol scheme than the record describes.
+
+This is the **probe**: it materializes nothing, so asking whether an
+instantiation is already cached costs a TOML parse and a checksum, not a copy
+of the library. `_restore_generic_artifact` is the half that produces a file to
+open.
+"""
+function _cached_generic_artifact(cache_key::String, member::AbstractString)
+    record = load_specialization_record(cache_key)
+    record === nothing && return nothing
+    # Checked before the checksum: a record that does not describe the member
+    # being asked for is a miss whatever its library turns out to be.
+    any(p -> first(p) == member, record.members) || return nothing
+    get_cached_library(record.library_key) === nothing && return nothing
+    cached = try
+        load_cached_library(record.library_key)
+    catch e
+        @debug "Ignoring a cached monomorphization that failed verification" cache_key exception = e
+        return nothing
+    end
+    return (; record, cached)
+end
+
+"""
+    _restore_generic_artifact(cache_key, member) -> Union{Nothing, NamedTuple}
+
+The file to open and the specialization metadata for an artifact an earlier
+session already produced for `cache_key`, or `nothing` when
+`_cached_generic_artifact` finds none covering `member`.
+
+# Which file is opened, and why it matters
+
+`load_artifact!` gives the same *path* the same handle and the same liveness
+flag ("one image, one flag"), so the file a restore opens decides whether two
+instantiations share an image — and whether rebuilding after an unload gets a
+fresh one.
+
+- An artifact **private to one instantiation** (`library_key == cache_key`) is
+  opened from a **private copy**, exactly as a freshly compiled one is opened
+  from its own build directory. Retiring an instantiation and asking for it
+  again therefore still produces a *new* image with its own statics and its own
+  liveness flag, which is what `test/test_generic_struct.jl` asserts for #291.
+  Reading the cache must not change that; it only removes the compile.
+- A **batch** (`library_key != cache_key`, written by `_batch_monomorphize`) is
+  opened from **one** copy shared by the whole batch — `_shared_batch_copy`.
+  Several instantiations naming one library is what a batch *is*, so they must
+  share one mapped image, in the session that built it and in every later one;
+  one path per batch is what gives them one.
+
+Nothing is ever mapped from the cache directory itself. The cache is a
+**mutable** store: a concurrent publisher of the same batch calls
+`save_cached_library(..., force = true)` on exactly that path, `clear_cache()`
+removes it, and on Windows the replacement fails outright while something has
+it open. A copy is also what the freshly-built path has always done, and
+`src/loadpolicy.jl` records why (#253 review of #254).
+"""
+function _restore_generic_artifact(cache_key::String, member::AbstractString)
+    found = _cached_generic_artifact(cache_key, member)
+    found === nothing && return nothing
+    try
+        return (; members = found.record.members,
+                 lib_path = found.record.library_key == cache_key ?
+                            _private_artifact_copy(found.cached) :
+                            _shared_batch_copy(found.record.library_key, found.cached))
+    catch e
+        @debug "Could not copy a restored monomorphization" cache_key exception = e
+        return nothing
+    end
+end
+
+# A copy nothing else will ever open: a fresh image, its own statics, its own
+# liveness flag, exactly as a build of this instantiation would have produced.
+function _private_artifact_copy(cached::String)
+    private = joinpath(mktempdir(), basename(cached))
+    cp(cached, private)
+    return private
+end
+
+"""
+    _BATCH_LIBRARY_COPIES
+
+`library_key` → the one path this process opens that batch from.
+
+A batch library holds several instantiations, and `load_artifact!` keys the
+handle and the liveness flag on the **path**, so every member has to name the
+same file or the batch stops being one image. That file cannot be the cached
+one (see `_restore_generic_artifact`), so it is a copy — made once, remembered
+here, and used by every member for the life of the process.
+"""
+const _BATCH_LIBRARY_COPIES = _state_view(:batch_library_copies, Dict{String, String}())
+
+function _shared_batch_copy(library_key::String, cached::String)
+    existing = get(_BATCH_LIBRARY_COPIES, library_key, nothing)
+    existing === nothing || return existing
+    # Copied outside STATE — it is file I/O — and published only if no other
+    # task has already supplied this key. Whoever is recorded wins, so every
+    # member of the batch opens one path and therefore one image; a loser's
+    # copy is an unused temporary file.
+    private = _private_artifact_copy(cached)
+    return get!(_BATCH_LIBRARY_COPIES, library_key, private)
+end
+
+"""
+    _cache_generic_library(library_key, lib_path, source, members, compiler)
+        -> Union{String, Nothing}
+
+Publish a freshly built monomorphization library under `library_key` and return
+the path inside the cache, or `nothing` when it could not be published.
+
+Publishing is best-effort and never changes what the caller *loads*: a build
+opens the file it just produced, as it always has. Only a later restore reads
+the cache (`_restore_generic_artifact`).
+"""
+function _cache_generic_library(library_key::String, lib_path::String, source::String,
+                                members, compiler::RustCompiler)
+    try
+        metadata = CacheMetadata(
+            library_key,
+            stable_content_hash(source),
+            "$(compiler.optimization_level)_$(compiler.emit_debug_info)",
+            compiler.target_triple,
+            now(),
+            String[fn.symbol for (_, fn) in members],
+        )
+        return save_cached_library(library_key, lib_path, metadata)
+    catch e
+        @warn "Failed to save a monomorphized library to the cache: $e"
+        return nothing
+    end
+end
+
+# Best-effort: a record that cannot be written costs a rebuild next session.
+function _record_generic_specialization(cache_key::String, library_key::String, members)
+    try
+        save_specialization_record(cache_key, SpecializationRecord(library_key, members))
+    catch e
+        @warn "Failed to record a monomorphization in the cache: $e"
+    end
+    return nothing
+end
+
+"""
     GenericFunctionInfo
 
 Information about a generic Rust function that needs monomorphization.
@@ -395,17 +550,32 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
         type_suffix = join([_rust_type_suffix(t) for (_, t) in id.type_params], "_")
         specialized_name = "$(func_name)_$(type_suffix)_$(artifact_short_id(cache_key, 8))"
 
-        # Instantiate through the extractor: the specialized function is added to
-        # the registered source (context + generic code) with the concrete types
-        # substituted at the AST level and exported as `#[no_mangle] extern "C"`.
-        bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(type_params[p])
-                                        for p in generic_info.type_params]
-        full_source = isempty(generic_info.context) ? generic_info.code :
-                      generic_info.context * "\n" * generic_info.code
-        specialized = specialize_generic(full_source, generic_info.path, bindings, specialized_name)
-        specialized_code = specialized.source
-
-        lib_path = _compile_generic_source(specialized_code, compiler, generic_info.cargo)
+        # An instantiation an earlier session already built is reused whole
+        # (#254): the record beside the cached library carries everything the
+        # extractor said about it, so neither the extractor nor `rustc` runs.
+        restored = _restore_generic_artifact(cache_key, func_name)
+        if restored === nothing
+            # Instantiate through the extractor: the specialized function is added
+            # to the registered source (context + generic code) with the concrete
+            # types substituted at the AST level and exported as
+            # `#[no_mangle] extern "C"`.
+            bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(type_params[p])
+                                            for p in generic_info.type_params]
+            full_source = isempty(generic_info.context) ? generic_info.code :
+                          generic_info.context * "\n" * generic_info.code
+            specialized = specialize_generic(full_source, generic_info.path, bindings,
+                                             specialized_name)
+            lib_path = _compile_generic_source(specialized.source, compiler, generic_info.cargo)
+            members = Pair{String, SpecializedFunction}[func_name => specialized]
+            if _cache_generic_library(cache_key, lib_path, specialized.source,
+                                      members, compiler) !== nothing
+                _record_generic_specialization(cache_key, cache_key, members)
+            end
+        else
+            hit = findfirst(p -> first(p) == func_name, restored.members)
+            specialized = last(restored.members[hit])
+            lib_path = restored.lib_path
+        end
 
         # Load and register the instantiation under its artifact identity.
         # `basename(lib_path)` used to be the key, but `_unique_source_name`
@@ -429,12 +599,11 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
 
         func_ptr = Libdl.dlsym(artifact.handle, specialized_symbol; throw_error=false)
         if func_ptr === nothing || func_ptr == C_NULL
-            error("""
-            Function '$(specialized_symbol)' not found in library '$lib_path'.
-
-            Specialized code was:
-            $specialized_code
-            """)
+            # A restored artifact has no source to show: it was not generated
+            # in this session, which is the point of restoring it (#254).
+            detail = isempty(specialized.source) ? "" :
+                     "\n\nSpecialized code was:\n$(specialized.source)"
+            error("Function '$(specialized_symbol)' not found in library '$lib_path'." * detail)
         end
 
         # Return and argument types come from the manifest of the specialized
@@ -545,49 +714,72 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             isempty(info.blocked) || throw(RustError(info.blocked))
         end
 
-        type_suffix = join([_rust_type_suffix(t) for (_, t) in group_id.type_params], "_")
-        specs = NamedTuple[]
-        for info in members
-            member_params = params_for(info)
-            bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(member_params[p])
-                                            for p in info.type_params]
-            push!(specs, (fn = info.path, bindings = bindings,
-                          new_name = "$(info.name)_$(type_suffix)_$(artifact_short_id(group_key, 8))"))
-        end
-        full_source = isempty(first_info.context) ? first_info.code :
-                      first_info.context * "\n" * first_info.code
-        specialized = specialize_generic_group(full_source, specs)
-        if !_generic_group_typechecks(specialized.source, compiler, first_info.cargo)
-            # Rust decides applicability. A concrete type can satisfy the
-            # constructor's bounds without satisfying every method's bounds.
-            # Keep all applicable wrappers together, including allocation and
-            # destruction, and report an invalid member only when requested.
-            applicable = Int[]
-            for i in eachindex(specs)
-                candidate = specialize_generic_group(full_source, [specs[i]])
-                if _generic_group_typechecks(candidate.source, compiler, first_info.cargo)
-                    push!(applicable, i)
-                elseif members[i].name == func_name
-                    # Use the normal compiler diagnostics for the requested
-                    # invalid specialization; this build is expected to fail.
-                    _compile_generic_source(candidate.source, compiler, first_info.cargo)
-                    error("Specialization applicability probe disagreed with compilation")
-                end
+        # An instantiation of this group that an earlier session already built is
+        # reused whole (#254). The record lists the members that build settled
+        # on, so the applicability filter below — which costs one `rustc
+        # --emit=metadata` per probe — is replayed rather than recomputed. A
+        # record that does not cover the member being asked for is a miss: the
+        # rebuild recomputes applicability and reports an inapplicable member
+        # with the compiler's own diagnostics, exactly as before.
+        restored = _restore_generic_artifact(group_key, func_name)
+        if restored === nothing
+            type_suffix = join([_rust_type_suffix(t) for (_, t) in group_id.type_params], "_")
+            specs = NamedTuple[]
+            for info in members
+                member_params = params_for(info)
+                bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(member_params[p])
+                                                for p in info.type_params]
+                push!(specs, (fn = info.path, bindings = bindings,
+                              new_name = "$(info.name)_$(type_suffix)_$(artifact_short_id(group_key, 8))"))
             end
-            members = members[applicable]
-            specs = specs[applicable]
+            full_source = isempty(first_info.context) ? first_info.code :
+                          first_info.context * "\n" * first_info.code
             specialized = specialize_generic_group(full_source, specs)
+            if !_generic_group_typechecks(specialized.source, compiler, first_info.cargo)
+                # Rust decides applicability. A concrete type can satisfy the
+                # constructor's bounds without satisfying every method's bounds.
+                # Keep all applicable wrappers together, including allocation and
+                # destruction, and report an invalid member only when requested.
+                applicable = Int[]
+                for i in eachindex(specs)
+                    candidate = specialize_generic_group(full_source, [specs[i]])
+                    if _generic_group_typechecks(candidate.source, compiler, first_info.cargo)
+                        push!(applicable, i)
+                    elseif members[i].name == func_name
+                        # Use the normal compiler diagnostics for the requested
+                        # invalid specialization; this build is expected to fail.
+                        _compile_generic_source(candidate.source, compiler, first_info.cargo)
+                        error("Specialization applicability probe disagreed with compilation")
+                    end
+                end
+                members = members[applicable]
+                specs = specs[applicable]
+                specialized = specialize_generic_group(full_source, specs)
+            end
+            lib_path = _compile_generic_source(specialized.source, compiler, first_info.cargo)
+            specialized_functions = specialized.functions
+            recorded = Pair{String, SpecializedFunction}[info.name => sp
+                                                         for (info, sp) in zip(members, specialized_functions)]
+            if _cache_generic_library(group_key, lib_path, specialized.source,
+                                      recorded, compiler) !== nothing
+                _record_generic_specialization(group_key, group_key, recorded)
+            end
+        else
+            by_name = Dict{String, SpecializedFunction}(first(p) => last(p)
+                                                        for p in restored.members)
+            members = filter(info -> haskey(by_name, info.name), members)
+            specialized_functions = SpecializedFunction[by_name[info.name] for info in members]
+            lib_path = restored.lib_path
         end
-        lib_path = _compile_generic_source(specialized.source, compiler, first_info.cargo)
         lib_name = "rust_generic_struct_$(artifact_short_id(group_key))"
-        eager = [s.symbol for s in specialized.functions]
+        eager = [s.symbol for s in specialized_functions]
         artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager,
                                   snapshot_env = first_info.cargo === nothing ? nothing :
                                                  _cargo_build_env(first_info.cargo.env))
 
         compiled = Dict{String, FunctionInfo}()
         named_members = Dict{String, FunctionInfo}()
-        for (info, sp) in zip(members, specialized.functions)
+        for (info, sp) in zip(members, specialized_functions)
             func_ptr = Libdl.dlsym(artifact.handle, sp.symbol; throw_error = false)
             (func_ptr === nothing || func_ptr == C_NULL) &&
                 error("Function '$(sp.symbol)' not found in library '$lib_path'")
@@ -639,6 +831,203 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
         end
     end
+end
+
+"""
+    _generic_binding(generic_info, instantiation) -> Dict{Symbol, Type}
+
+One instantiation of `precompile_generics`, normalized to the parameter map
+`monomorphize_function` takes. A bare `Type` binds a single-parameter generic, a
+`Tuple` of types binds the parameters in **declaration order**, and a mapping —
+a `Dict`, a single `param => type` pair, or any collection of them — binds them
+by name.
+
+Every spelling is checked against the declared parameters before it is used: a
+map that leaves one unbound or names one that does not exist is an
+`ArgumentError` here, rather than a specialization the extractor is asked to
+produce for a parameter the generic does not have.
+"""
+function _generic_binding(generic_info, instantiation)
+    params = generic_info.type_params
+    if instantiation isa Type
+        length(params) == 1 || throw(ArgumentError(
+            "'$(generic_info.name)' has $(length(params)) type parameters; " *
+            "pass a tuple of $(length(params)) types, not a single type"))
+        return Dict{Symbol, Type}(only(params) => instantiation)
+    elseif instantiation isa Tuple && !isempty(instantiation) && all(p -> p isa Pair, instantiation)
+        # `(:T => Int32, :U => Int64)` reads as a mapping, not as two positional
+        # types: a `Pair` is not a type, so the positional branch below could
+        # only reject it.
+        return _generic_binding_map(generic_info, instantiation)
+    elseif instantiation isa Tuple
+        length(instantiation) == length(params) || throw(ArgumentError(
+            "'$(generic_info.name)' has $(length(params)) type parameters but " *
+            "$(length(instantiation)) types were given"))
+        all(t -> t isa Type, instantiation) ||
+            throw(ArgumentError("a generic instantiation must be given as types"))
+        return Dict{Symbol, Type}(p => instantiation[i] for (i, p) in enumerate(params))
+    elseif instantiation isa AbstractDict || instantiation isa Pair ||
+           instantiation isa AbstractVector{<:Pair}
+        return _generic_binding_map(generic_info, instantiation)
+    end
+    throw(ArgumentError("cannot read $(repr(instantiation)) as a generic instantiation; " *
+                        "pass a type, a tuple of types, or a parameter mapping"))
+end
+
+# The mapping spellings, all reduced to `param => type` pairs. Values are
+# checked to be types here, so a wrong one names itself instead of failing as a
+# `convert` deep inside the `Dict` constructor.
+function _generic_binding_map(generic_info, mapping)
+    params = generic_info.type_params
+    pairs = mapping isa Pair ? (mapping,) : mapping
+    bound = Dict{Symbol, Type}()
+    for (k, v) in pairs
+        name = Symbol(k)
+        v isa Type || throw(ArgumentError(
+            "instantiation of '$(generic_info.name)' binds $(name) to " *
+            "$(repr(v)), which is not a type"))
+        name in params || throw(ArgumentError(
+            "'$(generic_info.name)' has no type parameter $(name); it declares " *
+            "$(join(string.(params), ", "))"))
+        bound[name] = v
+    end
+    missing_params = [p for p in params if !haskey(bound, p)]
+    isempty(missing_params) || throw(ArgumentError(
+        "instantiation of '$(generic_info.name)' does not bind " *
+        "$(join(string.(missing_params), ", "))"))
+    return bound
+end
+
+"""
+    precompile_generics(func_name, instantiations...) -> Vector{FunctionInfo}
+
+Instantiate the registered generic function `func_name` at every listed set of
+concrete types, compiling all of the instantiations that are still missing into
+**one** shared library with **one** `rustc` (or Cargo) invocation, and persist
+them so that later sessions need none at all (#254).
+
+Each instantiation is a type (for a single-parameter generic), a tuple of types
+in declaration order, or a `param => type` mapping:
+
+```julia
+RustCall.precompile_generics("identity", Int32, Int64, Float64)
+RustCall.precompile_generics("pair", (Int32, Int64), (Int64, Int32))
+```
+
+Instantiations this session already holds, and those an earlier session left in
+the cache, are not rebuilt — so a second call, or a second session, compiles
+nothing. Lazily instantiating a batched type later in the *same* session, or in
+any later one, finds the batch library and opens exactly that one image, rather
+than one image per type.
+
+A generic **struct** group is left alone: every wrapper of one instantiation of
+a group already shares a single cdylib, and its members must stay together for
+allocation and destruction to share an allocator (#291). Instantiations of a
+group are therefore built one at a time, through the ordinary path.
+
+Returns the `FunctionInfo` of each requested instantiation, in the order given.
+"""
+function precompile_generics(func_name::AbstractString, instantiations...)
+    name = String(func_name)
+    registered = lock(REGISTRY_LOCK) do
+        get(GENERIC_FUNCTION_REGISTRY, name, nothing)
+    end
+    registered === nothing && error("Function '$name' is not registered as a generic function")
+    bindings = Dict{Symbol, Type}[_generic_binding(registered, inst) for inst in instantiations]
+    isempty(bindings) && return FunctionInfo[]
+    registered.group === nothing &&
+        _batch_monomorphize(registered, name, bindings)
+    return FunctionInfo[monomorphize_function(name, b) for b in bindings]
+end
+
+# Compile every instantiation in `bindings` that is neither in memory nor in the
+# cache into one library. Best-effort by design: whatever it leaves undone, the
+# `monomorphize_function` calls that follow do one at a time.
+function _batch_monomorphize(generic_info, func_name::String,
+                             bindings::Vector{Dict{Symbol, Type}})
+    isempty(generic_info.blocked) || throw(RustError(generic_info.blocked))
+    compiler = something(generic_info.compiler, get_default_compiler())
+    todo = NamedTuple[]
+    seen = Set{String}()
+    for params in bindings
+        id = _monomorphization_id(generic_info, func_name, params, compiler)
+        key = artifact_key(id)
+        key in seen && continue
+        push!(seen, key)
+        haskey(MONOMORPHIZED_FUNCTIONS, key) && continue
+        # The probe, not the restore: this only asks whether the instantiation
+        # is already cached, and materializing a private copy of every cached
+        # library just to answer that would copy a dylib per skipped type.
+        _cached_generic_artifact(key, func_name) === nothing || continue
+        push!(todo, (; key, id, params))
+    end
+    length(todo) < 2 && return nothing  # nothing to gain from a batch of one
+    # Canonical order, so that the same set of instantiations is the same batch
+    # whatever order the caller listed them in.
+    sort!(todo; by = entry -> entry.key)
+
+    full_source = isempty(generic_info.context) ? generic_info.code :
+                  generic_info.context * "\n" * generic_info.code
+    specs = NamedTuple[]
+    for entry in todo
+        # Exactly the name and bindings `monomorphize_function` would produce
+        # for this instantiation on its own: `id.type_params` carries the Julia
+        # type names (the readable suffix), the bindings the Rust spellings.
+        suffix = join([_rust_type_suffix(t) for (_, t) in entry.id.type_params], "_")
+        push!(specs, (fn = generic_info.path,
+                      bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(entry.params[p])
+                                                      for p in generic_info.type_params],
+                      new_name = "$(func_name)_$(suffix)_$(artifact_short_id(entry.key, 8))"))
+    end
+    specialized = specialize_generic_group(full_source, specs)
+    built = try
+        _compile_generic_source(specialized.source, compiler, generic_info.cargo)
+    catch err
+        # One inapplicable type poisons the whole batch. Fall back to building
+        # the instantiations one at a time, where the caller gets the
+        # compiler's diagnostics for the type that is actually at fault.
+        (err isa CompilationError || err isa CargoBuildError) || rethrow()
+        @debug "Batched monomorphization failed; falling back to one build per type" exception = err
+        return nothing
+    end
+
+    # The batch library is one artifact of its own, and its identity is exactly
+    # the set of instantiations it holds — each of which is already a full
+    # artifact key. Only what was actually built is named: a request that
+    # skipped some cached instantiation must not claim the identity of a
+    # library that contains it.
+    batch_id = ArtifactId(;
+        kind = "monomorphization_batch",
+        source = full_source,
+        target_triple = compiler.target_triple,
+        codegen = artifact_codegen_options(compiler),
+        _generic_cargo_identity(generic_info.cargo)...,
+        extra = Pair{String, String}[["function" => func_name];
+                                     ["member" => entry.key for entry in todo]],
+    )
+    batch_key = artifact_key(batch_id)
+    # Pair each instantiation with its wrapper **by the name it asked for**, not
+    # by position in the manifest: recording one instantiation's key against
+    # another's symbol would call the wrong machine code, silently (#247 is what
+    # that costs).
+    by_name = Dict{String, SpecializedFunction}(sp.name => sp for sp in specialized.functions)
+    paired = Pair{String, SpecializedFunction}[]
+    for (entry, spec) in zip(todo, specs)
+        sp = get(by_name, spec.new_name, nothing)
+        sp === nothing && return nothing
+        push!(paired, entry.key => sp)
+    end
+    members = Pair{String, SpecializedFunction}[func_name => sp for (_, sp) in paired]
+    _cache_generic_library(batch_key, built, specialized.source, members, compiler) === nothing &&
+        return nothing
+    # Each instantiation gets its own record, all naming the one library. A
+    # later lazy `monomorphize_function` at any of these types therefore opens
+    # that library — one path, so one image and one liveness flag.
+    for (key, sp) in paired
+        _record_generic_specialization(key, batch_key,
+                                       Pair{String, SpecializedFunction}[func_name => sp])
+    end
+    return nothing
 end
 
 # Direct rustc checks only metadata. Cargo-backed checks reuse the normal
