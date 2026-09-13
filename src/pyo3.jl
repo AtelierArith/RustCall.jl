@@ -2028,7 +2028,22 @@ function _resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPla
         # `[target.'cfg(...)'.dependencies]` edge survives exactly when it is
         # live. Deciding that here would mean evaluating `cfg` predicates in
         # Julia; Cargo already knows.
-        parse_json(read(`$(cargo()) metadata --format-version=1 --manifest-path $manifest --filter-platform $(get_default_target()) $(plan.feature_flags)`, String))
+        #
+        # Run it **from the crate**, like the cfg probe and the wrapper build.
+        # Cargo discovers `.cargo/config.toml` by walking up from its working
+        # directory, and `--manifest-path` does not move that root: a crate
+        # whose config names a private registry, replaces a source, or carries
+        # credentials would otherwise be resolved from wherever Julia happens to
+        # have been started — failing, or naming a different source than the
+        # build will use, and either way caught below as "no pyo3" and turned
+        # into a refusal of every dispatcher-using wrapper (#392 review).
+        #
+        # The environment is the process's, as before. Nothing the probe adds to
+        # it (`CARGO_TARGET_DIR`, the panic profile, `PYO3_PYTHON`) takes part in
+        # resolving a dependency graph; the configuration that does is what the
+        # working directory reaches.
+        parse_json(read(setenv(`$(cargo()) metadata --format-version=1 --manifest-path $manifest --filter-platform $(get_default_target()) $(plan.feature_flags)`,
+                               ENV; dir = dirname(manifest)), String))
     catch e
         @debug "Could not resolve the target crate's pyo3 package" crate_path exception = e
         return empty_result

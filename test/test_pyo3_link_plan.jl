@@ -1078,6 +1078,68 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "pyo3 metadata runs in the crate's config scope (#392 review)" begin
+        # Cargo finds `.cargo/config.toml` by walking up from its *working
+        # directory*; `--manifest-path` does not move that root. The cfg probe
+        # and the wrapper build both run beneath the target crate so its
+        # configuration applies, and this resolution has to agree with them —
+        # otherwise a crate whose config replaces a source or names a private
+        # registry resolves differently here, or not at all, and is refused for
+        # having no identifiable pyo3.
+        #
+        # The marker is a source replacement pointing at a directory that does
+        # not exist: Cargo honours it only when it reads the config, so the call
+        # fails loudly from inside the crate and would quietly succeed from
+        # anywhere else.
+        root = mktempdir()
+        try
+            mkpath(joinpath(root, "src"))
+            mkpath(joinpath(root, ".cargo"))
+            write(joinpath(root, "Cargo.toml"), """
+            [package]
+            name = "pyo3_config_probe"
+            version = "0.1.0"
+            edition = "2021"
+
+            [dependencies]
+            pyo3 = { version = "0.26", default-features = false, features = ["macros"] }
+            """)
+            write(joinpath(root, "src", "lib.rs"), "")
+            write(joinpath(root, ".cargo", "config.toml"), """
+            [source.crates-io]
+            replace-with = "rustcall-test-missing"
+
+            [source.rustcall-test-missing]
+            directory = "$(RustCall.escape_toml_string(joinpath(root, "no-such-vendor")))"
+            """)
+            plan = RustCall.PyO3LinkPlan(:python_free, String[], "", "test")
+            # Read from inside the crate, the replacement applies and there is
+            # no vendor directory, so nothing resolves. That is the *positive*
+            # signal that the config was read at all.
+            @test isempty(RustCall._resolved_pyo3_dependency(root, plan).version)
+
+            # Control: the identical crate without the config resolves normally
+            # wherever a fresh pyo3 can be resolved at all. Skipped offline.
+            plainroot = mktempdir()
+            try
+                cp(joinpath(root, "Cargo.toml"), joinpath(plainroot, "Cargo.toml"))
+                mkpath(joinpath(plainroot, "src"))
+                write(joinpath(plainroot, "src", "lib.rs"), "")
+                control = RustCall._resolved_pyo3_dependency(plainroot, plan)
+                if isempty(control.version)
+                    @info "Skipping the config-scope control: no fresh pyo3 resolves here"
+                    @test_skip "needs a resolvable pyo3"
+                else
+                    @test startswith(control.version, "0.26")
+                end
+            finally
+                rm(plainroot; force = true, recursive = true)
+            end
+        finally
+            rm(root; force = true, recursive = true)
+        end
+    end
+
     @testset "a field accessor comes back when its taker is refused (#392 review)" begin
         # A symbol collision *erases* a field's accessors rather than leaving a
         # skip reason on them, so there is nothing to re-derive from when the
