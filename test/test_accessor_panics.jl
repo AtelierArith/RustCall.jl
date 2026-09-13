@@ -20,7 +20,10 @@ using Test
         Core.eval(scope, quote
             import RustCall: call_rust_function
             const library = $lib
-            function _call_target(name)
+            const cache = RustCall.CrateTargetCache()
+            # The emitters now pass the call site's snapshot cache first
+            # (#253); this fixture resolves afresh and ignores it.
+            function _call_target(::RustCall.CrateTargetCache, name)
                 target = RustCall.resolve_call_target(library, name)
                 (target.func_ptr, target.channel)
             end
@@ -29,8 +32,8 @@ using Test
         for flavour in (:inline, :ast, :source)
             if flavour !== :inline
                 body = flavour === :ast ?
-                    RustCall._crate_field_write(info, "text", "String", "TextSetter291_set_text", :ptr, :value) :
-                    Meta.parse(RustCall._crate_field_write_source(info, "text", "String", "TextSetter291_set_text", "ptr", "value"))
+                    RustCall._crate_field_write(info, "text", "String", "TextSetter291_set_text", :ptr, :value, :cache) :
+                    Meta.parse(RustCall._crate_field_write_source(info, "text", "String", "TextSetter291_set_text", "ptr", "value", :cache))
                 Core.eval(scope, :(function set_text(ptr, value); $body; end))
             end
             setter(value) = flavour === :inline ?
@@ -75,7 +78,7 @@ end
                 using RustCall
                 import RustCall: call_rust_function
                 const library = $lib
-                function _call_target(name, release = "")
+                function _call_target(::RustCall.CrateTargetCache, name, release = "")
                     # This fixture has only one String producer. The emitter
                     # still has to request and use a release pointer snapshot.
                     free = isempty(release) ? "" : "fail_text_free_rust_string"
@@ -91,14 +94,17 @@ end
                                          ("borrowed", "&str", "rustcall_fail_borrowed"),
                                          ("number", "i32", "rustcall_good_number"))
                 name = Symbol(symbol)
+                cache = Symbol("cache_", name)
+                Core.eval(scope, :(const $cache = RustCall.CrateTargetCache()))
                 body = flavour === :ast ?
-                    RustCall._crate_field_read(info, field, type, symbol, :ptr) :
-                    Meta.parse(RustCall._crate_field_read_source(info, field, type, symbol, "ptr"))
+                    RustCall._crate_field_read(info, field, type, symbol, :ptr, cache) :
+                    Meta.parse(RustCall._crate_field_read_source(info, field, type, symbol, "ptr", cache))
                 Core.eval(scope, :(function $name(ptr); $body; end))
             end
+            Core.eval(scope, :(const cache_set_number = RustCall.CrateTargetCache()))
             body = flavour === :ast ?
-                RustCall._crate_field_write(info, "number", "i32", "rustcall_fail_set", :ptr, :value) :
-                Meta.parse(RustCall._crate_field_write_source(info, "number", "i32", "rustcall_fail_set", "ptr", "value"))
+                RustCall._crate_field_write(info, "number", "i32", "rustcall_fail_set", :ptr, :value, :cache_set_number) :
+                Meta.parse(RustCall._crate_field_write_source(info, "number", "i32", "rustcall_fail_set", "ptr", "value", :cache_set_number))
             Core.eval(scope, :(function set_number(ptr, value); $body; end))
             storage = Ref{Int32}(42)
             GC.@preserve storage begin

@@ -1054,6 +1054,100 @@ end
 CrateGeneration() = CrateGeneration(C_NULL, Ref(false), 0)
 
 """
+    CachedCrateTarget
+
+One `@rust_crate` call site's remembered snapshot, with the two things that say
+whether it may still be used: the process that resolved it and the artifact
+epoch it was resolved at.
+
+`target` is whatever tuple the arm that produced it returns — a pointer and a
+channel, those plus a release function, plus a liveness flag, and so on. It is
+stored and handed back **whole**, never rebuilt from parts, so the generation
+rule of #277 is untouched: what is cached is one snapshot of one image.
+"""
+struct CachedCrateTarget
+    """The process that resolved this. See `SESSION_TOKEN`."""
+    token::SessionToken
+    """The artifact epoch it was resolved at."""
+    epoch::Int
+    """The arm's whole tuple, exactly as the call site will use it."""
+    target::Any
+end
+
+"""
+    CrateTargetCache()
+
+One call site's memory of the snapshot it last took out of a generated
+`@rust_crate` module (#253).
+
+# Why a named binding and not a spliced object
+
+The inline `rust\"\"\"` path (`CallTargetCache`, `src/ruststr.jl`) splices its
+cache straight into the expansion, so it needs no name. A `@rust_crate` module
+cannot do that: `write_bindings_to_file` emits the same module as **source
+text**, and an object has no source spelling. So each call site of a generated
+module declares its cache as a `const` of that module, which both flavours can
+write, and which `test/test_state.jl` accepts because a target cache is not a
+registry — it holds one immutable snapshot and is invalidated wholesale.
+
+# What makes an entry usable
+
+Exactly what makes a `CachedTarget` usable, and for exactly the same reasons:
+
+  * `ARTIFACT_EPOCH` must not have moved. Every write to the state container
+    bumps it (`_state_mutate_storage!`), and so does every publication to a
+    module's generation mirror, so a hot reload, an unload, an alias or a newly
+    memoized symbol all invalidate every kept snapshot.
+  * `SESSION_TOKEN` must be this process's. A generated module is routinely
+    precompiled into a package, and a wrapper called from a precompile workload
+    would otherwise serialise a populated cache — raw pointers included — into
+    the `.ji`, where a matching epoch in the next process would hand a dead
+    pointer to `ccall`.
+"""
+mutable struct CrateTargetCache
+    # One atomic field holding an immutable record: a reader sees either the
+    # whole previous answer or the whole new one, in one pointer load.
+    @atomic entry::Union{Nothing, CachedCrateTarget}
+    CrateTargetCache() = new(nothing)
+end
+
+"""
+    crate_target_hit(cache, T) -> Union{T, Nothing}
+
+`cache`'s snapshot if it is still current, `nothing` otherwise. The whole fast
+path of a generated `@rust_crate` call: one atomic load, an identity comparison
+and an integer comparison — no lock, and no symbol lookup.
+
+`T` is the tuple type the arm that owns this cache stores, asserted on the way
+out so the wrapper's `ccall` stays statically typed.
+"""
+@inline function crate_target_hit(cache::CrateTargetCache, ::Type{T}) where {T}
+    entry = @atomic :acquire cache.entry
+    entry === nothing && return nothing
+    # This process first: an entry deserialised from a precompiled module holds
+    # pointers of the process that wrote them, and the epoch alone would let one
+    # through whenever the two counters happened to agree.
+    entry.token === session_token() || return nothing
+    entry.epoch === artifact_epoch() || return nothing
+    return entry.target::T
+end
+
+"""
+    publish_crate_target!(cache, epoch, target) -> target
+
+Record `target` as `cache`'s answer for `epoch`.
+
+`epoch` must have been sampled **before** the snapshot was taken. A write
+landing in between then leaves the entry stamped with the older epoch and it is
+resolved again; sampling afterwards could stamp a pre-write snapshot as current
+and keep it for the life of the process.
+"""
+@inline function publish_crate_target!(cache::CrateTargetCache, epoch::Int, target::T) where {T}
+    @atomic :release cache.entry = CachedCrateTarget(session_token(), epoch, target)
+    return target
+end
+
+"""
     HANDLE_MIRRORS
 
 `lib_name` → the module-local copies of that library's handle and liveness flag
@@ -1103,6 +1197,7 @@ function register_handle_mirror!(lib_name::AbstractString,
             gen_ref[] = CrateGeneration(entry[1],
                                         get!(() -> Ref(true), ARTIFACT_ALIVE, name),
                                         get(ARTIFACT_GENERATIONS, name, 0))
+            _invalidate_kept_snapshots!()
         end
     end
     return nothing
@@ -1126,8 +1221,19 @@ function _update_handle_mirrors!(name::String, handle::Ptr{Cvoid},
     for gen_ref in get(HANDLE_MIRRORS, name, ())
         gen_ref[] = published
     end
+    _invalidate_kept_snapshots!()
     return nothing
 end
+
+# A mirror cell is state that a `CrateTargetCache` caches a read of, but it is
+# written by storing into a `Ref` rather than through `_state_mutate_storage!`,
+# so it is the one such write that does not bump the epoch on its own (#253).
+# Today every caller changes a registry row in the same transaction and the
+# epoch moves for that reason; saying it here as well means a kept snapshot
+# stays correct even if that stops being true. Bumped **after** the store, and
+# under `REGISTRY_LOCK` — a reader samples the epoch before it derefs the
+# mirror, which it can only do once this transaction has released the lock.
+@inline _invalidate_kept_snapshots!() = (Threads.atomic_add!(ARTIFACT_EPOCH, 1); nothing)
 
 # The library is gone: a mirror must say so rather than keep a handle that is
 # about to be closed. The *mirror* stays registered — a reload under the same
@@ -1137,6 +1243,7 @@ function _retire_handle_mirrors!(name::String)
     for gen_ref in get(HANDLE_MIRRORS, name, ())
         gen_ref[] = retired
     end
+    _invalidate_kept_snapshots!()
     return nothing
 end
 

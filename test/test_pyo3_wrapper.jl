@@ -157,7 +157,10 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                 try
                     @test Base.invokelatest(getfield, M, :_PIN_LIBRARY)
                     call_target = Base.invokelatest(getfield, M, :_call_target)
-                    dropped_ptr, _ = Base.invokelatest(call_target, "rustcall_dropped_filtered")
+                    # A cache of this probe's own: every call site of a
+                    # generated module now carries one (#253).
+                    dropped_ptr, _ = Base.invokelatest(call_target,
+                        RustCall.CrateTargetCache(), "rustcall_dropped_filtered")
                     before = ccall(dropped_ptr, Int32, ())
                     object = Base.invokelatest(Base.invokelatest(getfield, M, :FilteredOwned))
                     @test object.alive[]
@@ -566,9 +569,9 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             @test occursin("ok_value::RustCall.CRustString", code)
             @test occursin("struct CResult_Point_shifted <: FFIByValue", code)
             @test occursin("ok_value::Ptr{Cvoid}", code)
-            @test occursin("_ctor_target(\"rustcall_Point_shifted\"", code)
+            @test occursin("_ctor_target(_TC_m_rustcall_Point_shifted, \"rustcall_Point_shifted\"", code)
             @test occursin("function Fallible(value)", code)
-            @test occursin("_ctor_target(\"rustcall_Fallible_new\"", code)
+            @test occursin("_ctor_target(_TC_m_rustcall_Fallible_new, \"rustcall_Fallible_new\"", code)
 
             expr = RustCall.emit_crate_module(wrapped, "/nonexistent/lib.so";
                                               lib_name = "rust_crate_byvalue_probe")
@@ -580,6 +583,14 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             @test occursin("CResult_Point_shifted <: FFIByValue", text)
             @test occursin("CResult_Fallible_new <: FFIByValue", text)
             @test occursin("_ctor_target", text)
+
+            # The `PyResult` emitters are two more call-site emitters, so they
+            # carry the same obligation: no target helper is ever reached with a
+            # bare symbol, it always gets the call site's snapshot cache (#253).
+            for rendered in (code, text), helper in ("_call_target", "_vec_target",
+                                                     "_ctor_target", "_struct_generation")
+                @test !occursin("$helper(\"", rendered)
+            end
         end
     end
 

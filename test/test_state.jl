@@ -479,9 +479,19 @@ end
 # Inspect values rather than constructor spellings: a registry returned by a
 # factory must be caught too. Compiler-generated documentation metadata is not
 # application state; immutable lookup tables and StateViews are safe to share.
+#
+# A `CrateTargetCache` is exempt for the same reason a `StateView` is: it is not
+# state, it is one call site's memory of a snapshot STATE already published
+# (#253). It holds one immutable record, is replaced wholesale, and is discarded
+# the moment `ARTIFACT_EPOCH` or `SESSION_TOKEN` says it is no longer this
+# process's current answer — so nothing reads a value out of it that STATE does
+# not still agree with. Without the exemption the *populated* form of a
+# constructor's cache would be flagged, because the snapshot it keeps contains
+# the image's liveness `Ref{Bool}`.
 function _contains_mutable_registry(value, seen = IdSet{Any}())
     value === RustCall.STATE && return false
-    value isa Union{Type, Module, ReentrantLock, RustCall.StateView} && return false
+    value isa Union{Type, Module, ReentrantLock, RustCall.StateView,
+                    RustCall.CrateTargetCache} && return false
     isbitstype(typeof(value)) && return false
     if value isa Union{AbstractDict, AbstractSet, Ref, AbstractArray} &&
        !(value isa Base.ImmutableDict)
@@ -568,6 +578,13 @@ end
 
 @testset "registry guard detects newly named mutable bindings (#251)" begin
     fixture = Module(:NewRegistryFixture)
+    # A `@rust_crate` call site's snapshot cache, populated exactly as a
+    # constructor's is: the snapshot it keeps contains the image's liveness
+    # `Ref{Bool}`, so this is the form the scan would otherwise flag (#253).
+    # Built here and spliced in, because the fixture module imports nothing.
+    target_cache = RustCall.CrateTargetCache()
+    RustCall.publish_crate_target!(target_cache, RustCall.artifact_epoch(),
+                                   (Ptr{Cvoid}(1), Ref(true), Ptr{Cvoid}(2)))
     Core.eval(fixture, quote
         make_registry() = Dict{String, Int}()
         const NEW_DICTIONARY = make_registry()
@@ -577,6 +594,7 @@ end
         const WRAPPED_STATE = (cache = Dict{String, Int}(),)
         const STATIC_TUPLE = ("a", "b")
         const STATIC_MAP = Base.ImmutableDict("a" => 1)
+        const TARGET_CACHE = $target_cache
     end)
     @test _mutable_module_registries(fixture) ==
           [:NEW_DICTIONARY, :NEW_REFERENCE, :NEW_SET, :NEW_VECTOR, :WRAPPED_STATE]

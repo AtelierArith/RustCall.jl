@@ -357,3 +357,195 @@ using RustCall
         end
     end
 end
+
+# ---------------------------------------------------------------------------
+# The `@rust_crate` path (#253)
+# ---------------------------------------------------------------------------
+#
+# Same scheme, a different carrier. A generated `@rust_crate` module is also
+# emitted as *source text* by `write_bindings_to_file`, and an object has no
+# source spelling, so its call sites cannot be handed a spliced cache the way
+# `@rust` and the `#[julia]` wrappers are. Each declares a `const` cache of its
+# own instead, and the target helpers take it as their first argument.
+#
+# What has to hold is exactly what holds for `CallTargetCache`: a kept snapshot
+# is one whole `_LIB_GEN` deref, it is dropped the moment the artifact epoch
+# moves, and it never validates in another process.
+
+# The plain arm's tuple shape, as the generated module names it.
+const CRATE_SHAPE = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}
+
+@testset "cached @rust_crate dispatch (#253)" begin
+    @testset "a crate entry is dropped when the epoch moves" begin
+        cache = RustCall.CrateTargetCache()
+        @test RustCall.crate_target_hit(cache, CRATE_SHAPE) === nothing
+        # Fabricated: this testset is about the checks, and they must hold
+        # whatever the snapshot happens to be.
+        target = (Ptr{Cvoid}(1), Ptr{Cvoid}(2))
+        RustCall.publish_crate_target!(cache, RustCall.artifact_epoch(), target)
+        @test RustCall.crate_target_hit(cache, CRATE_SHAPE) === target
+        Threads.atomic_add!(RustCall.ARTIFACT_EPOCH, 1)
+        @test RustCall.crate_target_hit(cache, CRATE_SHAPE) === nothing
+    end
+
+    @testset "a crate entry from another process is never a hit" begin
+        # A generated crate module is routinely precompiled into a package, and
+        # a wrapper called from a precompile workload would otherwise serialise
+        # a populated cache — raw pointers included — into the `.ji`. The epoch
+        # cannot tell one process from another; the session token can.
+        cache = RustCall.CrateTargetCache()
+        target = (Ptr{Cvoid}(1), Ptr{Cvoid}(2))
+        RustCall.publish_crate_target!(cache, RustCall.artifact_epoch(), target)
+        @test RustCall.crate_target_hit(cache, CRATE_SHAPE) === target
+        previous = RustCall.session_token()
+        epoch_then = RustCall.artifact_epoch()
+        try
+            @eval RustCall SESSION_TOKEN = SessionToken()
+            @test RustCall.artifact_epoch() === epoch_then
+            @test RustCall.crate_target_hit(cache, CRATE_SHAPE) === nothing
+        finally
+            @eval RustCall SESSION_TOKEN = $previous
+        end
+        @test RustCall.crate_target_hit(cache, CRATE_SHAPE) === target
+    end
+
+    @testset "publishing a generation moves the epoch" begin
+        # A generated module's generation mirror is the one piece of state a
+        # kept crate snapshot was taken from that is written with a plain `Ref`
+        # store rather than through `_state_mutate_storage!` — so the choke
+        # point that bumps the epoch for every other write does not see it.
+        #
+        # Today every caller changes a registry row in the same transaction and
+        # the epoch moves for that reason; the two mirror helpers say it
+        # themselves so that a kept snapshot does not depend on that staying
+        # true. Called directly here, with no other write in the transaction, so
+        # this fails if the bump is removed rather than passing on a neighbour's.
+        name = "dispatch_cache_mirror_probe"
+        cell = Base.RefValue(RustCall.CrateGeneration())
+        RustCall.register_handle_mirror!(name, cell)
+        try
+            alive = Ref(true)
+            before = RustCall.artifact_epoch()
+            lock(RustCall.REGISTRY_LOCK) do
+                RustCall._update_handle_mirrors!(name, Ptr{Cvoid}(1), alive, 7)
+            end
+            @test cell[].handle === Ptr{Cvoid}(1)
+            @test cell[].alive === alive
+            @test RustCall.artifact_epoch() > before
+
+            # ...and the same for the half of an unload that empties it.
+            before = RustCall.artifact_epoch()
+            lock(RustCall.REGISTRY_LOCK) do
+                RustCall._retire_handle_mirrors!(name)
+            end
+            @test cell[].handle == C_NULL
+            @test RustCall.artifact_epoch() > before
+        finally
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.HANDLE_MIRRORS, name)
+            end
+        end
+    end
+
+    if !RustCall.check_rustc_available()
+        @info "Skipping the @rust_crate cache tests: no Rust toolchain"
+        @test_skip "needs rustc"
+    else
+        crate_fixture = joinpath(@__DIR__, "fixtures", "sample_crate")
+
+        @testset "every generated call site is given a cache" begin
+            # The guard against a forgotten emitter: a target helper called with
+            # a bare symbol would resolve through `_LIB_GEN` on every call
+            # again, silently, and only a benchmark would notice. Both emitters
+            # are checked, because they are two implementations of one module.
+            info = RustCall.scan_crate(crate_fixture)
+            ast = string(RustCall.emit_crate_module(info, "/tmp/libdispatch_cache.so"))
+            code = RustCall.emit_crate_module_code(info, "/tmp/libdispatch_cache.so")
+            for text in (ast, code)
+                for helper in ("_call_target", "_vec_target", "_ctor_target",
+                               "_struct_generation")
+                    # `helper("sym"` — the pre-#253 spelling.
+                    @test !occursin("$helper(\"", text)
+                end
+                used = Set(m.match for m in eachmatch(r"_TC_[A-Za-z0-9_]+", text))
+                declared = Set(m.captures[1]
+                               for m in eachmatch(r"const (_TC_[A-Za-z0-9_]+) = RustCall\.CrateTargetCache\(\)", text))
+                @test !isempty(used)
+                @test isempty(setdiff(used, declared))
+            end
+        end
+
+        @testset "a crate call site drops its snapshot when the image is replaced" begin
+            # The property the whole scheme rests on, on the path that can
+            # actually reach a retired image: the module's `_LIB_GEN` record is
+            # what a kept snapshot was taken from, so an unload — the first half
+            # of a hot reload — has to make the next call resolve again. Without
+            # the invalidation this call would go on using the pointer it
+            # cached, into an image the registry no longer names.
+            scope = Module(gensym(:DispatchCacheCrate))
+            Core.eval(scope, :(using RustCall))
+            bindings = RustCall.load_crate_bindings(crate_fixture;
+                submodule_name = "DispatchCacheCrate", target_module = scope)
+            mod = getfield(bindings, :module_ref)
+            name = RustCall._module_binding(mod, :_LIB_NAME)
+            add = RustCall._module_binding(mod, :add)
+            try
+                @test Base.invokelatest(add, Int32(2), Int32(3)) == 5
+                @test Base.invokelatest(add, Int32(2), Int32(3)) == 5
+                RustCall.unload_library(name)
+                @test RustCall._module_binding(mod, :_LIB_GEN)[].handle == C_NULL
+                @test_throws Exception Base.invokelatest(add, Int32(2), Int32(3))
+                # ...and the other direction: the entry that says "not loaded"
+                # must not stick either, or a reload would never be seen.
+                Base.invokelatest(RustCall._module_binding(mod, :__init__))
+                @test RustCall._module_binding(mod, :_LIB_GEN)[].handle != C_NULL
+                @test Base.invokelatest(add, Int32(2), Int32(3)) == 5
+            finally
+                RustCall.unload_library(name; close = true)
+                RustCall.close_retired_handles!(RustCall.retired_handles(name))
+            end
+        end
+
+        @testset "a warm crate call site takes no lock" begin
+            # #253's second acceptance criterion on this path, as a property
+            # rather than a timing. Before the cache every call derefed
+            # `_LIB_GEN` — a `StateView`, so `REGISTRY_LOCK` — and then took it
+            # twice more for the two memoized symbol lookups.
+            scope = Module(gensym(:DispatchCacheCrateLock))
+            Core.eval(scope, :(using RustCall))
+            bindings = RustCall.load_crate_bindings(crate_fixture;
+                submodule_name = "DispatchCacheCrateLock", target_module = scope)
+            mod = getfield(bindings, :module_ref)
+            name = RustCall._module_binding(mod, :_LIB_NAME)
+            add = RustCall._module_binding(mod, :add)
+            try
+                # Warmed until it settles: the first resolution of a symbol
+                # publishes its pointer into the module's own memo, and that
+                # publication is a state write, so it leaves the entry it just
+                # produced stale. Three calls is one more than it takes.
+                for _ in 1:3
+                    Base.invokelatest(add, Int32(2), Int32(3))
+                end
+                held = Channel{Nothing}(1)
+                release = Channel{Nothing}(1)
+                holder = Threads.@spawn lock(RustCall.REGISTRY_LOCK) do
+                    put!(held, nothing)
+                    take!(release)
+                end
+                take!(held)
+                result = Threads.@spawn Base.invokelatest(add, Int32(2), Int32(3))
+                finished = timedwait(() -> istaskdone(result), 20.0)
+                # Released before anything waits on `result`: if the call did
+                # take the lock, `fetch` would block until the holder let go,
+                # and the holder is waiting for this.
+                put!(release, nothing)
+                wait(holder)
+                @test finished === :ok
+                @test fetch(result) == 5
+            finally
+                RustCall.unload_library(name; close = true)
+                RustCall.close_retired_handles!(RustCall.retired_handles(name))
+            end
+        end
+    end
+end

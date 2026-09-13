@@ -177,7 +177,7 @@ end
                 content = read(output_path, String)
                 @test occursin("\"rustcall_Gauge_read\"", content)
                 @test occursin("\"rustcall_Gauge_label\"", content)
-                @test occursin("_ctor_target(\"rustcall_Gauge_new\", \"Gauge_free\")", content)
+                @test occursin("_ctor_target(_TC_m_rustcall_Gauge_new, \"rustcall_Gauge_new\", \"Gauge_free\")", content)
 
                 sandbox = Module(:CmiSandbox)
                 Base.include(sandbox, output_path)
