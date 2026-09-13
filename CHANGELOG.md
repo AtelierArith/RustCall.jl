@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-09-13
+
 ### Fixed
 - **PyO3 wrapper follow-ups**
   ([#370](https://github.com/AtelierArith/RustCall.jl/issues/370)). Four edge
@@ -65,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   return type is read from the snapshot at run time, so the call is a dynamic
   dispatch by construction; annotate it, or mark the Rust function `#[julia]`
   and call the wrapper. See `docs/src/performance.md`.
+
+  A follow-up ([#391](https://github.com/AtelierArith/RustCall.jl/pull/391))
+  fixes the ordering this exposed: a caller module restored from a precompiled
+  package was declared to have no such function *before* it had been restored,
+  because the failure was raised from inside the `try` that does the restoring.
+  Resolving the library now happens first and outside it.
 - **A panic RustCall catches no longer prints `panicked at` to stderr**
   ([#304](https://github.com/AtelierArith/RustCall.jl/issues/304)). Rust runs
   the panic hook before the unwind `catch_unwind` catches, so every panic the
@@ -1693,7 +1701,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.1...v0.3.2
