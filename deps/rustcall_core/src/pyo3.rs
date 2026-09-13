@@ -822,6 +822,17 @@ fn from_collision(reason: &str) -> bool {
 }
 
 fn clear_collision_reasons(manifest: &mut Manifest) {
+    // Fields first, and unconditionally: a collision *erases* a field's
+    // accessors rather than leaving a reason behind, so there is no skip reason
+    // here to key the restoration on. `remember_accessors` recorded the
+    // original at the first clearing, and restoring it is what lets the
+    // analysis decide the field again once the entry that took its name turns
+    // out to be refused (#392 review).
+    for s in &mut manifest.structs {
+        for f in &mut s.fields {
+            f.restore_accessors();
+        }
+    }
     for f in &mut manifest.functions {
         if from_collision(&f.skip_reason) {
             f.skip_reason.clear();
@@ -1061,6 +1072,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
                 }
             }
             for f in &mut s.fields {
+                f.remember_accessors();
                 f.ffi_compatible = false;
                 f.getter.clear();
                 f.setter.clear();
@@ -1142,6 +1154,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
             {
                 for f in &mut s.fields {
                     if is_string_spelling(&f.rust_type) {
+                        f.remember_accessors();
                         f.ffi_compatible = false;
                         f.getter.clear();
                         f.setter.clear();
@@ -1165,6 +1178,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
                     .iter()
                     .any(|(t, _, c)| symbols.contains(t) && cfg_clash(c, &s_cfg))
                 {
+                    f.remember_accessors();
                     f.getter.clear();
                     f.free_symbol.clear();
                 } else {
@@ -1179,6 +1193,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
                     .iter()
                     .any(|(t, _, c)| symbols.contains(t) && cfg_clash(c, &s_cfg))
                 {
+                    f.remember_accessors();
                     f.setter.clear();
                 } else {
                     for symbol in symbols {
@@ -1450,6 +1465,7 @@ fn class_entry(
                 // decide; the generator refuses the accessors under a lenient
                 // scan (#307 review).
                 cfg: predicate_string(&f.attrs),
+                precollision: None,
             });
         }
     }

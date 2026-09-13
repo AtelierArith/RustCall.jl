@@ -520,6 +520,52 @@ pub struct Field {
     /// is compiled against may not have (#307 review).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cfg: String,
+    /// The accessors this field had before a **symbol collision** took them.
+    ///
+    /// In memory only, and never serialized: it exists so the collision
+    /// analysis can be run again from the state it found. Every other skip the
+    /// analysis produces is a `skip_reason` it can simply clear and re-derive,
+    /// but a field's accessors are *erased*, and the entry that took them may
+    /// yet be refused by the generator — after which the field's own getter is
+    /// valid again and there would be nothing left to restore it from
+    /// (#392 review). Set by the first clearing only, so the original survives
+    /// any number of passes.
+    #[serde(skip)]
+    pub precollision: Option<Box<FieldAccessors>>,
+}
+
+/// What [`Field::precollision`] remembers: everything a symbol collision
+/// clears on a field.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FieldAccessors {
+    pub ffi_compatible: bool,
+    pub getter: String,
+    pub setter: String,
+    pub free_symbol: String,
+}
+
+impl Field {
+    /// Remember the accessors, once, before a collision clears them.
+    pub fn remember_accessors(&mut self) {
+        if self.precollision.is_none() {
+            self.precollision = Some(Box::new(FieldAccessors {
+                ffi_compatible: self.ffi_compatible,
+                getter: self.getter.clone(),
+                setter: self.setter.clone(),
+                free_symbol: self.free_symbol.clone(),
+            }));
+        }
+    }
+
+    /// Put back what a collision cleared, so the analysis can decide again.
+    pub fn restore_accessors(&mut self) {
+        if let Some(saved) = &self.precollision {
+            self.ffi_compatible = saved.ffi_compatible;
+            self.getter = saved.getter.clone();
+            self.setter = saved.setter.clone();
+            self.free_symbol = saved.free_symbol.clone();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

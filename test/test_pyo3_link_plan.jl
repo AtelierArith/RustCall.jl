@@ -1078,6 +1078,70 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a field accessor comes back when its taker is refused (#392 review)" begin
+        # A symbol collision *erases* a field's accessors rather than leaving a
+        # skip reason on them, so there is nothing to re-derive from when the
+        # entry that took the name is later refused by the generator. The
+        # original has to be remembered at the moment it is cleared.
+        wrapped = code -> begin
+            dir = mktempdir()
+            try
+                mkpath(joinpath(dir, "src"))
+                write(joinpath(dir, "src", "lib.rs"), code)
+                RustCall.wrap_crate([joinpath(dir, "src", "lib.rs")]; crate_name = "probe")
+            finally
+                rm(dir; force = true, recursive = true)
+            end
+        end
+        field_of = source -> begin
+            class = only(st for st in source.manifest["structs"]
+                         if get(st, "name", "") == "C")
+            only(f for f in get(class, "fields", []) if get(f, "name", "") == "x")
+        end
+
+        # `C_get_x` wants `rustcall_C_get_x`, which is also the getter of `C.x`.
+        # The free function claims it first — and is then refused for its
+        # `Vec<i32>` argument, so the getter is valid again.
+        refused = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyclass]
+        pub struct C { #[pyo3(get)] pub x: i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        #[pyo3(signature = (v = vec![]))]
+        pub fn C_get_x(v: Vec<i32>) -> i32 { v.len() as i32 }
+        """)
+        fn_reason = only(String(get(f, "skip_reason", ""))
+                         for f in refused.manifest["functions"]
+                         if get(f, "name", "") == "C_get_x")
+        @test startswith(fn_reason, "unsupported_arg")
+        field = field_of(refused)
+        @test String(get(field, "getter", "")) == "rustcall_C_get_x"
+        @test get(field, "ffi_compatible", false)
+
+        # The converse: a taker the generator *does* emit keeps the name, and
+        # the accessor stays cleared. Restoring must not undo a live collision.
+        emitted = wrapped("""
+        use pyo3::prelude::*;
+
+        #[pyclass]
+        pub struct C { #[pyo3(get)] pub x: i32 }
+
+        #[allow(non_snake_case)]
+        #[pyfunction]
+        pub fn C_get_x(v: i32) -> i32 { v }
+        """)
+        fn_reason = only(String(get(f, "skip_reason", ""))
+                         for f in emitted.manifest["functions"]
+                         if get(f, "name", "") == "C_get_x")
+        @test fn_reason == ""
+        field = field_of(emitted)
+        @test String(get(field, "getter", "")) == ""
+        @test !get(field, "ffi_compatible", false)
+    end
+
     @testset "several refused entries do not trap a valid one (#392 review)" begin
         # The relowering loop drops an entry from the report when *it* was the
         # analysis's own loser, so that it is reconsidered. A generator refusal
@@ -1318,35 +1382,47 @@ _manifest(text::AbstractString) = TOML.parse(text)
         # and so discarded these edges outright, and the dispatcher then refused
         # every such crate for want of a version. Cargo prunes the inactive ones
         # itself (`--filter-platform`), so the live edge has to survive.
-        root = mktempdir()
-        try
+        probe = table -> begin
+            root = mktempdir()
+            try
+                write(joinpath(root, "Cargo.toml"), """
+                [package]
+                name = "pyo3_target_probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                $(table)
+                pyo3 = { version = "0.26", default-features = false, features = ["macros"] }
+                """)
+                mkpath(joinpath(root, "src"))
+                write(joinpath(root, "src", "lib.rs"), "")
+                return RustCall._resolved_pyo3_dependency(root, RustCall.pyo3_link_plan(root))
+            finally
+                rm(root; force = true, recursive = true)
+            end
+        end
+
+        # The control decides whether this environment can resolve a fresh pyo3
+        # at all: the offline CI job runs with `CARGO_NET_OFFLINE=true` and an
+        # empty `CARGO_HOME` seeded only from `test/fixtures/offline_prefetch`,
+        # where a temporary crate asking the registry for a version resolves
+        # nothing. `_resolved_pyo3_dependency` fails *closed* — it reports an
+        # empty result rather than raising — so without a control an
+        # unresolvable environment is indistinguishable from the regression
+        # this test exists to catch (#259, #392 review).
+        plain = probe("[dependencies]")
+        if isempty(plain.version)
+            @info "Skipping the target-conditional probe: this environment resolves no fresh pyo3"
+            @test_skip "needs a resolvable pyo3"
+        else
             # `cfg(any(unix, windows))` is live on every platform the suite runs
             # on, and is still spelled as a target-conditional table — so this
-            # asserts the shape, not the host.
-            write(joinpath(root, "Cargo.toml"), """
-            [package]
-            name = "pyo3_target_probe"
-            version = "0.1.0"
-            edition = "2021"
-
-            [target.'cfg(any(unix, windows))'.dependencies]
-            pyo3 = { version = "0.26", default-features = false, features = ["macros"] }
-            """)
-            mkpath(joinpath(root, "src"))
-            write(joinpath(root, "src", "lib.rs"), "")
-            plan = RustCall.pyo3_link_plan(root)
-            dep = RustCall._resolved_pyo3_dependency(root, plan)
-            @test !isempty(dep.version)
-            @test startswith(dep.version, "0.26")
-            @test dep.source in RustCall.CRATES_IO_SOURCES
-        catch e
-            # The probe needs the registry; an offline run without a cached
-            # pyo3 index cannot resolve it at all.
-            e isa Base.IOError || e isa ProcessFailedException || rethrow()
-            @info "Skipping the target-conditional probe: cannot resolve pyo3" exception = e
-            @test_skip "needs a resolvable pyo3"
-        finally
-            rm(root; force = true, recursive = true)
+            # asserts the shape, not the host. Whatever the control resolved,
+            # the target-conditional form has to resolve the same thing.
+            targeted = probe("[target.'cfg(any(unix, windows))'.dependencies]")
+            @test targeted == plain
+            @test !isempty(targeted.version)
+            @test startswith(targeted.version, "0.26")
         end
     end
 
