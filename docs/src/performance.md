@@ -202,14 +202,18 @@ above the floor is dispatch and nothing else):
 | a `#[julia]` function's generated wrapper | 9891 ns | 10.0 ns | 1.9 |
 | `@rust f(a, b)::Int32` | 8940 ns | 11.9 ns | 2.2 |
 | `@rust f(a, b)` (no annotation) | 9945 ns | 360 ns | 68 |
+| a `@rust_crate` module's wrapper | 1029 ns | 21.8 ns | 3.3 |
+
+(the `@rust_crate` row was measured in a later run, against a 6.5 ns floor on the
+same machine; its wrapper also went from 14 allocations per call to none.)
 
 and across threads, as calls per second against the same path's one-task figure:
 
-| tasks | raw `ccall` | generated wrapper, before | now |
-| --- | --- | --- | --- |
-| 1 | 1.00× | 1.00× | 1.00× |
-| 2 | 2.06× | 0.94× | 2.24× |
-| 4 | 4.01× | 0.85× | 5.18× |
+| tasks | raw `ccall` | generated wrapper, before | now | `@rust_crate`, before | now |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1.00× | 1.00× | 1.00× | 1.00× | 1.00× |
+| 2 | 2.06× | 0.94× | 2.24× | 0.87× | 1.99× |
+| 4 | 4.01× | 0.85× | 5.18× | 0.70× | 3.89× |
 
 A call used to re-resolve everything it needed, every time: walk the calling
 module's blocks, take `REGISTRY_LOCK`, rebuild the symbol strings, look up the
@@ -225,6 +229,14 @@ comparison, and the `ccall`. This does not weaken the generation rule of #277:
 what is kept is one whole snapshot, taken under one lock in the one place
 allowed to take one, and it is dropped the moment the epoch moves, so a call can
 still never mix an old pointer with a new channel.
+
+A `@rust_crate` wrapper does the same thing with a cache it can *name*: a
+generated crate module is also written out as Julia source by
+`write_bindings_to_file`, so its call sites cannot be handed a spliced object.
+Each declares a `RustCall.CrateTargetCache` beside its wrapper instead. Nothing
+about this is visible in the bindings you call — but it is visible in a file you
+regenerate, and the `Bindings format:` marker at the top of a generated file is
+now `11`.
 
 ### Annotate the return type, or use `#[julia]`
 

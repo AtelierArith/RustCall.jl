@@ -246,6 +246,44 @@ dispatch by construction. `_call_and_guard` keeps it to exactly one.
 asserts the invalidation contract, including that a warmed call site completes
 while another task holds `REGISTRY_LOCK`.
 
+**A `@rust_crate` call site keeps its snapshot too, in a named `const`.** Same
+scheme, a different carrier: a generated crate module is also emitted as
+*source text* by `write_bindings_to_file`, and an object has no source
+spelling, so the spliced `CallTargetCache` of `@rust` is not available to it.
+Each call site declares a `RustCall.CrateTargetCache` of its own beside the
+wrapper that uses it, and `_call_target` / `_vec_target` / `_ctor_target` /
+`_struct_generation` take it as their first argument. Four things make that
+work:
+
+* **The cache name is `(kind, symbol)`, and `kind` is the *emitter*** —
+  `_target_cache_name` in `src/crate_bindings.jl`: `:fn` a free function, `:m` a
+  method wrapper, `:free` a struct's destructor, `:acc` a `get_x` / `set_x!`
+  helper, `:prop` a `getproperty` branch. Each emits a given symbol at most once
+  per module, so no `const` is ever declared twice — a field getter reached
+  through the accessor *and* through `getproperty` is two call sites with two
+  caches, which is what the split kinds are for.
+* **`_symbol` / `_required_symbol` are declared `::Ptr{Cvoid}`.** The symbol
+  memo is a `StateView` and hands back an `Any`; without the declaration every
+  snapshot is a tuple of `Any`, and the cached fast path still boxes the
+  pointer and the channel — 64 bytes and 150 ns a call, against 0 and 17 ns
+  with it (measured).
+* **The generation mirror bumps the epoch itself.** `_update_handle_mirrors!` /
+  `_retire_handle_mirrors!` write a `Ref` rather than going through
+  `_state_mutate_storage!`, so they are the one write a kept crate snapshot
+  depends on that the choke point does not see. They call
+  `_invalidate_kept_snapshots!` after the store. Every caller happens to change
+  a registry row in the same transaction as well; a kept snapshot must not
+  depend on that staying true.
+* **`test/test_state.jl` exempts `CrateTargetCache`** from its mutable-registry
+  scan, next to `StateView` and for the same reason: it is not state, it is one
+  call site's memory of a snapshot STATE already published, discarded the moment
+  the epoch or the session token says otherwise. Without the exemption a
+  constructor's populated cache would be flagged, because the snapshot it keeps
+  contains the image's liveness `Ref{Bool}`.
+
+`BINDINGS_FORMAT_VERSION` is 11 for this: a file emitted here names
+`RustCall.CrateTargetCache`, which an older RustCall does not have.
+
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 
 **One generation snapshot per call.** A library can be replaced under a running program (hot reload), so every FFI entry point captures its handle, cached pointers, liveness `Ref` and **return ABI** in **one** locked step. Cold function, panic-channel and release/destructor pointers are then resolved on that captured handle outside STATE. No later name lookup may supply any part of the returned target: that could cross a swap and pair an old call with a replacement's channel, allocator or ABI. Cache publication writes only to the captured image's cache. The legacy name-keyed panic cache compares its captured registry entry before publishing, but that comparison never changes the pointer returned to its caller. Explicit closing requires quiescence of the entire FFI operation, including target resolution.
@@ -257,7 +295,7 @@ There are exactly four snapshot constructors, and `scripts/lint_generation_snaps
 | `resolve_call_target` | `src/ruststr.jl` | `CallTarget`: pointer, panic channel, owned-`String` release fn, handle, return type / `FunctionInfo`, generation |
 | `artifact_generation_snapshot` | `src/structs.jl` | `ArtifactGeneration`: a struct's destructor + the flag of the image that exports it |
 | `generic_struct_generation_snapshot` | `src/structs.jl` | the same, for a monomorphized generic destructor |
-| `_call_target` / `_struct_generation` | the two `@rust_crate` templates | the same two, from **one deref** of the module's `_LIB_GEN` |
+| `_call_target` / `_struct_generation` | the two `@rust_crate` templates | the same two, from **one deref** of the module's `_LIB_GEN` — or the whole tuple that deref produced, kept in the call site's `CrateTargetCache` (#253) |
 
 Two consequences worth knowing:
 
@@ -265,7 +303,7 @@ Two consequences worth knowing:
 - **A retired image keeps its identity.** An image is retired, not closed, so it stays mapped with live objects holding its flag; loading the same path again gets the same handle back and adopts that same flag (one mapped image, one flag), and a retirement closes exactly the number of owned opens it was retired with — never the live counter, which a concurrent reopen may have raised.
 - **A cached record is a snapshot too.** `FunctionInfo` (a monomorphized generic, `register_function`) carries the channel, the handle and the generation it was built with, because it is called long after the lookup that produced it.
 - **Generic objects keep image-specific members.** `GENERIC_STRUCT_ARTIFACTS` is keyed by both artifact name and the image's liveness flag. Rebuilding identical source after retirement reuses the name but creates a separate member map; methods and accessors select with the object's captured flag, never the current name alone. Retired mapped images keep their records; making an image inert during explicit reclamation removes its member map without touching a live replacement's map.
-- **A generated `@rust_crate` module keeps one immutable record, not several `Ref`s.** `_LIB_GEN` is an owner-qualified StateView of a `Ref{CrateGeneration}` in STATE. The record holds handle + liveness flag + generation, replaced wholesale by `_update_handle_mirrors!` inside the `REGISTRY_LOCK` transaction; wrappers read it once per call, releasing STATE before symbol resolution or FFI. Two independently read cells are not a snapshot. `__init__` registers the mirror **before** loading and never assigns it afterwards — an assignment after `load_artifact!` would overwrite a newer generation a concurrent reload had already published. The legacy raw-Ref registration overload remains compatible; generated modules use only the owned view.
+- **A generated `@rust_crate` module keeps one immutable record, not several `Ref`s.** `_LIB_GEN` is an owner-qualified StateView of a `Ref{CrateGeneration}` in STATE. The record holds handle + liveness flag + generation, replaced wholesale by `_update_handle_mirrors!` inside the `REGISTRY_LOCK` transaction; wrappers read it once per call — or reuse the whole tuple a previous deref produced, while `ARTIFACT_EPOCH` and `SESSION_TOKEN` say it is still current (#253) — releasing STATE before symbol resolution or FFI. Two independently read cells are not a snapshot. `__init__` registers the mirror **before** loading and never assigns it afterwards — an assignment after `load_artifact!` would overwrite a newer generation a concurrent reload had already published. The legacy raw-Ref registration overload remains compatible; generated modules use only the owned view.
 
 A replaced image is **retired, not closed**, so a call already inside one stays valid; a cached pointer finds its own image's flag through `alive_ref_for_handle`, never through the name. **One image, one flag**: every name of a handle shares it — an alias by construction (`alias_artifact!`), and a second `load_artifact!` of the same path by adopting the flag the image already has (`registered_alive_for_handle`, #291). A second flag would not be cosmetic: `unload_artifact!` retires with one of them and drops the other without flipping it, so objects holding the dropped flag believe themselves live over unmapped code. For the same reason, re-aliasing a name that already names this image does not retire it. `test/test_hot_reload_transaction.jl` asserts all of this adversarially: a reload loop against tasks that call, panic, allocate and drop — plus one that reads the crate-module record — checking that no call returns an unpublished generation, that no generation number is ever paired with two different results, that no panic is lost and that no finalizer fails.
 

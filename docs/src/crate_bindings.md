@@ -768,7 +768,15 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 7`). Regenerate after upgrading RustCall.
+(`# Bindings format: 11`). Regenerate after upgrading RustCall.
+
+Format `11` (#253) gives every call site in the file a
+`RustCall.CrateTargetCache` of its own, declared as a `const` beside the wrapper
+that uses it, and passes it to the target helpers. A wrapper then reuses the
+snapshot it last resolved instead of taking `REGISTRY_LOCK` and looking two
+symbols up on every call — about 1.0 µs and 14 allocations down to 22 ns and
+none, and calls from several threads no longer queue behind one another. A file
+emitted at this version does not load against a RustCall that predates the name.
 
 Format `7` (#300) names every symbol module-qualified (`a__C_free`,
 `rustcall_a__run`) and puts items inside Rust modules into Julia submodules.
