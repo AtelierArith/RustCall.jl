@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`RustCall.precompile_generics(f, types...)` builds a whole set of
+  instantiations with one `rustc` invocation**
+  ([#254](https://github.com/AtelierArith/RustCall.jl/issues/254)). Lazy
+  instantiation cannot know which types are coming, so it compiles one library
+  per type and maps one image per type. Passing the set up front —
+  `RustCall.precompile_generics("identity", Int32, Int64, Float64)`, or tuples
+  of types for a multi-parameter generic — specializes all of them into one
+  source file and compiles it once. All the instantiations of a batch then share
+  **one** mapped image, in the session that built it and in every later session
+  that instantiates them lazily. Instantiations already in memory or already in
+  the cache are not rebuilt, so a second call compiles nothing, and a batch that
+  fails to compile (one inapplicable type poisons the whole file) falls back to
+  building the types one at a time, where the caller gets the compiler's
+  diagnostics for the type actually at fault.
+
 ### Changed
+- **A monomorphized generic outlives the session that compiled it**
+  ([#254](https://github.com/AtelierArith/RustCall.jl/issues/254)). Every
+  instantiation was compiled into a temporary directory and cached only in
+  memory, so restarting Julia re-ran the extractor and `rustc` for each one. The
+  compiled library is now published to the artifact cache under the artifact key
+  the instantiation is already identified by, together with a record of what the
+  extractor reported about it (`<key>.spec.toml` beside the cache metadata); a
+  later session restores both and runs **neither**. Measured over six
+  instantiations of one generic function in two sessions sharing a cache, with
+  `rustc` launches counted through a `PATH` shim: six `rustc` invocations in the
+  second session before, **zero** after. What is left of an instantiation is a
+  checksum verification, a file copy and a `dlopen` — about 0.02 s on an idle
+  machine against about 0.5 s for the build it replaces. The record is only ever an
+  optimisation — missing, unreadable, or written by another format version, it
+  reads as a cache miss — and the artifact key folds in the toolchain
+  fingerprint, so a library built by a different extractor or `rustcall_core`
+  can never be restored. An instantiation's own library is opened from a private
+  copy, exactly as a freshly compiled one is, so retiring an image and asking
+  for the instantiation again still produces a new image with its own statics
+  and its own liveness flag (#291).
 - **A `@rust` call no longer re-resolves everything on every call**
   ([#253](https://github.com/AtelierArith/RustCall.jl/issues/253)). Each call
   walked the calling module's blocks, took the global `REGISTRY_LOCK`, rebuilt

@@ -336,6 +336,46 @@ type-parameter tuple. Generic struct wrappers for one tuple additionally share
 one artifact identity, including the constructor and destructor, so an object
 never crosses allocator boundaries when it is finalized.
 
+Since #254 the cache is also on disk. Every instantiation is published to the
+artifact cache under the artifact key it is already identified by, together with
+a small record of what the extractor said about it (`<key>.spec.toml` beside the
+cache metadata). A later session that asks for the same instantiation restores
+both and runs **neither** the extractor nor `rustc`; only the library is opened.
+The record is purely an optimisation — missing, unreadable or written by another
+format version, it reads as a cache miss and the instantiation is rebuilt, and
+the artifact key folds in the toolchain fingerprint, so a library built by a
+different extractor or `rustcall_core` can never be restored.
+
+Reading the cache removes the compile and nothing else. An instantiation's
+library is private to it, so it is opened from a private copy of the cached
+file, exactly as a freshly compiled one is opened from its own build directory:
+retiring an image and asking for the instantiation again still produces a *new*
+image, with its own Rust statics and its own liveness flag (#291).
+
+### Compiling several instantiations at once
+
+Lazy instantiation cannot know which types will be asked for next, so it builds
+one library per type: `k` types cost `k` `rustc` invocations and map `k` images.
+`RustCall.precompile_generics` takes the whole set at once and builds it as one
+library with one invocation:
+
+```julia
+RustCall.precompile_generics("identity", Int32, Int64, Float64)
+RustCall.precompile_generics("pair", (Int32, Int64), (Int64, Int32))
+```
+
+Each instantiation is a type (for a single-parameter generic), a tuple of types
+in declaration order, or a `param => type` mapping. Instantiations already held
+in memory or already in the cache are not rebuilt, so calling it twice — or in a
+second session — compiles nothing.
+
+All the instantiations of one batch live in one library, so they map **one**
+image rather than one per type, in the session that built them and in every
+later session that instantiates them lazily. Generic *struct* groups are built
+one instantiation at a time: the wrappers of a single instantiation already
+share one cdylib, which is what keeps allocation and destruction on one
+allocator.
+
 ## See Also
 
 - [Tutorial](tutorial.md) - General tutorial
