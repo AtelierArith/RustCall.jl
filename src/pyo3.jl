@@ -1666,42 +1666,50 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
     # Dependency outputs are shared with the probe. Distinct wrapper artifacts
     # must not overwrite one shared cdylib between Cargo exiting and our copy.
     wrapper_name = "rustcall_wrapper_$(key)"
-    # The same choice `wrap_crate` was given, from the same function: the
-    # dependency table has to be keyed on the identifier the generated `lib.rs`
-    # names the crate by, or the two disagree about what `use <crate>::*` means.
-    target_identifier, target_renamed =
-        wrapper_target_identifier(info.name, parse_cargo_toml(joinpath(info.path, "Cargo.toml")))
-    write(joinpath(wrapper_path, "Cargo.toml"),
-          generate_pyo3_wrapper_cargo_toml(
-              info, plan; wrapper_name = wrapper_name,
-              python_dispatch = source.uses_python_dispatch,
-              target_identifier = target_identifier, target_renamed = target_renamed,
-              pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
-          _root_patch_toml(info.path))
-    write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
-
-    # The link options travel in the wrapper's own build script, not in
-    # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
-    # `[build] rustflags` from config, and is itself ignored whenever
-    # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the wrong
-    # place or none. `cargo:rustc-link-search` / `cargo:rustc-link-arg` from
-    # `build.rs` apply to exactly this cdylib's link step and to nothing else
-    # (#307 review). `rustflags` stays the identity input it always was.
-    script = _pyo3_wrapper_build_script(plan)
-    isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
-
     project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
                            "2021", wrapper_path)
-    env = Dict{String, String}(ENV)
-    # Only where pyo3 is actually in the graph: a `:python_free` build has no
-    # pyo3 build script to configure, and pinning an interpreter it will never
-    # consult would misdescribe the build. The interpreter is the plan's — it
-    # honours a caller's own `PYO3_PYTHON`, was chosen next to `plan.rpath`,
-    # and is already in the artifact key (`_pyo3_wrapper_build_env`).
-    if plan.mode === :link_libpython && !isempty(plan.interpreter)
-        env["PYO3_PYTHON"] = plan.interpreter
-    end
+    # The cleanup scope opens here, at the directory that already exists, not at
+    # the build. Writing the manifest can *refuse* — a pyo3 older than the
+    # dispatcher needs, or one from a registry the alias cannot name — and those
+    # are expected outcomes, not crashes. Entering the `try` only at
+    # `build_cargo_project` left a project tree under the crate's `target/` for
+    # every refused attempt, for the life of the process (#392 review).
     try
+        # The same choice `wrap_crate` was given, from the same function: the
+        # dependency table has to be keyed on the identifier the generated
+        # `lib.rs` names the crate by, or the two disagree about what
+        # `use <crate>::*` means.
+        target_identifier, target_renamed =
+            wrapper_target_identifier(info.name,
+                                      parse_cargo_toml(joinpath(info.path, "Cargo.toml")))
+        write(joinpath(wrapper_path, "Cargo.toml"),
+              generate_pyo3_wrapper_cargo_toml(
+                  info, plan; wrapper_name = wrapper_name,
+                  python_dispatch = source.uses_python_dispatch,
+                  target_identifier = target_identifier, target_renamed = target_renamed,
+                  pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
+              _root_patch_toml(info.path))
+        write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
+
+        # The link options travel in the wrapper's own build script, not in
+        # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
+        # `[build] rustflags` from config, and is itself ignored whenever
+        # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the wrong
+        # place or none. `cargo:rustc-link-search` / `cargo:rustc-link-arg` from
+        # `build.rs` apply to exactly this cdylib's link step and to nothing else
+        # (#307 review). `rustflags` stays the identity input it always was.
+        script = _pyo3_wrapper_build_script(plan)
+        isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
+
+        env = Dict{String, String}(ENV)
+        # Only where pyo3 is actually in the graph: a `:python_free` build has no
+        # pyo3 build script to configure, and pinning an interpreter it will never
+        # consult would misdescribe the build. The interpreter is the plan's — it
+        # honours a caller's own `PYO3_PYTHON`, was chosen next to `plan.rpath`,
+        # and is already in the artifact key (`_pyo3_wrapper_build_env`).
+        if plan.mode === :link_libpython && !isempty(plan.interpreter)
+            env["PYO3_PYTHON"] = plan.interpreter
+        end
         built = build_cargo_project(project; release = release, env = env,
                                     policy = crate_wrapper_policy(),
                                     target_directory = joinpath(info.path, "target", "rustcall-pyo3-probe", "target"))

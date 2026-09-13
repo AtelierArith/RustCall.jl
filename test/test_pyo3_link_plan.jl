@@ -1078,6 +1078,44 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a refused wrapper build leaves no project behind (#392 review)" begin
+        # Writing the wrapper's manifest can refuse outright — a pyo3 older
+        # than the dispatcher needs, or one from a registry the alias cannot
+        # name. Those are expected outcomes, and the project directory
+        # `_wrapper_shaped_project` has already created must go with them
+        # rather than accumulating under the crate's `target/` for the life of
+        # the process.
+        root = mktempdir()
+        try
+            mkpath(joinpath(root, "src"))
+            write(joinpath(root, "Cargo.toml"), """
+            [package]
+            name = "refused_probe"
+            version = "0.1.0"
+            edition = "2021"
+            """)
+            write(joinpath(root, "src", "lib.rs"), "")
+            info = RustCall.CrateInfo("refused_probe", root, "0.1.0",
+                                      RustCall.DependencySpec[],
+                                      RustCall.RustFunctionSignature[],
+                                      RustCall.RustStructInfo[], String[])
+            plan = RustCall.PyO3LinkPlan(:python_free, String[], "", "test")
+            # `uses_python_dispatch` with no resolvable pyo3 is the refusal: the
+            # wrapper needs the dispatcher and Cargo names no direct pyo3.
+            source = RustCall.WrapperCrateSource("refused_probe", "", Dict{String, Any}(),
+                                                 String[], true)
+            parent = joinpath(root, "target", "rustcall-pyo3-wrapper")
+            @test_throws RustCall.RustError RustCall._build_pyo3_wrapper_project(
+                info, plan, source, String[], true, "deadbeef", false)
+            # The parent may exist; what must not survive is a project tree.
+            leftovers = isdir(parent) ?
+                filter(startswith("project_"), readdir(parent)) : String[]
+            @test isempty(leftovers)
+        finally
+            rm(root; force = true, recursive = true)
+        end
+    end
+
     @testset "a refused entry does not keep a valid name (#392 review)" begin
         # The symbol table reserves every arity an entry *will* emit, and it
         # runs in the scan — before the generator has had the chance to refuse

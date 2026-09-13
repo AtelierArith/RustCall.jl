@@ -150,8 +150,22 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
     // generator refused never comes back — so it terminates; the bound is
     // belt and braces against a future change that makes a refusal depend on a
     // reinstated item.
+    //
+    // It counts **methods too**, not just their classes: each pass can release
+    // one claim, and a class carries as many claimants as it has methods — four
+    // refused methods whose names differ only in case contend for one
+    // upper-cased panic-slot name, and a bound that counted the class once
+    // would stop while a valid fifth was still marked as their loser (#392
+    // review).
     let mut current = scanned.clone();
-    let bound = scanned.functions.len() + scanned.structs.len() + 2;
+    let bound = scanned.functions.len()
+        + scanned.structs.len()
+        + scanned
+            .structs
+            .iter()
+            .map(|s| s.methods.len() + s.fields.len())
+            .sum::<usize>()
+        + 2;
     for _ in 0..bound {
         let lowered = lower_once(&current, &krate, cfg_resolved);
         let mut next = scanned.clone();
