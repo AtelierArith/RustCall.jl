@@ -26,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   way out, instead of failing later with rustc errors about generated code. See
   `docs/src/pyo3.md`.
 
+  Four more corners found while reviewing that work, each one a name or a fact
+  taken from the wrong place: whether a wrapper needs the pyo3 alias is now
+  **reported by the generator** rather than inferred by scanning the Rust it
+  emitted; the pyo3 the alias names is the crate's *normal* dependency, with
+  Cargo's own `--filter-platform` deciding which `[target.'cfg(...)']` edges are
+  live, so neither a `dev-dependencies` pyo3 of another version nor a live
+  Unix-only one is mistaken for it; a wrapped crate whose own name is
+  `rustcall_pyo3` or `rustcall_julia_macros` — the two the wrapper spends on
+  itself — is depended on under `rustcall_target_<name>` instead of writing one
+  dependency table twice; and an entry the generator **refuses** no longer keeps
+  the symbols it would have exported, so `foo(values = vec![])` refused for its
+  `Vec<i32>` argument no longer costs a function actually named
+  `foo__default_1` its own name. That last one makes generation and the symbol
+  analysis a fixpoint: the wrapper is lowered, what came out is reported back,
+  and the analysis runs again while the answer keeps changing.
+
 ### Changed
 - **A `@rust` call no longer re-resolves everything on every call**
   ([#253](https://github.com/AtelierArith/RustCall.jl/issues/253)). Each call

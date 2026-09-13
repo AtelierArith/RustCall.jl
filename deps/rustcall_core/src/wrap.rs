@@ -139,6 +139,31 @@ impl WrapperCrate {
 /// is not, which is exactly what makes a Python-free wrapper build possible.
 pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -> WrapperCrate {
     let krate = format_ident!("{}", crate_name.replace('-', "_"));
+    // Lowering and the symbol analysis each need the other's answer: the
+    // analysis reserves the symbols an entry *will* emit, and only lowering
+    // knows whether that entry is emitted at all. So lower, report what came
+    // out, run the analysis again, and repeat while the answer keeps changing
+    // (#392 review). The first pass is exactly what the scan already decided,
+    // so a crate where nothing is refused settles after one round.
+    //
+    // The loop shrinks the set of reservations monotonically — an entry the
+    // generator refused never comes back — so it terminates; the bound is
+    // belt and braces against a future change that makes a refusal depend on a
+    // reinstated item.
+    let mut current = scanned.clone();
+    let bound = scanned.functions.len() + scanned.structs.len() + 2;
+    for _ in 0..bound {
+        let lowered = lower_once(&current, &krate, cfg_resolved);
+        let mut next = scanned.clone();
+        if !crate::pyo3::remark_collisions(&mut next, &lowered.manifest) || next == current {
+            return lowered;
+        }
+        current = next;
+    }
+    lower_once(&current, &krate, cfg_resolved)
+}
+
+fn lower_once(scanned: &Manifest, krate: &Ident, cfg_resolved: bool) -> WrapperCrate {
     let mut out = Manifest::new(scanned.mode);
     let mut items = TokenStream2::new();
 
@@ -159,7 +184,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
             out.functions.push(entry);
             continue;
         }
-        match function_wrappers(&krate, &entry) {
+        match function_wrappers(krate, &entry) {
             Ok((tokens, updated)) => {
                 items.extend(tokens);
                 out.functions.extend(updated);
@@ -198,7 +223,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
             out.structs.push(entry);
             continue;
         }
-        items.extend(class_wrappers(&krate, &mut entry, cfg_resolved));
+        items.extend(class_wrappers(krate, &mut entry, cfg_resolved));
         out.structs.push(entry);
     }
 
@@ -208,7 +233,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
         .any(|f| !f.attribute.is_pyo3_scan() && f.exported)
         || scanned.structs.iter().any(|s| !s.attribute.is_pyo3_scan());
 
-    let lib_rs = render(&krate, items, uses_user_crate);
+    let lib_rs = render(krate, items, uses_user_crate);
     // Decided on the token path the generator itself emits, not on a name that
     // may appear for other reasons: `::rustcall_pyo3::` is what `wrapper_args`,
     // the handles and the dispatch helpers write, and nothing else can produce

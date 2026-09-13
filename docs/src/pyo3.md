@@ -43,6 +43,14 @@ duplicate work, they produce a dispatcher whose `Python` and traits come from a
 different crate instance than the types in your macro metadata, and nothing
 using the dispatcher compiles.
 
+The wrapper spends two crate names on itself — `rustcall_pyo3` and
+`rustcall_julia_macros`, the runtime its quiet-panic guard comes from. Nothing
+reserves a crate *name*, so if your crate is called either of those, the
+wrapper depends on it under `rustcall_target_<name>` (a plain Cargo rename,
+`package = "<your name>"`) and the generated Rust names it that way too. You do
+not have to do anything; it is only worth knowing if you read the generated
+`Cargo.toml`.
+
 ## Using it
 
 ```julia

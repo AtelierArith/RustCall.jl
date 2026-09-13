@@ -513,7 +513,7 @@ impl Pyo3Scan {
         // The Julia surface first: an item it refuses claims no symbol, so a
         // `fn User()` refused for the class `User`'s name does not also cost the
         // class its `String` getters' helper (#307 review).
-        mark_julia_surface_collisions(manifest);
+        mark_julia_surface_collisions(manifest, &Emitted::new());
     }
 }
 
@@ -537,20 +537,20 @@ impl Pyo3Scan {
 /// different modules — so [`mark_symbol_collisions`] lets them through.
 /// Constructors are named after their class and instance methods dispatch on
 /// `self::Class`; neither can collide this way.
-fn mark_julia_surface_collisions(manifest: &mut Manifest) {
+fn mark_julia_surface_collisions(manifest: &mut Manifest, emitted: &Emitted) {
     // Resolve the user-facing owners before reserving their implementation
     // types. An owner skipped by a class or an earlier method emits no ABI
     // aggregate and must not take a valid class's name with it.
     let owners = manifest.clone();
     mark_julia_surface_collisions_pass(manifest, None);
-    mark_symbol_collisions(manifest);
+    mark_symbol_collisions(manifest, emitted);
     loop {
         let mut next = owners.clone();
         mark_julia_surface_collisions_pass(&mut next, Some(manifest));
         // A symbol winner may have just lost its Julia name to an aggregate.
         // Re-evaluate symbol ownership too, so it cannot leave permanent
         // tombstones on methods that are now safe to emit.
-        mark_symbol_collisions(&mut next);
+        mark_symbol_collisions(&mut next, emitted);
         if next == *manifest {
             return;
         }
@@ -770,7 +770,124 @@ fn cfg_clash(a: &str, b: &str) -> bool {
     !cfg_exclusive(a, b)
 }
 
-fn mark_symbol_collisions(manifest: &mut Manifest) {
+/// What the generator actually emitted for an owner, keyed by its qualified
+/// name (`module::item`, and `module::Class::method` for a method).
+///
+/// The symbol table below reserves every symbol an entry *will* emit, and it
+/// runs in the scan — before `wrapper_crate` has had the chance to refuse that
+/// entry for a signature it cannot lower. A reservation left standing for an
+/// entry that then emits nothing costs a **valid** item its own name:
+/// `foo(values = vec![])` reserves `rustcall_foo__default_1`, a function
+/// literally named `foo__default_1` is marked a collision against it, and when
+/// `foo` is then refused for its `Vec<i32>` argument neither one is emitted
+/// (#392 review).
+///
+/// So `wrapper_crate` lowers, reports what came out, and asks for the analysis
+/// again. An owner absent from the map is one nothing is known about yet —
+/// the first pass, where the derived list stands as it always did.
+///
+/// **Only a refusal the *generator* made is a report.** An entry this analysis
+/// refused emitted nothing for that very reason, and taking that as "the
+/// generator refuses it" would drop its claim and hand the symbol to the item
+/// it had just beaten — two `#[no_mangle]` definitions of one name in the
+/// wrapper. Such an entry is left out of the map, so it claims everything
+/// again and the analysis decides it afresh.
+pub type Emitted = std::collections::HashMap<String, std::collections::HashSet<String>>;
+
+/// The arities of `base` this owner emitted, as far as anything is known.
+///
+/// `None` means "no report yet, take every arity"; a report that lists none is
+/// an owner the generator refused outright, and it claims nothing.
+fn emitted_arities<'a>(
+    emitted: &'a Emitted,
+    owner: &str,
+) -> Option<&'a std::collections::HashSet<String>> {
+    emitted.get(owner)
+}
+
+/// Clear the skip reasons this analysis produces, so it can be run again from
+/// the state the scan was in before it ran.
+///
+/// Only these three come from here. An `owner_skipped` is cleared exactly when
+/// the owner's own reason (which it carries after the colon) is one of them —
+/// a method whose class is not `pub` keeps its reason, a method whose class
+/// lost a symbol does not.
+fn from_collision(reason: &str) -> bool {
+    let body = reason
+        .strip_prefix(skip_reason::OWNER_SKIPPED)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(reason);
+    body.starts_with(skip_reason::SYMBOL_COLLISION)
+        || body.starts_with(skip_reason::JULIA_NAME_COLLISION)
+}
+
+fn clear_collision_reasons(manifest: &mut Manifest) {
+    for f in &mut manifest.functions {
+        if from_collision(&f.skip_reason) {
+            f.skip_reason.clear();
+        }
+    }
+    for s in &mut manifest.structs {
+        if from_collision(&s.skip_reason) {
+            s.skip_reason.clear();
+        }
+        for m in &mut s.methods {
+            if from_collision(&m.skip_reason) {
+                m.skip_reason.clear();
+            }
+        }
+    }
+}
+
+/// Re-run the collision analysis knowing what the generator emitted.
+///
+/// Returns whether anything changed. `lowered` is the manifest `wrapper_crate`
+/// produced; the owners it reports with an empty `skip_reason` are the ones
+/// that really exist, and only those reserve a symbol here.
+pub fn remark_collisions(manifest: &mut Manifest, lowered: &Manifest) -> bool {
+    let mut emitted: Emitted = Emitted::new();
+    for f in &lowered.functions {
+        if !f.attribute.is_pyo3_scan() {
+            continue;
+        }
+        if from_collision(&f.skip_reason) {
+            continue;
+        }
+        let key = qualified(&f.module_path, &f.name);
+        let slot = emitted.entry(key).or_default();
+        if f.skip_reason.is_empty() {
+            slot.insert(f.symbol.clone());
+        }
+    }
+    for s in &lowered.structs {
+        if !s.attribute.is_pyo3_scan() {
+            continue;
+        }
+        let class = qualified(&s.module_path, &s.name);
+        let class_refused_here = from_collision(&s.skip_reason);
+        if !class_refused_here {
+            let slot = emitted.entry(class.clone()).or_default();
+            if s.skip_reason.is_empty() {
+                slot.insert(s.ffi_name.clone());
+            }
+        }
+        for m in &s.methods {
+            if class_refused_here || from_collision(&m.skip_reason) {
+                continue;
+            }
+            let slot = emitted.entry(format!("{class}::{}", m.name)).or_default();
+            if s.skip_reason.is_empty() && m.skip_reason.is_empty() {
+                slot.insert(m.symbol.clone());
+            }
+        }
+    }
+    let before = manifest.clone();
+    clear_collision_reasons(manifest);
+    mark_julia_surface_collisions(manifest, &emitted);
+    *manifest != before
+}
+
+fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
     // One table for every exported symbol of the whole manifest, whatever
     // produces it: a `#[julia]` function's wrapper, a `#[julia]` struct's
     // method and accessor wrappers, and the PyO3 entries the scan just added.
@@ -833,17 +950,26 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         // `rustcall_foo__default_1` and its panic and string helpers, so a root
         // function named `foo__default_1` is a collision — and reserving only
         // `rustcall_foo` let both items through to emit the same symbol (#370).
+        let actual = emitted_arities(emitted, &qualified(&f.module_path, &f.name));
         let mut symbols = Vec::new();
         for omitted in 0..=crate::claims::trailing_default_count(&f.args) {
-            symbols.extend(wrapper_symbols(&crate::claims::default_arity_name(
-                &f.symbol, omitted,
-            )));
+            let arity = crate::claims::default_arity_name(&f.symbol, omitted);
+            // An arity the generator did not emit reserves nothing: there is no
+            // such symbol in the wrapper for anything to collide with.
+            if actual.is_some_and(|a| !a.contains(&arity)) {
+                continue;
+            }
+            symbols.extend(wrapper_symbols(&arity));
             if strings {
                 symbols.extend(string_helper_symbols(&crate::claims::default_arity_name(
                     &f.ffi_name,
                     omitted,
                 )));
             }
+        }
+        if symbols.is_empty() {
+            // Emits nothing at all, so it can neither take a name nor lose one.
+            continue;
         }
         let f_cfg = f.cfg.clone();
         if let Some((_, owner, _)) = taken
@@ -894,6 +1020,12 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         if !s.attribute.is_pyo3_scan() || !s.skip_reason.is_empty() {
             continue;
         }
+        let class_key = qualified(&s.module_path, &s.name);
+        if emitted_arities(emitted, &class_key).is_some_and(|a| a.is_empty()) {
+            // The generator refused the whole class, so there is no handle
+            // type and no destructor; its methods are handled with it.
+            continue;
+        }
         let name = s.ffi_name.clone();
         let s_cfg = s.cfg.clone();
         let free = crate::codegen::struct_free_symbol(&s.ffi_name);
@@ -935,6 +1067,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
         }
         let s = &mut manifest.structs[i];
         let class_name = s.ffi_name.clone();
+        let method_class = class_key;
         for m in &mut s.methods {
             if !m.skip_reason.is_empty() || m.symbol.is_empty() {
                 continue;
@@ -946,17 +1079,23 @@ fn mark_symbol_collisions(manifest: &mut Manifest) {
             let strings =
                 declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type);
             let string_owner = format!("{}_{}", class_name, m.name);
+            let actual = emitted_arities(emitted, &format!("{method_class}::{}", m.name));
             let mut symbols = Vec::new();
             for omitted in 0..=crate::claims::trailing_default_count(&m.args) {
-                symbols.extend(wrapper_symbols(&crate::claims::default_arity_name(
-                    &m.symbol, omitted,
-                )));
+                let arity = crate::claims::default_arity_name(&m.symbol, omitted);
+                if actual.is_some_and(|a| !a.contains(&arity)) {
+                    continue;
+                }
+                symbols.extend(wrapper_symbols(&arity));
                 if strings {
                     symbols.extend(string_helper_symbols(&crate::claims::default_arity_name(
                         &string_owner,
                         omitted,
                     )));
                 }
+            }
+            if symbols.is_empty() {
+                continue;
             }
             match taken
                 .iter()
