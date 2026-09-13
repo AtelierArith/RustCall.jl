@@ -24,7 +24,13 @@ allow='^(src/ruststr\.jl|src/dependencies\.jl|src/exceptions\.jl):'
 
 # Regex literals (r"..."), Regex("...") constructors and eachmatch/match calls
 # whose pattern mentions Rust item keywords or attribute syntax.
-pattern='(r"([^"]*[^A-Za-z_])?(fn|struct|impl|extern|where|derive|no_mangle)([^A-Za-z_][^"]*)?"|Regex\("([^"]*[^A-Za-z_])?(fn|struct|impl|extern|where|derive|no_mangle)([^A-Za-z_][^"]*)?"|r"[^"]*#\\\[|Regex\("[^"]*#\\\\\[)'
+#
+# The `r"` must not be preceded by an identifier character: `var"..."` is how
+# Julia spells a name that is not an identifier (the generated snapshot caches
+# of #253 are `var"#TC#fn#<symbol>"`), and `raw"..."`, `b"..."` and any other
+# string macro ending in `r` are not regexes either. Without the guard the `r`
+# of `var` and the quote after it read as a regex literal.
+pattern='((^|[^A-Za-z0-9_])r"([^"]*[^A-Za-z_])?(fn|struct|impl|extern|where|derive|no_mangle)([^A-Za-z_][^"]*)?"|Regex\("([^"]*[^A-Za-z_])?(fn|struct|impl|extern|where|derive|no_mangle)([^A-Za-z_][^"]*)?"|(^|[^A-Za-z0-9_])r"[^"]*#\\\[|Regex\("[^"]*#\\\\\[)'
 
 hits=$(grep -rnE --include='*.jl' "$pattern" "$dir" | grep -vE "$allow" || true)
 
