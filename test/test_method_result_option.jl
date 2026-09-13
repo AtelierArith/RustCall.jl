@@ -269,11 +269,11 @@ end
     @test occursin("struct COption_Divider_ratio <: FFIByValue", code)
     # The release function is snapshotted with the call pointer: a crate method
     # names its buffer after `<Struct>_<method>` (#268, #277).
-    @test occursin("func_ptr, panic_channel, free_ptr = _call_target(\"rustcall_Divider_checked_div\", \"Divider_checked_div_free_rust_string\")",
+    @test occursin("func_ptr, panic_channel, free_ptr = _call_target(_TC_m_rustcall_Divider_checked_div, \"rustcall_Divider_checked_div\", \"Divider_checked_div_free_rust_string\")",
                    code)
     @test occursin("_result_payload(String, c_payload.err_value, free_ptr)", code)
     # No payload is a string here, so nothing is resolved to release.
-    @test occursin("func_ptr, panic_channel = _call_target(\"rustcall_Divider_ratio\")", code)
+    @test occursin("func_ptr, panic_channel = _call_target(_TC_m_rustcall_Divider_ratio, \"rustcall_Divider_ratio\")", code)
     @test occursin("_result_payload(Float64, c_payload.value, C_NULL)", code)
     # The channel is read before either payload is decoded (#244).
     at = findfirst("function checked_div(self::Divider, d)", code)
