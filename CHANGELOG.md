@@ -40,10 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optimisation — missing, unreadable, or written by another format version, it
   reads as a cache miss — and the artifact key folds in the toolchain
   fingerprint, so a library built by a different extractor or `rustcall_core`
-  can never be restored. An instantiation's own library is opened from a private
-  copy, exactly as a freshly compiled one is, so retiring an image and asking
-  for the instantiation again still produces a new image with its own statics
-  and its own liveness flag (#291).
+  can never be restored. Nothing is ever mapped out of the cache directory
+  itself, because the cache is a mutable store that a concurrent publisher may
+  rewrite and `clear_cache()` may empty: an instantiation's own library is
+  opened from a private copy, exactly as a freshly compiled one is — so
+  retiring an image and asking for the instantiation again still produces a new
+  image with its own statics and its own liveness flag (#291) — and a batch
+  from one copy shared by the whole batch, which is what keeps its members on
+  one image.
 - **A `@rust_crate` wrapper no longer re-resolves its target on every call**
   ([#253](https://github.com/AtelierArith/RustCall.jl/issues/253)). The inline
   and `#[julia]` paths stopped doing that in 0.3.5; a generated crate module

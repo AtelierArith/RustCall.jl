@@ -185,25 +185,62 @@ fresh one.
   liveness flag, which is what `test/test_generic_struct.jl` asserts for #291.
   Reading the cache must not change that; it only removes the compile.
 - A **batch** (`library_key != cache_key`, written by `_batch_monomorphize`) is
-  opened from the cache file itself. Several instantiations naming one library
-  is what a batch *is*, so they share one mapped image — in the session that
-  built it and in every later one.
+  opened from **one** copy shared by the whole batch — `_shared_batch_copy`.
+  Several instantiations naming one library is what a batch *is*, so they must
+  share one mapped image, in the session that built it and in every later one;
+  one path per batch is what gives them one.
+
+Nothing is ever mapped from the cache directory itself. The cache is a
+**mutable** store: a concurrent publisher of the same batch calls
+`save_cached_library(..., force = true)` on exactly that path, `clear_cache()`
+removes it, and on Windows the replacement fails outright while something has
+it open. A copy is also what the freshly-built path has always done, and
+`src/loadpolicy.jl` records why (#253 review of #254).
 """
 function _restore_generic_artifact(cache_key::String, member::AbstractString)
     found = _cached_generic_artifact(cache_key, member)
     found === nothing && return nothing
-    lib_path = found.cached
-    if found.record.library_key == cache_key
-        private = joinpath(mktempdir(), basename(found.cached))
-        try
-            cp(found.cached, private)
-            lib_path = private
-        catch e
-            @debug "Could not copy a restored monomorphization" cache_key exception = e
-            return nothing
-        end
+    try
+        return (; members = found.record.members,
+                 lib_path = found.record.library_key == cache_key ?
+                            _private_artifact_copy(found.cached) :
+                            _shared_batch_copy(found.record.library_key, found.cached))
+    catch e
+        @debug "Could not copy a restored monomorphization" cache_key exception = e
+        return nothing
     end
-    return (; lib_path, members = found.record.members)
+end
+
+# A copy nothing else will ever open: a fresh image, its own statics, its own
+# liveness flag, exactly as a build of this instantiation would have produced.
+function _private_artifact_copy(cached::String)
+    private = joinpath(mktempdir(), basename(cached))
+    cp(cached, private)
+    return private
+end
+
+"""
+    _BATCH_LIBRARY_COPIES
+
+`library_key` → the one path this process opens that batch from.
+
+A batch library holds several instantiations, and `load_artifact!` keys the
+handle and the liveness flag on the **path**, so every member has to name the
+same file or the batch stops being one image. That file cannot be the cached
+one (see `_restore_generic_artifact`), so it is a copy — made once, remembered
+here, and used by every member for the life of the process.
+"""
+const _BATCH_LIBRARY_COPIES = _state_view(:batch_library_copies, Dict{String, String}())
+
+function _shared_batch_copy(library_key::String, cached::String)
+    existing = get(_BATCH_LIBRARY_COPIES, library_key, nothing)
+    existing === nothing || return existing
+    # Copied outside STATE — it is file I/O — and published only if no other
+    # task has already supplied this key. Whoever is recorded wins, so every
+    # member of the batch opens one path and therefore one image; a loser's
+    # copy is an unused temporary file.
+    private = _private_artifact_copy(cached)
+    return get!(_BATCH_LIBRARY_COPIES, library_key, private)
 end
 
 """

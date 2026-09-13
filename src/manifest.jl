@@ -1139,6 +1139,12 @@ end
 The record filed under `cache_key`, or `nothing` when there is none, it is
 unreadable, or it was written by another format version. Never throws: a
 damaged record is a cache miss, and a cache miss only costs a rebuild.
+
+"Damaged" includes a file that parses as TOML but says something a record
+cannot mean — `arg_types = [1]`, a string where a list belongs. Every field is
+checked for its type rather than converted and hoped for, because the callers
+in `src/generics.jl` treat this as a lookup: a throw here would abort a
+monomorphization that the cache exists only to *speed up* (#254 review).
 """
 function load_specialization_record(cache_key::AbstractString)
     path = _specialization_record_path(cache_key)
@@ -1157,27 +1163,45 @@ function load_specialization_record(cache_key::AbstractString)
     members = Pair{String, SpecializedFunction}[]
     for entry in entries
         entry isa AbstractDict || return nothing
-        member = get(entry, "member", nothing)
-        member isa AbstractString || return nothing
-        symbol = get(entry, "symbol", nothing)
-        symbol isa AbstractString && !isempty(symbol) || return nothing
-        arg_types = get(entry, "arg_types", nothing)
-        arg_abis = get(entry, "arg_abis", nothing)
-        (arg_types isa AbstractVector && arg_abis isa AbstractVector) || return nothing
+        member = _record_string(entry, "member")
+        member === nothing && return nothing
+        symbol = _record_string(entry, "symbol")
+        (symbol === nothing || isempty(symbol)) && return nothing
+        name = _record_string(entry, "name", "")
+        return_type = _record_string(entry, "return_type", "")
+        ffi_name = _record_string(entry, "ffi_name", "")
+        (name === nothing || return_type === nothing || ffi_name === nothing) && return nothing
+        arg_types = _record_strings(entry, "arg_types")
+        arg_abis = _record_strings(entry, "arg_abis")
+        (arg_types === nothing || arg_abis === nothing) && return nothing
         length(arg_types) == length(arg_abis) || return nothing
-        push!(members, String(member) => SpecializedFunction(
-            "",
-            String(get(entry, "name", "")),
-            String(symbol),
-            String[String(t) for t in arg_types],
-            String(get(entry, "return_type", "")),
-            String[String(a) for a in arg_abis],
-            get(entry, "has_owned_string_helper", false) === true,
-            get(entry, "has_borrowed_string_helper", false) === true,
-            String(get(entry, "ffi_name", "")),
-        ))
+        owned = get(entry, "has_owned_string_helper", false)
+        borrowed = get(entry, "has_borrowed_string_helper", false)
+        (owned isa Bool && borrowed isa Bool) || return nothing
+        push!(members, member => SpecializedFunction(
+            "", name, symbol, arg_types, return_type, arg_abis, owned, borrowed, ffi_name))
     end
     return SpecializationRecord(String(library_key), members)
+end
+
+# A record field that must be a string, or `nothing` when it is anything else.
+# `default` is returned for an absent key; pass none to require the key.
+function _record_string(entry::AbstractDict, key::AbstractString,
+                        default::Union{String, Nothing} = nothing)
+    value = get(entry, key, nothing)
+    value === nothing && return default
+    value isa AbstractString || return nothing
+    return String(value)
+end
+
+# ...and a field that must be a list of strings. An absent key is an empty list;
+# a list with one non-string element is a damaged record, not an empty one.
+function _record_strings(entry::AbstractDict, key::AbstractString)
+    value = get(entry, key, nothing)
+    value === nothing && return String[]
+    value isa AbstractVector || return nothing
+    all(v -> v isa AbstractString, value) || return nothing
+    return String[String(v) for v in value]
 end
 
 # ----------------------------------------------------------------------------

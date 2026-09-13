@@ -352,6 +352,10 @@ file, exactly as a freshly compiled one is opened from its own build directory:
 retiring an image and asking for the instantiation again still produces a *new*
 image, with its own Rust statics and its own liveness flag (#291).
 
+Nothing is mapped out of the cache directory itself. The cache is a mutable
+store — a concurrent publisher of the same artifact rewrites that file, and
+`RustCall.clear_cache()` removes it — so what is opened is always a copy.
+
 ### Compiling several instantiations at once
 
 Lazy instantiation cannot know which types will be asked for next, so it builds

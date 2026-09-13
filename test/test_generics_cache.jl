@@ -7,6 +7,7 @@
 
 using RustCall
 using Test
+using TOML
 
 # The child sessions do the real work: the point of the feature is what
 # survives a process boundary, and that cannot be observed in one process.
@@ -237,6 +238,23 @@ end
                 rm(path)
                 @test RustCall.load_specialization_record(key) === nothing
 
+                # A record that parses as TOML but says something a record
+                # cannot mean is a miss too, not a `MethodError` out of the
+                # reconstruction — the callers treat this as a lookup, and a
+                # throw would abort a monomorphization the cache exists only to
+                # speed up (#254 review).
+                RustCall.save_specialization_record(key, record)
+                for (field, bad) in ("arg_types" => [1], "arg_abis" => "not a list",
+                                     "symbol" => 7, "name" => [], "ffi_name" => 1.5,
+                                     "return_type" => true,
+                                     "has_owned_string_helper" => "yes")
+                    doc = TOML.parsefile(path)
+                    doc["functions"][1][field] = bad
+                    open(io -> TOML.print(io, doc), path, "w")
+                    @test RustCall.load_specialization_record(key) === nothing
+                    @test RustCall._cached_generic_artifact(key, "f") === nothing
+                end
+
                 # A record with no library beside it never claims a hit.
                 RustCall.save_specialization_record(key, record)
                 @test RustCall._restore_generic_artifact(key, "f") === nothing
@@ -284,4 +302,47 @@ end
     @test_throws ArgumentError RustCall._generic_binding(single, Dict(:T => "i32"))
 
     @test_throws ErrorException RustCall.precompile_generics("gc254_not_registered", Int32)
+end
+
+@testset "#254: a batch is never mapped from the cache file" begin
+    # `load_artifact!` keys the handle and the liveness flag on the *path*, so
+    # every member of a batch has to name one file or the batch stops being one
+    # image — and that file must not be the cached one. The cache is a mutable
+    # store: a concurrent publisher of the same batch calls `save_cached_library`
+    # on exactly that path, `clear_cache()` removes it, and on Windows the
+    # replacement fails outright while something has it open (#254 review).
+    mktempdir() do dir
+        withenv("RUSTCALL_CACHE_DIR" => dir) do
+            RustCall._reset_cache_dir_memo!()
+            key = "1"^64
+            try
+                cached = joinpath(RustCall.get_cache_dir(),
+                                  "pretend_batch" * RustCall.get_library_extension())
+                mkpath(dirname(cached))
+                write(cached, "the batch, as published")
+
+                copy1 = RustCall._shared_batch_copy(key, cached)
+                @test copy1 != cached
+                @test !startswith(abspath(copy1), abspath(RustCall.get_cache_dir()))
+                @test read(copy1, String) == "the batch, as published"
+                # One path per batch: a second member gets the same file.
+                @test RustCall._shared_batch_copy(key, cached) == copy1
+
+                # A publisher replacing the cached file leaves the mapped copy
+                # alone, and the batch keeps naming it.
+                write(cached, "a concurrent publisher's replacement")
+                @test read(copy1, String) == "the batch, as published"
+                @test RustCall._shared_batch_copy(key, cached) == copy1
+
+                # ...and the private arm is the opposite: a fresh file every
+                # time, which is what makes a rebuilt instantiation a new image.
+                private1 = RustCall._private_artifact_copy(cached)
+                private2 = RustCall._private_artifact_copy(cached)
+                @test private1 != private2
+            finally
+                delete!(RustCall._BATCH_LIBRARY_COPIES, key)
+                RustCall._reset_cache_dir_memo!()
+            end
+        end
+    end
 end
