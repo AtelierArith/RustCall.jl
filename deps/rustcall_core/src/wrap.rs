@@ -87,8 +87,30 @@ pub struct WrapperCrate {
     pub crate_name: String,
     /// Source of the generated `src/lib.rs`.
     pub lib_rs: String,
+    /// Whether `lib_rs` names `::rustcall_pyo3` — the alias the wrapper's
+    /// `Cargo.toml` must then declare (`generate_pyo3_wrapper_cargo_toml`), and
+    /// the reason such a wrapper needs pyo3 0.26 or later.
+    ///
+    /// Reported here rather than inferred on the Julia side. Julia does not
+    /// parse Rust (#264), and every proxy for this is wrong in one direction or
+    /// the other: a defaulted callable the generator **refused** leaves a
+    /// `python_default` in the manifest and no dispatcher in the source, while a
+    /// class made Python-owned by exactly such a refused method has a
+    /// `Py<PyAny>` handle and no emitted default to infer it from (#371). Even
+    /// scanning this string is wrong — a `#[pyfunction] fn rustcall_pyo3_status`
+    /// puts those characters in a symbol (#392 review). The generator is the
+    /// only thing that knows, because it is what writes the path.
+    #[serde(default = "default_true")]
+    pub uses_python_dispatch: bool,
     /// What the generated crate exports.
     pub manifest: Manifest,
+}
+
+/// `true`, for `serde(default)` on a field an older manifest may not carry.
+/// Declaring the alias when it is not needed only adds a dependency; omitting
+/// one that is needed does not compile.
+fn default_true() -> bool {
+    true
 }
 
 impl WrapperCrate {
@@ -117,6 +139,48 @@ impl WrapperCrate {
 /// is not, which is exactly what makes a Python-free wrapper build possible.
 pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -> WrapperCrate {
     let krate = format_ident!("{}", crate_name.replace('-', "_"));
+    // Lowering and the symbol analysis each need the other's answer: the
+    // analysis reserves the symbols an entry *will* emit, and only lowering
+    // knows whether that entry is emitted at all. So lower, report what came
+    // out, run the analysis again, and repeat while the answer keeps changing
+    // (#392 review). The first pass is exactly what the scan already decided,
+    // so a crate where nothing is refused settles after one round.
+    //
+    // The loop shrinks the set of reservations monotonically — an entry the
+    // generator refused never comes back — so it terminates; the bound is
+    // belt and braces against a future change that makes a refusal depend on a
+    // reinstated item.
+    //
+    // It counts **methods too**, not just their classes: each pass can release
+    // one claim, and a class carries as many claimants as it has methods — four
+    // refused methods whose names differ only in case contend for one
+    // upper-cased panic-slot name, and a bound that counted the class once
+    // would stop while a valid fifth was still marked as their loser (#392
+    // review).
+    let mut current = scanned.clone();
+    let mut known = crate::pyo3::Emitted::new();
+    let bound = scanned.functions.len()
+        + scanned.structs.len()
+        + scanned
+            .structs
+            .iter()
+            .map(|s| s.methods.len() + s.fields.len())
+            .sum::<usize>()
+        + 2;
+    for _ in 0..bound {
+        let lowered = lower_once(&current, &krate, cfg_resolved);
+        let mut next = scanned.clone();
+        if !crate::pyo3::remark_collisions(&mut next, &lowered.manifest, &mut known)
+            || next == current
+        {
+            return lowered;
+        }
+        current = next;
+    }
+    lower_once(&current, &krate, cfg_resolved)
+}
+
+fn lower_once(scanned: &Manifest, krate: &Ident, cfg_resolved: bool) -> WrapperCrate {
     let mut out = Manifest::new(scanned.mode);
     let mut items = TokenStream2::new();
 
@@ -137,7 +201,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
             out.functions.push(entry);
             continue;
         }
-        match function_wrappers(&krate, &entry) {
+        match function_wrappers(krate, &entry) {
             Ok((tokens, updated)) => {
                 items.extend(tokens);
                 out.functions.extend(updated);
@@ -176,7 +240,7 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
             out.structs.push(entry);
             continue;
         }
-        items.extend(class_wrappers(&krate, &mut entry, cfg_resolved));
+        items.extend(class_wrappers(krate, &mut entry, cfg_resolved));
         out.structs.push(entry);
     }
 
@@ -186,10 +250,18 @@ pub fn wrapper_crate(scanned: &Manifest, crate_name: &str, cfg_resolved: bool) -
         .any(|f| !f.attribute.is_pyo3_scan() && f.exported)
         || scanned.structs.iter().any(|s| !s.attribute.is_pyo3_scan());
 
+    let lib_rs = render(krate, items, uses_user_crate);
+    // Decided on the token path the generator itself emits, not on a name that
+    // may appear for other reasons: `::rustcall_pyo3::` is what `wrapper_args`,
+    // the handles and the dispatch helpers write, and nothing else can produce
+    // a leading `::` before it.
+    let uses_python_dispatch =
+        lib_rs.contains(":: rustcall_pyo3 ::") || lib_rs.contains("::rustcall_pyo3::");
     WrapperCrate {
         schema_version: out.schema_version,
         crate_name: krate.to_string(),
-        lib_rs: render(&krate, items, uses_user_crate),
+        lib_rs,
+        uses_python_dispatch,
         manifest: out,
     }
 }
@@ -299,7 +371,7 @@ fn function_wrappers(
     krate: &Ident,
     f: &crate::manifest::Function,
 ) -> Result<(TokenStream2, Vec<crate::manifest::Function>), String> {
-    let defaults = trailing_default_count(&f.args);
+    let defaults = crate::claims::trailing_default_count(&f.args);
     let has_defaults = f.args.iter().any(|arg| !arg.python_default.is_empty());
     if !has_defaults {
         let (tokens, entry) = function_wrapper(krate, f)?;
@@ -312,21 +384,14 @@ fn function_wrappers(
         let mut entry = f.clone();
         entry.args.truncate(f.args.len() - omitted);
         if omitted > 0 {
-            entry.symbol = format!("{}__default_{omitted}", f.symbol);
-            entry.ffi_name = format!("{}__default_{omitted}", f.ffi_name);
+            entry.symbol = crate::claims::default_arity_name(&f.symbol, omitted);
+            entry.ffi_name = crate::claims::default_arity_name(&f.ffi_name, omitted);
         }
         let (generated, updated) = python_function_wrapper(krate, &entry, f)?;
         tokens.extend(generated);
         entries.push(updated);
     }
     Ok((tokens, entries))
-}
-
-fn trailing_default_count(args: &[Arg]) -> usize {
-    args.iter()
-        .rev()
-        .take_while(|arg| !arg.python_default.is_empty())
-        .count()
 }
 
 fn python_function_wrapper(
@@ -344,6 +409,12 @@ fn python_function_wrapper(
             &entry.return_type,
         ));
     }
+    // Before anything reads the return type: this wrapper answers from inside
+    // `Python::attach`, where a `&str` cannot be returned (`python_owned_returns`).
+    // Lowering it here rather than at each use keeps the helper's signature, the
+    // ABI plan and the manifest entry describing the same thing.
+    let lowered = python_owned_returns(entry);
+    let entry = &lowered;
     let args = wrapper_args(&entry.args)?;
     let symbol = symbol_ident(&entry.symbol)?;
     let owner = format_ident!("{}", entry.ffi_name);
@@ -454,6 +525,41 @@ fn python_kind<'a>(f: &'a crate::manifest::Function, name: &Ident) -> &'a str {
         .find(|arg| *name == arg.name)
         .map(|arg| arg.python_kind.as_str())
         .unwrap_or("")
+}
+
+/// The spelling a **Python-owned** wrapper must return in place of `spelling`.
+///
+/// `Some("String")` for a borrowed `&str`, `None` for anything else.
+///
+/// A Python-owned wrapper produces its result inside `Python::attach`, and a
+/// `&str` extracted there borrows the Python string bound to `py`. It cannot
+/// leave the closure — the generated helper did not compile at all, so one
+/// `&str`-returning method failed the whole wrapper crate even though borrowed
+/// strings are otherwise supported (#370). Nor should it: the buffer belongs to
+/// a Python object the attachment is the only thing keeping alive, so a pointer
+/// to it is dangling by the time Julia reads it.
+///
+/// Extracting an owned `String` instead costs a copy and puts the value on the
+/// existing owned-string ABI, which Julia already releases through
+/// `<owner>_free_rust_string`. Only the Python-owned flavours go through here;
+/// a plain `#[pyfunction]` returning `&str` still uses the borrowed ABI, where
+/// the buffer is the crate's own and outlives the call.
+fn python_owned_string_return(spelling: &str) -> Option<String> {
+    let ty: Type = syn::parse_str(spelling).ok()?;
+    is_str_ref_type(&ty).then(|| "String".to_string())
+}
+
+/// `f` with every borrowed-string return lowered to an owned one
+/// ([`python_owned_string_return`]).
+fn python_owned_returns(f: &crate::manifest::Function) -> crate::manifest::Function {
+    let mut lowered = f.clone();
+    if let Some(owned) = python_owned_string_return(&lowered.return_type) {
+        lowered.return_type = owned;
+    }
+    if let Some(owned) = python_owned_string_return(&lowered.ok_type) {
+        lowered.ok_type = owned;
+    }
+    lowered
 }
 
 fn python_extract_type(f: &crate::manifest::Function) -> Result<Type, String> {
@@ -800,12 +906,12 @@ fn python_class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> T
             s.methods.push(refused);
             continue;
         }
-        let defaults = trailing_default_count(&original.args);
+        let defaults = crate::claims::trailing_default_count(&original.args);
         for omitted in 0..=defaults {
             let mut entry = original.clone();
             entry.args.truncate(original.args.len() - omitted);
             if omitted > 0 {
-                entry.symbol = format!("{}__default_{omitted}", original.symbol);
+                entry.symbol = crate::claims::default_arity_name(&original.symbol, omitted);
             }
             match python_method_wrapper(
                 &class,
@@ -987,6 +1093,15 @@ fn python_method_wrapper(
     entry: &mut Method,
     original: &Method,
 ) -> Result<TokenStream2, String> {
+    // As for free functions: a method answering from inside `Python::attach`
+    // cannot return a borrowed string (`python_owned_returns`). A getter is the
+    // same shape — `getattr(...).extract::<&str>()` borrows `py` too.
+    if let Some(owned) = python_owned_string_return(&entry.return_type) {
+        entry.return_type = owned;
+    }
+    if let Some(owned) = python_owned_string_return(&entry.ok_type) {
+        entry.ok_type = owned;
+    }
     let native_args = wrapper_args(&entry.args)?;
     let symbol = symbol_ident(&entry.symbol)?;
     let helper = format_ident!(
@@ -1011,10 +1126,10 @@ fn python_method_wrapper(
         original.python_name.clone()
     };
     let omitted = original.args.len() - entry.args.len();
-    let mut owner_name = crate::codegen::method_string_owner(class_name, &entry.name);
-    if omitted > 0 {
-        owner_name.push_str(&format!("__default_{omitted}"));
-    }
+    let owner_name = crate::claims::default_arity_name(
+        &crate::codegen::method_string_owner(class_name, &entry.name),
+        omitted,
+    );
 
     if entry.is_constructor {
         let attached = quote! {

@@ -306,6 +306,206 @@ fn python_owned_classes_keep_descriptor_and_vec_field_abis() {
     assert!(!wrapped.lib_rs.contains("call_method(\"doubled\""));
 }
 
+/// The generated default-arity entry points are symbols like any other, and have
+/// to be reserved before wrappers are emitted (#370). `foo(value = 1)` also
+/// defines `rustcall_foo__default_1`, so a root function actually *named*
+/// `foo__default_1` is a collision — and reserving only `rustcall_foo` let both
+/// items through to define the same symbol twice.
+#[test]
+fn default_arity_symbols_are_reserved_against_a_natural_name() {
+    let scan = extract(
+        r#"
+        #[pyfunction]
+        #[pyo3(signature = (value = 1))]
+        pub fn foo(value: i32) -> i32 { value }
+
+        #[pyfunction]
+        pub fn foo__default_1() -> i32 { 0 }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let refused: Vec<_> = wrapped
+        .manifest
+        .functions
+        .iter()
+        .filter(|f| !f.skip_reason.is_empty())
+        .collect();
+    // One of the two has to lose; which one is the existing ordering rule's
+    // business. What must not happen is both being emitted.
+    assert_eq!(refused.len(), 1, "expected exactly one refusal");
+    assert!(
+        refused[0].skip_reason.contains("symbol"),
+        "refused for the wrong reason: {}",
+        refused[0].skip_reason
+    );
+    // Exactly one definition of the contested symbol. The open paren matters:
+    // without it this also counts `rustcall_foo__default_1_take_panic`.
+    assert_eq!(
+        wrapped
+            .lib_rs
+            .matches("fn rustcall_foo__default_1(")
+            .count(),
+        1,
+        "the contested symbol is defined more than once"
+    );
+}
+
+/// The same for a class: a defaulted method also defines
+/// `rustcall_C_foo__default_1`, so a method literally named `foo__default_1` in
+/// that class is a collision (#392 review — the first fix covered only free
+/// functions).
+#[test]
+fn method_default_arity_symbols_are_reserved_too() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct C { value: i32 }
+        #[pymethods]
+        impl C {
+            #[new]
+            pub fn new() -> Self { Self { value: 0 } }
+            #[pyo3(signature = (value = 1))]
+            pub fn foo(&self, value: i32) -> i32 { value }
+            pub fn foo__default_1(&self) -> i32 { 0 }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let class = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "C")
+        .unwrap();
+    let refused: Vec<_> = class
+        .methods
+        .iter()
+        .filter(|m| !m.skip_reason.is_empty())
+        .collect();
+    assert_eq!(refused.len(), 1, "expected exactly one refusal");
+    assert!(
+        refused[0].skip_reason.contains("symbol"),
+        "refused for the wrong reason: {}",
+        refused[0].skip_reason
+    );
+    assert_eq!(
+        wrapped
+            .lib_rs
+            .matches("fn rustcall_C_foo__default_1(")
+            .count(),
+        1,
+        "the contested symbol is defined more than once"
+    );
+}
+
+/// A defaulted function on its own still gets every arity.
+#[test]
+fn default_arity_symbols_are_emitted_when_nothing_collides() {
+    let scan = extract(
+        r#"
+        #[pyfunction]
+        #[pyo3(signature = (value = 1))]
+        pub fn solo(value: i32) -> i32 { value }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    assert!(wrapped
+        .manifest
+        .functions
+        .iter()
+        .all(|f| f.skip_reason.is_empty()));
+    assert!(wrapped.lib_rs.contains("fn rustcall_solo("));
+    assert!(wrapped.lib_rs.contains("fn rustcall_solo__default_1("));
+}
+
+/// A Python-owned method returning `&str` used to fail the whole wrapper crate
+/// (#370): the reference is extracted inside `Python::attach` and borrows the
+/// Python string bound to `py`, so the helper could not return it — and had it
+/// compiled, the buffer belongs to an object only the attachment keeps alive.
+#[test]
+fn python_owned_borrowed_string_returns_are_lowered_to_owned() {
+    let scan = extract(
+        r#"
+        #[pyclass]
+        pub struct Base;
+        #[pyclass(extends = Base)]
+        pub struct Child { label: String }
+        #[pymethods]
+        impl Child {
+            #[new]
+            pub fn new() -> (Self, Base) { (Self { label: String::from("x") }, Base) }
+            pub fn name(&self) -> &str { &self.label }
+            #[getter]
+            pub fn tag(&self) -> &str { &self.label }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let class = wrapped
+        .manifest
+        .structs
+        .iter()
+        .find(|class| class.name == "Child")
+        .unwrap();
+    // A plain method and a getter take the same route.
+    for name in ["name", "tag"] {
+        let method = class
+            .methods
+            .iter()
+            .find(|method| method.name == name)
+            .unwrap();
+        assert_eq!(method.skip_reason, "", "{name} was refused");
+        // The manifest describes the wrapper, not the user's signature: this
+        // one hands Julia an owned buffer to release, not a borrowed pointer.
+        assert_eq!(method.return_type, "String", "{name}");
+        assert_eq!(method.return_abi, "string", "{name}");
+        assert_eq!(method.string_owner, format!("Child_{name}"));
+        assert!(
+            wrapped
+                .lib_rs
+                .contains(&format!("pub struct Child_{name}_RustCallOwnedString")),
+            "{name} has no owned-string buffer"
+        );
+    }
+    // The shape that did not compile, in the exact place it appeared.
+    assert!(!wrapped.lib_rs.contains("PyResult<&str>"));
+    assert!(wrapped
+        .lib_rs
+        .contains("::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<String>"));
+}
+
+/// ...and the lowering stays inside the Python-owned flavours. A plain
+/// `#[pyfunction]` returning `&str` is called directly, and its buffer is the
+/// crate's own, so it keeps the borrowed ABI and the copy it saves.
+#[test]
+fn a_plain_pyfunction_keeps_the_borrowed_string_abi() {
+    let scan = extract(
+        r#"
+        #[pyfunction]
+        pub fn label() -> &'static str { "x" }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = wrapper_crate(&scan, "user_crate", true);
+    let label = wrapped
+        .manifest
+        .functions
+        .iter()
+        .find(|f| f.name == "label")
+        .unwrap();
+    assert_eq!(label.return_abi, "str");
+    assert_eq!(label.return_type, "&'static str");
+}
+
 #[test]
 fn python_owned_handle_decision_survives_a_skipped_defaulted_method() {
     let scan = extract(

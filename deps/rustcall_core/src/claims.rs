@@ -23,7 +23,7 @@
 //! exported, and callers that care (a Julia-facing diagnostic, say) filter.
 
 use crate::codegen::{panic_symbol, struct_free_symbol};
-use crate::manifest::{Function, Struct};
+use crate::manifest::{Arg, Function, Struct};
 
 /// Which of Rust's two name spaces a generated item occupies. `struct Foo`
 /// and `fn Foo` may coexist in one module, so two claims of one spelling are
@@ -300,6 +300,33 @@ pub fn declares_borrowed_string(abis: [&str; 4]) -> bool {
 /// Julia can register its return type but for which RustCall generates no
 /// wrapper at all — a hand-written `release` / `release_take_panic` pair is
 /// two unrelated exports, not a collision (#338).
+/// How many **trailing** arguments carry a Python default.
+///
+/// The PyO3 wrapper crate emits one entry point per arity a Python caller may
+/// use: the full one, then one for each trailing default it omits
+/// (`crate::wrap`). This is the rule that decides how many, and it lives here
+/// rather than next to the generator because collision analysis has to reserve
+/// exactly the same set — not reserving them let `foo(value = 1)` and a root
+/// function literally named `foo__default_1` both through, and the generated
+/// `rustcall_foo__default_1` then collided with the second one's natural symbol
+/// (#370).
+pub fn trailing_default_count(args: &[Arg]) -> usize {
+    args.iter()
+        .rev()
+        .take_while(|arg| !arg.python_default.is_empty())
+        .count()
+}
+
+/// The name `base` takes in the entry point that omits `omitted` trailing
+/// defaults. `omitted == 0` is `base` itself.
+pub fn default_arity_name(base: &str, omitted: usize) -> String {
+    if omitted == 0 {
+        base.to_string()
+    } else {
+        format!("{base}__default_{omitted}")
+    }
+}
+
 pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
     if !f.exported || f.symbol.is_empty() || (policy.skip_cfg_gated && !f.cfg.is_empty()) {
         return Vec::new();
