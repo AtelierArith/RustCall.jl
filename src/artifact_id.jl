@@ -700,14 +700,6 @@ version like any other.
 const RUSTCALL_RELEASE_CRATES = ("rustcall_core", "rustcall_extract",
                                  "rustcall_julia_macros", "rustcall_julia_macros_impl")
 
-# A directory as one path: symlinks resolved when it exists (`/tmp` is
-# `/private/tmp` on macOS), absolute otherwise.
-_canonical_dir(path::AbstractString) = try
-    realpath(String(path))
-catch
-    abspath(String(path))
-end
-
 # This package's own directory for one of `RUSTCALL_RELEASE_CRATES`, canonical.
 _rustcall_release_crate_dir(name::AbstractString) =
     _canonical_dir(joinpath(dirname(@__DIR__), "deps", String(name)))
