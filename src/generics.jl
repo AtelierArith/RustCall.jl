@@ -567,13 +567,24 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     error("An instantiation of '$func_name' was released repeatedly while it was being published")
 end
 
-# Whether `handle` is still the image registered as `lib_name`. Checked under
-# `REGISTRY_LOCK` in the transaction that publishes an instantiation, so that
-# a publication and a release of the same image are serialized: whichever
-# comes second sees the other (#397 review). Caller holds REGISTRY_LOCK.
-function _image_is_current(lib_name::String, handle::Ptr{Cvoid})
+# Whether the image an instantiation resolved its pointers on — `handle`, at
+# `generation` of `lib_name` — is still the one registered under that name.
+# Checked under `REGISTRY_LOCK` in the transaction that publishes an
+# instantiation, so that a publication and a release of the same image are
+# serialized: whichever comes second sees the other (#397 review).
+#
+# The generation is compared as well as the handle, because a handle is not an
+# identity: with `close = true` the released image is unmapped, and the
+# instantiation's *next* image — registered under the same name, since the
+# name is derived from the artifact key — can be handed the same pointer value
+# by the dynamic loader. Pointer equality alone would then let a task that
+# resolved its symbols on the closed image publish them against the new one.
+# Every load of a name advances `ARTIFACT_GENERATIONS[name]`, so the pair is
+# what names one image. Caller holds REGISTRY_LOCK.
+function _image_is_current(lib_name::String, handle::Ptr{Cvoid}, generation::Int)
     entry = get(RUST_LIBRARIES, lib_name, nothing)
-    return entry !== nothing && entry[1] == handle
+    return entry !== nothing && entry[1] == handle &&
+           get(ARTIFACT_GENERATIONS, lib_name, 0) == generation
 end
 
 # One attempt at `monomorphize_function`; `nothing` means the image resolved
@@ -721,7 +732,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
         return lock(REGISTRY_LOCK) do
             # Released while this task was between the load and here: do not
             # cache a pointer into an image the registry has let go of.
-            _image_is_current(lib_name, artifact.handle) || return nothing
+            _image_is_current(lib_name, artifact.handle, artifact.generation) || return nothing
             MONOMORPHIZATION_OWNERS[cache_key] = func_name
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
@@ -890,7 +901,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             cached === nothing || return cached
             # Same guard as the function path: an image released between the
             # load and this publication is not cached (#397 review).
-            _image_is_current(lib_name, artifact.handle) || return nothing
+            _image_is_current(lib_name, artifact.handle, artifact.generation) || return nothing
             for (key, info) in compiled
                 MONOMORPHIZED_FUNCTIONS[key] = info
             end
@@ -1098,52 +1109,52 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
 
     released = 0
     for (lib_name, _) in images
-        # Counted *before* the unload, because `purge_library_state!` inside it
-        # drops this library's `MONOMORPHIZED_FUNCTIONS` rows itself. The image
-        # is the unit: every instantiation whose pointers were resolved on
-        # this handle leaves with it — including a batch sibling registered
-        # under another name, and an instantiation of another generic that
-        # shares the batch — and that is what the return value counts.
-        handle = lock(REGISTRY_LOCK) do
+        # One state transition does everything that must precede the
+        # retirement (#397 review). Capture the image — handle *and*
+        # generation, since a handle value can be reused by the loader — count
+        # what leaves with it, and drop every memo that could revive it: the
+        # process-private copy a batch is opened from (`_shared_batch_copy`),
+        # and the path record of every name on this handle. Doing this before
+        # `unload_artifact!` rather than after is the point: a restore that
+        # lands in between now makes a fresh copy and loads a fresh path, and
+        # if it loses the `:insert_only` race to the still-registered image it
+        # is retired with it a moment later. Counted before the unload as
+        # well, because `purge_library_state!` inside it drops the rows.
+        handle, generation, names = lock(REGISTRY_LOCK) do
             entry = get(RUST_LIBRARIES, lib_name, nothing)
-            entry === nothing ? C_NULL : entry[1]
+            entry === nothing && return (C_NULL, 0, String[])
+            handle = entry[1]
+            generation = get(ARTIFACT_GENERATIONS, lib_name, 0)
+            names = String[n for (n, e) in RUST_LIBRARIES if e[1] == handle]
+            released += count(info -> info.handle == handle && info.generation == generation,
+                              values(MONOMORPHIZED_FUNCTIONS))
+            paths = Set{String}(GENERIC_IMAGE_PATHS[n] for n in names
+                                if haskey(GENERIC_IMAGE_PATHS, n))
+            for (batch, path) in collect(_BATCH_LIBRARY_COPIES)
+                path in paths && delete!(_BATCH_LIBRARY_COPIES, batch)
+            end
+            for n in names
+                delete!(GENERIC_IMAGE_PATHS, n)
+            end
+            (handle, generation, names)
         end
         handle == C_NULL && continue
-        released += lock(REGISTRY_LOCK) do
-            count(info -> info.handle == handle, values(MONOMORPHIZED_FUNCTIONS))
-        end
+        # Unloading one name of an image unloads every name of it, so a batch
+        # member's siblings — registered under their own names on the same
+        # handle — leave the registry with it.
         unload_artifact!(generics_policy(), lib_name; close) ||
             @debug "release_generics: '$lib_name' was not registered" lib_name
         lock(REGISTRY_LOCK) do
-            # Unloading one name of an image unloads every name of it, so a
-            # batch member's siblings — registered under their own names on the
-            # same handle — have just left the registry too. Everything that
-            # belongs to a name no longer registered goes: the instantiation
-            # rows, their owners, and the path memo.
-            gone = Set{String}(n for n in Base.keys(GENERIC_IMAGE_PATHS)
-                               if !haskey(RUST_LIBRARIES, n))
-            # Rows the purge could not see: an instantiation resolved on this
-            # handle but registered under a name that was never in
-            # `GENERIC_IMAGE_PATHS` cannot exist, but a row keyed by handle is
-            # the exact statement, so it is what is swept.
+            # `purge_library_state!` dropped this library's rows by name; rows
+            # resolved on this image under a sibling name go the same way —
+            # matched by handle *and* generation, so a row published for a
+            # later image that happens to reuse the pointer value is kept.
             for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
-                (info.handle == handle || info.lib_name in gone) &&
+                (info.handle == handle && info.generation == generation) &&
                     delete!(MONOMORPHIZED_FUNCTIONS, key)
             end
             for key in collect(Base.keys(MONOMORPHIZATION_OWNERS))
                 haskey(MONOMORPHIZED_FUNCTIONS, key) || delete!(MONOMORPHIZATION_OWNERS, key)
-            end
-            # A batch image is opened from one process-private copy shared by
-            # its members (`_shared_batch_copy`). Loading that same path again
-            # would hand back the retired image — same handle, same flag —
-            # so the memo of the copy goes with the image, and the next restore
-            # makes a fresh copy and gets a fresh image.
-            gone_paths = Set{String}(GENERIC_IMAGE_PATHS[n] for n in gone)
-            for n in gone
-                delete!(GENERIC_IMAGE_PATHS, n)
-            end
-            for (batch, path) in collect(_BATCH_LIBRARY_COPIES)
-                path in gone_paths && delete!(_BATCH_LIBRARY_COPIES, batch)
             end
         end
     end

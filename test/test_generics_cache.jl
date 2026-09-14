@@ -442,20 +442,28 @@ end
                 # the fresh one the release promised (#397 review).
                 RustCall.call_generic_function("gc397_id", Float32(1))
                 info = cached(Float32)
-                @test lock(RustCall.REGISTRY_LOCK) do
-                    RustCall._image_is_current(info.lib_name, info.handle)
+                current(i, gen = i.generation) = lock(RustCall.REGISTRY_LOCK) do
+                    RustCall._image_is_current(i.lib_name, i.handle, gen)
                 end
+                @test current(info)
                 @test RustCall.release_generics("gc397_id") == 1
+                @test !current(info)
                 @test !lock(RustCall.REGISTRY_LOCK) do
-                    RustCall._image_is_current(info.lib_name, info.handle)
-                end
-                @test !lock(RustCall.REGISTRY_LOCK) do
-                    RustCall._image_is_current("rust_generic_never_registered", info.handle)
+                    RustCall._image_is_current("rust_generic_never_registered", info.handle,
+                                               info.generation)
                 end
                 # A retry after the refusal is an ordinary instantiation: a
                 # fresh image, cached like any other.
-                @test RustCall.monomorphize_function("gc397_id", Dict{Symbol, Type}(:T => Float32)).handle != info.handle
+                fresh = RustCall.monomorphize_function("gc397_id", Dict{Symbol, Type}(:T => Float32))
+                @test fresh.handle != info.handle
                 @test cached(Float32) !== nothing
+                # A handle is not an identity: the next image of this name is a
+                # later generation, and a pointer resolved on the released
+                # image is refused even if the loader had reused the value.
+                @test fresh.lib_name == info.lib_name
+                @test fresh.generation > info.generation
+                @test current(fresh)
+                @test !current(fresh, info.generation)
                 @test RustCall.release_generics("gc397_id") == 1
             end
 
