@@ -191,6 +191,30 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 syn = "2.0"
                 """)
             @test RustCall._rustcall_release_names_in(dir) == Set(["rustcall_julia_macros"])
+            # ...also when declared for one platform only (#372 review).
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                [target.'cfg(unix)'.dependencies]
+                rustcall_julia_macros = { path = $(repr(real)) }
+
+                [target.'cfg(windows)'.build-dependencies]
+                rustcall_core = { path = $(repr(joinpath(_ROOT, "deps", "rustcall_core"))) }
+                """)
+            @test RustCall._rustcall_release_names_in(dir) == Set(["rustcall_julia_macros", "rustcall_core"])
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                rustcall_julia_macros = { path = $(repr(real)) }
+                syn = "2.0"
+                """)
             base = digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.1"))
             @test digest("Cargo.lock", lock("0.4.1", "0.1.0", "2.0.1")) == base   # RustCall path dep
             @test digest("Cargo.lock", lock("0.4.0", "0.1.1", "2.0.1")) != base   # the user's own crate

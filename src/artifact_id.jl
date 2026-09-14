@@ -724,8 +724,14 @@ function _rustcall_release_names_in(dir::AbstractString)
     catch
         return names
     end
-    for table in ("dependencies", "dev-dependencies", "build-dependencies")
-        deps = get(doc, table, nothing)
+    # The three dependency tables at the top level and under every
+    # `[target.'cfg(...)']`: a path dependency declared for one platform is a
+    # path dependency.
+    scopes = Any[doc]
+    targets = get(doc, "target", nothing)
+    targets isa AbstractDict && append!(scopes, (t for t in values(targets) if t isa AbstractDict))
+    for scope in scopes, table in ("dependencies", "dev-dependencies", "build-dependencies")
+        deps = get(scope, table, nothing)
         deps isa AbstractDict || continue
         for (dep, spec) in deps
             spec isa AbstractDict || continue
