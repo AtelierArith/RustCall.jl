@@ -60,7 +60,7 @@ every push.
 
 ## Native Build Products
 
-`Pkg.build("RustCall")` compiles two crates: `deps/rust_helpers` (the ownership
+`Pkg.build("RustCall")` compiles two crates: `deps/rustcall_helpers` (the ownership
 helper cdylib behind `RustBox`/`RustRc`/`RustArc`/`RustVec`) and
 `deps/rustcall_extract` (the `rustcall-extract` CLI). Since #258 there is one
 place that decides where they go and where they are found again,
@@ -94,7 +94,8 @@ the profile and the `rustc` identity, replaces it. Rebuilding both crates
 unchanged went from ~31 s to ~0.1 s of Cargo time on an M-series laptop.
 
 Lookup order for each product, most authoritative first: the environment
-override (`RUSTCALL_EXTRACT`, `RUSTCALL_RUST_HELPERS`); **the directory a build
+override (`RUSTCALL_EXTRACT`, `RUSTCALL_HELPERS` — `RUSTCALL_RUST_HELPERS` is still
+accepted as a deprecated alias, #387); **the directory a build
 would write to right now**, asked of the same function the build asks, so a
 read-only `DEPOT_PATH[1]` carrying an older product for the same slug cannot
 shadow a successful `Pkg.build` into the writable depot behind it; the scratch
@@ -141,7 +142,7 @@ has. `test/test_native_layout.jl` pins all of it.
 - **The default run needs no crate from outside the declared closure.** Those
   two crates are listed in `test/fixtures/offline_prefetch/Cargo.toml`, and
   everything else the suite builds resolves through `path =` or through the
-  dependency closure of `deps/rustcall_extract`, `deps/rust_helpers` and
+  dependency closure of `deps/rustcall_extract`, `deps/rustcall_helpers` and
   `deps/rustcall_julia_macros`. The `Offline tests` workflow fetches exactly
   those manifests into an empty `CARGO_HOME` and then runs the whole suite
   with `CARGO_NET_OFFLINE=true`, so a test that starts needing another
@@ -162,7 +163,7 @@ has. `test/test_native_layout.jl` pins all of it.
   # library an earlier run compiled would otherwise satisfy a Cargo-backed
   # test without Cargo being invoked at all.
   export JULIA_DEPOT_PATH="$(mktemp -d):$HOME/.julia"
-  for m in deps/rustcall_extract deps/rust_helpers deps/rustcall_julia_macros; do
+  for m in deps/rustcall_extract deps/rustcall_helpers deps/rustcall_julia_macros; do
     cargo fetch --manifest-path "$m/Cargo.toml"
   done
   for lock in test/fixtures/*/Cargo.lock; do

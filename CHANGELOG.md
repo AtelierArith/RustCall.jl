@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking: the ownership helper crate is `deps/rustcall_helpers`, and its
+  library `librustcall_helpers`**
+  ([#387](https://github.com/AtelierArith/RustCall.jl/issues/387)). Every Rust
+  component RustCall owns was named `rustcall_*` except this one, which was still
+  `rust_helpers` / `librust_helpers.{so,dylib}` / `rust_helpers.dll`. It now
+  matches its siblings (`rustcall_core`, `rustcall_extract`,
+  `rustcall_julia_macros`), the crate carries its `panic = "unwind"` pin (#244)
+  across unchanged, and `helper_library_policy()` registers the image as
+  `rustcall_helpers`. Three things follow for a deployment, since the file name
+  is what it sees. **The override variable is `RUSTCALL_HELPERS`**;
+  `RUSTCALL_RUST_HELPERS` is still honoured as a deprecated alias when the new
+  one is unset, with a one-time warning naming the replacement. **A tree built
+  by v0.3.x keeps loading**: the old file name is searched in every location
+  the current one is, after all of them, so an installed package that has not
+  been rebuilt since v0.3 still finds its `librust_helpers`, and a rebuild under
+  the new name is always preferred — this fallback lasts one release and is
+  removed in v0.5. And **nothing builds under the old name any more**:
+  `native_product_filename(:rustcall_helpers)` names the new file, there is no
+  `:rust_helpers` product, and `deps/build.jl` needed no change of its own
+  because it asks `src/native_layout.jl` (#258). The planned prebuilt package is
+  `RustCallHelpers_jll` (#404), written against this name.
+
 ### Fixed
 - **A crate module's generation record is published atomically**
   ([#402](https://github.com/AtelierArith/RustCall.jl/issues/402)). The record a

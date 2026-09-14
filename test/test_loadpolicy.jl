@@ -487,7 +487,7 @@ end
 
         repo_root = dirname(_SRC_DIR)
         build_jl = read(joinpath(repo_root, "deps", "build.jl"), String)
-        helpers_toml = read(joinpath(repo_root, "deps", "rust_helpers", "Cargo.toml"), String)
+        helpers_toml = read(joinpath(repo_root, "deps", "rustcall_helpers", "Cargo.toml"), String)
         @test occursin("CARGO_PROFILE_RELEASE_PANIC", build_jl)
         @test occursin("panic = \"unwind\"", helpers_toml)
 

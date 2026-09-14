@@ -378,7 +378,7 @@ handle that produced the value:
 |---|---|---|
 | `#[julia]` struct handle | `<Struct>_free` | the library that constructed it |
 | owned `String` return | `<owner>_free_rust_string` | the library that returned it |
-| `RustBox` / `RustVec` / `RustArc` payload | `deps/rust_helpers` | the helper library that allocated it |
+| `RustBox` / `RustVec` / `RustArc` payload | `deps/rustcall_helpers` | the helper library that allocated it |
 
 The consequence for your own code: never hand a pointer obtained from one
 `rust"""` block to a free function in another, and never construct a

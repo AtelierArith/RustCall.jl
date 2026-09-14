@@ -2,7 +2,7 @@
 #
 # Builds the two native products the package needs and reports where they went:
 #
-#   * `deps/rust_helpers`     → the ownership helper cdylib (Box / Rc / Arc / Vec)
+#   * `deps/rustcall_helpers` → the ownership helper cdylib (Box / Rc / Arc / Vec)
 #   * `deps/rustcall_extract` → `rustcall-extract`, the only component that
 #     interprets Rust syntax on behalf of Julia (FFI manifests, inline
 #     expansion of `#[julia]` items, generic specialization)
@@ -87,7 +87,7 @@ function build_native_product(kind::Symbol, what::AbstractString)
 
     build_env = copy(ENV)
     build_env["CARGO_TARGET_DIR"] = target_dir
-    # `panic = "unwind"` is pinned in deps/rust_helpers/Cargo.toml; setting it
+    # `panic = "unwind"` is pinned in deps/rustcall_helpers/Cargo.toml; setting it
     # here too means an inherited CARGO_PROFILE_RELEASE_PANIC cannot decide it
     # either (#244). The two agree by construction: the manifest is what
     # `helper_library_policy()` describes.
@@ -152,7 +152,7 @@ function main()
     end
     println()
 
-    lib_path = build_native_product(:rust_helpers, "the Rust helpers library")
+    lib_path = build_native_product(:rustcall_helpers, "the RustCall helpers library")
     println()
     build_native_product(:extractor, "the rustcall-extract CLI")
     println()

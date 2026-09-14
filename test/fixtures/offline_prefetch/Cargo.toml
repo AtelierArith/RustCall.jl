@@ -3,7 +3,7 @@
 #
 # Almost everything the suite builds depends only on the repository's own
 # crates through `path =`, or on crates that are already in the dependency
-# closure of `deps/rustcall_extract`, `deps/rust_helpers`,
+# closure of `deps/rustcall_extract`, `deps/rustcall_helpers`,
 # `deps/rustcall_julia_macros` and `deps/rustcall_julia_macros_impl`. What is
 # left is listed here:
 #

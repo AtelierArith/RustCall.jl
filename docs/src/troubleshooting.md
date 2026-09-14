@@ -67,7 +67,7 @@ Rust helpers library not found. Ownership types (Box, Rc, Arc) will not work...
 
 4. Manual build:
    ```bash
-   cd deps/rust_helpers
+   cd deps/rustcall_helpers
    cargo build --release
    ```
 
