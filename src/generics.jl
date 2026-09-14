@@ -592,6 +592,20 @@ function _image_is_current(lib_name::String, handle::Ptr{Cvoid}, generation::Int
            get(ARTIFACT_GENERATIONS, lib_name, 0) == generation
 end
 
+# Whether the image an instantiation is about to be published against was
+# opened from the copy the batch memo names — or the instantiation is not from
+# a batch at all. Trivially true for the task that installed the image: it
+# opened `lib_path` itself. An `:insert_only` loser was handed the incumbent,
+# whose own path the loader recorded (`ARTIFACT_IMAGE_PATHS`); a private
+# instantiation is opened from a copy of its own, so a loser's path never
+# matches there and is never asked to. Caller holds REGISTRY_LOCK.
+function _opened_from_current_copy(batch_key, artifact::LoadedArtifact, lib_name::String,
+                                   lib_path::String)
+    batch_key === nothing && return true
+    artifact.installed && return true
+    return registered_image_path(lib_name) == lib_path
+end
+
 # Whether the batch copy an instantiation was opened from is still the one the
 # memo names — or the instantiation is not from a batch at all. A reader can
 # take the path out of `_BATCH_LIBRARY_COPIES` *before* `release_generics`
@@ -763,6 +777,13 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
             # the released image; that is not the fresh image the release
             # promised, so it is not published either.
             _batch_copy_is_current(batch_key, lib_path) || return :revived
+            # The other order of that race: a batch member that *lost* the
+            # `:insert_only` load was handed whatever image the name had, and
+            # that may be the image a stale reader revived from an older copy
+            # and has not retired again yet. The memo is current and so is the
+            # image, yet it was not opened from the copy the memo names — not
+            # published either; the retry finds a fresh image (#397 review).
+            _opened_from_current_copy(batch_key, artifact, lib_name, lib_path) || return :revived
             MONOMORPHIZATION_OWNERS[cache_key] = func_name
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
@@ -890,6 +911,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             specialized_functions = SpecializedFunction[by_name[info.name] for info in members]
             lib_path = restored.lib_path
         end
+        batch_key = restored === nothing ? nothing : restored.batch_key
         lib_name = "rust_generic_struct_$(artifact_short_id(group_key))"
         eager = [s.symbol for s in specialized_functions]
         artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager,
@@ -940,12 +962,16 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
                              artifact.handle, artifact.generation)
             named_members[info.name] = compiled[member_keys[info.name]]
         end
-        return lock(REGISTRY_LOCK) do
+        published = lock(REGISTRY_LOCK) do
             cached = get(MONOMORPHIZED_FUNCTIONS, member_keys[func_name], nothing)
             cached === nothing || return cached
-            # Same guard as the function path: an image released between the
-            # load and this publication is not cached (#397 review).
+            # Same guards as the function path: an image released between the
+            # load and this publication is not cached, nor a batch copy the
+            # memo no longer names, nor an incumbent opened from a copy other
+            # than the one it names (#397 review).
             _image_is_current(lib_name, artifact.handle, artifact.generation) || return nothing
+            _batch_copy_is_current(batch_key, lib_path) || return :revived
+            _opened_from_current_copy(batch_key, artifact, lib_name, lib_path) || return :revived
             for (key, info) in compiled
                 MONOMORPHIZED_FUNCTIONS[key] = info
             end
@@ -963,6 +989,16 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             GENERIC_STRUCT_ARTIFACTS[(lib_name, artifact.alive)] = named_members
             MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
         end
+        if published === :revived
+            # As on the function path: retire what this task revived — and
+            # only that; a loser installed nothing — so the retry opens a
+            # fresh copy (#397 review).
+            artifact.installed &&
+                unload_artifact!(generics_policy(), lib_name;
+                                 expect_generation = artifact.generation)
+            return nothing
+        end
+        return published
     end
 end
 

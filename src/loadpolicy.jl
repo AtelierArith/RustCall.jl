@@ -866,6 +866,7 @@ function unregister_library!(policy::LoadPolicy, lib_name::AbstractString)
         removed = haskey(RUST_LIBRARIES, name)
         if removed
             delete!(RUST_LIBRARIES, name)
+            delete!(ARTIFACT_IMAGE_PATHS, name)
         end
         clear_library_metadata!(name)
         if CURRENT_LIB[] == name
@@ -1013,6 +1014,27 @@ swap.
 Guarded by `REGISTRY_LOCK`.
 """
 const ARTIFACT_GENERATIONS = _state_view(:artifact_generations, Dict{String, Int}())
+
+"""
+    ARTIFACT_IMAGE_PATHS
+
+`lib_name` → the path the image registered under that name was opened from.
+
+An `:insert_only` loser is handed the incumbent image without learning where it
+came from, and for one caller that matters: a generic batch member must be
+opened from the one copy the batch memo names (`_batch_copy_is_current`), and
+the incumbent it lost to may be a retired image a stale reader revived from an
+*older* copy and has not yet retired again (#397). The memo is current and so
+is the image, yet it is not the fresh copy the memo names; this table is how
+the publication can tell. Written with the registry row, dropped with it, and
+shared by an alias. A name registered without a path (`register_library!`,
+`adopt_artifact!`) has no entry. Guarded by `REGISTRY_LOCK`.
+"""
+const ARTIFACT_IMAGE_PATHS = _state_view(:artifact_image_paths, Dict{String, String}())
+
+# The path `name`'s registered image was opened from, or `nothing` when it was
+# registered without one. Caller holds REGISTRY_LOCK.
+registered_image_path(name::AbstractString) = get(ARTIFACT_IMAGE_PATHS, String(name), nothing)
 
 # The generation being installed for `name`. Caller holds REGISTRY_LOCK.
 function _next_artifact_generation!(name::String)
@@ -2420,6 +2442,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         end
         ARTIFACT_ALIVE[name] = alive
         RUST_LIBRARIES[name] = (handle, cache)
+        ARTIFACT_IMAGE_PATHS[name] = lib_path
         # This image is live again, so it is no longer retired: a record left
         # behind would let a later `close = true` close an image that is in
         # the registry (and flip a flag that belongs to a live generation).
@@ -2545,6 +2568,7 @@ function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; close::B
             alive === nothing && (alive = get(ARTIFACT_ALIVE, each, nothing))
             delete!(ARTIFACT_ALIVE, each)
             delete!(RUST_LIBRARIES, each)
+            delete!(ARTIFACT_IMAGE_PATHS, each)
             purge_library_state!(each)
             _retire_handle_mirrors!(each)
             if CURRENT_LIB[] == each
@@ -2637,6 +2661,10 @@ function alias_artifact!(policy::LoadPolicy, from::AbstractString, to::AbstractS
         # record retired, keep the flag, close later.
         ARTIFACT_ALIVE[target] = alive
         RUST_LIBRARIES[target] = entry
+        # One image, one path: the alias was opened from wherever its source was.
+        source_path = get(ARTIFACT_IMAGE_PATHS, source, nothing)
+        source_path === nothing ? delete!(ARTIFACT_IMAGE_PATHS, target) :
+                                  (ARTIFACT_IMAGE_PATHS[target] = source_path)
         # Generation numbers belong to the destination name. Rebinding it to
         # another image must advance its stamp; an idempotent alias must not.
         generation = displaced == entry[1] ? get(ARTIFACT_GENERATIONS, target, 0) :

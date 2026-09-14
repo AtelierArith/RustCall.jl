@@ -499,6 +499,35 @@ end
                                                            restored_override = restored) === nothing
                 @test cached(UInt32) === nothing
                 @test !(before.lib_name in RustCall.list_loaded_libraries())
+                # The other order of that race (#397 review): the stale reader
+                # has *installed* the retired image and not yet retired it
+                # again when a fresh caller — the memo already naming a new
+                # copy — loses the `:insert_only` load to it. That loser's
+                # path is current and so is the incumbent, but the incumbent
+                # was not opened from that path (`ARTIFACT_IMAGE_PATHS`); it
+                # must publish nothing and leave the reader's image for the
+                # reader to retire.
+                revived = RustCall.load_artifact!(RustCall.generics_policy(), restored.lib_path;
+                                                  lib_name = before.lib_name)
+                @test revived.installed
+                @test revived.handle == before.handle
+                fresh_restore = RustCall._restore_generic_artifact(key, "gc397_id")
+                @test fresh_restore.lib_path != restored.lib_path
+                @test lock(RustCall.REGISTRY_LOCK) do
+                    RustCall.registered_image_path(before.lib_name) == restored.lib_path &&
+                        RustCall._batch_copy_is_current(fresh_restore.batch_key, fresh_restore.lib_path)
+                end
+                @test RustCall._monomorphize_function_once("gc397_id", bind;
+                                                           restored_override = fresh_restore) === nothing
+                @test cached(UInt32) === nothing
+                @test RustCall.RUST_LIBRARIES[before.lib_name][1] == revived.handle
+                # The reader's own second retirement; the name is free again.
+                @test RustCall.unload_artifact!(RustCall.generics_policy(), before.lib_name;
+                                                expect_generation = revived.generation)
+                @test !(before.lib_name in RustCall.list_loaded_libraries())
+                @test lock(RustCall.REGISTRY_LOCK) do
+                    RustCall.registered_image_path(before.lib_name) === nothing
+                end
                 # A concurrent caller may by now have *registered* a fresh
                 # image under the name without having published it yet —
                 # played here by loading a fresh copy directly. A stale reader
