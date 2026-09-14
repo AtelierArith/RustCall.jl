@@ -467,6 +467,50 @@ end
                 @test RustCall.release_generics("gc397_id") == 1
             end
 
+            @testset "a batch path taken before a release does not revive the image" begin
+                # The reader that `_batch_copy_is_current` exists for: it takes
+                # the copy's path out of the memo, a release drops the memo and
+                # retires the image, and only then does it open the path — and
+                # `dlopen` hands back the retired image, flag adopted,
+                # generation advanced. Played through the real code with the
+                # restore taken early (`restored_override`); the attempt must
+                # publish nothing and retire what it revived, and the next
+                # instantiation must be a fresh image (#397 review).
+                RustCall.precompile_generics("gc397_id", UInt32, UInt64)
+                before = cached(UInt32)
+                bind = Dict{Symbol, Type}(:T => UInt32)
+                key = RustCall.artifact_key(RustCall._monomorphization_id(
+                    RustCall.GENERIC_FUNCTION_REGISTRY["gc397_id"], "gc397_id",
+                    bind, RustCall.get_default_compiler()))
+                # The reader's first step: the path, from the memo, before the release.
+                restored = RustCall._restore_generic_artifact(key, "gc397_id")
+                @test restored.batch_key !== nothing
+                @test lock(RustCall.REGISTRY_LOCK) do
+                    RustCall._batch_copy_is_current(restored.batch_key, restored.lib_path)
+                end
+                @test RustCall.release_generics("gc397_id") == 2
+                @test !lock(RustCall.REGISTRY_LOCK) do
+                    RustCall._batch_copy_is_current(restored.batch_key, restored.lib_path)
+                end
+                # The reader's second step, through the real attempt: it
+                # revives the retired image, notices, retires it again and
+                # publishes nothing.
+                @test RustCall._monomorphize_function_once("gc397_id", bind;
+                                                           restored_override = restored) === nothing
+                @test cached(UInt32) === nothing
+                @test !(before.lib_name in RustCall.list_loaded_libraries())
+                # The retry — any caller — gets a fresh image, not the old statics.
+                fresh = RustCall.monomorphize_function("gc397_id", bind)
+                @test fresh.handle != before.handle
+                @test RustCall.call_generic_function("gc397_id", UInt32(3)) == UInt32(3)
+                @test RustCall.release_generics("gc397_id") >= 1
+                RustCall.close_retired_handles!(RustCall.retired_handles(before.lib_name))
+                # And a private (non-batch) instantiation has nothing to check.
+                @test lock(RustCall.REGISTRY_LOCK) do
+                    RustCall._batch_copy_is_current(nothing, "/anything")
+                end
+            end
+
             @testset "close = true flips the flag and closes" begin
                 RustCall.call_generic_function("gc397_id", UInt8(1))
                 info = cached(UInt8)

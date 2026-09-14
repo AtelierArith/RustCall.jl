@@ -201,10 +201,15 @@ function _restore_generic_artifact(cache_key::String, member::AbstractString)
     found = _cached_generic_artifact(cache_key, member)
     found === nothing && return nothing
     try
+        if found.record.library_key == cache_key
+            return (; members = found.record.members,
+                     lib_path = _private_artifact_copy(found.cached), batch_key = nothing)
+        end
+        # `batch_key` travels with the path so the publication can check that
+        # the memo still names this copy (`_batch_copy_is_current`, #397).
         return (; members = found.record.members,
-                 lib_path = found.record.library_key == cache_key ?
-                            _private_artifact_copy(found.cached) :
-                            _shared_batch_copy(found.record.library_key, found.cached))
+                 lib_path = _shared_batch_copy(found.record.library_key, found.cached),
+                 batch_key = found.record.library_key)
     catch e
         @debug "Could not copy a restored monomorphization" cache_key exception = e
         return nothing
@@ -587,9 +592,28 @@ function _image_is_current(lib_name::String, handle::Ptr{Cvoid}, generation::Int
            get(ARTIFACT_GENERATIONS, lib_name, 0) == generation
 end
 
+# Whether the batch copy an instantiation was opened from is still the one the
+# memo names — or the instantiation is not from a batch at all. A reader can
+# take the path out of `_BATCH_LIBRARY_COPIES` *before* `release_generics`
+# drops it and open it *after* the release: `dlopen` of that path hands back
+# the retired image, `load_artifact!` adopts its flag and advances the
+# generation, and `_image_is_current` alone would then accept a publication
+# of the very image the release promised to replace — same statics and all.
+# The memo is dropped in the release transaction, so a path no longer in it
+# is a copy that was released under the reader; the caller then retires what
+# it revived and starts over (#397 review). Caller holds REGISTRY_LOCK.
+function _batch_copy_is_current(batch_key::Union{Nothing, String}, lib_path::String)
+    batch_key === nothing && return true
+    return get(_BATCH_LIBRARY_COPIES, batch_key, nothing) == lib_path
+end
+
 # One attempt at `monomorphize_function`; `nothing` means the image resolved
 # against was released before it could be published, and the caller retries.
-function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol, <:Type})
+# `restored_override` is a test seam: the result of `_restore_generic_artifact`
+# taken *earlier*, so a test can play the reader whose batch path was released
+# between the restore and the load (`_batch_copy_is_current`).
+function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol, <:Type};
+                                     restored_override = nothing)
     registered = lock(REGISTRY_LOCK) do
         get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
     end
@@ -623,7 +647,9 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
         # An instantiation an earlier session already built is reused whole
         # (#254): the record beside the cached library carries everything the
         # extractor said about it, so neither the extractor nor `rustc` runs.
-        restored = _restore_generic_artifact(cache_key, func_name)
+        restored = restored_override === nothing ?
+            _restore_generic_artifact(cache_key, func_name) : restored_override
+        batch_key = restored === nothing ? nothing : restored.batch_key
         if restored === nothing
             # Instantiate through the extractor: the specialized function is added
             # to the registered source (context + generic code) with the concrete
@@ -729,14 +755,26 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
                             channel, artifact.handle, artifact.generation)
 
         # Cache the monomorphized function, and remember whose it is (#397).
-        return lock(REGISTRY_LOCK) do
+        published = lock(REGISTRY_LOCK) do
             # Released while this task was between the load and here: do not
             # cache a pointer into an image the registry has let go of.
             _image_is_current(lib_name, artifact.handle, artifact.generation) || return nothing
+            # A batch copy taken before a release and opened after it revives
+            # the released image; that is not the fresh image the release
+            # promised, so it is not published either.
+            _batch_copy_is_current(batch_key, lib_path) || return :revived
             MONOMORPHIZATION_OWNERS[cache_key] = func_name
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
         end
+        if published === :revived
+            # This task registered the retired image again. Retire it again —
+            # nothing was published against it — so the retry does not lose
+            # the `:insert_only` race to it, and opens a fresh copy instead.
+            unload_artifact!(generics_policy(), lib_name)
+            return nothing
+        end
+        return published
     end
 end
 
