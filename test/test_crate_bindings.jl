@@ -552,8 +552,8 @@ end
         policy = RustCall.crate_direct_policy()
         h1 = Ptr{Cvoid}(UInt(0xc0de0001))
         h2 = Ptr{Cvoid}(UInt(0xc0de0002))
-        m1 = Ref(RustCall.CrateGeneration())
-        m2 = Ref(RustCall.CrateGeneration())
+        m1 = RustCall.CrateGenerationCell()
+        m2 = RustCall.CrateGenerationCell()
         try
             RustCall.register_handle_mirror!(release, m1)
             RustCall.register_handle_mirror!(debug, m2)

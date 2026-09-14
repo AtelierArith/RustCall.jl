@@ -1039,11 +1039,10 @@ could then run, and the constructor would pair that handle with the
 image it was allocated by had been closed, and its finalizer jumped through an
 unmapped destructor.
 
-One immutable record in one `Ref` removes the question. The record is not
-`isbits` (it holds the flag), so the `Ref` holds a pointer to it and publishing
-a new generation is a single pointer store; a reader's single deref therefore
-yields a handle and a flag that were always written together. Readers take no
-lock at all.
+One immutable record removes the question — but only if publishing it is **one
+store**, which is what `CrateGenerationCell` is for. A plain
+`Base.RefValue{CrateGeneration}` is not: see that type's docstring for the
+measurement (#402).
 """
 struct CrateGeneration
     handle::Ptr{Cvoid}
@@ -1052,6 +1051,79 @@ struct CrateGeneration
 end
 
 CrateGeneration() = CrateGeneration(C_NULL, Ref(false), 0)
+
+"""
+    CrateGenerationCell([record])
+
+The cell a generated `@rust_crate` module reads its generation record from, and
+that `_update_handle_mirrors!` publishes into. Behaves as a `Ref` — `cell[]` and
+`cell[] = record` — so every call site reads the same as before.
+
+# Why not a `Base.RefValue{CrateGeneration}` (#402)
+
+Because that tears. `CrateGeneration` holds a `Ref{Bool}`, so it is not
+`isbits`, and this file used to reason from that: "the `Ref` holds a pointer to
+it and publishing a new generation is a single pointer store". That is wrong.
+Julia stores an immutable struct **inline** in a `RefValue` whenever it can, and
+it can here — `sizeof(Base.RefValue{CrateGeneration})` is **24**, the struct
+itself, not 8. So `gen_ref[] = published` is a 24-byte write and a reader's
+deref is a 24-byte read, with nothing keeping them apart.
+
+A reader therefore observed records that were never published: one generation's
+handle with another's number and flag. Measured directly — one writer
+alternating two records, one reader checking that the three fields came from the
+same one — **137129 torn reads out of 13211045**. It surfaced as the reload
+stress test pairing one generation number with two different returned values
+(#402).
+
+# How exposed this was, exactly
+
+A generated module reaches its cell through a `StateView`, and `StateView`
+reads take `STATE.lock` — which **is** `REGISTRY_LOCK` (`src/RustCall.jl`), the
+lock `_update_handle_mirrors!` writes under. So no generated wrapper has ever
+read a torn record: the two sides exclude each other by accident of the
+container, not by the store being atomic.
+
+What was exposed is everything this type says a caller may do. The paragraph
+above promised a lock-free read, `register_handle_mirror!` takes a bare cell so
+that a caller can have one, and `test/test_hot_reload_transaction.jl` reads
+exactly that way — which is how #402 was found. Had a lock-free read been added
+later, as #253 did for the *target* cache, it would have been the #291 hazard
+with no test to catch it: a wrapper pairing a new handle with the previous
+image's liveness flag, or an object capturing a destructor from one image and a
+flag from another. The store is atomic now, so the promise is true rather than
+true-by-coincidence.
+
+`@atomic` on the field is the fix, and the `Union{Nothing, …}` is what makes it
+cheap: an atomic field wider than a pointer falls back to a lock (measured:
+`sizeof` 40 for a bare `@atomic record::CrateGeneration`), while a union with a
+reference is stored as one pointer — `sizeof` **8**, one store, one load, no
+lock and no allocation on the read path. `CrateTargetCache` above is the same
+shape for the same reason.
+
+`test/test_hot_reload_transaction.jl` asserts both halves: that the cell does not
+tear under a writer, and that it is still pointer-sized, so that a later
+simplification back to a `Ref` fails instead of silently reintroducing this.
+"""
+mutable struct CrateGenerationCell <: Ref{CrateGeneration}
+    @atomic record::Union{Nothing, CrateGeneration}
+    CrateGenerationCell(record::CrateGeneration = CrateGeneration()) = new(record)
+end
+
+@inline function Base.getindex(cell::CrateGenerationCell)
+    record = @atomic :acquire cell.record
+    # `nothing` is never stored — the constructor always writes a record — so
+    # this branch exists only to give the field a reference type, which is what
+    # makes it one pointer. A `const` empty record would be tidier and is not
+    # used: `test/test_state.jl` rejects a module binding that reaches a `Ref`,
+    # and `CrateGeneration` holds the liveness flag.
+    return record === nothing ? CrateGeneration() : record
+end
+
+@inline function Base.setindex!(cell::CrateGenerationCell, record::CrateGeneration)
+    @atomic :release cell.record = record
+    return record
+end
 
 """
     CachedCrateTarget
@@ -1170,7 +1242,7 @@ still there waiting for the new handle.
 Guarded by `REGISTRY_LOCK`.
 """
 const HANDLE_MIRRORS = _state_view(:handle_mirrors,
-    Dict{String, Vector{Base.RefValue{CrateGeneration}}}())
+    Dict{String, Vector{CrateGenerationCell}}())
 
 """
     register_handle_mirror!(lib_name, gen_ref)
@@ -1187,10 +1259,10 @@ Idempotent: a module re-initialised in a new session registers the same `Ref`
 again and it is not duplicated.
 """
 function register_handle_mirror!(lib_name::AbstractString,
-                                 gen_ref::Base.RefValue{CrateGeneration})
+                                 gen_ref::CrateGenerationCell)
     name = String(lib_name)
     lock(REGISTRY_LOCK) do
-        mirrors = get!(() -> Base.RefValue{CrateGeneration}[], HANDLE_MIRRORS, name)
+        mirrors = get!(() -> CrateGenerationCell[], HANDLE_MIRRORS, name)
         any(m -> m === gen_ref, mirrors) || push!(mirrors, gen_ref)
         entry = get(RUST_LIBRARIES, name, nothing)
         if entry !== nothing
@@ -1212,9 +1284,9 @@ function register_handle_mirror!(lib_name::AbstractString, view::StateView)
     return register_handle_mirror!(lib_name, gen_ref)
 end
 
-# Publish one generation to every mirror of `name`: one pointer store each, so
-# a reader's single deref can never pair one generation's handle with
-# another's flag. Caller holds REGISTRY_LOCK.
+# Publish one generation to every mirror of `name`: one atomic pointer store
+# each, so a reader's single load can never pair one generation's handle with
+# another's flag (`CrateGenerationCell`, #402). Caller holds REGISTRY_LOCK.
 function _update_handle_mirrors!(name::String, handle::Ptr{Cvoid},
                                  alive::Base.RefValue{Bool}, generation::Int)
     published = CrateGeneration(handle, alive, generation)
@@ -1226,7 +1298,7 @@ function _update_handle_mirrors!(name::String, handle::Ptr{Cvoid},
 end
 
 # A mirror cell is state that a `CrateTargetCache` caches a read of, but it is
-# written by storing into a `Ref` rather than through `_state_mutate_storage!`,
+# written by storing into the cell rather than through `_state_mutate_storage!`,
 # so it is the one such write that does not bump the epoch on its own (#253).
 # Today every caller changes a registry row in the same transaction and the
 # epoch moves for that reason; saying it here as well means a kept snapshot

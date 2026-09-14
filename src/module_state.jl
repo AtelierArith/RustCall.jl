@@ -46,7 +46,7 @@ function _ensure_module_state!(mod::Module)
     end
     candidate = Dict{Symbol, Any}(
         :libs => libs, :symbols => symbols, :active => active,
-        :crate_generation => Ref(CrateGeneration()),
+        :crate_generation => CrateGenerationCell(),
         :crate_symbols => Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}())
     return lock(REGISTRY_LOCK) do
         chosen = get!(MODULE_STATES, mod, candidate)

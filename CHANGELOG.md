@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A crate module's generation record is published atomically**
+  ([#402](https://github.com/AtelierArith/RustCall.jl/issues/402)). The record a
+  generated `@rust_crate` module reads — handle, liveness flag and generation
+  number — is deliberately one immutable value so that a reader can never pair
+  one generation's handle with another's flag (#277, #291). It was kept in a
+  `Base.RefValue{CrateGeneration}`, and `src/loadpolicy.jl` reasoned that
+  because the record holds a `Ref{Bool}` it is not `isbits`, so the `RefValue`
+  holds a *pointer* and publishing is a single store. That is wrong: Julia
+  stores the struct inline, `sizeof(Base.RefValue{CrateGeneration})` is **24**,
+  and publishing was a 24-byte write with nothing keeping it apart from a
+  reader's 24-byte read. Measured with one writer alternating two records and
+  one reader checking that the three fields came from the same one:
+  **137129 torn reads out of 13211045**. No generated wrapper ever observed one
+  — a module reaches the cell through a `StateView`, which takes the same lock
+  the publisher writes under — so what was broken is the contract rather than
+  any shipped call path: the type promised a lock-free read, the registration
+  API hands out a bare cell so that a caller can have one, and the reload stress
+  test reads exactly that way, which is how this was found. The record now lives
+  in a `CrateGenerationCell` whose single field is `@atomic` and pointer-sized
+  (`Union{Nothing, CrateGeneration}`; a bare `@atomic` field wider than a
+  pointer falls back to a lock), so publishing is one store and reading is one
+  load. It still behaves as a `Ref`, so no generated file changes and the
+  bindings format is unchanged.
+
 ## [0.3.7] - 2026-09-14
 
 ### Fixed
