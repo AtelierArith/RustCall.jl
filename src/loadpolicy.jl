@@ -1275,6 +1275,28 @@ function register_handle_mirror!(lib_name::AbstractString,
     return nothing
 end
 
+# The container this used to accept, refused with the reason rather than a
+# `MethodError`. A `Base.RefValue{CrateGeneration}` stores the 24-byte record
+# inline, so publishing into one is not a single store and a reader can see a
+# mixture of two generations (#402) — which is the whole reason the cell exists.
+# Adapting the call by wrapping the caller's `Ref` in a cell would be worse than
+# refusing it: publications would go to the cell and the caller's `Ref` would
+# silently stop tracking the library.
+#
+# Nothing generated needs this. A `@rust_crate` module registers its
+# `StateView`, and the cell behind that view is created by RustCall
+# (`src/module_state.jl`), so even a file emitted before this change keeps
+# working unchanged.
+function register_handle_mirror!(lib_name::AbstractString,
+                                 ::Base.RefValue{CrateGeneration})
+    throw(ArgumentError(
+        "A generation mirror must be a `RustCall.CrateGenerationCell`, not a " *
+        "`Ref{CrateGeneration}`: a `Ref` stores the record inline, so publishing " *
+        "into it is not one store and a reader can observe one generation's " *
+        "handle with another's liveness flag (#402). Construct the mirror with " *
+        "`RustCall.CrateGenerationCell()`; it reads and writes as a `Ref`."))
+end
+
 # Generated modules expose only an immutable owner-qualified view. The cell
 # itself lives in STATE; the loader's mirror list aliases that same owned cell.
 function register_handle_mirror!(lib_name::AbstractString, view::StateView)

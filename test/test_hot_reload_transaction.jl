@@ -232,6 +232,20 @@ end
             @test cell[].handle == Ptr{Cvoid}(UInt(7))
             @test cell[].alive === alive
             @test cell[].generation == 3
+            # A bare `Ref` is refused with the reason rather than a
+            # `MethodError`, and never adapted: publications would go to the
+            # cell and the caller's `Ref` would silently stop tracking the
+            # library (#402 review).
+            refused = try
+                RustCall.register_handle_mirror!("hrt_ref_mirror_probe",
+                                                 Ref(RustCall.CrateGeneration()))
+                nothing
+            catch err
+                err
+            end
+            @test refused isa ArgumentError
+            @test occursin("CrateGenerationCell", sprint(showerror, refused))
+            @test occursin("#402", sprint(showerror, refused))
         end
 
         @testset "a reader never sees a mixture" begin
