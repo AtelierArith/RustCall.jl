@@ -678,19 +678,32 @@ function _file_content_digest(path::AbstractString)::String
     end
 end
 
+"""
+    RUSTCALL_RELEASE_CRATES
+
+The crates whose `[package] version` is the RustCall release version and moves
+with it (#372) — and therefore the **only** packages whose version is left out
+of an artifact identity (`_identity_file_bytes`). A user's crate, or any other
+path dependency, keeps its version in the key: a crate can read
+`env!("CARGO_PKG_VERSION")` in its source or build script, so a bump of its
+version alone can change what it compiles to. These four cannot be told apart
+by their version — a patch release rewrites it with nothing else changed — and
+their behaviour is their sources, which the identity hashes separately.
+"""
+const RUSTCALL_RELEASE_CRATES = ("rustcall_core", "rustcall_extract",
+                                 "rustcall_julia_macros", "rustcall_julia_macros_impl")
+
 # SHA-256 of one file as it enters an **artifact identity** (#372): a
-# `Cargo.toml` without its `[package] version`, a `Cargo.lock` without the
-# `version` of any package that has no `source` — the root and every path
-# dependency — and every other file as it is. Those two keys are what a
+# `Cargo.toml` of one of `RUSTCALL_RELEASE_CRATES` without its `[package]
+# version`, a `Cargo.lock` without the `version` of any of those crates
+# resolved as a path dependency (no `source`), and every other file — and
+# every other package's version — exactly as it is. Those keys are what a
 # *release* rewrites: the manifest crates are versioned as the RustCall
 # release, a patch release bumps them, and every lockfile that resolves a path
-# dependency on them records that number. Nothing about a path package's
-# version decides what is built — its content does, and its content is hashed
-# separately (`crate_content_digest` walks every local crate) — while a
-# registry package's version is exactly what pins its content, so it stays.
-# Without this, `@rust_crate` and PyO3 wrapper keys moved on every patch
-# release, against the promise the schema identifier makes
-# (`MANIFEST_SCHEMA_VERSION`). Everything else in either file still counts.
+# dependency on them records that number. Without this, `@rust_crate` and
+# PyO3 wrapper keys moved on every patch release, against the promise the
+# schema identifier makes (`MANIFEST_SCHEMA_VERSION`). Everything else in
+# either file still counts.
 function _identity_file_digest(path::AbstractString)::String
     return try
         bytes2hex(sha256(_identity_file_bytes(String(path))))
@@ -712,13 +725,16 @@ function _identity_file_bytes(path::String)::Vector{UInt8}
     name = basename(path)
     name == "Cargo.toml" && return _normalized_toml(path) do doc
         package = get(doc, "package", nothing)
-        package isa AbstractDict && delete!(package, "version")
+        package isa AbstractDict && get(package, "name", nothing) in RUSTCALL_RELEASE_CRATES &&
+            delete!(package, "version")
     end
     name == "Cargo.lock" && return _normalized_toml(path) do doc
         packages = get(doc, "package", nothing)
         packages isa AbstractVector || return
         for entry in packages
-            entry isa AbstractDict && !haskey(entry, "source") && delete!(entry, "version")
+            entry isa AbstractDict || continue
+            get(entry, "name", nothing) in RUSTCALL_RELEASE_CRATES && !haskey(entry, "source") &&
+                delete!(entry, "version")
         end
     end
     return read(path)

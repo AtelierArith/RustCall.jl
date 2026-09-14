@@ -14,3 +14,8 @@ path = "src/main.rs"
 rustcall_core = { path = "../rustcall_core" }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
+
+# `build.rs` embeds a digest of the sources this binary is built from
+# (`rustcall-extract source-digest`, RustCall.jl #372).
+[build-dependencies]
+sha2 = "0.10"

@@ -119,6 +119,7 @@ Base.showerror(io::IO, e::ExtractorError) = print(io, "ExtractorError: ", e.msg)
 
 const _EXTRACTOR_PATH = _state_view(:extractor_path, Ref{String}(""))
 const _EXTRACTOR_DIGEST = _state_view(:extractor_digest, Ref{String}(""))
+const _EXTRACTOR_SOURCE_DIGEST = _state_view(:extractor_source_digest, Ref{String}(""))
 const _TOOLCHAIN_FINGERPRINT = _state_view(:toolchain_fingerprint, Ref{String}(""))
 const _EXTRACTOR_LOCK = ReentrantLock()
 
@@ -167,6 +168,44 @@ function extractor_digest()
 end
 
 """
+    extractor_source_digest() -> String
+
+The digest of the sources the **selected** extractor was built from — its own
+and `rustcall_core`'s, each `[package] version` left out — as the binary
+itself reports it (`rustcall-extract source-digest`, embedded by its
+`build.rs`). This is how a cache key identifies the extractor (#372):
+
+  * not by the binary's bytes, which a patch release changes on its own
+    (`-C metadata` folds the crate version in) although nothing it emits did;
+  * not by the checkout's sources, which describe this tree and not the
+    executable `RUSTCALL_EXTRACT` may point at — a schema-compatible binary
+    built from other sources would otherwise move no key.
+
+Falls back to the checkout's own digest of those two crates when the selected
+binary cannot answer (no toolchain, or a binary that predates the subcommand —
+which the schema check refuses anyway), so `toolchain_fingerprint` stays total.
+"""
+function extractor_source_digest()
+    lock(_EXTRACTOR_LOCK) do
+        if isempty(_EXTRACTOR_SOURCE_DIGEST[])
+            reported = try
+                strip(read(`$(extractor_path()) source-digest`, String))
+            catch e
+                @debug "The extractor did not report a source digest; using the checkout's" exception = e
+                ""
+            end
+            if !occursin(r"^[0-9a-f]{64}$", reported)
+                deps = joinpath(dirname(@__DIR__), "deps")
+                reported = _rust_sources_digest(joinpath(deps, "rustcall_core"),
+                                                joinpath(deps, "rustcall_extract"))
+            end
+            _EXTRACTOR_SOURCE_DIGEST[] = String(reported)
+        end
+        return _EXTRACTOR_SOURCE_DIGEST[]
+    end
+end
+
+"""
     _rust_sources_digest(dirs...) -> String
 
 SHA-256 over the `src/*.rs` and `Cargo.toml` files of the given crate
@@ -201,10 +240,12 @@ function _rust_sources_digest(dirs::AbstractString...)
 end
 
 
-# The crates whose sources decide what the generator emits. `rustcall_extract`
-# is the CLI around `rustcall_core`; `rustcall_julia_macros` carries the
-# runtime module `rustcall_core::codegen` generates (`rt.rs`).
-const _FINGERPRINT_CRATES = ("rustcall_core", "rustcall_julia_macros", "rustcall_extract")
+# The crates a user's build compiles from *this tree*: `rustcall_julia_macros`
+# and its proc-macro implementation, which carry `rustcall_core` into every
+# `#[julia]` crate's build and the runtime module `rt.rs`. The extractor is
+# identified separately, by the binary that actually runs
+# (`extractor_source_digest`).
+const _FINGERPRINT_CRATES = ("rustcall_core", "rustcall_julia_macros", "rustcall_julia_macros_impl")
 
 # The lines `toolchain_fingerprint` hashes, and whether the compiler in them
 # was actually identified. Separate so a test can assert what is — and is
@@ -214,6 +255,7 @@ function _toolchain_fingerprint_inputs()
     compiler, identified = _toolchain_compiler_identity()
     parts = String[
         "schema=$(MANIFEST_SCHEMA_VERSION)",
+        "extractor=$(extractor_source_digest())",
         "sources=$(_rust_sources_digest((joinpath(deps, c) for c in _FINGERPRINT_CRATES)...))",
         "compiler=$(compiler)",
         "target=$(Sys.MACHINE)",
@@ -231,19 +273,22 @@ source: the manifest schema identifier, the **sources** of `rustcall_core`,
 that actually runs (`artifact_compiler_identity`) and the host target. Included
 in all cache keys.
 
-# Sources, not the extractor binary (#372 review)
+# What identifies the extractor (#372 review)
 
 Through v0.3.x the extractor entered as a digest of its executable. A patch
 release now bumps `rustcall_extract`'s package version, and Cargo folds the
 version into `-C metadata`, so the same sources produce a byte-different
 binary — every cache key would have moved on a release that promises to keep
-them. The extractor's behaviour is decided by its sources and by
-`rustcall_core`'s, both of which are already in the tree this fingerprint
-describes, so they are what is hashed, with each crate's `[package] version`
-left out of its `Cargo.toml` (`_identity_file_bytes`). `extractor_digest()`
-remains available as a diagnostic of which binary ran; it is no longer part of
-any key. The inputs are `_toolchain_fingerprint_inputs()`, so a test can see
-them.
+them. The extractor now enters as the digest of the sources **it** was built
+from, reported by the selected binary itself (`extractor_source_digest`): that
+follows `RUSTCALL_EXTRACT` to whatever executable actually runs, and does not
+move when only a version did. The tree's `rustcall_core`,
+`rustcall_julia_macros` and `rustcall_julia_macros_impl` sources enter
+separately, because a user's build compiles them from this tree, with each
+crate's `[package] version` left out (`_identity_file_bytes`).
+`extractor_digest()` remains available as a diagnostic of which binary ran; it
+is in no key. The inputs are `_toolchain_fingerprint_inputs()`, so a test can
+see them.
 
 # Missing toolchain (#252)
 
@@ -303,6 +348,7 @@ function _reset_extractor_state!()
     lock(_EXTRACTOR_LOCK) do
         _EXTRACTOR_PATH[] = ""
         _EXTRACTOR_DIGEST[] = ""
+        _EXTRACTOR_SOURCE_DIGEST[] = ""
         _TOOLCHAIN_FINGERPRINT[] = ""
     end
     lock(_EXPANSION_LOCK) do

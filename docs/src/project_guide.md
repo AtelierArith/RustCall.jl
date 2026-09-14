@@ -72,7 +72,14 @@ What that means in practice:
 - A **patch** release never changes the identifier. An installed extractor and
   every cached artifact stay valid across it; the identifier is one input of
   `toolchain_fingerprint`, which every artifact identity folds in, so this is
-  exactly what decides whether the cache survives an upgrade.
+  exactly what decides whether the cache survives an upgrade. Two more things
+  make that true rather than nominal: the extractor enters the fingerprint as
+  the digest of the sources it was built from, which it reports itself
+  (`rustcall-extract source-digest`) — not as the bytes of a binary that a
+  version bump alone changes — and the four manifest crates' `[package]
+  version`, together with the lockfile lines that record it for a path
+  dependency, are left out of every artifact identity. No other crate's
+  version is: a crate may read `env!("CARGO_PKG_VERSION")`.
 - A **minor** release always changes it. `Pkg.build("RustCall")` rebuilds the
   extractor once, every cache key moves, and the manifest may change shape
   freely inside that release. A manifest change that has to ship in a *patch*
