@@ -347,18 +347,37 @@ const MONOMORPHIZED_FUNCTIONS = _state_view(:monomorphized_functions,
     Dict{String, FunctionInfo}())
 
 """
+    MonomorphizationOwner
+
+Who an instantiation belongs to: the registered generic's name and the
+**bindings** it was instantiated with, as `(param => Type, ...)` in parameter
+order (`_owner_binding`). Immutable, so it can sit in a state table.
+"""
+struct MonomorphizationOwner
+    generic::String
+    binding::Tuple
+end
+
+_owner_binding(type_params) =
+    Tuple(sort!(Pair{Symbol, Type}[Symbol(k) => v for (k, v) in type_params]; by = first))
+
+"""
     MONOMORPHIZATION_OWNERS
 
-Artifact key of an instantiation → the registered generic it belongs to.
+Artifact key of an instantiation → the `MonomorphizationOwner` it belongs to.
 
 `MONOMORPHIZED_FUNCTIONS` is keyed by the artifact identity, which folds the
 source, the bindings and the toolchain into one digest — the right key for a
 lookup, and one nothing can enumerate *by generic*. `release_generics(f)` has
 to find every instantiation of `f` without being told their types, so each
-instantiation records its owner when it is published (#397). Written and
-cleared in the same transactions as `MONOMORPHIZED_FUNCTIONS`.
+instantiation records its owner when it is published (#397). The bindings are
+recorded too, not recomputed: `release_generics(f, T)` selects rows by them,
+and an identity recomputed *now* would miss an instantiation built under a
+different default compiler or a since re-registered source (#397 review).
+Written and cleared in the same transactions as `MONOMORPHIZED_FUNCTIONS`.
 """
-const MONOMORPHIZATION_OWNERS = _state_view(:monomorphization_owners, Dict{String, String}())
+const MONOMORPHIZATION_OWNERS =
+    _state_view(:monomorphization_owners, Dict{String, MonomorphizationOwner}())
 
 """
     GENERIC_IMAGE_PATHS
@@ -769,6 +788,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
                             channel, artifact.handle, artifact.generation)
 
         # Cache the monomorphized function, and remember whose it is (#397).
+        owner_binding = _owner_binding(type_params)
         published = lock(REGISTRY_LOCK) do
             # Released while this task was between the load and here: do not
             # cache a pointer into an image the registry has let go of.
@@ -784,7 +804,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
             # image, yet it was not opened from the copy the memo names — not
             # published either; the retry finds a fresh image (#397 review).
             _opened_from_current_copy(batch_key, artifact, lib_name, lib_path) || return :revived
-            MONOMORPHIZATION_OWNERS[cache_key] = func_name
+            MONOMORPHIZATION_OWNERS[cache_key] = MonomorphizationOwner(func_name, owner_binding)
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
         end
@@ -962,6 +982,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
                              artifact.handle, artifact.generation)
             named_members[info.name] = compiled[member_keys[info.name]]
         end
+        owner_binding = _owner_binding(type_params)
         published = lock(REGISTRY_LOCK) do
             cached = get(MONOMORPHIZED_FUNCTIONS, member_keys[func_name], nothing)
             cached === nothing || return cached
@@ -983,7 +1004,8 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             # no purge — which walks the rows — could ever remove.
             for member in members
                 key = member_keys[member.name]
-                haskey(compiled, key) && (MONOMORPHIZATION_OWNERS[key] = member.name)
+                haskey(compiled, key) &&
+                    (MONOMORPHIZATION_OWNERS[key] = MonomorphizationOwner(member.name, owner_binding))
             end
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             GENERIC_STRUCT_ARTIFACTS[(lib_name, artifact.alive)] = named_members
@@ -1162,18 +1184,14 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
     end
     registered === nothing && error("Function '$name' is not registered as a generic function")
 
-    # Which artifact keys are being released: all of the generic's, or the
-    # listed instantiations'. Resolved outside STATE, like every identity
-    # computation, then matched under it.
-    selected = if isempty(instantiations)
-        nothing
-    else
-        compiler = something(registered.compiler, get_default_compiler())
-        Set{String}(artifact_key(_monomorphization_id(registered, name,
-                                                       _generic_binding(registered, inst),
-                                                       compiler))
-                    for inst in instantiations)
-    end
+    # Which instantiations are being released: all of the generic's, or the
+    # listed bindings'. Matched on the bindings each row recorded when it was
+    # published, never on an artifact key recomputed now: the key folds the
+    # compiler and the source in, and an instantiation built under an earlier
+    # default compiler, or before the generic was re-registered, is still this
+    # generic's and still mapped (#397 review).
+    selected = isempty(instantiations) ? nothing :
+               Set{Tuple}(_owner_binding(_generic_binding(registered, inst)) for inst in instantiations)
 
     # The images to retire, found under one lock: every registered
     # instantiation owned by `name` (and selected, if a set was given), grouped
@@ -1186,8 +1204,8 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
     images = lock(REGISTRY_LOCK) do
         found = Dict{String, Tuple{Ptr{Cvoid}, Int}}()
         for (key, owner) in MONOMORPHIZATION_OWNERS
-            owner == name || continue
-            selected === nothing || key in selected || continue
+            owner.generic == name || continue
+            selected === nothing || owner.binding in selected || continue
             info = get(MONOMORPHIZED_FUNCTIONS, key, nothing)
             info === nothing && continue
             found[info.lib_name] = (info.handle, info.generation)

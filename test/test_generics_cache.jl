@@ -365,7 +365,7 @@ end
             "pub fn gc397_id<T: Copy>(x: T) -> T { x }", [:T])
         images() = count(n -> startswith(n, "rust_generic"), RustCall.list_loaded_libraries())
         cached(T) = RustCall.get_monomorphized_function("gc397_id", Dict{Symbol, Type}(:T => T))
-        owned() = [k for (k, o) in RustCall.MONOMORPHIZATION_OWNERS if o == "gc397_id"]
+        owned() = [k for (k, o) in RustCall.MONOMORPHIZATION_OWNERS if o.generic == "gc397_id"]
         try
             @testset "every instantiation of a generic, and the registry count comes down" begin
                 before = images()
@@ -465,6 +465,33 @@ end
                 @test current(fresh)
                 @test !current(fresh, info.generation)
                 @test RustCall.release_generics("gc397_id") == 1
+            end
+
+            @testset "release by type across a default-compiler change" begin
+                # `release_generics(f, T)` selects by the bindings each row
+                # recorded, not by an artifact key recomputed now: the key
+                # folds the compiler in, and an instantiation built under an
+                # earlier default compiler is still this generic's and still
+                # mapped (#397 review).
+                @test RustCall.call_generic_function("gc397_id", Float32(1.5)) == Float32(1.5)
+                built = cached(Float32)
+                @test built !== nothing
+                saved = RustCall.get_default_compiler()
+                try
+                    RustCall.set_default_compiler(RustCall.RustCompiler(
+                        optimization_level = saved.optimization_level == 0 ? 1 : 0))
+                    # The identity recomputed now is a key nobody owns...
+                    recomputed = RustCall.artifact_key(RustCall._monomorphization_id(
+                        RustCall.GENERIC_FUNCTION_REGISTRY["gc397_id"], "gc397_id",
+                        Dict{Symbol, Type}(:T => Float32), RustCall.get_default_compiler()))
+                    @test !(recomputed in owned())
+                    # ...and the instantiation is released all the same.
+                    @test RustCall.release_generics("gc397_id", Float32) == 1
+                    @test cached(Float32) === nothing
+                    @test !(built.lib_name in RustCall.list_loaded_libraries())
+                finally
+                    RustCall.set_default_compiler(saved)
+                end
             end
 
             @testset "a batch path taken before a release does not revive the image" begin
@@ -589,7 +616,7 @@ end
                 # tombstone per specialization (#397 review).
                 RustCall.call_generic_function("gc397_id", Int16(1))
                 info = cached(Int16)
-                key = only(k for (k, o) in RustCall.MONOMORPHIZATION_OWNERS if o == "gc397_id")
+                key = only(k for (k, o) in RustCall.MONOMORPHIZATION_OWNERS if o.generic == "gc397_id")
                 @test haskey(RustCall.GENERIC_IMAGE_PATHS, info.lib_name)
                 RustCall.unload_library(info.lib_name)
                 @test !haskey(RustCall.MONOMORPHIZATION_OWNERS, key)
