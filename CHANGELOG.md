@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-09-14
+
 ### Fixed
 - **Publishing a compiled library into the cache is atomic**
   ([#394](https://github.com/AtelierArith/RustCall.jl/issues/394)). The cache
@@ -1795,7 +1797,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.3...v0.3.4
