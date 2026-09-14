@@ -78,11 +78,19 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         # The promise is that a patch release keeps every cached artifact
         # valid. The four manifest crates are versioned as the release, so a
         # patch release rewrites their `[package] version` — and
-        # `_rust_sources_digest` hashes `Cargo.toml`. For those crates, and
-        # only those, that key is left out of the digest; a dependency's
-        # version is not, because it can change what the generator emits, and
-        # any other crate's own version is not either, because that crate may
-        # read `env!("CARGO_PKG_VERSION")` (#372 review).
+        # `_rust_sources_digest` hashes `Cargo.toml`. For those crates — this
+        # package's own `deps/<name>`, not a same-named crate anywhere else —
+        # that key is left out of the digest; a dependency's version is not,
+        # because it can change what the generator emits, and any other
+        # crate's own version is not either, because that crate may read
+        # `env!("CARGO_PKG_VERSION")` (#372 review).
+        for crate in RustCall.RUSTCALL_RELEASE_CRATES
+            real = joinpath(_ROOT, "deps", crate)
+            version = TOML.parsefile(joinpath(real, "Cargo.toml"))["package"]["version"]
+            as_hashed = String(RustCall._identity_file_bytes(joinpath(real, "Cargo.toml")))
+            @test !occursin("version = \"$(version)\"", as_hashed)
+            @test occursin("name = \"$(crate)\"", as_hashed)
+        end
         mktempdir() do dir
             a, b, c, d, e = (joinpath(dir, n) for n in ("a", "b", "c", "d", "e"))
             for root in (a, b, c, d, e)
@@ -103,12 +111,15 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
             write(joinpath(c, "Cargo.toml"), manifest("rustcall_core", "0.4.0", "2.1"))
             write(joinpath(d, "Cargo.toml"), manifest("probe", "0.4.0", "2.0"))
             write(joinpath(e, "Cargo.toml"), manifest("probe", "0.4.1", "2.0"))
-            @test RustCall._rust_sources_digest(a) == RustCall._rust_sources_digest(b)
+            # A crate *named* `rustcall_core` outside this tree is a fork, and
+            # a fork's version is in its key like anyone else's.
+            @test RustCall._rust_sources_digest(a) != RustCall._rust_sources_digest(b)
             @test RustCall._rust_sources_digest(a) != RustCall._rust_sources_digest(c)
             @test RustCall._rust_sources_digest(d) != RustCall._rust_sources_digest(e)
-            # ...and a source change still moves it.
-            write(joinpath(b, "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
-            @test RustCall._rust_sources_digest(a) != RustCall._rust_sources_digest(b)
+            # ...and a source change moves it.
+            same = RustCall._rust_sources_digest(a)
+            write(joinpath(a, "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
+            @test RustCall._rust_sources_digest(a) != same
         end
     end
 
@@ -133,14 +144,22 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 [dependencies]
                 syn = "$(dep)"
                 """
-            # A RustCall release crate: version-only is the same identity.
-            @test digest("Cargo.toml", toml("rustcall_julia_macros", "0.4.0", "2.0")) ==
-                  digest("Cargo.toml", toml("rustcall_julia_macros", "0.4.1", "2.0"))
+            # A crate merely *named* like a RustCall release crate, living
+            # somewhere else, keeps its version: a name is not provenance.
             @test digest("Cargo.toml", toml("rustcall_julia_macros", "0.4.0", "2.0")) !=
-                  digest("Cargo.toml", toml("rustcall_julia_macros", "0.4.0", "2.1"))
+                  digest("Cargo.toml", toml("rustcall_julia_macros", "0.4.1", "2.0"))
             # Anyone else's crate: its version is part of what it compiles to.
             @test digest("Cargo.toml", toml("probe", "0.4.0", "2.0")) !=
                   digest("Cargo.toml", toml("probe", "0.4.1", "2.0"))
+            # The real one — this package's own `deps/rustcall_julia_macros` —
+            # is the crate whose version a release rewrites, and its version is
+            # what is left out. Checked on the manifest as it is, with only the
+            # version rewritten in a temporary copy that keeps its place by
+            # being hashed through the provenance check on the *original*.
+            real = joinpath(_ROOT, "deps", "rustcall_julia_macros")
+            @test RustCall._is_rustcall_release_crate(real, "rustcall_julia_macros")
+            @test !RustCall._is_rustcall_release_crate(dir, "rustcall_julia_macros")
+            @test !RustCall._is_rustcall_release_crate(real, "probe")
             lock(rcv, userv, regv) = """
                 version = 4
 
@@ -159,10 +178,37 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 source = "registry+https://github.com/rust-lang/crates.io-index"
                 checksum = "0000"
                 """
+            # The lockfile's own crate takes `rustcall_julia_macros` by path
+            # from this package's `deps/`: that entry's version may go.
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                rustcall_julia_macros = { path = $(repr(real)) }
+                syn = "2.0"
+                """)
+            @test RustCall._rustcall_release_names_in(dir) == Set(["rustcall_julia_macros"])
             base = digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.1"))
             @test digest("Cargo.lock", lock("0.4.1", "0.1.0", "2.0.1")) == base   # RustCall path dep
             @test digest("Cargo.lock", lock("0.4.0", "0.1.1", "2.0.1")) != base   # the user's own crate
             @test digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.2")) != base   # a registry package
+            # ...but if that name resolved to a fork elsewhere, nothing goes.
+            fork = joinpath(dir, "fork"); mkpath(fork); write(joinpath(fork, "Cargo.toml"), toml("rustcall_julia_macros", "0.4.0", "2.0"))
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "probe"
+                version = "0.1.0"
+                edition = "2021"
+
+                [dependencies]
+                rustcall_julia_macros = { path = "fork" }
+                """)
+            @test isempty(RustCall._rustcall_release_names_in(dir))
+            @test digest("Cargo.lock", lock("0.4.1", "0.1.0", "2.0.1")) !=
+                  digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.1"))
             # Any other file, and a manifest that does not parse, hash as they are.
             @test digest("lib.rs", "pub fn a() {}") != digest("lib.rs", "pub fn b() {}")
             @test digest("Cargo.toml", "not = [toml") == RustCall._file_content_digest(joinpath(dir, "Cargo.toml"))
@@ -176,19 +222,20 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
     end
 
     @testset "a @rust_crate key survives a patch bump of a path dependency" begin
-        # End to end through `compute_crate_hash`: a crate with a local path
-        # dependency *named* `rustcall_julia_macros` (a stand-in for the real
-        # one, which is what a user crate depends on by path), whose version —
-        # and the lockfile lines recording it — is bumped as a patch release
-        # bumps it. The key must not move; a source change in the dependency
-        # must move it; and a version bump of a path dependency that is *not*
-        # a RustCall release crate must move it too.
+        # End to end through `compute_crate_hash`. A crate takes the *real*
+        # `deps/rustcall_julia_macros` by path — what a user crate does — and
+        # its lockfile records that crate's version; rewriting that one line
+        # as a patch release would must not move the key. A second path
+        # dependency is a fork *named* `rustcall_julia_macros`: a name is not
+        # provenance, so bumping it moves the key, as does bumping any other
+        # path dependency, as does a source change.
         if !RustCall.check_rustc_available()
             @test_skip "needs cargo to resolve the local dependency graph"
         else
             mktempdir() do dir
-                dep = joinpath(dir, "rustcall_julia_macros"); crate = joinpath(dir, "probe_crate")
+                dep = joinpath(dir, "fork_macros"); crate = joinpath(dir, "probe_crate")
                 other = joinpath(dir, "probe_dep")
+                real = joinpath(_ROOT, "deps", "rustcall_julia_macros")
                 for (root, name, body) in ((dep, "rustcall_julia_macros", "pub fn helper() -> i32 { 1 }"),
                                            (other, "probe_dep", "pub fn other() -> i32 { 1 }"),
                                            (crate, "probe_crate", "pub fn answer() -> i32 { 42 }"))
@@ -216,36 +263,52 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                     crate-type = ["cdylib"]
 
                     [dependencies]
-                    rustcall_julia_macros = { path = "../rustcall_julia_macros" }
+                    rustcall_julia_macros = { path = $(repr(real)) }
+                    fork_macros = { path = "../fork_macros", package = "rustcall_julia_macros" }
                     probe_dep = { path = "../probe_dep" }
                     """)
+                # Two packages named `rustcall_julia_macros` cannot share one
+                # graph, so the fork is renamed at the manifest level too.
+                write(joinpath(dep, "Cargo.toml"), manifest("fork_macros", "0.4.0"))
+                write(joinpath(crate, "Cargo.toml"), replace(read(joinpath(crate, "Cargo.toml"), String),
+                    "fork_macros = { path = \"../fork_macros\", package = \"rustcall_julia_macros\" }" =>
+                    "fork_macros = { path = \"../fork_macros\" }"))
                 resolve() = for root in (dep, other, crate)
                     run(pipeline(Cmd(`cargo generate-lockfile --offline`; dir = root); stdout = devnull, stderr = devnull))
                 end
                 resolve()
                 info = RustCall.scan_crate(crate)
                 key = RustCall.compute_crate_hash(info)
-                @test occursin("0.4.0", read(joinpath(crate, "Cargo.lock"), String))
+                lockfile = joinpath(crate, "Cargo.lock")
+                real_version = TOML.parsefile(joinpath(real, "Cargo.toml"))["package"]["version"]
+                @test occursin("name = \"rustcall_julia_macros\"\nversion = \"$(real_version)\"", read(lockfile, String))
 
-                # The patch bump of the RustCall crate: manifest and lockfiles.
-                write(joinpath(dep, "Cargo.toml"), manifest("rustcall_julia_macros", "0.4.1"))
-                resolve()
-                @test occursin("0.4.1", read(joinpath(crate, "Cargo.lock"), String))
+                # The patch bump, as it reaches a user's crate: its lockfile now
+                # records the next version of RustCall's crate. Nothing else.
+                write(lockfile, replace(read(lockfile, String),
+                    "name = \"rustcall_julia_macros\"\nversion = \"$(real_version)\"" =>
+                    "name = \"rustcall_julia_macros\"\nversion = \"99.0.0\""))
                 RustCall._artifact_reset_digest_caches!()
                 @test RustCall.compute_crate_hash(RustCall.scan_crate(crate)) == key
 
                 # A version bump of any *other* path dependency moves it: that
-                # crate may read `env!("CARGO_PKG_VERSION")`.
+                # crate may read `env!("CARGO_PKG_VERSION")`. So does a bump
+                # of the fork, whatever it is called.
                 write(joinpath(other, "Cargo.toml"), manifest("probe_dep", "0.1.1"))
                 resolve()
                 RustCall._artifact_reset_digest_caches!()
                 bumped_other = RustCall.compute_crate_hash(RustCall.scan_crate(crate))
                 @test bumped_other != key
+                write(joinpath(dep, "Cargo.toml"), manifest("fork_macros", "0.4.1"))
+                resolve()
+                RustCall._artifact_reset_digest_caches!()
+                bumped_fork = RustCall.compute_crate_hash(RustCall.scan_crate(crate))
+                @test bumped_fork != bumped_other
 
-                # ...and a real change to the RustCall crate still moves it.
+                # ...and a source change in a path dependency still moves it.
                 write(joinpath(dep, "src", "lib.rs"), "pub fn helper() -> i32 { 2 }")
                 RustCall._artifact_reset_digest_caches!()
-                @test RustCall.compute_crate_hash(RustCall.scan_crate(crate)) != bumped_other
+                @test RustCall.compute_crate_hash(RustCall.scan_crate(crate)) != bumped_fork
             end
         end
     end

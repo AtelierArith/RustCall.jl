@@ -79,7 +79,11 @@ What that means in practice:
   version bump alone changes — and the four manifest crates' `[package]
   version`, together with the lockfile lines that record it for a path
   dependency, are left out of every artifact identity. No other crate's
-  version is: a crate may read `env!("CARGO_PKG_VERSION")`.
+  version is: a crate may read `env!("CARGO_PKG_VERSION")`. The exception
+  is decided by provenance, not by name: a manifest loses its version only
+  when it *is* this package's `deps/<name>/Cargo.toml`, and a lockfile entry
+  only when the lockfile's crate takes that name by path from this package's
+  `deps/`; a fork or a stranger called `rustcall_core` keeps its version.
 - A **minor** release always changes it. `Pkg.build("RustCall")` rebuilds the
   extractor once, every cache key moves, and the manifest may change shape
   freely inside that release. A manifest change that has to ship in a *patch*

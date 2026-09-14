@@ -689,9 +689,64 @@ path dependency, keeps its version in the key: a crate can read
 version alone can change what it compiles to. These four cannot be told apart
 by their version — a patch release rewrites it with nothing else changed — and
 their behaviour is their sources, which the identity hashes separately.
+
+A name is not provenance. The exception applies to a manifest only when it
+*is* this package's `deps/<name>/Cargo.toml`, and to a lockfile entry only when
+the lockfile's own crate takes that dependency by path from this package's
+`deps/` — `_rustcall_release_crate_dir`, `_rustcall_release_names_in`. A fork
+or an unrelated crate that happens to be called `rustcall_core` keeps its
+version like any other.
 """
 const RUSTCALL_RELEASE_CRATES = ("rustcall_core", "rustcall_extract",
                                  "rustcall_julia_macros", "rustcall_julia_macros_impl")
+
+# A directory as one path: symlinks resolved when it exists (`/tmp` is
+# `/private/tmp` on macOS), absolute otherwise.
+_canonical_dir(path::AbstractString) = try
+    realpath(String(path))
+catch
+    abspath(String(path))
+end
+
+# This package's own directory for one of `RUSTCALL_RELEASE_CRATES`, canonical.
+_rustcall_release_crate_dir(name::AbstractString) =
+    _canonical_dir(joinpath(dirname(@__DIR__), "deps", String(name)))
+
+# Whether the crate at `dir` is one of this package's release crates: its name
+# is on the list *and* it lives where that crate lives. A copy of the tree is
+# still the tree (`realpath` on both sides); a fork elsewhere is not.
+function _is_rustcall_release_crate(dir::AbstractString, name)
+    name isa AbstractString && name in RUSTCALL_RELEASE_CRATES || return false
+    return _canonical_dir(dir) == _rustcall_release_crate_dir(name)
+end
+
+# The release crates that the crate at `dir` takes as **path** dependencies
+# from this package's `deps/`, read from its own manifest: the only lockfile
+# entries whose `version` may be left out. A dependency inherited from a
+# workspace (`workspace = true`) carries no path here and is left alone — the
+# key then moves on a patch release for that layout, which is the safe side.
+function _rustcall_release_names_in(dir::AbstractString)
+    names = Set{String}()
+    doc = try
+        TOML.parsefile(joinpath(dir, "Cargo.toml"))
+    catch
+        return names
+    end
+    for table in ("dependencies", "dev-dependencies", "build-dependencies")
+        deps = get(doc, table, nothing)
+        deps isa AbstractDict || continue
+        for (dep, spec) in deps
+            spec isa AbstractDict || continue
+            path = get(spec, "path", nothing)
+            path isa AbstractString || continue
+            # `package = "..."` renames a dependency; the lockfile carries the
+            # package name, so that is the one to match.
+            package = get(spec, "package", dep)
+            _is_rustcall_release_crate(joinpath(dir, path), package) && push!(names, String(package))
+        end
+    end
+    return names
+end
 
 # SHA-256 of one file as it enters an **artifact identity** (#372): a
 # `Cargo.toml` of one of `RUSTCALL_RELEASE_CRATES` without its `[package]
@@ -725,15 +780,20 @@ function _identity_file_bytes(path::String)::Vector{UInt8}
     name = basename(path)
     name == "Cargo.toml" && return _normalized_toml(path) do doc
         package = get(doc, "package", nothing)
-        package isa AbstractDict && get(package, "name", nothing) in RUSTCALL_RELEASE_CRATES &&
+        package isa AbstractDict &&
+            _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) &&
             delete!(package, "version")
     end
     name == "Cargo.lock" && return _normalized_toml(path) do doc
         packages = get(doc, "package", nothing)
         packages isa AbstractVector || return
+        # The entries whose version may go: this crate's own path dependencies
+        # on this package's release crates — never a same-named stranger.
+        strip = _rustcall_release_names_in(dirname(path))
+        isempty(strip) && return
         for entry in packages
             entry isa AbstractDict || continue
-            get(entry, "name", nothing) in RUSTCALL_RELEASE_CRATES && !haskey(entry, "source") &&
+            get(entry, "name", nothing) in strip && !haskey(entry, "source") &&
                 delete!(entry, "version")
         end
     end
