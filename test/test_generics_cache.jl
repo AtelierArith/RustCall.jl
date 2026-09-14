@@ -609,6 +609,12 @@ end
         replacement = nothing
         try
             @test Base.invokelatest(gc397_peek, obj) == Int32(5)
+            # Every owner names a row: a member left out of the compiled set
+            # must not leave an owner behind that no purge can reach (#397
+            # review). Holds for this group, and is the invariant the release
+            # path and `purge_library_state!` rely on.
+            @test all(haskey(RustCall.MONOMORPHIZED_FUNCTIONS, k)
+                      for k in keys(RustCall.MONOMORPHIZATION_OWNERS))
             # One image per struct instantiation, every member in it (#291):
             # naming any member's generic releases the instantiation.
             @test RustCall.release_generics(member) >= 1

@@ -949,11 +949,15 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             for (key, info) in compiled
                 MONOMORPHIZED_FUNCTIONS[key] = info
             end
-            # Every member of the group is owned by the generic it was
-            # registered as, so releasing any one member's generic releases
-            # the image they share (#397).
+            # Every *compiled* member of the group is owned by the generic it
+            # was registered as, so releasing any one member's generic releases
+            # the image they share (#397). Only the keys with a row: a member
+            # whose concrete type falls outside the FFI contract is left out of
+            # `compiled` above, and an owner without a row is a tombstone that
+            # no purge — which walks the rows — could ever remove.
             for member in members
-                MONOMORPHIZATION_OWNERS[member_keys[member.name]] = member.name
+                key = member_keys[member.name]
+                haskey(compiled, key) && (MONOMORPHIZATION_OWNERS[key] = member.name)
             end
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             GENERIC_STRUCT_ARTIFACTS[(lib_name, artifact.alive)] = named_members
