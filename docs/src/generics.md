@@ -380,6 +380,40 @@ one instantiation at a time: the wrappers of a single instantiation already
 share one cdylib, which is what keeps allocation and destruction on one
 allocator.
 
+### Releasing instantiations
+
+Lazy instantiation maps one image per type, and a long session that touches
+many types accumulates them. `RustCall.release_generics` is the explicit way to
+let them go — explicit, because the implicit answer is not decidable: an
+instantiation hands out a raw function pointer, and a generic struct
+instantiation hands out objects holding a destructor pointer and the image's
+liveness flag, so the registry cannot know when nothing refers to an image any
+more. You can.
+
+```julia
+RustCall.release_generics("identity")                 # every instantiation
+RustCall.release_generics("identity", Int32, Int64)   # only these
+RustCall.release_generics("identity"; close = true)   # and close the images
+```
+
+Releasing retires the images exactly as `unload_library` retires a library:
+the instantiations leave the registry, so the next call at those types produces
+a *new* image with its own statics and its own liveness flag — restored from the
+on-disk cache, so neither the extractor nor `rustc` runs — while the old image
+stays **mapped**, so a pointer or object that still holds it keeps working and
+an object finalized later frees through the image that allocated it. `close =
+true` also closes the retired images, flipping their liveness flags first so
+that any surviving object goes inert instead of calling into unmapped code;
+pass it only when you know no call into them is in flight and no object from
+them is still in use, as for `unload_library(name; close = true)`.
+
+Two consequences of how instantiations are laid out: instantiations built
+together by `precompile_generics` share one library, so releasing one of them
+releases the others with it (each comes back from the cache on its next call);
+and a generic **struct** group is one library per instantiation with every
+member wrapper in it, so naming any member's generic releases that
+instantiation.
+
 ## See Also
 
 - [Tutorial](tutorial.md) - General tutorial

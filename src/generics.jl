@@ -341,6 +341,37 @@ machine code (#247).
 const MONOMORPHIZED_FUNCTIONS = _state_view(:monomorphized_functions,
     Dict{String, FunctionInfo}())
 
+"""
+    MONOMORPHIZATION_OWNERS
+
+Artifact key of an instantiation → the registered generic it belongs to.
+
+`MONOMORPHIZED_FUNCTIONS` is keyed by the artifact identity, which folds the
+source, the bindings and the toolchain into one digest — the right key for a
+lookup, and one nothing can enumerate *by generic*. `release_generics(f)` has
+to find every instantiation of `f` without being told their types, so each
+instantiation records its owner when it is published (#397). Written and
+cleared in the same transactions as `MONOMORPHIZED_FUNCTIONS`.
+"""
+const MONOMORPHIZATION_OWNERS = _state_view(:monomorphization_owners, Dict{String, String}())
+
+"""
+    GENERIC_IMAGE_PATHS
+
+Registry name of a monomorphization image → the file it was opened from.
+
+`release_generics` needs it for one thing (#397): a batch image is opened from
+a process-private copy that `_BATCH_LIBRARY_COPIES` remembers, and opening that
+same path again hands back the *retired* image — same handle, same flag — so
+the memo has to be dropped with the image. The registry does not keep a
+library's path, and a retirement recorded by `unload_artifact!` has none to
+give, so the loader of an instantiation writes it here in the transaction that
+publishes the instantiation. Written under `REGISTRY_LOCK`; a stale entry for
+a name that was unloaded some other way is overwritten the next time that name
+is loaded.
+"""
+const GENERIC_IMAGE_PATHS = _state_view(:generic_image_paths, Dict{String, String}())
+
 # An object's image is immutable even after the source registration changes.
 # Keep original wrapper names alongside the compiled snapshots, indexed by
 # artifact name and image-lifetime flag: unloading and rebuilding identical
@@ -658,8 +689,10 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
                             specialized.arg_abis, string_return, free_ptr,
                             channel, artifact.handle, artifact.generation)
 
-        # Cache the monomorphized function
+        # Cache the monomorphized function, and remember whose it is (#397).
         return lock(REGISTRY_LOCK) do
+            MONOMORPHIZATION_OWNERS[cache_key] = func_name
+            GENERIC_IMAGE_PATHS[lib_name] = lib_path
             get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
         end
     end
@@ -827,6 +860,13 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             for (key, info) in compiled
                 MONOMORPHIZED_FUNCTIONS[key] = info
             end
+            # Every member of the group is owned by the generic it was
+            # registered as, so releasing any one member's generic releases
+            # the image they share (#397).
+            for member in members
+                MONOMORPHIZATION_OWNERS[member_keys[member.name]] = member.name
+            end
+            GENERIC_IMAGE_PATHS[lib_name] = lib_path
             GENERIC_STRUCT_ARTIFACTS[(lib_name, artifact.alive)] = named_members
             MONOMORPHIZED_FUNCTIONS[member_keys[func_name]]
         end
@@ -938,6 +978,125 @@ function precompile_generics(func_name::AbstractString, instantiations...)
     registered.group === nothing &&
         _batch_monomorphize(registered, name, bindings)
     return FunctionInfo[monomorphize_function(name, b) for b in bindings]
+end
+
+"""
+    release_generics(func_name; close = false) -> Int
+    release_generics(func_name, instantiations...; close = false) -> Int
+
+Retire the images behind the instantiations of the registered generic
+`func_name` — every one of them, or only the listed ones, spelled as for
+`precompile_generics` — and return how many instantiations were released
+(#397).
+
+Lazy instantiation maps one image per type and, until this existed, nothing
+ever unmapped one: a long session touching many types accumulated them for
+its lifetime. This is the explicit answer, because the implicit one is not
+decidable — an instantiation hands out a raw function pointer, and a generic
+struct instantiation hands out objects holding a destructor pointer and the
+image's liveness flag (#291), so the registry cannot know when nothing refers
+to an image any more. You can.
+
+# What "retire" means here
+
+Exactly what it means for `unload_library`: the instantiation leaves the
+registry, so the next call at those types produces a **new** image with its
+own statics and its own liveness flag, and the old image stays **mapped** —
+retired, not closed — so a pointer or object still holding it keeps working,
+and an object that is finalized later frees through the image that allocated
+it. `close = true` also closes the retired images, flipping their liveness
+flags first so that any surviving object goes inert instead of calling into
+unmapped code; pass it only when you know no call into them is in flight and
+no object from them is still in use, as for `unload_library(name; close = true)`.
+
+Two consequences of how instantiations are laid out:
+
+  * Instantiations built together by `precompile_generics` share one library.
+    Releasing one of them retires that library, so the others leave the
+    registry with it; each comes back — from the cache, without a rebuild — on
+    its next call, as a fresh image. Releasing is per image, and the batch is
+    the image.
+  * A generic **struct** group is one library per instantiation, with every
+    member wrapper in it (#291). Naming any member's generic releases the
+    instantiation the way the members share it.
+
+Nothing about the on-disk cache changes: a released instantiation is restored
+from it on the next call and runs neither the extractor nor `rustc` (#254).
+"""
+function release_generics(func_name::AbstractString, instantiations...; close::Bool = false)
+    name = String(func_name)
+    registered = lock(REGISTRY_LOCK) do
+        get(GENERIC_FUNCTION_REGISTRY, name, nothing)
+    end
+    registered === nothing && error("Function '$name' is not registered as a generic function")
+
+    # Which artifact keys are being released: all of the generic's, or the
+    # listed instantiations'. Resolved outside STATE, like every identity
+    # computation, then matched under it.
+    selected = if isempty(instantiations)
+        nothing
+    else
+        compiler = something(registered.compiler, get_default_compiler())
+        Set{String}(artifact_key(_monomorphization_id(registered, name,
+                                                       _generic_binding(registered, inst),
+                                                       compiler))
+                    for inst in instantiations)
+    end
+
+    # The images to retire, found under one lock: every registered
+    # instantiation owned by `name` (and selected, if a set was given), grouped
+    # by the library it lives in.
+    images = lock(REGISTRY_LOCK) do
+        found = Dict{String, Vector{String}}()
+        for (key, owner) in MONOMORPHIZATION_OWNERS
+            owner == name || continue
+            selected === nothing || key in selected || continue
+            info = get(MONOMORPHIZED_FUNCTIONS, key, nothing)
+            info === nothing && continue
+            push!(get!(() -> String[], found, info.lib_name), key)
+        end
+        found
+    end
+    isempty(images) && return 0
+
+    released = 0
+    for (lib_name, keys) in images
+        released += length(keys)
+        # `purge_library_state!` drops every `MONOMORPHIZED_FUNCTIONS` row of
+        # this library — including instantiations of *other* generics that
+        # share a batch image with these — so the owners map is cleared to
+        # match: whatever the purge removed, by library, not by key.
+        unload_artifact!(generics_policy(), lib_name; close) ||
+            @debug "release_generics: '$lib_name' was not registered" lib_name
+        lock(REGISTRY_LOCK) do
+            # Unloading one name of an image unloads every name of it, so a
+            # batch member's siblings — registered under their own names on the
+            # same handle — have just left the registry too. Everything that
+            # belongs to a name no longer registered goes: the instantiation
+            # rows, their owners, and the path memo.
+            gone = Set{String}(n for n in Base.keys(GENERIC_IMAGE_PATHS)
+                               if !haskey(RUST_LIBRARIES, n))
+            for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
+                info.lib_name in gone && delete!(MONOMORPHIZED_FUNCTIONS, key)
+            end
+            for key in collect(Base.keys(MONOMORPHIZATION_OWNERS))
+                haskey(MONOMORPHIZED_FUNCTIONS, key) || delete!(MONOMORPHIZATION_OWNERS, key)
+            end
+            # A batch image is opened from one process-private copy shared by
+            # its members (`_shared_batch_copy`). Loading that same path again
+            # would hand back the retired image — same handle, same flag —
+            # so the memo of the copy goes with the image, and the next restore
+            # makes a fresh copy and gets a fresh image.
+            gone_paths = Set{String}(GENERIC_IMAGE_PATHS[n] for n in gone)
+            for n in gone
+                delete!(GENERIC_IMAGE_PATHS, n)
+            end
+            for (batch, path) in collect(_BATCH_LIBRARY_COPIES)
+                path in gone_paths && delete!(_BATCH_LIBRARY_COPIES, batch)
+            end
+        end
+    end
+    return released
 end
 
 # Compile every instantiation in `bindings` that is neither in memory nor in the

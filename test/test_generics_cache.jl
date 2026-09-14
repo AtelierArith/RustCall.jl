@@ -346,3 +346,151 @@ end
         end
     end
 end
+
+# ---------------------------------------------------------------------------
+# Releasing instantiations (#397)
+# ---------------------------------------------------------------------------
+#
+# Lazy instantiation maps one image per type, and until #397 nothing ever
+# unmapped one. `release_generics` is the explicit answer: it retires the
+# images behind a generic's instantiations exactly as `unload_library` retires
+# a library — out of the registry, still mapped — so a pointer or object that
+# still holds one keeps working, and the next call gets a fresh image.
+
+@testset "#397: release_generics retires instantiations" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required to build a monomorphization"
+    else
+        RustCall.register_generic_function("gc397_id",
+            "pub fn gc397_id<T: Copy>(x: T) -> T { x }", [:T])
+        images() = count(n -> startswith(n, "rust_generic"), RustCall.list_loaded_libraries())
+        cached(T) = RustCall.get_monomorphized_function("gc397_id", Dict{Symbol, Type}(:T => T))
+        owned() = [k for (k, o) in RustCall.MONOMORPHIZATION_OWNERS if o == "gc397_id"]
+        try
+            @testset "every instantiation of a generic, and the registry count comes down" begin
+                before = images()
+                @test RustCall.call_generic_function("gc397_id", Int32(1)) == Int32(1)
+                @test RustCall.call_generic_function("gc397_id", Int64(2)) == Int64(2)
+                @test RustCall.call_generic_function("gc397_id", 3.5) == 3.5
+                @test images() == before + 3
+                @test length(owned()) == 3
+                old = cached(Int32)
+                @test old !== nothing
+                old_alive = RustCall.alive_ref_for_handle(old.handle, old.lib_name)
+                @test old_alive[]
+
+                @test RustCall.release_generics("gc397_id") == 3
+                @test images() == before
+                @test isempty(owned())
+                @test all(T -> cached(T) === nothing, (Int32, Int64, Float64))
+                # Retired, not closed: the image is still mapped and its flag
+                # still says live, so anything holding it keeps working.
+                @test old.handle in RustCall.retired_handles()
+                @test old_alive[]
+                @test RustCall._call_monomorphized(old, Int32(9)) == Int32(9)
+
+                # The next call gets a fresh image — from the cache, so no
+                # rebuild, but a different mapping with its own flag.
+                @test RustCall.call_generic_function("gc397_id", Int32(4)) == Int32(4)
+                fresh = cached(Int32)
+                @test fresh !== nothing
+                @test fresh.handle != old.handle
+                @test RustCall.alive_ref_for_handle(fresh.handle, fresh.lib_name) !== old_alive
+                @test images() == before + 1
+                @test RustCall.release_generics("gc397_id") == 1
+                RustCall.close_retired_handles!(RustCall.retired_handles(old.lib_name))
+                @test !old_alive[]
+            end
+
+            @testset "only the listed instantiations" begin
+                RustCall.call_generic_function("gc397_id", Int32(1))
+                RustCall.call_generic_function("gc397_id", Int64(2))
+                @test RustCall.release_generics("gc397_id", Int64) == 1
+                @test cached(Int32) !== nothing
+                @test cached(Int64) === nothing
+                @test RustCall.release_generics("gc397_id", Int64) == 0
+                @test RustCall.release_generics("gc397_id") == 1
+            end
+
+            @testset "a batch is one image, so it is released as one" begin
+                RustCall.precompile_generics("gc397_id", Int8, Int16)
+                a, b = cached(Int8), cached(Int16)
+                @test a !== nothing && b !== nothing
+                @test a.handle == b.handle
+                copies_before = length(RustCall._BATCH_LIBRARY_COPIES)
+                # Asking for one member retires the library both live in...
+                @test RustCall.release_generics("gc397_id", Int8) == 1
+                @test cached(Int8) === nothing
+                @test cached(Int16) === nothing
+                # ...and forgets the shared copy, or the next restore would open
+                # the same path and get the retired image back.
+                @test length(RustCall._BATCH_LIBRARY_COPIES) < copies_before
+                @test RustCall.call_generic_function("gc397_id", Int16(6)) == Int16(6)
+                again = cached(Int16)
+                @test again !== nothing
+                @test again.handle != b.handle
+                @test RustCall.release_generics("gc397_id") == 1
+            end
+
+            @testset "close = true flips the flag and closes" begin
+                RustCall.call_generic_function("gc397_id", UInt8(1))
+                info = cached(UInt8)
+                alive = RustCall.alive_ref_for_handle(info.handle, info.lib_name)
+                @test alive[]
+                @test RustCall.release_generics("gc397_id"; close = true) == 1
+                @test !alive[]
+                @test !(info.handle in RustCall.retired_handles())
+            end
+
+            @test_throws ErrorException RustCall.release_generics("gc397_not_registered")
+        finally
+            RustCall.release_generics("gc397_id"; close = true)
+            lock(RustCall.REGISTRY_LOCK) do
+                delete!(RustCall.GENERIC_FUNCTION_REGISTRY, "gc397_id")
+            end
+        end
+    end
+end
+
+@testset "#397: a released generic struct keeps its live objects safe" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required to build a monomorphization"
+    else
+        rust"""
+        #[julia]
+        pub struct Gc397Box<T> { value: T }
+        impl<T: Copy> Gc397Box<T> {
+            pub fn new(value: T) -> Self { Self { value } }
+            pub fn gc397_peek(&self) -> T { self.value }
+        }
+        """
+        failures_before = RustCall.finalizer_failure_count()
+        obj = Gc397Box{Int32}(Int32(5))
+        member = first(sort([n for n in keys(RustCall.GENERIC_FUNCTION_REGISTRY)
+                             if startswith(n, "Gc397Box_")]))
+        old_alive = getfield(obj, :alive)
+        replacement = nothing
+        try
+            @test Base.invokelatest(gc397_peek, obj) == Int32(5)
+            # One image per struct instantiation, every member in it (#291):
+            # naming any member's generic releases the instantiation.
+            @test RustCall.release_generics(member) >= 1
+            # The object still works: its image is retired, not closed.
+            @test old_alive[]
+            @test Base.invokelatest(gc397_peek, obj) == Int32(5)
+            @test obj.value == Int32(5)
+            # A new object comes from a fresh image with its own flag.
+            replacement = Gc397Box{Int32}(Int32(6))
+            @test getfield(replacement, :alive) !== old_alive
+            @test Base.invokelatest(gc397_peek, replacement) == Int32(6)
+            # ...and the old one finalizes through the image that allocated it.
+            finalize(obj)
+            @test RustCall.finalizer_failure_count() == failures_before
+        finally
+            finalize(obj)
+            replacement === nothing || finalize(replacement)
+            RustCall.close_retired_handles!(RustCall.retired_handles(obj.lib_name))
+            RustCall.release_generics(member; close = true)
+        end
+    end
+end
