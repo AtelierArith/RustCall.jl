@@ -418,8 +418,9 @@ end
                 @test a !== nothing && b !== nothing
                 @test a.handle == b.handle
                 copies_before = length(RustCall._BATCH_LIBRARY_COPIES)
-                # Asking for one member retires the library both live in...
-                @test RustCall.release_generics("gc397_id", Int8) == 1
+                # Asking for one member retires the library both live in, and
+                # the count says what actually left the registry: both.
+                @test RustCall.release_generics("gc397_id", Int8) == 2
                 @test cached(Int8) === nothing
                 @test cached(Int16) === nothing
                 # ...and forgets the shared copy, or the next restore would open
@@ -429,6 +430,32 @@ end
                 again = cached(Int16)
                 @test again !== nothing
                 @test again.handle != b.handle
+                @test RustCall.release_generics("gc397_id") == 1
+            end
+
+            @testset "a publication is refused once its image was released" begin
+                # Two tasks racing on one instantiation both end on the
+                # winner's handle; `release_generics` can retire it while the
+                # loser is between its load and its publication. The guard the
+                # publication runs under `REGISTRY_LOCK` is what stops the
+                # loser caching a pointer into the retired image as if it were
+                # the fresh one the release promised (#397 review).
+                RustCall.call_generic_function("gc397_id", Float32(1))
+                info = cached(Float32)
+                @test lock(RustCall.REGISTRY_LOCK) do
+                    RustCall._image_is_current(info.lib_name, info.handle)
+                end
+                @test RustCall.release_generics("gc397_id") == 1
+                @test !lock(RustCall.REGISTRY_LOCK) do
+                    RustCall._image_is_current(info.lib_name, info.handle)
+                end
+                @test !lock(RustCall.REGISTRY_LOCK) do
+                    RustCall._image_is_current("rust_generic_never_registered", info.handle)
+                end
+                # A retry after the refusal is an ordinary instantiation: a
+                # fresh image, cached like any other.
+                @test RustCall.monomorphize_function("gc397_id", Dict{Symbol, Type}(:T => Float32)).handle != info.handle
+                @test cached(Float32) !== nothing
                 @test RustCall.release_generics("gc397_id") == 1
             end
 

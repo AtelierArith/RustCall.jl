@@ -551,6 +551,34 @@ info = monomorphize_function("identity", Dict{Symbol, Type}(:T => Int32))
 ```
 """
 function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type})
+    # An attempt publishes nothing when the image it resolved against was
+    # released between its `load_artifact!` and its publication (#397 review):
+    # two tasks racing on one instantiation both end on the winner's handle,
+    # and `release_generics` can retire that image while the loser is still
+    # between the two steps. Publishing then would cache a pointer into a
+    # retired — or, with `close = true`, unmapped — image as if it were the
+    # fresh one the release promised. So the loser starts over, and gets the
+    # fresh image like any other caller.
+    for _ in 1:3
+        info = _monomorphize_function_once(func_name, type_params)
+        info === nothing || return info
+        @debug "An instantiation of '$func_name' was released while being published; retrying"
+    end
+    error("An instantiation of '$func_name' was released repeatedly while it was being published")
+end
+
+# Whether `handle` is still the image registered as `lib_name`. Checked under
+# `REGISTRY_LOCK` in the transaction that publishes an instantiation, so that
+# a publication and a release of the same image are serialized: whichever
+# comes second sees the other (#397 review). Caller holds REGISTRY_LOCK.
+function _image_is_current(lib_name::String, handle::Ptr{Cvoid})
+    entry = get(RUST_LIBRARIES, lib_name, nothing)
+    return entry !== nothing && entry[1] == handle
+end
+
+# One attempt at `monomorphize_function`; `nothing` means the image resolved
+# against was released before it could be published, and the caller retries.
+function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol, <:Type})
     registered = lock(REGISTRY_LOCK) do
         get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
     end
@@ -691,6 +719,9 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
 
         # Cache the monomorphized function, and remember whose it is (#397).
         return lock(REGISTRY_LOCK) do
+            # Released while this task was between the load and here: do not
+            # cache a pointer into an image the registry has let go of.
+            _image_is_current(lib_name, artifact.handle) || return nothing
             MONOMORPHIZATION_OWNERS[cache_key] = func_name
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
@@ -857,6 +888,9 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
         return lock(REGISTRY_LOCK) do
             cached = get(MONOMORPHIZED_FUNCTIONS, member_keys[func_name], nothing)
             cached === nothing || return cached
+            # Same guard as the function path: an image released between the
+            # load and this publication is not cached (#397 review).
+            _image_is_current(lib_name, artifact.handle) || return nothing
             for (key, info) in compiled
                 MONOMORPHIZED_FUNCTIONS[key] = info
             end
@@ -986,8 +1020,11 @@ end
 
 Retire the images behind the instantiations of the registered generic
 `func_name` — every one of them, or only the listed ones, spelled as for
-`precompile_generics` — and return how many instantiations were released
-(#397).
+`precompile_generics` — and return how many instantiations **left the
+registry** (#397). That can exceed the number asked for: releasing is per
+image, and an image built by `precompile_generics` holds several
+instantiations (see below), so `release_generics(f, Int8)` against a batch of
+`Int8` and `Int16` returns `2`.
 
 Lazy instantiation maps one image per type and, until this existed, nothing
 ever unmapped one: a long session touching many types accumulated them for
@@ -1060,12 +1097,21 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
     isempty(images) && return 0
 
     released = 0
-    for (lib_name, keys) in images
-        released += length(keys)
-        # `purge_library_state!` drops every `MONOMORPHIZED_FUNCTIONS` row of
-        # this library — including instantiations of *other* generics that
-        # share a batch image with these — so the owners map is cleared to
-        # match: whatever the purge removed, by library, not by key.
+    for (lib_name, _) in images
+        # Counted *before* the unload, because `purge_library_state!` inside it
+        # drops this library's `MONOMORPHIZED_FUNCTIONS` rows itself. The image
+        # is the unit: every instantiation whose pointers were resolved on
+        # this handle leaves with it — including a batch sibling registered
+        # under another name, and an instantiation of another generic that
+        # shares the batch — and that is what the return value counts.
+        handle = lock(REGISTRY_LOCK) do
+            entry = get(RUST_LIBRARIES, lib_name, nothing)
+            entry === nothing ? C_NULL : entry[1]
+        end
+        handle == C_NULL && continue
+        released += lock(REGISTRY_LOCK) do
+            count(info -> info.handle == handle, values(MONOMORPHIZED_FUNCTIONS))
+        end
         unload_artifact!(generics_policy(), lib_name; close) ||
             @debug "release_generics: '$lib_name' was not registered" lib_name
         lock(REGISTRY_LOCK) do
@@ -1076,8 +1122,13 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             # rows, their owners, and the path memo.
             gone = Set{String}(n for n in Base.keys(GENERIC_IMAGE_PATHS)
                                if !haskey(RUST_LIBRARIES, n))
+            # Rows the purge could not see: an instantiation resolved on this
+            # handle but registered under a name that was never in
+            # `GENERIC_IMAGE_PATHS` cannot exist, but a row keyed by handle is
+            # the exact statement, so it is what is swept.
             for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
-                info.lib_name in gone && delete!(MONOMORPHIZED_FUNCTIONS, key)
+                (info.handle == handle || info.lib_name in gone) &&
+                    delete!(MONOMORPHIZED_FUNCTIONS, key)
             end
             for key in collect(Base.keys(MONOMORPHIZATION_OWNERS))
                 haskey(MONOMORPHIZED_FUNCTIONS, key) || delete!(MONOMORPHIZATION_OWNERS, key)
