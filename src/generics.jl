@@ -768,10 +768,16 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
             get!(MONOMORPHIZED_FUNCTIONS, cache_key, info)
         end
         if published === :revived
-            # This task registered the retired image again. Retire it again —
-            # nothing was published against it — so the retry does not lose
-            # the `:insert_only` race to it, and opens a fresh copy instead.
-            unload_artifact!(generics_policy(), lib_name)
+            # If this task is the one that registered the retired image again,
+            # retire it again — nothing was published against it — so the
+            # retry does not lose the `:insert_only` race to it and opens a
+            # fresh copy instead. Conditional on having installed it and on
+            # the generation this load produced: a task that merely *lost* the
+            # race to a fresh incumbent another caller had already registered
+            # under the name must leave that incumbent alone (#397 review).
+            artifact.installed &&
+                unload_artifact!(generics_policy(), lib_name;
+                                 expect_generation = artifact.generation)
             return nothing
         end
         return published
@@ -1132,40 +1138,51 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
     # The images to retire, found under one lock: every registered
     # instantiation owned by `name` (and selected, if a set was given), grouped
     # by the library it lives in.
+    # Selected once, *with* the image each row was resolved on: the handle and
+    # the generation of its name. A later transaction must not re-read those
+    # from the registry — between the two, another release can retire this
+    # image and a concurrent caller publish a replacement under the same name,
+    # and a fresh read would then authorize retiring the replacement.
     images = lock(REGISTRY_LOCK) do
-        found = Dict{String, Vector{String}}()
+        found = Dict{String, Tuple{Ptr{Cvoid}, Int}}()
         for (key, owner) in MONOMORPHIZATION_OWNERS
             owner == name || continue
             selected === nothing || key in selected || continue
             info = get(MONOMORPHIZED_FUNCTIONS, key, nothing)
             info === nothing && continue
-            push!(get!(() -> String[], found, info.lib_name), key)
+            found[info.lib_name] = (info.handle, info.generation)
         end
         found
     end
     isempty(images) && return 0
 
     released = 0
-    for (lib_name, _) in images
+    for (lib_name, (handle, generation)) in images
         # One state transition does everything that must precede the
-        # retirement (#397 review). Capture the image — handle *and*
-        # generation, since a handle value can be reused by the loader — count
-        # what leaves with it, and drop every memo that could revive it: the
-        # process-private copy a batch is opened from (`_shared_batch_copy`),
-        # and the path record of every name on this handle. Doing this before
-        # `unload_artifact!` rather than after is the point: a restore that
-        # lands in between now makes a fresh copy and loads a fresh path, and
-        # if it loses the `:insert_only` race to the still-registered image it
-        # is retired with it a moment later. Counted before the unload as
-        # well, because `purge_library_state!` inside it drops the rows.
-        handle, generation, names, leaving = lock(REGISTRY_LOCK) do
+        # retirement (#397 review). Confirm the image selected above is still
+        # the one registered under its name — same handle, same generation —
+        # count what leaves with it, and drop every memo that could revive it:
+        # the process-private copy a batch is opened from
+        # (`_shared_batch_copy`), and the path record of every name on this
+        # handle. Doing this before `unload_artifact!` rather than after is the
+        # point: a restore that lands in between now makes a fresh copy and
+        # loads a fresh path, and if it loses the `:insert_only` race to the
+        # still-registered image it is retired with it a moment later. Counted
+        # before the unload as well, because `purge_library_state!` inside it
+        # drops the rows.
+        #
+        # The count is by handle alone. The image is the unit of retirement:
+        # a batch member restored and released on its own advances its *name's*
+        # generation past its siblings', yet a later load of both gives them
+        # one handle again — and releasing either unloads every name on it. A
+        # live row can only point at the live image of its handle (a retired
+        # image's rows were purged with it), so the handle is exact.
+        names, leaving = lock(REGISTRY_LOCK) do
             entry = get(RUST_LIBRARIES, lib_name, nothing)
-            entry === nothing && return (C_NULL, 0, String[], 0)
-            handle = entry[1]
-            generation = get(ARTIFACT_GENERATIONS, lib_name, 0)
+            (entry === nothing || entry[1] != handle ||
+             get(ARTIFACT_GENERATIONS, lib_name, 0) != generation) && return (String[], 0)
             names = String[n for (n, e) in RUST_LIBRARIES if e[1] == handle]
-            leaving = count(info -> info.handle == handle && info.generation == generation,
-                            values(MONOMORPHIZED_FUNCTIONS))
+            leaving = count(info -> info.handle == handle, values(MONOMORPHIZED_FUNCTIONS))
             paths = Set{String}(GENERIC_IMAGE_PATHS[n] for n in names
                                 if haskey(GENERIC_IMAGE_PATHS, n))
             for (batch, path) in collect(_BATCH_LIBRARY_COPIES)
@@ -1174,9 +1191,9 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             for n in names
                 delete!(GENERIC_IMAGE_PATHS, n)
             end
-            (handle, generation, names, leaving)
+            (names, leaving)
         end
-        handle == C_NULL && continue
+        isempty(names) && continue
         # Unloading one name of an image unloads every name of it, so a batch
         # member's siblings — registered under their own names on the same
         # handle — leave the registry with it. Conditional on the generation
@@ -1190,12 +1207,12 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         released += leaving
         lock(REGISTRY_LOCK) do
             # `purge_library_state!` dropped this library's rows by name; rows
-            # resolved on this image under a sibling name go the same way —
-            # matched by handle *and* generation, so a row published for a
-            # later image that happens to reuse the pointer value is kept.
+            # resolved on this image under a sibling name go the same way, by
+            # handle. A later image reusing the pointer value cannot have a
+            # row yet: its names were all just unloaded, and a publication
+            # against it is refused until it is registered again.
             for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
-                (info.handle == handle && info.generation == generation) &&
-                    delete!(MONOMORPHIZED_FUNCTIONS, key)
+                info.handle == handle && delete!(MONOMORPHIZED_FUNCTIONS, key)
             end
             for key in collect(Base.keys(MONOMORPHIZATION_OWNERS))
                 haskey(MONOMORPHIZED_FUNCTIONS, key) || delete!(MONOMORPHIZATION_OWNERS, key)

@@ -499,8 +499,25 @@ end
                                                            restored_override = restored) === nothing
                 @test cached(UInt32) === nothing
                 @test !(before.lib_name in RustCall.list_loaded_libraries())
-                # The retry — any caller — gets a fresh image, not the old statics.
+                # A concurrent caller may by now have *registered* a fresh
+                # image under the name without having published it yet —
+                # played here by loading a fresh copy directly. A stale reader
+                # arriving then loses the `:insert_only` race to that
+                # incumbent; it installed nothing, so it must retire nothing:
+                # the incumbent stays, and the stale attempt publishes nothing
+                # (#397 review).
+                incumbent_path = RustCall._restore_generic_artifact(key, "gc397_id").lib_path
+                @test incumbent_path != restored.lib_path
+                incumbent = RustCall.load_artifact!(RustCall.generics_policy(), incumbent_path;
+                                                    lib_name = before.lib_name)
+                @test incumbent.installed
+                @test RustCall._monomorphize_function_once("gc397_id", bind;
+                                                           restored_override = restored) === nothing
+                @test before.lib_name in RustCall.list_loaded_libraries()
+                @test RustCall.RUST_LIBRARIES[before.lib_name][1] == incumbent.handle
+                # The retry — any caller — then publishes that fresh image.
                 fresh = RustCall.monomorphize_function("gc397_id", bind)
+                @test fresh.handle == incumbent.handle
                 @test fresh.handle != before.handle
                 @test RustCall.call_generic_function("gc397_id", UInt32(3)) == UInt32(3)
                 @test RustCall.release_generics("gc397_id") >= 1

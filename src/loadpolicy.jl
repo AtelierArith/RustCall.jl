@@ -915,6 +915,12 @@ One loaded shared library, as returned by `load_artifact!`.
   call into a `dlclose`d image **without taking a lock or doing a lookup**
   (#249): a finalizer may run while the running thread holds `REGISTRY_LOCK`,
   so it must never take it.
+- `installed::Bool` — whether *this* call put the handle in the registry.
+  `false` for an `:insert_only` policy that lost the race and was handed the
+  existing image, and for a helper/module-local policy that found its image
+  already registered; a caller that must undo only what it itself installed
+  (`release_generics`' revived-batch case, #397) reads this rather than
+  guessing from the handle, which the loser shares with the winner.
 - `assumed_unwind::Bool` — `must_assume_unwind` resolved against the
   environment the artifact was *built* under (`snapshot_env`), recorded at load
   time because the live `ENV` is not evidence about a cached artifact (#244).
@@ -926,13 +932,16 @@ struct LoadedArtifact
     policy::LoadPolicy
     alive::Ref{Bool}
     assumed_unwind::Bool
+    installed::Bool
     # Which generation of `name` this is. Anything resolved against `handle`
     # belongs to this generation and may be cached with it (#277).
     generation::Int
 end
 
 LoadedArtifact(name, handle, path, policy, alive, assumed_unwind) =
-    LoadedArtifact(name, handle, path, policy, alive, assumed_unwind, 0)
+    LoadedArtifact(name, handle, path, policy, alive, assumed_unwind, true, 0)
+LoadedArtifact(name, handle, path, policy, alive, assumed_unwind, generation::Int) =
+    LoadedArtifact(name, handle, path, policy, alive, assumed_unwind, true, generation)
 
 function Base.show(io::IO, a::LoadedArtifact)
     print(io, "LoadedArtifact(", a.name, " @ ", repr(a.handle),
@@ -2370,7 +2379,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
             duplicate = handle
             existing, _ = RUST_LIBRARIES[name]
             alive = get!(() -> Ref(true), ARTIFACT_ALIVE, name)
-            return LoadedArtifact(name, existing, lib_path, policy, alive, assumed,
+            return LoadedArtifact(name, existing, lib_path, policy, alive, assumed, false,
                                   get(ARTIFACT_GENERATIONS, name, 0))
         end
         if haskey(RUST_LIBRARIES, name)
