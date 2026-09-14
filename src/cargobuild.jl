@@ -618,10 +618,14 @@ function save_cargo_cached_library(cache_key::String, lib_path::String)
     lib_ext = get_library_extension()
     cached_path = joinpath(cache_dir, "$(cache_key)$(lib_ext)")
 
-    # Copy library to cache
-    cp(lib_path, cached_path, force=true)
+    # Published, never copied over an existing entry: a `cp(force = true)` here
+    # left this path absent and then half-written, and a worker in another
+    # process that had just looked the key up opened it in that window (#394).
+    # See `_publish_cache_file`.
+    published = _publish_cache_file(lib_path, cached_path)
 
-    @debug "Cached Cargo library" cache_key=artifact_short_id(cache_key, 8) path=cached_path
+    @debug "Cached Cargo library" cache_key=artifact_short_id(cache_key, 8) path=published.path published=published.published
+    return published.path
 end
 
 """

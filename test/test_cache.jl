@@ -666,3 +666,284 @@ end
         @test_skip "rustc not found, skipping cache integration tests"
     end
 end
+
+# ---------------------------------------------------------------------------
+# Publishing into the cache is atomic (#394)
+# ---------------------------------------------------------------------------
+#
+# Every cache key is the complete artifact identity, so two processes routinely
+# want the same destination — and the test suite runs sixteen of them against
+# one cache directory, where `CACHE_LOCK` means nothing because it is
+# process-local. `cp(src, dst; force = true)` unlinks `dst` and then writes it,
+# so a worker that had just looked the key up and found it could lose it
+# mid-read: `SystemError: opening file .../cache-v2/cargo/<key>.dylib` out of
+# `include_dependency`, or `could not load library` out of `dlopen`. Two
+# full-suite runs minutes apart on one tree died that way in two different
+# files, neither of which touches the cache.
+
+@testset "publishing into the cache never exposes a partial file (#394)" begin
+    @testset "a fresh destination is published whole" begin
+        mktempdir() do dir
+            src = joinpath(dir, "build.bin")
+            dst = joinpath(dir, "cache", "key.bin")
+            payload = rand(UInt8, 64 * 1024)
+            write(src, payload)
+
+            result = RustCall._publish_cache_file(src, dst)
+            @test result.published
+            @test result.path == dst
+            @test read(dst) == payload
+            # Nothing is left behind for `list_cached_libraries` or a
+            # "exactly one entry" assertion to trip over.
+            @test filter(f -> endswith(f, ".tmp"), readdir(joinpath(dir, "cache"))) == String[]
+        end
+    end
+
+    @testset "an existing destination is never rewritten" begin
+        mktempdir() do dir
+            src = joinpath(dir, "build.bin")
+            dst = joinpath(dir, "key.bin")
+            write(src, rand(UInt8, 64 * 1024))
+            first_bytes = rand(UInt8, 64 * 1024)
+            write(dst, first_bytes)
+            before = stat(dst)
+
+            result = RustCall._publish_cache_file(src, dst)
+            @test !result.published
+            @test result.path == dst
+            # The same key is the same artifact, and the file may be `dlopen`ed
+            # or mapped right now, so it is left exactly as it was — not
+            # replaced with equivalent bytes.
+            @test read(dst) == first_bytes
+            after = stat(dst)
+            # `inode` is 0 on some Windows filesystems; where it is real it is
+            # the strongest statement that nothing was unlinked and recreated.
+            before.inode == 0 || @test after.inode == before.inode
+            @test after.mtime == before.mtime
+            @test filter(f -> endswith(f, ".tmp"), readdir(dir)) == String[]
+        end
+    end
+
+    @testset "a destination that exists never disappears under a reader" begin
+        # The property that actually broke: a reader that has *already seen* the
+        # entry must never afterwards find it missing or short. Before the fix,
+        # a reader polling one destination through twelve republications saw it
+        # absent 1182 times and short 32971 times out of 34615 observations.
+        if Threads.nthreads() < 2
+            @info "Skipping the concurrent publication test: needs at least 2 threads"
+            @test_skip "needs Threads.nthreads() >= 2"
+        else
+            mktempdir() do dir
+                src = joinpath(dir, "build.bin")
+                dst = joinpath(dir, "key.bin")
+                # Large enough that the copy the old code did was observable;
+                # the fix makes every publication after the first a no-op.
+                payload = rand(UInt8, 8 * 1024 * 1024)
+                write(src, payload)
+                expected = length(payload)
+
+                RustCall._publish_cache_file(src, dst)
+                @test isfile(dst)
+
+                stop = Threads.Atomic{Bool}(false)
+                vanished = Threads.Atomic{Int}(0)
+                truncated = Threads.Atomic{Int}(0)
+                observations = Threads.Atomic{Int}(0)
+                reader = Threads.@spawn begin
+                    while !stop[]
+                        Threads.atomic_add!(observations, 1)
+                        if !isfile(dst)
+                            Threads.atomic_add!(vanished, 1)
+                        elseif filesize(dst) != expected
+                            Threads.atomic_add!(truncated, 1)
+                        end
+                        yield()
+                    end
+                end
+                try
+                    # The reader has to be polling before the publications
+                    # start, or there is nothing to observe: with the fix every
+                    # publication after the first returns without touching the
+                    # file, so the loop below is instant. With the bug it is
+                    # twelve 8 MB copies and the reader sees the inside of them.
+                    @test timedwait(() -> observations[] > 0, 10.0) === :ok
+                    started = observations[]
+                    for _ in 1:12
+                        RustCall._publish_cache_file(src, dst)
+                    end
+                    @test timedwait(() -> observations[] > started, 10.0) === :ok
+                finally
+                    stop[] = true
+                    wait(reader)
+                end
+
+                @test observations[] > 0
+                @test vanished[] == 0
+                @test truncated[] == 0
+                @test read(dst) == payload
+            end
+        end
+    end
+
+    @testset "the claim refuses an existing destination; a rename would not" begin
+        # Why the claim is a hard link. Both operations publish atomically as far
+        # as a reader is concerned, but `rename` *replaces* an existing
+        # destination, so a publisher that lost the race could overwrite the
+        # winner — and then the winner's checksum describes bytes that are gone,
+        # which `_verify_cached_checksum` treats as corruption and deletes.
+        # `link` fails instead. Asserted on the primitives, because after the
+        # fact the two are indistinguishable.
+        mktempdir() do dir
+            winner = joinpath(dir, "winner")
+            claimed = joinpath(dir, "claimed")
+            loser = joinpath(dir, "loser")
+            write(winner, "winner")
+            write(loser, "loser")
+
+            Base.Filesystem.hardlink(winner, claimed)
+            @test_throws Base.IOError Base.Filesystem.hardlink(loser, claimed)
+            @test read(claimed, String) == "winner"
+
+            Base.Filesystem.rename(loser, claimed)
+            @test read(claimed, String) == "loser"
+        end
+    end
+
+    @testset "a filesystem that cannot claim fails the write" begin
+        # `RUSTCALL_CACHE_DIR` points wherever the user says, so a filesystem
+        # that rejects hard links (exFAT, some network mounts) is reachable.
+        # There the write fails and the caller carries on uncached. A rename
+        # fallback was tried and removed: it cannot refuse an existing
+        # destination, so it reinstates the replacement — and the checksum
+        # corruption behind it — that the claim exists to prevent (#394 review).
+        mktempdir() do dir
+            src = joinpath(dir, "build.bin")
+            write(src, rand(UInt8, 1024))
+            # A destination whose parent is a *file*: `mkpath` and the claim
+            # both fail, standing in for a filesystem that cannot link.
+            blocked = joinpath(dir, "build.bin", "key.bin")
+            @test_throws Exception RustCall._publish_cache_file(src, blocked)
+            # Every caller treats a failed cache write as "not cached" rather
+            # than as a failed build.
+            @test occursin("Failed to save library to cache",
+                           read(joinpath(pkgdir(RustCall), "src", "ruststr.jl"), String))
+        end
+    end
+
+    @testset "two publishers of one absent key produce one winner" begin
+        # The `isfile` fast path cannot be the guarantee: two processes can both
+        # pass it before either publishes. A rename would not close that — Julia
+        # checks for an existing destination and then calls `rename`, which
+        # *replaces* whatever appeared in between, so the loser could overwrite
+        # the winner and leave the winner's checksum describing bytes that are
+        # gone (a verifier deletes such an entry as corrupt). The claim is a
+        # hard link, which refuses an existing destination outright.
+        if Threads.nthreads() < 2
+            @info "Skipping the publication-race test: needs at least 2 threads"
+            @test_skip "needs Threads.nthreads() >= 2"
+        else
+            mktempdir() do dir
+                dst = joinpath(dir, "key.bin")
+                # Deliberately different bytes: two direct-`rustc` builds of one
+                # key come from different temporary directories and need not be
+                # byte-identical, which is exactly what makes a replacement
+                # dangerous rather than merely wasteful.
+                sources = map(1:2) do i
+                    path = joinpath(dir, "build$(i).bin")
+                    write(path, rand(UInt8, 2 * 1024 * 1024))
+                    path
+                end
+                start = Base.Event()
+                tasks = map(sources) do source
+                    Threads.@spawn begin
+                        wait(start)
+                        RustCall._publish_cache_file(source, dst)
+                    end
+                end
+                notify(start)
+                results = fetch.(tasks)
+
+                @test count(r -> r.published, results) == 1
+                winner = sources[findfirst(r -> r.published, results)]
+                @test read(dst) == read(winner)
+                @test all(r -> r.path == dst, results)
+                @test filter(f -> endswith(f, ".tmp"), readdir(dir)) == String[]
+            end
+        end
+    end
+
+    @testset "only the publisher's checksum is written" begin
+        # A checksum written by a process whose bytes are not the ones in the
+        # cache condemns a good entry: `_verify_cached_checksum` removes the
+        # file and raises. So a non-publisher writes one only when none exists,
+        # and computes it from the published file either way.
+        mktempdir() do dir
+            withenv("RUSTCALL_CACHE_DIR" => dir) do
+                RustCall._reset_cache_dir_memo!()
+                try
+                    key = "4"^64
+                    metadata = RustCall.CacheMetadata(key, "hash", "cfg", "triple",
+                                                      RustCall.now(), String["f"])
+                    winner = joinpath(dir, "winner" * RustCall.get_library_extension())
+                    loser = joinpath(dir, "loser" * RustCall.get_library_extension())
+                    write(winner, rand(UInt8, 16 * 1024))
+                    write(loser, rand(UInt8, 16 * 1024))
+
+                    dest = RustCall.save_cached_library(key, winner, metadata)
+                    @test read(dest) == read(winner)
+                    checksum = read(dest * ".sha256", String)
+
+                    # The second publisher must not restate the checksum against
+                    # its own build, and must not disturb the entry.
+                    @test RustCall.save_cached_library(key, loser, metadata) == dest
+                    @test read(dest) == read(winner)
+                    @test read(dest * ".sha256", String) == checksum
+                    # ...and the entry still verifies, which is the property the
+                    # whole arrangement exists to protect.
+                    @test RustCall.load_cached_library(key) == dest
+
+                    # A missing checksum is filled in, from the cached file.
+                    rm(dest * ".sha256")
+                    @test RustCall.save_cached_library(key, loser, metadata) == dest
+                    @test read(dest * ".sha256", String) == checksum
+                    @test RustCall.load_cached_library(key) == dest
+                finally
+                    RustCall._reset_cache_dir_memo!()
+                end
+            end
+        end
+    end
+
+    @testset "the Cargo cache publishes through the same path" begin
+        # Pinned at the call site as well as in the helper: this is the entry
+        # point the two observed failures went through.
+        mktempdir() do dir
+            withenv("RUSTCALL_CACHE_DIR" => dir) do
+                RustCall._reset_cache_dir_memo!()
+                try
+                    key = "3"^64
+                    src = joinpath(dir, "build" * RustCall.get_library_extension())
+                    payload = rand(UInt8, 32 * 1024)
+                    write(src, payload)
+
+                    published = RustCall.save_cargo_cached_library(key, src)
+                    @test RustCall.get_cargo_cached_library(key) == published
+                    @test read(published) == payload
+
+                    # A second publisher of the same key leaves the first
+                    # entry alone rather than unlinking it.
+                    before = stat(published)
+                    other = joinpath(dir, "other" * RustCall.get_library_extension())
+                    write(other, rand(UInt8, 32 * 1024))
+                    @test RustCall.save_cargo_cached_library(key, other) == published
+                    @test read(published) == payload
+                    before.inode == 0 || @test stat(published).inode == before.inode
+                    @test filter(f -> endswith(f, ".tmp"),
+                                 readdir(RustCall.get_cargo_cache_dir())) == String[]
+                finally
+                    RustCall._reset_cache_dir_memo!()
+                end
+            end
+        end
+    end
+end

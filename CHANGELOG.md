@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Publishing a compiled library into the cache is atomic**
+  ([#394](https://github.com/AtelierArith/RustCall.jl/issues/394)). The cache
+  was written with `cp(src, dst; force = true)`, which unlinks the destination
+  and then copies — and the copy of a multi-megabyte `.dylib` is not instant.
+  Every cache key is the complete artifact identity, so two processes routinely
+  want the same destination, and `CACHE_LOCK` cannot help because it is
+  process-local. A process that had just looked the key up and found it could
+  therefore lose it mid-read: `SystemError: opening file …/cache-v2/cargo/<key>.dylib`
+  out of `include_dependency`, or `could not load library` out of `dlopen`. A
+  reader polling one destination while twelve republications ran observed it
+  **absent 1182 times and short 32971 times** out of 34615 observations. The
+  symptom was the test suite, whose sixteen parallel workers share one cache
+  directory — two runs minutes apart on the same tree died in two unrelated
+  files — but any two Julia sessions building the same block at the same time
+  could hit it. Publication now goes to a per-process temporary name in the same
+  directory and the destination is then created as a **hard link** to it, which
+  both publishes atomically — the name appears already pointing at the finished
+  copy — and refuses an existing destination, so a second publisher gets
+  `EEXIST` rather than replacing the first. A rename would not have been enough:
+  it replaces, and two direct-`rustc` builds of one key come from different
+  temporary directories and need not be byte-identical, so the loser could leave
+  the winner's checksum describing bytes that are gone — which a concurrent
+  verifier treats as corruption and deletes. An entry that already exists is
+  therefore left strictly alone, and only the process that actually published
+  writes the checksum (a later one fills in a *missing* checksum, computed from
+  the cached file rather than from its own build). On a filesystem that rejects
+  hard links — reachable, since `RUSTCALL_CACHE_DIR` points wherever it is told
+  — the cache write fails and the caller carries on uncached, which every caller
+  already does for a failed cache write: no cache is better than one that can
+  delete its own entries.
+
 ## [0.3.6] - 2026-09-13
 
 ### Added

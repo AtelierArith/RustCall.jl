@@ -470,7 +470,9 @@ Save a SHA-256 checksum file alongside a cached library.
 function _save_checksum(cache_key::String, lib_path::String)
     checksum = _compute_file_checksum(lib_path)
     checksum_path = lib_path * ".sha256"
-    tmp_path = checksum_path * ".tmp"
+    # Unique per process and per call: a fixed `.tmp` is shared by two
+    # publishers of the same key, and one then truncates the other's (#394).
+    tmp_path = string(checksum_path, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
     open(tmp_path, "w") do io
         println(io, checksum)
     end
@@ -503,6 +505,102 @@ function _verify_cached_checksum(cache_key::String, lib_path::String)
 end
 
 """
+    _publish_cache_file(src, dst) -> (path = dst, published::Bool)
+
+Put `src` into the cache at `dst` so that **no concurrent reader can ever see a
+missing or half-written file there** (#394).
+
+# Why this cannot be a `cp`
+
+`cp(src, dst; force = true)` unlinks `dst` and then writes it, and the write of
+a multi-megabyte `.dylib` is not instant. Every RustCall cache key is the
+complete artifact identity, so two processes routinely want the same `dst` —
+and the test suite runs sixteen of them against one cache directory. `CACHE_LOCK`
+does not help: it is process-local. Measured on one such destination, a reader
+polling while twelve `cp`s ran saw it **absent 1182 times and short 32971
+times** out of 34615 observations. That is the flake of #394: the reader is
+another worker that had just looked the key up and then got
+`SystemError: No such file or directory` from `include_dependency`, or
+`could not load library` from `dlopen`.
+
+# The two rules
+
+  * **An existing `dst` is never touched.** The key is the whole identity of the
+    artifact, so a file already there *is* this artifact; rewriting it could only
+    replace equivalent bytes with equivalent bytes, while exposing every reader
+    to the window above. It may also be `dlopen`ed or mapped right now, which on
+    Windows makes the rewrite fail outright and on any platform makes it
+    pointless.
+  * **A new `dst` appears whole, and exactly once.** The copy goes to a private
+    temporary name in the *same directory*, and `dst` is then created as a
+    **hard link** to it. `link` is the one filesystem operation that both
+    publishes atomically and refuses an existing destination: the name appears
+    already pointing at the finished copy, so a reader never sees a partial
+    file, and a second publisher gets `EEXIST` instead of replacing the first.
+
+The `isfile` check above is only a fast path — it cannot be the guarantee,
+because two processes can both pass it before either publishes. A rename would
+not close that hole: `mv` checks for an existing destination in Julia and then
+calls `rename`, which *replaces* whatever appeared in between, so the nominal
+loser could overwrite the winner. Two direct-`rustc` builds of one key come from
+different temporary directories and need not be byte-identical, and the
+checksums would then describe bytes that are no longer there — a concurrent
+verifier deletes such an entry as corrupt. Hence the link.
+
+Losing the race is not an error: the publisher that arrives second drops its
+temporary file and keeps what is already there, which is the same artifact.
+
+`published` says whether this call is the one that created `dst`. Only the
+publisher knows its own bytes are the ones in the cache, which is what
+`save_cached_library` needs in order to write a checksum that cannot be wrong.
+
+# Why there is no fallback
+
+A filesystem that rejects hard links — exFAT, some network mounts — is
+reachable, because `RUSTCALL_CACHE_DIR` overrides the location outright. There
+the write simply **fails**, and every caller treats a failed cache write as
+"not cached" and carries on (`build_cargo_project_cached`, the inline string
+literal path in `src/ruststr.jl` and `_cache_generic_library` all warn and
+continue). A rename fallback was
+tried and removed: it publishes atomically for a reader but cannot refuse an
+existing destination, so it reinstates exactly the replacement — and the
+checksum corruption behind it — that the link exists to prevent. No cache is
+better than a cache that can delete its own entries.
+"""
+function _publish_cache_file(src::AbstractString, dst::AbstractString)
+    isfile(dst) && return (path = String(dst), published = false)
+    mkpath(dirname(dst))
+    # Unique per process *and* per call: two publishers of one key must not
+    # share a temporary name, or one would truncate the other's copy.
+    tmp = string(dst, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
+    try
+        cp(src, tmp; force = true)
+        try
+            Base.Filesystem.hardlink(tmp, dst)
+            return (path = String(dst), published = true)
+        catch
+            # `EEXIST`: someone published while we were copying. Their file is
+            # this artifact too, so that is the answer rather than a failure.
+            isfile(dst) && return (path = String(dst), published = false)
+            # Anything else fails the write; see "Why there is no fallback".
+            rethrow()
+        end
+    finally
+        # A successful link leaves `dst` naming the same inode, so dropping the
+        # staging name does not touch the published file — but it is the *same*
+        # file, and on Windows a DLL another process has already mapped cannot be
+        # unlinked under either of its names. Removing the alias is housekeeping,
+        # and a failure here must not turn a published entry into an error before
+        # its checksum and metadata are written.
+        try
+            rm(tmp; force = true)
+        catch err
+            @debug "Could not remove the cache staging name" tmp exception = err
+        end
+    end
+end
+
+"""
     save_cached_library(cache_key::String, lib_path::String, metadata::CacheMetadata)
 
 Save a compiled library to the cache along with its metadata and checksum.
@@ -513,11 +611,19 @@ function save_cached_library(cache_key::String, lib_path::String, metadata::Cach
         lib_ext = get_library_extension()
         dest_lib_path = joinpath(cache_dir, "$(cache_key)$(lib_ext)")
 
-        # Copy the library file
-        cp(lib_path, dest_lib_path, force=true)
+        # Published, not copied over: a reader in another process must never see
+        # this path absent or half-written (#394).
+        published = _publish_cache_file(lib_path, dest_lib_path)
 
-        # Save checksum for integrity verification
-        _save_checksum(cache_key, dest_lib_path)
+        # Only the publisher writes the checksum. `dst` is created once, by one
+        # process, so anyone else writing one could be describing bytes that are
+        # not there — and `_verify_cached_checksum` deletes an entry whose
+        # checksum does not match. A non-publisher fills in a *missing* one,
+        # since a missing checksum only costs verification; either way it is
+        # computed from the file that is in the cache, never from `lib_path`.
+        if published.published || !isfile(published.path * ".sha256")
+            _save_checksum(cache_key, published.path)
+        end
 
         # Save metadata (called under the same lock)
         _save_cache_metadata_unlocked(cache_key, metadata)
@@ -585,8 +691,10 @@ function _save_cache_metadata_unlocked(cache_key::String, metadata::CacheMetadat
     metadata_dir = get_metadata_dir()
     metadata_path = joinpath(metadata_dir, "$(cache_key).json")
 
-    # Write to a temp file first, then atomically rename to prevent partial reads
-    tmp_path = metadata_path * ".tmp"
+    # Write to a temp file first, then atomically rename to prevent partial
+    # reads. The name is unique per process and per call, or two publishers of
+    # one key share it and one truncates the other's (#394).
+    tmp_path = string(metadata_path, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
     open(tmp_path, "w") do io
         println(io, "{")
         println(io, "  \"cache_key\": \"$(metadata.cache_key)\",")
