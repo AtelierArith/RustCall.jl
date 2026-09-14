@@ -350,16 +350,19 @@ const MONOMORPHIZED_FUNCTIONS = _state_view(:monomorphized_functions,
     MonomorphizationOwner
 
 Who an instantiation belongs to: the registered generic's name and the
-**bindings** it was instantiated with, as `(param => Type, ...)` in parameter
-order (`_owner_binding`). Immutable, so it can sit in a state table.
+concrete **types** it was instantiated with, in the generic's parameter order
+(`_owner_binding`). Parameter *names* are not part of it: a re-registration
+may spell `f<T>` as `f<U>`, and an `impl` wrapper in a struct group may name
+the struct's parameter differently from the struct — the same instantiation
+either way (#397 review). Immutable, so it can sit in a state table.
 """
 struct MonomorphizationOwner
     generic::String
     binding::Tuple
 end
 
-_owner_binding(type_params) =
-    Tuple(sort!(Pair{Symbol, Type}[Symbol(k) => v for (k, v) in type_params]; by = first))
+_owner_binding(info::GenericFunctionInfo, type_params) =
+    Tuple(Type[type_params[p] for p in info.type_params])
 
 """
     MONOMORPHIZATION_OWNERS
@@ -788,7 +791,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
                             channel, artifact.handle, artifact.generation)
 
         # Cache the monomorphized function, and remember whose it is (#397).
-        owner_binding = _owner_binding(type_params)
+        owner_binding = _owner_binding(registered, type_params)
         published = lock(REGISTRY_LOCK) do
             # Released while this task was between the load and here: do not
             # cache a pointer into an image the registry has let go of.
@@ -982,7 +985,6 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
                              artifact.handle, artifact.generation)
             named_members[info.name] = compiled[member_keys[info.name]]
         end
-        owner_binding = _owner_binding(type_params)
         published = lock(REGISTRY_LOCK) do
             cached = get(MONOMORPHIZED_FUNCTIONS, member_keys[func_name], nothing)
             cached === nothing || return cached
@@ -1005,7 +1007,8 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             for member in members
                 key = member_keys[member.name]
                 haskey(compiled, key) &&
-                    (MONOMORPHIZATION_OWNERS[key] = MonomorphizationOwner(member.name, owner_binding))
+                    (MONOMORPHIZATION_OWNERS[key] =
+                        MonomorphizationOwner(member.name, _owner_binding(member, params_for(member))))
             end
             GENERIC_IMAGE_PATHS[lib_name] = lib_path
             GENERIC_STRUCT_ARTIFACTS[(lib_name, artifact.alive)] = named_members
@@ -1191,7 +1194,8 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
     # default compiler, or before the generic was re-registered, is still this
     # generic's and still mapped (#397 review).
     selected = isempty(instantiations) ? nothing :
-               Set{Tuple}(_owner_binding(_generic_binding(registered, inst)) for inst in instantiations)
+               Set{Tuple}(_owner_binding(registered, _generic_binding(registered, inst))
+                          for inst in instantiations)
 
     # The images to retire, found under one lock: every registered
     # instantiation owned by `name` (and selected, if a set was given), grouped

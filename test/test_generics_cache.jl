@@ -494,6 +494,27 @@ end
                 end
             end
 
+            @testset "release by type across a re-registration that renames the parameter" begin
+                # The recorded bindings are the concrete types in parameter
+                # order, not `name => type` pairs: `f<T>` re-registered as
+                # `f<U>` is the same generic, and its earlier instantiation is
+                # still released by type (#397 review).
+                @test RustCall.call_generic_function("gc397_id", Int16(4)) == Int16(4)
+                built = cached(Int16)
+                @test built !== nothing
+                original = RustCall.GENERIC_FUNCTION_REGISTRY["gc397_id"]
+                try
+                    RustCall.register_generic_function("gc397_id",
+                        "pub fn gc397_id<U: Copy>(x: U) -> U { x }", [:U])
+                    @test RustCall.GENERIC_FUNCTION_REGISTRY["gc397_id"].type_params == [:U]
+                    @test RustCall.release_generics("gc397_id", Int16) == 1
+                    @test cached(Int16) === nothing
+                    @test !(built.lib_name in RustCall.list_loaded_libraries())
+                finally
+                    RustCall.GENERIC_FUNCTION_REGISTRY["gc397_id"] = original
+                end
+            end
+
             @testset "a batch path taken before a release does not revive the image" begin
                 # The reader that `_batch_copy_is_current` exists for: it takes
                 # the copy's path out of the memo, a release drops the memo and
