@@ -531,17 +531,32 @@ another worker that had just looked the key up and then got
     to the window above. It may also be `dlopen`ed or mapped right now, which on
     Windows makes the rewrite fail outright and on any platform makes it
     pointless.
-  * **A new `dst` appears whole.** The copy goes to a private temporary name in
-    the *same directory* — so the rename cannot cross a filesystem — and
-    `mv` without `force` publishes it. A rename is atomic: a reader sees either
-    nothing yet or the finished file.
+  * **A new `dst` appears whole, and exactly once.** The copy goes to a private
+    temporary name in the *same directory*, and `dst` is then created as a
+    **hard link** to it. `link` is the one filesystem operation that both
+    publishes atomically and refuses an existing destination: the name appears
+    already pointing at the finished copy, so a reader never sees a partial
+    file, and a second publisher gets `EEXIST` instead of replacing the first.
 
-Losing the race is not an error. `mv` refuses an existing destination, so the
-publisher that arrives second drops its temporary file and keeps what is
-already there, which is the same artifact.
+The `isfile` check above is only a fast path — it cannot be the guarantee,
+because two processes can both pass it before either publishes. A rename would
+not close that hole: `mv` checks for an existing destination in Julia and then
+calls `rename`, which *replaces* whatever appeared in between, so the nominal
+loser could overwrite the winner. Two direct-`rustc` builds of one key come from
+different temporary directories and need not be byte-identical, and the
+checksums would then describe bytes that are no longer there — a concurrent
+verifier deletes such an entry as corrupt. Hence the link.
 
-`published` says whether this call is the one that created `dst`; the caller
-needs it to decide whether its own bytes are the ones now in the cache.
+Losing the race is not an error: the publisher that arrives second drops its
+temporary file and keeps what is already there, which is the same artifact.
+
+`published` says whether this call is the one that created `dst`. Only the
+publisher knows its own bytes are the ones in the cache, which is what
+`save_cached_library` needs in order to write a checksum that cannot be wrong.
+
+On a filesystem with no hard links there is a rename fallback, which is still
+atomic for a reader but cannot refuse an existing destination. Nothing RustCall
+supports lands there in practice — the cache lives in a Julia scratch space.
 """
 function _publish_cache_file(src::AbstractString, dst::AbstractString)
     isfile(dst) && return (path = String(dst), published = false)
@@ -551,14 +566,27 @@ function _publish_cache_file(src::AbstractString, dst::AbstractString)
     tmp = string(dst, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
     try
         cp(src, tmp; force = true)
-        mv(tmp, dst)
-        return (path = String(dst), published = true)
-    catch err
+        try
+            Base.Filesystem.hardlink(tmp, dst)
+            return (path = String(dst), published = true)
+        catch err
+            # `EEXIST`: someone published while we were copying. Their file is
+            # this artifact too, so that is the answer rather than a failure.
+            isfile(dst) && return (path = String(dst), published = false)
+            # Otherwise the filesystem has no hard links (or the failure left
+            # nothing behind); see the note above.
+            try
+                mv(tmp, dst)
+                return (path = String(dst), published = true)
+            catch
+                isfile(dst) || rethrow()
+                return (path = String(dst), published = false)
+            end
+        end
+    finally
+        # A successful link leaves `dst` naming the same inode, so dropping the
+        # temporary name does not touch the published file.
         rm(tmp; force = true)
-        # Someone else published it while we were copying: their file is this
-        # artifact too, so that is the answer rather than a failure.
-        isfile(dst) || rethrow()
-        return (path = String(dst), published = false)
     end
 end
 
@@ -577,11 +605,15 @@ function save_cached_library(cache_key::String, lib_path::String, metadata::Cach
         # this path absent or half-written (#394).
         published = _publish_cache_file(lib_path, dest_lib_path)
 
-        # The checksum is computed from the file that is actually in the cache,
-        # never from `lib_path`: if another process published first, the bytes
-        # there are its build, and a checksum of ours would condemn a perfectly
-        # good entry the next time it is verified.
-        _save_checksum(cache_key, published.path)
+        # Only the publisher writes the checksum. `dst` is created once, by one
+        # process, so anyone else writing one could be describing bytes that are
+        # not there — and `_verify_cached_checksum` deletes an entry whose
+        # checksum does not match. A non-publisher fills in a *missing* one,
+        # since a missing checksum only costs verification; either way it is
+        # computed from the file that is in the cache, never from `lib_path`.
+        if published.published || !isfile(published.path * ".sha256")
+            _save_checksum(cache_key, published.path)
+        end
 
         # Save metadata (called under the same lock)
         _save_cache_metadata_unlocked(cache_key, metadata)

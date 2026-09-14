@@ -23,12 +23,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory — two runs minutes apart on the same tree died in two unrelated
   files — but any two Julia sessions building the same block at the same time
   could hit it. Publication now goes to a per-process temporary name in the same
-  directory and is renamed into place, so a reader sees either nothing yet or the
-  finished file; and an entry that already exists is left strictly alone, since
-  the same key is the same artifact and the file may be `dlopen`ed or mapped
-  right now. The checksum is computed from whichever file ended up in the cache
-  rather than from the local build, so losing the race cannot condemn a good
-  entry.
+  directory and the destination is then created as a **hard link** to it, which
+  both publishes atomically — the name appears already pointing at the finished
+  copy — and refuses an existing destination, so a second publisher gets
+  `EEXIST` rather than replacing the first. A rename would not have been enough:
+  it replaces, and two direct-`rustc` builds of one key come from different
+  temporary directories and need not be byte-identical, so the loser could leave
+  the winner's checksum describing bytes that are gone — which a concurrent
+  verifier treats as corruption and deletes. An entry that already exists is
+  therefore left strictly alone, and only the process that actually published
+  writes the checksum (a later one fills in a *missing* checksum, computed from
+  the cached file rather than from its own build).
 
 ### Fixed
 - **The test suite no longer deletes artifacts out from under its own parallel
