@@ -221,13 +221,49 @@ function _manifest_digest_input(path::AbstractString)
     return take!(io)
 end
 
+# The crates whose sources decide what the generator emits. `rustcall_extract`
+# is the CLI around `rustcall_core`; `rustcall_julia_macros` carries the
+# runtime module `rustcall_core::codegen` generates (`rt.rs`).
+const _FINGERPRINT_CRATES = ("rustcall_core", "rustcall_julia_macros", "rustcall_extract")
+
+# The lines `toolchain_fingerprint` hashes, and whether the compiler in them
+# was actually identified. Separate so a test can assert what is — and is
+# not — in a cache key.
+function _toolchain_fingerprint_inputs()
+    deps = joinpath(dirname(@__DIR__), "deps")
+    compiler, identified = _toolchain_compiler_identity()
+    parts = String[
+        "schema=$(MANIFEST_SCHEMA_VERSION)",
+        "sources=$(_rust_sources_digest((joinpath(deps, c) for c in _FINGERPRINT_CRATES)...))",
+        "compiler=$(compiler)",
+        "target=$(Sys.MACHINE)",
+        "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
+    ]
+    return parts, identified
+end
+
 """
     toolchain_fingerprint() -> String
 
 Fingerprint of everything that influences generated code besides the user's
-source: extractor binary, manifest schema, `rustcall_core` and
-`rustcall_julia_macros` sources, the identity of the compiler that actually runs
-(`artifact_compiler_identity`) and the host target. Included in all cache keys.
+source: the manifest schema identifier, the **sources** of `rustcall_core`,
+`rustcall_julia_macros` and `rustcall_extract`, the identity of the compiler
+that actually runs (`artifact_compiler_identity`) and the host target. Included
+in all cache keys.
+
+# Sources, not the extractor binary (#372 review)
+
+Through v0.3.x the extractor entered as a digest of its executable. A patch
+release now bumps `rustcall_extract`'s package version, and Cargo folds the
+version into `-C metadata`, so the same sources produce a byte-different
+binary — every cache key would have moved on a release that promises to keep
+them. The extractor's behaviour is decided by its sources and by
+`rustcall_core`'s, both of which are already in the tree this fingerprint
+describes, so they are what is hashed, with each crate's `[package] version`
+left out of its `Cargo.toml` (`_manifest_digest_input`). `extractor_digest()`
+remains available as a diagnostic of which binary ran; it is no longer part of
+any key. The inputs are `_toolchain_fingerprint_inputs()`, so a test can see
+them.
 
 # Missing toolchain (#252)
 
@@ -246,16 +282,7 @@ and raises `RustError`.
 function toolchain_fingerprint()
     lock(_EXTRACTOR_LOCK) do
         if isempty(_TOOLCHAIN_FINGERPRINT[])
-            deps = joinpath(dirname(@__DIR__), "deps")
-            compiler, identified = _toolchain_compiler_identity()
-            parts = String[
-                "schema=$(MANIFEST_SCHEMA_VERSION)",
-                "extractor=$(extractor_digest())",
-                "core=$(_rust_sources_digest(joinpath(deps, "rustcall_core"), joinpath(deps, "rustcall_julia_macros")))",
-                "compiler=$(compiler)",
-                "target=$(Sys.MACHINE)",
-                "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
-            ]
+            parts, identified = _toolchain_fingerprint_inputs()
             fingerprint = bytes2hex(sha256(join(parts, "\n")))
             @debug "Computed RustCall toolchain fingerprint" fingerprint components = join(parts, "\n")
             # A fingerprint computed without a usable toolchain describes

@@ -108,12 +108,21 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         end
     end
 
-    @testset "the identifier is part of every cache key" begin
+    @testset "the identifier is part of every cache key, the extractor binary is not" begin
         # A minor release must move every cache key and a patch release must
-        # not: that follows from the identifier being an input of
-        # `toolchain_fingerprint`, which every artifact identity folds in.
-        src = read(joinpath(_ROOT, "src", "manifest.jl"), String)
-        @test occursin("\"schema=\$(MANIFEST_SCHEMA_VERSION)\"", src)
+        # not: the identifier is an input of `toolchain_fingerprint`, which
+        # every artifact identity folds in — and the extractor *executable* is
+        # not, because a patch release bumps its crate version, Cargo folds
+        # that into `-C metadata`, and the same sources give different bytes
+        # (#372 review). Its sources are what count, version left out.
+        parts, _ = RustCall._toolchain_fingerprint_inputs()
+        @test "schema=$(RustCall.MANIFEST_SCHEMA_VERSION)" in parts
+        @test !any(p -> startswith(p, "extractor="), parts)
+        deps = joinpath(_ROOT, "deps")
+        expected = RustCall._rust_sources_digest(
+            (joinpath(deps, c) for c in RustCall._FINGERPRINT_CRATES)...)
+        @test "sources=$(expected)" in parts
+        @test "rustcall_extract" in RustCall._FINGERPRINT_CRATES
         if RustCall.check_rustc_available()
             @test length(RustCall.toolchain_fingerprint()) == 64
         end
