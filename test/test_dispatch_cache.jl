@@ -421,7 +421,7 @@ const CRATE_SHAPE = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}
         # true. Called directly here, with no other write in the transaction, so
         # this fails if the bump is removed rather than passing on a neighbour's.
         name = "dispatch_cache_mirror_probe"
-        cell = Base.RefValue(RustCall.CrateGeneration())
+        cell = RustCall.CrateGenerationCell()
         RustCall.register_handle_mirror!(name, cell)
         try
             alive = Ref(true)

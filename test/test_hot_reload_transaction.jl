@@ -196,6 +196,107 @@ end
 @testset "Hot reload is transactional (#255)" begin
 
     # ------------------------------------------------------------------
+    # (1b) A generation record is published whole, or not at all (#402).
+    # ------------------------------------------------------------------
+    @testset "the generation cell is published atomically (#402)" begin
+        # `CrateGeneration` holds a `Ref{Bool}`, and `src/loadpolicy.jl` used to
+        # reason from that: not `isbits`, so a `RefValue` of it holds a
+        # *pointer* and publishing is a single store. That is wrong — Julia
+        # stores the struct inline, `sizeof(Ref{CrateGeneration})` is 24 — and a
+        # reader observed records that were never published: one generation's
+        # handle with another's number and flag. It surfaced as the reload
+        # stress test below pairing one generation number with two returned
+        # values (#402).
+        #
+        # A generated module happens to read its cell through a `StateView`,
+        # which takes the same lock the publisher writes under, so no wrapper
+        # ever saw a torn record. What was wrong is the contract: the type
+        # promised a lock-free read, `register_handle_mirror!` hands out a bare
+        # cell so a caller can have one, and this file reads exactly that way.
+        # A lock-free read added later — as #253 did for the target cache —
+        # would have been the #291 hazard with nothing to catch it.
+        @testset "one pointer, so one store and one load" begin
+            # The guard against a well-meaning simplification back to a `Ref`:
+            # an atomic field wider than a pointer falls back to a lock, and a
+            # plain `Ref{CrateGeneration}` does not synchronise at all.
+            @test sizeof(RustCall.CrateGenerationCell) == sizeof(Ptr{Cvoid})
+            @test sizeof(Base.RefValue{RustCall.CrateGeneration}) >
+                  sizeof(Ptr{Cvoid})  # ...which is exactly why it is not used
+            # It still reads and writes as a `Ref`, which is what keeps every
+            # call site — including generated modules — unchanged.
+            @test RustCall.CrateGenerationCell <: Ref
+            cell = RustCall.CrateGenerationCell()
+            @test cell[].handle == C_NULL
+            alive = Ref(true)
+            cell[] = RustCall.CrateGeneration(Ptr{Cvoid}(UInt(7)), alive, 3)
+            @test cell[].handle == Ptr{Cvoid}(UInt(7))
+            @test cell[].alive === alive
+            @test cell[].generation == 3
+            # A bare `Ref` is refused with the reason rather than a
+            # `MethodError`, and never adapted: publications would go to the
+            # cell and the caller's `Ref` would silently stop tracking the
+            # library (#402 review).
+            refused = try
+                RustCall.register_handle_mirror!("hrt_ref_mirror_probe",
+                                                 Ref(RustCall.CrateGeneration()))
+                nothing
+            catch err
+                err
+            end
+            @test refused isa ArgumentError
+            @test occursin("CrateGenerationCell", sprint(showerror, refused))
+            @test occursin("#402", sprint(showerror, refused))
+        end
+
+        @testset "a reader never sees a mixture" begin
+            if Threads.nthreads() < 2
+                @info "Skipping the generation-cell tearing test: needs at least 2 threads"
+                @test_skip "needs Threads.nthreads() >= 2"
+            else
+                # Two records whose three fields are paired distinctly, so any
+                # mixture is detectable. Against a `Ref{CrateGeneration}` this
+                # reports ~1% torn reads out of tens of millions.
+                first_record = RustCall.CrateGeneration(Ptr{Cvoid}(UInt(0x1111)), Ref(true), 1)
+                second_record = RustCall.CrateGeneration(Ptr{Cvoid}(UInt(0x2222)), Ref(false), 2)
+                cell = RustCall.CrateGenerationCell(first_record)
+                # Bounded by iteration count, not by a clock, and both loops
+                # yield: a pair of unbounded spin loops needs two threads to
+                # make progress and hangs the file when it does not get them.
+                rounds = 200_000
+                done = Threads.Atomic{Bool}(false)
+                torn = Threads.Atomic{Int}(0)
+                reads = Threads.Atomic{Int}(0)
+                reader = Threads.@spawn begin
+                    while !done[]
+                        record = cell[]
+                        Threads.atomic_add!(reads, 1)
+                        paired = (record.handle === first_record.handle &&
+                                  record.generation == first_record.generation &&
+                                  record.alive === first_record.alive) ||
+                                 (record.handle === second_record.handle &&
+                                  record.generation == second_record.generation &&
+                                  record.alive === second_record.alive)
+                        paired || Threads.atomic_add!(torn, 1)
+                        yield()
+                    end
+                end
+                writer = Threads.@spawn begin
+                    for _ in 1:rounds
+                        cell[] = first_record
+                        cell[] = second_record
+                        yield()
+                    end
+                    done[] = true
+                end
+                wait(writer)
+                wait(reader)
+                @test reads[] > 0
+                @test torn[] == 0
+            end
+        end
+    end
+
+    # ------------------------------------------------------------------
     # (2) Each reload opens its own file, so the rebuild never has to
     #     overwrite the image that is currently mapped.
     # ------------------------------------------------------------------
@@ -605,7 +706,7 @@ end
                     # `@rust_crate` module keeps — follows the swap. Without
                     # that it would still point at the image the reload closed,
                     # and the next `dlsym` would read unmapped memory (#277).
-                    gen_ref = Ref(RustCall.CrateGeneration())
+                    gen_ref = RustCall.CrateGenerationCell()
                     RustCall.register_handle_mirror!(lib_name, gen_ref)
                     current = lock(() -> RustCall.RUST_LIBRARIES[lib_name][1],
                                    RustCall.REGISTRY_LOCK)
@@ -1048,7 +1149,7 @@ end
                     # What a generated `@rust_crate` module keeps: ONE
                     # immutable record, published by the loader in the same
                     # transaction that swaps the registry entry.
-                    mirror = Ref(RustCall.CrateGeneration())
+                    mirror = RustCall.CrateGenerationCell()
                     RustCall.register_handle_mirror!(lib_name, mirror)
                     # (generation number, value that generation returned).
                     # Every entry for one generation must agree: a call that

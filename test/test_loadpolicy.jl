@@ -1281,7 +1281,7 @@ end
         # ONE record, not two `Ref`s. Handle, liveness flag and generation are
         # published together, so a reader's single deref can never pair one
         # generation's handle with another's flag (#277).
-        gen_ref = Ref(RustCall.CrateGeneration())
+        gen_ref = RustCall.CrateGenerationCell()
         first_handle = Ptr{Cvoid}(UInt(0xaaaa0000))
         second_handle = Ptr{Cvoid}(UInt(0xbbbb0000))
         try
