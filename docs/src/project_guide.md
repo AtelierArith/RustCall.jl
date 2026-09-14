@@ -58,6 +58,36 @@ julia --project=examples/pluto examples/pluto/run_notebook.jl
 The `Examples` GitHub workflow runs the same `Pkg.test()` for each package on
 every push.
 
+## Manifest Schema and Releases
+
+The extractor's manifest carries a `schema_version`, and RustCall refuses a
+manifest whose identifier is not its own. Since **v0.4.0** that identifier is
+the **`MAJOR.MINOR` of the release** — `"0.4"` for every v0.4.x — derived on
+the Julia side from `Project.toml` and on the Rust side from
+`rustcall_core`'s `Cargo.toml` version (#372). Through v0.3.x it was an integer
+bumped on every manifest edit, last `13`.
+
+What that means in practice:
+
+- A **patch** release never changes the identifier. An installed extractor and
+  every cached artifact stay valid across it; the identifier is one input of
+  `toolchain_fingerprint`, which every artifact identity folds in, so this is
+  exactly what decides whether the cache survives an upgrade.
+- A **minor** release always changes it. `Pkg.build("RustCall")` rebuilds the
+  extractor once, every cache key moves, and the manifest may change shape
+  freely inside that release. A manifest change that has to ship in a *patch*
+  must therefore be additive and optional.
+- The four manifest crates (`rustcall_core`, `rustcall_extract`,
+  `rustcall_julia_macros`, `rustcall_julia_macros_impl`) are versioned as the
+  package, and `test/test_schema_version.jl` fails when they drift. A version
+  bump is therefore a bump of `Project.toml` **and** those four `Cargo.toml`s
+  (plus `deps/rustcall_extract/Cargo.lock`).
+
+**Migrating from v0.3.x.** Nothing to do beyond `Pkg.build("RustCall")`: a
+pre-v0.4 extractor reports `13`, which never equals a release string, and the
+refusal names both and says to rebuild. Cached artifacts built by v0.3.x are
+not reused — their keys carried `schema=13` — and are rebuilt on first use.
+
 ## Native Build Products
 
 `Pkg.build("RustCall")` compiles two crates: `deps/rustcall_helpers` (the ownership

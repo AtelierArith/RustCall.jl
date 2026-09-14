@@ -11,8 +11,30 @@ using TOML
 using SHA: sha256
 
 """
-Manifest schema version this version of RustCall.jl understands. Must match
-`rustcall_core::manifest::SCHEMA_VERSION` (2: string ABI columns `abi`,
+    MANIFEST_SCHEMA_VERSION
+
+The manifest compatibility identifier this RustCall.jl accepts: the
+**`MAJOR.MINOR` of its own release**, read from `Project.toml` — `"0.4"` for
+every v0.4.x. `rustcall_core::manifest::SCHEMA_VERSION` is the same string,
+and `test/test_schema_version.jl` keeps the two from drifting by pinning every
+manifest crate's `Cargo.toml` version to the package version (#372).
+
+What that buys, and what it costs:
+
+  * A **patch** release never changes the identifier. An installed extractor
+    and every cached artifact stay valid across it — the identifier is part of
+    `toolchain_fingerprint`, so this is what decides whether the cache survives.
+  * A **minor** release always changes it. Every consumer rebuilds the
+    extractor once (`Pkg.build("RustCall")`), every cache key moves, and the
+    manifest may change shape freely inside that release without a per-edit
+    bump. A manifest change that has to ship in a *patch* release therefore
+    cannot break compatibility; it must be additive and optional.
+  * A pre-v0.4 extractor reports the integer `13`, which never equals a
+    release string, so the mismatch below names both and says to rebuild.
+
+Through v0.3.x this was that integer, bumped on every manifest edit; the
+history is kept here because the fields it introduced are all still present
+(2: string ABI columns `abi`,
 `return_abi` and the string helper flags, #242; 3: `#[julia]` is additive, so
 `symbol` differs from `name` for every wrapped function and method, #279;
 4: one vocabulary for the type contract — `Function.return_abi`, `Field.abi`
@@ -54,9 +76,31 @@ a schema-10 consumer would decode either aggregate with the wrong slot type
 wrapper can select Python-owned dispatch. Schema 13 adds the wrapper's
 authoritative `python_owned_handle` decision: a consumer that re-infers it
 after filtering unsupported methods can unload an image whose drain thread is
-still running (#371).
+still running (#371). v0.4.0 replaced the integer with the release identifier
+(#372).
 """
-const MANIFEST_SCHEMA_VERSION = 13
+const MANIFEST_SCHEMA_VERSION = let
+    project = TOML.parsefile(joinpath(dirname(@__DIR__), "Project.toml"))
+    v = VersionNumber(project["version"])
+    "$(v.major).$(v.minor)"
+end
+
+"""
+    _schema_mismatch_message(what, produced) -> String
+
+The refusal for a manifest whose `schema_version` is not this release's. An
+integer is what a pre-v0.4 extractor writes, and the message says so rather
+than comparing a number with a release.
+"""
+function _schema_mismatch_message(what::AbstractString, produced)
+    origin = produced isa Integer ?
+        "schema $(produced) — the integer scheme of RustCall ≤ v0.3.x" :
+        "schema $(repr(produced))"
+    return "$(what) schema version mismatch: the rustcall-extract binary produced " *
+           "$(origin), but this RustCall.jl (v$(pkgversion(@__MODULE__))) expects " *
+           "$(repr(MANIFEST_SCHEMA_VERSION)), the MAJOR.MINOR of its release. " *
+           "Rebuild with `Pkg.build(\"RustCall\")`."
+end
 
 """
     ExtractorError <: Exception
@@ -263,12 +307,8 @@ function _parse_manifest(text::AbstractString)
         throw(ExtractorError("failed to parse manifest TOML: $e"))
     end
     version = get(dict, "schema_version", nothing)
-    if version != MANIFEST_SCHEMA_VERSION
-        throw(ExtractorError(
-            "manifest schema version mismatch: the rustcall-extract binary produced " *
-            "schema $(version) but this RustCall.jl expects $(MANIFEST_SCHEMA_VERSION). " *
-            "Rebuild with `Pkg.build(\"RustCall\")`."))
-    end
+    version == MANIFEST_SCHEMA_VERSION ||
+        throw(ExtractorError(_schema_mismatch_message("manifest", version)))
     return dict
 end
 
@@ -931,12 +971,8 @@ function wrap_crate(files::Vector{String}; crate_name::AbstractString,
         throw(ExtractorError("failed to parse wrapper crate TOML: $e"))
     end
     version = get(doc, "schema_version", nothing)
-    if version != MANIFEST_SCHEMA_VERSION
-        throw(ExtractorError(
-            "wrapper crate schema version mismatch: the rustcall-extract binary produced " *
-            "schema $(version) but this RustCall.jl expects $(MANIFEST_SCHEMA_VERSION). " *
-            "Rebuild with `Pkg.build(\"RustCall\")`."))
-    end
+    version == MANIFEST_SCHEMA_VERSION ||
+        throw(ExtractorError(_schema_mismatch_message("wrapper crate", version)))
     manifest = get(doc, "manifest", nothing)
     manifest isa AbstractDict ||
         throw(ExtractorError("wrapper crate output has no [manifest] table"))
