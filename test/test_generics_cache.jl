@@ -552,6 +552,23 @@ end
                 RustCall.close_retired_handles!(RustCall.retired_handles(info.lib_name))
             end
 
+            @testset "unloading a generic image directly leaves no owner behind" begin
+                # `unload_library` on an instantiation's image — which existing
+                # tests do — goes through `purge_library_state!`, and that has
+                # to drop the owner row and the path record with the
+                # instantiation row, or a long session accumulates one
+                # tombstone per specialization (#397 review).
+                RustCall.call_generic_function("gc397_id", Int16(1))
+                info = cached(Int16)
+                key = only(k for (k, o) in RustCall.MONOMORPHIZATION_OWNERS if o == "gc397_id")
+                @test haskey(RustCall.GENERIC_IMAGE_PATHS, info.lib_name)
+                RustCall.unload_library(info.lib_name)
+                @test !haskey(RustCall.MONOMORPHIZATION_OWNERS, key)
+                @test !haskey(RustCall.GENERIC_IMAGE_PATHS, info.lib_name)
+                @test isempty(owned())
+                RustCall.close_retired_handles!(RustCall.retired_handles(info.lib_name))
+            end
+
             @testset "close = true flips the flag and closes" begin
                 RustCall.call_generic_function("gc397_id", UInt8(1))
                 info = cached(UInt8)

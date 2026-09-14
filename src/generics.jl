@@ -1201,23 +1201,16 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         # count it, and a release must not retire a *newer* image that a
         # concurrent instantiation registered under the name in between.
         # Only the call whose retirement actually happened counts.
+        # Nothing follows the unload. `unload_artifact!` retires every name on
+        # the handle in its own transaction, and `purge_library_state!` drops
+        # each name's instantiation rows, their owners and the image's path
+        # record with it — so there is no second transaction here in which a
+        # replacement that reused the pointer value could be mistaken for the
+        # image just retired (#397 review).
         retired = unload_artifact!(generics_policy(), lib_name; close,
                                    expect_generation = generation)
         retired || continue
         released += leaving
-        lock(REGISTRY_LOCK) do
-            # `purge_library_state!` dropped this library's rows by name; rows
-            # resolved on this image under a sibling name go the same way, by
-            # handle. A later image reusing the pointer value cannot have a
-            # row yet: its names were all just unloaded, and a publication
-            # against it is refused until it is registered again.
-            for (key, info) in collect(MONOMORPHIZED_FUNCTIONS)
-                info.handle == handle && delete!(MONOMORPHIZED_FUNCTIONS, key)
-            end
-            for key in collect(Base.keys(MONOMORPHIZATION_OWNERS))
-                haskey(MONOMORPHIZED_FUNCTIONS, key) || delete!(MONOMORPHIZATION_OWNERS, key)
-            end
-        end
     end
     return released
 end
