@@ -209,6 +209,25 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
             @test isempty(RustCall._rustcall_release_names_in(dir))
             @test digest("Cargo.lock", lock("0.4.1", "0.1.0", "2.0.1")) !=
                   digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.1"))
+            # A file with nothing to remove enters byte for byte: a crate can
+            # read its own manifest (`include_str!("../Cargo.toml")`), so a
+            # comment or a reordering is a change to what it compiles to
+            # (#372 review). The lockfile of a crate with no RustCall path
+            # dependency likewise.
+            plain = toml("probe", "0.1.0", "2.0")
+            @test digest("Cargo.toml", plain) == RustCall._file_content_digest(joinpath(dir, "Cargo.toml"))
+            @test digest("Cargo.toml", plain * "# a comment\n") != digest("Cargo.toml", plain)
+            @test digest("Cargo.toml", "[package]\nversion = \"0.1.0\"\nname = \"probe\"\nedition = \"2021\"\n\n[dependencies]\nsyn = { version = \"2.0\", features = [\"full\"] }\n") !=
+                  digest("Cargo.toml", plain)
+            @test digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.1")) ==
+                  RustCall._file_content_digest(joinpath(dir, "Cargo.lock"))
+            @test digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.1") * "# trailing\n") !=
+                  digest("Cargo.lock", lock("0.4.0", "0.1.0", "2.0.1"))
+            # ...while a file that did lose a line is reprinted, so only that
+            # line is insensitive: the real dependency's manifest is not its
+            # raw bytes.
+            real_manifest = joinpath(real, "Cargo.toml")
+            @test RustCall._identity_file_digest(real_manifest) != RustCall._file_content_digest(real_manifest)
             # Any other file, and a manifest that does not parse, hash as they are.
             @test digest("lib.rs", "pub fn a() {}") != digest("lib.rs", "pub fn b() {}")
             @test digest("Cargo.toml", "not = [toml") == RustCall._file_content_digest(joinpath(dir, "Cargo.toml"))
@@ -333,6 +352,30 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         # sources alone.
         extractor_line = only(filter(p -> startswith(p, "extractor="), parts))
         @test extractor_line != "extractor=$(RustCall.extractor_digest())"
+        # A selected extractor that cannot report a source digest is identified
+        # by its bytes — never by this checkout's sources, which say nothing
+        # about what that executable emits (#372 review). Played with a stub
+        # that fails every subcommand; only the fingerprint input is read, so
+        # the schema check the stub would also fail is not reached.
+        mktempdir() do dir
+            stub = joinpath(dir, Sys.iswindows() ? "rustcall-extract.exe" : "rustcall-extract")
+            write(stub, "#!/bin/sh\nexit 1\n")
+            chmod(stub, 0o755)
+            RustCall._reset_extractor_state!()
+            try
+                withenv("RUSTCALL_EXTRACT" => stub) do
+                    @test RustCall.extractor_path() == stub
+                    @test RustCall.extractor_source_digest() ==
+                          "binary:" * RustCall.extractor_digest()
+                    stub_parts, _ = RustCall._toolchain_fingerprint_inputs()
+                    stub_line = only(filter(p -> startswith(p, "extractor="), stub_parts))
+                    @test stub_line == "extractor=binary:" * RustCall.extractor_digest()
+                    @test stub_line != extractor_line
+                end
+            finally
+                RustCall._reset_extractor_state!()
+            end
+        end
         if RustCall.check_rustc_available()
             reported = strip(read(`$(RustCall.extractor_path()) source-digest`, String))
             @test occursin(r"^[0-9a-f]{64}$", reported)

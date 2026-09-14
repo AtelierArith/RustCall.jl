@@ -770,24 +770,32 @@ anyway.
 """
 function _identity_file_bytes(path::String)::Vector{UInt8}
     name = basename(path)
+    # Each editor answers whether it removed anything; `_normalized_toml`
+    # returns the raw bytes when it did not.
     name == "Cargo.toml" && return _normalized_toml(path) do doc
         package = get(doc, "package", nothing)
-        package isa AbstractDict &&
-            _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) &&
-            delete!(package, "version")
+        package isa AbstractDict && haskey(package, "version") &&
+            _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) || return false
+        delete!(package, "version")
+        return true
     end
     name == "Cargo.lock" && return _normalized_toml(path) do doc
         packages = get(doc, "package", nothing)
-        packages isa AbstractVector || return
+        packages isa AbstractVector || return false
         # The entries whose version may go: this crate's own path dependencies
         # on this package's release crates — never a same-named stranger.
         strip = _rustcall_release_names_in(dirname(path))
-        isempty(strip) && return
+        isempty(strip) && return false
+        removed = false
         for entry in packages
             entry isa AbstractDict || continue
-            get(entry, "name", nothing) in strip && !haskey(entry, "source") &&
+            if get(entry, "name", nothing) in strip && !haskey(entry, "source") &&
+               haskey(entry, "version")
                 delete!(entry, "version")
+                removed = true
+            end
         end
+        return removed
     end
     return read(path)
 end
@@ -800,7 +808,11 @@ function _normalized_toml(edit!::Function, path::String)::Vector{UInt8}
     catch
         return read(path)
     end
-    edit!(doc)
+    # The bytes as they are unless something was actually removed: a crate can
+    # read its own manifest (`include_str!("../Cargo.toml")`, a `build.rs`), so
+    # a comment or a reordering is a change to what it compiles to, and only a
+    # file with a release-coupled line to drop is reprinted (#372 review).
+    edit!(doc) === true || return read(path)
     io = IOBuffer()
     TOML.print(io, doc; sorted = true)
     return take!(io)

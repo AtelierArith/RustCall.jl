@@ -181,23 +181,26 @@ itself reports it (`rustcall-extract source-digest`, embedded by its
     executable `RUSTCALL_EXTRACT` may point at — a schema-compatible binary
     built from other sources would otherwise move no key.
 
-Falls back to the checkout's own digest of those two crates when the selected
-binary cannot answer (no toolchain, or a binary that predates the subcommand —
-which the schema check refuses anyway), so `toolchain_fingerprint` stays total.
+A selected binary that cannot answer — one built from other sources without
+the subcommand, or one that fails it — is identified by its **bytes** instead
+(`binary:<sha256>`, `extractor_digest`), never by this checkout's sources: the
+checkout describes this tree and says nothing about what that executable
+emits, and a bytes digest is exact for it. Such a binary is outside the
+patch-release promise anyway. `toolchain_fingerprint` therefore stays total,
+and the two forms cannot collide (#372 review).
 """
 function extractor_source_digest()
     lock(_EXTRACTOR_LOCK) do
         if isempty(_EXTRACTOR_SOURCE_DIGEST[])
+            path = extractor_path()
             reported = try
-                strip(read(`$(extractor_path()) source-digest`, String))
+                strip(read(`$(path) source-digest`, String))
             catch e
-                @debug "The extractor did not report a source digest; using the checkout's" exception = e
+                @debug "The extractor did not report a source digest; identifying it by its bytes" path exception = e
                 ""
             end
             if !occursin(r"^[0-9a-f]{64}$", reported)
-                deps = joinpath(dirname(@__DIR__), "deps")
-                reported = _rust_sources_digest(joinpath(deps, "rustcall_core"),
-                                                joinpath(deps, "rustcall_extract"))
+                reported = "binary:" * bytes2hex(open(sha256, path))
             end
             _EXTRACTOR_SOURCE_DIGEST[] = String(reported)
         end
