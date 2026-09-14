@@ -33,26 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verifier treats as corruption and deletes. An entry that already exists is
   therefore left strictly alone, and only the process that actually published
   writes the checksum (a later one fills in a *missing* checksum, computed from
-  the cached file rather than from its own build).
-
-### Fixed
-- **The test suite no longer deletes artifacts out from under its own parallel
-  workers** ([#394](https://github.com/AtelierArith/RustCall.jl/issues/394)).
-  `test/runtests.jl` runs most files across sixteen worker processes that share
-  one Rust artifact cache, and serialised four of them for that reason — but two
-  more had since gained a `RustCall.clear_cache()` call and were still in the
-  parallel phase. `clear_cache()` empties the whole cache, including the library
-  a concurrent worker had just written and recorded a path to, so the run failed
-  in whichever file happened to be loading at that moment: two runs minutes
-  apart on one tree died in `test_generated_includes` and in
-  `test_pyo3_public_routes`, neither of which touches the cache, and both of
-  which pass alone. Both offenders are now serialised, and the list of names
-  moved to `test/serial_tests.jl` with a line saying why each is on it.
-  `test/test_suite_isolation.jl` reads that same file and fails the suite when a
-  parallel test gains a `clear_cache()` call, so the list cannot fall behind
-  again — it walks the parsed file rather than grepping it, because several of
-  the mentions in the suite are comments explaining the hazard. No library code
-  changed.
+  the cached file rather than from its own build). On a filesystem that rejects
+  hard links — reachable, since `RUSTCALL_CACHE_DIR` points wherever it is told
+  — the cache write fails and the caller carries on uncached, which every caller
+  already does for a failed cache write: no cache is better than one that can
+  delete its own entries.
 
 ## [0.3.6] - 2026-09-13
 

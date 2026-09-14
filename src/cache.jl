@@ -554,9 +554,18 @@ temporary file and keeps what is already there, which is the same artifact.
 publisher knows its own bytes are the ones in the cache, which is what
 `save_cached_library` needs in order to write a checksum that cannot be wrong.
 
-On a filesystem with no hard links there is a rename fallback, which is still
-atomic for a reader but cannot refuse an existing destination. Nothing RustCall
-supports lands there in practice — the cache lives in a Julia scratch space.
+# Why there is no fallback
+
+A filesystem that rejects hard links — exFAT, some network mounts — is
+reachable, because `RUSTCALL_CACHE_DIR` overrides the location outright. There
+the write simply **fails**, and every caller treats a failed cache write as
+"not cached" and carries on (`build_cargo_project_cached`, the inline string
+literal path in `src/ruststr.jl` and `_cache_generic_library` all warn and
+continue). A rename fallback was
+tried and removed: it publishes atomically for a reader but cannot refuse an
+existing destination, so it reinstates exactly the replacement — and the
+checksum corruption behind it — that the link exists to prevent. No cache is
+better than a cache that can delete its own entries.
 """
 function _publish_cache_file(src::AbstractString, dst::AbstractString)
     isfile(dst) && return (path = String(dst), published = false)
@@ -569,24 +578,25 @@ function _publish_cache_file(src::AbstractString, dst::AbstractString)
         try
             Base.Filesystem.hardlink(tmp, dst)
             return (path = String(dst), published = true)
-        catch err
+        catch
             # `EEXIST`: someone published while we were copying. Their file is
             # this artifact too, so that is the answer rather than a failure.
             isfile(dst) && return (path = String(dst), published = false)
-            # Otherwise the filesystem has no hard links (or the failure left
-            # nothing behind); see the note above.
-            try
-                mv(tmp, dst)
-                return (path = String(dst), published = true)
-            catch
-                isfile(dst) || rethrow()
-                return (path = String(dst), published = false)
-            end
+            # Anything else fails the write; see "Why there is no fallback".
+            rethrow()
         end
     finally
         # A successful link leaves `dst` naming the same inode, so dropping the
-        # temporary name does not touch the published file.
-        rm(tmp; force = true)
+        # staging name does not touch the published file — but it is the *same*
+        # file, and on Windows a DLL another process has already mapped cannot be
+        # unlinked under either of its names. Removing the alias is housekeeping,
+        # and a failure here must not turn a published entry into an error before
+        # its checksum and metadata are written.
+        try
+            rm(tmp; force = true)
+        catch err
+            @debug "Could not remove the cache staging name" tmp exception = err
+        end
     end
 end
 

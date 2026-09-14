@@ -809,6 +809,27 @@ end
         end
     end
 
+    @testset "a filesystem that cannot claim fails the write" begin
+        # `RUSTCALL_CACHE_DIR` points wherever the user says, so a filesystem
+        # that rejects hard links (exFAT, some network mounts) is reachable.
+        # There the write fails and the caller carries on uncached. A rename
+        # fallback was tried and removed: it cannot refuse an existing
+        # destination, so it reinstates the replacement — and the checksum
+        # corruption behind it — that the claim exists to prevent (#394 review).
+        mktempdir() do dir
+            src = joinpath(dir, "build.bin")
+            write(src, rand(UInt8, 1024))
+            # A destination whose parent is a *file*: `mkpath` and the claim
+            # both fail, standing in for a filesystem that cannot link.
+            blocked = joinpath(dir, "build.bin", "key.bin")
+            @test_throws Exception RustCall._publish_cache_file(src, blocked)
+            # Every caller treats a failed cache write as "not cached" rather
+            # than as a failed build.
+            @test occursin("Failed to save library to cache",
+                           read(joinpath(pkgdir(RustCall), "src", "ruststr.jl"), String))
+        end
+    end
+
     @testset "two publishers of one absent key produce one winner" begin
         # The `isfile` fast path cannot be the guarantee: two processes can both
         # pass it before either publishes. A rename would not close that — Julia
