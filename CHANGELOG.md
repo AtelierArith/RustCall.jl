@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Publishing a compiled library into the cache is atomic**
+  ([#394](https://github.com/AtelierArith/RustCall.jl/issues/394)). The cache
+  was written with `cp(src, dst; force = true)`, which unlinks the destination
+  and then copies — and the copy of a multi-megabyte `.dylib` is not instant.
+  Every cache key is the complete artifact identity, so two processes routinely
+  want the same destination, and `CACHE_LOCK` cannot help because it is
+  process-local. A process that had just looked the key up and found it could
+  therefore lose it mid-read: `SystemError: opening file …/cache-v2/cargo/<key>.dylib`
+  out of `include_dependency`, or `could not load library` out of `dlopen`. A
+  reader polling one destination while twelve republications ran observed it
+  **absent 1182 times and short 32971 times** out of 34615 observations. The
+  symptom was the test suite, whose sixteen parallel workers share one cache
+  directory — two runs minutes apart on the same tree died in two unrelated
+  files — but any two Julia sessions building the same block at the same time
+  could hit it. Publication now goes to a per-process temporary name in the same
+  directory and is renamed into place, so a reader sees either nothing yet or the
+  finished file; and an entry that already exists is left strictly alone, since
+  the same key is the same artifact and the file may be `dlopen`ed or mapped
+  right now. The checksum is computed from whichever file ended up in the cache
+  rather than from the local build, so losing the race cannot condemn a good
+  entry.
+
+### Fixed
 - **The test suite no longer deletes artifacts out from under its own parallel
   workers** ([#394](https://github.com/AtelierArith/RustCall.jl/issues/394)).
   `test/runtests.jl` runs most files across sixteen worker processes that share

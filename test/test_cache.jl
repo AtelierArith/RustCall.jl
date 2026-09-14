@@ -666,3 +666,155 @@ end
         @test_skip "rustc not found, skipping cache integration tests"
     end
 end
+
+# ---------------------------------------------------------------------------
+# Publishing into the cache is atomic (#394)
+# ---------------------------------------------------------------------------
+#
+# Every cache key is the complete artifact identity, so two processes routinely
+# want the same destination — and the test suite runs sixteen of them against
+# one cache directory, where `CACHE_LOCK` means nothing because it is
+# process-local. `cp(src, dst; force = true)` unlinks `dst` and then writes it,
+# so a worker that had just looked the key up and found it could lose it
+# mid-read: `SystemError: opening file .../cache-v2/cargo/<key>.dylib` out of
+# `include_dependency`, or `could not load library` out of `dlopen`. Two
+# full-suite runs minutes apart on one tree died that way in two different
+# files, neither of which touches the cache.
+
+@testset "publishing into the cache never exposes a partial file (#394)" begin
+    @testset "a fresh destination is published whole" begin
+        mktempdir() do dir
+            src = joinpath(dir, "build.bin")
+            dst = joinpath(dir, "cache", "key.bin")
+            payload = rand(UInt8, 64 * 1024)
+            write(src, payload)
+
+            result = RustCall._publish_cache_file(src, dst)
+            @test result.published
+            @test result.path == dst
+            @test read(dst) == payload
+            # Nothing is left behind for `list_cached_libraries` or a
+            # "exactly one entry" assertion to trip over.
+            @test filter(f -> endswith(f, ".tmp"), readdir(joinpath(dir, "cache"))) == String[]
+        end
+    end
+
+    @testset "an existing destination is never rewritten" begin
+        mktempdir() do dir
+            src = joinpath(dir, "build.bin")
+            dst = joinpath(dir, "key.bin")
+            write(src, rand(UInt8, 64 * 1024))
+            first_bytes = rand(UInt8, 64 * 1024)
+            write(dst, first_bytes)
+            before = stat(dst)
+
+            result = RustCall._publish_cache_file(src, dst)
+            @test !result.published
+            @test result.path == dst
+            # The same key is the same artifact, and the file may be `dlopen`ed
+            # or mapped right now, so it is left exactly as it was — not
+            # replaced with equivalent bytes.
+            @test read(dst) == first_bytes
+            after = stat(dst)
+            # `inode` is 0 on some Windows filesystems; where it is real it is
+            # the strongest statement that nothing was unlinked and recreated.
+            before.inode == 0 || @test after.inode == before.inode
+            @test after.mtime == before.mtime
+            @test filter(f -> endswith(f, ".tmp"), readdir(dir)) == String[]
+        end
+    end
+
+    @testset "a destination that exists never disappears under a reader" begin
+        # The property that actually broke: a reader that has *already seen* the
+        # entry must never afterwards find it missing or short. Before the fix,
+        # a reader polling one destination through twelve republications saw it
+        # absent 1182 times and short 32971 times out of 34615 observations.
+        if Threads.nthreads() < 2
+            @info "Skipping the concurrent publication test: needs at least 2 threads"
+            @test_skip "needs Threads.nthreads() >= 2"
+        else
+            mktempdir() do dir
+                src = joinpath(dir, "build.bin")
+                dst = joinpath(dir, "key.bin")
+                # Large enough that the copy the old code did was observable;
+                # the fix makes every publication after the first a no-op.
+                payload = rand(UInt8, 8 * 1024 * 1024)
+                write(src, payload)
+                expected = length(payload)
+
+                RustCall._publish_cache_file(src, dst)
+                @test isfile(dst)
+
+                stop = Threads.Atomic{Bool}(false)
+                vanished = Threads.Atomic{Int}(0)
+                truncated = Threads.Atomic{Int}(0)
+                observations = Threads.Atomic{Int}(0)
+                reader = Threads.@spawn begin
+                    while !stop[]
+                        Threads.atomic_add!(observations, 1)
+                        if !isfile(dst)
+                            Threads.atomic_add!(vanished, 1)
+                        elseif filesize(dst) != expected
+                            Threads.atomic_add!(truncated, 1)
+                        end
+                        yield()
+                    end
+                end
+                try
+                    # The reader has to be polling before the publications
+                    # start, or there is nothing to observe: with the fix every
+                    # publication after the first returns without touching the
+                    # file, so the loop below is instant. With the bug it is
+                    # twelve 8 MB copies and the reader sees the inside of them.
+                    @test timedwait(() -> observations[] > 0, 10.0) === :ok
+                    started = observations[]
+                    for _ in 1:12
+                        RustCall._publish_cache_file(src, dst)
+                    end
+                    @test timedwait(() -> observations[] > started, 10.0) === :ok
+                finally
+                    stop[] = true
+                    wait(reader)
+                end
+
+                @test observations[] > 0
+                @test vanished[] == 0
+                @test truncated[] == 0
+                @test read(dst) == payload
+            end
+        end
+    end
+
+    @testset "the Cargo cache publishes through the same path" begin
+        # Pinned at the call site as well as in the helper: this is the entry
+        # point the two observed failures went through.
+        mktempdir() do dir
+            withenv("RUSTCALL_CACHE_DIR" => dir) do
+                RustCall._reset_cache_dir_memo!()
+                try
+                    key = "3"^64
+                    src = joinpath(dir, "build" * RustCall.get_library_extension())
+                    payload = rand(UInt8, 32 * 1024)
+                    write(src, payload)
+
+                    published = RustCall.save_cargo_cached_library(key, src)
+                    @test RustCall.get_cargo_cached_library(key) == published
+                    @test read(published) == payload
+
+                    # A second publisher of the same key leaves the first
+                    # entry alone rather than unlinking it.
+                    before = stat(published)
+                    other = joinpath(dir, "other" * RustCall.get_library_extension())
+                    write(other, rand(UInt8, 32 * 1024))
+                    @test RustCall.save_cargo_cached_library(key, other) == published
+                    @test read(published) == payload
+                    before.inode == 0 || @test stat(published).inode == before.inode
+                    @test filter(f -> endswith(f, ".tmp"),
+                                 readdir(RustCall.get_cargo_cache_dir())) == String[]
+                finally
+                    RustCall._reset_cache_dir_memo!()
+                end
+            end
+        end
+    end
+end

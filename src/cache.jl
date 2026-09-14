@@ -470,7 +470,9 @@ Save a SHA-256 checksum file alongside a cached library.
 function _save_checksum(cache_key::String, lib_path::String)
     checksum = _compute_file_checksum(lib_path)
     checksum_path = lib_path * ".sha256"
-    tmp_path = checksum_path * ".tmp"
+    # Unique per process and per call: a fixed `.tmp` is shared by two
+    # publishers of the same key, and one then truncates the other's (#394).
+    tmp_path = string(checksum_path, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
     open(tmp_path, "w") do io
         println(io, checksum)
     end
@@ -503,6 +505,64 @@ function _verify_cached_checksum(cache_key::String, lib_path::String)
 end
 
 """
+    _publish_cache_file(src, dst) -> (path = dst, published::Bool)
+
+Put `src` into the cache at `dst` so that **no concurrent reader can ever see a
+missing or half-written file there** (#394).
+
+# Why this cannot be a `cp`
+
+`cp(src, dst; force = true)` unlinks `dst` and then writes it, and the write of
+a multi-megabyte `.dylib` is not instant. Every RustCall cache key is the
+complete artifact identity, so two processes routinely want the same `dst` —
+and the test suite runs sixteen of them against one cache directory. `CACHE_LOCK`
+does not help: it is process-local. Measured on one such destination, a reader
+polling while twelve `cp`s ran saw it **absent 1182 times and short 32971
+times** out of 34615 observations. That is the flake of #394: the reader is
+another worker that had just looked the key up and then got
+`SystemError: No such file or directory` from `include_dependency`, or
+`could not load library` from `dlopen`.
+
+# The two rules
+
+  * **An existing `dst` is never touched.** The key is the whole identity of the
+    artifact, so a file already there *is* this artifact; rewriting it could only
+    replace equivalent bytes with equivalent bytes, while exposing every reader
+    to the window above. It may also be `dlopen`ed or mapped right now, which on
+    Windows makes the rewrite fail outright and on any platform makes it
+    pointless.
+  * **A new `dst` appears whole.** The copy goes to a private temporary name in
+    the *same directory* — so the rename cannot cross a filesystem — and
+    `mv` without `force` publishes it. A rename is atomic: a reader sees either
+    nothing yet or the finished file.
+
+Losing the race is not an error. `mv` refuses an existing destination, so the
+publisher that arrives second drops its temporary file and keeps what is
+already there, which is the same artifact.
+
+`published` says whether this call is the one that created `dst`; the caller
+needs it to decide whether its own bytes are the ones now in the cache.
+"""
+function _publish_cache_file(src::AbstractString, dst::AbstractString)
+    isfile(dst) && return (path = String(dst), published = false)
+    mkpath(dirname(dst))
+    # Unique per process *and* per call: two publishers of one key must not
+    # share a temporary name, or one would truncate the other's copy.
+    tmp = string(dst, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
+    try
+        cp(src, tmp; force = true)
+        mv(tmp, dst)
+        return (path = String(dst), published = true)
+    catch err
+        rm(tmp; force = true)
+        # Someone else published it while we were copying: their file is this
+        # artifact too, so that is the answer rather than a failure.
+        isfile(dst) || rethrow()
+        return (path = String(dst), published = false)
+    end
+end
+
+"""
     save_cached_library(cache_key::String, lib_path::String, metadata::CacheMetadata)
 
 Save a compiled library to the cache along with its metadata and checksum.
@@ -513,11 +573,15 @@ function save_cached_library(cache_key::String, lib_path::String, metadata::Cach
         lib_ext = get_library_extension()
         dest_lib_path = joinpath(cache_dir, "$(cache_key)$(lib_ext)")
 
-        # Copy the library file
-        cp(lib_path, dest_lib_path, force=true)
+        # Published, not copied over: a reader in another process must never see
+        # this path absent or half-written (#394).
+        published = _publish_cache_file(lib_path, dest_lib_path)
 
-        # Save checksum for integrity verification
-        _save_checksum(cache_key, dest_lib_path)
+        # The checksum is computed from the file that is actually in the cache,
+        # never from `lib_path`: if another process published first, the bytes
+        # there are its build, and a checksum of ours would condemn a perfectly
+        # good entry the next time it is verified.
+        _save_checksum(cache_key, published.path)
 
         # Save metadata (called under the same lock)
         _save_cache_metadata_unlocked(cache_key, metadata)
@@ -585,8 +649,10 @@ function _save_cache_metadata_unlocked(cache_key::String, metadata::CacheMetadat
     metadata_dir = get_metadata_dir()
     metadata_path = joinpath(metadata_dir, "$(cache_key).json")
 
-    # Write to a temp file first, then atomically rename to prevent partial reads
-    tmp_path = metadata_path * ".tmp"
+    # Write to a temp file first, then atomically rename to prevent partial
+    # reads. The name is unique per process and per call, or two publishers of
+    # one key share it and one truncates the other's (#394).
+    tmp_path = string(metadata_path, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
     open(tmp_path, "w") do io
         println(io, "{")
         println(io, "  \"cache_key\": \"$(metadata.cache_key)\",")

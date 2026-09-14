@@ -4,11 +4,11 @@ using ParallelTestRunner
 args = parse_args(ARGS)
 testsuite = find_tests(@__DIR__)
 serial_testsuite = Dict{String, Expr}()
-# The names, and the reason each one is on the list, live in one file that
-# `test/test_suite_isolation.jl` reads too — so the guard and the harness
-# cannot disagree about what is serialised (#394).
-include(joinpath(@__DIR__, "serial_tests.jl"))
-serial_test_names = SERIAL_TEST_NAMES
+# `test_cargo` asserts that one evaluation leaves exactly **one** entry in the
+# Cargo cache directory (#287), which only holds if nothing else is writing to
+# it at the same time. `test_pyo3_wrapper` builds Cargo projects and caches
+# them (#275 Phase 2), so it runs here rather than in the parallel phase.
+serial_test_names = ("test_cache", "test_core_api", "test_cargo", "test_pyo3_wrapper")
 
 for test_name in collect(keys(testsuite))
     basename = split(test_name, '/')[end]
