@@ -713,34 +713,50 @@ function _is_rustcall_release_crate(dir::AbstractString, name)
 end
 
 # The release crates that the crate at `dir` takes as **path** dependencies
-# from this package's `deps/`, read from its own manifest: the only lockfile
-# entries whose `version` may be left out. A dependency inherited from a
-# workspace (`workspace = true`) carries no path here and is left alone — the
-# key then moves on a patch release for that layout, which is the safe side.
+# from this package's `deps/` — and the release crates *those* take by path in
+# turn: a `#[julia]` crate names only `rustcall_julia_macros`, and its lockfile
+# records `rustcall_julia_macros_impl` and `rustcall_core` behind it, all
+# three bumped by a patch release. Read from the manifests, not the lockfile:
+# these are the only lockfile entries whose `version` may be left out. A
+# dependency inherited from a workspace (`workspace = true`) carries no path
+# here and is left alone — the key then moves on a patch release for that
+# layout, which is the safe side.
 function _rustcall_release_names_in(dir::AbstractString)
     names = Set{String}()
-    doc = try
-        TOML.parsefile(joinpath(dir, "Cargo.toml"))
-    catch
-        return names
-    end
-    # The three dependency tables at the top level and under every
-    # `[target.'cfg(...)']`: a path dependency declared for one platform is a
-    # path dependency.
-    scopes = Any[doc]
-    targets = get(doc, "target", nothing)
-    targets isa AbstractDict && append!(scopes, (t for t in values(targets) if t isa AbstractDict))
-    for scope in scopes, table in ("dependencies", "dev-dependencies", "build-dependencies")
-        deps = get(scope, table, nothing)
-        deps isa AbstractDict || continue
-        for (dep, spec) in deps
-            spec isa AbstractDict || continue
-            path = get(spec, "path", nothing)
-            path isa AbstractString || continue
-            # `package = "..."` renames a dependency; the lockfile carries the
-            # package name, so that is the one to match.
-            package = get(spec, "package", dep)
-            _is_rustcall_release_crate(joinpath(dir, path), package) && push!(names, String(package))
+    pending = [String(dir)]
+    seen = Set{String}()
+    while !isempty(pending)
+        here = pop!(pending)
+        canonical = _canonical_dir(here)
+        canonical in seen && continue
+        push!(seen, canonical)
+        doc = try
+            TOML.parsefile(joinpath(here, "Cargo.toml"))
+        catch
+            continue
+        end
+        # The three dependency tables at the top level and under every
+        # `[target.'cfg(...)']`: a path dependency declared for one platform
+        # is a path dependency.
+        scopes = Any[doc]
+        targets = get(doc, "target", nothing)
+        targets isa AbstractDict && append!(scopes, (t for t in values(targets) if t isa AbstractDict))
+        for scope in scopes, table in ("dependencies", "dev-dependencies", "build-dependencies")
+            deps = get(scope, table, nothing)
+            deps isa AbstractDict || continue
+            for (dep, spec) in deps
+                spec isa AbstractDict || continue
+                path = get(spec, "path", nothing)
+                path isa AbstractString || continue
+                # `package = "..."` renames a dependency; the lockfile carries
+                # the package name, so that is the one to match.
+                package = get(spec, "package", dep)
+                target = joinpath(here, path)
+                _is_rustcall_release_crate(target, package) || continue
+                String(package) in names && continue
+                push!(names, String(package))
+                push!(pending, target)
+            end
         end
     end
     return names
@@ -748,9 +764,10 @@ end
 
 # SHA-256 of one file as it enters an **artifact identity** (#372): a
 # `Cargo.toml` of one of `RUSTCALL_RELEASE_CRATES` without its `[package]
-# version`, a `Cargo.lock` without the `version` of any of those crates
-# resolved as a path dependency (no `source`), and every other file — and
-# every other package's version — exactly as it is. Those keys are what a
+# version` line, a `Cargo.lock` without the `version` line of any of those
+# crates resolved as a path dependency (no `source`), and every other byte of
+# either — and every other file, and every other package's version — exactly
+# as it is. Those keys are what a
 # *release* rewrites: the manifest crates are versioned as the RustCall
 # release, a patch release bumps them, and every lockfile that resolves a path
 # dependency on them records that number. Without this, `@rust_crate` and
@@ -769,59 +786,83 @@ end
     _identity_file_bytes(path) -> Vector{UInt8}
 
 The bytes of `path` as they enter an artifact identity: `Cargo.toml` and
-`Cargo.lock` through the release-insensitive view described at
-`_identity_file_digest`, every other file as it is. A manifest or lockfile
-that does not parse is hashed as it is; the build that follows fails on it
-anyway.
+`Cargo.lock` with the release-coupled `version` lines described at
+`_identity_file_digest` removed and nothing else touched, every other file as
+it is. A manifest or lockfile that does not parse is hashed as it is; the
+build that follows fails on it anyway.
 """
 function _identity_file_bytes(path::String)::Vector{UInt8}
     name = basename(path)
-    # Each editor answers whether it removed anything; `_normalized_toml`
-    # returns the raw bytes when it did not.
-    name == "Cargo.toml" && return _normalized_toml(path) do doc
+    name == "Cargo.toml" || name == "Cargo.lock" || return read(path)
+    raw = read(path)
+    doc = try
+        TOML.parse(String(copy(raw)))
+    catch
+        return raw
+    end
+    # What to remove is decided on the parsed document — the name, its
+    # provenance, the resolved path dependencies — and removed from the raw
+    # text one `version = ...` line at a time, every other byte kept: a crate
+    # can read its own manifest or lockfile (`include_str!`, a `build.rs`), so
+    # a comment, an ordering, a blank line is part of what it compiles to and
+    # must stay in the key (#372 review).
+    if name == "Cargo.toml"
         package = get(doc, "package", nothing)
         package isa AbstractDict && haskey(package, "version") &&
-            _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) || return false
-        delete!(package, "version")
-        return true
+            _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) || return raw
+        return _without_version_lines(raw, (header, body) -> header == "[package]")
     end
-    name == "Cargo.lock" && return _normalized_toml(path) do doc
-        packages = get(doc, "package", nothing)
-        packages isa AbstractVector || return false
-        # The entries whose version may go: this crate's own path dependencies
-        # on this package's release crates — never a same-named stranger.
-        strip = _rustcall_release_names_in(dirname(path))
-        isempty(strip) && return false
-        removed = false
-        for entry in packages
-            entry isa AbstractDict || continue
-            if get(entry, "name", nothing) in strip && !haskey(entry, "source") &&
-               haskey(entry, "version")
-                delete!(entry, "version")
-                removed = true
-            end
-        end
-        return removed
-    end
-    return read(path)
+    packages = get(doc, "package", nothing)
+    packages isa AbstractVector || return raw
+    # The entries whose version may go: the release crates this crate resolves
+    # by path into this package's `deps/` — never a same-named stranger, never
+    # a registry package (one with a `source`).
+    strip_names = _rustcall_release_names_in(dirname(path))
+    isempty(strip_names) && return raw
+    return _without_version_lines(raw, (header, body) ->
+        header == "[[package]]" && _toml_line_value(body, "name") in strip_names &&
+        _toml_line_value(body, "source") === nothing)
 end
 
-# Parse, let `edit!` strip the release-only keys, re-serialize with sorted keys
-# so the bytes are canonical whatever the file's own layout was.
-function _normalized_toml(edit!::Function, path::String)::Vector{UInt8}
-    doc = try
-        TOML.parsefile(path)
-    catch
-        return read(path)
+# Whether `line` is `key = ...` (not `key.sub = ...`, not a key that merely
+# begins with `key`).
+function _is_toml_key_line(line::AbstractString, key::AbstractString)
+    stripped = lstrip(line)
+    startswith(stripped, key) || return false
+    rest = lstrip(SubString(stripped, ncodeunits(key) + 1))
+    return startswith(rest, "=")
+end
+
+# The unquoted value of the first `key = "..."` line in `body`, or `nothing`.
+function _toml_line_value(body, key::AbstractString)
+    for line in body
+        _is_toml_key_line(line, key) || continue
+        value = strip(split(line, '='; limit = 2)[2])
+        return String(strip(value, '"'))
     end
-    # The bytes as they are unless something was actually removed: a crate can
-    # read its own manifest (`include_str!("../Cargo.toml")`, a `build.rs`), so
-    # a comment or a reordering is a change to what it compiles to, and only a
-    # file with a release-coupled line to drop is reprinted (#372 review).
-    edit!(doc) === true || return read(path)
-    io = IOBuffer()
-    TOML.print(io, doc; sorted = true)
-    return take!(io)
+    return nothing
+end
+
+# `raw` with the `version = ...` line removed from every table whose header
+# line (stripped) and body lines `select` picks, and byte for byte otherwise.
+# Line oriented on purpose: Cargo writes a lockfile one key per line, and a
+# release crate's manifest is this package's own; a document reprinted from
+# its parse would lose exactly the bytes a crate reading the file can see.
+function _without_version_lines(raw::Vector{UInt8}, select::Function)::Vector{UInt8}
+    text = String(copy(raw))
+    lines = split(text, '\n'; keepempty = true)
+    headers = [i for (i, line) in enumerate(lines) if startswith(lstrip(line), "[")]
+    drop = falses(length(lines))
+    for (k, start) in enumerate(headers)
+        stop = k < length(headers) ? headers[k + 1] - 1 : length(lines)
+        body = view(lines, start + 1:stop)
+        select(strip(lines[start]), body) || continue
+        for j in start + 1:stop
+            _is_toml_key_line(lines[j], "version") && (drop[j] = true)
+        end
+    end
+    any(drop) || return raw
+    return Vector{UInt8}(join(lines[.!drop], '\n'))
 end
 
 """
