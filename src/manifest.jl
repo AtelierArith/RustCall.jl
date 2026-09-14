@@ -189,11 +189,36 @@ function _rust_sources_digest(dirs::AbstractString...)
         end
         for f in sort(files)
             print(ctx, relpath(f, dir), "\0")
-            write(ctx, read(f))
+            if f == manifest
+                write(ctx, _manifest_digest_input(f))
+            else
+                write(ctx, read(f))
+            end
             print(ctx, "\0")
         end
     end
     return bytes2hex(sha256(take!(ctx)))
+end
+
+# A crate's `Cargo.toml` as it enters the source digest: parsed, with
+# `package.version` removed, and re-serialized canonically. The four manifest
+# crates are versioned as the release (#372), so a **patch** release rewrites
+# that one key — and a patch release is exactly the case the schema identifier
+# promises keeps every cached artifact valid. Everything else in the manifest
+# (dependencies and their versions, features, profile pins) still counts, since
+# any of it can change what the generator emits. Falls back to the raw bytes
+# when the file does not parse, which then fails the build anyway.
+function _manifest_digest_input(path::AbstractString)
+    doc = try
+        TOML.parsefile(path)
+    catch
+        return read(path)
+    end
+    package = get(doc, "package", nothing)
+    package isa AbstractDict && delete!(package, "version")
+    io = IOBuffer()
+    TOML.print(io, doc; sorted = true)
+    return take!(io)
 end
 
 """

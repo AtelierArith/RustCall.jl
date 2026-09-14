@@ -74,6 +74,40 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         @test occursin("\"99.0\"", sprint(showerror, other))
     end
 
+    @testset "a patch bump of the crates does not move the cache" begin
+        # The promise is that a patch release keeps every cached artifact
+        # valid. The four manifest crates are versioned as the release, so a
+        # patch release rewrites their `[package] version` — and
+        # `_rust_sources_digest` hashes `Cargo.toml`. That key alone is
+        # therefore left out of the digest; a dependency's version is not,
+        # because it can change what the generator emits (#372 review).
+        mktempdir() do dir
+            a, b, c = joinpath(dir, "a"), joinpath(dir, "b"), joinpath(dir, "c")
+            for root in (a, b, c)
+                mkpath(joinpath(root, "src"))
+                write(joinpath(root, "src", "lib.rs"), "pub fn f() {}\n")
+            end
+            write(joinpath(a, "Cargo.toml"), """
+                [package]
+                name = "probe"
+                version = "0.4.0"
+                edition = "2021"
+
+                [dependencies]
+                syn = { version = "2.0", features = ["full"] }
+                """)
+            write(joinpath(b, "Cargo.toml"), replace(read(joinpath(a, "Cargo.toml"), String),
+                                                     "version = \"0.4.0\"" => "version = \"0.4.1\""))
+            write(joinpath(c, "Cargo.toml"), replace(read(joinpath(a, "Cargo.toml"), String),
+                                                     "version = \"2.0\"" => "version = \"2.1\""))
+            @test RustCall._rust_sources_digest(a) == RustCall._rust_sources_digest(b)
+            @test RustCall._rust_sources_digest(a) != RustCall._rust_sources_digest(c)
+            # ...and a source change still moves it.
+            write(joinpath(b, "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
+            @test RustCall._rust_sources_digest(a) != RustCall._rust_sources_digest(b)
+        end
+    end
+
     @testset "the identifier is part of every cache key" begin
         # A minor release must move every cache key and a patch release must
         # not: that follows from the identifier being an input of
