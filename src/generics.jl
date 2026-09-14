@@ -586,13 +586,35 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     # retired — or, with `close = true`, unmapped — image as if it were the
     # fresh one the release promised. So the loser starts over, and gets the
     # fresh image like any other caller.
-    for _ in 1:3
+    #
+    # Bounded by time, not by a count of attempts: the releasing task holds no
+    # lock between dropping the batch memo and retiring the image, and a batch
+    # sibling can lose the `:insert_only` load to the old incumbent as often
+    # as it tries while that task has not run — a fixed number of attempts
+    # could all be spent before one retirement proceeds (#397 review). Each
+    # attempt therefore gives the thread away and then waits a little longer,
+    # and only an image that keeps being released for `_MONOMORPHIZE_SETTLE_SECONDS`
+    # is an error.
+    deadline = time() + _MONOMORPHIZE_SETTLE_SECONDS
+    backoff = 0.001
+    while true
         info = _monomorphize_function_once(func_name, type_params)
         info === nothing || return info
+        time() < deadline ||
+            error("An instantiation of '$func_name' could not be published: the image it " *
+                  "resolved against kept being released for $(_MONOMORPHIZE_SETTLE_SECONDS) s")
         @debug "An instantiation of '$func_name' was released while being published; retrying"
+        yield()
+        sleep(backoff)
+        backoff = min(2backoff, 0.1)
     end
-    error("An instantiation of '$func_name' was released repeatedly while it was being published")
 end
+
+# How long `monomorphize_function` keeps retrying an instantiation whose image
+# is being released under it before giving up. A release is one retirement
+# transaction; seconds of them in a row is a program releasing in a loop, not
+# a race.
+const _MONOMORPHIZE_SETTLE_SECONDS = 10.0
 
 # Whether the image an instantiation resolved its pointers on — `handle`, at
 # `generation` of `lib_name` — is still the one registered under that name.
