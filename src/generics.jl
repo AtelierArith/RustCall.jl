@@ -1158,14 +1158,14 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         # if it loses the `:insert_only` race to the still-registered image it
         # is retired with it a moment later. Counted before the unload as
         # well, because `purge_library_state!` inside it drops the rows.
-        handle, generation, names = lock(REGISTRY_LOCK) do
+        handle, generation, names, leaving = lock(REGISTRY_LOCK) do
             entry = get(RUST_LIBRARIES, lib_name, nothing)
-            entry === nothing && return (C_NULL, 0, String[])
+            entry === nothing && return (C_NULL, 0, String[], 0)
             handle = entry[1]
             generation = get(ARTIFACT_GENERATIONS, lib_name, 0)
             names = String[n for (n, e) in RUST_LIBRARIES if e[1] == handle]
-            released += count(info -> info.handle == handle && info.generation == generation,
-                              values(MONOMORPHIZED_FUNCTIONS))
+            leaving = count(info -> info.handle == handle && info.generation == generation,
+                            values(MONOMORPHIZED_FUNCTIONS))
             paths = Set{String}(GENERIC_IMAGE_PATHS[n] for n in names
                                 if haskey(GENERIC_IMAGE_PATHS, n))
             for (batch, path) in collect(_BATCH_LIBRARY_COPIES)
@@ -1174,14 +1174,20 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             for n in names
                 delete!(GENERIC_IMAGE_PATHS, n)
             end
-            (handle, generation, names)
+            (handle, generation, names, leaving)
         end
         handle == C_NULL && continue
         # Unloading one name of an image unloads every name of it, so a batch
         # member's siblings — registered under their own names on the same
-        # handle — leave the registry with it.
-        unload_artifact!(generics_policy(), lib_name; close) ||
-            @debug "release_generics: '$lib_name' was not registered" lib_name
+        # handle — leave the registry with it. Conditional on the generation
+        # captured above: two concurrent releases of one image must not both
+        # count it, and a release must not retire a *newer* image that a
+        # concurrent instantiation registered under the name in between.
+        # Only the call whose retirement actually happened counts.
+        retired = unload_artifact!(generics_policy(), lib_name; close,
+                                   expect_generation = generation)
+        retired || continue
+        released += leaving
         lock(REGISTRY_LOCK) do
             # `purge_library_state!` dropped this library's rows by name; rows
             # resolved on this image under a sibling name go the same way —

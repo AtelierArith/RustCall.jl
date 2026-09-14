@@ -511,6 +511,30 @@ end
                 end
             end
 
+            @testset "only the release that retires the image counts it" begin
+                # Two concurrent releases of one image both capture its
+                # generation before either retires it; only the first
+                # retirement happens, and only that call may report the count.
+                # The retirement is conditional on the captured generation, so
+                # the second call — and a release racing a re-instantiation
+                # that registered a newer image under the name — does nothing
+                # (#397 review). Played out through the primitive.
+                RustCall.call_generic_function("gc397_id", UInt16(1))
+                info = cached(UInt16)
+                # A stale generation retires nothing and reports so...
+                @test !RustCall.unload_artifact!(RustCall.generics_policy(), info.lib_name;
+                                                 expect_generation = info.generation - 1)
+                @test info.lib_name in RustCall.list_loaded_libraries()
+                @test cached(UInt16) !== nothing
+                # ...the right one retires it...
+                @test RustCall.unload_artifact!(RustCall.generics_policy(), info.lib_name;
+                                                expect_generation = info.generation)
+                @test !(info.lib_name in RustCall.list_loaded_libraries())
+                # ...and a second release of what is already gone counts nothing.
+                @test RustCall.release_generics("gc397_id", UInt16) == 0
+                RustCall.close_retired_handles!(RustCall.retired_handles(info.lib_name))
+            end
+
             @testset "close = true flips the flag and closes" begin
                 RustCall.call_generic_function("gc397_id", UInt8(1))
                 info = cached(UInt8)

@@ -2482,7 +2482,7 @@ end
 
 """
     unload_artifact!(artifact::LoadedArtifact; close = false) -> Bool
-    unload_artifact!(policy::LoadPolicy, lib_name; close = false) -> Bool
+    unload_artifact!(policy::LoadPolicy, lib_name; close = false, expect_generation = nothing) -> Bool
 
 Retire a library: remove everything the registries record about it, in one
 locked block — the `RUST_LIBRARIES` entry and its function-pointer cache, the
@@ -2508,11 +2508,23 @@ from those images inert.
 
 Returns whether a `RUST_LIBRARIES` entry was actually removed.
 """
-function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; close::Bool = false)
+function unload_artifact!(policy::LoadPolicy, lib_name::AbstractString; close::Bool = false,
+                          expect_generation::Union{Nothing, Int} = nothing)
     name = String(lib_name)
     to_close = Ptr{Cvoid}[]
     removed = lock(REGISTRY_LOCK) do
         entry = get(RUST_LIBRARIES, name, nothing)
+        # `expect_generation` makes the retirement conditional on the image
+        # being the one the caller decided to retire: a caller that captured
+        # `(handle, generation)` earlier, did its own bookkeeping against it,
+        # and must neither retire a *newer* image registered under the name in
+        # the meantime nor report a retirement another caller already did.
+        # Checked here, in the same transaction, because a check outside it
+        # is exactly the race it exists to close (#397 review).
+        if expect_generation !== nothing &&
+           (entry === nothing || get(ARTIFACT_GENERATIONS, name, 0) != expect_generation)
+            return false
+        end
         handle = entry === nothing ? C_NULL : entry[1]
         # Every name of this handle goes: an alias is a second name for the
         # same image, and leaving one behind would leave a live registry entry
