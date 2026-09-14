@@ -37,6 +37,7 @@ _toolchain_required() =
         for file in ("memory.jl", "manifest.jl")
             src = read(joinpath(_REPO_ROOT, "src", file), String)
             @test !occursin("rustcall_extract\", \"target", src)
+            @test !occursin("rustcall_helpers\", \"target", src)
             @test !occursin("rust_helpers\", \"target", src)
         end
     end
@@ -47,7 +48,7 @@ _toolchain_required() =
     end
 
     @testset "each product names a crate that exists" begin
-        for kind in (:rust_helpers, :extractor)
+        for kind in (:rustcall_helpers, :extractor)
             @test isfile(joinpath(RustCall.native_crate_dir(kind), "Cargo.toml"))
             @test !isempty(RustCall.native_product_filename(kind))
         end
@@ -59,14 +60,14 @@ _toolchain_required() =
         # The repository under test is a checkout, not an installed package.
         @test RustCall.native_installed_slug() === nothing
         @test RustCall.native_is_installed_package() === false
-        for kind in (:rust_helpers, :extractor)
+        for kind in (:rustcall_helpers, :extractor)
             @test RustCall.native_target_dir(kind) ==
                   joinpath(RustCall.native_crate_dir(kind), "target")
         end
         # ...and, overrides aside, nothing outside that tree is offered as a
         # candidate, so a checkout's lookup cannot pick up another copy's build.
-        withenv("RUSTCALL_EXTRACT" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
-            for kind in (:rust_helpers, :extractor)
+        withenv("RUSTCALL_EXTRACT" => nothing, "RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
+            for kind in (:rustcall_helpers, :extractor)
                 for candidate in RustCall.native_product_candidates(kind)
                     @test startswith(candidate, RustCall.native_package_root())
                 end
@@ -79,8 +80,21 @@ _toolchain_required() =
         withenv("RUSTCALL_EXTRACT" => probe) do
             @test first(RustCall.native_product_candidates(:extractor)) == probe
         end
-        withenv("RUSTCALL_RUST_HELPERS" => probe) do
-            @test first(RustCall.native_product_candidates(:rust_helpers)) == probe
+        withenv("RUSTCALL_HELPERS" => probe, "RUSTCALL_RUST_HELPERS" => nothing) do
+            @test first(RustCall.native_product_candidates(:rustcall_helpers)) == probe
+        end
+        # The pre-v0.4 variable is a deprecated alias: honoured when the new one
+        # is unset, and it says so once (#387).
+        legacy_probe = joinpath(mktempdir(), "librust_helpers.so")
+        withenv("RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => legacy_probe) do
+            candidates = @test_logs (:warn, r"RUSTCALL_RUST_HELPERS is deprecated") match_mode=:any begin
+                RustCall.native_product_candidates(:rustcall_helpers)
+            end
+            @test first(candidates) == legacy_probe
+        end
+        # ...and it never shadows the new one.
+        withenv("RUSTCALL_HELPERS" => probe, "RUSTCALL_RUST_HELPERS" => legacy_probe) do
+            @test first(RustCall.native_product_candidates(:rustcall_helpers)) == probe
         end
         # An empty value is not an override: the checkout's own build wins.
         withenv("RUSTCALL_EXTRACT" => "") do
@@ -97,7 +111,7 @@ _toolchain_required() =
         depot = mktempdir()
         pkg = joinpath(depot, "packages", "RustCall", "AbCdE")
         mkpath(joinpath(pkg, "src"))
-        for kind in (:rust_helpers, :extractor)
+        for kind in (:rustcall_helpers, :extractor)
             crate = joinpath(pkg, "deps", RustCall.NATIVE_PRODUCTS[kind].crate)
             mkpath(crate)
             write(joinpath(crate, "Cargo.toml"), "")
@@ -116,14 +130,14 @@ _toolchain_required() =
         Base.include(m, $(repr(joinpath(pkg, "src", "native_layout.jl"))))
         println(m.native_installed_slug())
         println(m.native_target_dir(:extractor; create = true))
-        println(m.native_target_dir(:rust_helpers))
+        println(m.native_target_dir(:rustcall_helpers))
         for c in m.native_product_candidates(:extractor)
             println("candidate: ", c)
         end
         """
         # The probe must see the layout, not this session's overrides.
         out = withenv("RUSTCALL_EXTRACT" => nothing,
-                      "RUSTCALL_RUST_HELPERS" => nothing) do
+                      "RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
             read(`$(Base.julia_cmd()) --project=$(_REPO_ROOT) --startup-file=no -e $script`,
                  String)
         end
@@ -137,11 +151,11 @@ _toolchain_required() =
         expected = joinpath(depot, "scratchspaces", string(RustCall.RUSTCALL_UUID),
                             RustCall.NATIVE_SCRATCH_NAME, "AbCdE")
         @test extractor_dir == joinpath(expected, "rustcall_extract")
-        @test helpers_dir == joinpath(expected, "rust_helpers")
+        @test helpers_dir == joinpath(expected, "rustcall_helpers")
         # `create = true` really created it, and the package tree stayed clean.
         @test isdir(extractor_dir)
         @test !ispath(joinpath(pkg, "deps", "rustcall_extract", "target"))
-        @test !ispath(joinpath(pkg, "deps", "rust_helpers", "target"))
+        @test !ispath(joinpath(pkg, "deps", "rustcall_helpers", "target"))
         # The preferred candidate is that scratch build, never the tree.
         @test first(candidates) ==
               joinpath(extractor_dir, "release",
@@ -154,6 +168,69 @@ _toolchain_required() =
         @test any(c -> c == joinpath(pkg, "deps", "rustcall_extract", "target",
                                      "release", RustCall.native_product_filename(:extractor)),
                   candidates)
+    end
+
+    @testset "the pre-v0.4 helper name is still found, after the current one (#387)" begin
+        # `deps/rust_helpers` / `librust_helpers` became `deps/rustcall_helpers` /
+        # `librustcall_helpers` in v0.4.0. The file name is what a deployment
+        # sees, so an installed tree built by v0.3.x — and not rebuilt since —
+        # must keep loading for one release, from every place the current name
+        # is looked for, and always *after* the current name.
+        new_file = RustCall.native_product_filename(:rustcall_helpers)
+        old_file = RustCall.native_legacy_helpers_filename()
+        @test old_file == replace(new_file, "rustcall_helpers" => "rust_helpers")
+        @test old_file != new_file
+
+        withenv("RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
+            candidates = RustCall.native_product_candidates(:rustcall_helpers)
+            news = findall(c -> basename(c) == new_file, candidates)
+            olds = findall(c -> basename(c) == old_file, candidates)
+            @test !isempty(news)
+            @test !isempty(olds)
+            # Every current-name candidate precedes every legacy-name one.
+            @test maximum(news) < minimum(olds)
+            # A checkout: the legacy crate directory's own build is searched.
+            @test joinpath(RustCall.native_package_root(), "deps", "rust_helpers",
+                           "target", "release", old_file) in candidates
+            # Nothing is ever *built* under the old name: no product is keyed by it.
+            @test !haskey(RustCall.NATIVE_PRODUCTS, :rust_helpers)
+            @test_throws ArgumentError RustCall.native_target_dir(:rust_helpers)
+        end
+
+        # An installed tree exactly as v0.3.x left it: only the old file exists,
+        # in the old crate's scratch directory. It resolves.
+        depot = mktempdir()
+        pkg = joinpath(depot, "packages", "RustCall", "AbCdE")
+        mkpath(joinpath(pkg, "src"))
+        for crate in ("rustcall_helpers", "rustcall_extract", "rust_helpers")
+            mkpath(joinpath(pkg, "deps", crate))
+            write(joinpath(pkg, "deps", crate, "Cargo.toml"), "")
+        end
+        cp(joinpath(_REPO_ROOT, "src", "native_layout.jl"),
+           joinpath(pkg, "src", "native_layout.jl"))
+        old_build = joinpath(depot, "scratchspaces", string(RustCall.RUSTCALL_UUID),
+                             RustCall.NATIVE_SCRATCH_NAME, "AbCdE", "rust_helpers", "release")
+        mkpath(old_build)
+        write(joinpath(old_build, old_file), "built by v0.3.x")
+        script = """
+        import Scratch
+        empty!(DEPOT_PATH)
+        push!(DEPOT_PATH, $(repr(depot)))
+        m = Module(:NativeLayoutProbe)
+        Base.include(m, $(repr(joinpath(pkg, "src", "native_layout.jl"))))
+        println(something(m.native_product_path(:rustcall_helpers), "nothing"))
+        println(first(m.native_product_candidates(:rustcall_helpers)))
+        """
+        out = withenv("RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
+            read(`$(Base.julia_cmd()) --project=$(_REPO_ROOT) --startup-file=no -e $script`,
+                 String)
+        end
+        resolved, preferred = split(strip(out), '\n')
+        @test resolved == joinpath(old_build, old_file)
+        # ...but a rebuild lands under the new name and would win.
+        @test preferred == joinpath(depot, "scratchspaces", string(RustCall.RUSTCALL_UUID),
+                                    RustCall.NATIVE_SCRATCH_NAME, "AbCdE",
+                                    "rustcall_helpers", "release", new_file)
     end
 
     @testset "a read-only depot in front cannot shadow the build" begin
@@ -170,7 +247,7 @@ _toolchain_required() =
             frozen, live = joinpath(root, "frozen"), joinpath(root, "live")
             pkg = joinpath(live, "packages", "RustCall", "AbCdE")
             mkpath(joinpath(pkg, "src"))
-            for kind in (:rust_helpers, :extractor)
+            for kind in (:rustcall_helpers, :extractor)
                 crate = joinpath(pkg, "deps", RustCall.NATIVE_PRODUCTS[kind].crate)
                 mkpath(crate)
                 write(joinpath(crate, "Cargo.toml"), "")
@@ -215,7 +292,7 @@ _toolchain_required() =
                 end
                 """
                 out = withenv("RUSTCALL_EXTRACT" => nothing,
-                              "RUSTCALL_RUST_HELPERS" => nothing) do
+                              "RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
                     read(`$(Base.julia_cmd()) --project=$(_REPO_ROOT) --startup-file=no -e $script`,
                          String)
                 end
@@ -260,7 +337,7 @@ _toolchain_required() =
         # are built with `--locked`, so Cargo asserts it rather than writes it.
         build_jl = read(joinpath(_REPO_ROOT, "deps", "build.jl"), String)
         @test occursin("--locked", build_jl)
-        for kind in (:rust_helpers, :extractor)
+        for kind in (:rustcall_helpers, :extractor)
             @test isfile(joinpath(RustCall.native_crate_dir(kind), "Cargo.lock"))
         end
     end
@@ -274,14 +351,14 @@ _toolchain_required() =
             run(pipeline(cmd; stdout = devnull, stderr = devnull))
 
             products = [RustCall.native_product_path(kind)
-                        for kind in (:rust_helpers, :extractor)]
+                        for kind in (:rustcall_helpers, :extractor)]
             @test all(p -> p !== nothing, products)
             # A no-op Cargo build writes nothing: not the products, and not
             # the lockfiles, which `--locked` keeps Cargo from touching even
             # though they sit inside the package tree.
             watched = vcat(products,
                            [joinpath(RustCall.native_crate_dir(kind), "Cargo.lock")
-                            for kind in (:rust_helpers, :extractor)])
+                            for kind in (:rustcall_helpers, :extractor)])
             before = [(p, mtime(p), filesize(p)) for p in watched]
             run(pipeline(cmd; stdout = devnull, stderr = devnull))
             for (path, stamp, size) in before

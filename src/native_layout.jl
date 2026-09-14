@@ -2,7 +2,7 @@
 #
 # `Pkg.build("RustCall")` compiles two crates with Cargo:
 #
-#   * `deps/rust_helpers`    → the ownership helper cdylib (`RUST_HELPERS_LIB`)
+#   * `deps/rustcall_helpers` → the ownership helper cdylib (`RUST_HELPERS_LIB`)
 #   * `deps/rustcall_extract` → the `rustcall-extract` CLI (`extractor_path()`)
 #
 # Through v0.3.x both landed in `deps/<crate>/target/`, i.e. **inside the
@@ -60,9 +60,24 @@ directory under `deps/`, `env` the environment variable that overrides the
 resolved path outright.
 """
 const NATIVE_PRODUCTS = (
-    rust_helpers = (crate = "rust_helpers", env = "RUSTCALL_RUST_HELPERS"),
+    rustcall_helpers = (crate = "rustcall_helpers", env = "RUSTCALL_HELPERS"),
     extractor = (crate = "rustcall_extract", env = "RUSTCALL_EXTRACT"),
 )
+
+"""
+    LEGACY_HELPERS
+
+What the ownership helper library was called through v0.3.x (#387): the crate
+directory `deps/rust_helpers`, the file `librust_helpers.{so,dylib}` /
+`rust_helpers.dll`, and the override `RUSTCALL_RUST_HELPERS`.
+
+The rename is a visible break — the file name is what a deployment sees — so
+for one release the old name stays a **lookup** fallback: an installed tree
+built by v0.3.x and not rebuilt since still loads, and the old variable is
+accepted as a deprecated alias of `RUSTCALL_HELPERS`. Nothing *builds* under the
+old name any more. Remove this in v0.5.
+"""
+const LEGACY_HELPERS = (crate = "rust_helpers", env = "RUSTCALL_RUST_HELPERS")
 
 """
     native_package_root() -> String
@@ -78,14 +93,26 @@ native_package_root() = dirname(@__DIR__)
 The file Cargo produces for `kind` on this platform.
 """
 function native_product_filename(kind::Symbol)
-    if kind === :rust_helpers
-        return Sys.iswindows() ? "rust_helpers.dll" :
-               Sys.isapple() ? "librust_helpers.dylib" : "librust_helpers.so"
+    if kind === :rustcall_helpers
+        return _cdylib_filename("rustcall_helpers")
     elseif kind === :extractor
         return Sys.iswindows() ? "rustcall-extract.exe" : "rustcall-extract"
     end
     throw(ArgumentError("unknown native product: $(kind)"))
 end
+
+# The file Cargo produces for a `cdylib` crate named `crate` on this platform.
+_cdylib_filename(crate::AbstractString) =
+    Sys.iswindows() ? "$(crate).dll" :
+    Sys.isapple() ? "lib$(crate).dylib" : "lib$(crate).so"
+
+"""
+    native_legacy_helpers_filename() -> String
+
+The pre-v0.4 file name of the ownership helper library on this platform
+(`LEGACY_HELPERS`), searched after every location of the current name.
+"""
+native_legacy_helpers_filename() = _cdylib_filename(LEGACY_HELPERS.crate)
 
 """
     native_crate_dir(kind::Symbol) -> String
@@ -231,8 +258,18 @@ usage log) and is what `deps/build.jl` passes; the lookup path leaves it alone.
 `depot` names the depot to build in and defaults to `_writable_depot()`.
 """
 function native_target_dir(kind::Symbol; depot = nothing, create::Bool = false)
+    haskey(NATIVE_PRODUCTS, kind) ||
+        throw(ArgumentError("unknown native product: $(kind)"))
+    return _native_target_dir(NATIVE_PRODUCTS[kind].crate; depot, create)
+end
+
+# `native_target_dir` for a crate *name*, so the legacy helper name can ask the
+# same question (`native_product_candidates`) without a product entry of its
+# own. Nothing builds under the legacy name, so `create` is only ever passed
+# for a current product.
+function _native_target_dir(crate::AbstractString; depot = nothing, create::Bool = false)
     slug = native_installed_slug()
-    slug === nothing && return joinpath(native_crate_dir(kind), "target")
+    slug === nothing && return joinpath(native_package_root(), "deps", crate, "target")
     chosen = depot === nothing ? _writable_depot() : String(depot)
     if chosen === nothing
         create && error("""
@@ -245,7 +282,7 @@ function native_target_dir(kind::Symbol; depot = nothing, create::Bool = false)
     root = create ?
         Scratch.get_scratch!(RUSTCALL_UUID, NATIVE_SCRATCH_NAME; depot_path = chosen) :
         native_scratch_dir(chosen)
-    dir = joinpath(root, slug, NATIVE_PRODUCTS[kind].crate)
+    dir = joinpath(root, slug, crate)
     create && mkpath(dir)
     return dir
 end
@@ -255,8 +292,9 @@ end
 
 Every path `kind` may be found at, most authoritative first:
 
-1. its environment override (`RUSTCALL_EXTRACT` / `RUSTCALL_RUST_HELPERS`),
-   when set to a non-empty value;
+1. its environment override (`RUSTCALL_EXTRACT` / `RUSTCALL_HELPERS`), when
+   set to a non-empty value — for the helpers, `RUSTCALL_RUST_HELPERS` is still
+   honoured as a deprecated alias when the new variable is unset (#387);
 2. **`native_target_dir(kind)` — the directory a build would write to right
    now.** Asking the same function the build asks is what keeps the two from
    drifting: with a read-only `DEPOT_PATH[1]` in front of a writable depot,
@@ -268,7 +306,10 @@ Every path `kind` may be found at, most authoritative first:
    behind another still finds its products;
 4. the legacy in-package location `deps/<crate>/target/release`, for an
    installed tree built by RustCall ≤ v0.3.4 and not rebuilt since;
-5. for the extractor only, the `debug` profile of each directory above.
+5. for the extractor only, the `debug` profile of each directory above;
+6. for the helpers only, every directory above again under the **pre-v0.4
+   name** (`deps/rust_helpers`, `librust_helpers`), so an installed tree built
+   by v0.3.x still loads until it is rebuilt (#387, `LEGACY_HELPERS`).
 
 Paths are returned whether or not they exist; callers filter. Deciding (2) for
 an installed package probes each depot for writability, which creates that
@@ -279,34 +320,55 @@ function native_product_candidates(kind::Symbol)
     file = native_product_filename(kind)
     out = String[]
     env = get(ENV, NATIVE_PRODUCTS[kind].env, "")
+    if isempty(env) && kind === :rustcall_helpers
+        legacy = get(ENV, LEGACY_HELPERS.env, "")
+        if !isempty(legacy)
+            @warn "$(LEGACY_HELPERS.env) is deprecated; set " *
+                  "$(NATIVE_PRODUCTS[kind].env) instead (#387)." maxlog = 1
+            env = legacy
+        end
+    end
     isempty(env) || push!(out, env)
 
     # Only the extractor has ever been used from a `debug` build.
     profiles = kind === :extractor ? ("release", "debug") : ("release",)
+    for dir in _native_build_dirs(NATIVE_PRODUCTS[kind].crate), profile in profiles
+        push!(out, joinpath(dir, profile, file))
+    end
+
+    if kind === :rustcall_helpers
+        # Even older: a library dropped straight into deps/.
+        push!(out, joinpath(native_package_root(), "deps", file))
+        # The pre-v0.4 name, in every place the current one is looked for,
+        # after all of them: a tree built by v0.3.x keeps working until it is
+        # rebuilt, and a rebuild under the new name is always preferred.
+        legacy_file = native_legacy_helpers_filename()
+        for dir in _native_build_dirs(LEGACY_HELPERS.crate)
+            push!(out, joinpath(dir, "release", legacy_file))
+        end
+        push!(out, joinpath(native_package_root(), "deps", legacy_file))
+    end
+    return unique!(out)
+end
+
+# The directories a build of `crate` may have written to, most authoritative
+# first: the build's own answer, then (for an installed package) the same slug
+# under every depot, then the legacy in-package `target`.
+function _native_build_dirs(crate::AbstractString)
     # The build's own answer comes first, so a fresh `Pkg.build` always wins
     # over whatever another depot happens to carry for the same slug.
-    dirs = String[native_target_dir(kind)]
+    dirs = String[_native_target_dir(crate)]
     slug = native_installed_slug()
     if slug !== nothing
         # Then every depot, not just the writable one: a package installed in
         # a depot that has since moved behind another still finds its build.
         for depot in DEPOT_PATH
             isempty(depot) && continue
-            push!(dirs, joinpath(native_scratch_dir(String(depot)), slug,
-                                 NATIVE_PRODUCTS[kind].crate))
+            push!(dirs, joinpath(native_scratch_dir(String(depot)), slug, crate))
         end
-        push!(dirs, joinpath(native_crate_dir(kind), "target"))
+        push!(dirs, joinpath(native_package_root(), "deps", crate, "target"))
     end
-    unique!(dirs)
-    for dir in dirs, profile in profiles
-        push!(out, joinpath(dir, profile, file))
-    end
-
-    if kind === :rust_helpers
-        # Even older: a library dropped straight into deps/.
-        push!(out, joinpath(native_package_root(), "deps", file))
-    end
-    return unique!(out)
+    return unique!(dirs)
 end
 
 """

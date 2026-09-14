@@ -627,7 +627,7 @@ pub fn panic_symbol(symbol: &str) -> String {
 /// sit in the same module as the wrapper that writes them, are named after a
 /// symbol that is already unique, need no crate-wide coordination and no
 /// `extern` block, and make every library self-contained (a generated `cdylib`
-/// does not link `rust_helpers`). The cost is one thread-local and one exported
+/// does not link `rustcall_helpers`). The cost is one thread-local and one exported
 /// symbol per `#[julia]` item.
 ///
 /// # Protocol

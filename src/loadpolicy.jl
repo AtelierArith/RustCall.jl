@@ -51,7 +51,7 @@ Why the category is empty:
   `RUST_LIBRARIES`, not the process-global namespace, so it keeps working too.
 * Every artifact RustCall builds is a self-contained `cdylib`. Under `RTLD_NOW`
   a genuinely unresolved symbol fails at load rather than at first call.
-* The ownership helper library (`deps/rust_helpers`) looked like the one
+* The ownership helper library (`deps/rustcall_helpers`) looked like the one
   exception and is not: every user reaches it through `RUST_HELPERS_LIB[]` plus
   `dlsym`, and no artifact links against it.
 * PyO3 crates look like an exception and are not: their `Py_*` symbols resolve
@@ -375,9 +375,10 @@ crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
 """
     helper_library_policy() -> LoadPolicy
 
-The ownership helper library `deps/rust_helpers`, loaded by
-`load_rust_helpers_lib` and `try_load_rust_helpers` (`src/memory.jl`) into
-`RUST_HELPERS_LIB`.
+The ownership helper library `deps/rustcall_helpers` — `deps/rust_helpers`
+through v0.3.x (#387) — loaded by `load_rust_helpers_lib` and
+`try_load_rust_helpers` (`src/memory.jl`) into `RUST_HELPERS_LIB`, and
+registered under the name `rustcall_helpers`.
 
 It looked like the one library other artifacts could legitimately need to
 resolve symbols against, and is not: every user goes through
@@ -387,7 +388,7 @@ against it, so nothing would resolve anything against it even if it were
 artifacts" category is therefore empty, and this policy stays `RTLD_LOCAL`
 (#277 Phase B2).
 
-Panic strategy is `:unwind`, and pinned twice over: `deps/rust_helpers/Cargo.toml`
+Panic strategy is `:unwind`, and pinned twice over: `deps/rustcall_helpers/Cargo.toml`
 declares `[profile.release] panic = "unwind"`, and `build_native_product`
 (`deps/build.jl`) passes `CARGO_PROFILE_RELEASE_PANIC=unwind` to Cargo, so an
 inherited `CARGO_PROFILE_RELEASE_PANIC=abort` cannot decide it either (#244).
@@ -406,7 +407,7 @@ helper_library_policy() = LoadPolicy("helper-library";
     call_sites = ["src/memory.jl (load_rust_helpers_lib)",
                   "src/memory.jl (try_load_rust_helpers)",
                   "deps/build.jl (build_native_product)",
-                  "deps/rust_helpers/Cargo.toml"],
+                  "deps/rustcall_helpers/Cargo.toml"],
     issues = [244, 250],
     notes = "Every user reaches it through RUST_HELPERS_LIB[] and dlsym and " *
             "nothing links against it, so RTLD_LOCAL is right after all " *

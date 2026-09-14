@@ -20,7 +20,7 @@ function _ownership_drop_target(::Type{T}, kind::Symbol,
     pointer = Libdl.dlsym(lib, symbol; throw_error=false)
     pointer === nothing && return (Ptr{Cvoid}(C_NULL), Ref(false))
     alive = lock(REGISTRY_LOCK) do
-        alive_ref_for_handle(lib, "rust_helpers")
+        alive_ref_for_handle(lib, "rustcall_helpers")
     end
     return (pointer, alive)
 end
@@ -263,7 +263,7 @@ function require_rust_helpers(operation::AbstractString)
 
             using Pkg; Pkg.build("RustCall")
 
-        The helper library (deps/rust_helpers) implements Box / Rc / Arc / Vec
+        The helper library (deps/rustcall_helpers) implements Box / Rc / Arc / Vec
         allocation and release. It is deliberately required *before* the value
         exists: a value allocated without it could never be freed.
         """))
@@ -306,7 +306,7 @@ function load_rust_helpers_lib(lib_path::String)
         # `load_artifact!` opens the image. The policy registers nowhere —
         # the handle's home is `RUST_HELPERS_LIB` — so nothing else happens.
         artifact = load_artifact!(helper_library_policy(), lib_path;
-                                  lib_name = "rust_helpers")
+                                  lib_name = "rustcall_helpers")
         RUST_HELPERS_LIB[] = artifact.handle
         return artifact.handle
     catch e
@@ -321,12 +321,14 @@ Path to the ownership helper library built by `Pkg.build("RustCall")`, or
 `nothing` when no copy of it exists.
 
 Every candidate location, and their order, is `native_product_candidates`
-(#258): `RUSTCALL_RUST_HELPERS` first, then this package tree's own build
-directory — a scratch space for an installed package, `deps/rust_helpers/target`
-for a checkout — then the legacy in-package locations a pre-v0.3.5 build left
-behind.
+(#258): `RUSTCALL_HELPERS` first (`RUSTCALL_RUST_HELPERS` is accepted as a
+deprecated alias, #387), then this package tree's own build directory — a
+scratch space for an installed package, `deps/rustcall_helpers/target` for a
+checkout — then the legacy in-package locations a pre-v0.3.5 build left behind,
+and finally the pre-v0.4 file name `librust_helpers` in each of those places, so
+an installed tree built by v0.3.x still loads until it is rebuilt.
 """
-get_rust_helpers_lib_path() = native_product_path(:rust_helpers)
+get_rust_helpers_lib_path() = native_product_path(:rustcall_helpers)
 
 """
     verify_rust_helpers_functions(lib::Ptr{Cvoid}) -> Bool
@@ -388,7 +390,7 @@ function try_load_rust_helpers()
     try
         # Same policy as `load_rust_helpers_lib` (#277 Phase B).
         lib_handle = load_artifact!(helper_library_policy(), lib_path;
-                                    lib_name = "rust_helpers").handle
+                                    lib_name = "rustcall_helpers").handle
 
         # Verify that required functions are available
         if !verify_rust_helpers_functions(lib_handle)
