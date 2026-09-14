@@ -664,12 +664,78 @@ end
 # why a `(mtime, size)` stamp must not stand in for content). An unreadable file
 # gets a marker digest rather than an exception, so a crate whose permissions
 # changed still produces a different key.
+#
+# Byte for byte, on purpose: the persisted-lockfile store (#256) compares this
+# digest of a replayed `Cargo.lock` with the one taken when the block's
+# identity was computed, and that equality means "exactly the same file". The
+# release-insensitive view an *artifact identity* wants is
+# `_identity_file_digest`, which the identity paths call instead.
 function _file_content_digest(path::AbstractString)::String
     return try
         bytes2hex(open(sha256, String(path)))
     catch
         "unreadable"
     end
+end
+
+# SHA-256 of one file as it enters an **artifact identity** (#372): a
+# `Cargo.toml` without its `[package] version`, a `Cargo.lock` without the
+# `version` of any package that has no `source` — the root and every path
+# dependency — and every other file as it is. Those two keys are what a
+# *release* rewrites: the manifest crates are versioned as the RustCall
+# release, a patch release bumps them, and every lockfile that resolves a path
+# dependency on them records that number. Nothing about a path package's
+# version decides what is built — its content does, and its content is hashed
+# separately (`crate_content_digest` walks every local crate) — while a
+# registry package's version is exactly what pins its content, so it stays.
+# Without this, `@rust_crate` and PyO3 wrapper keys moved on every patch
+# release, against the promise the schema identifier makes
+# (`MANIFEST_SCHEMA_VERSION`). Everything else in either file still counts.
+function _identity_file_digest(path::AbstractString)::String
+    return try
+        bytes2hex(sha256(_identity_file_bytes(String(path))))
+    catch
+        "unreadable"
+    end
+end
+
+"""
+    _identity_file_bytes(path) -> Vector{UInt8}
+
+The bytes of `path` as they enter an artifact identity: `Cargo.toml` and
+`Cargo.lock` through the release-insensitive view described at
+`_identity_file_digest`, every other file as it is. A manifest or lockfile
+that does not parse is hashed as it is; the build that follows fails on it
+anyway.
+"""
+function _identity_file_bytes(path::String)::Vector{UInt8}
+    name = basename(path)
+    name == "Cargo.toml" && return _normalized_toml(path) do doc
+        package = get(doc, "package", nothing)
+        package isa AbstractDict && delete!(package, "version")
+    end
+    name == "Cargo.lock" && return _normalized_toml(path) do doc
+        packages = get(doc, "package", nothing)
+        packages isa AbstractVector || return
+        for entry in packages
+            entry isa AbstractDict && !haskey(entry, "source") && delete!(entry, "version")
+        end
+    end
+    return read(path)
+end
+
+# Parse, let `edit!` strip the release-only keys, re-serialize with sorted keys
+# so the bytes are canonical whatever the file's own layout was.
+function _normalized_toml(edit!::Function, path::String)::Vector{UInt8}
+    doc = try
+        TOML.parsefile(path)
+    catch
+        return read(path)
+    end
+    edit!(doc)
+    io = IOBuffer()
+    TOML.print(io, doc; sorted = true)
+    return take!(io)
 end
 
 """
@@ -848,7 +914,7 @@ function crate_content_digest(dir::AbstractString)::String
         f = joinpath(dir, rel)
         if isfile(f)
             _netstring!(io, "content")
-            _netstring!(io, _file_content_digest(f))
+            _netstring!(io, _identity_file_digest(f))
         else
             _netstring!(io, "not-on-disk")
         end

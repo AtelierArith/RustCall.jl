@@ -108,6 +108,121 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         end
     end
 
+    @testset "release-only version fields are out of every file digest" begin
+        # `_identity_file_digest` is what every artifact identity hashes a file
+        # through — `crate_content_digest` for a crate's inputs, the workspace
+        # root manifest and lock in `compute_crate_hash`. (`_file_content_digest`
+        # stays byte for byte: the persisted-lockfile store compares it to mean
+        # "exactly the same file".) A `Cargo.toml` enters
+        # without `[package] version`; a `Cargo.lock` without the `version` of
+        # any package that has no `source` (the root and every path
+        # dependency). A registry package's version pins its content and stays
+        # (#372 review).
+        mktempdir() do dir
+            digest(name, text) = (write(joinpath(dir, name), text); RustCall._identity_file_digest(joinpath(dir, name)))
+            toml(v, dep) = """
+                [package]
+                name = "probe"
+                version = "$(v)"
+                edition = "2021"
+
+                [dependencies]
+                syn = "$(dep)"
+                """
+            @test digest("Cargo.toml", toml("0.4.0", "2.0")) == digest("Cargo.toml", toml("0.4.1", "2.0"))
+            @test digest("Cargo.toml", toml("0.4.0", "2.0")) != digest("Cargo.toml", toml("0.4.0", "2.1"))
+            lock(pathv, regv) = """
+                version = 4
+
+                [[package]]
+                name = "probe"
+                version = "$(pathv)"
+                dependencies = ["rustcall_julia_macros", "syn"]
+
+                [[package]]
+                name = "rustcall_julia_macros"
+                version = "$(pathv)"
+
+                [[package]]
+                name = "syn"
+                version = "$(regv)"
+                source = "registry+https://github.com/rust-lang/crates.io-index"
+                checksum = "0000"
+                """
+            @test digest("Cargo.lock", lock("0.4.0", "2.0.1")) == digest("Cargo.lock", lock("0.4.1", "2.0.1"))
+            @test digest("Cargo.lock", lock("0.4.0", "2.0.1")) != digest("Cargo.lock", lock("0.4.0", "2.0.2"))
+            # Any other file, and a manifest that does not parse, hash as they are.
+            @test digest("lib.rs", "pub fn a() {}") != digest("lib.rs", "pub fn b() {}")
+            @test digest("Cargo.toml", "not = [toml") == RustCall._file_content_digest(joinpath(dir, "Cargo.toml"))
+            # ...and the byte-exact digest the lockfile store relies on still
+            # sees a version-only change.
+            write(joinpath(dir, "Cargo.lock"), lock("0.4.0", "2.0.1"))
+            raw_a = RustCall._file_content_digest(joinpath(dir, "Cargo.lock"))
+            write(joinpath(dir, "Cargo.lock"), lock("0.4.1", "2.0.1"))
+            @test RustCall._file_content_digest(joinpath(dir, "Cargo.lock")) != raw_a
+        end
+    end
+
+    @testset "a @rust_crate key survives a patch bump of a path dependency" begin
+        # End to end through `compute_crate_hash`: a crate with a local path
+        # dependency, whose version — and the lockfile lines recording it — is
+        # bumped as a patch release would bump `rustcall_julia_macros`. The key
+        # must not move; a source change in the dependency must move it.
+        if !RustCall.check_rustc_available()
+            @test_skip "needs cargo to resolve the local dependency graph"
+        else
+            mktempdir() do dir
+                dep = joinpath(dir, "probe_dep"); crate = joinpath(dir, "probe_crate")
+                for (root, name, body) in ((dep, "probe_dep", "pub fn helper() -> i32 { 1 }"),
+                                           (crate, "probe_crate", "pub fn answer() -> i32 { 42 }"))
+                    mkpath(joinpath(root, "src"))
+                    write(joinpath(root, "src", "lib.rs"), body)
+                end
+                manifest(v) = """
+                    [package]
+                    name = "probe_dep"
+                    version = "$(v)"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["rlib"]
+                    """
+                write(joinpath(dep, "Cargo.toml"), manifest("0.4.0"))
+                write(joinpath(crate, "Cargo.toml"), """
+                    [package]
+                    name = "probe_crate"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [dependencies]
+                    probe_dep = { path = "../probe_dep" }
+                    """)
+                resolve() = for root in (dep, crate)
+                    run(pipeline(Cmd(`cargo generate-lockfile --offline`; dir = root); stdout = devnull, stderr = devnull))
+                end
+                resolve()
+                info = RustCall.scan_crate(crate)
+                key = RustCall.compute_crate_hash(info)
+                @test occursin("0.4.0", read(joinpath(crate, "Cargo.lock"), String))
+
+                # The patch bump: manifest version and both lockfiles.
+                write(joinpath(dep, "Cargo.toml"), manifest("0.4.1"))
+                resolve()
+                @test occursin("0.4.1", read(joinpath(crate, "Cargo.lock"), String))
+                RustCall._artifact_reset_digest_caches!()
+                @test RustCall.compute_crate_hash(RustCall.scan_crate(crate)) == key
+
+                # ...and a real change to the dependency still moves it.
+                write(joinpath(dep, "src", "lib.rs"), "pub fn helper() -> i32 { 2 }")
+                RustCall._artifact_reset_digest_caches!()
+                @test RustCall.compute_crate_hash(RustCall.scan_crate(crate)) != key
+            end
+        end
+    end
+
     @testset "the identifier is part of every cache key, the extractor binary is not" begin
         # A minor release must move every cache key and a patch release must
         # not: the identifier is an input of `toolchain_fingerprint`, which

@@ -3319,8 +3319,8 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
     # touches no file of the member still rebuilds (#307 review, #278).
     root = _cargo_root_dir(info.path)
     if root != abspath(info.path)
-        push!(extra, "workspace-root-manifest" => _file_content_digest(joinpath(root, "Cargo.toml")))
-        push!(extra, "workspace-root-lock" => _file_content_digest(joinpath(root, "Cargo.lock")))
+        push!(extra, "workspace-root-manifest" => _identity_file_digest(joinpath(root, "Cargo.toml")))
+        push!(extra, "workspace-root-lock" => _identity_file_digest(joinpath(root, "Cargo.lock")))
     end
     # So is a library root outside the package directory (`[lib] path =
     # "../shared/lib.rs"`), which the scan follows and `source` — the package
