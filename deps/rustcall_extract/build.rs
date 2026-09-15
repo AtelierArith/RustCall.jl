@@ -195,16 +195,17 @@ fn config_overrides_sources(dir: &Path) -> bool {
         candidates.push(home.join("config"));
     }
     // A configuration file created *after* this build must rerun the script:
-    // the directories that would hold one and exist now are watched (a new
-    // entry changes a directory's mtime), which covers `$CARGO_HOME` and any
-    // `.cargo` directory already present on the way up. A `.cargo` directory
-    // created later in an ancestor is not — watching every ancestor
-    // directory would rerun this script on unrelated activity — and is one of
-    // the cases the tech-debt issue on extractor identity records.
+    // every `.cargo` directory already present on the way up is watched (a
+    // new entry changes a directory's mtime). Not `$CARGO_HOME` itself —
+    // Cargo touches that directory on ordinary runs, and watching it would
+    // rerun this script, and relink the extractor, on every build — and not
+    // a `.cargo` directory created later in an ancestor, which would need
+    // every ancestor watched; both are recorded on the tech-debt issue on
+    // extractor identity (RustCall.jl #409).
     let mut watched_dirs: Vec<PathBuf> = candidates
         .iter()
         .filter_map(|file| file.parent().map(Path::to_path_buf))
-        .filter(|dir| dir.is_dir())
+        .filter(|dir| dir.file_name().is_some_and(|n| n == ".cargo") && dir.is_dir())
         .collect();
     watched_dirs.sort();
     watched_dirs.dedup();
