@@ -1,0 +1,21 @@
+# The Rust half of examples/RustCrateMacro.jl: an ordinary RustCall crate,
+# annotated with `#[julia]` from `rustcall_julia_macros`. The difference from
+# ../../SampleCrate.jl/deps/sample_crate is only *how* it is bound: there a
+# `deps/build.jl` writes the bindings to a file, here `@rust_crate` in the
+# package's `src/` does it in memory while the package is precompiled (#339).
+# The crate itself cannot tell which front door binds it.
+#
+# `rustcall_julia_macros` (the `#[julia]` attribute) is not on crates.io yet, so
+# this is a path dependency into the RustCall.jl checkout. It is the only
+# reference this example makes outside its own directory.
+[package]
+name = "macro_crate"
+version = "0.1.0"
+edition = "2021"
+description = "The Rust half of examples/RustCrateMacro.jl: #[julia] items bound with the @rust_crate macro"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rustcall_julia_macros = { path = "../../../../deps/rustcall_julia_macros" }

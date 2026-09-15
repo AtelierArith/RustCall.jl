@@ -12,7 +12,7 @@ dependency in `deps/sample_crate/Cargo.toml` (`../../../../deps/rustcall_julia_m
 the proc-macro crate of this checkout), because `rustcall_julia_macros` is not on
 crates.io yet.
 
-## Layout: Rust and Julia in separate files
+## Layout: the crate, and one inline block
 
 ```
 SampleCrate.jl/
@@ -25,16 +25,19 @@ SampleCrate.jl/
 │   └── lib/                      # the compiled library (git-ignored)
 ├── src/
 │   ├── SampleCrate.jl            # hand-written Julia (wrappers, docstrings, exports)
+│   ├── inline.jl                 # a rust""" block beside the crate (coexistence)
 │   └── generated/Bindings.jl     # written by deps/build.jl (git-ignored)
 └── test/runtests.jl              # Pkg.test
 ```
 
 This is the layout the documentation prescribes (`deps/<crate>/`, `deps/lib/`,
-`src/generated/`). No file contains both languages: `lib.rs` is plain Rust with
-`#[julia]` attributes, `SampleCrate.jl` is plain Julia. The bridge is the
-generated module `SampleCrate.Bindings`, produced from the crate by
+`src/generated/`): `lib.rs` is plain Rust with `#[julia]` attributes,
+`SampleCrate.jl` is plain Julia, and the bridge is the generated module
+`SampleCrate.Bindings`, produced from the crate by
 `RustCall.write_bindings_to_file` together with a copy of the compiled library
 under `deps/lib/`. Both are build outputs and are not committed.
+`src/inline.jl` is the one file with Rust source in it; it is the
+`rust"""` coexistence example described below.
 
 ## Run the tests
 
@@ -99,6 +102,45 @@ layer, which is what a real package would do:
 
 The raw `RustResult` / `RustOption` values stay reachable through
 `SampleCrate.Bindings` for callers that want them.
+
+### Coexistence with `rust"""` (`@rust_str`)
+
+A package is not limited to one front door. Besides the crate bound by
+`deps/build.jl`, `src/inline.jl` carries a `rust"""` block — the `@rust_str`
+macro — that compiles a second, independent library into RustCall's cache and
+defines its wrappers in the same module:
+
+```julia
+rust"""
+#[julia]
+fn inline_hypot(a: f64, b: f64) -> f64 {
+    (a * a + b * b).sqrt()
+}
+"""
+```
+
+The two libraries coexist when the package is loaded: the crate's `add`,
+`shout`, `Point`, … and the block's `inline_hypot` / `inline_join` are all
+callable, in any order. `inline_distance(p::Point, q::Point)` composes them — a
+`Point` built by the crate's generated bindings, passed to inline Rust:
+
+```julia
+using SampleCrate
+inline_hypot(3.0, 4.0)                        # 5.0
+inline_join("a", "b")                         # "a-b"
+inline_distance(Point(0.0, 0.0), Point(3.0, 4.0))  # 5.0
+add(Int32(2), Int32(3))                       # 5 — the crate still wins its own name
+```
+
+The names in the block are `inline_*` on purpose: a `rust"""` block placed in
+the *same* module as the generated bindings and declaring a name the crate
+exports shadows that bare name (the call then reaches the inline library), and
+two `rust"""` blocks in one module that export the same name from different
+libraries are refused (#250). Distinct names keep the two libraries' exported
+namespaces disjoint. The test suite pins the rest: `test/runtests.jl` defines a
+second `add` (returning `(a + b) * 1000`) in a scratch module and checks that
+it and the crate's `add` each reach their own library, no matter the call
+order.
 
 ## Notes
 

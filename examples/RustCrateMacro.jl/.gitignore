@@ -1,0 +1,6 @@
+# Cargo's output for the embedded crate. This example writes nothing into the
+# package: `@rust_crate` generates the bindings module in memory, straight into
+# the package's precompile image, and builds the crate under its own target/.
+/deps/macro_crate/target/
+/deps/macro_crate/Cargo.lock
+/Manifest.toml

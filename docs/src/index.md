@@ -85,7 +85,11 @@ This will compile the Rust helpers library that provides FFI functions for owner
 
 - `examples/MyExample.jl`: Julia package using inline `rust"""..."""` blocks
 - `examples/SampleCrate.jl`: Julia package with an embedded Rust crate
-  (`deps/sample_crate`) using `#[julia]`, bound with `write_bindings_to_file`
+  (`deps/sample_crate`) using `#[julia]`, bound with `write_bindings_to_file`,
+  plus a `rust"""` block in `src/inline.jl` that coexists with those bindings
+- `examples/RustCrateMacro.jl`: Julia package that binds a `#[julia]` crate
+  with `@rust_crate ... submodule="Bindings"` while precompiling, plus a
+  `rust"""` block in the same module — all three front doors coexisting
 - `examples/SampleCratePyO3.jl`: Julia package with an embedded dual
   Julia/Python crate (`deps/sample_crate_pyo3`)
 - `examples/pluto/hello.jl`: Pluto notebook-style walkthrough
