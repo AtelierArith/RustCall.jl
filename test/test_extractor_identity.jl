@@ -164,6 +164,29 @@ end
         end
     end
 
+    @testset "configuration files Cargo discovers" begin
+        mktempdir() do dir
+            crate = joinpath(dir, "deps", "rustcall_extract"); mkpath(crate)
+            mkpath(joinpath(dir, ".cargo")); write(joinpath(dir, ".cargo", "config.toml"), "[build]\n")
+            found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => joinpath(dir, "nohome")))
+            @test any(f -> first(f) == "config:ancestor:2:config.toml" &&
+                           realpath(last(f)) == realpath(joinpath(dir, ".cargo", "config.toml")), found)
+            @test !any(f -> startswith(first(f), "config:home"), found)
+            # `$CARGO_HOME`, absolute...
+            home = joinpath(dir, "home"); mkpath(home); write(joinpath(home, "config.toml"), "")
+            found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => home))
+            @test any(f -> first(f) == "config:home:config.toml" &&
+                           realpath(last(f)) == realpath(joinpath(home, "config.toml")), found)
+            # ...and relative: Cargo resolves it against its working directory,
+            # the crate directory for the build this describes — not against
+            # this process's.
+            mkpath(joinpath(crate, "relhome")); write(joinpath(crate, "relhome", "config.toml"), "")
+            found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => "relhome"))
+            @test any(f -> first(f) == "config:home:config.toml" &&
+                           realpath(last(f)) == realpath(joinpath(crate, "relhome", "config.toml")), found)
+        end
+    end
+
     @testset "the record beside the binary" begin
         mktempdir() do dir
             binary = joinpath(dir, "rustcall-extract")

@@ -146,6 +146,11 @@ function _ei_config_files(crate_dir::AbstractString, env)
     if home === nothing || isempty(home)
         userhome = get(env, "HOME", get(env, "USERPROFILE", ""))
         home = isempty(userhome) ? nothing : joinpath(userhome, ".cargo")
+    elseif !isabspath(home)
+        # Cargo resolves a relative `CARGO_HOME` against its own working
+        # directory, which for the build this describes is the crate directory
+        # (`deps/build.jl` runs Cargo there) — not this process's.
+        home = joinpath(_ei_canonical(crate_dir), home)
     end
     if home !== nothing
         for name in ("config.toml", "config")
