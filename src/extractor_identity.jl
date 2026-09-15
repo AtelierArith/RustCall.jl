@@ -360,6 +360,41 @@ function _ei_config_replaces_sources(file::AbstractString)
                values(sources))
 end
 
+# The executables the environment puts in front of `rustc` — `RUSTC`,
+# `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER` — resolved to files, as `key =>
+# path`: Cargo runs them, and what they do to the compilation is decided by
+# their bytes, not by their names. A name that resolves to nothing is
+# reported as `key => nothing` and makes the build non-canonical.
+const _EI_RUSTC_EXECUTABLE_KEYS = ("RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")
+
+function _ei_rustc_executables(env, crate_dir::AbstractString)
+    out = Pair{String, Union{Nothing, String}}[]
+    for key in _EI_RUSTC_EXECUTABLE_KEYS
+        value = String(get(env, key, ""))
+        isempty(value) && continue
+        push!(out, key => _ei_resolve_executable(value, env, crate_dir))
+    end
+    return out
+end
+
+function _ei_resolve_executable(name::AbstractString, env, crate_dir::AbstractString)
+    candidates = String[]
+    if isabspath(name) || occursin('/', name) || occursin('\\', name)
+        push!(candidates, isabspath(name) ? String(name) : joinpath(_ei_canonical(crate_dir), name))
+    else
+        sep = Sys.iswindows() ? ';' : ':'
+        for dir in split(String(get(env, "PATH", "")), sep)
+            isempty(dir) && continue
+            push!(candidates, joinpath(dir, String(name)))
+            Sys.iswindows() && push!(candidates, joinpath(dir, String(name) * ".exe"))
+        end
+    end
+    for c in candidates
+        isfile(c) && return _ei_canonical(c)
+    end
+    return nothing
+end
+
 # ---------------------------------------------------------------------------
 # What a manifest declares about its own targets
 # ---------------------------------------------------------------------------
@@ -508,7 +543,8 @@ _ei_relpath_forward(path::AbstractString, base::AbstractString) =
 function _ei_source_digest(crate_dir::AbstractString, crates::Vector{Pair{String, String}},
                            release, lockfile::AbstractString,
                            config_files::Vector{Pair{String, String}},
-                           env_inputs::Vector{Pair{String, String}})
+                           env_inputs::Vector{Pair{String, String}},
+                           executables::Vector{Pair{String, String}} = Pair{String, String}[])
     base = _ei_canonical(crate_dir)
     ordered = sort(crates; by = c -> _ei_relpath_forward(_ei_canonical(last(c)), base))
     versions = Dict{String, String}()
@@ -549,6 +585,9 @@ function _ei_source_digest(crate_dir::AbstractString, crates::Vector{Pair{String
     for (k, v) in env_inputs
         upd("env\0"); upd(k); upd("\0"); upd(v); upd("\0")
     end
+    for (k, file) in executables
+        upd("executable\0"); upd(k); upd("\0"); updb(read(file)); upd("\0")
+    end
     return bytes2hex(digest!(ctx))
 end
 
@@ -574,16 +613,26 @@ function extractor_build_identity(crate_dir::AbstractString; cargo::Cmd, env = E
     workspace = _ei_workspace_manifest(cargo, crate_dir, env)
     config_files = _ei_config_files(crate_dir, env)
     env_inputs = _ei_env_inputs(env)
-    return _extractor_identity_decide(crate_dir, packages, workspace, config_files, env_inputs)
+    executables = _ei_rustc_executables(env, crate_dir)
+    return _extractor_identity_decide(crate_dir, packages, workspace, config_files, env_inputs, executables)
 end
 
 # The decision proper, on already-gathered facts, so it can be tested without
 # a toolchain.
 function _extractor_identity_decide(crate_dir::String, packages, workspace_manifest,
                                     config_files::Vector{Pair{String, String}},
-                                    env_inputs::Vector{Pair{String, String}})
+                                    env_inputs::Vector{Pair{String, String}},
+                                    executables = Pair{String, Union{Nothing, String}}[])
     inputs = String[]
     fail(reason) = (; canonical = false, digest = nothing, reason = String(reason), inputs)
+    # A `rustc` or wrapper the environment names is run by Cargo: its bytes
+    # are an input, and one that cannot be found is a build this identity
+    # cannot describe.
+    resolved = Pair{String, String}[]
+    for (key, file) in executables
+        file === nothing && return fail("$(key) names an executable that could not be resolved")
+        push!(resolved, key => file)
+    end
     packages === nothing && return fail("cargo tree did not resolve the graph offline and locked")
     workspace_manifest === nothing && return fail("cargo locate-project did not answer")
     if _ei_canonical(workspace_manifest) != _ei_canonical(joinpath(crate_dir, "Cargo.toml"))
@@ -623,7 +672,8 @@ function _extractor_identity_decide(crate_dir::String, packages, workspace_manif
     push!(inputs, "lockfile")
     append!(inputs, first.(config_files))
     append!(inputs, ("env:" * first(e) for e in env_inputs))
-    digest = _ei_source_digest(crate_dir, crates, release, lockfile, config_files, env_inputs)
+    append!(inputs, ("executable:" * first(e) for e in resolved))
+    digest = _ei_source_digest(crate_dir, crates, release, lockfile, config_files, env_inputs, resolved)
     return (; canonical = true, digest, reason = "", inputs)
 end
 

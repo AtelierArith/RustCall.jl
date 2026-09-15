@@ -75,8 +75,9 @@ end
                         pkg("syn", "2.0.1", nothing)]
             root = joinpath(crate, "Cargo.toml")
             none = Pair{String, String}[]
-            decide(; packages = packages, workspace = root, config = none, env = none) =
-                RustCall._extractor_identity_decide(crate, packages, workspace, config, env)
+            decide(; packages = packages, workspace = root, config = none, env = none,
+                     executables = Pair{String, Union{Nothing, String}}[]) =
+                RustCall._extractor_identity_decide(crate, packages, workspace, config, env, executables)
 
             good = decide()
             @test good.canonical
@@ -149,6 +150,27 @@ end
             @test isempty(RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind")))
             @test RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) ==
                   ["CARGO_PROFILE_RELEASE_PANIC" => "abort"]
+
+            # A wrapper Cargo runs in front of rustc is an input by its
+            # *bytes*: the same RUSTC_WRAPPER value with a changed executable
+            # is a different build; one that cannot be resolved declines.
+            wrapper = joinpath(dir, "wrapper.sh"); write(wrapper, "#!/bin/sh\nexec \"\$@\"\n")
+            with_wrapper = decide(packages = bumped, env = ["RUSTC_WRAPPER" => wrapper],
+                                  executables = ["RUSTC_WRAPPER" => wrapper])
+            @test with_wrapper.canonical && "executable:RUSTC_WRAPPER" in with_wrapper.inputs
+            write(wrapper, "#!/bin/sh\nexec \"\$@\" -C opt-level=0\n")
+            @test decide(packages = bumped, env = ["RUSTC_WRAPPER" => wrapper],
+                         executables = ["RUSTC_WRAPPER" => wrapper]).digest != with_wrapper.digest
+            r = decide(packages = bumped, env = ["RUSTC_WRAPPER" => "no-such-wrapper"],
+                       executables = ["RUSTC_WRAPPER" => nothing])
+            @test !r.canonical && occursin("could not be resolved", r.reason)
+            # Resolution: absolute, relative to the crate directory, or on PATH.
+            @test RustCall._ei_resolve_executable(wrapper, Dict{String, String}(), crate) == realpath(wrapper)
+            @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => dir), crate) == realpath(wrapper)
+            @test RustCall._ei_resolve_executable("missing", Dict("PATH" => dir), crate) === nothing
+            @test RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => wrapper, "HOME" => dir), crate) ==
+                  ["RUSTC_WRAPPER" => realpath(wrapper)]
+            @test isempty(RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => ""), crate))
 
             # A configuration that redirects a source — the `cargo vendor`
             # form, or `paths` — makes the build one this identity cannot
