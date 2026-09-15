@@ -383,6 +383,22 @@ const MONOMORPHIZATION_OWNERS =
     _state_view(:monomorphization_owners, Dict{String, MonomorphizationOwner}())
 
 """
+    RELEASED_GENERIC_IMAGES
+
+Generic name → (library name → the bindings it carried) for every image a
+**non-closing** `release_generics` of that generic retired and left mapped.
+
+A release in two steps is the safe way to reclaim: retire now, so no new call
+reaches the image, and close later, once nothing holds a pointer or an object
+from it. By then the retirement has purged every row and owner, so the closing
+call would find no instantiation to select; this is what it drains instead
+(#397 review). An entry leaves when a closing release covers it; an image
+revived in between has no retired record any more and closing it is a no-op.
+"""
+const RELEASED_GENERIC_IMAGES =
+    _state_view(:released_generic_images, Dict{String, Dict{String, Vector{Tuple}}}())
+
+"""
     GENERIC_IMAGE_PATHS
 
 Registry name of a monomorphization image → the file it was opened from.
@@ -1163,6 +1179,7 @@ end
     release_generics(func_name; close = false) -> Int
     release_generics(func_name, instantiations...; close = false) -> Int
 
+
 Retire the images behind the instantiations of the registered generic
 `func_name` — every one of them, or only the listed ones, spelled as for
 `precompile_generics` — and return how many instantiations **left the
@@ -1190,6 +1207,13 @@ it. `close = true` also closes the retired images, flipping their liveness
 flags first so that any surviving object goes inert instead of calling into
 unmapped code; pass it only when you know no call into them is in flight and
 no object from them is still in use, as for `unload_library(name; close = true)`.
+
+Released in two steps is the safe way to reclaim: `release_generics(f)` now,
+so no new call reaches the old images, and `release_generics(f; close = true)`
+once you know nothing holds a pointer or an object from them. The closing call
+also closes the images an earlier non-closing release of `f` retired and left
+mapped (the typed form, those that carried one of the named types); its return
+value still counts only the instantiations it retires itself.
 
 Two consequences of how instantiations are laid out:
 
@@ -1241,7 +1265,12 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         end
         found
     end
-    isempty(images) && return 0
+    if isempty(images)
+        # Nothing live to retire — the closing step of a two-step release
+        # still has the earlier retirements to close.
+        close && _close_released_generic_images!(name, selected)
+        return 0
+    end
 
     released = 0
     for (lib_name, (handle, generation)) in images
@@ -1264,12 +1293,18 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         # one handle again — and releasing either unloads every name on it. A
         # live row can only point at the live image of its handle (a retired
         # image's rows were purged with it), so the handle is exact.
-        names, leaving = lock(REGISTRY_LOCK) do
+        names, leaving, carried = lock(REGISTRY_LOCK) do
             entry = get(RUST_LIBRARIES, lib_name, nothing)
             (entry === nothing || entry[1] != handle ||
-             get(ARTIFACT_GENERATIONS, lib_name, 0) != generation) && return (String[], 0)
+             get(ARTIFACT_GENERATIONS, lib_name, 0) != generation) && return (String[], 0, Tuple[])
             names = String[n for (n, e) in RUST_LIBRARIES if e[1] == handle]
             leaving = count(info -> info.handle == handle, values(MONOMORPHIZED_FUNCTIONS))
+            # What this generic had on the image, remembered for a later
+            # closing release (`RELEASED_GENERIC_IMAGES`).
+            carried = Tuple[owner.binding for (key, owner) in MONOMORPHIZATION_OWNERS
+                            if owner.generic == name &&
+                               (info = get(MONOMORPHIZED_FUNCTIONS, key, nothing)) !== nothing &&
+                               info.handle == handle]
             paths = Set{String}(GENERIC_IMAGE_PATHS[n] for n in names
                                 if haskey(GENERIC_IMAGE_PATHS, n))
             for (batch, path) in collect(_BATCH_LIBRARY_COPIES)
@@ -1278,7 +1313,7 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             for n in names
                 delete!(GENERIC_IMAGE_PATHS, n)
             end
-            (names, leaving)
+            (names, leaving, carried)
         end
         isempty(names) && continue
         # Unloading one name of an image unloads every name of it, so a batch
@@ -1298,8 +1333,36 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
                                    expect_generation = generation)
         retired || continue
         released += leaving
+        # Left mapped: remember it for the closing release that may follow.
+        close || lock(REGISTRY_LOCK) do
+            get!(RELEASED_GENERIC_IMAGES, name, Dict{String, Vector{Tuple}}())[lib_name] = carried
+        end
     end
+    close && _close_released_generic_images!(name, selected)
     return released
+end
+
+# The second step of a two-step release: close the images an earlier
+# non-closing `release_generics(name)` retired — all of them, or those that
+# carried one of the `selected` bindings — and forget them. Closing goes
+# through the retired-handle records, so an image revived (and perhaps retired
+# again) in between is closed only if it is retired now.
+function _close_released_generic_images!(name::String, selected)
+    to_close = lock(REGISTRY_LOCK) do
+        images = get(RELEASED_GENERIC_IMAGES, name, nothing)
+        images === nothing && return String[]
+        chosen = String[lib for (lib, carried) in images
+                        if selected === nothing || any(b -> b in selected, carried)]
+        for lib in chosen
+            delete!(images, lib)
+        end
+        isempty(images) && delete!(RELEASED_GENERIC_IMAGES, name)
+        chosen
+    end
+    for lib in to_close
+        close_retired_handles!(retired_handles(lib))
+    end
+    return nothing
 end
 
 # Compile every instantiation in `bindings` that is neither in memory nor in the

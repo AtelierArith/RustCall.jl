@@ -407,6 +407,13 @@ that any surviving object goes inert instead of calling into unmapped code;
 pass it only when you know no call into them is in flight and no object from
 them is still in use, as for `unload_library(name; close = true)`.
 
+Released in two steps is the safe way to reclaim: `release_generics(f)` now,
+so no new call reaches the old images, and `release_generics(f; close = true)`
+once you know nothing holds a pointer or an object from them. The closing call
+also closes the images an earlier non-closing release of `f` retired and left
+mapped (the typed form, those that carried one of the named types); its return
+value still counts only the instantiations it retires itself.
+
 Two consequences of how instantiations are laid out: instantiations built
 together by `precompile_generics` share one library, so releasing one of them
 releases the others with it (each comes back from the cache on its next call);

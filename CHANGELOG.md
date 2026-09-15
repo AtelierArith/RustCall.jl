@@ -26,7 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   library and are released together, and a generic struct group is released by
   naming any of its members. Each instantiation now records which generic owns
   it (`MONOMORPHIZATION_OWNERS`), which is what makes "every instantiation of
-  `f`" answerable without being told the types.
+  `f`" answerable without being told the types. A release in two steps —
+  retire now, `close = true` later once nothing holds the old images — works:
+  the closing call also closes what an earlier non-closing release of the
+  same generic left mapped.
 
 ### Changed
 - **Breaking: the ownership helper crate is `deps/rustcall_helpers`, and its

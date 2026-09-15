@@ -467,6 +467,33 @@ end
                 @test RustCall.release_generics("gc397_id") == 1
             end
 
+            @testset "a closing release drains what an earlier release left mapped" begin
+                # The safe way to reclaim is two steps: retire now, close once
+                # nothing holds the old images. The retirement purged every
+                # row and owner, so the closing call selects nothing — and
+                # drains `RELEASED_GENERIC_IMAGES` instead (#397 review).
+                @test RustCall.call_generic_function("gc397_id", UInt16(1)) == UInt16(1)
+                @test RustCall.call_generic_function("gc397_id", Int8(2)) == Int8(2)
+                first_lib = cached(UInt16).lib_name
+                second_lib = cached(Int8).lib_name
+                @test RustCall.release_generics("gc397_id") == 2
+                @test !isempty(RustCall.retired_handles(first_lib))
+                @test !isempty(RustCall.retired_handles(second_lib))
+                @test haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+                # The typed closing release covers only the image that carried
+                # the named type; the other stays mapped for later.
+                @test RustCall.release_generics("gc397_id", UInt16; close = true) == 0
+                @test isempty(RustCall.retired_handles(first_lib))
+                @test !isempty(RustCall.retired_handles(second_lib))
+                @test RustCall.release_generics("gc397_id"; close = true) == 0
+                @test isempty(RustCall.retired_handles(second_lib))
+                @test !haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+                # A closing release of a live instantiation records nothing.
+                @test RustCall.call_generic_function("gc397_id", UInt16(3)) == UInt16(3)
+                @test RustCall.release_generics("gc397_id"; close = true) == 1
+                @test !haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+            end
+
             @testset "release by type across a default-compiler change" begin
                 # `release_generics(f, T)` selects by the bindings each row
                 # recorded, not by an artifact key recomputed now: the key
