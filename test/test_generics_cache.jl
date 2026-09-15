@@ -498,6 +498,28 @@ end
                 @test RustCall.call_generic_function("gc397_id", UInt16(3)) == UInt16(3)
                 @test RustCall.release_generics("gc397_id"; close = true) == 1
                 @test !haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+                # An entry names one image by its liveness flag. When that
+                # image is closed by other means and a later image of the
+                # same name is retired by other means, the closing release
+                # forgets the entry and leaves the later retirement alone —
+                # whatever pointer value the loader handed the later image
+                # (#397 review).
+                @test RustCall.call_generic_function("gc397_id", UInt16(4)) == UInt16(4)
+                third = cached(UInt16)
+                third_alive = RustCall.ARTIFACT_ALIVE[third.lib_name]
+                @test RustCall.release_generics("gc397_id") == 1
+                RustCall.close_retired_handles!(RustCall.retired_handles(third.lib_name))
+                @test isempty(RustCall.retired_handles(third.lib_name))
+                @test any(e -> e.alive === third_alive, RustCall.RELEASED_GENERIC_IMAGES["gc397_id"])
+                @test RustCall.call_generic_function("gc397_id", UInt16(5)) == UInt16(5)
+                fourth = cached(UInt16)
+                @test fourth.lib_name == third.lib_name
+                @test RustCall.unload_artifact!(RustCall.generics_policy(), fourth.lib_name)
+                @test RustCall.retired_handles(fourth.lib_name) == [fourth.handle]
+                @test RustCall.release_generics("gc397_id"; close = true) == 0
+                @test RustCall.retired_handles(fourth.lib_name) == [fourth.handle]
+                @test !haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+                RustCall.close_retired_handles!(RustCall.retired_handles(fourth.lib_name))
                 # One record per retired *image*, not per name: a batch of two
                 # released through one member, that member restored alone and
                 # released again — two images under one name; the typed

@@ -395,6 +395,10 @@ struct ReleasedGenericImage
     lib::String
     handle::Ptr{Cvoid}
     generation::Int
+    # The image's liveness flag: one per mapped image, never shared with the
+    # next image of the name (a closed image's pointer value can be), so it
+    # is what tells this retirement from a later one under the same name.
+    alive::Base.RefValue{Bool}
     carried::Vector{Tuple}
 end
 
@@ -1340,10 +1344,11 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             # One entry per image — two releases selecting the same image
             # share it, and whichever loses the retirement must not take the
             # winner's record with it (#397 review).
-            if !close
+            alive = get(ARTIFACT_ALIVE, lib_name, nothing)
+            if !close && alive !== nothing
                 entries = get!(RELEASED_GENERIC_IMAGES, name, ReleasedGenericImage[])
-                any(e -> e.handle == handle && e.generation == generation, entries) ||
-                    push!(entries, ReleasedGenericImage(lib_name, handle, generation, carried))
+                any(e -> e.alive === alive, entries) ||
+                    push!(entries, ReleasedGenericImage(lib_name, handle, generation, alive, carried))
             end
             (names, leaving, carried)
         end
@@ -1392,6 +1397,13 @@ function _withdraw_released_image!(name::String, lib_name::String, handle::Ptr{C
     return nothing
 end
 
+# Whether the image a history entry describes is still the one registered
+# under its name — same handle, same generation, and the same flag. Caller
+# holds REGISTRY_LOCK.
+_released_image_is_live(e::ReleasedGenericImage) =
+    _image_is_current(e.lib, e.handle, e.generation) &&
+    get(ARTIFACT_ALIVE, e.lib, nothing) === e.alive
+
 # The second step of a two-step release: close the images an earlier
 # non-closing `release_generics(name)` retired — all of them, or those that
 # carried one of the `selected` bindings — and forget them. Decided under the
@@ -1406,9 +1418,12 @@ function _close_released_generic_images!(name::String, selected)
         handles = Ptr{Cvoid}[]
         filter!(entries) do e
             selected === nothing || any(b -> b in selected, e.carried) || return true
-            _image_is_current(e.lib, e.handle, e.generation) && return true
+            # Still the live image of its name: a retirement in flight.
+            _released_image_is_live(e) && return true
+            # Retired now — the *same* image, by its flag: a pointer value the
+            # loader reused for a later image of the name is not it.
             record = get(RETIRED_HANDLES, e.handle, nothing)
-            record !== nothing && e.lib in record.names && push!(handles, e.handle)
+            record !== nothing && record.alive === e.alive && push!(handles, e.handle)
             return false
         end
         isempty(entries) && delete!(RELEASED_GENERIC_IMAGES, name)
