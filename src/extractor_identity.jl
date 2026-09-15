@@ -15,9 +15,10 @@
 # the module exists: only `Base`, `SHA` and `TOML` may be used here.
 #
 # The digest reproduces, byte for byte, what the v0.4.0 `build.rs` embedded for
-# this tree's own layout, so the upgrade keeps every cache key; inputs the
-# script never saw (configuration files, `RUSTFLAGS`) are appended only when
-# present.
+# this tree's own layout, so the upgrade keeps every cache key. It covers the
+# sources and nothing else, because a digest is claimed only for a *plain*
+# build — one nothing outside the sources could have shaped (the closed rule,
+# #413, below); any other build is identified by its bytes.
 
 using SHA: SHA256_CTX, update!, digest!, sha256
 using TOML
@@ -129,10 +130,11 @@ end
 
 # The configuration files Cargo discovers for a build run *in* `crate_dir`:
 # `.cargo/config.toml` / `.cargo/config` in that directory and every ancestor,
-# then `$CARGO_HOME`'s (falling back to `~/.cargo`) — and rustup's
-# `rust-toolchain(.toml)` override files on the same walk. Each existing file
-# is one input, labelled without its absolute path so the label is the same
-# on every machine: the bytes are what count.
+# then `$CARGO_HOME`'s (falling back to `~/.cargo`). Each existing file is
+# labelled without its absolute path so a reason reads the same on every
+# machine. (rustup's `rust-toolchain` files select the compiler, which is not
+# a source input — the same sources through any compiler emit the same
+# manifest — so they are not looked for.)
 function _ei_config_files(crate_dir::AbstractString, env)
     files = Pair{String, String}[]
     dir = _ei_canonical(crate_dir)
@@ -141,15 +143,6 @@ function _ei_config_files(crate_dir::AbstractString, env)
         for name in ("config.toml", "config")
             f = joinpath(dir, ".cargo", name)
             isfile(f) && push!(files, "config:ancestor:$(depth):$(name)" => f)
-        end
-        # rustup's override files, looked up the same way (the build runs in
-        # the crate directory): they select the toolchain that compiled the
-        # binary, which the compiler identity taken later from the caller's
-        # directory need not see. Hashed like a configuration file, not
-        # parsed — the legacy `rust-toolchain` is a bare channel name.
-        for name in ("rust-toolchain.toml", "rust-toolchain")
-            f = joinpath(dir, name)
-            isfile(f) && push!(files, "toolchain:ancestor:$(depth):$(name)" => f)
         end
         parent = dirname(dir)
         (parent == dir || isempty(parent)) && break
@@ -318,181 +311,83 @@ function artifact_build_env_captured(name::AbstractString)::Bool
     return false
 end
 
-# The environment variables that change what Cargo compiles without touching
-# a file — the same policy every artifact key applies
-# (`artifact_build_env_captured`: `CARGO_PROFILE_*`, `RUSTC` and its wrappers,
-# the `RUSTFLAGS` family, build-script inputs; never a secret). The ones
-# *present*, empty or not: `RUSTFLAGS=""` overrides a configuration file's
-# flags where an unset variable would let them apply, so presence is part of
-# the identity.
-function _ei_env_inputs(env)
-    captured = String[String(k) for k in keys(env)
-                      if artifact_build_env_captured(String(k)) && !_ei_is_baseline(String(k), String(env[k]))]
-    sort!(captured)
-    return Pair{String, String}[k => String(env[k]) for k in captured]
-end
+# ---------------------------------------------------------------------------
+# The closed rule (#413)
+# ---------------------------------------------------------------------------
+#
+# A digest is claimed only for a build nothing outside the sources could have
+# shaped. Cargo and rustc read the environment and the discovered
+# configuration files, so the rule is stated over those two and nothing is
+# hashed on top of the sources — there is no list of inputs to keep complete.
+# (v0.4.1 hashed each input as it was found: flags, wrappers, the linker,
+# response files, ...; each review round of #411 added one, and #413 replaced
+# that with this rule.)
+#
+# What may be present: variables and tables that only say *where* things
+# are (`CARGO_HOME`, `CARGO_TARGET_DIR`, `RUSTUP_HOME`), *which toolchain*
+# (`RUSTUP_TOOLCHAIN`: the compiler is not a source input — the same sources
+# through any compiler emit the same manifest), or *how Cargo talks and
+# fetches* (`[net]`, `[http]`, `[term]`, `[registries]`, ...), plus the
+# `panic = "unwind"` `deps/build.jl` pins, which the manifest pins too.
+# Anything else in Cargo's or rustc's namespaces, or that the shared
+# build-environment policy captures (`artifact_build_env_captured`: profile
+# overrides, flags, wrappers, build-script inputs, ...), makes the build one
+# this identity does not describe.
 
 # Settings `deps/build.jl` pins for every build and the manifests pin too:
-# they are the baseline the digest already describes, not an input on top of
-# it. `panic = "unwind"` is in `deps/rustcall_extract/Cargo.toml` (#244); the
+# `panic = "unwind"` is in `deps/rustcall_extract/Cargo.toml` (#244); the
 # environment override only forbids an inherited value from deciding
 # otherwise. Any *other* value of the same variable is an input.
 const _EI_BASELINE_ENV = ("CARGO_PROFILE_RELEASE_PANIC" => "unwind",)
-_ei_is_baseline(key::String, value::String) = any(b -> first(b) == key && last(b) == value, _EI_BASELINE_ENV)
+_ei_is_baseline(key::AbstractString, value::AbstractString) =
+    any(b -> first(b) == key && last(b) == value, _EI_BASELINE_ENV)
 
-# Whether a discovered configuration file is one this identity cannot
-# describe: it redirects a source — `paths = [...]`, or a `[source.<name>]`
-# table with `replace-with`, `directory` or `local-registry`, the `cargo
-# vendor` form (`cargo tree` prints a package from a replaced registry exactly
-# like one from crates.io, so this is decided from the configuration) — or it
-# pulls in files this scan does not see (`include = [...]`, Cargo's
-# `-Zconfig-include`), or it does not parse.
-function _ei_config_replaces_sources(file::AbstractString)
-    doc = try
-        TOML.parsefile(String(file))
-    catch
-        return true   # unreadable configuration: not a build this identity can describe
+# Variables Cargo or rustc read that cannot change what is compiled.
+const _EI_HARMLESS_ENV_NAMES = (
+    "CARGO",                     # Cargo's own path, set for a process it spawned
+    "CARGO_HOME", "CARGO_TARGET_DIR", "CARGO_INSTALL_ROOT",
+    "CARGO_INCREMENTAL", "CARGO_BUILD_JOBS", "CARGO_CACHE_RUSTC_INFO", "CARGO_LOG",
+    "CARGO_NAME", "CARGO_EMAIL",
+)
+const _EI_HARMLESS_ENV_PREFIXES = (
+    "CARGO_TERM_", "CARGO_NET_", "CARGO_HTTP_", "CARGO_REGISTRIES_", "CARGO_REGISTRY_",
+    "CARGO_ALIAS_", "CARGO_FUTURE_INCOMPAT_", "CARGO_DOC_",
+    "CARGO_PKG_", "CARGO_MANIFEST_",   # set by Cargo for a process it spawned
+    "RUSTUP_",                         # toolchain selection and rustup's own settings
+    "RUST_",                           # RUST_BACKTRACE, RUST_LOG, RUST_MIN_STACK, ...
+)
+_ei_env_harmless(upper::AbstractString) =
+    upper in _EI_HARMLESS_ENV_NAMES || any(p -> startswith(upper, p), _EI_HARMLESS_ENV_PREFIXES)
+
+# Whether `upper` is a name Cargo or rustc would act on: their namespaces
+# (`RUSTC`, `RUSTC_*`, `RUSTFLAGS`, `RUSTDOC*`, `CARGO_*` — not `RUSTCALL_*`,
+# this package's own) or the shared build-environment policy.
+_ei_env_acted_on(name::AbstractString, upper::AbstractString) =
+    startswith(upper, "CARGO_") || startswith(upper, "__CARGO") ||
+    upper == "RUSTC" || startswith(upper, "RUSTC_") || startswith(upper, "RUSTFLAGS") ||
+    upper == "RUSTDOC" || startswith(upper, "RUSTDOC_") || startswith(upper, "RUSTDOCFLAGS") ||
+    artifact_build_env_captured(name)
+
+# `nothing` when the environment carries nothing that shapes the build, else
+# a reason naming the variables (names only — a value is never quoted).
+function _ei_env_verdict(env)
+    offending = String[]
+    for k in keys(env)
+        name = String(k)
+        upper = uppercase(name)
+        _ei_env_harmless(upper) && continue
+        _ei_is_baseline(upper, String(env[k])) && continue
+        _ei_env_acted_on(name, upper) && push!(offending, name)
     end
-    (haskey(doc, "paths") || haskey(doc, "include")) && return true
-    sources = get(doc, "source", nothing)
-    sources isa AbstractDict || return false
-    return any(v -> v isa AbstractDict && any(k -> haskey(v, k), ("replace-with", "directory", "local-registry")),
-               values(sources))
-end
-
-# The executables the environment puts in front of `rustc` — `RUSTC`,
-# `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER` — resolved to files, as `key =>
-# path`: Cargo runs them, and what they do to the compilation is decided by
-# their bytes, not by their names. A name that resolves to nothing is
-# reported as `key => nothing` and makes the build non-canonical.
-const _EI_RUSTC_EXECUTABLE_KEYS = ("RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
-                                   "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER",
-                                   "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
-
-# The linker Cargo hands rustc as `-C linker=` when a target's
-# `CARGO_TARGET_<TRIPLE>_LINKER` names one.
-const _EI_LINKER_ENV = r"^CARGO_TARGET_[A-Za-z0-9_]+_LINKER$"
-
-function _ei_rustc_executables(env, crate_dir::AbstractString)
-    out = Pair{String, Union{Nothing, String}}[]
-    keys_ = vcat(collect(_EI_RUSTC_EXECUTABLE_KEYS),
-                 sort!(String[String(k) for k in keys(env) if occursin(_EI_LINKER_ENV, String(k))]))
-    for key in keys_
-        value = String(get(env, key, ""))
-        isempty(value) && continue
-        push!(out, key => _ei_resolve_executable(value, env, crate_dir))
-    end
-    return out
-end
-
-# An executable named by a `-C linker=<path>` argument in a flags value
-# (`RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, …), as
-# `<label>:linker => path`; the argument is spelled `-Clinker=`, `-C linker=`,
-# `--codegen linker=` or `--codegen=linker=`.
-function _ei_flag_linkers(tokens, label::AbstractString, env, crate_dir::AbstractString)
-    out = Pair{String, Union{Nothing, String}}[]
-    toks = collect(String, tokens)
-    for (i, t) in enumerate(toks)
-        spec = if startswith(t, "-Clinker=")
-            t[length("-Clinker=") + 1:end]
-        elseif startswith(t, "--codegen=linker=")
-            t[length("--codegen=linker=") + 1:end]
-        elseif (t == "-C" || t == "--codegen") && i < length(toks) && startswith(toks[i + 1], "linker=")
-            toks[i + 1][length("linker=") + 1:end]
-        else
-            nothing
-        end
-        spec === nothing && continue
-        push!(out, "$(label):linker" => _ei_resolve_executable(spec, env, crate_dir))
-    end
-    return out
-end
-
-_ei_flag_tokens(value::AbstractString) = split(value, r"[\s\x1f]+"; keepempty = false)
-
-function _ei_env_flag_linkers(env_inputs::Vector{Pair{String, String}}, env, crate_dir::AbstractString)
-    out = Pair{String, Union{Nothing, String}}[]
-    for (key, value) in env_inputs
-        endswith(key, "FLAGS") || continue
-        append!(out, _ei_flag_linkers(_ei_flag_tokens(value), key, env, crate_dir))
-    end
-    return out
-end
-
-# The same executables when a discovered configuration file selects them
-# (`[build] rustc`, `rustc-wrapper`, `rustc-workspace-wrapper`), as
-# `config:<label>:<key> => path`. A relative path with a separator is
-# resolved as Cargo resolves one in a configuration file: against the
-# *parent* of the directory holding the file — `<dir>` for
-# `<dir>/.cargo/config.toml`, and likewise `$CARGO_HOME/..` for
-# `$CARGO_HOME/config.toml`, whatever that directory is named.
-const _EI_CONFIG_EXECUTABLE_KEYS = ("rustc", "rustc-wrapper", "rustc-workspace-wrapper")
-
-function _ei_config_executables(config_files::Vector{Pair{String, String}}, env,
-                                crate_dir::AbstractString)
-    out = Pair{String, Union{Nothing, String}}[]
-    for (label, file) in config_files
-        startswith(label, "config:") || continue
-        doc = try
-            TOML.parsefile(file)
-        catch
-            continue   # an unreadable configuration declines elsewhere
-        end
-        base = dirname(dirname(file))
-        resolve(value) = (isabspath(value) || occursin('/', value) || occursin('\\', value)) ?
-                         _ei_resolve_executable(isabspath(value) ? value : joinpath(base, value), env, crate_dir) :
-                         _ei_resolve_executable(value, env, crate_dir)
-        build = get(doc, "build", nothing)
-        if build isa AbstractDict
-            for key in _EI_CONFIG_EXECUTABLE_KEYS
-                value = get(build, key, nothing)
-                value isa AbstractString && !isempty(value) || continue
-                push!(out, "$(label):$(key)" => resolve(value))
-            end
-        end
-        # `[target.<triple>] linker`: the linker rustc is handed for that
-        # target, resolved like the other configuration-file paths.
-        targets = get(doc, "target", nothing)
-        if targets isa AbstractDict
-            for triple in sort!(collect(String, keys(targets)))
-                tbl = targets[triple]
-                tbl isa AbstractDict || continue
-                value = get(tbl, "linker", nothing)
-                value isa AbstractString && !isempty(value) || continue
-                push!(out, "$(label):target.$(triple).linker" => resolve(value))
-            end
-        end
-        # A `-C linker=` inside any `*flags` value of the file.
-        for (flabel, tokens) in _ei_config_flag_values(doc, label)
-            append!(out, _ei_flag_linkers(tokens, flabel, env, crate_dir))
-        end
-    end
-    return out
-end
-
-# Every `*flags` value of a configuration document as `(label, tokens)`: a
-# string is split like an environment value, an array is taken as given.
-function _ei_config_flag_values(doc, label::AbstractString)
-    out = Tuple{String, Vector{String}}[]
-    walk(node, path, inflags) = begin
-        if node isa AbstractDict
-            for k in sort!(collect(String, keys(node)))
-                walk(node[k], isempty(path) ? k : "$(path).$(k)", inflags || endswith(k, "flags"))
-            end
-        elseif inflags && node isa AbstractVector
-            all(v -> v isa AbstractString, node) && push!(out, ("$(label):$(path)", String[String(v) for v in node]))
-        elseif inflags && node isa AbstractString
-            push!(out, ("$(label):$(path)", String[String(t) for t in split(node; keepempty = false)]))
-        end
-    end
-    walk(doc, "", false)
-    return out
+    isempty(offending) && return nothing
+    sort!(offending)
+    return "the environment sets $(join(offending, ", ")), which shapes the build"
 end
 
 # On Windows an environment variable's name is case-insensitive — Cargo
 # honours `cargo_home` as `CARGO_HOME` — and a copied dictionary is not, so
 # every name is spelled in upper case before anything looks one up or
-# captures it. Elsewhere names are case-sensitive and kept as given.
+# judges it. Elsewhere names are case-sensitive and kept as given.
 function _ei_normalize_env(env; windows::Bool = Sys.iswindows())
     windows || return env
     out = Dict{String, String}()
@@ -502,70 +397,24 @@ function _ei_normalize_env(env; windows::Bool = Sys.iswindows())
     return out
 end
 
-# The label of the first flags input — an environment variable whose name
-# ends in `FLAGS` (`RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`,
-# `CARGO_ENCODED_RUSTFLAGS`, `CARGO_TARGET_<T>_RUSTFLAGS`, …), or a `*flags`
-# key of a discovered configuration file — that carries a `@file` argument;
-# `nothing` when none does. Environment values are split on whitespace and
-# on the `\x1f` separator of the encoded form.
-function _ei_response_file(env_inputs::Vector{Pair{String, String}},
-                           config_files::Vector{Pair{String, String}})
-    for (key, value) in env_inputs
-        endswith(key, "FLAGS") || continue
-        any(t -> startswith(t, '@'), split(value, r"[\s\x1f]+"; keepempty = false)) && return key
-    end
-    for (label, file) in config_files
-        startswith(label, "config:") || continue
-        doc = try
-            TOML.parsefile(file)
-        catch
-            continue   # unparseable configuration declines elsewhere
-        end
-        _ei_flags_response_file(doc, false) && return label
-    end
-    return nothing
-end
+# Top-level tables of a configuration file that cannot change what is
+# compiled. Everything else — `[build]`, `[target.*]`, `[env]`, `[source.*]`,
+# `[patch.*]`, `[profile.*]`, `[unstable]`, `paths`, `include`, a table a
+# future Cargo adds — shapes the build or pulls in files this does not read.
+const _EI_HARMLESS_CONFIG_TABLES = (
+    "alias", "cargo-new", "doc", "future-incompat-report", "http", "install",
+    "net", "registries", "registry", "term",
+)
 
-# Whether any string under a `*flags` key of a TOML document starts with
-# `@`; `inflags` says whether an enclosing key was such a key (a `rustflags`
-# string, or an array of strings, or the `[target.<t>] rustflags` form).
-function _ei_flags_response_file(node, inflags::Bool)
-    if node isa AbstractDict
-        return any(kv -> _ei_flags_response_file(last(kv), inflags || endswith(String(first(kv)), "flags")), node)
-    elseif node isa AbstractVector
-        return any(v -> _ei_flags_response_file(v, inflags), node)
-    elseif node isa AbstractString
-        return inflags && any(t -> startswith(t, '@'), split(node; keepempty = false))
+# `nothing` when `file` carries only harmless tables, else what it carries.
+function _ei_config_verdict(file::AbstractString)
+    doc = try
+        TOML.parsefile(String(file))
+    catch
+        return "does not parse"
     end
-    return false
-end
-
-# Environment variables that redirect a source — Cargo reads `[source.*]`
-# from `CARGO_SOURCE_<NAME>_REPLACE_WITH` / `_DIRECTORY` / … too — make the
-# build one this identity cannot describe, exactly like the file form.
-_ei_env_replaces_sources(env) = any(k -> startswith(String(k), "CARGO_SOURCE_"), keys(env))
-
-function _ei_resolve_executable(name::AbstractString, env, crate_dir::AbstractString)
-    candidates = String[]
-    if isabspath(name) || occursin('/', name) || occursin('\\', name)
-        push!(candidates, isabspath(name) ? String(name) : joinpath(_ei_canonical(crate_dir), name))
-    else
-        sep = Sys.iswindows() ? ';' : ':'
-        for entry in split(String(get(env, "PATH", "")), sep)
-            # A relative `PATH` entry — and, on Unix, an empty one, which
-            # names the working directory — is resolved from Cargo's working
-            # directory, which for the build this describes is the crate
-            # directory, not this process's.
-            isempty(entry) && Sys.iswindows() && continue
-            dir = isabspath(entry) ? String(entry) : joinpath(_ei_canonical(crate_dir), entry)
-            push!(candidates, joinpath(dir, String(name)))
-            Sys.iswindows() && push!(candidates, joinpath(dir, String(name) * ".exe"))
-        end
-    end
-    # Cargo skips a candidate it cannot execute (a plain file of the same
-    # name earlier on `PATH`) and runs the next; so does this.
-    for c in candidates
-        isfile(c) && Sys.isexecutable(c) && return _ei_canonical(c)
+    for key in sort!(collect(String, keys(doc)))
+        key in _EI_HARMLESS_CONFIG_TABLES || return "carries `$(key)`, which shapes the build"
     end
     return nothing
 end
@@ -713,13 +562,10 @@ _ei_relpath_forward(path::AbstractString, base::AbstractString) =
 
 # The source digest of a set of local crates: `crates` as `name => dir`,
 # `crate_dir` the extractor's, `release` the names among them that are release
-# crates, `lockfile` the lockfile Cargo used, plus the configuration files and
-# environment values Cargo honoured.
+# crates, `lockfile` the lockfile Cargo used. Byte for byte what the v0.4.0
+# `build.rs` embedded.
 function _ei_source_digest(crate_dir::AbstractString, crates::Vector{Pair{String, String}},
-                           release, lockfile::AbstractString,
-                           config_files::Vector{Pair{String, String}},
-                           env_inputs::Vector{Pair{String, String}},
-                           executables::Vector{Pair{String, String}} = Pair{String, String}[])
+                           release, lockfile::AbstractString)
     base = _ei_canonical(crate_dir)
     ordered = sort(crates; by = c -> _ei_relpath_forward(_ei_canonical(last(c)), base))
     versions = Dict{String, String}()
@@ -752,17 +598,6 @@ function _ei_source_digest(crate_dir::AbstractString, crates::Vector{Pair{String
             upd(name); upd("\0"); upd(_ei_relpath_forward(f, dir)); upd("\0"); updb(read(f)); upd("\0")
         end
     end
-    # Inputs the v0.4.0 script never saw, appended only when present so the
-    # common case — no configuration, no flags — keeps the digest it had.
-    for (label, f) in config_files
-        upd("config\0"); upd(label); upd("\0"); updb(read(f)); upd("\0")
-    end
-    for (k, v) in env_inputs
-        upd("env\0"); upd(k); upd("\0"); upd(v); upd("\0")
-    end
-    for (k, file) in executables
-        upd("executable\0"); upd(k); upd("\0"); updb(read(file)); upd("\0")
-    end
     return bytes2hex(digest!(ctx))
 end
 
@@ -775,10 +610,12 @@ end
 
 The identity of a build of the extractor at `crate_dir`, from Cargo's view of
 it: `(; canonical, digest, reason, inputs)`. `canonical` says whether the
-build is one this identity describes — the workspace root is the crate itself
-(Cargo decides membership), every local package is one of this tree's release
-crates in its place with default target roots, every other package comes from
-crates.io — and `digest` is then the source digest; otherwise `digest` is
+build is one this identity describes — a plain build (nothing in the
+environment or the discovered configuration shapes it; the closed rule of
+#413) of this tree's own layout (the workspace root is the crate itself,
+Cargo deciding membership; every local package one of this tree's release
+crates in its place with default target roots; every other package from
+crates.io) — and `digest` is then the source digest; otherwise `digest` is
 `nothing` and `reason` says why, and RustCall identifies the binary by its
 bytes. `inputs` lists what the digest covered, for diagnostics.
 """
@@ -788,46 +625,25 @@ function extractor_build_identity(crate_dir::AbstractString; cargo::Cmd, env = E
     packages = _ei_packages(cargo, crate_dir, env)
     workspace = _ei_workspace_manifest(cargo, crate_dir, env)
     config_files = _ei_config_files(crate_dir, env)
-    env_inputs = _ei_env_inputs(env)
-    executables = vcat(_ei_rustc_executables(env, crate_dir),
-                       _ei_config_executables(config_files, env, crate_dir),
-                       _ei_env_flag_linkers(env_inputs, env, crate_dir))
-    _ei_env_replaces_sources(env) && push!(env_inputs, "CARGO_SOURCE_*" => "")
-    return _extractor_identity_decide(crate_dir, packages, workspace, config_files, env_inputs, executables)
+    return _extractor_identity_decide(crate_dir, packages, workspace, config_files, env)
 end
 
 # The decision proper, on already-gathered facts, so it can be tested without
-# a toolchain.
+# a toolchain. `env` is the build's environment (already normalized).
 function _extractor_identity_decide(crate_dir::String, packages, workspace_manifest,
-                                    config_files::Vector{Pair{String, String}},
-                                    env_inputs::Vector{Pair{String, String}},
-                                    executables = Pair{String, Union{Nothing, String}}[])
+                                    config_files::Vector{Pair{String, String}}, env)
     inputs = String[]
     fail(reason) = (; canonical = false, digest = nothing, reason = String(reason), inputs)
-    any(e -> first(e) == "CARGO_SOURCE_*", env_inputs) &&
-        return fail("the environment replaces a source (CARGO_SOURCE_*)")
-    # A `@file` argument in a flags variable or a configuration file's flags
-    # is expanded by rustc from a file this identity does not read.
-    response = _ei_response_file(env_inputs, config_files)
-    response === nothing ||
-        return fail("$(response) passes a response file (@file) whose contents this identity does not read")
-    # A `rustc` or wrapper the environment or a configuration file names is
-    # run by Cargo: its bytes are an input, and one that cannot be found is a
-    # build this identity cannot describe.
-    resolved = Pair{String, String}[]
-    for (key, file) in executables
-        file === nothing && return fail("$(key) names an executable that could not be resolved")
-        push!(resolved, key => file)
+    verdict = _ei_env_verdict(env)
+    verdict === nothing || return fail(verdict)
+    for (label, file) in config_files
+        verdict = _ei_config_verdict(file)
+        verdict === nothing || return fail("the configuration file $(label) $(verdict)")
     end
     packages === nothing && return fail("cargo tree did not resolve the graph offline and locked")
     workspace_manifest === nothing && return fail("cargo locate-project did not answer")
     if _ei_canonical(workspace_manifest) != _ei_canonical(joinpath(crate_dir, "Cargo.toml"))
         return fail("the crate is a member of the workspace at $(workspace_manifest); its lockfile decides the build")
-    end
-    for (label, file) in config_files
-        startswith(label, "config:") || continue   # a toolchain override is hashed, not read
-        _ei_config_replaces_sources(file) &&
-            return fail("the configuration file $(label) replaces a source or includes other files")
     end
     deps_root = dirname(_ei_canonical(crate_dir))
     crates = Pair{String, String}[]
@@ -856,10 +672,7 @@ function _extractor_identity_decide(crate_dir::String, packages, workspace_manif
         push!(inputs, "crate:$(name)")
     end
     push!(inputs, "lockfile")
-    append!(inputs, first.(config_files))
-    append!(inputs, ("env:" * first(e) for e in env_inputs))
-    append!(inputs, ("executable:" * first(e) for e in resolved))
-    digest = _ei_source_digest(crate_dir, crates, release, lockfile, config_files, env_inputs, resolved)
+    digest = _ei_source_digest(crate_dir, crates, release, lockfile)
     return (; canonical = true, digest, reason = "", inputs)
 end
 

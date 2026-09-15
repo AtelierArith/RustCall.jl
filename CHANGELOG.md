@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The extractor's identity is decided by a closed rule, not by an
+  enumeration of Cargo's build inputs**
+  ([#413](https://github.com/AtelierArith/RustCall.jl/issues/413)). A source
+  digest is claimed only for a *plain* build — nothing in the environment
+  that Cargo or rustc would act on beyond where things are, which toolchain
+  and how Cargo talks, and no discovered configuration file with a table
+  beyond those kinds. v0.4.1 hashed each other input as it was found (flags,
+  wrappers, the linker, response files, ...); now none is hashed and any of
+  them makes the build non-canonical, identified by its bytes. The digest of
+  a plain build is unchanged, so cache keys survive; a build under
+  `RUSTFLAGS`, `RUSTC_WRAPPER` or a `[build]` table moves once, from a hashed
+  identity to a bytes identity, and stays exact — only not stable across a
+  patch release. `rust-toolchain` files are no longer an input: the compiler
+  is not a source, and the same sources through any compiler emit the same
+  manifest.
+
 ## [0.4.1] - 2026-09-16
 
 ### Changed

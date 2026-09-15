@@ -84,7 +84,13 @@ What that means in practice:
   the digest of the sources it was built from, computed by `deps/build.jl`
   from Cargo's own view of the build and stored beside the binary keyed by its
   SHA-256 (`rustcall-extract.identity.toml`, #409) — not as the bytes of a
-  binary that a version bump alone changes — and the four manifest crates' `[package]
+  binary that a version bump alone changes. That digest is claimed only for
+  a *plain* build, one nothing outside the sources could have shaped (no
+  `RUSTFLAGS`, wrapper, linker, profile override or source replacement in
+  the environment, no `[build]`, `[target]`, `[env]` or `[source]` table in
+  a discovered `config.toml`; the closed rule of #413); any other build is
+  identified by its bytes, which is still exact, only not stable across a
+  patch release. And the four manifest crates' `[package]
   version`, together with the lockfile lines that record it for a path
   dependency, are left out of every artifact identity. No other crate's
   version is: a crate may read `env!("CARGO_PKG_VERSION")`. The exception

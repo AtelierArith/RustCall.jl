@@ -649,10 +649,10 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         else
             @test fresh_line == "extractor=$(record["source_digest"])"
             # The v0.4.0 cross-check: the record's digest is what the binary's
-            # own `build.rs` embedded, when nothing that script never saw is
-            # present (configuration files, flags).
-            extra = filter(i -> !startswith(i, "crate:") && i != "lockfile", record["inputs"])
-            if RustCall.check_rustc_available() && isempty(extra)
+            # own `build.rs` embedded. A canonical build has no input beyond
+            # the sources (#413), so nothing gates this.
+            @test all(i -> startswith(i, "crate:") || i == "lockfile", record["inputs"])
+            if RustCall.check_rustc_available()
                 reported = strip(read(`$(RustCall.extractor_path()) source-digest`, String))
                 @test occursin(r"^[0-9a-f]{64}$", reported)
                 @test record["source_digest"] == reported
