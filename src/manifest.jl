@@ -155,8 +155,12 @@ end
 """
     extractor_digest() -> String
 
-SHA-256 of the extractor binary. Part of every cache key, so rebuilding the
-extractor (new codegen, new schema) invalidates cached artifacts.
+SHA-256 of the extractor binary's bytes. **Not** part of a cache key on its
+own since #372: a patch release rebuilds the binary from unchanged sources and
+these bytes move with it, against the promise that a patch keeps the cache.
+`extractor_source_digest` is what every key folds in; this digest is its
+fallback identity for a selected binary that cannot report one, and a
+diagnostic otherwise.
 """
 function extractor_digest()
     lock(_EXTRACTOR_LOCK) do

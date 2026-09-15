@@ -19,3 +19,4 @@ toml = "0.8"
 # (`rustcall-extract source-digest`, RustCall.jl #372).
 [build-dependencies]
 sha2 = "0.10"
+toml = "0.8"

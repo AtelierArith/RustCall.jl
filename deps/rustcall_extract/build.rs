@@ -8,10 +8,13 @@
 //! to keep them. And hashing the checkout's sources on the Julia side describes
 //! the tree, not the executable `RUSTCALL_EXTRACT` may point at. The digest
 //! below is of exactly what decides this binary's output — its own sources,
-//! `rustcall_core`'s, and the locked versions of the registry crates it parses
-//! and prints with — with each release-coupled `[package] version` left out,
-//! and is printed by `rustcall-extract source-digest`.
+//! those of every **local path dependency** it is built from (found through
+//! the manifests, `rustcall_core` and whatever a fork adds beside it), and the
+//! locked versions of the registry crates it parses and prints with — with
+//! each release-coupled `[package] version` left out, and is printed by
+//! `rustcall-extract source-digest`.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -88,9 +91,94 @@ fn lockfile_without_path_versions(path: &Path) -> Vec<u8> {
     kept.into_bytes()
 }
 
+/// The `path = "..."` dependencies a manifest declares for a build of the
+/// crate: `[dependencies]`, `[build-dependencies]` and both under every
+/// `[target.'cfg(...)']`. Not `dev-dependencies`, which do not reach the
+/// binary.
+fn path_dependencies(manifest: &Path) -> Vec<PathBuf> {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return Vec::new();
+    };
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let dir = manifest.parent().unwrap_or(Path::new("."));
+    let mut scopes: Vec<&toml::Table> = vec![&doc];
+    if let Some(targets) = doc.get("target").and_then(|t| t.as_table()) {
+        scopes.extend(targets.values().filter_map(|t| t.as_table()));
+    }
+    let mut out = Vec::new();
+    for scope in scopes {
+        for table in ["dependencies", "build-dependencies"] {
+            let Some(deps) = scope.get(table).and_then(|d| d.as_table()) else {
+                continue;
+            };
+            for spec in deps.values() {
+                if let Some(path) = spec.get("path").and_then(|p| p.as_str()) {
+                    out.push(dir.join(path));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Every local crate this binary is built from: the extractor itself and the
+/// closure of its path dependencies, keyed by the canonical directory so a
+/// crate reached twice is hashed once. A fork that adds a local helper beside
+/// `rustcall_core` is therefore identified by that helper's sources too, and
+/// an edit to it moves the digest (RustCall.jl #372 review).
+fn local_crates(root: &Path) -> BTreeMap<PathBuf, PathBuf> {
+    let mut found = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        if found.contains_key(&canonical) {
+            continue;
+        }
+        pending.extend(path_dependencies(&dir.join("Cargo.toml")));
+        found.insert(canonical, dir);
+    }
+    found
+}
+
+/// `[package] name` of a manifest.
+fn package_name(manifest: &Path) -> Option<String> {
+    let text = fs::read_to_string(manifest).ok()?;
+    let doc = text.parse::<toml::Table>().ok()?;
+    doc.get("package")?.get("name")?.as_str().map(str::to_owned)
+}
+
+/// `path` relative to `base` as a forward-slash string, walking up with `..`
+/// where needed: the same for the same tree wherever it is checked out.
+fn pathdiff(path: &Path, base: &Path) -> String {
+    let path: Vec<_> = path.components().collect();
+    let base: Vec<_> = base.components().collect();
+    let common = path.iter().zip(&base).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = vec!["..".to_owned(); base.len() - common];
+    parts.extend(
+        path[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
+}
+
 fn main() {
     let here = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
-    let crates = [here.clone(), here.join("..").join("rustcall_core")];
+    // Hashed in the order of their canonical paths *relative to the extractor*
+    // — a checkout's location must not reach the digest — and named by the
+    // `[package] name` their manifest declares.
+    let here_canonical = fs::canonicalize(&here).unwrap_or_else(|_| here.clone());
+    let mut crates: Vec<(String, PathBuf)> = local_crates(&here)
+        .into_iter()
+        .map(|(canonical, dir)| {
+            let key = pathdiff(&canonical, &here_canonical);
+            (key, dir)
+        })
+        .collect();
+    crates.sort();
+    let crates: Vec<PathBuf> = crates.into_iter().map(|(_, dir)| dir).collect();
 
     let mut hasher = Sha256::new();
     // The resolved dependency graph this binary is built against.
@@ -100,11 +188,13 @@ fn main() {
     hasher.update(lockfile_without_path_versions(&lock));
     hasher.update(b"\0");
     for krate in &crates {
-        let name = krate
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let manifest = krate.join("Cargo.toml");
+        let name = package_name(&manifest).unwrap_or_else(|| {
+            krate
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
         println!("cargo:rerun-if-changed={}", manifest.display());
         hasher.update(name.as_bytes());
         hasher.update(b"\0Cargo.toml\0");
