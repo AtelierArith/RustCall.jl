@@ -194,24 +194,13 @@ fn config_overrides_sources(dir: &Path) -> bool {
         candidates.push(home.join("config.toml"));
         candidates.push(home.join("config"));
     }
-    // A configuration file created *after* this build must rerun the script:
-    // every `.cargo` directory already present on the way up is watched (a
-    // new entry changes a directory's mtime). Not `$CARGO_HOME` itself —
-    // Cargo touches that directory on ordinary runs, and watching it would
-    // rerun this script, and relink the extractor, on every build — and not
-    // a `.cargo` directory created later in an ancestor, which would need
-    // every ancestor watched; both are recorded on the tech-debt issue on
-    // extractor identity (RustCall.jl #409).
-    let mut watched_dirs: Vec<PathBuf> = candidates
-        .iter()
-        .filter_map(|file| file.parent().map(Path::to_path_buf))
-        .filter(|dir| dir.file_name().is_some_and(|n| n == ".cargo") && dir.is_dir())
-        .collect();
-    watched_dirs.sort();
-    watched_dirs.dedup();
-    for dir in watched_dirs {
-        println!("cargo:rerun-if-changed={}", dir.display());
-    }
+    // A configuration file created *after* this build is not watched: the
+    // only directories that could be watched for one — `$CARGO_HOME` and any
+    // `.cargo` directory on the way up, which on a checkout under `$HOME` is
+    // `$CARGO_HOME` itself — have their mtime touched by ordinary Cargo runs,
+    // and watching them reran this script, and relinked the extractor, on
+    // every build (seen on the macOS runner). Recorded on the tech-debt
+    // issue on extractor identity (RustCall.jl #409).
     let mut overrides = false;
     for file in candidates {
         if !file.is_file() {
