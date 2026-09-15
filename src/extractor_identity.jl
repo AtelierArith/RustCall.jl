@@ -438,10 +438,11 @@ function _ei_resolve_executable(name::AbstractString, env, crate_dir::AbstractSt
     else
         sep = Sys.iswindows() ? ';' : ':'
         for entry in split(String(get(env, "PATH", "")), sep)
-            isempty(entry) && continue
-            # A relative `PATH` entry is resolved from Cargo's working
+            # A relative `PATH` entry — and, on Unix, an empty one, which
+            # names the working directory — is resolved from Cargo's working
             # directory, which for the build this describes is the crate
             # directory, not this process's.
+            isempty(entry) && Sys.iswindows() && continue
             dir = isabspath(entry) ? String(entry) : joinpath(_ei_canonical(crate_dir), entry)
             push!(candidates, joinpath(dir, String(name)))
             Sys.iswindows() && push!(candidates, joinpath(dir, String(name) * ".exe"))

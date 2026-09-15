@@ -175,6 +175,15 @@ end
             cd(dir) do
                 @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => "tools"), crate) ==
                       realpath(joinpath(crate, "tools", "wrap"))
+                # An empty Unix PATH component is the working directory —
+                # the crate directory — and is searched in its position.
+                if !Sys.iswindows()
+                    write(joinpath(crate, "wrap"), "#!/bin/sh\n"); write(joinpath(dir, "wrap"), "#!/bin/sh\nexit 1\n")
+                    @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => ":" * dir), crate) ==
+                          realpath(joinpath(crate, "wrap"))
+                    @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => dir * ":"), crate) ==
+                          realpath(joinpath(dir, "wrap"))
+                end
             end
             # Windows environment names are case-insensitive: the copy the
             # build hands over is spelled upper case before any lookup.
