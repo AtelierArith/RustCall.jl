@@ -174,35 +174,30 @@ end
 """
     extractor_source_digest() -> String
 
-The digest of the sources the **selected** extractor was built from — its own
-and `rustcall_core`'s, each `[package] version` left out — as the binary
-itself reports it (`rustcall-extract source-digest`, embedded by its
-`build.rs`). This is how a cache key identifies the extractor (#372):
+How a cache key identifies the **selected** extractor (#372, #409): the source
+digest `deps/build.jl` computed from Cargo's own view of the build and stored
+beside the binary (`EXTRACTOR_IDENTITY_FILENAME`, `write_extractor_identity!`),
+trusted only while the binary still has the SHA-256 the record names and only
+when that build was one the identity describes (this tree's own layout). Any
+other binary — one `RUSTCALL_EXTRACT` points at, one built from another
+layout, one whose record is missing or stale — is identified by its **bytes**
+(`binary:<sha256>`, `extractor_digest`): exact for that executable, and a
+namespace a source digest cannot collide with.
 
-  * not by the binary's bytes, which a patch release changes on its own
-    (`-C metadata` folds the crate version in) although nothing it emits did;
-  * not by the checkout's sources, which describe this tree and not the
-    executable `RUSTCALL_EXTRACT` may point at — a schema-compatible binary
-    built from other sources would otherwise move no key.
-
-A selected binary that cannot answer — one built from other sources without
-the subcommand, one that fails it, or one whose `build.rs` declined to report
-a digest because it was not built from this tree's own layout (a fork with
-local crates of its own) — is identified by its **bytes** instead
-(`binary:<sha256>`, `extractor_digest`), never by this checkout's sources: the
-checkout describes this tree and says nothing about what that executable
-emits, and a bytes digest is exact for it. Such a binary is outside the
-patch-release promise anyway. `toolchain_fingerprint` therefore stays total,
-and the two forms cannot collide (#372 review).
+Not by the binary's bytes alone, which a patch release changes (`-C metadata`
+folds the crate version in) although nothing it emits did; not by this
+checkout's sources, which describe the tree and not the executable that runs;
+and no longer by anything the binary says about itself — a build script can
+enumerate the manifests but not what Cargo honours beyond them.
 """
 function extractor_source_digest()
     lock(_EXTRACTOR_LOCK) do
         if isempty(_EXTRACTOR_SOURCE_DIGEST[])
             path = extractor_path()
-            reported = try
-                strip(read(`$(path) source-digest`, String))
-            catch e
-                @debug "The extractor did not report a source digest; identifying it by its bytes" path exception = e
+            record = read_extractor_identity(path)
+            reported = if record !== nothing && get(record, "canonical", false) === true
+                String(get(record, "source_digest", ""))
+            else
                 ""
             end
             if !occursin(r"^[0-9a-f]{64}$", reported)

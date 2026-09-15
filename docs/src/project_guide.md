@@ -81,9 +81,10 @@ What that means in practice:
   `toolchain_fingerprint`, which every artifact identity folds in, so this is
   exactly what decides whether the cache survives an upgrade. Two more things
   make that true rather than nominal: the extractor enters the fingerprint as
-  the digest of the sources it was built from, which it reports itself
-  (`rustcall-extract source-digest`) — not as the bytes of a binary that a
-  version bump alone changes — and the four manifest crates' `[package]
+  the digest of the sources it was built from, computed by `deps/build.jl`
+  from Cargo's own view of the build and stored beside the binary keyed by its
+  SHA-256 (`rustcall-extract.identity.toml`, #409) — not as the bytes of a
+  binary that a version bump alone changes — and the four manifest crates' `[package]
   version`, together with the lockfile lines that record it for a path
   dependency, are left out of every artifact identity. No other crate's
   version is: a crate may read `env!("CARGO_PKG_VERSION")`. The exception

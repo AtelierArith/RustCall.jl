@@ -238,6 +238,7 @@ include("exceptions.jl")
 # looked up again (#258). Included before cache.jl, which shares its depot
 # selection, and written so `deps/build.jl` can include the same file.
 include("native_layout.jl")
+include("extractor_identity.jl")
 
 include("cache.jl")
 
