@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-09-16
+
 ### Changed
 - **The extractor's identity is decided by a closed rule, not by an
   enumeration of Cargo's build inputs**
@@ -1943,7 +1945,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.7...v0.4.0
 [0.3.7]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.6...v0.3.7
