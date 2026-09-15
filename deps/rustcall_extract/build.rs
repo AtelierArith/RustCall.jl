@@ -194,6 +194,23 @@ fn config_overrides_sources(dir: &Path) -> bool {
         candidates.push(home.join("config.toml"));
         candidates.push(home.join("config"));
     }
+    // A configuration file created *after* this build must rerun the script:
+    // the directories that would hold one and exist now are watched (a new
+    // entry changes a directory's mtime), which covers `$CARGO_HOME` and any
+    // `.cargo` directory already present on the way up. A `.cargo` directory
+    // created later in an ancestor is not — watching every ancestor
+    // directory would rerun this script on unrelated activity — and is one of
+    // the cases the tech-debt issue on extractor identity records.
+    let mut watched_dirs: Vec<PathBuf> = candidates
+        .iter()
+        .filter_map(|file| file.parent().map(Path::to_path_buf))
+        .filter(|dir| dir.is_dir())
+        .collect();
+    watched_dirs.sort();
+    watched_dirs.dedup();
+    for dir in watched_dirs {
+        println!("cargo:rerun-if-changed={}", dir.display());
+    }
     let mut overrides = false;
     for file in candidates {
         if !file.is_file() {
