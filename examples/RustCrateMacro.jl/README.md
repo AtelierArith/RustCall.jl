@@ -95,10 +95,12 @@ julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
 
 `Pkg.develop(path="../..")` uses the RustCall of this checkout; with a
-registered RustCall — **0.3.1 or later**, the first release whose `@rust_crate`
-has `submodule=` — `Pkg.instantiate()` is enough. There is no build step to
-run: the first `using` (which `Pkg.test()` performs) precompiles the package,
-which builds the crate.
+registered RustCall in the range this package's `[compat]` admits —
+**0.4.x**, `RustCall = "0.4"` — `Pkg.instantiate()` is enough. (`@rust_crate`'s
+`submodule=` option is older — 0.3.1 introduced it — but the examples are
+pinned to the version of this release.) There is no build step to run: the first
+`using` (which `Pkg.test()` performs) precompiles the package, which builds the
+crate.
 
 The crate also builds and tests on its own:
 
