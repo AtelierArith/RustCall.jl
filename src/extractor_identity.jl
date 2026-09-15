@@ -304,8 +304,7 @@ end
 # the identity.
 function _ei_env_inputs(env)
     captured = String[String(k) for k in keys(env)
-                      if artifact_build_env_captured(String(k)) &&
-                         get(_EI_BASELINE_ENV, String(k), nothing) != String(env[k])]
+                      if artifact_build_env_captured(String(k)) && !_ei_is_baseline(String(k), String(env[k]))]
     sort!(captured)
     return Pair{String, String}[k => String(env[k]) for k in captured]
 end
@@ -315,7 +314,8 @@ end
 # it. `panic = "unwind"` is in `deps/rustcall_extract/Cargo.toml` (#244); the
 # environment override only forbids an inherited value from deciding
 # otherwise. Any *other* value of the same variable is an input.
-const _EI_BASELINE_ENV = Dict{String, String}("CARGO_PROFILE_RELEASE_PANIC" => "unwind")
+const _EI_BASELINE_ENV = ("CARGO_PROFILE_RELEASE_PANIC" => "unwind",)
+_ei_is_baseline(key::String, value::String) = any(b -> first(b) == key && last(b) == value, _EI_BASELINE_ENV)
 
 # Whether a discovered configuration file redirects a source: `paths = [...]`,
 # or a `[source.<name>]` table with `replace-with`, `directory` or
