@@ -165,8 +165,14 @@ using Libdl
     end
 
     @testset "manifest: schema version guard" begin
-        @test RustCall.MANIFEST_SCHEMA_VERSION == 13
-        @test RustCall._parse_manifest("schema_version = 13\nmode = \"inline\"\n")["schema_version"] == 13
+        # The identifier is the release's MAJOR.MINOR since v0.4 (#372);
+        # `test/test_schema_version.jl` pins it to Project.toml and the crates.
+        @test RustCall.MANIFEST_SCHEMA_VERSION isa String
+        @test occursin(r"^\d+\.\d+$", RustCall.MANIFEST_SCHEMA_VERSION)
+        current = "schema_version = $(repr(RustCall.MANIFEST_SCHEMA_VERSION))\nmode = \"inline\"\n"
+        @test RustCall._parse_manifest(current)["schema_version"] == RustCall.MANIFEST_SCHEMA_VERSION
+        # The last integer of the pre-v0.4 scheme is refused like every other.
+        @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 13\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 12\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 11\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 10\nmode = \"inline\"\n")
@@ -196,8 +202,8 @@ using Libdl
             e
         end
         @test err isa RustCall.ExtractorError
-        @test occursin("schema 1", sprint(showerror, err))
-        @test occursin("expects 13", sprint(showerror, err))
+        @test occursin("schema 1 ", sprint(showerror, err))
+        @test occursin("expects $(repr(RustCall.MANIFEST_SCHEMA_VERSION))", sprint(showerror, err))
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 2\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 3\nmode = \"inline\"\n")
         @test_throws RustCall.ExtractorError RustCall._parse_manifest("schema_version = 4\nmode = \"inline\"\n")

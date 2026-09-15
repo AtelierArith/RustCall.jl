@@ -785,17 +785,28 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     try
         stored_lock = lockfile_path(dependencies)
-        cargo_lock = if isfile(stored_lock)
-            _file_content_digest(stored_lock)
+        # The lockfile enters the *build's* key through its release-insensitive
+        # digest — the version lines of RustCall's release crates left out, so
+        # a patch release keeps the key (#372) — and is tracked by its exact
+        # bytes for the race checks below. A stored file resolved under an
+        # earlier patch release is brought up to date first, in place, so the
+        # file the key describes is the file that is replayed.
+        release_names = _release_names_for_dependencies(dependencies)
+        _refresh_stored_lockfile!(stored_lock, release_names)
+        cargo_lock_raw, cargo_lock = if isfile(stored_lock)
+            (_file_content_digest(stored_lock),
+             _identity_file_digest(stored_lock; release_names))
         else
             project = create_cargo_project(cargo_block_package(dependencies), dependencies)
-            something(ensure_cargo_lockfile!(project; env = build_env), "")
+            raw = something(ensure_cargo_lockfile!(project; env = build_env), "")
+            (raw, isempty(raw) ? "" :
+                  _identity_file_digest(joinpath(project.path, "Cargo.lock"); release_names))
         end
         cargo_id = _cargo_block_id(augmented_code, dependencies, build_env_key;
                                    cargo_config = cargo_config, cargo_lock = cargo_lock)
-        lock_text = isempty(cargo_lock) ? "" : read(
+        lock_text = isempty(cargo_lock_raw) ? "" : read(
             project === nothing ? stored_lock : joinpath(project.path, "Cargo.lock"), String)
-        isempty(cargo_lock) || stable_content_hash(lock_text) == cargo_lock || throw(CargoBuildError(
+        isempty(cargo_lock_raw) || stable_content_hash(lock_text) == cargo_lock_raw || throw(CargoBuildError(
             "Cargo.lock changed while capturing generic build context", "", source_file))
         cargo_context = _generic_cargo_context(dependencies, build_env_key, cargo_config, lock_text)
         # THE key for this block: the in-memory name, the disk lookup, the build
@@ -855,7 +866,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
             # build must be of exactly that graph. A file that changed in
             # between would make the key describe another build — refuse.
             replayed = something(ensure_cargo_lockfile!(project; env = build_env), "")
-            replayed == cargo_lock || throw(CargoBuildError(
+            replayed == cargo_lock_raw || throw(CargoBuildError(
                 "The persisted Cargo.lock changed while this block was being prepared",
                 "lockfile: $(stored_lock)", project.path))
         end

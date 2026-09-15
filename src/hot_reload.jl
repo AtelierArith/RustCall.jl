@@ -374,6 +374,9 @@ function _reload_library_once(state::HotReloadState)
             stale = [k for (k, v) in MONOMORPHIZED_FUNCTIONS if v.lib_name == state.lib_name]
             for k in stale
                 delete!(MONOMORPHIZED_FUNCTIONS, k)
+                # The owner goes with the row: an owner without a row is a
+                # tombstone no purge can reach (#397).
+                delete!(MONOMORPHIZATION_OWNERS, k)
             end
             length(stale)
         end

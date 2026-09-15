@@ -4,7 +4,13 @@ This guide covers Windows-specific setup, configuration, and troubleshooting for
 
 ## Prerequisites
 
-### Rust Installation
+### Rust Toolchain (optional to install yourself)
+
+RustCall depends on [RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl),
+which uses the `rustc`/`cargo` on `PATH` when there is one and otherwise
+installs an isolated MSVC-target toolchain (`x86_64-pc-windows-msvc`) through
+Julia's Artifacts system. A system Rust installation is therefore **optional**.
+If you prefer one — for example to pin a toolchain or use it outside Julia:
 
 1. **Download and run rustup-init.exe** from [rustup.rs](https://rustup.rs/)
 
@@ -18,9 +24,16 @@ This guide covers Windows-specific setup, configuration, and troubleshooting for
    cargo --version
    ```
 
-### Visual Studio Build Tools
+A `rustc` on `PATH` takes precedence over the artifact toolchain.
 
-The default MSVC toolchain requires Visual Studio Build Tools:
+### Visual Studio Build Tools (required for the MSVC target)
+
+RustCall's default target on Windows is MSVC (`x86_64-pc-windows-msvc`;
+`RustCall.get_default_target()`), and the artifact toolchain RustToolChain.jl
+installs is MSVC-only. Linking for that target needs the MSVC build tools and
+a Windows SDK whichever toolchain compiles — RustToolChain.jl does not provide
+a linker. Only the MinGW route below avoids them, and it needs the explicit
+configuration described there. The MSVC toolchain requires Visual Studio Build Tools:
 
 1. Download [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 
@@ -93,26 +106,46 @@ rustup default stable-x86_64-pc-windows-msvc
 - Visual Studio Build Tools (or full Visual Studio)
 - Windows SDK
 
-### MinGW Toolchain (Alternative)
+### MinGW Toolchain (alternative, configuration-dependent)
 
-MinGW uses GCC instead of MSVC:
+MinGW uses GCC instead of MSVC. It is **not** what RustCall selects by itself
+and **not** what the artifact toolchain provides. RustCall runs Rust in two
+ways, and both have to be pointed at the GNU target:
 
-```powershell
-# Install MinGW toolchain
-rustup target add x86_64-pc-windows-gnu
+- **Cargo builds** — the helper library and the extractor built by
+  `Pkg.build("RustCall")`, `// cargo-deps:` blocks, `@rust_crate` — run a plain
+  `cargo build`, which compiles for the **active rustup toolchain's host**.
+  Install the GNU host toolchain and make it the default (a rustup install on
+  `PATH` takes precedence over the artifact toolchain):
 
-# Use for a specific build
-rustup run stable-x86_64-pc-windows-gnu cargo build
-```
+  ```powershell
+  rustup toolchain install stable-x86_64-pc-windows-gnu
+  rustup default stable-x86_64-pc-windows-gnu
+  ```
+
+  `rustup target add x86_64-pc-windows-gnu` alone is not enough: it adds a
+  target to the current (MSVC) toolchain without selecting the GNU host.
+
+- **Direct `rustc` builds** — plain `rust"""` blocks — use RustCall's own
+  target, which defaults to MSVC on Windows; tell RustCall to compile for the
+  GNU target:
+
+  ```julia
+  using RustCall
+  RustCall.set_default_compiler(RustCall.RustCompiler(target_triple = "x86_64-pc-windows-gnu"))
+  ```
+
+Skip either step and that class of build still targets MSVC and needs the
+build tools this route is meant to avoid. The MinGW route is not exercised by
+RustCall's CI (which runs the MSVC target).
 
 **Advantages**:
 - Smaller installation (no Visual Studio needed)
-- Simpler setup
 - Cross-compilation friendly
 
 **Disadvantages**:
 - Potential ABI incompatibility with some libraries
-- Less common in Windows ecosystem
+- Less common in Windows ecosystem, and not covered by RustCall's CI
 
 ### When to Use Which
 

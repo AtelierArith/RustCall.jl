@@ -11,7 +11,12 @@ It is inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl), but targets 
 Requirements:
 
 - Julia 1.12 or later
-- Rust toolchain (`rustc` and `cargo`) available in `PATH`
+- A Rust toolchain — **no system installation required**. RustCall depends on
+  [RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl), which
+  uses the `rustc`/`cargo` on `PATH` when there is one and otherwise installs
+  an isolated toolchain through Julia's Artifacts system. On Windows the
+  artifact toolchain still needs the MSVC build tools and a Windows SDK for
+  linking (see the RustToolChain.jl README).
 
 ```julia
 using Pkg

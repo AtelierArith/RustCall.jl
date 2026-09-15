@@ -96,7 +96,12 @@ function build_native_product(kind::Symbol, what::AbstractString)
     args = `build --release --locked --manifest-path $cargo_toml`
     try
         println("  Running: $(cargo()) $args")
-        run(setenv(`$(cargo()) $args`, build_env))
+        # Run *in* the crate directory: Cargo discovers its configuration
+        # (`.cargo/config.toml`, walking up) from the directory it is invoked
+        # in, not from the manifest's, and the extractor's `build.rs` reports a
+        # source digest only for a build whose configuration it can see —
+        # the one discovered from the crate directory up (#372).
+        run(setenv(`$(cargo()) $args`, build_env; dir = crate_dir))
         println("  ✓ Cargo build completed successfully")
     catch e
         error("""

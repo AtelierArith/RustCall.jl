@@ -81,8 +81,8 @@ const PYERR_SLOT: &str = "i32";
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WrapperCrate {
     /// Schema of the embedded manifest, so a consumer can gate on it exactly
-    /// as it gates on a plain manifest.
-    pub schema_version: u32,
+    /// as it gates on a plain manifest (`SCHEMA_VERSION`, a release `MAJOR.MINOR`).
+    pub schema_version: String,
     /// The dependency the wrappers call into, as a Rust identifier.
     pub crate_name: String,
     /// Source of the generated `src/lib.rs`.
@@ -258,7 +258,7 @@ fn lower_once(scanned: &Manifest, krate: &Ident, cfg_resolved: bool) -> WrapperC
     let uses_python_dispatch =
         lib_rs.contains(":: rustcall_pyo3 ::") || lib_rs.contains("::rustcall_pyo3::");
     WrapperCrate {
-        schema_version: out.schema_version,
+        schema_version: out.schema_version.clone(),
         crate_name: krate.to_string(),
         lib_rs,
         uses_python_dispatch,

@@ -386,7 +386,22 @@ We recommend learning RustCall.jl in this order:
 
 ### Rust not found
 
-If you see "rustc not found in PATH", install Rust from [rustup.rs](https://rustup.rs/).
+RustCall resolves `rustc`/`cargo` through RustToolChain.jl: a system Rust on
+`PATH` when there is one, otherwise the toolchain it installs through Julia's
+Artifacts system — so a system Rust is optional. If `using RustCall` reports
+"No working rustc found", it names both routes and how to see the underlying
+error:
+
+```julia
+using RustToolChain; run(`$(RustToolChain.rustc()) --version`)
+```
+
+Remedies: make the artifact download possible (network access, a writable
+depot) and retry; or install Rust yourself from [rustup.rs](https://rustup.rs/)
+so a `rustc` is on `PATH` (it then takes precedence). On Windows the MSVC
+target — RustCall's default, and the only one the artifact toolchain
+provides — also needs the MSVC build tools; the GNU route that avoids them is
+described in `docs/src/platforms/windows.md`.
 
 ### Library build fails
 

@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
+### Added
+- **`RustCall.release_generics(f[, types...]; close = false)` lets a session
+  give instantiations back**
+  ([#397](https://github.com/AtelierArith/RustCall.jl/issues/397)). Lazy
+  instantiation maps one image per type, and nothing ever unmapped one: a
+  long-running session touching many types kept every image for its lifetime,
+  the third acceptance criterion of #254. Releasing is explicit because the
+  implicit answer is not decidable — an instantiation hands out a raw function
+  pointer, and a generic struct instantiation hands out objects holding a
+  destructor pointer and the image's liveness flag (#291), so the registry
+  cannot know when nothing refers to an image any more. It retires the images
+  exactly as `unload_library` does: out of the registry, so the next call gets a
+  fresh image (from the on-disk cache, without a rebuild), and still mapped, so a
+  pointer or object holding the old one keeps working and finalizes through the
+  image that allocated it; `close = true` closes them too, flipping the liveness
+  flags first. Instantiations built together by `precompile_generics` share one
+  library and are released together, and a generic struct group is released by
+  naming any of its members. Each instantiation now records which generic owns
+  it (`MONOMORPHIZATION_OWNERS`), which is what makes "every instantiation of
+  `f`" answerable without being told the types. A release in two steps —
+  retire now, `close = true` later once nothing holds the old images — works:
+  the closing call also closes what an earlier non-closing release of the
+  same generic left mapped.
+
 ### Changed
+- **Breaking: the manifest schema identifier is the release's `MAJOR.MINOR`**
+  ([#372](https://github.com/AtelierArith/RustCall.jl/issues/372)). Through
+  v0.3.x the extractor's manifest carried an integer bumped on every manifest
+  edit — thirteen times — kept in step by hand between `rustcall_core` and
+  `src/manifest.jl`. It is now the release: `"0.4"` for every v0.4.x, derived on
+  the Julia side from `Project.toml` and on the Rust side from the crate's own
+  version, with `test/test_schema_version.jl` pinning the four manifest crates
+  to the package version so the two cannot drift. A **patch** release therefore
+  never invalidates an installed extractor or a cached artifact, and a
+  **minor** release always does — every cache key folds the identifier in
+  through `toolchain_fingerprint` — so a manifest may change shape freely inside
+  a minor release and a change that must ship in a patch has to be additive. A
+  pre-v0.4 extractor reports `13`, which never equals a release string; the
+  refusal names the integer scheme, this release and `Pkg.build("RustCall")`.
+  See `docs/src/project_guide.md`.
+- **The documented requirements no longer ask for a Rust toolchain on `PATH`**
+  ([#404](https://github.com/AtelierArith/RustCall.jl/issues/404)). RustCall
+  depends on RustToolChain.jl, which uses the `rustc`/`cargo` on `PATH` when
+  there is one and otherwise installs an isolated toolchain through Julia's
+  Artifacts system, so a system Rust installation is optional (Windows still
+  needs the MSVC build tools for linking). This is also why the prebuilt
+  helper library once planned as `RustCallHelpers_jll` is withdrawn: the
+  helpers compile with that toolchain on any machine.
 - **Breaking: the ownership helper crate is `deps/rustcall_helpers`, and its
   library `librustcall_helpers`**
   ([#387](https://github.com/AtelierArith/RustCall.jl/issues/387)). Every Rust
@@ -27,8 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in v0.5. And **nothing builds under the old name any more**:
   `native_product_filename(:rustcall_helpers)` names the new file, there is no
   `:rust_helpers` product, and `deps/build.jl` needed no change of its own
-  because it asks `src/native_layout.jl` (#258). The planned prebuilt package is
-  `RustCallHelpers_jll` (#404), written against this name.
+  because it asks `src/native_layout.jl` (#258). The prebuilt package once
+  planned under this name, `RustCallHelpers_jll` (#404), is withdrawn — see
+  the entry above: RustToolChain.jl already provides the toolchain that builds
+  the helpers.
 
 ### Fixed
 - **A crate module's generation record is published atomically**
@@ -1845,7 +1896,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.7...v0.4.0
 [0.3.7]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.4...v0.3.5

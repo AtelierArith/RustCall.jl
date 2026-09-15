@@ -11,8 +11,30 @@ using TOML
 using SHA: sha256
 
 """
-Manifest schema version this version of RustCall.jl understands. Must match
-`rustcall_core::manifest::SCHEMA_VERSION` (2: string ABI columns `abi`,
+    MANIFEST_SCHEMA_VERSION
+
+The manifest compatibility identifier this RustCall.jl accepts: the
+**`MAJOR.MINOR` of its own release**, read from `Project.toml` — `"0.4"` for
+every v0.4.x. `rustcall_core::manifest::SCHEMA_VERSION` is the same string,
+and `test/test_schema_version.jl` keeps the two from drifting by pinning every
+manifest crate's `Cargo.toml` version to the package version (#372).
+
+What that buys, and what it costs:
+
+  * A **patch** release never changes the identifier. An installed extractor
+    and every cached artifact stay valid across it — the identifier is part of
+    `toolchain_fingerprint`, so this is what decides whether the cache survives.
+  * A **minor** release always changes it. Every consumer rebuilds the
+    extractor once (`Pkg.build("RustCall")`), every cache key moves, and the
+    manifest may change shape freely inside that release without a per-edit
+    bump. A manifest change that has to ship in a *patch* release therefore
+    cannot break compatibility; it must be additive and optional.
+  * A pre-v0.4 extractor reports the integer `13`, which never equals a
+    release string, so the mismatch below names both and says to rebuild.
+
+Through v0.3.x this was that integer, bumped on every manifest edit; the
+history is kept here because the fields it introduced are all still present
+(2: string ABI columns `abi`,
 `return_abi` and the string helper flags, #242; 3: `#[julia]` is additive, so
 `symbol` differs from `name` for every wrapped function and method, #279;
 4: one vocabulary for the type contract — `Function.return_abi`, `Field.abi`
@@ -54,9 +76,31 @@ a schema-10 consumer would decode either aggregate with the wrong slot type
 wrapper can select Python-owned dispatch. Schema 13 adds the wrapper's
 authoritative `python_owned_handle` decision: a consumer that re-infers it
 after filtering unsupported methods can unload an image whose drain thread is
-still running (#371).
+still running (#371). v0.4.0 replaced the integer with the release identifier
+(#372).
 """
-const MANIFEST_SCHEMA_VERSION = 13
+const MANIFEST_SCHEMA_VERSION = let
+    project = TOML.parsefile(joinpath(dirname(@__DIR__), "Project.toml"))
+    v = VersionNumber(project["version"])
+    "$(v.major).$(v.minor)"
+end
+
+"""
+    _schema_mismatch_message(what, produced) -> String
+
+The refusal for a manifest whose `schema_version` is not this release's. An
+integer is what a pre-v0.4 extractor writes, and the message says so rather
+than comparing a number with a release.
+"""
+function _schema_mismatch_message(what::AbstractString, produced)
+    origin = produced isa Integer ?
+        "schema $(produced) — the integer scheme of RustCall ≤ v0.3.x" :
+        "schema $(repr(produced))"
+    return "$(what) schema version mismatch: the rustcall-extract binary produced " *
+           "$(origin), but this RustCall.jl (v$(pkgversion(@__MODULE__))) expects " *
+           "$(repr(MANIFEST_SCHEMA_VERSION)), the MAJOR.MINOR of its release. " *
+           "Rebuild with `Pkg.build(\"RustCall\")`."
+end
 
 """
     ExtractorError <: Exception
@@ -75,6 +119,7 @@ Base.showerror(io::IO, e::ExtractorError) = print(io, "ExtractorError: ", e.msg)
 
 const _EXTRACTOR_PATH = _state_view(:extractor_path, Ref{String}(""))
 const _EXTRACTOR_DIGEST = _state_view(:extractor_digest, Ref{String}(""))
+const _EXTRACTOR_SOURCE_DIGEST = _state_view(:extractor_source_digest, Ref{String}(""))
 const _TOOLCHAIN_FINGERPRINT = _state_view(:toolchain_fingerprint, Ref{String}(""))
 const _EXTRACTOR_LOCK = ReentrantLock()
 
@@ -110,8 +155,12 @@ end
 """
     extractor_digest() -> String
 
-SHA-256 of the extractor binary. Part of every cache key, so rebuilding the
-extractor (new codegen, new schema) invalidates cached artifacts.
+SHA-256 of the extractor binary's bytes. **Not** part of a cache key on its
+own since #372: a patch release rebuilds the binary from unchanged sources and
+these bytes move with it, against the promise that a patch keeps the cache.
+`extractor_source_digest` is what every key folds in; this digest is its
+fallback identity for a selected binary that cannot report one, and a
+diagnostic otherwise.
 """
 function extractor_digest()
     lock(_EXTRACTOR_LOCK) do
@@ -119,6 +168,49 @@ function extractor_digest()
             _EXTRACTOR_DIGEST[] = bytes2hex(open(sha256, extractor_path()))
         end
         return _EXTRACTOR_DIGEST[]
+    end
+end
+
+"""
+    extractor_source_digest() -> String
+
+The digest of the sources the **selected** extractor was built from — its own
+and `rustcall_core`'s, each `[package] version` left out — as the binary
+itself reports it (`rustcall-extract source-digest`, embedded by its
+`build.rs`). This is how a cache key identifies the extractor (#372):
+
+  * not by the binary's bytes, which a patch release changes on its own
+    (`-C metadata` folds the crate version in) although nothing it emits did;
+  * not by the checkout's sources, which describe this tree and not the
+    executable `RUSTCALL_EXTRACT` may point at — a schema-compatible binary
+    built from other sources would otherwise move no key.
+
+A selected binary that cannot answer — one built from other sources without
+the subcommand, one that fails it, or one whose `build.rs` declined to report
+a digest because it was not built from this tree's own layout (a fork with
+local crates of its own) — is identified by its **bytes** instead
+(`binary:<sha256>`, `extractor_digest`), never by this checkout's sources: the
+checkout describes this tree and says nothing about what that executable
+emits, and a bytes digest is exact for it. Such a binary is outside the
+patch-release promise anyway. `toolchain_fingerprint` therefore stays total,
+and the two forms cannot collide (#372 review).
+"""
+function extractor_source_digest()
+    lock(_EXTRACTOR_LOCK) do
+        if isempty(_EXTRACTOR_SOURCE_DIGEST[])
+            path = extractor_path()
+            reported = try
+                strip(read(`$(path) source-digest`, String))
+            catch e
+                @debug "The extractor did not report a source digest; identifying it by its bytes" path exception = e
+                ""
+            end
+            if !occursin(r"^[0-9a-f]{64}$", reported)
+                reported = "binary:" * bytes2hex(open(sha256, path))
+            end
+            _EXTRACTOR_SOURCE_DIGEST[] = String(reported)
+        end
+        return _EXTRACTOR_SOURCE_DIGEST[]
     end
 end
 
@@ -145,20 +237,67 @@ function _rust_sources_digest(dirs::AbstractString...)
         end
         for f in sort(files)
             print(ctx, relpath(f, dir), "\0")
-            write(ctx, read(f))
+            # A manifest enters without its `[package] version`
+            # (`_identity_file_bytes`, #372): the crates hashed here are
+            # versioned as the release, and a patch release must not move
+            # every cache key by rewriting that one line.
+            write(ctx, _identity_file_bytes(String(f)))
             print(ctx, "\0")
         end
     end
     return bytes2hex(sha256(take!(ctx)))
 end
 
+
+# The crates a user's build compiles from *this tree*: `rustcall_julia_macros`
+# and its proc-macro implementation, which carry `rustcall_core` into every
+# `#[julia]` crate's build and the runtime module `rt.rs`. The extractor is
+# identified separately, by the binary that actually runs
+# (`extractor_source_digest`).
+const _FINGERPRINT_CRATES = ("rustcall_core", "rustcall_julia_macros", "rustcall_julia_macros_impl")
+
+# The lines `toolchain_fingerprint` hashes, and whether the compiler in them
+# was actually identified. Separate so a test can assert what is — and is
+# not — in a cache key.
+function _toolchain_fingerprint_inputs()
+    deps = joinpath(dirname(@__DIR__), "deps")
+    compiler, identified = _toolchain_compiler_identity()
+    parts = String[
+        "schema=$(MANIFEST_SCHEMA_VERSION)",
+        "extractor=$(extractor_source_digest())",
+        "sources=$(_rust_sources_digest((joinpath(deps, c) for c in _FINGERPRINT_CRATES)...))",
+        "compiler=$(compiler)",
+        "target=$(Sys.MACHINE)",
+        "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
+    ]
+    return parts, identified
+end
+
 """
     toolchain_fingerprint() -> String
 
 Fingerprint of everything that influences generated code besides the user's
-source: extractor binary, manifest schema, `rustcall_core` and
-`rustcall_julia_macros` sources, the identity of the compiler that actually runs
-(`artifact_compiler_identity`) and the host target. Included in all cache keys.
+source: the manifest schema identifier, the **sources** of `rustcall_core`,
+`rustcall_julia_macros` and `rustcall_extract`, the identity of the compiler
+that actually runs (`artifact_compiler_identity`) and the host target. Included
+in all cache keys.
+
+# What identifies the extractor (#372 review)
+
+Through v0.3.x the extractor entered as a digest of its executable. A patch
+release now bumps `rustcall_extract`'s package version, and Cargo folds the
+version into `-C metadata`, so the same sources produce a byte-different
+binary — every cache key would have moved on a release that promises to keep
+them. The extractor now enters as the digest of the sources **it** was built
+from, reported by the selected binary itself (`extractor_source_digest`): that
+follows `RUSTCALL_EXTRACT` to whatever executable actually runs, and does not
+move when only a version did. The tree's `rustcall_core`,
+`rustcall_julia_macros` and `rustcall_julia_macros_impl` sources enter
+separately, because a user's build compiles them from this tree, with each
+crate's `[package] version` left out (`_identity_file_bytes`).
+`extractor_digest()` remains available as a diagnostic of which binary ran; it
+is in no key. The inputs are `_toolchain_fingerprint_inputs()`, so a test can
+see them.
 
 # Missing toolchain (#252)
 
@@ -177,16 +316,7 @@ and raises `RustError`.
 function toolchain_fingerprint()
     lock(_EXTRACTOR_LOCK) do
         if isempty(_TOOLCHAIN_FINGERPRINT[])
-            deps = joinpath(dirname(@__DIR__), "deps")
-            compiler, identified = _toolchain_compiler_identity()
-            parts = String[
-                "schema=$(MANIFEST_SCHEMA_VERSION)",
-                "extractor=$(extractor_digest())",
-                "core=$(_rust_sources_digest(joinpath(deps, "rustcall_core"), joinpath(deps, "rustcall_julia_macros")))",
-                "compiler=$(compiler)",
-                "target=$(Sys.MACHINE)",
-                "cfg=$(bytes2hex(sha256(_rustc_cfg_text())))",
-            ]
+            parts, identified = _toolchain_fingerprint_inputs()
             fingerprint = bytes2hex(sha256(join(parts, "\n")))
             @debug "Computed RustCall toolchain fingerprint" fingerprint components = join(parts, "\n")
             # A fingerprint computed without a usable toolchain describes
@@ -227,6 +357,7 @@ function _reset_extractor_state!()
     lock(_EXTRACTOR_LOCK) do
         _EXTRACTOR_PATH[] = ""
         _EXTRACTOR_DIGEST[] = ""
+        _EXTRACTOR_SOURCE_DIGEST[] = ""
         _TOOLCHAIN_FINGERPRINT[] = ""
     end
     lock(_EXPANSION_LOCK) do
@@ -263,12 +394,8 @@ function _parse_manifest(text::AbstractString)
         throw(ExtractorError("failed to parse manifest TOML: $e"))
     end
     version = get(dict, "schema_version", nothing)
-    if version != MANIFEST_SCHEMA_VERSION
-        throw(ExtractorError(
-            "manifest schema version mismatch: the rustcall-extract binary produced " *
-            "schema $(version) but this RustCall.jl expects $(MANIFEST_SCHEMA_VERSION). " *
-            "Rebuild with `Pkg.build(\"RustCall\")`."))
-    end
+    version == MANIFEST_SCHEMA_VERSION ||
+        throw(ExtractorError(_schema_mismatch_message("manifest", version)))
     return dict
 end
 
@@ -931,12 +1058,8 @@ function wrap_crate(files::Vector{String}; crate_name::AbstractString,
         throw(ExtractorError("failed to parse wrapper crate TOML: $e"))
     end
     version = get(doc, "schema_version", nothing)
-    if version != MANIFEST_SCHEMA_VERSION
-        throw(ExtractorError(
-            "wrapper crate schema version mismatch: the rustcall-extract binary produced " *
-            "schema $(version) but this RustCall.jl expects $(MANIFEST_SCHEMA_VERSION). " *
-            "Rebuild with `Pkg.build(\"RustCall\")`."))
-    end
+    version == MANIFEST_SCHEMA_VERSION ||
+        throw(ExtractorError(_schema_mismatch_message("wrapper crate", version)))
     manifest = get(doc, "manifest", nothing)
     manifest isa AbstractDict ||
         throw(ExtractorError("wrapper crate output has no [manifest] table"))
