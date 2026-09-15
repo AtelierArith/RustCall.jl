@@ -1,4 +1,5 @@
 using SampleCrate
+using RustCall
 using Test
 
 @testset "SampleCrate.jl" begin
@@ -93,5 +94,46 @@ using Test
         scale(r, 2.0)
         @test (r.width, r.height) == (4.0, 6.0)
         @test is_square(Rectangle(1.0, 1.0))
+    end
+
+    # The package carries both a crate bound by `deps/build.jl` and an inline
+    # `rust"""` (`@rust_str`) block in `src/inline.jl`. Loading both must leave
+    # each library's functions callable, and a name shared by both must resolve
+    # per library (#250).
+    @testset "Coexistence with rust_str" begin
+        # Functions of the inline block.
+        @test inline_hypot(3.0, 4.0) == 5.0
+        @test inline_hypot(5.0, 12.0) == 13.0
+        @test inline_join("a", "b") == "a-b"
+        @test inline_join("left", "right") == "left-right"
+
+        # A wrapper that composes the inline block with a crate struct: the
+        # `Point`s come from the generated bindings, the arithmetic from the
+        # inline library.
+        @test inline_distance(Point(0.0, 0.0), Point(3.0, 4.0)) == 5.0
+        @test inline_distance(Point(1.0, 1.0), Point(1.0, 1.0)) == 0.0
+
+        # Both libraries stay callable in either order, interleaved.
+        @test add(Int32(1), Int32(2)) == 3
+        @test inline_hypot(6.0, 8.0) == 10.0
+        @test shout("hi") == "HI"
+        @test inline_join("hi", "there") == "hi-there"
+
+        # The same Rust name in two libraries: the crate's `add` is `a + b`,
+        # the inline block's is `(a + b) * 1000`. Each module reaches its own
+        # library, and neither captures the other.
+        inline_mod = Module(:SampleCrateInlineCoexist)
+        Core.eval(inline_mod, :(using RustCall))
+        Core.eval(inline_mod, quote
+            rust"""
+            #[julia]
+            fn add(a: i32, b: i32) -> i32 { (a + b) * 1000 }
+            """
+        end)
+        @test Core.eval(inline_mod, :(add(Int32(2), Int32(3)))) == Int32(5000)
+        @test add(Int32(2), Int32(3)) == Int32(5)
+        @test SampleCrate.add(Int32(2), Int32(3)) == Int32(5)
+        # ...and the inline block is still live after the crate has been called.
+        @test Core.eval(inline_mod, :(add(Int32(1), Int32(4)))) == Int32(5000)
     end
 end

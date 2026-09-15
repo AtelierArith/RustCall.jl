@@ -6,14 +6,18 @@ A Julia package with its Rust crate embedded under `deps/sample_crate/`.
 The two halves live in separate files:
 
 - **Rust**: `deps/sample_crate/src/lib.rs` — the implementation, marked with
-  `#[julia]` where it should be callable from Julia. No Julia file contains
-  Rust source.
+  `#[julia]` where it should be callable from Julia.
 - **Julia**: this file — idiomatic wrappers over the generated bindings — and
   `src/generated/Bindings.jl`, which `deps/build.jl` writes with
   `RustCall.write_bindings_to_file` (run `Pkg.build("SampleCrate")`).
 
 `SampleCrate.Bindings` is the generated module, exposed as is; the functions
 this module exports are the Julia-side conveniences on top of it.
+
+`src/inline.jl` additionally carries a `rust\"\"\"` block (the `@rust_str`
+macro) beside the generated bindings. It is the one file with Rust source in
+it, and it exists to show that an inline block and the crate's bindings coexist
+in one package; see its header for the details.
 """
 module SampleCrate
 
@@ -42,6 +46,12 @@ using .Bindings: add, multiply, fibonacci, is_prime,
                  label, byte_len, kind, echo,
                  area, perimeter, is_square, scale
 
+# A `rust"""` block beside the generated bindings: `src/inline.jl` defines
+# `inline_hypot` / `inline_join` and the composing `inline_distance`. The two
+# libraries — the crate built by `deps/build.jl` and the inline block — coexist
+# in this module.
+include("inline.jl")
+
 # Names the Rust crate exports through `#[julia]`, re-exported unchanged.
 export add, multiply, fibonacci, is_prime
 export shout, join_repeat, char_count, crate_greeting, identity_str
@@ -57,6 +67,10 @@ export area, perimeter, is_square, scale
 # Julia-side conveniences defined below.
 export safe_divide, parse_positive, safe_sqrt, find_positive, parse_int, first_char
 export distance
+
+# The inline `rust"""` block of `src/inline.jl` and its composition with the
+# crate's `Point`.
+export inline_hypot, inline_join, inline_distance
 
 # ============================================================================
 # Result<T, E> → Julia: return the value, throw on Err
