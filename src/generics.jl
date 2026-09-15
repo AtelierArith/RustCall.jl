@@ -594,12 +594,15 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     # could all be spent before one retirement proceeds (#397 review). Each
     # attempt therefore gives the thread away and then waits a little longer,
     # and only an image that keeps being released for `_MONOMORPHIZE_SETTLE_SECONDS`
-    # is an error.
-    deadline = time() + _MONOMORPHIZE_SETTLE_SECONDS
+    # is an error. The clock starts at the first rejected publication, not at
+    # the call: the first attempt may compile, and a cold Cargo build takes
+    # longer than the whole allowance (#397 review).
+    deadline = Inf
     backoff = 0.001
     while true
         info = _monomorphize_function_once(func_name, type_params)
         info === nothing || return info
+        deadline = min(deadline, time() + _MONOMORPHIZE_SETTLE_SECONDS)
         time() < deadline ||
             error("An instantiation of '$func_name' could not be published: the image it " *
                   "resolved against kept being released for $(_MONOMORPHIZE_SETTLE_SECONDS) s")
