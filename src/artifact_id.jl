@@ -819,9 +819,44 @@ function _identity_file_bytes(path::String)::Vector{UInt8}
     # a registry package (one with a `source`).
     strip_names = _rustcall_release_names_in(dirname(path))
     isempty(strip_names) && return raw
+    # A graph holding two packages of one name — this package's crate and a
+    # fork — has Cargo qualify its references, `"rustcall_core 0.4.0"` in a
+    # `dependencies = [...]` list; the one naming this package's crate at its
+    # current version is the same reference before and after a bump, and
+    # enters as the bare name. A path package is unique by (name, version), so
+    # the qualified form names exactly one of the two (#372 review).
+    versions = Dict{String, String}(n => v for n in strip_names
+                                    for v in (_rustcall_release_crate_version(n),) if v !== nothing)
     return _without_version_lines(raw, (header, body) ->
-        header == "[[package]]" && _toml_line_value(body, "name") in strip_names &&
-        _toml_line_value(body, "source") === nothing)
+            header == "[[package]]" && _toml_line_value(body, "name") in strip_names &&
+            _toml_line_value(body, "source") === nothing;
+        rewrite = line -> _unqualified_reference(line, versions))
+end
+
+# The `[package] version` of one of this package's release crates, or
+# `nothing` when its manifest cannot be read.
+function _rustcall_release_crate_version(name::AbstractString)
+    doc = try
+        TOML.parsefile(joinpath(_rustcall_release_crate_dir(name), "Cargo.toml"))
+    catch
+        return nothing
+    end
+    package = get(doc, "package", nothing)
+    version = package isa AbstractDict ? get(package, "version", nothing) : nothing
+    return version isa AbstractString ? String(version) : nothing
+end
+
+# A lockfile reference line `"name version",` for a `name => version` in
+# `versions` becomes `"name",`; any other line is returned as it is. Only the
+# two-word form: a three-word `"name version (source)"` is a registry or git
+# package, whose version pins its content.
+function _unqualified_reference(line::AbstractString, versions::AbstractDict)
+    stripped = strip(line)
+    startswith(stripped, "\"") || return line
+    quoted = strip(rstrip(stripped, ','), '"')
+    parts = split(quoted, ' ')
+    length(parts) == 2 && get(versions, parts[1], nothing) == parts[2] || return line
+    return replace(line, "\"$(quoted)\"" => "\"$(parts[1])\""; count = 1)
 end
 
 # Whether `line` is `key = ...` (not `key.sub = ...`, not a key that merely
@@ -848,7 +883,10 @@ end
 # Line oriented on purpose: Cargo writes a lockfile one key per line, and a
 # release crate's manifest is this package's own; a document reprinted from
 # its parse would lose exactly the bytes a crate reading the file can see.
-function _without_version_lines(raw::Vector{UInt8}, select::Function)::Vector{UInt8}
+# `rewrite` is applied to every kept line; the file is returned as it is when
+# nothing was dropped and nothing was rewritten.
+function _without_version_lines(raw::Vector{UInt8}, select::Function;
+                                rewrite::Function = identity)::Vector{UInt8}
     text = String(copy(raw))
     lines = split(text, '\n'; keepempty = true)
     headers = [i for (i, line) in enumerate(lines) if startswith(lstrip(line), "[")]
@@ -861,8 +899,9 @@ function _without_version_lines(raw::Vector{UInt8}, select::Function)::Vector{UI
             _is_toml_key_line(lines[j], "version") && (drop[j] = true)
         end
     end
-    any(drop) || return raw
-    return Vector{UInt8}(join(lines[.!drop], '\n'))
+    kept = [rewrite(line) for line in lines[.!drop]]
+    any(drop) || kept != lines || return raw
+    return Vector{UInt8}(join(kept, '\n'))
 end
 
 """

@@ -274,6 +274,43 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
             @test String(RustCall._identity_file_bytes(joinpath(dir, "Cargo.lock"))) ==
                   replace(commented, "name = \"rustcall_julia_macros\"\nversion = \"0.4.0\"\n" =>
                                      "name = \"rustcall_julia_macros\"\n")
+            # Two packages of one name in a graph — this package's crate and a
+            # fork — make Cargo qualify the references to them; the one that
+            # names this package's crate at its current version enters as the
+            # bare name (it is the same reference before and after a bump),
+            # the fork's keeps its qualification (#372 review).
+            core_version = TOML.parsefile(joinpath(_ROOT, "deps", "rustcall_core", "Cargo.toml"))["package"]["version"]
+            two = """
+                version = 4
+
+                [[package]]
+                name = "probe"
+                version = "0.1.0"
+                dependencies = [
+                 "rustcall_core $(core_version)",
+                 "rustcall_core 0.3.9",
+                 "rustcall_julia_macros",
+                ]
+
+                [[package]]
+                name = "rustcall_core"
+                version = "$(core_version)"
+
+                [[package]]
+                name = "rustcall_core"
+                version = "0.3.9"
+                source = "registry+https://github.com/rust-lang/crates.io-index"
+                checksum = "0000"
+
+                [[package]]
+                name = "rustcall_julia_macros"
+                version = "$(core_version)"
+                """
+            digest("Cargo.lock", two)
+            @test String(RustCall._identity_file_bytes(joinpath(dir, "Cargo.lock"))) ==
+                  replace(two, " \"rustcall_core $(core_version)\",\n" => " \"rustcall_core\",\n",
+                               "name = \"rustcall_core\"\nversion = \"$(core_version)\"\n" => "name = \"rustcall_core\"\n",
+                               "name = \"rustcall_julia_macros\"\nversion = \"$(core_version)\"\n" => "name = \"rustcall_julia_macros\"\n")
             # The release crates behind a `#[julia]` crate's one path
             # dependency are release crates too: the fixture names only
             # `rustcall_julia_macros`, its lockfile records all three, and a
