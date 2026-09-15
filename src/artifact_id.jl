@@ -855,16 +855,33 @@ function _identity_file_bytes(path::String; release_names = nothing)::Vector{UIn
     isempty(strip_names) && return raw
     # A graph holding two packages of one name — this package's crate and a
     # fork — has Cargo qualify its references, `"rustcall_core 0.4.0"` in a
-    # `dependencies = [...]` list; the one naming this package's crate at its
-    # current version is the same reference before and after a bump, and
-    # enters as the bare name. A path package is unique by (name, version), so
-    # the qualified form names exactly one of the two (#372 review).
-    versions = Dict{String, String}(n => v for n in strip_names
-                                    for v in (_rustcall_release_crate_version(n),) if v !== nothing)
+    # `dependencies = [...]` list; the one naming this package's crate enters
+    # as the bare name, so it reads the same before and after a bump. Which
+    # version that is comes from *this lockfile* — the source-less entry of
+    # the name, whose version line is the one being left out — not from the
+    # manifest installed now: a lockfile written under the previous release
+    # must hash as it did then (#372 review). A path package is unique by
+    # (name, version), so the qualified form names exactly one of the two;
+    # a name with two source-less entries is left alone.
+    versions = _pathed_release_versions(doc, strip_names)
     return _without_version_lines(raw, (header, body) ->
             header == "[[package]]" && _toml_line_value(body, "name") in strip_names &&
             _toml_line_value(body, "source") === nothing;
         rewrite = line -> _unqualified_reference(line, versions))
+end
+
+# `name => version` of the one source-less `[[package]]` entry per release
+# crate in a parsed lockfile; a name with two such entries is omitted.
+function _pathed_release_versions(doc, strip_names)
+    seen = Dict{String, Vector{String}}()
+    for entry in get(doc, "package", Any[])
+        entry isa AbstractDict || continue
+        name = get(entry, "name", nothing)
+        name in strip_names && !haskey(entry, "source") || continue
+        version = get(entry, "version", nothing)
+        version isa AbstractString && push!(get!(seen, String(name), String[]), String(version))
+    end
+    return Dict{String, String}(n => only(v) for (n, v) in seen if length(v) == 1)
 end
 
 # The `[package] version` of one of this package's release crates, or

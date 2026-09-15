@@ -311,6 +311,12 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                   replace(two, " \"rustcall_core $(core_version)\",\n" => " \"rustcall_core\",\n",
                                "name = \"rustcall_core\"\nversion = \"$(core_version)\"\n" => "name = \"rustcall_core\"\n",
                                "name = \"rustcall_julia_macros\"\nversion = \"$(core_version)\"\n" => "name = \"rustcall_julia_macros\"\n")
+            # The version that is unqualified is the one *this lockfile*
+            # records for the path crate, not the one installed now: a lock
+            # written under the previous release hashes as it did then, so
+            # the two identities are equal (#372 review).
+            previous = replace(two, core_version => "0.0.1")
+            @test digest("Cargo.lock", previous) == digest("Cargo.lock", two)
             # A lockfile resolved under an earlier patch release replays
             # `--locked` under this one: the release crates' version lines,
             # and the qualified references to them, are brought to the
