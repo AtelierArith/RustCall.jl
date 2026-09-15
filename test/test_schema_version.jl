@@ -588,27 +588,27 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         @test extractor_line != "extractor=$(RustCall.extractor_digest())"
         # A selected extractor that cannot report a source digest is identified
         # by its bytes — never by this checkout's sources, which say nothing
-        # about what that executable emits (#372 review). Played with a stub
-        # that fails every subcommand; only the fingerprint input is read, so
-        # the schema check the stub would also fail is not reached.
-        mktempdir() do dir
-            stub = joinpath(dir, Sys.iswindows() ? "rustcall-extract.exe" : "rustcall-extract")
-            write(stub, "#!/bin/sh\nexit 1\n")
-            chmod(stub, 0o755)
-            RustCall._reset_extractor_state!()
-            try
-                withenv("RUSTCALL_EXTRACT" => stub) do
-                    @test RustCall.extractor_path() == stub
-                    @test RustCall.extractor_source_digest() ==
-                          "binary:" * RustCall.extractor_digest()
-                    stub_parts, _ = RustCall._toolchain_fingerprint_inputs()
-                    stub_line = only(filter(p -> startswith(p, "extractor="), stub_parts))
-                    @test stub_line == "extractor=binary:" * RustCall.extractor_digest()
-                    @test stub_line != extractor_line
-                end
-            finally
-                RustCall._reset_extractor_state!()
+        # about what that executable emits (#372 review). Played with a real
+        # executable that fails the subcommand: the Julia binary itself, which
+        # exits non-zero on `source-digest` (no such file). A text file dressed
+        # as an `.exe` is not used — spawning one hung the Windows CI job.
+        # Only the fingerprint input is read, so the schema check the stub
+        # would also fail is not reached.
+        stub = joinpath(Sys.BINDIR, Base.julia_exename())
+        @test isfile(stub)
+        RustCall._reset_extractor_state!()
+        try
+            withenv("RUSTCALL_EXTRACT" => stub) do
+                @test RustCall.extractor_path() == stub
+                @test RustCall.extractor_source_digest() ==
+                      "binary:" * RustCall.extractor_digest()
+                stub_parts, _ = RustCall._toolchain_fingerprint_inputs()
+                stub_line = only(filter(p -> startswith(p, "extractor="), stub_parts))
+                @test stub_line == "extractor=binary:" * RustCall.extractor_digest()
+                @test stub_line != extractor_line
             end
+        finally
+            RustCall._reset_extractor_state!()
         end
         if RustCall.check_rustc_available()
             reported = strip(read(`$(RustCall.extractor_path()) source-digest`, String))
