@@ -737,10 +737,14 @@ function _rustcall_release_names_in(dir::AbstractString)
         end
         # The three dependency tables at the top level and under every
         # `[target.'cfg(...)']`: a path dependency declared for one platform
-        # is a path dependency.
+        # is a path dependency. And `[workspace.dependencies]` of a workspace
+        # root: a member that takes a release crate as `{ workspace = true }`
+        # has its path here, and the lockfile is the root's (#372 review).
         scopes = Any[doc]
         targets = get(doc, "target", nothing)
         targets isa AbstractDict && append!(scopes, (t for t in values(targets) if t isa AbstractDict))
+        workspace = get(doc, "workspace", nothing)
+        workspace isa AbstractDict && push!(scopes, workspace)
         for scope in scopes, table in ("dependencies", "dev-dependencies", "build-dependencies")
             deps = get(scope, table, nothing)
             deps isa AbstractDict || continue

@@ -3319,8 +3319,14 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
     # touches no file of the member still rebuilds (#307 review, #278).
     root = _cargo_root_dir(info.path)
     if root != abspath(info.path)
+        # The root's lockfile records what the *member* resolves: the release
+        # crates whose version lines leave the identity are found from the
+        # member's manifest and the root's `[workspace.dependencies]` together
+        # (#372 review) — a virtual root declares no `[dependencies]` of its own.
+        release_names = union(_rustcall_release_names_in(info.path), _rustcall_release_names_in(root))
         push!(extra, "workspace-root-manifest" => _identity_file_digest(joinpath(root, "Cargo.toml")))
-        push!(extra, "workspace-root-lock" => _identity_file_digest(joinpath(root, "Cargo.lock")))
+        push!(extra, "workspace-root-lock" =>
+              _identity_file_digest(joinpath(root, "Cargo.lock"); release_names))
     end
     # So is a library root outside the package directory (`[lib] path =
     # "../shared/lib.rs"`), which the scan follows and `source` — the package

@@ -510,6 +510,52 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 write(joinpath(dep, "src", "lib.rs"), "pub fn helper() -> i32 { 2 }")
                 RustCall._artifact_reset_digest_caches!()
                 @test RustCall.compute_crate_hash(RustCall.scan_crate(crate)) != bumped_fork
+
+                # A workspace member takes the real crate through the root's
+                # `[workspace.dependencies]`, and the lockfile is the root's:
+                # the release crates whose lines leave the identity are found
+                # from the member and the root together, so a patch bump
+                # recorded in the root lock moves nothing (#372 review).
+                ws = joinpath(dir, "ws"); member = joinpath(ws, "member")
+                mkpath(joinpath(member, "src"))
+                write(joinpath(member, "src", "lib.rs"), "pub fn answer() -> i32 { 42 }")
+                write(joinpath(ws, "Cargo.toml"), """
+                    [workspace]
+                    members = ["member"]
+                    resolver = "2"
+
+                    [workspace.dependencies]
+                    rustcall_julia_macros = { path = $(repr(real)) }
+                    """)
+                write(joinpath(member, "Cargo.toml"), """
+                    [package]
+                    name = "ws_member"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [lib]
+                    crate-type = ["cdylib"]
+
+                    [dependencies]
+                    rustcall_julia_macros = { workspace = true }
+                    """)
+                run(pipeline(Cmd(`cargo generate-lockfile --offline`; dir = ws); stdout = devnull, stderr = devnull))
+                @test RustCall._rustcall_release_names_in(ws) ==
+                      Set(["rustcall_julia_macros", "rustcall_julia_macros_impl", "rustcall_core"])
+                @test isempty(RustCall._rustcall_release_names_in(member))
+                RustCall._artifact_reset_digest_caches!()
+                ws_key = RustCall.compute_crate_hash(RustCall.scan_crate(member))
+                ws_lock = joinpath(ws, "Cargo.lock")
+                pinned = "name = \"rustcall_julia_macros\"\nversion = \"$(real_version)\""
+                @test occursin(pinned, read(ws_lock, String))
+                write(ws_lock, replace(read(ws_lock, String),
+                                       pinned => "name = \"rustcall_julia_macros\"\nversion = \"99.0.0\""))
+                RustCall._artifact_reset_digest_caches!()
+                @test RustCall.compute_crate_hash(RustCall.scan_crate(member)) == ws_key
+                # ...while any other change to the root lock still moves it.
+                write(ws_lock, read(ws_lock, String) * "# trailing\n")
+                RustCall._artifact_reset_digest_caches!()
+                @test RustCall.compute_crate_hash(RustCall.scan_crate(member)) != ws_key
             end
         end
     end
