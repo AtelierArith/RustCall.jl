@@ -680,6 +680,20 @@ function _image_is_current(lib_name::String, handle::Ptr{Cvoid}, generation::Int
            get(ARTIFACT_GENERATIONS, lib_name, 0) == generation
 end
 
+# The positional binding a `release_generics` argument names. A bare type or a
+# tuple of types is taken as it is — it is matched against what the rows
+# *recorded*, not against the current registration, so an instantiation built
+# before the generic was re-registered with another arity (`f<T>` to
+# `f<T, U>`) is still released by the spelling that built it (#397 review). A
+# mapping names parameters and must go through the current registration.
+function _release_binding(registered, instantiation)
+    instantiation isa Type && return (instantiation,)
+    if instantiation isa Tuple && !isempty(instantiation) && all(t -> t isa Type, instantiation)
+        return Tuple(Type[t for t in instantiation])
+    end
+    return _owner_binding(registered, _generic_binding(registered, instantiation))
+end
+
 # Whether the image an instantiation is about to be published against was
 # opened from the copy the batch memo names — or the instantiation is not from
 # a batch at all. Trivially true for the task that installed the image: it
@@ -1268,8 +1282,7 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
     # default compiler, or before the generic was re-registered, is still this
     # generic's and still mapped (#397 review).
     selected = isempty(instantiations) ? nothing :
-               Set{Tuple}(_owner_binding(registered, _generic_binding(registered, inst))
-                          for inst in instantiations)
+               Set{Tuple}(_release_binding(registered, inst) for inst in instantiations)
 
     # The images to retire, found under one lock: every registered
     # instantiation owned by `name` (and selected, if a set was given), grouped

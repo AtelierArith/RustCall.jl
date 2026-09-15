@@ -591,6 +591,17 @@ end
                     @test RustCall.release_generics("gc397_id", Int16) == 1
                     @test cached(Int16) === nothing
                     @test !(built.lib_name in RustCall.list_loaded_libraries())
+                    # ...and by the spelling that built it even after the
+                    # arity changed: a positional request is matched against
+                    # the recorded bindings, not the current parameter list.
+                    RustCall.GENERIC_FUNCTION_REGISTRY["gc397_id"] = original
+                    @test RustCall.call_generic_function("gc397_id", Int16(5)) == Int16(5)
+                    two = cached(Int16)
+                    RustCall.register_generic_function("gc397_id",
+                        "pub fn gc397_id<T: Copy, U: Copy>(x: T, _y: U) -> T { x }", [:T, :U])
+                    @test RustCall.release_generics("gc397_id", Int16) == 1
+                    @test !(two.lib_name in RustCall.list_loaded_libraries())
+                    @test_throws ArgumentError RustCall.release_generics("gc397_id", :T => Int16)
                 finally
                     RustCall.GENERIC_FUNCTION_REGISTRY["gc397_id"] = original
                 end
