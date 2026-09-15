@@ -215,7 +215,8 @@ end
             # — is an executable Cargo hands rustc, hashed the same way.
             @test RustCall._ei_rustc_executables(Dict("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" => wrapper), crate) ==
                   ["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" => realpath(wrapper)]
-            for flags in ("-C linker=$(wrapper)", "-Clinker=$(wrapper) -C opt-level=1", "--codegen linker=$(wrapper)")
+            for flags in ("-C linker=$(wrapper)", "-Clinker=$(wrapper) -C opt-level=1", "--codegen linker=$(wrapper)",
+                          "--codegen=linker=$(wrapper)")
                 @test RustCall._ei_env_flag_linkers(["RUSTFLAGS" => flags], Dict{String, String}(), crate) ==
                       ["RUSTFLAGS:linker" => realpath(wrapper)]
             end

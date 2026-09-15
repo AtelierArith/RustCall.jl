@@ -387,14 +387,16 @@ end
 
 # An executable named by a `-C linker=<path>` argument in a flags value
 # (`RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, …), as
-# `<label>:linker => path`; the argument is spelled `-Clinker=`, `-C linker=`
-# or `--codegen linker=`.
+# `<label>:linker => path`; the argument is spelled `-Clinker=`, `-C linker=`,
+# `--codegen linker=` or `--codegen=linker=`.
 function _ei_flag_linkers(tokens, label::AbstractString, env, crate_dir::AbstractString)
     out = Pair{String, Union{Nothing, String}}[]
     toks = collect(String, tokens)
     for (i, t) in enumerate(toks)
         spec = if startswith(t, "-Clinker=")
             t[length("-Clinker=") + 1:end]
+        elseif startswith(t, "--codegen=linker=")
+            t[length("--codegen=linker=") + 1:end]
         elseif (t == "-C" || t == "--codegen") && i < length(toks) && startswith(toks[i + 1], "linker=")
             toks[i + 1][length("linker=") + 1:end]
         else
