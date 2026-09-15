@@ -167,12 +167,16 @@ fn overrides_sources(manifest: &Path) -> bool {
     doc.contains_key("patch") || doc.contains_key("replace")
 }
 
-/// Whether Cargo's configuration overrides a dependency's source with a
-/// local checkout — the `paths = [...]` key of any `.cargo/config.toml` (or
-/// `config`) from the extractor's directory up, or of `$CARGO_HOME`'s. Such
-/// an override compiles sources no manifest and no lockfile names, so a build
-/// under one reports no source digest and is identified by its bytes. The
-/// files that exist are registered as rerun triggers.
+/// Whether Cargo's configuration overrides a dependency's source — the
+/// `paths = [...]` key or a `[source.<name>] replace-with` of any
+/// `.cargo/config.toml` (or `config`) from the extractor's directory up, or of
+/// `$CARGO_HOME`'s. Such an override compiles sources no manifest and no
+/// lockfile names, so a build under one reports no source digest and is
+/// identified by its bytes. The files that exist are registered as rerun
+/// triggers. Cargo discovers configuration from its *invocation* directory;
+/// `Pkg.build("RustCall")` runs Cargo in the crate directory, which is the
+/// build this digest describes — a build run from elsewhere is under
+/// configuration this script cannot see.
 fn config_overrides_sources(dir: &Path) -> bool {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let start = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -196,11 +200,24 @@ fn config_overrides_sources(dir: &Path) -> bool {
             continue;
         }
         println!("cargo:rerun-if-changed={}", file.display());
-        let has_paths = fs::read_to_string(&file)
+        // `paths = [...]`, and `[source.<name>] replace-with = "..."`: either
+        // compiles sources the manifests and the lockfile do not name.
+        let overriding = fs::read_to_string(&file)
             .ok()
             .and_then(|text| text.parse::<toml::Table>().ok())
-            .is_some_and(|doc| doc.contains_key("paths"));
-        overrides |= has_paths;
+            .is_some_and(|doc| {
+                doc.contains_key("paths")
+                    || doc
+                        .get("source")
+                        .and_then(|s| s.as_table())
+                        .is_some_and(|sources| {
+                            sources.values().any(|src| {
+                                src.as_table()
+                                    .is_some_and(|t| t.contains_key("replace-with"))
+                            })
+                        })
+            });
+        overrides |= overriding;
     }
     overrides
 }
@@ -263,9 +280,12 @@ fn manifest_without_package_version(path: &Path) -> Vec<u8> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
+    // Lines keep their own endings (`split_inclusive`), so the only bytes
+    // that leave are the version line's: a CRLF file, or one without a final
+    // newline, stays exactly that, as `include_str!("../Cargo.toml")` sees it.
     let mut in_package = false;
     let mut kept = String::new();
-    for line in text.lines() {
+    for line in text.split_inclusive('\n') {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
             in_package = trimmed == "[package]";
@@ -276,7 +296,6 @@ fn manifest_without_package_version(path: &Path) -> Vec<u8> {
             continue;
         }
         kept.push_str(line);
-        kept.push('\n');
     }
     kept.into_bytes()
 }
@@ -294,6 +313,9 @@ fn lockfile_without_release_versions(
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
+    // Byte for byte apart from the lines rewritten: each block's lines keep
+    // their own endings (`split_inclusive`), and a rewritten reference keeps
+    // the ending of the line it replaces.
     let mut kept = String::new();
     let blocks: Vec<&str> = text.split("\n[[package]]").collect();
     for (i, block) in blocks.iter().enumerate() {
@@ -308,14 +330,16 @@ fn lockfile_without_release_versions(
                 .map(str::to_owned)
         });
         let strip = !has_source && name.is_some_and(|n| release.contains(&n));
-        for line in block.lines() {
+        for line in block.split_inclusive('\n') {
             let trimmed = line.trim();
             if strip && trimmed.starts_with("version") && trimmed[7..].trim_start().starts_with('=')
             {
                 continue;
             }
-            kept.push_str(&unqualified_reference(line, versions));
-            kept.push('\n');
+            let ending_len = line.len() - line.trim_end_matches(['\r', '\n']).len();
+            let (body, ending) = line.split_at(line.len() - ending_len);
+            kept.push_str(&unqualified_reference(body, versions));
+            kept.push_str(ending);
         }
     }
     kept.into_bytes()
