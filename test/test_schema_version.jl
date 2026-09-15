@@ -636,16 +636,28 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         # `Pkg.build`), and the bytes form otherwise (a raw `cargo build`, or
         # a `RUSTCALL_EXTRACT` binary from elsewhere) — never a value the
         # binary reports about itself (#409).
+        # Read the record and the fingerprint together, after the reset above:
+        # another test file in the same session (`test_native_layout` runs
+        # `deps/build.jl`) may rewrite the record, and a line memoized before
+        # that must not be compared with a record read after it.
+        RustCall._reset_extractor_state!()
+        fresh_parts, _ = RustCall._toolchain_fingerprint_inputs()
+        fresh_line = only(filter(p -> startswith(p, "extractor="), fresh_parts))
         record = RustCall.read_extractor_identity(RustCall.extractor_path())
         if record === nothing || record["canonical"] !== true
-            @test extractor_line == "extractor=binary:$(RustCall.extractor_digest())"
+            @test fresh_line == "extractor=binary:$(RustCall.extractor_digest())"
+        else
+            @test fresh_line == "extractor=$(record["source_digest"])"
+            # The v0.4.0 cross-check: the record's digest is what the binary's
+            # own `build.rs` embedded, when nothing that script never saw is
+            # present (configuration files, flags).
+            extra = filter(i -> !startswith(i, "crate:") && i != "lockfile", record["inputs"])
+            if RustCall.check_rustc_available() && isempty(extra)
+                reported = strip(read(`$(RustCall.extractor_path()) source-digest`, String))
+                @test occursin(r"^[0-9a-f]{64}$", reported)
+                @test record["source_digest"] == reported
+            end
         end
-        if RustCall.check_rustc_available() && record !== nothing && record["canonical"] === true
-            reported = strip(read(`$(RustCall.extractor_path()) source-digest`, String))
-            @test occursin(r"^[0-9a-f]{64}$", reported)
-            @test extractor_line == "extractor=$(reported)"
-            @test RustCall.extractor_source_digest() == reported
-            @test length(RustCall.toolchain_fingerprint()) == 64
-        end
+        @test length(RustCall.toolchain_fingerprint()) == 64
     end
 end

@@ -89,11 +89,15 @@ function _ei_parse_tree_line(line::AbstractString)
     return (; name = String(parts[1]), version = String(SubString(parts[2], 2)), source)
 end
 
-# Every package in the resolved graph, from Cargo. `--target all` so the set
-# does not depend on the platform this runs on; `--locked --offline` so nothing
-# is written and nothing is fetched (the build that just ran has the cache warm).
+# Every package in the resolved graph, from Cargo, for the host target — the
+# one the build was for. Not `--target all`: that asks for every platform's
+# packages, which a build never fetched, and `--offline` then fails; the
+# digest hashes only local crates and the lockfile, so the platform-specific
+# registry packages change nothing in it either way. `--locked --offline` so
+# nothing is written and nothing is fetched (the build that just ran has the
+# cache warm).
 function _ei_packages(cargo::Cmd, crate_dir::AbstractString, env)
-    args = String["tree", "--locked", "--offline", "--target", "all",
+    args = String["tree", "--locked", "--offline",
                   "--edges", "normal,build", "--prefix", "none", "--format", "{p}"]
     lines = _ei_cargo_lines(cargo, args, crate_dir, env)
     lines === nothing && return nothing
