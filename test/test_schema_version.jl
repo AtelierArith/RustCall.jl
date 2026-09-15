@@ -409,13 +409,34 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                   Set(["rustcall_julia_macros", "rustcall_julia_macros_impl", "rustcall_core"])
             fixture_lock = read(joinpath(fixture, "Cargo.lock"), String)
             real_version = TOML.parsefile(joinpath(real, "Cargo.toml"))["package"]["version"]
+            # A Windows checkout may carry CRLF line endings; whichever the
+            # file has, only the version lines leave and every other byte stays.
+            nl = occursin("\r\n", fixture_lock) ? "\r\n" : "\n"
             expected = fixture_lock
             for crate in ("rustcall_julia_macros", "rustcall_julia_macros_impl", "rustcall_core")
-                @test occursin("name = \"$(crate)\"\nversion = \"$(real_version)\"\n", expected)
-                expected = replace(expected, "name = \"$(crate)\"\nversion = \"$(real_version)\"\n" =>
-                                             "name = \"$(crate)\"\n")
+                @test occursin("name = \"$(crate)\"$(nl)version = \"$(real_version)\"$(nl)", expected)
+                expected = replace(expected, "name = \"$(crate)\"$(nl)version = \"$(real_version)\"$(nl)" =>
+                                             "name = \"$(crate)\"$(nl)")
             end
             @test String(RustCall._identity_file_bytes(joinpath(fixture, "Cargo.lock"))) == expected
+            # ...and the same file with the other line ending is treated alike.
+            mktempdir() do crlf_dir
+                other_nl = nl == "\n" ? "\r\n" : "\n"
+                # The fixture's manifest points at `deps/` relatively; here
+                # the same dependency by absolute path.
+                write(joinpath(crlf_dir, "Cargo.toml"), """
+                    [package]
+                    name = "sample_crate"
+                    version = "0.1.0"
+                    edition = "2021"
+
+                    [dependencies]
+                    rustcall_julia_macros = { path = $(repr(real)) }
+                    """)
+                write(joinpath(crlf_dir, "Cargo.lock"), replace(fixture_lock, nl => other_nl))
+                @test String(RustCall._identity_file_bytes(joinpath(crlf_dir, "Cargo.lock"))) ==
+                      replace(expected, nl => other_nl)
+            end
             # Any other file, and a manifest that does not parse, hash as they are.
             @test digest("lib.rs", "pub fn a() {}") != digest("lib.rs", "pub fn b() {}")
             @test digest("Cargo.toml", "not = [toml") == RustCall._file_content_digest(joinpath(dir, "Cargo.toml"))
