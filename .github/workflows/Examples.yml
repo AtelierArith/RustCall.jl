@@ -36,6 +36,7 @@ jobs:
         package:
           - MyExample.jl
           - SampleCrate.jl
+          - RustCrateMacro.jl
           - SampleCratePyO3.jl
           - SampleCratePyO3Only.jl
           - RustCrateMacroPyO3Only.jl

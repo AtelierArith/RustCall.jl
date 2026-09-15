@@ -17,6 +17,13 @@ This page collects repository-oriented information that no longer lives in the t
 - `examples/SampleCrate.jl`: a Julia package with the Rust crate
   `deps/sample_crate` embedded in it, using `#[julia]` (Rust and Julia in
   separate files, bindings written by `deps/build.jl`, tested with `Pkg.test()`).
+  Its `src/inline.jl` also carries a `rust"""` block beside those bindings, and
+  the test suite checks that the two libraries coexist.
+- `examples/RustCrateMacro.jl`: a Julia package that binds a `#[julia]` crate
+  with the `@rust_crate` macro at its top level (`submodule="Bindings"`, built
+  while the package is precompiled, nothing generated in the repository) and
+  carries a `rust"""` block in the same module; all three front doors coexist
+  and compose.
 - `examples/SampleCratePyO3.jl`: a Julia package with the dual Julia/Python
   crate `deps/sample_crate_pyo3` embedded in it; `deps/sample_crate_pyo3/main.py`
   is its Python consumer.

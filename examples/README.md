@@ -20,7 +20,8 @@ Before running the examples, ensure you have:
 | Example | Description | Difficulty | Key Features |
 |---------|-------------|------------|--------------|
 | [MyExample.jl](./MyExample.jl/) | Julia package using `rust""` string literal | Beginner | Inline Rust code, basic FFI |
-| [SampleCrate.jl](./SampleCrate.jl/) | Julia package with a Rust crate using `#[julia]` embedded under `deps/sample_crate/` | Intermediate | `#[julia]`, `@rust_crate`, `write_bindings_to_file`, Rust and Julia in separate files |
+| [SampleCrate.jl](./SampleCrate.jl/) | Julia package with a Rust crate using `#[julia]` embedded under `deps/sample_crate/`, plus a `rust"""` block in `src/inline.jl` | Intermediate | `#[julia]`, `@rust_crate`, `write_bindings_to_file`, coexistence of the crate bindings with `@rust_str`, Rust and Julia in separate files |
+| [RustCrateMacro.jl](./RustCrateMacro.jl/) | Julia package that binds a `#[julia]` crate with the `@rust_crate` macro at its top level and adds a `rust"""` block in the same module | Intermediate | `@rust_crate ... submodule=`, `#[julia]`, inline `rust"""`, all three front doors coexisting and composing |
 | [SampleCratePyO3.jl](./SampleCratePyO3.jl/) | Julia package with a dual Julia/Python crate embedded under `deps/sample_crate_pyo3/` | Advanced | PyO3 integration, feature flags |
 | [SampleCratePyO3Only.jl](./SampleCratePyO3Only.jl/) | Julia package with a **PyO3-only** crate (no RustCall attribute) embedded under `deps/sample_crate_pyo3_only/`, bound through RustCall's generated wrapper crate | Advanced | `#[pyfunction]` / `#[pyclass]` without `#[julia]`, `PyResult` → `RustResult`, `:link_libpython` (needs a Python interpreter to build) |
 | [RustCrateMacroPyO3Only.jl](./RustCrateMacroPyO3Only.jl/) | The same **PyO3-only** shape, embedded under `deps/macro_pyo3_only/`, bound with the **`@rust_crate` macro** at the package's top level instead of a `deps/build.jl` | Advanced | `@rust_crate ... submodule="Bindings"` in a package, bindings generated while the package is precompiled, nothing generated in the repository, `:link_libpython` |
@@ -30,18 +31,21 @@ Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
 `Examples` GitHub workflow runs them for every push. Each package is
 **self-contained**: the Rust crate it binds is a plain Cargo crate under its own
 `deps/<crate>/` (the layout the [Precompilation Support](../docs/src/precompilation.md)
-guide prescribes), and no Julia file contains Rust source. The only reference an
-example makes outside its own directory is the `rustcall_julia_macros` path
-dependency in its `Cargo.toml`, because the proc-macro crate is not on crates.io
-yet — and the two PyO3-only packages, `SampleCratePyO3Only.jl` and
-`RustCrateMacroPyO3Only.jl`, make none at all: their crates depend on pyo3
-alone, and the wrapper crate RustCall generates for each is what depends on
-`rustcall_julia_macros`. (RustCall's own test suite uses separate fixture crates
-under `test/fixtures/`, not the examples.)
+guide prescribes). Most keep Rust and Julia in separate files; the inline
+`rust"""` (the `@rust_str` macro) is the subject of `MyExample.jl`, and
+`SampleCrate.jl` and `RustCrateMacro.jl` use it deliberately beside a crate to
+show the two front doors coexisting. The only reference an example makes outside
+its own directory is the `rustcall_julia_macros` path dependency in its
+`Cargo.toml`, because the proc-macro crate is not on crates.io yet — and the two
+PyO3-only packages, `SampleCratePyO3Only.jl` and `RustCrateMacroPyO3Only.jl`,
+make none at all: their crates depend on pyo3 alone, and the wrapper crate
+RustCall generates for each is what depends on `rustcall_julia_macros`.
+(RustCall's own test suite uses separate fixture crates under `test/fixtures/`,
+not the examples.)
 
 ```bash
-# any of MyExample.jl, SampleCrate.jl, SampleCratePyO3.jl, SampleCratePyO3Only.jl,
-# RustCrateMacroPyO3Only.jl
+# any of MyExample.jl, SampleCrate.jl, RustCrateMacro.jl, SampleCratePyO3.jl,
+# SampleCratePyO3Only.jl, RustCrateMacroPyO3Only.jl
 cd examples/SampleCrate.jl
 julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
@@ -118,6 +122,7 @@ A Julia package with a Rust crate embedded under `deps/sample_crate/`, demonstra
 - Struct definitions with methods
 - Property access syntax for struct fields
 - The package workflow: `deps/build.jl` writes the bindings with `write_bindings_to_file`, `Pkg.test()` tests them; Rust in `deps/sample_crate/src/lib.rs`, Julia in `src/`
+- Coexistence with the `rust"""` (`@rust_str`) macro: `src/inline.jl` carries an inline block next to the crate bindings, and `test/runtests.jl` checks that a name shared by both libraries resolves per library
 
 **How to build the crate alone:**
 ```bash
@@ -149,6 +154,44 @@ julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```julia
 using SampleCrate
 safe_divide(1.0, 0.0)   # throws DivideError — the Julia layer over Result<f64, i32>
+inline_hypot(3.0, 4.0)  # 5.0 — from the package's own rust""" block
+```
+
+The package carries both the crate bound by `deps/build.jl` and an inline
+`rust"""` block in `src/inline.jl`; the two libraries coexist, and
+`inline_distance(Point(0.0, 0.0), Point(3.0, 4.0))` composes them. See the
+"Coexistence with `rust\"\"\"`" section of the
+[package README](./SampleCrate.jl/README.md).
+
+### RustCrateMacro.jl
+
+A Julia package that binds a `#[julia]` crate with the **`@rust_crate` macro**
+at its top level (`@rust_crate ... submodule="Bindings"`) and carries an inline
+`rust"""` block in the same module. It is the `#[julia]` counterpart of
+`RustCrateMacroPyO3Only.jl` (whose crate is PyO3-only) and the macro counterpart
+of `SampleCrate.jl` (which binds its crate with `write_bindings_to_file`).
+
+**Features demonstrated:**
+- `@rust_crate ... submodule="Bindings"` in a package's `src/`, with the
+  bindings generated while the package is precompiled and nothing written into
+  the repository
+- A crate that carries `#[julia]` from `rustcall_julia_macros`, bound by the
+  macro instead of a `deps/build.jl`
+- All three front doors — `#[julia]`, `@rust_crate`, and inline `rust"""` —
+  coexisting in one package, with `inline_norm(Point(...))` composing the crate
+  bindings and the inline library
+- A shared name across two libraries resolving per module (#250)
+
+**How to use from Julia:**
+```bash
+cd examples/RustCrateMacro.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
+```
+```julia
+using RustCrateMacro
+add(Int32(2), Int32(3))          # 5      — from the crate, through @rust_crate
+inline_hypot(3.0, 4.0)           # 5.0    — from the inline rust""" block
+inline_norm(Point(3.0, 4.0))     # 5.0    — the two joined
 ```
 
 ### SampleCratePyO3.jl
@@ -310,24 +353,31 @@ We recommend learning RustCall.jl in this order:
    - Explore struct handling and property access
    - Learn about `Result<T, E>` and `Option<T>` support
    - See how a package keeps Rust and Julia in separate files and tests them with `Pkg.test()`
+   - See the crate bindings coexist with an inline `rust"""` block (`@rust_str`)
 
-3. **Explore SampleCratePyO3.jl** (optional)
+3. **Explore RustCrateMacro.jl**
+   - Bind a `#[julia]` crate with `@rust_crate ... submodule="Bindings"` at a
+     package's top level, instead of `write_bindings_to_file` in `deps/build.jl`
+   - See all three front doors — `#[julia]`, `@rust_crate` and inline
+     `rust"""` — coexist in one package, and compose in `inline_norm`
+
+4. **Explore SampleCratePyO3.jl** (optional)
    - Learn how to create dual Julia/Python bindings
    - Understand feature flags for conditional compilation
    - See how to share core logic between languages
 
-4. **Explore SampleCratePyO3Only.jl** (optional)
+5. **Explore SampleCratePyO3Only.jl** (optional)
    - Bind a PyO3 crate you cannot annotate: RustCall's generated wrapper crate
    - See what `PyResult<T>` becomes, and why its error is opaque
    - Understand the link plan and the Python requirement of `:link_libpython`
 
-5. **Compare RustCrateMacroPyO3Only.jl** (optional)
+6. **Compare RustCrateMacroPyO3Only.jl** (optional)
    - The same crate shape bound with `@rust_crate ... submodule="Bindings"` in
      a package's `src/`, instead of `write_bindings_to_file` in a `deps/build.jl`
    - See what a package that generates nothing looks like, and when to prefer
      each of the two front doors
 
-6. **Read the documentation**
+7. **Read the documentation**
    - [Tutorial](../docs/src/tutorial.md)
    - [Crate Bindings (Phase 6)](../docs/src/crate_bindings.md)
    - [Troubleshooting](../docs/src/troubleshooting.md)
