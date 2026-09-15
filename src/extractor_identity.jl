@@ -486,8 +486,10 @@ function _ei_resolve_executable(name::AbstractString, env, crate_dir::AbstractSt
             Sys.iswindows() && push!(candidates, joinpath(dir, String(name) * ".exe"))
         end
     end
+    # Cargo skips a candidate it cannot execute (a plain file of the same
+    # name earlier on `PATH`) and runs the next; so does this.
     for c in candidates
-        isfile(c) && return _ei_canonical(c)
+        isfile(c) && Sys.isexecutable(c) && return _ei_canonical(c)
     end
     return nothing
 end

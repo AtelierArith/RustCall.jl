@@ -154,11 +154,14 @@ end
             # A wrapper Cargo runs in front of rustc is an input by its
             # *bytes*: the same RUSTC_WRAPPER value with a changed executable
             # is a different build; one that cannot be resolved declines.
-            wrapper = joinpath(dir, "wrapper.sh"); write(wrapper, "#!/bin/sh\nexec \"\$@\"\n")
+            # A stub the resolver may select must be executable: Cargo skips
+            # a candidate it cannot run, and so does the resolver.
+            stub(path, body) = (write(path, body); chmod(path, 0o755); path)
+            wrapper = joinpath(dir, "wrapper.sh"); stub(wrapper, "#!/bin/sh\nexec \"\$@\"\n")
             with_wrapper = decide(packages = bumped, env = ["RUSTC_WRAPPER" => wrapper],
                                   executables = ["RUSTC_WRAPPER" => wrapper])
             @test with_wrapper.canonical && "executable:RUSTC_WRAPPER" in with_wrapper.inputs
-            write(wrapper, "#!/bin/sh\nexec \"\$@\" -C opt-level=0\n")
+            stub(wrapper, "#!/bin/sh\nexec \"\$@\" -C opt-level=0\n")
             @test decide(packages = bumped, env = ["RUSTC_WRAPPER" => wrapper],
                          executables = ["RUSTC_WRAPPER" => wrapper]).digest != with_wrapper.digest
             r = decide(packages = bumped, env = ["RUSTC_WRAPPER" => "no-such-wrapper"],
@@ -168,17 +171,25 @@ end
             @test RustCall._ei_resolve_executable(wrapper, Dict{String, String}(), crate) == realpath(wrapper)
             @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => dir), crate) == realpath(wrapper)
             @test RustCall._ei_resolve_executable("missing", Dict("PATH" => dir), crate) === nothing
+            # A same-named plain file earlier on PATH is not a candidate Cargo
+            # would run, so the executable one behind it is the one hashed.
+            if !Sys.iswindows()
+                shadow = joinpath(dir, "shadow"); mkpath(shadow)
+                write(joinpath(shadow, "wrapper.sh"), "not a program"); chmod(joinpath(shadow, "wrapper.sh"), 0o644)
+                @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => shadow * ":" * dir), crate) == realpath(wrapper)
+                @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => shadow), crate) === nothing
+            end
             # A relative PATH entry is taken from the crate directory (where
             # Cargo runs), not from this process's working directory.
-            mkpath(joinpath(crate, "tools")); write(joinpath(crate, "tools", "wrap"), "#!/bin/sh\n")
-            mkpath(joinpath(dir, "tools")); write(joinpath(dir, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
+            mkpath(joinpath(crate, "tools")); stub(joinpath(crate, "tools", "wrap"), "#!/bin/sh\n")
+            mkpath(joinpath(dir, "tools")); stub(joinpath(dir, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
             cd(dir) do
                 @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => "tools"), crate) ==
                       realpath(joinpath(crate, "tools", "wrap"))
                 # An empty Unix PATH component is the working directory —
                 # the crate directory — and is searched in its position.
                 if !Sys.iswindows()
-                    write(joinpath(crate, "wrap"), "#!/bin/sh\n"); write(joinpath(dir, "wrap"), "#!/bin/sh\nexit 1\n")
+                    stub(joinpath(crate, "wrap"), "#!/bin/sh\n"); stub(joinpath(dir, "wrap"), "#!/bin/sh\nexit 1\n")
                     @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => ":" * dir), crate) ==
                           realpath(joinpath(crate, "wrap"))
                     @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => dir * ":"), crate) ==
@@ -201,7 +212,7 @@ end
                   ["CARGO_BUILD_RUSTC_WRAPPER" => realpath(wrapper)]
             cargo_dir = joinpath(dir, "cfgroot", ".cargo"); mkpath(cargo_dir)
             write(joinpath(cargo_dir, "config.toml"), "[build]\nrustc-wrapper = \"tools/wrap.sh\"\n")
-            mkpath(joinpath(dir, "cfgroot", "tools")); write(joinpath(dir, "cfgroot", "tools", "wrap.sh"), "#!/bin/sh\n")
+            mkpath(joinpath(dir, "cfgroot", "tools")); stub(joinpath(dir, "cfgroot", "tools", "wrap.sh"), "#!/bin/sh\n")
             cfg_execs = RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(cargo_dir, "config.toml")],
                                                         Dict{String, String}(), crate)
             @test cfg_execs == ["config:ancestor:1:config.toml:rustc-wrapper" => realpath(joinpath(dir, "cfgroot", "tools", "wrap.sh"))]
@@ -218,8 +229,8 @@ end
             # is not the one Cargo runs.
             home = joinpath(dir, "myhome"); mkpath(joinpath(home, "tools")); mkpath(joinpath(dir, "tools"))
             write(joinpath(home, "config.toml"), "[build]\nrustc-wrapper = \"tools/wrap\"\n")
-            write(joinpath(home, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
-            write(joinpath(dir, "tools", "wrap"), "#!/bin/sh\n")
+            stub(joinpath(home, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
+            stub(joinpath(dir, "tools", "wrap"), "#!/bin/sh\n")
             @test RustCall._ei_config_executables(["config:home:config.toml" => joinpath(home, "config.toml")],
                                                   Dict{String, String}(), crate) ==
                   ["config:home:config.toml:rustc-wrapper" => realpath(joinpath(dir, "tools", "wrap"))]
