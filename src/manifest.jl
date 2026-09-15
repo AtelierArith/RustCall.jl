@@ -186,7 +186,9 @@ itself reports it (`rustcall-extract source-digest`, embedded by its
     built from other sources would otherwise move no key.
 
 A selected binary that cannot answer — one built from other sources without
-the subcommand, or one that fails it — is identified by its **bytes** instead
+the subcommand, one that fails it, or one whose `build.rs` declined to report
+a digest because it was not built from this tree's own layout (a fork with
+local crates of its own) — is identified by its **bytes** instead
 (`binary:<sha256>`, `extractor_digest`), never by this checkout's sources: the
 checkout describes this tree and says nothing about what that executable
 emits, and a bytes digest is exact for it. Such a binary is outside the

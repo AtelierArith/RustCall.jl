@@ -12,7 +12,10 @@
 //! the manifests, `rustcall_core` and whatever a fork adds beside it), and the
 //! locked versions of the registry crates it parses and prints with — with
 //! the `[package] version` of this tree's own release crates, and only those,
-//! left out — and is printed by `rustcall-extract source-digest`.
+//! left out — and is printed by `rustcall-extract source-digest`. It is
+//! reported only for this tree's own layout; a build from any other — a fork
+//! with local crates of its own — reports nothing and is identified by the
+//! bytes of the binary instead.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,18 +23,51 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+/// Every regular file under `dir`: `.rs` sources and whatever they
+/// `include_str!` / `include_bytes!` beside them — a template or a table is
+/// as much an input as the code that embeds it.
+fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            rust_sources(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            source_files(&path, out);
+        } else if path.is_file() {
             out.push(path);
         }
     }
+}
+
+/// Whether a manifest inherits anything from a workspace — a dependency or a
+/// package field spelled `{ workspace = true }`, or an explicit
+/// `[package] workspace = "..."`. Such a crate's inputs are not knowable from
+/// its own manifest, so a build that has one reports no source digest and is
+/// identified by its bytes instead.
+fn inherits_from_workspace(manifest: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return false;
+    };
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return false;
+    };
+    let inherits = |v: &toml::Value| v.as_table().is_some_and(|t| t.contains_key("workspace"));
+    if let Some(package) = doc.get("package").and_then(|p| p.as_table()) {
+        if package.contains_key("workspace") || package.values().any(inherits) {
+            return true;
+        }
+    }
+    let mut scopes: Vec<&toml::Table> = vec![&doc];
+    if let Some(targets) = doc.get("target").and_then(|t| t.as_table()) {
+        scopes.extend(targets.values().filter_map(|t| t.as_table()));
+    }
+    scopes.iter().any(|scope| {
+        ["dependencies", "build-dependencies", "dev-dependencies"]
+            .iter()
+            .filter_map(|table| scope.get(*table).and_then(|d| d.as_table()))
+            .any(|deps| deps.values().any(inherits))
+    })
 }
 
 /// The crates whose `[package] version` is the RustCall release version and
@@ -224,6 +260,22 @@ fn main() {
         .filter(|(name, dir)| is_release_crate(dir, name, &deps))
         .map(|(name, _)| name.clone())
         .collect();
+    // A source digest is reported only for this tree's own layout: every
+    // local crate one of the release crates in its place, none inheriting
+    // from a workspace. Anything else — a fork with a helper beside
+    // `rustcall_core`, a workspace member whose `path` lives in
+    // `[workspace.dependencies]` — has inputs this script cannot enumerate
+    // from the manifests, and claiming a digest for it would let an edit
+    // it does not see keep a stale cache alive. Such a binary reports
+    // nothing and RustCall identifies it by its bytes (`extractor_source_digest`).
+    let canonical = release.len() == named.len()
+        && !named
+            .iter()
+            .any(|(_, dir)| inherits_from_workspace(&dir.join("Cargo.toml")));
+    if !canonical {
+        println!("cargo:rustc-env=RUSTCALL_SOURCE_DIGEST=");
+        return;
+    }
 
     let mut hasher = Sha256::new();
     // The resolved dependency graph this binary is built against.
@@ -259,7 +311,7 @@ fn main() {
         let src = krate.join("src");
         println!("cargo:rerun-if-changed={}", src.display());
         let mut files = Vec::new();
-        rust_sources(&src, &mut files);
+        source_files(&src, &mut files);
         files.sort();
         for file in files {
             let rel = file.strip_prefix(krate).unwrap_or(&file);
