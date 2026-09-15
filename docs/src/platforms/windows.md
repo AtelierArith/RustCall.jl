@@ -26,11 +26,14 @@ If you prefer one — for example to pin a toolchain or use it outside Julia:
 
 A `rustc` on `PATH` takes precedence over the artifact toolchain.
 
-### Visual Studio Build Tools (required)
+### Visual Studio Build Tools (required for the MSVC target)
 
-Whichever toolchain is used — the artifact one or your own — linking on
-Windows needs the MSVC build tools and a Windows SDK; RustToolChain.jl does
-not provide a linker. The default MSVC toolchain requires Visual Studio Build Tools:
+RustCall's default target on Windows is MSVC (`x86_64-pc-windows-msvc`;
+`RustCall.get_default_target()`), and the artifact toolchain RustToolChain.jl
+installs is MSVC-only. Linking for that target needs the MSVC build tools and
+a Windows SDK whichever toolchain compiles — RustToolChain.jl does not provide
+a linker. Only the MinGW route below avoids them, and it needs the explicit
+configuration described there. The MSVC toolchain requires Visual Studio Build Tools:
 
 1. Download [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 
@@ -103,26 +106,35 @@ rustup default stable-x86_64-pc-windows-msvc
 - Visual Studio Build Tools (or full Visual Studio)
 - Windows SDK
 
-### MinGW Toolchain (Alternative)
+### MinGW Toolchain (alternative, configuration-dependent)
 
-MinGW uses GCC instead of MSVC:
+MinGW uses GCC instead of MSVC. It is **not** what RustCall selects by itself
+and **not** what the artifact toolchain provides, so it takes two explicit
+steps — a system toolchain with the GNU target, and RustCall told to compile
+for it:
 
 ```powershell
-# Install MinGW toolchain
+# Install a system toolchain with the GNU target (a rustup install on PATH
+# takes precedence over the artifact toolchain)
 rustup target add x86_64-pc-windows-gnu
-
-# Use for a specific build
-rustup run stable-x86_64-pc-windows-gnu cargo build
 ```
+
+```julia
+using RustCall
+RustCall.set_default_compiler(RustCall.RustCompiler(target_triple = "x86_64-pc-windows-gnu"))
+```
+
+Without the second step `rust"""` blocks are compiled for the default MSVC
+target and need the MSVC build tools regardless of what `rustup` installed.
+The MinGW route is not exercised by RustCall's CI (which runs the MSVC target).
 
 **Advantages**:
 - Smaller installation (no Visual Studio needed)
-- Simpler setup
 - Cross-compilation friendly
 
 **Disadvantages**:
 - Potential ABI incompatibility with some libraries
-- Less common in Windows ecosystem
+- Less common in Windows ecosystem, and not covered by RustCall's CI
 
 ### When to Use Which
 
