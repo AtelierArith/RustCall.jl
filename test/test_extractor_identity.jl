@@ -171,6 +171,30 @@ end
             @test RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => wrapper, "HOME" => dir), crate) ==
                   ["RUSTC_WRAPPER" => realpath(wrapper)]
             @test isempty(RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => ""), crate))
+            # Cargo's own spellings — the `CARGO_BUILD_*` variables and
+            # `[build]` keys of a configuration file — select the same
+            # executables and are hashed the same way.
+            @test RustCall._ei_rustc_executables(Dict("CARGO_BUILD_RUSTC_WRAPPER" => wrapper), crate) ==
+                  ["CARGO_BUILD_RUSTC_WRAPPER" => realpath(wrapper)]
+            cargo_dir = joinpath(dir, "cfgroot", ".cargo"); mkpath(cargo_dir)
+            write(joinpath(cargo_dir, "config.toml"), "[build]\nrustc-wrapper = \"tools/wrap.sh\"\n")
+            mkpath(joinpath(dir, "cfgroot", "tools")); write(joinpath(dir, "cfgroot", "tools", "wrap.sh"), "#!/bin/sh\n")
+            cfg_execs = RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(cargo_dir, "config.toml")],
+                                                        Dict{String, String}(), crate)
+            @test cfg_execs == ["config:ancestor:1:config.toml:rustc-wrapper" => realpath(joinpath(dir, "cfgroot", "tools", "wrap.sh"))]
+            r = decide(packages = bumped, executables = cfg_execs)
+            @test r.canonical && "executable:config:ancestor:1:config.toml:rustc-wrapper" in r.inputs
+            write(joinpath(cargo_dir, "config.toml"), "[build]\nrustc-wrapper = \"tools/missing.sh\"\n")
+            missing_exec = RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(cargo_dir, "config.toml")],
+                                                           Dict{String, String}(), crate)
+            @test only(missing_exec) == ("config:ancestor:1:config.toml:rustc-wrapper" => nothing)
+            @test !decide(packages = bumped, executables = missing_exec).canonical
+            # A source replaced through the environment declines like one
+            # replaced through a file.
+            @test RustCall._ei_env_replaces_sources(Dict("CARGO_SOURCE_CRATES_IO_REPLACE_WITH" => "vendored"))
+            @test !RustCall._ei_env_replaces_sources(Dict("CARGO_HOME" => "/x"))
+            r = decide(packages = bumped, env = ["CARGO_SOURCE_*" => ""])
+            @test !r.canonical && occursin("CARGO_SOURCE_", r.reason)
 
             # A configuration that redirects a source — the `cargo vendor`
             # form, or `paths` — makes the build one this identity cannot

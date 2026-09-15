@@ -365,7 +365,9 @@ end
 # path`: Cargo runs them, and what they do to the compilation is decided by
 # their bytes, not by their names. A name that resolves to nothing is
 # reported as `key => nothing` and makes the build non-canonical.
-const _EI_RUSTC_EXECUTABLE_KEYS = ("RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER")
+const _EI_RUSTC_EXECUTABLE_KEYS = ("RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                                   "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER",
+                                   "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
 
 function _ei_rustc_executables(env, crate_dir::AbstractString)
     out = Pair{String, Union{Nothing, String}}[]
@@ -376,6 +378,43 @@ function _ei_rustc_executables(env, crate_dir::AbstractString)
     end
     return out
 end
+
+# The same executables when a discovered configuration file selects them
+# (`[build] rustc`, `rustc-wrapper`, `rustc-workspace-wrapper`), as
+# `config:<label>:<key> => path`. A relative path is resolved as Cargo
+# resolves paths in a configuration file: against the directory that holds
+# the `.cargo` directory (or the file's own directory for `$CARGO_HOME`).
+const _EI_CONFIG_EXECUTABLE_KEYS = ("rustc", "rustc-wrapper", "rustc-workspace-wrapper")
+
+function _ei_config_executables(config_files::Vector{Pair{String, String}}, env,
+                                crate_dir::AbstractString)
+    out = Pair{String, Union{Nothing, String}}[]
+    for (label, file) in config_files
+        startswith(label, "config:") || continue
+        doc = try
+            TOML.parsefile(file)
+        catch
+            continue   # an unreadable configuration declines elsewhere
+        end
+        build = get(doc, "build", nothing)
+        build isa AbstractDict || continue
+        base = basename(dirname(file)) == ".cargo" ? dirname(dirname(file)) : dirname(file)
+        for key in _EI_CONFIG_EXECUTABLE_KEYS
+            value = get(build, key, nothing)
+            value isa AbstractString && !isempty(value) || continue
+            resolved = (isabspath(value) || occursin('/', value) || occursin('\\', value)) ?
+                       _ei_resolve_executable(isabspath(value) ? value : joinpath(base, value), env, crate_dir) :
+                       _ei_resolve_executable(value, env, crate_dir)
+            push!(out, "$(label):$(key)" => resolved)
+        end
+    end
+    return out
+end
+
+# Environment variables that redirect a source — Cargo reads `[source.*]`
+# from `CARGO_SOURCE_<NAME>_REPLACE_WITH` / `_DIRECTORY` / … too — make the
+# build one this identity cannot describe, exactly like the file form.
+_ei_env_replaces_sources(env) = any(k -> startswith(String(k), "CARGO_SOURCE_"), keys(env))
 
 function _ei_resolve_executable(name::AbstractString, env, crate_dir::AbstractString)
     candidates = String[]
@@ -613,7 +652,9 @@ function extractor_build_identity(crate_dir::AbstractString; cargo::Cmd, env = E
     workspace = _ei_workspace_manifest(cargo, crate_dir, env)
     config_files = _ei_config_files(crate_dir, env)
     env_inputs = _ei_env_inputs(env)
-    executables = _ei_rustc_executables(env, crate_dir)
+    executables = vcat(_ei_rustc_executables(env, crate_dir),
+                       _ei_config_executables(config_files, env, crate_dir))
+    _ei_env_replaces_sources(env) && push!(env_inputs, "CARGO_SOURCE_*" => "")
     return _extractor_identity_decide(crate_dir, packages, workspace, config_files, env_inputs, executables)
 end
 
@@ -625,9 +666,11 @@ function _extractor_identity_decide(crate_dir::String, packages, workspace_manif
                                     executables = Pair{String, Union{Nothing, String}}[])
     inputs = String[]
     fail(reason) = (; canonical = false, digest = nothing, reason = String(reason), inputs)
-    # A `rustc` or wrapper the environment names is run by Cargo: its bytes
-    # are an input, and one that cannot be found is a build this identity
-    # cannot describe.
+    any(e -> first(e) == "CARGO_SOURCE_*", env_inputs) &&
+        return fail("the environment replaces a source (CARGO_SOURCE_*)")
+    # A `rustc` or wrapper the environment or a configuration file names is
+    # run by Cargo: its bytes are an input, and one that cannot be found is a
+    # build this identity cannot describe.
     resolved = Pair{String, String}[]
     for (key, file) in executables
         file === nothing && return fail("$(key) names an executable that could not be resolved")
