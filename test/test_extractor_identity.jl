@@ -75,9 +75,8 @@ end
                         pkg("syn", "2.0.1", nothing)]
             root = joinpath(crate, "Cargo.toml")
             none = Pair{String, String}[]
-            decide(; packages = packages, workspace = root, config = none, env = none,
-                     executables = Pair{String, Union{Nothing, String}}[]) =
-                RustCall._extractor_identity_decide(crate, packages, workspace, config, env, executables)
+            decide(; packages = packages, workspace = root, config = none, env = Dict{String, String}()) =
+                RustCall._extractor_identity_decide(crate, packages, workspace, config, env)
 
             good = decide()
             @test good.canonical
@@ -119,191 +118,72 @@ end
                                                           "2.0.1" => "2.0.2"))
             @test decide(packages = bumped).digest != changed
 
-            # Inputs the v0.4.0 script never saw: configuration and flags move
-            # the digest, and are listed.
-            cfg = joinpath(dir, "config.toml")
-            write(cfg, "[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n")
-            with_cfg = decide(packages = bumped, config = ["config:home:config.toml" => cfg])
-            @test with_cfg.canonical && with_cfg.digest != decide(packages = bumped).digest
-            @test "config:home:config.toml" in with_cfg.inputs
-            with_env = decide(packages = bumped, env = ["RUSTFLAGS" => "-C target-cpu=native"])
-            @test with_env.canonical && with_env.digest != decide(packages = bumped).digest
-            @test "env:RUSTFLAGS" in with_env.inputs
-            # An *empty* RUSTFLAGS is not an unset one: it overrides a config
-            # file's flags where an unset variable lets them apply.
-            empty_env = decide(packages = bumped, env = ["RUSTFLAGS" => ""])
-            @test empty_env.digest != decide(packages = bumped).digest
-            @test empty_env.digest != with_env.digest
-            @test RustCall._ei_env_inputs(Dict("RUSTFLAGS" => "", "HOME" => "/x")) == ["RUSTFLAGS" => ""]
-            @test isempty(RustCall._ei_env_inputs(Dict("HOME" => "/x")))
-            # The same policy every artifact key applies: profile overrides
-            # and rustc wrappers count, secrets never do.
-            @test RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => "true",
-                                               "RUSTC_WRAPPER" => "sccache",
-                                               "CARGO_REGISTRY_TOKEN" => "hunter2")) ==
-                  ["CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => "true", "RUSTC_WRAPPER" => "sccache"]
-            with_profile = decide(packages = bumped, env = ["CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS" => "true"])
-            @test with_profile.canonical && with_profile.digest != decide(packages = bumped).digest
-            # The value `deps/build.jl` pins for every build — what the
-            # manifest pins too — is the baseline, not an input; any other
-            # value of that variable is.
-            @test isempty(RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind")))
-            @test RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) ==
-                  ["CARGO_PROFILE_RELEASE_PANIC" => "abort"]
-
-            # A wrapper Cargo runs in front of rustc is an input by its
-            # *bytes*: the same RUSTC_WRAPPER value with a changed executable
-            # is a different build; one that cannot be resolved declines.
-            # A stub the resolver may select must be executable: Cargo skips
-            # a candidate it cannot run, and so does the resolver.
-            stub(path, body) = (write(path, body); chmod(path, 0o755); path)
-            wrapper = joinpath(dir, "wrapper.sh"); stub(wrapper, "#!/bin/sh\nexec \"\$@\"\n")
-            with_wrapper = decide(packages = bumped, env = ["RUSTC_WRAPPER" => wrapper],
-                                  executables = ["RUSTC_WRAPPER" => wrapper])
-            @test with_wrapper.canonical && "executable:RUSTC_WRAPPER" in with_wrapper.inputs
-            stub(wrapper, "#!/bin/sh\nexec \"\$@\" -C opt-level=0\n")
-            @test decide(packages = bumped, env = ["RUSTC_WRAPPER" => wrapper],
-                         executables = ["RUSTC_WRAPPER" => wrapper]).digest != with_wrapper.digest
-            r = decide(packages = bumped, env = ["RUSTC_WRAPPER" => "no-such-wrapper"],
-                       executables = ["RUSTC_WRAPPER" => nothing])
-            @test !r.canonical && occursin("could not be resolved", r.reason)
-            # Resolution: absolute, relative to the crate directory, or on PATH.
-            @test RustCall._ei_resolve_executable(wrapper, Dict{String, String}(), crate) == realpath(wrapper)
-            @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => dir), crate) == realpath(wrapper)
-            @test RustCall._ei_resolve_executable("missing", Dict("PATH" => dir), crate) === nothing
-            # A same-named plain file earlier on PATH is not a candidate Cargo
-            # would run, so the executable one behind it is the one hashed.
-            if !Sys.iswindows()
-                shadow = joinpath(dir, "shadow"); mkpath(shadow)
-                write(joinpath(shadow, "wrapper.sh"), "not a program"); chmod(joinpath(shadow, "wrapper.sh"), 0o644)
-                @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => shadow * ":" * dir), crate) == realpath(wrapper)
-                @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => shadow), crate) === nothing
+            # The closed rule (#413): a digest is claimed only for a plain
+            # build. Nothing is hashed on top of the sources, so an
+            # environment or a configuration that cannot shape the build
+            # leaves the digest exactly where it is...
+            plain = decide(packages = bumped).digest
+            harmless = Dict("CARGO_HOME" => joinpath(dir, "h"), "CARGO_TARGET_DIR" => joinpath(dir, "t"),
+                            "CARGO_PROFILE_RELEASE_PANIC" => "unwind", "RUSTUP_TOOLCHAIN" => "stable",
+                            "RUSTUP_HOME" => "/r", "CARGO_TERM_COLOR" => "always", "CARGO_NET_OFFLINE" => "true",
+                            "CARGO_INCREMENTAL" => "0", "CARGO_REGISTRIES_CRATES_IO_PROTOCOL" => "sparse",
+                            "CARGO_REGISTRY_TOKEN" => "hunter2", "RUST_BACKTRACE" => "1",
+                            "HOME" => "/h", "PATH" => "/bin", "JULIA_NUM_THREADS" => "4",
+                            "RUSTCALL_EXTRACT" => "/e", "RUSTCALL_HELPERS" => "/l", "RUSTCALL_CACHE_DIR" => "/c")
+            r = decide(packages = bumped, env = harmless)
+            @test r.canonical && r.digest == plain
+            @test r.inputs == ["crate:rustcall_core", "crate:rustcall_extract", "lockfile"] ||
+                  Set(r.inputs) == Set(["crate:rustcall_core", "crate:rustcall_extract", "lockfile"])
+            cfg = joinpath(dir, "harmless.toml")
+            write(cfg, "[net]\noffline = true\n\n[term]\ncolor = \"always\"\n\n[registries.crates-io]\nprotocol = \"sparse\"\n")
+            r = decide(packages = bumped, config = ["config:home:config.toml" => cfg])
+            @test r.canonical && r.digest == plain
+            # ...while anything Cargo or rustc would act on declines, whatever
+            # its value — an *empty* RUSTFLAGS still overrides a
+            # configuration file's flags — with a reason that names the
+            # variable and never quotes its value.
+            for (k, v) in ("RUSTFLAGS" => "-C target-cpu=native", "RUSTFLAGS" => "",
+                           "CARGO_ENCODED_RUSTFLAGS" => "--cfg\x1fx", "CARGO_BUILD_RUSTFLAGS" => "-C opt-level=1",
+                           "RUSTC_WRAPPER" => "sccache", "RUSTC" => "/opt/rustc", "RUSTC_BOOTSTRAP" => "1",
+                           "CARGO_BUILD_RUSTC_WRAPPER" => "wrap", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" => "/opt/ld",
+                           "CARGO_PROFILE_RELEASE_OPT_LEVEL" => "0", "CARGO_PROFILE_RELEASE_PANIC" => "abort",
+                           "CARGO_SOURCE_CRATES_IO_REPLACE_WITH" => "vendored", "CARGO_UNSTABLE_BUILD_STD" => "std",
+                           "CARGO_CFG_FOO" => "", "__CARGO_TEST_ROOT" => "/x", "CC" => "clang", "PYO3_PYTHON" => "/usr/bin/python3")
+                r = decide(packages = bumped, env = merge(harmless, Dict(k => v)))
+                @test !r.canonical && r.digest === nothing
+                @test occursin(k, r.reason) && (isempty(v) || !occursin(v, r.reason))
             end
-            # A relative PATH entry is taken from the crate directory (where
-            # Cargo runs), not from this process's working directory.
-            mkpath(joinpath(crate, "tools")); stub(joinpath(crate, "tools", "wrap"), "#!/bin/sh\n")
-            mkpath(joinpath(dir, "tools")); stub(joinpath(dir, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
-            cd(dir) do
-                @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => "tools"), crate) ==
-                      realpath(joinpath(crate, "tools", "wrap"))
-                # An empty Unix PATH component is the working directory —
-                # the crate directory — and is searched in its position.
-                if !Sys.iswindows()
-                    stub(joinpath(crate, "wrap"), "#!/bin/sh\n"); stub(joinpath(dir, "wrap"), "#!/bin/sh\nexit 1\n")
-                    @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => ":" * dir), crate) ==
-                          realpath(joinpath(crate, "wrap"))
-                    @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => dir * ":"), crate) ==
-                          realpath(joinpath(dir, "wrap"))
-                end
+            r = decide(packages = bumped, env = Dict("RUSTFLAGS" => "", "CC" => "cc"))
+            @test occursin("CC, RUSTFLAGS", r.reason)
+            # A configuration file declines unless every top-level table is
+            # one that cannot shape the build; the reason names the table.
+            for (text, key) in (("[build]\nrustflags = [\"-C\", \"target-cpu=native\"]\n", "build"),
+                                ("[build]\nrustc-wrapper = \"sccache\"\n", "build"),
+                                ("[target.x86_64-unknown-linux-gnu]\nlinker = \"ld\"\n", "target"),
+                                ("[env]\nFOO = \"bar\"\n", "env"),
+                                ("[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"vendor\"\n", "source"),
+                                ("paths = [\"/somewhere/syn\"]\n", "paths"),
+                                ("include = [\"extra.toml\"]\n", "include"),
+                                ("[profile.release]\nopt-level = 1\n", "profile"),
+                                ("[patch.crates-io]\nsyn = { path = \"/x\" }\n", "patch"),
+                                ("[unstable]\nbuild-std = [\"std\"]\n", "unstable"),
+                                ("[net]\noffline = true\n\n[build]\njobs = 4\n", "build"),
+                                ("[something-new]\nx = 1\n", "something-new"))
+                f = joinpath(dir, "cfg.toml"); write(f, text)
+                r = decide(packages = bumped, config = ["config:ancestor:0:config.toml" => f])
+                @test !r.canonical && occursin("config:ancestor:0:config.toml", r.reason) && occursin("`$(key)`", r.reason)
             end
+            write(joinpath(dir, "cfg.toml"), "this is not toml = [")
+            r = decide(packages = bumped, config = ["config:ancestor:0:config.toml" => joinpath(dir, "cfg.toml")])
+            @test !r.canonical && occursin("does not parse", r.reason)
             # Windows environment names are case-insensitive: the copy the
-            # build hands over is spelled upper case before any lookup.
+            # build hands over is spelled upper case before any lookup or
+            # judgement, so `rustflags` declines there like `RUSTFLAGS`.
             @test RustCall._ei_normalize_env(Dict("cargo_home" => "x", "Path" => "y"); windows = true) ==
                   Dict("CARGO_HOME" => "x", "PATH" => "y")
             lower = Dict("cargo_home" => "x")
             @test RustCall._ei_normalize_env(lower; windows = false) === lower
-            @test RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => wrapper, "HOME" => dir), crate) ==
-                  ["RUSTC_WRAPPER" => realpath(wrapper)]
-            @test isempty(RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => ""), crate))
-            # Cargo's own spellings — the `CARGO_BUILD_*` variables and
-            # `[build]` keys of a configuration file — select the same
-            # executables and are hashed the same way.
-            @test RustCall._ei_rustc_executables(Dict("CARGO_BUILD_RUSTC_WRAPPER" => wrapper), crate) ==
-                  ["CARGO_BUILD_RUSTC_WRAPPER" => realpath(wrapper)]
-            # The linker a target names — through its environment variable,
-            # a `[target.<triple>] linker`, or `-C linker=` in a flags value
-            # — is an executable Cargo hands rustc, hashed the same way.
-            @test RustCall._ei_rustc_executables(Dict("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" => wrapper), crate) ==
-                  ["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" => realpath(wrapper)]
-            for flags in ("-C linker=$(wrapper)", "-Clinker=$(wrapper) -C opt-level=1", "--codegen linker=$(wrapper)",
-                          "--codegen=linker=$(wrapper)")
-                @test RustCall._ei_env_flag_linkers(["RUSTFLAGS" => flags], Dict{String, String}(), crate) ==
-                      ["RUSTFLAGS:linker" => realpath(wrapper)]
-            end
-            @test RustCall._ei_env_flag_linkers(["CARGO_ENCODED_RUSTFLAGS" => "-C\x1flinker=nope"], Dict("PATH" => dir), crate) ==
-                  ["CARGO_ENCODED_RUSTFLAGS:linker" => nothing]
-            @test isempty(RustCall._ei_env_flag_linkers(["RUSTFLAGS" => "-C opt-level=1"], Dict{String, String}(), crate))
-            lk = joinpath(dir, "lk", ".cargo"); mkpath(lk); mkpath(joinpath(dir, "lk", "tools"))
-            stub(joinpath(dir, "lk", "tools", "ld.sh"), "#!/bin/sh\n")
-            write(joinpath(lk, "config.toml"),
-                  # literal strings: a Windows path's backslashes are not escapes
-                  "[target.x86_64-unknown-linux-gnu]\nlinker = 'tools/ld.sh'\nrustflags = ['-C', 'linker=$(wrapper)']\n")
-            @test RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(lk, "config.toml")],
-                                                  Dict{String, String}(), crate) ==
-                  ["config:ancestor:1:config.toml:target.x86_64-unknown-linux-gnu.linker" => realpath(joinpath(dir, "lk", "tools", "ld.sh")),
-                   "config:ancestor:1:config.toml:target.x86_64-unknown-linux-gnu.rustflags:linker" => realpath(wrapper)]
-            cargo_dir = joinpath(dir, "cfgroot", ".cargo"); mkpath(cargo_dir)
-            write(joinpath(cargo_dir, "config.toml"), "[build]\nrustc-wrapper = \"tools/wrap.sh\"\n")
-            mkpath(joinpath(dir, "cfgroot", "tools")); stub(joinpath(dir, "cfgroot", "tools", "wrap.sh"), "#!/bin/sh\n")
-            cfg_execs = RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(cargo_dir, "config.toml")],
-                                                        Dict{String, String}(), crate)
-            @test cfg_execs == ["config:ancestor:1:config.toml:rustc-wrapper" => realpath(joinpath(dir, "cfgroot", "tools", "wrap.sh"))]
-            r = decide(packages = bumped, executables = cfg_execs)
-            @test r.canonical && "executable:config:ancestor:1:config.toml:rustc-wrapper" in r.inputs
-            write(joinpath(cargo_dir, "config.toml"), "[build]\nrustc-wrapper = \"tools/missing.sh\"\n")
-            missing_exec = RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(cargo_dir, "config.toml")],
-                                                           Dict{String, String}(), crate)
-            @test only(missing_exec) == ("config:ancestor:1:config.toml:rustc-wrapper" => nothing)
-            @test !decide(packages = bumped, executables = missing_exec).canonical
-            # `$CARGO_HOME/config.toml` resolves the same way — from the
-            # parent of the directory holding the file — even when that
-            # directory is not named `.cargo`; a same-named file inside it
-            # is not the one Cargo runs.
-            home = joinpath(dir, "myhome"); mkpath(joinpath(home, "tools")); mkpath(joinpath(dir, "tools"))
-            write(joinpath(home, "config.toml"), "[build]\nrustc-wrapper = \"tools/wrap\"\n")
-            stub(joinpath(home, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
-            stub(joinpath(dir, "tools", "wrap"), "#!/bin/sh\n")
-            @test RustCall._ei_config_executables(["config:home:config.toml" => joinpath(home, "config.toml")],
-                                                  Dict{String, String}(), crate) ==
-                  ["config:home:config.toml:rustc-wrapper" => realpath(joinpath(dir, "tools", "wrap"))]
-            # A source replaced through the environment declines like one
-            # replaced through a file.
-            @test RustCall._ei_env_replaces_sources(Dict("CARGO_SOURCE_CRATES_IO_REPLACE_WITH" => "vendored"))
-            @test !RustCall._ei_env_replaces_sources(Dict("CARGO_HOME" => "/x"))
-            r = decide(packages = bumped, env = ["CARGO_SOURCE_*" => ""])
-            @test !r.canonical && occursin("CARGO_SOURCE_", r.reason)
-            # A `@file` argument is expanded by rustc from a file the digest
-            # does not read: it declines, from a flags variable in any of
-            # its spellings and from a configuration file's `rustflags`.
-            @test decide(packages = bumped, env = ["RUSTFLAGS" => "--cfg x"]).canonical
-            for (k, v) in ("RUSTFLAGS" => "--cfg x @flags.txt", "CARGO_BUILD_RUSTFLAGS" => "@/tmp/f",
-                           "CARGO_ENCODED_RUSTFLAGS" => "--cfg\x1f@f\x1fx")
-                r = decide(packages = bumped, env = [k => v])
-                @test !r.canonical && occursin("response file", r.reason) && occursin(k, r.reason)
-            end
-            rf = joinpath(dir, "rf"); mkpath(rf)
-            write(joinpath(rf, "config.toml"), "[build]\nrustflags = [\"--cfg\", \"x\"]\n")
-            @test decide(packages = bumped, config = ["config:ancestor:0:config.toml" => joinpath(rf, "config.toml")]).canonical
-            write(joinpath(rf, "config.toml"), "[target.'cfg(unix)']\nrustflags = \"-C @resp\"\n")
-            r = decide(packages = bumped, config = ["config:ancestor:0:config.toml" => joinpath(rf, "config.toml")])
-            @test !r.canonical && occursin("response file", r.reason)
-            write(joinpath(rf, "config.toml"), "[build]\nrustflags = [\"@resp\"]\n")
-            @test !decide(packages = bumped, config = ["config:ancestor:0:config.toml" => joinpath(rf, "config.toml")]).canonical
-
-            # A configuration that redirects a source — the `cargo vendor`
-            # form, or `paths` — makes the build one this identity cannot
-            # describe: `cargo tree` prints a vendored package like a
-            # crates.io one, so the configuration is what says.
-            for text in ("[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"vendor\"\n",
-                         "paths = [\"/somewhere/syn\"]\n",
-                         "include = [\"extra.toml\"]\n",
-                         "this is not toml = [")
-                vendored = joinpath(dir, "vendored.toml"); write(vendored, text)
-                r = decide(packages = bumped, config = ["config:ancestor:0:config.toml" => vendored])
-                @test !r.canonical && occursin("replaces a source or includes", r.reason)
-            end
-            # ...while an ordinary configuration merely enters the digest.
-            @test decide(packages = bumped, config = ["config:home:config.toml" => cfg]).canonical
-            # A rustup override selects the toolchain that compiled the
-            # binary: it enters the digest (hashed, not parsed — the legacy
-            # file is a bare channel name) and does not decline.
-            for (name, text) in (("rust-toolchain.toml", "[toolchain]\nchannel = \"nightly-2026-01-01\"\n"),
-                                 ("rust-toolchain", "nightly-2026-01-01\n"))
-                tc = joinpath(dir, name); write(tc, text)
-                r = decide(packages = bumped, config = ["toolchain:ancestor:0:$(name)" => tc])
-                @test r.canonical && r.digest != decide(packages = bumped).digest
-                @test "toolchain:ancestor:0:$(name)" in r.inputs
-            end
+            @test !decide(packages = bumped, env = RustCall._ei_normalize_env(Dict("rustflags" => "-C x"); windows = true)).canonical
 
             # Not this tree's layout: no digest, and a reason.
             fork = joinpath(dir, "fork_core"); mkpath(joinpath(fork, "src"))
@@ -342,9 +222,12 @@ end
         mktempdir() do dir
             crate = joinpath(dir, "deps", "rustcall_extract"); mkpath(crate)
             mkpath(joinpath(dir, ".cargo")); write(joinpath(dir, ".cargo", "config.toml"), "[build]\n")
+            # A rustup override selects the compiler, not a source: it is not
+            # an input and is not looked for.
             write(joinpath(dir, "rust-toolchain.toml"), "[toolchain]\nchannel = \"stable\"\n")
             found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => joinpath(dir, "nohome")))
-            @test any(f -> first(f) == "toolchain:ancestor:2:rust-toolchain.toml", found)
+            @test !any(f -> occursin("toolchain", first(f)), found)
+            @test all(f -> startswith(first(f), "config:"), found)
             @test any(f -> first(f) == "config:ancestor:2:config.toml" &&
                            realpath(last(f)) == realpath(joinpath(dir, ".cargo", "config.toml")), found)
             @test !any(f -> startswith(first(f), "config:home"), found)
@@ -440,19 +323,21 @@ end
             @test Set(filter(startswith("crate:"), identity.inputs)) ==
                   Set(["crate:rustcall_extract", "crate:rustcall_core"])
             # Byte-compatible with what the v0.4.0 build.rs embeds — the
-            # cross-check that keeps every cache key across the upgrade — when
-            # nothing the script never saw is present.
-            extra = filter(i -> !startswith(i, "crate:") && i != "lockfile", identity.inputs)
+            # cross-check that keeps every cache key across the upgrade. A
+            # canonical build has no other input (#413), so this is
+            # unconditional.
+            @test identity.inputs == ["crate:rustcall_core", "crate:rustcall_extract", "lockfile"] ||
+                  Set(identity.inputs) == Set(["crate:rustcall_core", "crate:rustcall_extract", "lockfile"])
             binary = RustCall.extractor_path()
             reported = try
                 strip(read(`$binary source-digest`, String))
             catch
                 ""
             end
-            if isempty(extra) && occursin(r"^[0-9a-f]{64}$", reported)
+            if occursin(r"^[0-9a-f]{64}$", reported)
                 @test identity.digest == reported
             else
-                @info "source-digest cross-check not applicable" extra reported
+                @info "source-digest cross-check not applicable" reported
             end
             # `write_extractor_identity!` produces a record `read_extractor_identity` accepts.
             mktempdir() do dir

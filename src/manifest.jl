@@ -178,9 +178,10 @@ How a cache key identifies the **selected** extractor (#372, #409): the source
 digest `deps/build.jl` computed from Cargo's own view of the build and stored
 beside the binary (`EXTRACTOR_IDENTITY_FILENAME`, `write_extractor_identity!`),
 trusted only while the binary still has the SHA-256 the record names and only
-when that build was one the identity describes (this tree's own layout). Any
-other binary — one `RUSTCALL_EXTRACT` points at, one built from another
-layout, one whose record is missing or stale — is identified by its **bytes**
+when that build was one the identity describes (a plain build of this tree's
+own layout: the closed rule of #413). Any other binary — one `RUSTCALL_EXTRACT`
+points at, one built from another layout or under flags, a wrapper or a
+source replacement, one whose record is missing or stale — is identified by its **bytes**
 (`binary:<sha256>`, `extractor_digest`): exact for that executable, and a
 namespace a source digest cannot collide with.
 
