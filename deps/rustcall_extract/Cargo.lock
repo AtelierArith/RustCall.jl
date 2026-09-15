@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "rustcall_core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "rustcall_extract"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "rustcall_core",
  "serde",

@@ -7,20 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-16
+
 ### Changed
 - **The extractor's identity comes from Cargo's view of its build, not from
   the binary's own report**
   ([#409](https://github.com/AtelierArith/RustCall.jl/issues/409)).
   `deps/build.jl` now computes the source digest right after building the
   extractor — the package set from `cargo tree`, the workspace from
-  `cargo locate-project`, the configuration files Cargo discovered and the
-  `RUSTFLAGS` family — and stores it beside the binary keyed by the binary's
-  SHA-256 (`rustcall-extract.identity.toml`). `extractor_source_digest` reads
-  that record and trusts it only while the binary still matches; every other
-  binary is identified by its bytes. The digest is byte-compatible with what
-  v0.4.0's `build.rs` embedded for this tree's layout, so the upgrade keeps
-  every cache key; `build.rs` still embeds it as a cross-check the tests
-  assert and is removed in v0.5.
+  `cargo locate-project`, the configuration files Cargo discovered, the
+  build-affecting environment and the bytes of every executable Cargo is
+  told to run (`rustc`, its wrappers, the linker) — and stores it beside the
+  binary keyed by the binary's SHA-256 (`rustcall-extract.identity.toml`).
+  `extractor_source_digest` reads that record and trusts it only while the
+  binary still matches; every other binary — one built under a source
+  replacement, a `@file` response argument, an unresolvable executable, a
+  foreign layout — is identified by its bytes. The digest is byte-compatible
+  with what v0.4.0's `build.rs` embedded for this tree's layout, so the
+  upgrade keeps every cache key; `build.rs` still embeds it as a cross-check
+  the tests assert and is removed in v0.5. The class of "an input Cargo
+  consults that the digest neither hashes nor declines" is closed
+  structurally in v0.5.0 by
+  [#413](https://github.com/AtelierArith/RustCall.jl/issues/413).
+
+### Added
+- Examples: `SampleCrate.jl` gains an inline `rust"""` block beside its
+  generated bindings, and the new `RustCrateMacro.jl` puts all three front
+  doors in one package — a `#[julia]` crate, `@rust_crate ... submodule=`
+  generated at precompile time, and an inline `rust"""` block that composes
+  the two ([#412](https://github.com/AtelierArith/RustCall.jl/pull/412)).
 
 ## [0.4.0] - 2026-09-15
 
@@ -1911,7 +1926,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.7...v0.4.0
 [0.3.7]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.5...v0.3.6
