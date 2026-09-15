@@ -482,6 +482,12 @@ end
                 @test haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
                 # The typed closing release covers only the image that carried
                 # the named type; the other stays mapped for later.
+                # A release that lost the retirement to a concurrent one
+                # withdraws nothing: the image did leave the registry, and the
+                # shared entry is the winner's record too (#397 review).
+                entry = only(e for e in RustCall.RELEASED_GENERIC_IMAGES["gc397_id"] if e.lib == first_lib)
+                RustCall._withdraw_released_image!("gc397_id", first_lib, entry.handle, entry.generation)
+                @test any(e -> e.lib == first_lib, RustCall.RELEASED_GENERIC_IMAGES["gc397_id"])
                 @test RustCall.release_generics("gc397_id", UInt16; close = true) == 0
                 @test isempty(RustCall.retired_handles(first_lib))
                 @test !isempty(RustCall.retired_handles(second_lib))

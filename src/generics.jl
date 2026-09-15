@@ -1336,9 +1336,15 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             end
             # Left mapped by this release: on record *before* the retirement,
             # so a closing release racing this one never finds the rows gone
-            # and the record absent; withdrawn below if nothing was retired.
-            close || push!(get!(RELEASED_GENERIC_IMAGES, name, ReleasedGenericImage[]),
-                           ReleasedGenericImage(lib_name, handle, generation, carried))
+            # and the record absent; withdrawn below if nothing retired it.
+            # One entry per image — two releases selecting the same image
+            # share it, and whichever loses the retirement must not take the
+            # winner's record with it (#397 review).
+            if !close
+                entries = get!(RELEASED_GENERIC_IMAGES, name, ReleasedGenericImage[])
+                any(e -> e.handle == handle && e.generation == generation, entries) ||
+                    push!(entries, ReleasedGenericImage(lib_name, handle, generation, carried))
+            end
             (names, leaving, carried)
         end
         isempty(names) && continue
@@ -1358,9 +1364,10 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         retired = unload_artifact!(generics_policy(), lib_name; close,
                                    expect_generation = generation)
         if !retired
-            # Another release got there first (or a newer image took the
-            # name): this call retired nothing, so it has nothing on record.
-            close || _withdraw_released_image!(name, handle, generation)
+            # This call retired nothing. Its record stays only if the image
+            # did leave the registry under someone else — another release,
+            # whose record this is too — and goes if the image is still live.
+            close || _withdraw_released_image!(name, lib_name, handle, generation)
             continue
         end
         released += leaving
@@ -1369,9 +1376,14 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
     return released
 end
 
-# Drop the record a release made for an image it then did not retire.
-function _withdraw_released_image!(name::String, handle::Ptr{Cvoid}, generation::Int)
+# Drop the record a release made for an image it then did not retire — unless
+# the image is no longer the live one of its name, in which case something
+# else retired it and the record describes a retired image after all (a
+# concurrent release of the same image, which shares the entry).
+function _withdraw_released_image!(name::String, lib_name::String, handle::Ptr{Cvoid},
+                                   generation::Int)
     lock(REGISTRY_LOCK) do
+        _image_is_current(lib_name, handle, generation) || return
         entries = get(RELEASED_GENERIC_IMAGES, name, nothing)
         entries === nothing && return
         filter!(e -> !(e.handle == handle && e.generation == generation), entries)
