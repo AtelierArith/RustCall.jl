@@ -109,24 +109,35 @@ rustup default stable-x86_64-pc-windows-msvc
 ### MinGW Toolchain (alternative, configuration-dependent)
 
 MinGW uses GCC instead of MSVC. It is **not** what RustCall selects by itself
-and **not** what the artifact toolchain provides, so it takes two explicit
-steps — a system toolchain with the GNU target, and RustCall told to compile
-for it:
+and **not** what the artifact toolchain provides. RustCall runs Rust in two
+ways, and both have to be pointed at the GNU target:
 
-```powershell
-# Install a system toolchain with the GNU target (a rustup install on PATH
-# takes precedence over the artifact toolchain)
-rustup target add x86_64-pc-windows-gnu
-```
+- **Cargo builds** — the helper library and the extractor built by
+  `Pkg.build("RustCall")`, `// cargo-deps:` blocks, `@rust_crate` — run a plain
+  `cargo build`, which compiles for the **active rustup toolchain's host**.
+  Install the GNU host toolchain and make it the default (a rustup install on
+  `PATH` takes precedence over the artifact toolchain):
 
-```julia
-using RustCall
-RustCall.set_default_compiler(RustCall.RustCompiler(target_triple = "x86_64-pc-windows-gnu"))
-```
+  ```powershell
+  rustup toolchain install stable-x86_64-pc-windows-gnu
+  rustup default stable-x86_64-pc-windows-gnu
+  ```
 
-Without the second step `rust"""` blocks are compiled for the default MSVC
-target and need the MSVC build tools regardless of what `rustup` installed.
-The MinGW route is not exercised by RustCall's CI (which runs the MSVC target).
+  `rustup target add x86_64-pc-windows-gnu` alone is not enough: it adds a
+  target to the current (MSVC) toolchain without selecting the GNU host.
+
+- **Direct `rustc` builds** — plain `rust"""` blocks — use RustCall's own
+  target, which defaults to MSVC on Windows; tell RustCall to compile for the
+  GNU target:
+
+  ```julia
+  using RustCall
+  RustCall.set_default_compiler(RustCall.RustCompiler(target_triple = "x86_64-pc-windows-gnu"))
+  ```
+
+Skip either step and that class of build still targets MSVC and needs the
+build tools this route is meant to avoid. The MinGW route is not exercised by
+RustCall's CI (which runs the MSVC target).
 
 **Advantages**:
 - Smaller installation (no Visual Studio needed)
