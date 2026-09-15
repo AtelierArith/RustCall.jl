@@ -40,6 +40,60 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Whether any ancestor directory of `dir` carries a manifest with a
+/// `[workspace]` table. A checkout placed inside a workspace is built against
+/// the workspace root's `Cargo.lock`, not the one beside this manifest, so the
+/// lockfile hashed here would not be the one that decided the build; such a
+/// build reports no source digest and is identified by its bytes.
+fn inside_workspace(dir: &Path) -> bool {
+    let start = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut ancestor = start.parent();
+    while let Some(parent) = ancestor {
+        let manifest = parent.join("Cargo.toml");
+        if manifest.is_file() {
+            if let Ok(text) = fs::read_to_string(&manifest) {
+                if let Ok(doc) = text.parse::<toml::Table>() {
+                    if doc.contains_key("workspace") {
+                        return true;
+                    }
+                }
+            }
+        }
+        ancestor = parent.parent();
+    }
+    false
+}
+
+/// A lockfile reference line `"name version",` naming one of the release
+/// crates at its current manifest version becomes `"name",`: Cargo qualifies
+/// references when two packages of one name are in the graph, and the
+/// qualified form to this tree's crate is the same reference before and after
+/// a bump. Any other line is returned as it is.
+fn unqualified_reference(line: &str, versions: &BTreeMap<String, String>) -> String {
+    let trimmed = line.trim();
+    let Some(quoted) = trimmed
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix(',').unwrap_or(rest).strip_suffix('"'))
+    else {
+        return line.to_owned();
+    };
+    let parts: Vec<&str> = quoted.split(' ').collect();
+    if parts.len() == 2 && versions.get(parts[0]).is_some_and(|v| v == parts[1]) {
+        return line.replacen(&format!("\"{quoted}\""), &format!("\"{}\"", parts[0]), 1);
+    }
+    line.to_owned()
+}
+
+/// `[package] version` of a manifest.
+fn package_version(manifest: &Path) -> Option<String> {
+    let text = fs::read_to_string(manifest).ok()?;
+    let doc = text.parse::<toml::Table>().ok()?;
+    doc.get("package")?
+        .get("version")?
+        .as_str()
+        .map(str::to_owned)
+}
+
 /// Whether a manifest inherits anything from a workspace — a dependency or a
 /// package field spelled `{ workspace = true }`, or an explicit
 /// `[package] workspace = "..."`. Such a crate's inputs are not knowable from
@@ -121,7 +175,11 @@ fn manifest_without_package_version(path: &Path) -> Vec<u8> {
 /// versions a release rewrites — and has no `source`. Every other version
 /// stays: a registry package's pins what `syn` or `prettyplease` this binary
 /// parses and prints with, and a fork's local helper may read its own.
-fn lockfile_without_release_versions(path: &Path, release: &[String]) -> Vec<u8> {
+fn lockfile_without_release_versions(
+    path: &Path,
+    release: &[String],
+    versions: &BTreeMap<String, String>,
+) -> Vec<u8> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -145,7 +203,7 @@ fn lockfile_without_release_versions(path: &Path, release: &[String]) -> Vec<u8>
             {
                 continue;
             }
-            kept.push_str(line);
+            kept.push_str(&unqualified_reference(line, versions));
             kept.push('\n');
         }
     }
@@ -264,14 +322,23 @@ fn main() {
     // local crate one of the release crates in its place, none inheriting
     // from a workspace. Anything else — a fork with a helper beside
     // `rustcall_core`, a workspace member whose `path` lives in
-    // `[workspace.dependencies]` — has inputs this script cannot enumerate
+    // `[workspace.dependencies]`, a checkout inside a workspace whose root
+    // lockfile decides the build — has inputs this script cannot enumerate
     // from the manifests, and claiming a digest for it would let an edit
     // it does not see keep a stale cache alive. Such a binary reports
     // nothing and RustCall identifies it by its bytes (`extractor_source_digest`).
     let canonical = release.len() == named.len()
         && !named
             .iter()
-            .any(|(_, dir)| inherits_from_workspace(&dir.join("Cargo.toml")));
+            .any(|(_, dir)| inherits_from_workspace(&dir.join("Cargo.toml")))
+        && !inside_workspace(&here);
+    let versions: BTreeMap<String, String> = named
+        .iter()
+        .filter(|(name, _)| release.contains(name))
+        .filter_map(|(name, dir)| {
+            package_version(&dir.join("Cargo.toml")).map(|v| (name.clone(), v))
+        })
+        .collect();
     if !canonical {
         println!("cargo:rustc-env=RUSTCALL_SOURCE_DIGEST=");
         return;
@@ -282,7 +349,9 @@ fn main() {
     let lock = here.join("Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock.display());
     hasher.update(b"Cargo.lock\0");
-    hasher.update(lockfile_without_release_versions(&lock, &release));
+    hasher.update(lockfile_without_release_versions(
+        &lock, &release, &versions,
+    ));
     hasher.update(b"\0");
     for (name, krate) in &named {
         let manifest = krate.join("Cargo.toml");
