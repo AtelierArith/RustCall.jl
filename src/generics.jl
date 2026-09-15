@@ -1379,7 +1379,12 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         # record with it — so there is no second transaction here in which a
         # replacement that reused the pointer value could be mistaken for the
         # image just retired (#397 review).
-        retired = unload_artifact!(generics_policy(), lib_name; close,
+        # Always a retirement, never the loader's own `close = true`: that
+        # closes every retired image carrying any of the handle's names, and
+        # an older image of the same instantiation released earlier without
+        # closing — whose pointers a caller may still hold — is one of them.
+        # Closing is done by handle below, exactly this image (#397 review).
+        retired = unload_artifact!(generics_policy(), lib_name;
                                    expect_generation = generation)
         if !retired
             # This call retired nothing. Its record stays only if the image
@@ -1389,6 +1394,7 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             continue
         end
         released += leaving
+        close && close_retired_handles!([handle])
     end
     close && _close_released_generic_images!(name, selected)
     return released

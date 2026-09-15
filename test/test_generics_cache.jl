@@ -546,6 +546,34 @@ end
                         @test !haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
                     end
                 end
+                # A typed closing release closes the image it retires and the
+                # recorded images that carried the type — never an older
+                # retired image that merely shares a *name* with the batch:
+                # `Int64` released earlier without closing stays mapped when
+                # a later `Int64`/`UInt8` batch is released through `UInt8`
+                # (#397 review).
+                mktempdir() do first_cache
+                    mktempdir() do second_cache
+                        older = withenv("RUSTCALL_CACHE_DIR" => first_cache) do
+                            @test RustCall.call_generic_function("gc397_id", Int64(7)) == Int64(7)
+                            o = cached(Int64)
+                            @test RustCall.release_generics("gc397_id", Int64) == 1
+                            o
+                        end
+                        @test RustCall.retired_handles(older.lib_name) == [older.handle]
+                        withenv("RUSTCALL_CACHE_DIR" => second_cache) do
+                            RustCall.precompile_generics("gc397_id", UInt8, Int64)
+                            batch = cached(UInt8)
+                            @test cached(Int64).lib_name == older.lib_name
+                            @test cached(Int64).handle == batch.handle
+                            @test RustCall.release_generics("gc397_id", UInt8; close = true) == 2
+                            @test !(batch.handle in RustCall.retired_handles(batch.lib_name))
+                            @test RustCall.retired_handles(older.lib_name) == [older.handle]
+                            @test RustCall.release_generics("gc397_id"; close = true) == 0
+                            @test isempty(RustCall.retired_handles(older.lib_name))
+                        end
+                    end
+                end
             end
 
             @testset "release by type across a default-compiler change" begin
