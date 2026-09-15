@@ -168,6 +168,20 @@ end
             @test RustCall._ei_resolve_executable(wrapper, Dict{String, String}(), crate) == realpath(wrapper)
             @test RustCall._ei_resolve_executable("wrapper.sh", Dict("PATH" => dir), crate) == realpath(wrapper)
             @test RustCall._ei_resolve_executable("missing", Dict("PATH" => dir), crate) === nothing
+            # A relative PATH entry is taken from the crate directory (where
+            # Cargo runs), not from this process's working directory.
+            mkpath(joinpath(crate, "tools")); write(joinpath(crate, "tools", "wrap"), "#!/bin/sh\n")
+            mkpath(joinpath(dir, "tools")); write(joinpath(dir, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
+            cd(dir) do
+                @test RustCall._ei_resolve_executable("wrap", Dict("PATH" => "tools"), crate) ==
+                      realpath(joinpath(crate, "tools", "wrap"))
+            end
+            # Windows environment names are case-insensitive: the copy the
+            # build hands over is spelled upper case before any lookup.
+            @test RustCall._ei_normalize_env(Dict("cargo_home" => "x", "Path" => "y"); windows = true) ==
+                  Dict("CARGO_HOME" => "x", "PATH" => "y")
+            lower = Dict("cargo_home" => "x")
+            @test RustCall._ei_normalize_env(lower; windows = false) === lower
             @test RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => wrapper, "HOME" => dir), crate) ==
                   ["RUSTC_WRAPPER" => realpath(wrapper)]
             @test isempty(RustCall._ei_rustc_executables(Dict("RUSTC_WRAPPER" => ""), crate))

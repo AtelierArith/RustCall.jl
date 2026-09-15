@@ -411,6 +411,19 @@ function _ei_config_executables(config_files::Vector{Pair{String, String}}, env,
     return out
 end
 
+# On Windows an environment variable's name is case-insensitive — Cargo
+# honours `cargo_home` as `CARGO_HOME` — and a copied dictionary is not, so
+# every name is spelled in upper case before anything looks one up or
+# captures it. Elsewhere names are case-sensitive and kept as given.
+function _ei_normalize_env(env; windows::Bool = Sys.iswindows())
+    windows || return env
+    out = Dict{String, String}()
+    for (k, v) in env
+        out[uppercase(String(k))] = String(v)
+    end
+    return out
+end
+
 # Environment variables that redirect a source — Cargo reads `[source.*]`
 # from `CARGO_SOURCE_<NAME>_REPLACE_WITH` / `_DIRECTORY` / … too — make the
 # build one this identity cannot describe, exactly like the file form.
@@ -422,8 +435,12 @@ function _ei_resolve_executable(name::AbstractString, env, crate_dir::AbstractSt
         push!(candidates, isabspath(name) ? String(name) : joinpath(_ei_canonical(crate_dir), name))
     else
         sep = Sys.iswindows() ? ';' : ':'
-        for dir in split(String(get(env, "PATH", "")), sep)
-            isempty(dir) && continue
+        for entry in split(String(get(env, "PATH", "")), sep)
+            isempty(entry) && continue
+            # A relative `PATH` entry is resolved from Cargo's working
+            # directory, which for the build this describes is the crate
+            # directory, not this process's.
+            dir = isabspath(entry) ? String(entry) : joinpath(_ei_canonical(crate_dir), entry)
             push!(candidates, joinpath(dir, String(name)))
             Sys.iswindows() && push!(candidates, joinpath(dir, String(name) * ".exe"))
         end
@@ -648,6 +665,7 @@ bytes. `inputs` lists what the digest covered, for diagnostics.
 """
 function extractor_build_identity(crate_dir::AbstractString; cargo::Cmd, env = ENV)
     crate_dir = String(crate_dir)
+    env = _ei_normalize_env(env)
     packages = _ei_packages(cargo, crate_dir, env)
     workspace = _ei_workspace_manifest(cargo, crate_dir, env)
     config_files = _ei_config_files(crate_dir, env)
