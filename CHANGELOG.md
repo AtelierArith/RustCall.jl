@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-v0.4 extractor reports `13`, which never equals a release string; the
   refusal names the integer scheme, this release and `Pkg.build("RustCall")`.
   See `docs/src/project_guide.md`.
+- **The documented requirements no longer ask for a Rust toolchain on `PATH`**
+  ([#404](https://github.com/AtelierArith/RustCall.jl/issues/404)). RustCall
+  depends on RustToolChain.jl, which uses the `rustc`/`cargo` on `PATH` when
+  there is one and otherwise installs an isolated toolchain through Julia's
+  Artifacts system, so a system Rust installation is optional (Windows still
+  needs the MSVC build tools for linking). This is also why the prebuilt
+  helper library once planned as `RustCallHelpers_jll` is withdrawn: the
+  helpers compile with that toolchain on any machine.
 - **Breaking: the ownership helper crate is `deps/rustcall_helpers`, and its
   library `librustcall_helpers`**
   ([#387](https://github.com/AtelierArith/RustCall.jl/issues/387)). Every Rust

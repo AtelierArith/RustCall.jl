@@ -46,9 +46,15 @@ Pkg.develop(path="/path/to/RustCall.jl")
 
 **Requirements:**
 - Julia 1.12 or later
-- Rust toolchain (`rustc` and `cargo`) installed and available in PATH
+- A Rust toolchain — **no system installation required**. RustCall depends on
+  [RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl), which
+  uses the `rustc`/`cargo` on `PATH` when there is one and otherwise installs
+  an isolated toolchain through Julia's Artifacts system. On Windows the
+  artifact toolchain still needs the MSVC build tools and a Windows SDK for
+  linking (see the RustToolChain.jl README).
 
-To install Rust, visit [rustup.rs](https://rustup.rs/).
+Installing Rust yourself ([rustup.rs](https://rustup.rs/)) is optional; a
+`rustc` on `PATH` is preferred over the artifact toolchain when both exist.
 
 ### Rebuilding Rust Helpers Library
 
