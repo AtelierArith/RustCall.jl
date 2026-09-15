@@ -399,7 +399,7 @@ struct ReleasedGenericImage
     # next image of the name (a closed image's pointer value can be), so it
     # is what tells this retirement from a later one under the same name.
     alive::Base.RefValue{Bool}
-    carried::Vector{Tuple}
+    carried::Tuple
 end
 
 """
@@ -421,7 +421,7 @@ whose image is still live (a retirement in flight), and forgets the rest — an
 image closed or replaced by other means.
 """
 const RELEASED_GENERIC_IMAGES =
-    _state_view(:released_generic_images, Dict{String, Vector{ReleasedGenericImage}}())
+    _state_view(:released_generic_images, Dict{String, Tuple{Vararg{ReleasedGenericImage}}}())
 
 """
     GENERIC_IMAGE_PATHS
@@ -1334,15 +1334,15 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         names, leaving, carried = lock(REGISTRY_LOCK) do
             entry = get(RUST_LIBRARIES, lib_name, nothing)
             (entry === nothing || entry[1] != handle ||
-             get(ARTIFACT_GENERATIONS, lib_name, 0) != generation) && return (String[], 0, Tuple[])
+             get(ARTIFACT_GENERATIONS, lib_name, 0) != generation) && return (String[], 0, ())
             names = String[n for (n, e) in RUST_LIBRARIES if e[1] == handle]
             leaving = count(info -> info.handle == handle, values(MONOMORPHIZED_FUNCTIONS))
             # What this generic had on the image, remembered for a later
             # closing release (`RELEASED_GENERIC_IMAGES`).
-            carried = Tuple[owner.binding for (key, owner) in MONOMORPHIZATION_OWNERS
+            carried = Tuple(owner.binding for (key, owner) in MONOMORPHIZATION_OWNERS
                             if owner.generic == name &&
                                (info = get(MONOMORPHIZED_FUNCTIONS, key, nothing)) !== nothing &&
-                               info.handle == handle]
+                               info.handle == handle)
             paths = Set{String}(GENERIC_IMAGE_PATHS[n] for n in names
                                 if haskey(GENERIC_IMAGE_PATHS, n))
             for (batch, path) in collect(_BATCH_LIBRARY_COPIES)
@@ -1357,11 +1357,14 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             # One entry per image — two releases selecting the same image
             # share it, and whichever loses the retirement must not take the
             # winner's record with it (#397 review).
+            # Values are immutable tuples replaced whole through the view, so
+            # every write goes through the state container's mutation path.
             alive = get(ARTIFACT_ALIVE, lib_name, nothing)
             if !close && alive !== nothing
-                entries = get!(RELEASED_GENERIC_IMAGES, name, ReleasedGenericImage[])
+                entries = get(RELEASED_GENERIC_IMAGES, name, ())
                 any(e -> e.alive === alive, entries) ||
-                    push!(entries, ReleasedGenericImage(lib_name, handle, generation, alive, carried))
+                    (RELEASED_GENERIC_IMAGES[name] =
+                        (entries..., ReleasedGenericImage(lib_name, handle, generation, alive, carried)))
             end
             (names, leaving, carried)
         end
@@ -1410,8 +1413,9 @@ function _withdraw_released_image!(name::String, lib_name::String, handle::Ptr{C
         _image_is_current(lib_name, handle, generation) || return
         entries = get(RELEASED_GENERIC_IMAGES, name, nothing)
         entries === nothing && return
-        filter!(e -> !(e.handle == handle && e.generation == generation), entries)
-        isempty(entries) && delete!(RELEASED_GENERIC_IMAGES, name)
+        kept = Tuple(e for e in entries if !(e.handle == handle && e.generation == generation))
+        length(kept) == length(entries) && return
+        isempty(kept) ? delete!(RELEASED_GENERIC_IMAGES, name) : (RELEASED_GENERIC_IMAGES[name] = kept)
     end
     return nothing
 end
@@ -1435,17 +1439,24 @@ function _close_released_generic_images!(name::String, selected)
         entries = get(RELEASED_GENERIC_IMAGES, name, nothing)
         entries === nothing && return Ptr{Cvoid}[]
         handles = Ptr{Cvoid}[]
-        filter!(entries) do e
-            selected === nothing || any(b -> b in selected, e.carried) || return true
-            # Still the live image of its name: a retirement in flight.
-            _released_image_is_live(e) && return true
-            # Retired now — the *same* image, by its flag: a pointer value the
-            # loader reused for a later image of the name is not it.
-            record = get(RETIRED_HANDLES, e.handle, nothing)
-            record !== nothing && record.alive === e.alive && push!(handles, e.handle)
-            return false
+        kept = Tuple(e for e in entries if begin
+            keep = if selected !== nothing && !any(b -> b in selected, e.carried)
+                true
+            elseif _released_image_is_live(e)
+                # Still the live image of its name: a retirement in flight.
+                true
+            else
+                # Retired now — the *same* image, by its flag: a pointer value
+                # the loader reused for a later image of the name is not it.
+                record = get(RETIRED_HANDLES, e.handle, nothing)
+                record !== nothing && record.alive === e.alive && push!(handles, e.handle)
+                false
+            end
+            keep
+        end)
+        if length(kept) != length(entries)
+            isempty(kept) ? delete!(RELEASED_GENERIC_IMAGES, name) : (RELEASED_GENERIC_IMAGES[name] = kept)
         end
-        isempty(entries) && delete!(RELEASED_GENERIC_IMAGES, name)
         unique(handles)
     end
     isempty(to_close) || close_retired_handles!(to_close)
