@@ -115,6 +115,13 @@ end
             with_env = decide(packages = bumped, env = ["RUSTFLAGS" => "-C target-cpu=native"])
             @test with_env.canonical && with_env.digest != decide(packages = bumped).digest
             @test "env:RUSTFLAGS" in with_env.inputs
+            # An *empty* RUSTFLAGS is not an unset one: it overrides a config
+            # file's flags where an unset variable lets them apply.
+            empty_env = decide(packages = bumped, env = ["RUSTFLAGS" => ""])
+            @test empty_env.digest != decide(packages = bumped).digest
+            @test empty_env.digest != with_env.digest
+            @test RustCall._ei_env_inputs(Dict("RUSTFLAGS" => "", "HOME" => "/x")) == ["RUSTFLAGS" => ""]
+            @test isempty(RustCall._ei_env_inputs(Dict("HOME" => "/x")))
 
             # Not this tree's layout: no digest, and a reason.
             fork = joinpath(dir, "fork_core"); mkpath(joinpath(fork, "src"))
@@ -132,12 +139,20 @@ end
             @test !r.canonical && occursin("member of the workspace", r.reason)
             r = decide(packages = nothing)
             @test !r.canonical && occursin("cargo tree", r.reason)
-            # A manifest-selected target root outside `src`.
+            # A manifest-selected target root outside `src` — including one
+            # that merely shares the `src` prefix.
+            for (rel, setup) in (("../shared/lib.rs", () -> (mkpath(joinpath(deps, "shared")); write(joinpath(deps, "shared", "lib.rs"), ""))),
+                                 ("src_extra/lib.rs", () -> (mkpath(joinpath(deps, "rustcall_core", "src_extra")); write(joinpath(deps, "rustcall_core", "src_extra", "lib.rs"), ""))))
+                setup()
+                write(joinpath(deps, "rustcall_core", "Cargo.toml"),
+                      "[package]\nname = \"rustcall_core\"\nversion = \"0.4.1\"\n\n[lib]\npath = \"$(rel)\"\n")
+                r = decide(packages = bumped)
+                @test !r.canonical && occursin("target root", r.reason)
+            end
+            # ...while a root under `src` proper is the default layout.
             write(joinpath(deps, "rustcall_core", "Cargo.toml"),
-                  "[package]\nname = \"rustcall_core\"\nversion = \"0.4.1\"\n\n[lib]\npath = \"../shared/lib.rs\"\n")
-            mkpath(joinpath(deps, "shared")); write(joinpath(deps, "shared", "lib.rs"), "")
-            r = decide(packages = bumped)
-            @test !r.canonical && occursin("target root", r.reason)
+                  "[package]\nname = \"rustcall_core\"\nversion = \"0.4.1\"\n\n[lib]\npath = \"src/lib.rs\"\n")
+            @test decide(packages = bumped).canonical
         end
     end
 

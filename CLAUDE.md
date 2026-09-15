@@ -25,7 +25,8 @@ julia --project=docs docs/make.jl
 # Rust crates (deps/rustcall_core, deps/rustcall_extract, deps/rustcall_julia_macros{,_impl})
 cd deps/rustcall_core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 UPDATE_GOLDEN=1 cargo test          # in deps/rustcall_core: regenerate tests/corpus/*.toml and *.expanded.rs
-cd deps/rustcall_extract && cargo build --release   # the CLI Julia calls; also built by Pkg.build
+julia --project deps/build.jl                       # builds the helpers and the CLI Julia calls, and writes the extractor's identity record (#409)
+cd deps/rustcall_extract && cargo build --release   # the CLI alone; no identity record, so that binary is identified by its bytes
 cd deps/rustcall_julia_macros && cargo test --all-features
 cd deps/rustcall_julia_macros_impl && cargo test
 
@@ -384,7 +385,7 @@ Practical rules that CI enforces or that have bitten before:
 
 - Docstrings in `src/*.jl` must not use `(@ref)` links to internal bindings — the Documentation job fails. Plain backticks.
 - `test/runtests.jl` auto-discovers `test_*.jl`; never add an `include`.
-- Rebuild the extractor (`cd deps/rustcall_extract && cargo build --release`) and export `RUSTCALL_EXTRACT` before running Julia tests; a stale binary is rejected by the manifest schema check.
+- Rebuild the extractor with `julia --project deps/build.jl` (writes `rustcall-extract.identity.toml` beside it, #409) and export `RUSTCALL_EXTRACT` before running Julia tests; a stale binary is rejected by the manifest schema check, and a binary from a raw `cargo build` has no record and is identified by its bytes (the fingerprint then moves on every rebuild).
 - Golden corpus: run the plain `cargo test` in `deps/rustcall_core` first — a golden failure is the signal that the extractor's output changed. Only when that change is intended, regenerate with `UPDATE_GOLDEN=1 cargo test` (it overwrites without comparing) and review `git diff tests/corpus` before committing.
 - Run every `scripts/lint_*.sh src` locally; they are all CI jobs.
 - On Windows a loaded DLL cannot be deleted or overwritten: tests unload libraries before removing temp trees and clean up best-effort; hot reload opens a fresh generation path per rebuild.

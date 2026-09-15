@@ -157,7 +157,9 @@ function _ei_config_files(crate_dir::AbstractString, env)
 end
 
 # The environment variables that change what Cargo compiles without touching
-# a file: the `RUSTFLAGS` family and a default target. Only the ones set.
+# a file: the `RUSTFLAGS` family and a default target. The ones *present*,
+# empty or not: `RUSTFLAGS=""` overrides a configuration file's flags where an
+# unset variable would let them apply, so presence is part of the identity.
 function _ei_env_inputs(env)
     keys_of_interest = String[]
     for k in keys(env)
@@ -168,7 +170,7 @@ function _ei_env_inputs(env)
         end
     end
     sort!(keys_of_interest)
-    return Pair{String, String}[k => String(env[k]) for k in keys_of_interest if !isempty(env[k])]
+    return Pair{String, String}[k => String(env[k]) for k in keys_of_interest]
 end
 
 # ---------------------------------------------------------------------------
@@ -186,11 +188,14 @@ function _ei_nondefault_targets(dir::AbstractString)
     end
     build = get(get(doc, "package", Dict{String, Any}()), "build", nothing)
     build isa AbstractString && build != "build.rs" && return true
-    src = _ei_canonical(joinpath(dir, "src"))
+    # Containment by path component: `src_extra/main.rs` and `../src-extra`
+    # share the prefix and are not under `src`.
+    src = splitpath(_ei_canonical(joinpath(dir, "src")))
     outside(rel) = begin
         root = joinpath(dir, rel)
         isfile(root) || return true
-        !startswith(_ei_canonical(root), src)
+        parts = splitpath(_ei_canonical(root))
+        !(length(parts) > length(src) && parts[1:length(src)] == src)
     end
     lib = get(doc, "lib", nothing)
     lib isa AbstractDict && get(lib, "path", nothing) isa AbstractString && outside(lib["path"]) && return true

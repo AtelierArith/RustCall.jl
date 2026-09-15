@@ -631,7 +631,16 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         finally
             RustCall._reset_extractor_state!()
         end
-        if RustCall.check_rustc_available()
+        # The fingerprint's extractor line is the identity record's digest
+        # when the selected binary has one (a build by `deps/build.jl` /
+        # `Pkg.build`), and the bytes form otherwise (a raw `cargo build`, or
+        # a `RUSTCALL_EXTRACT` binary from elsewhere) — never a value the
+        # binary reports about itself (#409).
+        record = RustCall.read_extractor_identity(RustCall.extractor_path())
+        if record === nothing || record["canonical"] !== true
+            @test extractor_line == "extractor=binary:$(RustCall.extractor_digest())"
+        end
+        if RustCall.check_rustc_available() && record !== nothing && record["canonical"] === true
             reported = strip(read(`$(RustCall.extractor_path()) source-digest`, String))
             @test occursin(r"^[0-9a-f]{64}$", reported)
             @test extractor_line == "extractor=$(reported)"
