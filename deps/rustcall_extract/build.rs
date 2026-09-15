@@ -11,8 +11,8 @@
 //! those of every **local path dependency** it is built from (found through
 //! the manifests, `rustcall_core` and whatever a fork adds beside it), and the
 //! locked versions of the registry crates it parses and prints with — with
-//! each release-coupled `[package] version` left out, and is printed by
-//! `rustcall-extract source-digest`.
+//! the `[package] version` of this tree's own release crates, and only those,
+//! left out — and is printed by `rustcall-extract source-digest`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -34,9 +34,30 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// The crates whose `[package] version` is the RustCall release version and
+/// moves with it — the only manifests whose version line is left out of the
+/// digest, and only when they are this tree's own `deps/<name>`. Any other
+/// local crate a fork adds keeps its version: it may read
+/// `env!("CARGO_PKG_VERSION")`, so a bump of that alone can change what it
+/// compiles to (RustCall.jl #372 review).
+const RELEASE_CRATES: [&str; 4] = [
+    "rustcall_core",
+    "rustcall_extract",
+    "rustcall_julia_macros",
+    "rustcall_julia_macros_impl",
+];
+
+/// Whether `dir` is this tree's own release crate `name`: the name is on the
+/// list and the directory *is* `<deps>/<name>` beside the extractor.
+fn is_release_crate(dir: &Path, name: &str, deps: &Path) -> bool {
+    RELEASE_CRATES.contains(&name)
+        && fs::canonicalize(dir).ok() == fs::canonicalize(deps.join(name)).ok()
+}
+
 /// `Cargo.toml` without the `version = "..."` line of its `[package]` table:
 /// the one line a release rewrites. Everything else — dependencies and their
-/// versions, features — still counts.
+/// versions, features — still counts. Applied to release crates only; any
+/// other manifest is hashed as it is.
 fn manifest_without_package_version(path: &Path) -> Vec<u8> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
@@ -59,13 +80,12 @@ fn manifest_without_package_version(path: &Path) -> Vec<u8> {
     kept.into_bytes()
 }
 
-/// `Cargo.lock` without the `version = "..."` line of any package that has no
-/// `source` — the root and its path dependencies, whose versions a release
-/// rewrites. A registry package's version pins what `syn` or `prettyplease`
-/// this binary parses and prints with, and stays: updating one changes what
-/// the extractor emits without touching a source file, so it must move the
-/// digest.
-fn lockfile_without_path_versions(path: &Path) -> Vec<u8> {
+/// `Cargo.lock` without the `version = "..."` line of any package that is one
+/// of `release` — the release crates this build resolves by path, whose
+/// versions a release rewrites — and has no `source`. Every other version
+/// stays: a registry package's pins what `syn` or `prettyplease` this binary
+/// parses and prints with, and a fork's local helper may read its own.
+fn lockfile_without_release_versions(path: &Path, release: &[String]) -> Vec<u8> {
     let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -76,11 +96,16 @@ fn lockfile_without_path_versions(path: &Path) -> Vec<u8> {
             kept.push_str("\n[[package]]");
         }
         let has_source = block.lines().any(|l| l.trim_start().starts_with("source"));
+        let name = block.lines().find_map(|l| {
+            let t = l.trim();
+            t.strip_prefix("name = \"")
+                .and_then(|rest| rest.strip_suffix('"'))
+                .map(str::to_owned)
+        });
+        let strip = !has_source && name.is_some_and(|n| release.contains(&n));
         for line in block.lines() {
             let trimmed = line.trim();
-            if !has_source
-                && trimmed.starts_with("version")
-                && trimmed[7..].trim_start().starts_with('=')
+            if strip && trimmed.starts_with("version") && trimmed[7..].trim_start().starts_with('=')
             {
                 continue;
             }
@@ -179,27 +204,57 @@ fn main() {
         .collect();
     crates.sort();
     let crates: Vec<PathBuf> = crates.into_iter().map(|(_, dir)| dir).collect();
+    let deps = here.join("..");
+    let named: Vec<(String, PathBuf)> = crates
+        .iter()
+        .map(|krate| {
+            let name = package_name(&krate.join("Cargo.toml")).unwrap_or_else(|| {
+                krate
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+            (name, krate.clone())
+        })
+        .collect();
+    // The release crates among them, by provenance: these are the only
+    // versions left out, in the manifests and in the lockfile.
+    let release: Vec<String> = named
+        .iter()
+        .filter(|(name, dir)| is_release_crate(dir, name, &deps))
+        .map(|(name, _)| name.clone())
+        .collect();
 
     let mut hasher = Sha256::new();
     // The resolved dependency graph this binary is built against.
     let lock = here.join("Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock.display());
     hasher.update(b"Cargo.lock\0");
-    hasher.update(lockfile_without_path_versions(&lock));
+    hasher.update(lockfile_without_release_versions(&lock, &release));
     hasher.update(b"\0");
-    for krate in &crates {
+    for (name, krate) in &named {
         let manifest = krate.join("Cargo.toml");
-        let name = package_name(&manifest).unwrap_or_else(|| {
-            krate
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
         println!("cargo:rerun-if-changed={}", manifest.display());
         hasher.update(name.as_bytes());
         hasher.update(b"\0Cargo.toml\0");
-        hasher.update(manifest_without_package_version(&manifest));
+        if release.contains(name) {
+            hasher.update(manifest_without_package_version(&manifest));
+        } else {
+            hasher.update(fs::read(&manifest).unwrap_or_default());
+        }
         hasher.update(b"\0");
+
+        // A build script is part of what the crate compiles to. Its own
+        // inputs beyond the crate's manifest and sources cannot be known
+        // here; this tree's scripts read only those.
+        let build_script = krate.join("build.rs");
+        println!("cargo:rerun-if-changed={}", build_script.display());
+        if build_script.is_file() {
+            hasher.update(name.as_bytes());
+            hasher.update(b"\0build.rs\0");
+            hasher.update(fs::read(&build_script).unwrap_or_default());
+            hasher.update(b"\0");
+        }
 
         let src = krate.join("src");
         println!("cargo:rerun-if-changed={}", src.display());
