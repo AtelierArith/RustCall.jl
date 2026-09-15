@@ -40,13 +40,13 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Whether `dir` is a member of an enclosing Cargo workspace: the nearest
-/// ancestor manifest with a `[workspace]` table decides, and a package under
-/// one of its `exclude` entries is its own root (Cargo looks no further up).
-/// A member is built against the workspace root's `Cargo.lock`, not the one
-/// beside this manifest, so the lockfile hashed here would not be the one
-/// that decided the build; such a build reports no source digest and is
-/// identified by its bytes.
+/// Whether any ancestor directory of `dir` carries a manifest with a
+/// `[workspace]` table. A member is built against the workspace root's
+/// `Cargo.lock`, not the one beside this manifest, so the lockfile hashed
+/// here would not be the one that decided the build. Cargo's `members` /
+/// `exclude` precedence is deliberately not modelled: an enclosing workspace
+/// of any shape is a layout this script does not claim to enumerate, and
+/// such a build reports no source digest and is identified by its bytes.
 fn inside_workspace(dir: &Path) -> bool {
     let start = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let mut ancestor = start.parent();
@@ -55,17 +55,8 @@ fn inside_workspace(dir: &Path) -> bool {
         if manifest.is_file() {
             if let Ok(text) = fs::read_to_string(&manifest) {
                 if let Ok(doc) = text.parse::<toml::Table>() {
-                    if let Some(workspace) = doc.get("workspace").and_then(|w| w.as_table()) {
-                        let excluded = workspace
-                            .get("exclude")
-                            .and_then(|e| e.as_array())
-                            .is_some_and(|entries| {
-                                entries.iter().filter_map(|e| e.as_str()).any(|e| {
-                                    fs::canonicalize(parent.join(e))
-                                        .is_ok_and(|excluded| start.starts_with(&excluded))
-                                })
-                            });
-                        return !excluded;
+                    if doc.contains_key("workspace") {
+                        return true;
                     }
                 }
             }
@@ -73,6 +64,50 @@ fn inside_workspace(dir: &Path) -> bool {
         ancestor = parent.parent();
     }
     false
+}
+
+/// Whether a manifest points a target outside what this script walks: a
+/// `[package] build = "..."` script other than `build.rs`, or a `[lib] path`
+/// / `[[bin]] path` that does not resolve under `src` (which is hashed whole).
+/// Such a root brings a module tree this script does not see (`mod x;`
+/// beside it), so a build with one reports no source digest and is
+/// identified by its bytes; this tree's crates keep everything under `src`.
+fn nondefault_targets(manifest: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return false;
+    };
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return false;
+    };
+    let dir = manifest.parent().unwrap_or(Path::new("."));
+    if let Some(toml::Value::String(script)) = doc.get("package").and_then(|p| p.get("build")) {
+        if script != "build.rs" {
+            return true;
+        }
+    }
+    let src = fs::canonicalize(dir.join("src")).ok();
+    let outside_src = |rel: &str| {
+        let Ok(root) = fs::canonicalize(dir.join(rel)) else {
+            return true;
+        };
+        !src.as_ref().is_some_and(|src| root.starts_with(src))
+    };
+    if let Some(lib_path) = doc
+        .get("lib")
+        .and_then(|l| l.get("path"))
+        .and_then(|p| p.as_str())
+    {
+        if outside_src(lib_path) {
+            return true;
+        }
+    }
+    doc.get("bin")
+        .and_then(|b| b.as_array())
+        .is_some_and(|bins| {
+            bins.iter()
+                .filter_map(|bin| bin.get("path").and_then(|p| p.as_str()))
+                .any(outside_src)
+        })
 }
 
 /// A lockfile reference line `"name version",` naming one of the release
@@ -95,55 +130,17 @@ fn unqualified_reference(line: &str, versions: &BTreeMap<String, String>) -> Str
     line.to_owned()
 }
 
-/// The files outside `src` that decide a crate's build besides its manifest:
-/// the build script Cargo runs for it — `[package] build = "..."` when set,
-/// `build.rs` beside the manifest otherwise, none when `build = false` — and
-/// a `[lib] path` or `[[bin]] path` that points outside `src`. Only files
-/// that exist.
-fn extra_inputs(manifest: &Path, dir: &Path) -> Vec<(String, PathBuf)> {
-    let doc = fs::read_to_string(manifest)
-        .ok()
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    let script = match doc.get("package").and_then(|p| p.get("build")) {
-        Some(toml::Value::Boolean(false)) => None,
-        Some(toml::Value::String(path)) => Some(dir.join(path)),
-        _ => Some(dir.join("build.rs")),
-    };
-    if let Some(script) = script.filter(|s| s.is_file()) {
-        out.push(("build-script".to_owned(), script));
+/// The one file outside `src` that decides a crate's build besides its
+/// manifest: its `build.rs`, when it has one. A manifest that selects any
+/// other build script or target root is not a layout this script claims
+/// (`nondefault_targets`). Only a file that exists.
+fn extra_inputs(dir: &Path) -> Vec<(String, PathBuf)> {
+    let script = dir.join("build.rs");
+    if script.is_file() {
+        vec![("build-script".to_owned(), script)]
+    } else {
+        Vec::new()
     }
-    // Target roots the manifest points outside `src`: the library's and each
-    // binary's (`[[bin]] path`), which is what this crate itself is. Files
-    // under `src` are already hashed with the sources.
-    let mut roots: Vec<(String, &str)> = Vec::new();
-    if let Some(lib_path) = doc
-        .get("lib")
-        .and_then(|l| l.get("path"))
-        .and_then(|p| p.as_str())
-    {
-        roots.push(("lib-root".to_owned(), lib_path));
-    }
-    if let Some(bins) = doc.get("bin").and_then(|b| b.as_array()) {
-        for (i, bin) in bins.iter().enumerate() {
-            if let Some(bin_path) = bin.get("path").and_then(|p| p.as_str()) {
-                roots.push((format!("bin-root-{i}"), bin_path));
-            }
-        }
-    }
-    let src = fs::canonicalize(dir.join("src")).ok();
-    for (label, rel) in roots {
-        let root = dir.join(rel);
-        let under_src = fs::canonicalize(&root)
-            .ok()
-            .zip(src.as_ref())
-            .is_some_and(|(root, src)| root.starts_with(src));
-        if root.is_file() && !under_src {
-            out.push((label, root));
-        }
-    }
-    out
 }
 
 /// `[package] version` of a manifest.
@@ -400,7 +397,8 @@ fn main() {
     // `rustcall_core`, a workspace member whose `path` lives in
     // `[workspace.dependencies]`, a `[patch]` that swaps a registry crate for
     // a local one, a checkout inside a workspace whose root lockfile decides
-    // the build — has inputs this script cannot enumerate
+    // the build, a build script or target root selected by the manifest —
+    // has inputs this script cannot enumerate
     // from the manifests, and claiming a digest for it would let an edit
     // it does not see keep a stale cache alive. Such a binary reports
     // nothing and RustCall identifies it by its bytes (`extractor_source_digest`).
@@ -411,6 +409,9 @@ fn main() {
         && !named
             .iter()
             .any(|(_, dir)| overrides_sources(&dir.join("Cargo.toml")))
+        && !named
+            .iter()
+            .any(|(_, dir)| nondefault_targets(&dir.join("Cargo.toml")))
         && !inside_workspace(&here);
     let versions: BTreeMap<String, String> = named
         .iter()
@@ -454,7 +455,7 @@ fn main() {
         // files that exist: Cargo treats a missing `rerun-if-changed` path
         // as always changed and would rerun this script — and rebuild the
         // extractor — on every build.
-        for (label, file) in extra_inputs(&manifest, krate) {
+        for (label, file) in extra_inputs(krate) {
             println!("cargo:rerun-if-changed={}", file.display());
             hasher.update(name.as_bytes());
             hasher.update(b"\0");
