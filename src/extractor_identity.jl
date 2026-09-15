@@ -164,10 +164,12 @@ function _ei_config_files(crate_dir::AbstractString, env)
         userhome = get(env, "HOME", get(env, "USERPROFILE", ""))
         isempty(userhome) && (userhome = try homedir() catch; "" end)
         home = isempty(userhome) ? nothing : joinpath(userhome, ".cargo")
-    elseif !isabspath(home)
-        # Cargo resolves a relative `CARGO_HOME` against its own working
+    end
+    if home !== nothing && !isabspath(home)
+        # Cargo resolves a relative home — `CARGO_HOME`, or a relative `HOME`
+        # / `USERPROFILE` it fell back to — against its own working
         # directory, which for the build this describes is the crate directory
-        # (`deps/build.jl` runs Cargo there) — not this process's.
+        # (`deps/build.jl` runs Cargo there), not this process's.
         home = joinpath(_ei_canonical(crate_dir), home)
     end
     if home !== nothing

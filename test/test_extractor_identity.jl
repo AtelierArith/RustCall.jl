@@ -237,6 +237,11 @@ end
             found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => "relhome"))
             @test any(f -> first(f) == "config:home:config.toml" &&
                            realpath(last(f)) == realpath(joinpath(crate, "relhome", "config.toml")), found)
+            # ...and a relative `HOME` it falls back to, the same way.
+            mkpath(joinpath(crate, "relhome2", ".cargo")); write(joinpath(crate, "relhome2", ".cargo", "config.toml"), "")
+            found = RustCall._ei_config_files(crate, Dict("HOME" => "relhome2"))
+            @test any(f -> first(f) == "config:home:config.toml" &&
+                           realpath(last(f)) == realpath(joinpath(crate, "relhome2", ".cargo", "config.toml")), found)
         end
     end
 
