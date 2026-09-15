@@ -130,6 +130,25 @@ end
                   ["CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => "true", "RUSTC_WRAPPER" => "sccache"]
             with_profile = decide(packages = bumped, env = ["CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS" => "true"])
             @test with_profile.canonical && with_profile.digest != decide(packages = bumped).digest
+            # The value `deps/build.jl` pins for every build — what the
+            # manifest pins too — is the baseline, not an input; any other
+            # value of that variable is.
+            @test isempty(RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_PANIC" => "unwind")))
+            @test RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_PANIC" => "abort")) ==
+                  ["CARGO_PROFILE_RELEASE_PANIC" => "abort"]
+
+            # A configuration that redirects a source — the `cargo vendor`
+            # form, or `paths` — makes the build one this identity cannot
+            # describe: `cargo tree` prints a vendored package like a
+            # crates.io one, so the configuration is what says.
+            for text in ("[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"vendor\"\n",
+                         "paths = [\"/somewhere/syn\"]\n")
+                vendored = joinpath(dir, "vendored.toml"); write(vendored, text)
+                r = decide(packages = bumped, config = ["config:ancestor:0:config.toml" => vendored])
+                @test !r.canonical && occursin("replaces a source", r.reason)
+            end
+            # ...while an ordinary configuration merely enters the digest.
+            @test decide(packages = bumped, config = ["config:home:config.toml" => cfg]).canonical
 
             # Not this tree's layout: no digest, and a reason.
             fork = joinpath(dir, "fork_core"); mkpath(joinpath(fork, "src"))
@@ -235,6 +254,9 @@ end
         else
             identity = RustCall.extractor_build_identity(_EI_CRATE; cargo = cargo())
             @test identity.canonical
+            # Under the environment `deps/build.jl` builds with, the same digest.
+            build_env = copy(ENV); build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
+            @test RustCall.extractor_build_identity(_EI_CRATE; cargo = cargo(), env = build_env).digest == identity.digest
             @test occursin(r"^[0-9a-f]{64}$", identity.digest)
             # The extractor's own local closure: itself and `rustcall_core`
             # (the macro crates are inputs of a *user's* build, covered by the

@@ -303,9 +303,36 @@ end
 # flags where an unset variable would let them apply, so presence is part of
 # the identity.
 function _ei_env_inputs(env)
-    captured = String[String(k) for k in keys(env) if artifact_build_env_captured(String(k))]
+    captured = String[String(k) for k in keys(env)
+                      if artifact_build_env_captured(String(k)) &&
+                         get(_EI_BASELINE_ENV, String(k), nothing) != String(env[k])]
     sort!(captured)
     return Pair{String, String}[k => String(env[k]) for k in captured]
+end
+
+# Settings `deps/build.jl` pins for every build and the manifests pin too:
+# they are the baseline the digest already describes, not an input on top of
+# it. `panic = "unwind"` is in `deps/rustcall_extract/Cargo.toml` (#244); the
+# environment override only forbids an inherited value from deciding
+# otherwise. Any *other* value of the same variable is an input.
+const _EI_BASELINE_ENV = Dict{String, String}("CARGO_PROFILE_RELEASE_PANIC" => "unwind")
+
+# Whether a discovered configuration file redirects a source: `paths = [...]`,
+# or a `[source.<name>]` table with `replace-with`, `directory` or
+# `local-registry` — the `cargo vendor` form. `cargo tree` prints a package
+# from a replaced registry exactly like one from crates.io, so this is decided
+# from the configuration, not from the package list.
+function _ei_config_replaces_sources(file::AbstractString)
+    doc = try
+        TOML.parsefile(String(file))
+    catch
+        return true   # unreadable configuration: not a build this identity can describe
+    end
+    haskey(doc, "paths") && return true
+    sources = get(doc, "source", nothing)
+    sources isa AbstractDict || return false
+    return any(v -> v isa AbstractDict && any(k -> haskey(v, k), ("replace-with", "directory", "local-registry")),
+               values(sources))
 end
 
 # ---------------------------------------------------------------------------
@@ -534,6 +561,10 @@ function _extractor_identity_decide(crate_dir::String, packages, workspace_manif
     workspace_manifest === nothing && return fail("cargo locate-project did not answer")
     if _ei_canonical(workspace_manifest) != _ei_canonical(joinpath(crate_dir, "Cargo.toml"))
         return fail("the crate is a member of the workspace at $(workspace_manifest); its lockfile decides the build")
+    end
+    for (label, file) in config_files
+        _ei_config_replaces_sources(file) &&
+            return fail("the configuration file $(label) replaces a source (vendored or overridden packages)")
     end
     deps_root = dirname(_ei_canonical(crate_dir))
     crates = Pair{String, String}[]
