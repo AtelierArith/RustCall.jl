@@ -206,6 +206,13 @@ end
             @test any(f -> first(f) == "config:ancestor:2:config.toml" &&
                            realpath(last(f)) == realpath(joinpath(dir, ".cargo", "config.toml")), found)
             @test !any(f -> startswith(first(f), "config:home"), found)
+            # No `CARGO_HOME`, `HOME` or `USERPROFILE` in the environment:
+            # Cargo still reads the account home's configuration, and so does
+            # this — whatever `homedir()` says, not nothing.
+            found = RustCall._ei_config_files(crate, Dict{String, String}())
+            home_entries = filter(f -> startswith(first(f), "config:home"), found)
+            @test all(f -> startswith(realpath(last(f)), realpath(joinpath(homedir(), ".cargo"))), home_entries)
+            @test length(home_entries) == count(isfile, (joinpath(homedir(), ".cargo", n) for n in ("config.toml", "config")))
             # `$CARGO_HOME`, absolute...
             home = joinpath(dir, "home"); mkpath(home); write(joinpath(home, "config.toml"), "")
             found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => home))

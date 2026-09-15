@@ -148,7 +148,11 @@ function _ei_config_files(crate_dir::AbstractString, env)
     end
     home = get(env, "CARGO_HOME", nothing)
     if home === nothing || isempty(home)
+        # Cargo's own fallback order: `$CARGO_HOME`, else the account's home —
+        # from the environment when it says, else from the operating system
+        # (`homedir()` asks it), never "no home".
         userhome = get(env, "HOME", get(env, "USERPROFILE", ""))
+        isempty(userhome) && (userhome = try homedir() catch; "" end)
         home = isempty(userhome) ? nothing : joinpath(userhome, ".cargo")
     elseif !isabspath(home)
         # Cargo resolves a relative `CARGO_HOME` against its own working
