@@ -280,8 +280,10 @@ computation and the replay alike — sees one file. A file whose refresh is
 ambiguous is removed instead, and the set is resolved afresh by the next
 `ensure_cargo_lockfile!`. Nothing to do for a set with no release crate, or no
 stored file. When another process holds the claim (a resolution or a refresh
-in flight) this waits up to `wait` seconds for it and then leaves the file to
-that process.
+in flight) this waits up to `wait` seconds for it; a claim held longer than
+that is a `CargoBuildError`, as in `_publish_lockfile!` — the file under it
+cannot be trusted, and neither the identity nor a `--locked` build may proceed
+on it (#372 review).
 """
 function _refresh_stored_lockfile!(stored::AbstractString, release_names; wait::Real = 10.0)
     stored = String(stored)
@@ -289,7 +291,12 @@ function _refresh_stored_lockfile!(stored::AbstractString, release_names; wait::
     claim = stored * ".claim"
     deadline = time() + Float64(wait)
     while !_claim_lockfile!(claim)
-        time() < deadline || return nothing
+        time() < deadline || throw(CargoBuildError(
+            "Another RustCall process holds the claim on this dependency set's Cargo.lock " *
+            "and did not release it within $(wait)s. If no other process is resolving it, " *
+            "a previous one died holding the claim: delete `$(claim)` (or run " *
+            "`RustCall.clear_lockfiles()`) and build again",
+            "claim: $(claim)", dirname(stored)))
         sleep(0.05)
     end
     try

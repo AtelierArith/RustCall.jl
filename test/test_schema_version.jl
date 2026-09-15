@@ -377,6 +377,13 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 @test read(stored, String) == refreshed
                 RustCall._refresh_stored_lockfile!(stored, Set{String}())
                 @test read(stored, String) == refreshed
+                # A claim held past the wait is an error, not a file to use.
+                touch(stored * ".claim")
+                try
+                    @test_throws RustCall.CargoBuildError RustCall._refresh_stored_lockfile!(stored, three; wait = 0.2)
+                finally
+                    rm(stored * ".claim"; force = true)
+                end
             end
             # The release crates behind a `#[julia]` crate's one path
             # dependency are release crates too: the fixture names only
