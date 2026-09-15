@@ -225,6 +225,13 @@ end
             home_entries = filter(f -> startswith(first(f), "config:home"), found)
             @test all(f -> startswith(realpath(last(f)), realpath(joinpath(homedir(), ".cargo"))), home_entries)
             @test length(home_entries) == count(isfile, (joinpath(homedir(), ".cargo", n) for n in ("config.toml", "config")))
+            # `USERPROFILE` is a Windows variable: elsewhere Cargo ignores it
+            # and falls back to the account home, and so does this.
+            if !Sys.iswindows()
+                mkpath(joinpath(dir, "winhome", ".cargo")); write(joinpath(dir, "winhome", ".cargo", "config.toml"), "")
+                found = RustCall._ei_config_files(crate, Dict("USERPROFILE" => joinpath(dir, "winhome")))
+                @test !any(f -> startswith(first(f), "config:home") && occursin("winhome", last(f)), found)
+            end
             # `$CARGO_HOME`, absolute...
             home = joinpath(dir, "home"); mkpath(home); write(joinpath(home, "config.toml"), "")
             found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => home))

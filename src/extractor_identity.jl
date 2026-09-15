@@ -161,7 +161,10 @@ function _ei_config_files(crate_dir::AbstractString, env)
         # Cargo's own fallback order: `$CARGO_HOME`, else the account's home —
         # from the environment when it says, else from the operating system
         # (`homedir()` asks it), never "no home".
-        userhome = get(env, "HOME", get(env, "USERPROFILE", ""))
+        # `HOME` everywhere; `USERPROFILE` is consulted on Windows only (Cargo
+        # ignores it elsewhere); then the operating system's answer.
+        userhome = get(env, "HOME", "")
+        isempty(userhome) && Sys.iswindows() && (userhome = get(env, "USERPROFILE", ""))
         isempty(userhome) && (userhome = try homedir() catch; "" end)
         home = isempty(userhome) ? nothing : joinpath(userhome, ".cargo")
     end
