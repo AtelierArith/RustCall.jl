@@ -45,8 +45,11 @@ builds the crate under its own `target/`.
 The example is **self-contained**: everything it builds and tests is inside
 this directory. The only reference outside it is the `rustcall_julia_macros`
 path dependency in `deps/macro_crate/Cargo.toml`
-(`../../../../deps/rustcall_julia_macros`, the proc-macro crate of this
-checkout), because `rustcall_julia_macros` is not on crates.io yet.
+(`../../../../deps/rustcall_julia_macros`), because it is not on crates.io yet.
+`rustcall_julia_macros` is the attribute/runtime crate this checkout publishes
+for `#[julia]` crates: a normal library — not the proc macro — that re-exports
+the attribute from the proc-macro crate `rustcall_julia_macros_impl` and carries
+the runtime state the generated wrappers link against.
 
 ## The three lines
 
