@@ -324,6 +324,7 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 version = "0.1.0"
                 dependencies = [
                  "rustcall_julia_macros 0.0.1",
+                 "rustcall_julia_macros 0.3.9",
                  "syn",
                 ]
 
@@ -332,11 +333,19 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 version = "0.0.1"
 
                 [[package]]
+                name = "rustcall_julia_macros"
+                version = "0.3.9"
+                source = "registry+https://github.com/rust-lang/crates.io-index"
+                checksum = "1111"
+
+                [[package]]
                 name = "syn"
                 version = "2.0.1"
                 source = "registry+https://github.com/rust-lang/crates.io-index"
                 checksum = "0000"
                 """
+            # Only the path entry's old version is rewritten, in its table and
+            # in the references; the same-named registry package keeps both.
             refreshed = replace(stale, "\"rustcall_julia_macros 0.0.1\"" => "\"rustcall_julia_macros $(core_version)\"",
                                        "name = \"rustcall_julia_macros\"\nversion = \"0.0.1\"" =>
                                        "name = \"rustcall_julia_macros\"\nversion = \"$(core_version)\"")

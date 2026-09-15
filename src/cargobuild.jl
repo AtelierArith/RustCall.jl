@@ -237,8 +237,9 @@ function _refresh_release_versions!(lockfile::AbstractString; release_names = no
     isempty(versions) && return :unchanged
     lines = split(read(lockfile, String), '\n'; keepempty = true)
     headers = [i for (i, line) in enumerate(lines) if startswith(lstrip(line), "[")]
-    stale = Dict{String, Vector{Int}}()   # name => the version lines to rewrite
-    pathed = Dict{String, Int}()          # name => source-less entries seen
+    stale = Dict{String, Vector{Int}}()     # name => the version lines to rewrite
+    renames = Dict{String, Pair{String, String}}()  # name => old version => current
+    pathed = Dict{String, Int}()            # name => source-less entries seen
     for (k, start) in enumerate(headers)
         strip(lines[start]) == "[[package]]" || continue
         stop = k < length(headers) ? headers[k + 1] - 1 : length(lines)
@@ -248,8 +249,10 @@ function _refresh_release_versions!(lockfile::AbstractString; release_names = no
         pathed[name] = get(pathed, name, 0) + 1
         for j in start + 1:stop
             _is_toml_key_line(lines[j], "version") || continue
-            strip(lines[j]) == "version = \"$(versions[name])\"" && continue
+            old = _toml_line_value((lines[j],), "version")
+            old == versions[name] && continue
             push!(get!(stale, name, Int[]), j)
+            renames[name] = old => versions[name]
         end
     end
     any(n -> get(pathed, n, 0) > 1, keys(stale)) && return :ambiguous
@@ -258,8 +261,11 @@ function _refresh_release_versions!(lockfile::AbstractString; release_names = no
         lines[j] = "version = \"$(versions[name])\""
         changed = true
     end
+    # Only references to the *old* version of an entry rewritten above: a
+    # same-named registry package at some other version keeps its qualified
+    # reference, since it is another package (#372 review).
     for (j, line) in enumerate(lines)
-        refreshed = _requalified_reference(line, versions)
+        refreshed = _requalified_reference(line, renames)
         if refreshed != line
             lines[j] = refreshed
             changed = true
@@ -321,16 +327,17 @@ function _refresh_stored_lockfile!(stored::AbstractString, release_names; wait::
     return nothing
 end
 
-# A lockfile reference line `"name version",` for a `name` in `versions` at any
-# other version becomes `"name <versions[name]>",`; any other line is returned
-# as it is (two-word form only, as in `_unqualified_reference`).
-function _requalified_reference(line::AbstractString, versions::AbstractDict)
+# A lockfile reference line `"name old",` for a `name => (old => new)` in
+# `renames` becomes `"name new",`; any other line — another version of the
+# name, a registry package's — is returned as it is (two-word form only, as
+# in `_unqualified_reference`).
+function _requalified_reference(line::AbstractString, renames::AbstractDict)
     stripped = strip(line)
     startswith(stripped, "\"") || return line
     quoted = strip(rstrip(stripped, ','), '"')
     parts = split(quoted, ' ')
-    length(parts) == 2 && haskey(versions, parts[1]) && versions[parts[1]] != parts[2] || return line
-    return replace(line, "\"$(quoted)\"" => "\"$(parts[1]) $(versions[parts[1]])\""; count = 1)
+    length(parts) == 2 && haskey(renames, parts[1]) && first(renames[parts[1]]) == parts[2] || return line
+    return replace(line, "\"$(quoted)\"" => "\"$(parts[1]) $(last(renames[parts[1]]))\""; count = 1)
 end
 
 # Whether the lockfile at `path` carries a `[[package]]` entry for `root` — the
