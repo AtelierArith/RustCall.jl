@@ -381,9 +381,11 @@ end
 
 # The same executables when a discovered configuration file selects them
 # (`[build] rustc`, `rustc-wrapper`, `rustc-workspace-wrapper`), as
-# `config:<label>:<key> => path`. A relative path is resolved as Cargo
-# resolves paths in a configuration file: against the directory that holds
-# the `.cargo` directory (or the file's own directory for `$CARGO_HOME`).
+# `config:<label>:<key> => path`. A relative path with a separator is
+# resolved as Cargo resolves one in a configuration file: against the
+# *parent* of the directory holding the file — `<dir>` for
+# `<dir>/.cargo/config.toml`, and likewise `$CARGO_HOME/..` for
+# `$CARGO_HOME/config.toml`, whatever that directory is named.
 const _EI_CONFIG_EXECUTABLE_KEYS = ("rustc", "rustc-wrapper", "rustc-workspace-wrapper")
 
 function _ei_config_executables(config_files::Vector{Pair{String, String}}, env,
@@ -398,7 +400,7 @@ function _ei_config_executables(config_files::Vector{Pair{String, String}}, env,
         end
         build = get(doc, "build", nothing)
         build isa AbstractDict || continue
-        base = basename(dirname(file)) == ".cargo" ? dirname(dirname(file)) : dirname(file)
+        base = dirname(dirname(file))
         for key in _EI_CONFIG_EXECUTABLE_KEYS
             value = get(build, key, nothing)
             value isa AbstractString && !isempty(value) || continue

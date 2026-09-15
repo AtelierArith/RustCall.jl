@@ -203,6 +203,17 @@ end
                                                            Dict{String, String}(), crate)
             @test only(missing_exec) == ("config:ancestor:1:config.toml:rustc-wrapper" => nothing)
             @test !decide(packages = bumped, executables = missing_exec).canonical
+            # `$CARGO_HOME/config.toml` resolves the same way — from the
+            # parent of the directory holding the file — even when that
+            # directory is not named `.cargo`; a same-named file inside it
+            # is not the one Cargo runs.
+            home = joinpath(dir, "myhome"); mkpath(joinpath(home, "tools")); mkpath(joinpath(dir, "tools"))
+            write(joinpath(home, "config.toml"), "[build]\nrustc-wrapper = \"tools/wrap\"\n")
+            write(joinpath(home, "tools", "wrap"), "#!/bin/sh\nexit 1\n")
+            write(joinpath(dir, "tools", "wrap"), "#!/bin/sh\n")
+            @test RustCall._ei_config_executables(["config:home:config.toml" => joinpath(home, "config.toml")],
+                                                  Dict{String, String}(), crate) ==
+                  ["config:home:config.toml:rustc-wrapper" => realpath(joinpath(dir, "tools", "wrap"))]
             # A source replaced through the environment declines like one
             # replaced through a file.
             @test RustCall._ei_env_replaces_sources(Dict("CARGO_SOURCE_CRATES_IO_REPLACE_WITH" => "vendored"))
