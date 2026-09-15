@@ -98,7 +98,8 @@ fn unqualified_reference(line: &str, versions: &BTreeMap<String, String>) -> Str
 /// The files outside `src` that decide a crate's build besides its manifest:
 /// the build script Cargo runs for it — `[package] build = "..."` when set,
 /// `build.rs` beside the manifest otherwise, none when `build = false` — and
-/// a `[lib] path` that points outside `src`. Only files that exist.
+/// a `[lib] path` or `[[bin]] path` that points outside `src`. Only files
+/// that exist.
 fn extra_inputs(manifest: &Path, dir: &Path) -> Vec<(String, PathBuf)> {
     let doc = fs::read_to_string(manifest)
         .ok()
@@ -113,18 +114,33 @@ fn extra_inputs(manifest: &Path, dir: &Path) -> Vec<(String, PathBuf)> {
     if let Some(script) = script.filter(|s| s.is_file()) {
         out.push(("build-script".to_owned(), script));
     }
+    // Target roots the manifest points outside `src`: the library's and each
+    // binary's (`[[bin]] path`), which is what this crate itself is. Files
+    // under `src` are already hashed with the sources.
+    let mut roots: Vec<(String, &str)> = Vec::new();
     if let Some(lib_path) = doc
         .get("lib")
         .and_then(|l| l.get("path"))
         .and_then(|p| p.as_str())
     {
-        let lib_root = dir.join(lib_path);
-        let under_src = fs::canonicalize(&lib_root)
+        roots.push(("lib-root".to_owned(), lib_path));
+    }
+    if let Some(bins) = doc.get("bin").and_then(|b| b.as_array()) {
+        for (i, bin) in bins.iter().enumerate() {
+            if let Some(bin_path) = bin.get("path").and_then(|p| p.as_str()) {
+                roots.push((format!("bin-root-{i}"), bin_path));
+            }
+        }
+    }
+    let src = fs::canonicalize(dir.join("src")).ok();
+    for (label, rel) in roots {
+        let root = dir.join(rel);
+        let under_src = fs::canonicalize(&root)
             .ok()
-            .zip(fs::canonicalize(dir.join("src")).ok())
-            .is_some_and(|(root, src)| root.starts_with(&src));
-        if lib_root.is_file() && !under_src {
-            out.push(("lib-root".to_owned(), lib_root));
+            .zip(src.as_ref())
+            .is_some_and(|(root, src)| root.starts_with(src));
+        if root.is_file() && !under_src {
+            out.push((label, root));
         }
     }
     out
