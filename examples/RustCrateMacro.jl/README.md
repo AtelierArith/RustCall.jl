@@ -105,14 +105,14 @@ pinned to the version of this release.) There is no build step to run: the first
 `using` (which `Pkg.test()` performs) precompiles the package, which builds the
 crate.
 
-The crate also builds and tests on its own:
+The `Examples` workflow runs the Julia suite above (job
+`Example - RustCrateMacro.jl`); its `Pkg.test()` builds the crate through
+`@rust_crate` but does **not** run the crate's `#[cfg(test)]` unit tests. Run
+those separately:
 
 ```bash
 cd deps/macro_crate && cargo test
 ```
-
-The same tests run in CI (the `Examples` workflow, job
-`Example - RustCrateMacro.jl`).
 
 ## Usage
 
