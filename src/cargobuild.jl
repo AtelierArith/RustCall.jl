@@ -174,6 +174,16 @@ function ensure_cargo_lockfile!(project::CargoProject;
     target = joinpath(project.path, "Cargo.lock")
     if isfile(stored) && _lockfile_names_root(stored, project.name)
         cp(stored, target; force = true)
+        # A stored resolution pins RustCall's release crates at the version
+        # they had when it was resolved. A patch release moves that version
+        # without moving the set's identity — their version is out of every
+        # artifact identity (#372) — and `--locked` would then reject the
+        # replayed file against the bumped manifests. Bring those lines, and
+        # only those, to the current versions; publish the refreshed file so
+        # the store is current too.
+        if _refresh_release_versions!(target)
+            return _publish_lockfile!(stored, target; replace = true)
+        end
         return _file_content_digest(target)
     end
     # Either no resolution yet, or a file that is not this set's resolution: it
@@ -202,6 +212,66 @@ function ensure_cargo_lockfile!(project::CargoProject;
     isfile(target) || throw(CargoBuildError("cargo generate-lockfile produced no Cargo.lock",
                                             "", project.path))
     return _publish_lockfile!(stored, target; replace = replace_stale, root = project.name)
+end
+
+"""
+    _refresh_release_versions!(lockfile) -> Bool
+
+Rewrite, in place, the `version` line of every source-less `[[package]]`
+entry of `lockfile` that names one of RustCall's release crates resolved by
+path from the project beside it (`_rustcall_release_names_in`), and every
+qualified reference `"<name> <version>"` to one, to the version that crate's
+manifest carries **now**. Nothing else in the file changes. Returns whether
+anything did. This is what lets a lockfile resolved under v0.4.0 replay
+`--locked` under v0.4.1: the set's identity does not move on a patch release
+(#372), so the store keeps serving the file, and the one thing in it a patch
+release rewrites is brought up to date on the way in.
+"""
+function _refresh_release_versions!(lockfile::AbstractString)
+    names = _rustcall_release_names_in(dirname(lockfile))
+    isempty(names) && return false
+    versions = Dict{String, String}(n => v for n in names
+                                    for v in (_rustcall_release_crate_version(n),) if v !== nothing)
+    isempty(versions) && return false
+    lines = split(read(lockfile, String), '\n'; keepempty = true)
+    changed = false
+    headers = [i for (i, line) in enumerate(lines) if startswith(lstrip(line), "[")]
+    for (k, start) in enumerate(headers)
+        strip(lines[start]) == "[[package]]" || continue
+        stop = k < length(headers) ? headers[k + 1] - 1 : length(lines)
+        body = view(lines, start + 1:stop)
+        name = _toml_line_value(body, "name")
+        haskey(versions, name) && _toml_line_value(body, "source") === nothing || continue
+        for j in start + 1:stop
+            _is_toml_key_line(lines[j], "version") || continue
+            current = "version = \"$(versions[name])\""
+            if strip(lines[j]) != current
+                lines[j] = current
+                changed = true
+            end
+        end
+    end
+    for (j, line) in enumerate(lines)
+        refreshed = _requalified_reference(line, versions)
+        if refreshed != line
+            lines[j] = refreshed
+            changed = true
+        end
+    end
+    changed && write(lockfile, join(lines, '\n'))
+    return changed
+end
+
+# A lockfile reference line `"name version",` for a `name` in `versions` at any
+# other version becomes `"name <versions[name]>",`; any other line is returned
+# as it is (two-word form only, as in `_unqualified_reference`).
+function _requalified_reference(line::AbstractString, versions::AbstractDict)
+    stripped = strip(line)
+    startswith(stripped, "\"") || return line
+    quoted = strip(rstrip(stripped, ','), '"')
+    parts = split(quoted, ' ')
+    length(parts) == 2 && haskey(versions, parts[1]) && versions[parts[1]] != parts[2] || return line
+    return replace(line, "\"$(quoted)\"" => "\"$(parts[1]) $(versions[parts[1]])\""; count = 1)
 end
 
 # Whether the lockfile at `path` carries a `[[package]]` entry for `root` — the

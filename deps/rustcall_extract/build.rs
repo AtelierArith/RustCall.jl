@@ -94,6 +94,20 @@ fn package_version(manifest: &Path) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether a manifest carries a `[patch]` or `[replace]` table. Either can
+/// swap a registry dependency for a local crate this traversal does not see
+/// (it reads dependency tables only), so a build with one reports no source
+/// digest and is identified by its bytes.
+fn overrides_sources(manifest: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(manifest) else {
+        return false;
+    };
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return false;
+    };
+    doc.contains_key("patch") || doc.contains_key("replace")
+}
+
 /// Whether a manifest inherits anything from a workspace — a dependency or a
 /// package field spelled `{ workspace = true }`, or an explicit
 /// `[package] workspace = "..."`. Such a crate's inputs are not knowable from
@@ -322,8 +336,9 @@ fn main() {
     // local crate one of the release crates in its place, none inheriting
     // from a workspace. Anything else — a fork with a helper beside
     // `rustcall_core`, a workspace member whose `path` lives in
-    // `[workspace.dependencies]`, a checkout inside a workspace whose root
-    // lockfile decides the build — has inputs this script cannot enumerate
+    // `[workspace.dependencies]`, a `[patch]` that swaps a registry crate for
+    // a local one, a checkout inside a workspace whose root lockfile decides
+    // the build — has inputs this script cannot enumerate
     // from the manifests, and claiming a digest for it would let an edit
     // it does not see keep a stale cache alive. Such a binary reports
     // nothing and RustCall identifies it by its bytes (`extractor_source_digest`).
@@ -331,6 +346,9 @@ fn main() {
         && !named
             .iter()
             .any(|(_, dir)| inherits_from_workspace(&dir.join("Cargo.toml")))
+        && !named
+            .iter()
+            .any(|(_, dir)| overrides_sources(&dir.join("Cargo.toml")))
         && !inside_workspace(&here);
     let versions: BTreeMap<String, String> = named
         .iter()
