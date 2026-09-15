@@ -463,11 +463,13 @@ function _ei_lockfile_without_release_versions(text::AbstractString, release, ve
 end
 
 # Every regular file under `dir`, sorted the way Rust sorts `PathBuf`s: by
-# path component, so `a/b.rs` comes before `a.rs`.
+# path component, so `a/b.rs` comes before `a.rs`. Symlinked directories are
+# followed, as rustc follows them for `mod` files and as the v0.4.0 `build.rs`
+# traversal did.
 function _ei_files_under(dir::AbstractString)
     files = String[]
     isdir(dir) || return files
-    for (root, _, names) in walkdir(dir)
+    for (root, _, names) in walkdir(dir; follow_symlinks = true)
         for n in names
             f = joinpath(root, n)
             isfile(f) && push!(files, f)

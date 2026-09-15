@@ -101,6 +101,19 @@ end
             write(joinpath(deps, "rustcall_core", "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
             changed = decide(packages = bumped).digest
             @test changed != good.digest
+            # A module behind a directory symlink inside `src` is a source
+            # like any other (rustc follows the link).
+            if !Sys.iswindows()
+                linked = joinpath(dir, "linked_src"); mkpath(linked)
+                write(joinpath(linked, "mod.rs"), "pub fn g() {}\n")
+                symlink(linked, joinpath(deps, "rustcall_core", "src", "linked"); dir_target = true)
+                with_link = decide(packages = bumped).digest
+                @test with_link != changed
+                write(joinpath(linked, "mod.rs"), "pub fn g() -> i32 { 2 }\n")
+                @test decide(packages = bumped).digest != with_link
+                rm(joinpath(deps, "rustcall_core", "src", "linked"))
+                changed = decide(packages = bumped).digest
+            end
             write(joinpath(crate, "Cargo.lock"), replace(read(joinpath(crate, "Cargo.lock"), String),
                                                           "2.0.1" => "2.0.2"))
             @test decide(packages = bumped).digest != changed
