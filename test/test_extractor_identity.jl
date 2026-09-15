@@ -225,7 +225,8 @@ end
             lk = joinpath(dir, "lk", ".cargo"); mkpath(lk); mkpath(joinpath(dir, "lk", "tools"))
             stub(joinpath(dir, "lk", "tools", "ld.sh"), "#!/bin/sh\n")
             write(joinpath(lk, "config.toml"),
-                  "[target.x86_64-unknown-linux-gnu]\nlinker = \"tools/ld.sh\"\nrustflags = [\"-C\", \"linker=$(wrapper)\"]\n")
+                  # literal strings: a Windows path's backslashes are not escapes
+                  "[target.x86_64-unknown-linux-gnu]\nlinker = 'tools/ld.sh'\nrustflags = ['-C', 'linker=$(wrapper)']\n")
             @test RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(lk, "config.toml")],
                                                   Dict{String, String}(), crate) ==
                   ["config:ancestor:1:config.toml:target.x86_64-unknown-linux-gnu.linker" => realpath(joinpath(dir, "lk", "tools", "ld.sh")),
