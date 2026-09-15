@@ -4,7 +4,13 @@ This guide covers Windows-specific setup, configuration, and troubleshooting for
 
 ## Prerequisites
 
-### Rust Installation
+### Rust Toolchain (optional to install yourself)
+
+RustCall depends on [RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl),
+which uses the `rustc`/`cargo` on `PATH` when there is one and otherwise
+installs an isolated MSVC-target toolchain (`x86_64-pc-windows-msvc`) through
+Julia's Artifacts system. A system Rust installation is therefore **optional**.
+If you prefer one — for example to pin a toolchain or use it outside Julia:
 
 1. **Download and run rustup-init.exe** from [rustup.rs](https://rustup.rs/)
 
@@ -18,9 +24,13 @@ This guide covers Windows-specific setup, configuration, and troubleshooting for
    cargo --version
    ```
 
-### Visual Studio Build Tools
+A `rustc` on `PATH` takes precedence over the artifact toolchain.
 
-The default MSVC toolchain requires Visual Studio Build Tools:
+### Visual Studio Build Tools (required)
+
+Whichever toolchain is used — the artifact one or your own — linking on
+Windows needs the MSVC build tools and a Windows SDK; RustToolChain.jl does
+not provide a linker. The default MSVC toolchain requires Visual Studio Build Tools:
 
 1. Download [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 
