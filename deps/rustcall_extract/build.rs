@@ -40,11 +40,13 @@ fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Whether any ancestor directory of `dir` carries a manifest with a
-/// `[workspace]` table. A checkout placed inside a workspace is built against
-/// the workspace root's `Cargo.lock`, not the one beside this manifest, so the
-/// lockfile hashed here would not be the one that decided the build; such a
-/// build reports no source digest and is identified by its bytes.
+/// Whether `dir` is a member of an enclosing Cargo workspace: the nearest
+/// ancestor manifest with a `[workspace]` table decides, and a package under
+/// one of its `exclude` entries is its own root (Cargo looks no further up).
+/// A member is built against the workspace root's `Cargo.lock`, not the one
+/// beside this manifest, so the lockfile hashed here would not be the one
+/// that decided the build; such a build reports no source digest and is
+/// identified by its bytes.
 fn inside_workspace(dir: &Path) -> bool {
     let start = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
     let mut ancestor = start.parent();
@@ -53,8 +55,17 @@ fn inside_workspace(dir: &Path) -> bool {
         if manifest.is_file() {
             if let Ok(text) = fs::read_to_string(&manifest) {
                 if let Ok(doc) = text.parse::<toml::Table>() {
-                    if doc.contains_key("workspace") {
-                        return true;
+                    if let Some(workspace) = doc.get("workspace").and_then(|w| w.as_table()) {
+                        let excluded = workspace
+                            .get("exclude")
+                            .and_then(|e| e.as_array())
+                            .is_some_and(|entries| {
+                                entries.iter().filter_map(|e| e.as_str()).any(|e| {
+                                    fs::canonicalize(parent.join(e))
+                                        .is_ok_and(|excluded| start.starts_with(&excluded))
+                                })
+                            });
+                        return !excluded;
                     }
                 }
             }
