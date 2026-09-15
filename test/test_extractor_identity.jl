@@ -142,10 +142,12 @@ end
             # describe: `cargo tree` prints a vendored package like a
             # crates.io one, so the configuration is what says.
             for text in ("[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"vendor\"\n",
-                         "paths = [\"/somewhere/syn\"]\n")
+                         "paths = [\"/somewhere/syn\"]\n",
+                         "include = [\"extra.toml\"]\n",
+                         "this is not toml = [")
                 vendored = joinpath(dir, "vendored.toml"); write(vendored, text)
                 r = decide(packages = bumped, config = ["config:ancestor:0:config.toml" => vendored])
-                @test !r.canonical && occursin("replaces a source", r.reason)
+                @test !r.canonical && occursin("replaces a source or includes", r.reason)
             end
             # ...while an ordinary configuration merely enters the digest.
             @test decide(packages = bumped, config = ["config:home:config.toml" => cfg]).canonical

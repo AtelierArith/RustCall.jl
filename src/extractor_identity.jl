@@ -317,18 +317,20 @@ end
 const _EI_BASELINE_ENV = ("CARGO_PROFILE_RELEASE_PANIC" => "unwind",)
 _ei_is_baseline(key::String, value::String) = any(b -> first(b) == key && last(b) == value, _EI_BASELINE_ENV)
 
-# Whether a discovered configuration file redirects a source: `paths = [...]`,
-# or a `[source.<name>]` table with `replace-with`, `directory` or
-# `local-registry` — the `cargo vendor` form. `cargo tree` prints a package
-# from a replaced registry exactly like one from crates.io, so this is decided
-# from the configuration, not from the package list.
+# Whether a discovered configuration file is one this identity cannot
+# describe: it redirects a source — `paths = [...]`, or a `[source.<name>]`
+# table with `replace-with`, `directory` or `local-registry`, the `cargo
+# vendor` form (`cargo tree` prints a package from a replaced registry exactly
+# like one from crates.io, so this is decided from the configuration) — or it
+# pulls in files this scan does not see (`include = [...]`, Cargo's
+# `-Zconfig-include`), or it does not parse.
 function _ei_config_replaces_sources(file::AbstractString)
     doc = try
         TOML.parsefile(String(file))
     catch
         return true   # unreadable configuration: not a build this identity can describe
     end
-    haskey(doc, "paths") && return true
+    (haskey(doc, "paths") || haskey(doc, "include")) && return true
     sources = get(doc, "source", nothing)
     sources isa AbstractDict || return false
     return any(v -> v isa AbstractDict && any(k -> haskey(v, k), ("replace-with", "directory", "local-registry")),
@@ -564,7 +566,7 @@ function _extractor_identity_decide(crate_dir::String, packages, workspace_manif
     end
     for (label, file) in config_files
         _ei_config_replaces_sources(file) &&
-            return fail("the configuration file $(label) replaces a source (vendored or overridden packages)")
+            return fail("the configuration file $(label) replaces a source or includes other files")
     end
     deps_root = dirname(_ei_canonical(crate_dir))
     crates = Pair{String, String}[]
