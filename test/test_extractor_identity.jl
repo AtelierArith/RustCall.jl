@@ -229,6 +229,23 @@ end
             @test !RustCall._ei_env_replaces_sources(Dict("CARGO_HOME" => "/x"))
             r = decide(packages = bumped, env = ["CARGO_SOURCE_*" => ""])
             @test !r.canonical && occursin("CARGO_SOURCE_", r.reason)
+            # A `@file` argument is expanded by rustc from a file the digest
+            # does not read: it declines, from a flags variable in any of
+            # its spellings and from a configuration file's `rustflags`.
+            @test decide(packages = bumped, env = ["RUSTFLAGS" => "--cfg x"]).canonical
+            for (k, v) in ("RUSTFLAGS" => "--cfg x @flags.txt", "CARGO_BUILD_RUSTFLAGS" => "@/tmp/f",
+                           "CARGO_ENCODED_RUSTFLAGS" => "--cfg\x1f@f\x1fx")
+                r = decide(packages = bumped, env = [k => v])
+                @test !r.canonical && occursin("response file", r.reason) && occursin(k, r.reason)
+            end
+            rf = joinpath(dir, "rf"); mkpath(rf)
+            write(joinpath(rf, "config.toml"), "[build]\nrustflags = [\"--cfg\", \"x\"]\n")
+            @test decide(packages = bumped, config = ["config:ancestor:0:config.toml" => joinpath(rf, "config.toml")]).canonical
+            write(joinpath(rf, "config.toml"), "[target.'cfg(unix)']\nrustflags = \"-C @resp\"\n")
+            r = decide(packages = bumped, config = ["config:ancestor:0:config.toml" => joinpath(rf, "config.toml")])
+            @test !r.canonical && occursin("response file", r.reason)
+            write(joinpath(rf, "config.toml"), "[build]\nrustflags = [\"@resp\"]\n")
+            @test !decide(packages = bumped, config = ["config:ancestor:0:config.toml" => joinpath(rf, "config.toml")]).canonical
 
             # A configuration that redirects a source — the `cargo vendor`
             # form, or `paths` — makes the build one this identity cannot

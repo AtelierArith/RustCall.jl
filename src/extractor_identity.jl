@@ -426,6 +426,44 @@ function _ei_normalize_env(env; windows::Bool = Sys.iswindows())
     return out
 end
 
+# The label of the first flags input — an environment variable whose name
+# ends in `FLAGS` (`RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`,
+# `CARGO_ENCODED_RUSTFLAGS`, `CARGO_TARGET_<T>_RUSTFLAGS`, …), or a `*flags`
+# key of a discovered configuration file — that carries a `@file` argument;
+# `nothing` when none does. Environment values are split on whitespace and
+# on the `\x1f` separator of the encoded form.
+function _ei_response_file(env_inputs::Vector{Pair{String, String}},
+                           config_files::Vector{Pair{String, String}})
+    for (key, value) in env_inputs
+        endswith(key, "FLAGS") || continue
+        any(t -> startswith(t, '@'), split(value, r"[\s\x1f]+"; keepempty = false)) && return key
+    end
+    for (label, file) in config_files
+        startswith(label, "config:") || continue
+        doc = try
+            TOML.parsefile(file)
+        catch
+            continue   # unparseable configuration declines elsewhere
+        end
+        _ei_flags_response_file(doc, false) && return label
+    end
+    return nothing
+end
+
+# Whether any string under a `*flags` key of a TOML document starts with
+# `@`; `inflags` says whether an enclosing key was such a key (a `rustflags`
+# string, or an array of strings, or the `[target.<t>] rustflags` form).
+function _ei_flags_response_file(node, inflags::Bool)
+    if node isa AbstractDict
+        return any(kv -> _ei_flags_response_file(last(kv), inflags || endswith(String(first(kv)), "flags")), node)
+    elseif node isa AbstractVector
+        return any(v -> _ei_flags_response_file(v, inflags), node)
+    elseif node isa AbstractString
+        return inflags && any(t -> startswith(t, '@'), split(node; keepempty = false))
+    end
+    return false
+end
+
 # Environment variables that redirect a source — Cargo reads `[source.*]`
 # from `CARGO_SOURCE_<NAME>_REPLACE_WITH` / `_DIRECTORY` / … too — make the
 # build one this identity cannot describe, exactly like the file form.
@@ -689,6 +727,11 @@ function _extractor_identity_decide(crate_dir::String, packages, workspace_manif
     fail(reason) = (; canonical = false, digest = nothing, reason = String(reason), inputs)
     any(e -> first(e) == "CARGO_SOURCE_*", env_inputs) &&
         return fail("the environment replaces a source (CARGO_SOURCE_*)")
+    # A `@file` argument in a flags variable or a configuration file's flags
+    # is expanded by rustc from a file this identity does not read.
+    response = _ei_response_file(env_inputs, config_files)
+    response === nothing ||
+        return fail("$(response) passes a response file (@file) whose contents this identity does not read")
     # A `rustc` or wrapper the environment or a configuration file names is
     # run by Cargo: its bytes are an input, and one that cannot be found is a
     # build this identity cannot describe.
