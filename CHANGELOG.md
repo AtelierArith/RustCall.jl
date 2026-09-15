@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`RustCall.release_generics(f[, types...]; close = false)` lets a session
+  give instantiations back**
+  ([#397](https://github.com/AtelierArith/RustCall.jl/issues/397)). Lazy
+  instantiation maps one image per type, and nothing ever unmapped one: a
+  long-running session touching many types kept every image for its lifetime,
+  the third acceptance criterion of #254. Releasing is explicit because the
+  implicit answer is not decidable — an instantiation hands out a raw function
+  pointer, and a generic struct instantiation hands out objects holding a
+  destructor pointer and the image's liveness flag (#291), so the registry
+  cannot know when nothing refers to an image any more. It retires the images
+  exactly as `unload_library` does: out of the registry, so the next call gets a
+  fresh image (from the on-disk cache, without a rebuild), and still mapped, so a
+  pointer or object holding the old one keeps working and finalizes through the
+  image that allocated it; `close = true` closes them too, flipping the liveness
+  flags first. Instantiations built together by `precompile_generics` share one
+  library and are released together, and a generic struct group is released by
+  naming any of its members. Each instantiation now records which generic owns
+  it (`MONOMORPHIZATION_OWNERS`), which is what makes "every instantiation of
+  `f`" answerable without being told the types. A release in two steps —
+  retire now, `close = true` later once nothing holds the old images — works:
+  the closing call also closes what an earlier non-closing release of the
+  same generic left mapped.
+
 ### Changed
 - **Breaking: the ownership helper crate is `deps/rustcall_helpers`, and its
   library `librustcall_helpers`**
