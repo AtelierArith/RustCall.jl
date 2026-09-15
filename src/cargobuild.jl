@@ -172,6 +172,13 @@ function ensure_cargo_lockfile!(project::CargoProject;
     isempty(project.dependencies) && return nothing
     stored = lockfile_path(project.dependencies)
     target = joinpath(project.path, "Cargo.lock")
+    # A stored resolution pins RustCall's release crates at the version they
+    # had when it was resolved; a patch release moves that version without
+    # moving the set's identity (#372), and `--locked` would reject the file
+    # against the bumped manifests. The store's copy is brought up to date —
+    # in place, under the store's claim — before it is replayed, so the file
+    # the identity was computed from and the file that is built are one.
+    _refresh_stored_lockfile!(stored, _rustcall_release_names_in(project.path))
     if isfile(stored) && _lockfile_names_root(stored, project.name)
         cp(stored, target; force = true)
         return _file_content_digest(target)
@@ -202,6 +209,135 @@ function ensure_cargo_lockfile!(project::CargoProject;
     isfile(target) || throw(CargoBuildError("cargo generate-lockfile produced no Cargo.lock",
                                             "", project.path))
     return _publish_lockfile!(stored, target; replace = replace_stale, root = project.name)
+end
+
+"""
+    _refresh_release_versions!(lockfile; release_names = nothing) -> Symbol
+
+Rewrite, in place, the `version` line of every source-less `[[package]]`
+entry of `lockfile` that names one of RustCall's release crates the set
+resolves by path — `release_names`, or read from the manifest beside the file
+(`_rustcall_release_names_in`) — and every qualified reference
+`"<name> <version>"` to one, to the version that crate's manifest carries
+**now**. Nothing else in the file changes. Returns `:unchanged`, `:refreshed`,
+or `:ambiguous` — the file untouched — when a name has more than one
+source-less entry, since a same-named path package beside RustCall's crate
+cannot be told from it by name (its caller re-resolves the set instead). This
+is what lets a lockfile resolved under v0.4.0 replay `--locked` under v0.4.1:
+the set's identity does not move on a patch release (#372), so the store keeps
+serving the file, and the one thing in it a patch release rewrites is brought
+up to date.
+"""
+function _refresh_release_versions!(lockfile::AbstractString; release_names = nothing)
+    names = release_names === nothing ? _rustcall_release_names_in(dirname(lockfile)) :
+            Set{String}(release_names)
+    isempty(names) && return :unchanged
+    versions = Dict{String, String}(n => v for n in names
+                                    for v in (_rustcall_release_crate_version(n),) if v !== nothing)
+    isempty(versions) && return :unchanged
+    lines = split(read(lockfile, String), '\n'; keepempty = true)
+    headers = [i for (i, line) in enumerate(lines) if startswith(lstrip(line), "[")]
+    stale = Dict{String, Vector{Int}}()     # name => the version lines to rewrite
+    renames = Dict{String, Pair{String, String}}()  # name => old version => current
+    pathed = Dict{String, Int}()            # name => source-less entries seen
+    for (k, start) in enumerate(headers)
+        strip(lines[start]) == "[[package]]" || continue
+        stop = k < length(headers) ? headers[k + 1] - 1 : length(lines)
+        body = view(lines, start + 1:stop)
+        name = _toml_line_value(body, "name")
+        haskey(versions, name) && _toml_line_value(body, "source") === nothing || continue
+        pathed[name] = get(pathed, name, 0) + 1
+        for j in start + 1:stop
+            _is_toml_key_line(lines[j], "version") || continue
+            old = _toml_line_value((lines[j],), "version")
+            old == versions[name] && continue
+            push!(get!(stale, name, Int[]), j)
+            renames[name] = old => versions[name]
+        end
+    end
+    any(n -> get(pathed, n, 0) > 1, keys(stale)) && return :ambiguous
+    changed = false
+    for (name, js) in stale, j in js
+        lines[j] = "version = \"$(versions[name])\""
+        changed = true
+    end
+    # Only references to the *old* version of an entry rewritten above: a
+    # same-named registry package at some other version keeps its qualified
+    # reference, since it is another package (#372 review).
+    for (j, line) in enumerate(lines)
+        refreshed = _requalified_reference(line, renames)
+        if refreshed != line
+            lines[j] = refreshed
+            changed = true
+        end
+    end
+    changed || return :unchanged
+    write(lockfile, join(lines, '\n'))
+    return :refreshed
+end
+
+"""
+    _refresh_stored_lockfile!(stored, release_names; wait = 10.0)
+
+Bring the lockfile the store holds at `stored` up to date with the current
+versions of the release crates in `release_names` (`_refresh_release_versions!`),
+**in place and under the store's claim**, so every reader — the identity
+computation and the replay alike — sees one file. A file whose refresh is
+ambiguous is removed instead, and the set is resolved afresh by the next
+`ensure_cargo_lockfile!`. Nothing to do for a set with no release crate, or no
+stored file. When another process holds the claim (a resolution or a refresh
+in flight) this waits up to `wait` seconds for it; a claim held longer than
+that is a `CargoBuildError`, as in `_publish_lockfile!` — the file under it
+cannot be trusted, and neither the identity nor a `--locked` build may proceed
+on it (#372 review).
+"""
+function _refresh_stored_lockfile!(stored::AbstractString, release_names; wait::Real = 10.0)
+    stored = String(stored)
+    (isempty(release_names) || !isfile(stored)) && return nothing
+    claim = stored * ".claim"
+    deadline = time() + Float64(wait)
+    while !_claim_lockfile!(claim)
+        time() < deadline || throw(CargoBuildError(
+            "Another RustCall process holds the claim on this dependency set's Cargo.lock " *
+            "and did not release it within $(wait)s. If no other process is resolving it, " *
+            "a previous one died holding the claim: delete `$(claim)` (or run " *
+            "`RustCall.clear_lockfiles()`) and build again",
+            "claim: $(claim)", dirname(stored)))
+        sleep(0.05)
+    end
+    try
+        isfile(stored) || return nothing
+        tmp = stored * ".refresh-$(getpid())-$(rand(UInt32))"
+        cp(stored, tmp; force = true)
+        outcome = try
+            _refresh_release_versions!(tmp; release_names)
+        catch
+            rm(tmp; force = true)
+            rethrow()
+        end
+        if outcome === :refreshed
+            mv(tmp, stored; force = true)
+        else
+            rm(tmp; force = true)
+            outcome === :ambiguous && rm(stored; force = true)
+        end
+    finally
+        rm(claim; force = true)
+    end
+    return nothing
+end
+
+# A lockfile reference line `"name old",` for a `name => (old => new)` in
+# `renames` becomes `"name new",`; any other line — another version of the
+# name, a registry package's — is returned as it is (two-word form only, as
+# in `_unqualified_reference`).
+function _requalified_reference(line::AbstractString, renames::AbstractDict)
+    stripped = strip(line)
+    startswith(stripped, "\"") || return line
+    quoted = strip(rstrip(stripped, ','), '"')
+    parts = split(quoted, ' ')
+    length(parts) == 2 && haskey(renames, parts[1]) && first(renames[parts[1]]) == parts[2] || return line
+    return replace(line, "\"$(quoted)\"" => "\"$(parts[1]) $(last(renames[parts[1]]))\""; count = 1)
 end
 
 # Whether the lockfile at `path` carries a `[[package]]` entry for `root` — the

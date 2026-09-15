@@ -32,6 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same generic left mapped.
 
 ### Changed
+- **Breaking: the manifest schema identifier is the release's `MAJOR.MINOR`**
+  ([#372](https://github.com/AtelierArith/RustCall.jl/issues/372)). Through
+  v0.3.x the extractor's manifest carried an integer bumped on every manifest
+  edit — thirteen times — kept in step by hand between `rustcall_core` and
+  `src/manifest.jl`. It is now the release: `"0.4"` for every v0.4.x, derived on
+  the Julia side from `Project.toml` and on the Rust side from the crate's own
+  version, with `test/test_schema_version.jl` pinning the four manifest crates
+  to the package version so the two cannot drift. A **patch** release therefore
+  never invalidates an installed extractor or a cached artifact, and a
+  **minor** release always does — every cache key folds the identifier in
+  through `toolchain_fingerprint` — so a manifest may change shape freely inside
+  a minor release and a change that must ship in a patch has to be additive. A
+  pre-v0.4 extractor reports `13`, which never equals a release string; the
+  refusal names the integer scheme, this release and `Pkg.build("RustCall")`.
+  See `docs/src/project_guide.md`.
 - **Breaking: the ownership helper crate is `deps/rustcall_helpers`, and its
   library `librustcall_helpers`**
   ([#387](https://github.com/AtelierArith/RustCall.jl/issues/387)). Every Rust

@@ -1,6 +1,6 @@
 [package]
 name = "rustcall_extract"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2021"
 description = "Extractor CLI for RustCall.jl: FFI manifests, inline expansion and generic specialization"
 license = "MIT"
@@ -13,4 +13,10 @@ path = "src/main.rs"
 [dependencies]
 rustcall_core = { path = "../rustcall_core" }
 serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# `build.rs` embeds a digest of the sources this binary is built from
+# (`rustcall-extract source-digest`, RustCall.jl #372).
+[build-dependencies]
+sha2 = "0.10"
 toml = "0.8"

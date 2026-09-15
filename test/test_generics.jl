@@ -120,6 +120,7 @@ end
     lock(RustCall.REGISTRY_LOCK) do
         empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
         empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
     end
 
     code = "pub fn transform<T, U>(x: T, y: T, z: U) -> U { z }"
@@ -164,6 +165,7 @@ end
     lock(RustCall.REGISTRY_LOCK) do
         empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
         empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+        empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
     end
 end
 
@@ -220,6 +222,7 @@ end
         lock(RustCall.REGISTRY_LOCK) do
             empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
             empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+            empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
         end
 
         code = "pub fn test_identity<T>(x: T) -> T { x }"
@@ -251,6 +254,7 @@ end
         lock(RustCall.REGISTRY_LOCK) do
             empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
             empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+            empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
         end
     end
 end
@@ -277,6 +281,7 @@ end
         lock(RustCall.REGISTRY_LOCK) do
             empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
             empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+            empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
         end
         sig = signature_named(code, "rc247_pair")
         RustCall.register_generic_function(
@@ -307,6 +312,7 @@ end
         lock(RustCall.REGISTRY_LOCK) do
             empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
             empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+            empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
         end
     end
 end
@@ -362,6 +368,7 @@ end
         lock(RustCall.REGISTRY_LOCK) do
             empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
             empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+            empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
         end
 
         RustCall.register_generic_function("tag", tag_code, [:T])
@@ -402,6 +409,7 @@ end
         lock(RustCall.REGISTRY_LOCK) do
             empty!(RustCall.GENERIC_FUNCTION_REGISTRY)
             empty!(RustCall.MONOMORPHIZED_FUNCTIONS)
+            empty!(RustCall.MONOMORPHIZATION_OWNERS)   # rows and owners go together (#397)
         end
     end
 end

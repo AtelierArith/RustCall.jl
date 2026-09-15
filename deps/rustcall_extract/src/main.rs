@@ -7,6 +7,7 @@
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
 //! rustcall-extract schema-version
+//! rustcall-extract source-digest
 //! ```
 //!
 //! `manifest` writes the manifest to `--out` or stdout. `expand` and `specialize`
@@ -35,6 +36,7 @@ const USAGE: &str = "usage:
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
   rustcall-extract schema-version
+  rustcall-extract source-digest
 
 Use '-' as FILE to read from stdin.
 --build-env-file: TOML string map of the target Cargo build environment; requires
@@ -972,6 +974,14 @@ fn run() -> Result<(), String> {
         Some("specialize-many") => cmd_specialize_many(rest),
         Some("schema-version") => {
             println!("{SCHEMA_VERSION}");
+            Ok(())
+        }
+        // The digest of the sources this executable was built from, embedded
+        // by `build.rs`: RustCall's cache keys identify the extractor by this
+        // rather than by the binary's bytes, which a version bump alone
+        // changes (#372).
+        Some("source-digest") => {
+            println!("{}", env!("RUSTCALL_SOURCE_DIGEST"));
             Ok(())
         }
         Some("--help" | "-h" | "help") => {

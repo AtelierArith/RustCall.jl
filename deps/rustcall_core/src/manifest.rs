@@ -11,10 +11,23 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Bump whenever a field is added, removed or changes meaning. Julia refuses to
-/// load a manifest whose `schema_version` it does not understand.
+/// The manifest compatibility identifier: the **`MAJOR.MINOR` of the RustCall
+/// release** this crate ships in, so `"0.4"` for every v0.4.x. Julia derives
+/// the same string from its `Project.toml` and refuses a manifest whose
+/// `schema_version` differs (#372).
 ///
-/// History:
+/// Through v0.3.x this was an integer bumped on every manifest edit (the
+/// history below, last value 13). Tying it to the release instead means: a
+/// **patch** release never changes the identifier, so cached artifacts and an
+/// installed extractor stay valid across it; a **minor** release always does,
+/// so every consumer rebuilds once and a manifest can change shape freely
+/// inside that release; and the extractor and the package cannot disagree,
+/// because `test/test_schema_version.jl` asserts this crate's `Cargo.toml`
+/// version equals the package version and the unit test below asserts this
+/// constant is that version's `MAJOR.MINOR`. A pre-v0.4 consumer meets a
+/// string where it expects `13` and refuses it, which is the intended answer.
+///
+/// History of the integer scheme:
 /// * 1: initial manifest (#264).
 /// * 2: string ABI (#242): `Arg.abi`, `Method.return_abi` and the
 ///   `has_owned_string_helper` / `has_borrowed_string_helper` flags decide
@@ -128,7 +141,30 @@ use serde::{Deserialize, Serialize};
 /// * **13** adds [`Struct::python_owned_handle`], the wrapper generator's
 ///   authoritative handle decision. Consumers must not re-infer it after
 ///   skipped methods have been filtered from the binding surface.
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: &str = "0.4";
+
+#[cfg(test)]
+mod schema_version_tests {
+    use super::SCHEMA_VERSION;
+
+    /// The identifier is derived from the release, not chosen: it must be the
+    /// `MAJOR.MINOR` of this crate's own version, which `test/test_schema_version.jl`
+    /// in turn pins to the package's `Project.toml` (#372).
+    #[test]
+    fn schema_version_is_the_release_major_minor() {
+        let version = env!("CARGO_PKG_VERSION");
+        let mut parts = version.split('.');
+        let expected = format!(
+            "{}.{}",
+            parts.next().expect("major"),
+            parts.next().expect("minor")
+        );
+        assert_eq!(
+            SCHEMA_VERSION, expected,
+            "SCHEMA_VERSION must be MAJOR.MINOR of {version}"
+        );
+    }
+}
 
 /// Vocabulary of [`Function::skip_reason`] / [`Struct::skip_reason`] /
 /// [`Method::skip_reason`]. An empty reason means the item is wrappable.
@@ -870,7 +906,8 @@ impl Struct {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
-    pub schema_version: u32,
+    /// See [`SCHEMA_VERSION`]: the `MAJOR.MINOR` of the producing release.
+    pub schema_version: String,
     pub mode: Mode,
     #[serde(default)]
     pub functions: Vec<Function>,
@@ -881,7 +918,7 @@ pub struct Manifest {
 impl Manifest {
     pub fn new(mode: Mode) -> Self {
         Manifest {
-            schema_version: SCHEMA_VERSION,
+            schema_version: SCHEMA_VERSION.to_string(),
             mode,
             functions: Vec::new(),
             structs: Vec::new(),

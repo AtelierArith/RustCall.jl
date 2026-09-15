@@ -814,10 +814,14 @@ end
             @test Base.invokelatest(gc397_peek, obj) == Int32(5)
             # Every owner names a row: a member left out of the compiled set
             # must not leave an owner behind that no purge can reach (#397
-            # review). Holds for this group, and is the invariant the release
-            # path and `purge_library_state!` rely on.
+            # review). Asserted for this group's owners — the invariant the
+            # release path and `purge_library_state!` rely on — not for the
+            # whole table, which another test file in the same worker may
+            # have emptied of rows by hand.
             @test all(haskey(RustCall.MONOMORPHIZED_FUNCTIONS, k)
-                      for k in keys(RustCall.MONOMORPHIZATION_OWNERS))
+                      for (k, o) in RustCall.MONOMORPHIZATION_OWNERS
+                      if startswith(o.generic, "Gc397Box_"))
+            @test any(startswith(o.generic, "Gc397Box_") for o in values(RustCall.MONOMORPHIZATION_OWNERS))
             # One image per struct instantiation, every member in it (#291):
             # naming any member's generic releases the instantiation.
             @test RustCall.release_generics(member) >= 1
