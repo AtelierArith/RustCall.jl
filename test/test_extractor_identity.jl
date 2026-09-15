@@ -122,6 +122,14 @@ end
             @test empty_env.digest != with_env.digest
             @test RustCall._ei_env_inputs(Dict("RUSTFLAGS" => "", "HOME" => "/x")) == ["RUSTFLAGS" => ""]
             @test isempty(RustCall._ei_env_inputs(Dict("HOME" => "/x")))
+            # The same policy every artifact key applies: profile overrides
+            # and rustc wrappers count, secrets never do.
+            @test RustCall._ei_env_inputs(Dict("CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => "true",
+                                               "RUSTC_WRAPPER" => "sccache",
+                                               "CARGO_REGISTRY_TOKEN" => "hunter2")) ==
+                  ["CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS" => "true", "RUSTC_WRAPPER" => "sccache"]
+            with_profile = decide(packages = bumped, env = ["CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS" => "true"])
+            @test with_profile.canonical && with_profile.digest != decide(packages = bumped).digest
 
             # Not this tree's layout: no digest, and a reason.
             fork = joinpath(dir, "fork_core"); mkpath(joinpath(fork, "src"))
