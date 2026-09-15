@@ -383,20 +383,41 @@ const MONOMORPHIZATION_OWNERS =
     _state_view(:monomorphization_owners, Dict{String, MonomorphizationOwner}())
 
 """
+    ReleasedGenericImage
+
+One image a non-closing `release_generics` retired: the library name it was
+registered under, the handle and generation that identify that image (a name
+is reused by the next image of the same instantiation; a handle value can be
+too, once closed — the pair is the identity, as in `_image_is_current`), and
+the bindings of this generic it carried.
+"""
+struct ReleasedGenericImage
+    lib::String
+    handle::Ptr{Cvoid}
+    generation::Int
+    carried::Vector{Tuple}
+end
+
+"""
     RELEASED_GENERIC_IMAGES
 
-Generic name → (library name → the bindings it carried) for every image a
-**non-closing** `release_generics` of that generic retired and left mapped.
+Generic name → the images (`ReleasedGenericImage`) a **non-closing**
+`release_generics` of that generic retired and left mapped, one entry per
+retired image.
 
 A release in two steps is the safe way to reclaim: retire now, so no new call
 reaches the image, and close later, once nothing holds a pointer or an object
 from it. By then the retirement has purged every row and owner, so the closing
 call would find no instantiation to select; this is what it drains instead
-(#397 review). An entry leaves when a closing release covers it; an image
-revived in between has no retired record any more and closing it is a no-op.
+(#397 review). An entry is recorded in the transaction that *precedes* the
+retirement and withdrawn if that retirement did not happen, so a concurrent
+closing release can never find the rows gone and the record not yet there. A
+closing release closes the entries whose image is retired now, keeps the ones
+whose image is still live (a retirement in flight), and forgets the rest — an
+image closed or replaced by other means.
 """
 const RELEASED_GENERIC_IMAGES =
-    _state_view(:released_generic_images, Dict{String, Dict{String, Vector{Tuple}}}())
+    _state_view(:released_generic_images, Dict{String, Vector{ReleasedGenericImage}}())
 
 """
     GENERIC_IMAGE_PATHS
@@ -1313,6 +1334,11 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             for n in names
                 delete!(GENERIC_IMAGE_PATHS, n)
             end
+            # Left mapped by this release: on record *before* the retirement,
+            # so a closing release racing this one never finds the rows gone
+            # and the record absent; withdrawn below if nothing was retired.
+            close || push!(get!(RELEASED_GENERIC_IMAGES, name, ReleasedGenericImage[]),
+                           ReleasedGenericImage(lib_name, handle, generation, carried))
             (names, leaving, carried)
         end
         isempty(names) && continue
@@ -1331,37 +1357,52 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         # image just retired (#397 review).
         retired = unload_artifact!(generics_policy(), lib_name; close,
                                    expect_generation = generation)
-        retired || continue
-        released += leaving
-        # Left mapped: remember it for the closing release that may follow.
-        close || lock(REGISTRY_LOCK) do
-            get!(RELEASED_GENERIC_IMAGES, name, Dict{String, Vector{Tuple}}())[lib_name] = carried
+        if !retired
+            # Another release got there first (or a newer image took the
+            # name): this call retired nothing, so it has nothing on record.
+            close || _withdraw_released_image!(name, handle, generation)
+            continue
         end
+        released += leaving
     end
     close && _close_released_generic_images!(name, selected)
     return released
 end
 
+# Drop the record a release made for an image it then did not retire.
+function _withdraw_released_image!(name::String, handle::Ptr{Cvoid}, generation::Int)
+    lock(REGISTRY_LOCK) do
+        entries = get(RELEASED_GENERIC_IMAGES, name, nothing)
+        entries === nothing && return
+        filter!(e -> !(e.handle == handle && e.generation == generation), entries)
+        isempty(entries) && delete!(RELEASED_GENERIC_IMAGES, name)
+    end
+    return nothing
+end
+
 # The second step of a two-step release: close the images an earlier
 # non-closing `release_generics(name)` retired — all of them, or those that
-# carried one of the `selected` bindings — and forget them. Closing goes
-# through the retired-handle records, so an image revived (and perhaps retired
-# again) in between is closed only if it is retired now.
+# carried one of the `selected` bindings — and forget them. Decided under the
+# lock against the retired-handle records: an entry whose image is retired now
+# is closed; one whose image is still the live one of its name is a retirement
+# in flight and stays on record; one that is neither — closed or replaced by
+# other means — is forgotten.
 function _close_released_generic_images!(name::String, selected)
     to_close = lock(REGISTRY_LOCK) do
-        images = get(RELEASED_GENERIC_IMAGES, name, nothing)
-        images === nothing && return String[]
-        chosen = String[lib for (lib, carried) in images
-                        if selected === nothing || any(b -> b in selected, carried)]
-        for lib in chosen
-            delete!(images, lib)
+        entries = get(RELEASED_GENERIC_IMAGES, name, nothing)
+        entries === nothing && return Ptr{Cvoid}[]
+        handles = Ptr{Cvoid}[]
+        filter!(entries) do e
+            selected === nothing || any(b -> b in selected, e.carried) || return true
+            _image_is_current(e.lib, e.handle, e.generation) && return true
+            record = get(RETIRED_HANDLES, e.handle, nothing)
+            record !== nothing && e.lib in record.names && push!(handles, e.handle)
+            return false
         end
-        isempty(images) && delete!(RELEASED_GENERIC_IMAGES, name)
-        chosen
+        isempty(entries) && delete!(RELEASED_GENERIC_IMAGES, name)
+        unique(handles)
     end
-    for lib in to_close
-        close_retired_handles!(retired_handles(lib))
-    end
+    isempty(to_close) || close_retired_handles!(to_close)
     return nothing
 end
 

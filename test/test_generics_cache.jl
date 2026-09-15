@@ -492,6 +492,32 @@ end
                 @test RustCall.call_generic_function("gc397_id", UInt16(3)) == UInt16(3)
                 @test RustCall.release_generics("gc397_id"; close = true) == 1
                 @test !haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+                # One record per retired *image*, not per name: a batch of two
+                # released through one member, that member restored alone and
+                # released again — two images under one name; the typed
+                # closing release for the other member closes the first image
+                # and leaves the second (#397 review).
+                # In a cache of its own, so both members are built together
+                # (an instantiation already cached would be restored alone).
+                mktempdir() do fresh
+                    withenv("RUSTCALL_CACHE_DIR" => fresh) do
+                        RustCall.precompile_generics("gc397_id", UInt8, Int64)
+                        a = cached(UInt8); b = cached(Int64)
+                        @test a.handle == b.handle
+                        @test RustCall.release_generics("gc397_id", UInt8) == 2
+                        @test RustCall.call_generic_function("gc397_id", UInt8(9)) == UInt8(9)
+                        a2 = cached(UInt8)
+                        @test a2.lib_name == a.lib_name && a2.handle != a.handle
+                        @test RustCall.release_generics("gc397_id", UInt8) == 1
+                        @test length(RustCall.RELEASED_GENERIC_IMAGES["gc397_id"]) == 2
+                        @test RustCall.release_generics("gc397_id", Int64; close = true) == 0
+                        @test isempty(RustCall.retired_handles(b.lib_name))
+                        @test RustCall.retired_handles(a.lib_name) == [a2.handle]
+                        @test RustCall.release_generics("gc397_id"; close = true) == 0
+                        @test isempty(RustCall.retired_handles(a.lib_name))
+                        @test !haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+                    end
+                end
             end
 
             @testset "release by type across a default-compiler change" begin
