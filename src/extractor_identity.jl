@@ -129,9 +129,10 @@ end
 
 # The configuration files Cargo discovers for a build run *in* `crate_dir`:
 # `.cargo/config.toml` / `.cargo/config` in that directory and every ancestor,
-# then `$CARGO_HOME`'s (falling back to `~/.cargo`). Each existing file is one
-# input, labelled without its absolute path so the label is the same on every
-# machine: the bytes are what count.
+# then `$CARGO_HOME`'s (falling back to `~/.cargo`) — and rustup's
+# `rust-toolchain(.toml)` override files on the same walk. Each existing file
+# is one input, labelled without its absolute path so the label is the same
+# on every machine: the bytes are what count.
 function _ei_config_files(crate_dir::AbstractString, env)
     files = Pair{String, String}[]
     dir = _ei_canonical(crate_dir)
@@ -140,6 +141,15 @@ function _ei_config_files(crate_dir::AbstractString, env)
         for name in ("config.toml", "config")
             f = joinpath(dir, ".cargo", name)
             isfile(f) && push!(files, "config:ancestor:$(depth):$(name)" => f)
+        end
+        # rustup's override files, looked up the same way (the build runs in
+        # the crate directory): they select the toolchain that compiled the
+        # binary, which the compiler identity taken later from the caller's
+        # directory need not see. Hashed like a configuration file, not
+        # parsed — the legacy `rust-toolchain` is a bare channel name.
+        for name in ("rust-toolchain.toml", "rust-toolchain")
+            f = joinpath(dir, name)
+            isfile(f) && push!(files, "toolchain:ancestor:$(depth):$(name)" => f)
         end
         parent = dirname(dir)
         (parent == dir || isempty(parent)) && break
@@ -575,6 +585,7 @@ function _extractor_identity_decide(crate_dir::String, packages, workspace_manif
         return fail("the crate is a member of the workspace at $(workspace_manifest); its lockfile decides the build")
     end
     for (label, file) in config_files
+        startswith(label, "config:") || continue   # a toolchain override is hashed, not read
         _ei_config_replaces_sources(file) &&
             return fail("the configuration file $(label) replaces a source or includes other files")
     end

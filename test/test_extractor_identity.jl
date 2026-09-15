@@ -164,6 +164,16 @@ end
             end
             # ...while an ordinary configuration merely enters the digest.
             @test decide(packages = bumped, config = ["config:home:config.toml" => cfg]).canonical
+            # A rustup override selects the toolchain that compiled the
+            # binary: it enters the digest (hashed, not parsed — the legacy
+            # file is a bare channel name) and does not decline.
+            for (name, text) in (("rust-toolchain.toml", "[toolchain]\nchannel = \"nightly-2026-01-01\"\n"),
+                                 ("rust-toolchain", "nightly-2026-01-01\n"))
+                tc = joinpath(dir, name); write(tc, text)
+                r = decide(packages = bumped, config = ["toolchain:ancestor:0:$(name)" => tc])
+                @test r.canonical && r.digest != decide(packages = bumped).digest
+                @test "toolchain:ancestor:0:$(name)" in r.inputs
+            end
 
             # Not this tree's layout: no digest, and a reason.
             fork = joinpath(dir, "fork_core"); mkpath(joinpath(fork, "src"))
@@ -202,7 +212,9 @@ end
         mktempdir() do dir
             crate = joinpath(dir, "deps", "rustcall_extract"); mkpath(crate)
             mkpath(joinpath(dir, ".cargo")); write(joinpath(dir, ".cargo", "config.toml"), "[build]\n")
+            write(joinpath(dir, "rust-toolchain.toml"), "[toolchain]\nchannel = \"stable\"\n")
             found = RustCall._ei_config_files(crate, Dict("CARGO_HOME" => joinpath(dir, "nohome")))
+            @test any(f -> first(f) == "toolchain:ancestor:2:rust-toolchain.toml", found)
             @test any(f -> first(f) == "config:ancestor:2:config.toml" &&
                            realpath(last(f)) == realpath(joinpath(dir, ".cargo", "config.toml")), found)
             @test !any(f -> startswith(first(f), "config:home"), found)
