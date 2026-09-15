@@ -337,13 +337,47 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
                 source = "registry+https://github.com/rust-lang/crates.io-index"
                 checksum = "0000"
                 """
+            refreshed = replace(stale, "\"rustcall_julia_macros 0.0.1\"" => "\"rustcall_julia_macros $(core_version)\"",
+                                       "name = \"rustcall_julia_macros\"\nversion = \"0.0.1\"" =>
+                                       "name = \"rustcall_julia_macros\"\nversion = \"$(core_version)\"")
             write(joinpath(dir, "Cargo.lock"), stale)
-            @test RustCall._refresh_release_versions!(joinpath(dir, "Cargo.lock"))
-            @test read(joinpath(dir, "Cargo.lock"), String) ==
-                  replace(stale, "\"rustcall_julia_macros 0.0.1\"" => "\"rustcall_julia_macros $(core_version)\"",
-                                 "name = \"rustcall_julia_macros\"\nversion = \"0.0.1\"" =>
-                                 "name = \"rustcall_julia_macros\"\nversion = \"$(core_version)\"")
-            @test !RustCall._refresh_release_versions!(joinpath(dir, "Cargo.lock"))
+            @test RustCall._refresh_release_versions!(joinpath(dir, "Cargo.lock")) === :refreshed
+            @test read(joinpath(dir, "Cargo.lock"), String) == refreshed
+            @test RustCall._refresh_release_versions!(joinpath(dir, "Cargo.lock")) === :unchanged
+            # The set's release crates, from its dependency specs — what a
+            # file in the store, with no manifest beside it, is refreshed and
+            # hashed with.
+            specs = [RustCall.DependencySpec("rustcall_julia_macros", nothing, String[], nothing, real)]
+            @test RustCall._release_names_for_dependencies(specs) == three
+            @test isempty(RustCall._release_names_for_dependencies(
+                [RustCall.DependencySpec("rustcall_julia_macros", nothing, String[], nothing, fork)]))
+            @test isempty(RustCall._release_names_for_dependencies(
+                [RustCall.DependencySpec("syn", "2.0", String[], nothing, nothing)]))
+            # The store's copy is refreshed in place, under the claim, and the
+            # identity is release-insensitive either way.
+            mktempdir() do store
+                stored = joinpath(store, "set.lock")
+                write(stored, stale)
+                RustCall._refresh_stored_lockfile!(stored, three)
+                @test read(stored, String) == refreshed
+                @test !isfile(stored * ".claim")
+                @test RustCall._identity_file_digest(stored; release_names = three) ==
+                      RustCall._identity_file_digest(joinpath(dir, "Cargo.lock"); release_names = three)
+                # A same-named path package beside RustCall's crate cannot be
+                # told from it by name: the file is not guessed at but removed,
+                # and the set resolves afresh.
+                write(stored, stale * "\n[[package]]\nname = \"rustcall_julia_macros\"\nversion = \"0.0.2\"\n")
+                @test RustCall._refresh_release_versions!(stored; release_names = three) === :ambiguous
+                RustCall._refresh_stored_lockfile!(stored, three)
+                @test !isfile(stored)
+                @test !isfile(stored * ".claim")
+                # Nothing to refresh: untouched, and no claim taken.
+                write(stored, refreshed)
+                RustCall._refresh_stored_lockfile!(stored, three)
+                @test read(stored, String) == refreshed
+                RustCall._refresh_stored_lockfile!(stored, Set{String}())
+                @test read(stored, String) == refreshed
+            end
             # The release crates behind a `#[julia]` crate's one path
             # dependency are release crates too: the fixture names only
             # `rustcall_julia_macros`, its lockfile records all three, and a

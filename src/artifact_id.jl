@@ -774,12 +774,34 @@ end
 # PyO3 wrapper keys moved on every patch release, against the promise the
 # schema identifier makes (`MANIFEST_SCHEMA_VERSION`). Everything else in
 # either file still counts.
-function _identity_file_digest(path::AbstractString)::String
+function _identity_file_digest(path::AbstractString; release_names = nothing)::String
     return try
-        bytes2hex(sha256(_identity_file_bytes(String(path))))
+        bytes2hex(sha256(_identity_file_bytes(String(path); release_names)))
     catch
         "unreadable"
     end
+end
+
+"""
+    _release_names_for_dependencies(deps) -> Set{String}
+
+The release crates a `// cargo-deps:` block resolves by path — each `path =`
+dependency that is one of this package's release crates (provenance-checked),
+and the release crates those take by path in turn — which is what a lockfile
+persisted for that set records without a manifest beside it to read
+(`_identity_file_bytes`, `_refresh_stored_lockfile!`).
+"""
+function _release_names_for_dependencies(deps)
+    names = Set{String}()
+    for dep in deps
+        path = hasproperty(dep, :path) ? getproperty(dep, :path) : nothing
+        path isa AbstractString || continue
+        name = String(getproperty(dep, :name))
+        _is_rustcall_release_crate(path, name) || continue
+        push!(names, name)
+        union!(names, _rustcall_release_names_in(path))
+    end
+    return names
 end
 
 """
@@ -788,12 +810,17 @@ end
 The bytes of `path` as they enter an artifact identity: `Cargo.toml` and
 `Cargo.lock` with the release-coupled `version` lines described at
 `_identity_file_digest` removed and nothing else touched, every other file as
-it is. A manifest or lockfile that does not parse is hashed as it is; the
+it is. For a lockfile, the release crates whose lines go are read from the
+manifest beside it, or given as `release_names` when there is none (a file in
+the lockfile store). A manifest or lockfile that does not parse is hashed as it is; the
 build that follows fails on it anyway.
 """
-function _identity_file_bytes(path::String)::Vector{UInt8}
+function _identity_file_bytes(path::String; release_names = nothing)::Vector{UInt8}
     name = basename(path)
-    name == "Cargo.toml" || name == "Cargo.lock" || return read(path)
+    # A caller that names the release crates is hashing a lockfile, whatever
+    # the file is called: the store keeps them as `<key>.lock`.
+    is_lockfile = name == "Cargo.lock" || release_names !== nothing
+    name == "Cargo.toml" || is_lockfile || return read(path)
     raw = read(path)
     doc = try
         TOML.parse(String(copy(raw)))
@@ -806,7 +833,7 @@ function _identity_file_bytes(path::String)::Vector{UInt8}
     # can read its own manifest or lockfile (`include_str!`, a `build.rs`), so
     # a comment, an ordering, a blank line is part of what it compiles to and
     # must stay in the key (#372 review).
-    if name == "Cargo.toml"
+    if name == "Cargo.toml" && !is_lockfile
         package = get(doc, "package", nothing)
         package isa AbstractDict && haskey(package, "version") &&
             _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) || return raw
@@ -817,7 +844,10 @@ function _identity_file_bytes(path::String)::Vector{UInt8}
     # The entries whose version may go: the release crates this crate resolves
     # by path into this package's `deps/` — never a same-named stranger, never
     # a registry package (one with a `source`).
-    strip_names = _rustcall_release_names_in(dirname(path))
+    # A lockfile in the store has no manifest beside it; its caller says
+    # which release crates the set resolves by path (`release_names`).
+    strip_names = release_names === nothing ? _rustcall_release_names_in(dirname(path)) :
+                  Set{String}(release_names)
     isempty(strip_names) && return raw
     # A graph holding two packages of one name — this package's crate and a
     # fork — has Cargo qualify its references, `"rustcall_core 0.4.0"` in a
