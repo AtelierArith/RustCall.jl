@@ -84,6 +84,41 @@ fn unqualified_reference(line: &str, versions: &BTreeMap<String, String>) -> Str
     line.to_owned()
 }
 
+/// The files outside `src` that decide a crate's build besides its manifest:
+/// the build script Cargo runs for it — `[package] build = "..."` when set,
+/// `build.rs` beside the manifest otherwise, none when `build = false` — and
+/// a `[lib] path` that points outside `src`. Only files that exist.
+fn extra_inputs(manifest: &Path, dir: &Path) -> Vec<(String, PathBuf)> {
+    let doc = fs::read_to_string(manifest)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .unwrap_or_default();
+    let mut out = Vec::new();
+    let script = match doc.get("package").and_then(|p| p.get("build")) {
+        Some(toml::Value::Boolean(false)) => None,
+        Some(toml::Value::String(path)) => Some(dir.join(path)),
+        _ => Some(dir.join("build.rs")),
+    };
+    if let Some(script) = script.filter(|s| s.is_file()) {
+        out.push(("build-script".to_owned(), script));
+    }
+    if let Some(lib_path) = doc
+        .get("lib")
+        .and_then(|l| l.get("path"))
+        .and_then(|p| p.as_str())
+    {
+        let lib_root = dir.join(lib_path);
+        let under_src = fs::canonicalize(&lib_root)
+            .ok()
+            .zip(fs::canonicalize(dir.join("src")).ok())
+            .is_some_and(|(root, src)| root.starts_with(&src));
+        if lib_root.is_file() && !under_src {
+            out.push(("lib-root".to_owned(), lib_root));
+        }
+    }
+    out
+}
+
 /// `[package] version` of a manifest.
 fn package_version(manifest: &Path) -> Option<String> {
     let text = fs::read_to_string(manifest).ok()?;
@@ -383,18 +418,22 @@ fn main() {
         }
         hasher.update(b"\0");
 
-        // A build script is part of what the crate compiles to. Its own
-        // inputs beyond the crate's manifest and sources cannot be known
-        // here; this tree's scripts read only those. The rerun trigger is
-        // registered only for a script that exists: Cargo treats a missing
-        // `rerun-if-changed` path as always changed and would rerun this
-        // script — and rebuild the extractor — on every build.
-        let build_script = krate.join("build.rs");
-        if build_script.is_file() {
-            println!("cargo:rerun-if-changed={}", build_script.display());
+        // A build script is part of what the crate compiles to, and so is a
+        // library root outside `src` (`[lib] path = "../shared/lib.rs"`).
+        // Which script Cargo runs is the manifest's to say (`[package]
+        // build`), not a fixed file name. A script's own inputs beyond the
+        // crate's manifest and sources cannot be known here; this tree's
+        // scripts read only those. Rerun triggers are registered only for
+        // files that exist: Cargo treats a missing `rerun-if-changed` path
+        // as always changed and would rerun this script — and rebuild the
+        // extractor — on every build.
+        for (label, file) in extra_inputs(&manifest, krate) {
+            println!("cargo:rerun-if-changed={}", file.display());
             hasher.update(name.as_bytes());
-            hasher.update(b"\0build.rs\0");
-            hasher.update(fs::read(&build_script).unwrap_or_default());
+            hasher.update(b"\0");
+            hasher.update(label.as_bytes());
+            hasher.update(b"\0");
+            hasher.update(fs::read(&file).unwrap_or_default());
             hasher.update(b"\0");
         }
 
