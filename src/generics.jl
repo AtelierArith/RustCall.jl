@@ -1331,10 +1331,11 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
         # one handle again — and releasing either unloads every name on it. A
         # live row can only point at the live image of its handle (a retired
         # image's rows were purged with it), so the handle is exact.
-        names, leaving, carried = lock(REGISTRY_LOCK) do
+        names, leaving, carried, alive = lock(REGISTRY_LOCK) do
             entry = get(RUST_LIBRARIES, lib_name, nothing)
             (entry === nothing || entry[1] != handle ||
-             get(ARTIFACT_GENERATIONS, lib_name, 0) != generation) && return (String[], 0, ())
+             get(ARTIFACT_GENERATIONS, lib_name, 0) != generation) &&
+                return (String[], 0, (), nothing)
             names = String[n for (n, e) in RUST_LIBRARIES if e[1] == handle]
             leaving = count(info -> info.handle == handle, values(MONOMORPHIZED_FUNCTIONS))
             # What this generic had on the image, remembered for a later
@@ -1366,7 +1367,7 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
                     (RELEASED_GENERIC_IMAGES[name] =
                         (entries..., ReleasedGenericImage(lib_name, handle, generation, alive, carried)))
             end
-            (names, leaving, carried)
+            (names, leaving, carried, alive)
         end
         isempty(names) && continue
         # Unloading one name of an image unloads every name of it, so a batch
@@ -1397,7 +1398,11 @@ function release_generics(func_name::AbstractString, instantiations...; close::B
             continue
         end
         released += leaving
-        close && close_retired_handles!([handle])
+        # By identity, not by pointer value: between the retirement and here
+        # another caller may close this image, the loader hand its pointer
+        # value to a new image of the name, and that one be retired too — and
+        # only the image this call retired was declared quiescent.
+        close && alive !== nothing && close_retired_images!([handle => alive])
     end
     close && _close_released_generic_images!(name, selected)
     return released
@@ -1437,8 +1442,8 @@ _released_image_is_live(e::ReleasedGenericImage) =
 function _close_released_generic_images!(name::String, selected)
     to_close = lock(REGISTRY_LOCK) do
         entries = get(RELEASED_GENERIC_IMAGES, name, nothing)
-        entries === nothing && return Ptr{Cvoid}[]
-        handles = Ptr{Cvoid}[]
+        entries === nothing && return Pair{Ptr{Cvoid}, Base.RefValue{Bool}}[]
+        handles = Pair{Ptr{Cvoid}, Base.RefValue{Bool}}[]
         kept = Tuple(e for e in entries if begin
             keep = if selected !== nothing && !any(b -> b in selected, e.carried)
                 true
@@ -1449,7 +1454,7 @@ function _close_released_generic_images!(name::String, selected)
                 # Retired now — the *same* image, by its flag: a pointer value
                 # the loader reused for a later image of the name is not it.
                 record = get(RETIRED_HANDLES, e.handle, nothing)
-                record !== nothing && record.alive === e.alive && push!(handles, e.handle)
+                record !== nothing && record.alive === e.alive && push!(handles, e.handle => e.alive)
                 false
             end
             keep
@@ -1459,7 +1464,9 @@ function _close_released_generic_images!(name::String, selected)
         end
         unique(handles)
     end
-    isempty(to_close) || close_retired_handles!(to_close)
+    # Closed by identity: the flag each entry recorded, rechecked in the
+    # closing transaction, so a pointer value reused in between closes nothing.
+    isempty(to_close) || close_retired_images!(to_close)
     return nothing
 end
 

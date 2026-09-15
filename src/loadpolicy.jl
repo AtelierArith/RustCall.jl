@@ -1538,12 +1538,32 @@ An image RustCall did not open is released from the bookkeeping but not
 closed: closing it belongs to whoever opened it (`OWNED_HANDLES`).
 """
 function close_retired_handles!(handles = retired_handles())
-    selected = Ptr{Cvoid}[handle for handle in handles]
+    return _close_retired_images!(Pair{Ptr{Cvoid}, Any}[handle => nothing for handle in handles])
+end
+
+"""
+    close_retired_images!(images) -> Int
+
+Close retired images **by identity**: `handle => alive` pairs, each closed only
+while the retired record under `handle` still carries that liveness flag. A
+handle is a pointer value the loader can hand out again once the image is
+unmapped, so a caller that decided *which* image may go — and asserted
+quiescence for that one — must not close whatever retirement the value names
+by the time it acts; the flag is one per mapped image and names it exactly
+(#397 review). Returns how many were closed.
+"""
+close_retired_images!(images) =
+    _close_retired_images!(Pair{Ptr{Cvoid}, Any}[handle => alive for (handle, alive) in images])
+
+# `expected === nothing` closes whatever retirement the handle names; a flag
+# closes only the image carrying it.
+function _close_retired_images!(selected::Vector{Pair{Ptr{Cvoid}, Any}})
     records = lock(REGISTRY_LOCK) do
         found = Pair{Ptr{Cvoid}, RetiredImage}[]
-        for handle in selected
+        for (handle, expected) in selected
             record = get(RETIRED_HANDLES, handle, nothing)
             record === nothing && continue
+            expected === nothing || record.alive === expected || continue
             # Flip under the lock, before the close: an object finalized in
             # between must see `false`, not a handle that is about to go.
             record.alive[] = false

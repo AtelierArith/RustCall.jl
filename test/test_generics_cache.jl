@@ -480,6 +480,12 @@ end
                 @test !isempty(RustCall.retired_handles(first_lib))
                 @test !isempty(RustCall.retired_handles(second_lib))
                 @test haskey(RustCall.RELEASED_GENERIC_IMAGES, "gc397_id")
+                # Closing is by identity: a retired image is closed only for
+                # the flag it carries, never for a pointer value alone (#397
+                # review).
+                first_handle = only(RustCall.retired_handles(first_lib))
+                @test RustCall.close_retired_images!([first_handle => Ref(true)]) == 0
+                @test RustCall.retired_handles(first_lib) == [first_handle]
                 # The typed closing release covers only the image that carried
                 # the named type; the other stays mapped for later.
                 # A release that lost the retirement to a concurrent one
