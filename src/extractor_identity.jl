@@ -369,12 +369,50 @@ const _EI_RUSTC_EXECUTABLE_KEYS = ("RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WR
                                    "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER",
                                    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")
 
+# The linker Cargo hands rustc as `-C linker=` when a target's
+# `CARGO_TARGET_<TRIPLE>_LINKER` names one.
+const _EI_LINKER_ENV = r"^CARGO_TARGET_[A-Za-z0-9_]+_LINKER$"
+
 function _ei_rustc_executables(env, crate_dir::AbstractString)
     out = Pair{String, Union{Nothing, String}}[]
-    for key in _EI_RUSTC_EXECUTABLE_KEYS
+    keys_ = vcat(collect(_EI_RUSTC_EXECUTABLE_KEYS),
+                 sort!(String[String(k) for k in keys(env) if occursin(_EI_LINKER_ENV, String(k))]))
+    for key in keys_
         value = String(get(env, key, ""))
         isempty(value) && continue
         push!(out, key => _ei_resolve_executable(value, env, crate_dir))
+    end
+    return out
+end
+
+# An executable named by a `-C linker=<path>` argument in a flags value
+# (`RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, …), as
+# `<label>:linker => path`; the argument is spelled `-Clinker=`, `-C linker=`
+# or `--codegen linker=`.
+function _ei_flag_linkers(tokens, label::AbstractString, env, crate_dir::AbstractString)
+    out = Pair{String, Union{Nothing, String}}[]
+    toks = collect(String, tokens)
+    for (i, t) in enumerate(toks)
+        spec = if startswith(t, "-Clinker=")
+            t[length("-Clinker=") + 1:end]
+        elseif (t == "-C" || t == "--codegen") && i < length(toks) && startswith(toks[i + 1], "linker=")
+            toks[i + 1][length("linker=") + 1:end]
+        else
+            nothing
+        end
+        spec === nothing && continue
+        push!(out, "$(label):linker" => _ei_resolve_executable(spec, env, crate_dir))
+    end
+    return out
+end
+
+_ei_flag_tokens(value::AbstractString) = split(value, r"[\s\x1f]+"; keepempty = false)
+
+function _ei_env_flag_linkers(env_inputs::Vector{Pair{String, String}}, env, crate_dir::AbstractString)
+    out = Pair{String, Union{Nothing, String}}[]
+    for (key, value) in env_inputs
+        endswith(key, "FLAGS") || continue
+        append!(out, _ei_flag_linkers(_ei_flag_tokens(value), key, env, crate_dir))
     end
     return out
 end
@@ -398,18 +436,54 @@ function _ei_config_executables(config_files::Vector{Pair{String, String}}, env,
         catch
             continue   # an unreadable configuration declines elsewhere
         end
-        build = get(doc, "build", nothing)
-        build isa AbstractDict || continue
         base = dirname(dirname(file))
-        for key in _EI_CONFIG_EXECUTABLE_KEYS
-            value = get(build, key, nothing)
-            value isa AbstractString && !isempty(value) || continue
-            resolved = (isabspath(value) || occursin('/', value) || occursin('\\', value)) ?
-                       _ei_resolve_executable(isabspath(value) ? value : joinpath(base, value), env, crate_dir) :
-                       _ei_resolve_executable(value, env, crate_dir)
-            push!(out, "$(label):$(key)" => resolved)
+        resolve(value) = (isabspath(value) || occursin('/', value) || occursin('\\', value)) ?
+                         _ei_resolve_executable(isabspath(value) ? value : joinpath(base, value), env, crate_dir) :
+                         _ei_resolve_executable(value, env, crate_dir)
+        build = get(doc, "build", nothing)
+        if build isa AbstractDict
+            for key in _EI_CONFIG_EXECUTABLE_KEYS
+                value = get(build, key, nothing)
+                value isa AbstractString && !isempty(value) || continue
+                push!(out, "$(label):$(key)" => resolve(value))
+            end
+        end
+        # `[target.<triple>] linker`: the linker rustc is handed for that
+        # target, resolved like the other configuration-file paths.
+        targets = get(doc, "target", nothing)
+        if targets isa AbstractDict
+            for triple in sort!(collect(String, keys(targets)))
+                tbl = targets[triple]
+                tbl isa AbstractDict || continue
+                value = get(tbl, "linker", nothing)
+                value isa AbstractString && !isempty(value) || continue
+                push!(out, "$(label):target.$(triple).linker" => resolve(value))
+            end
+        end
+        # A `-C linker=` inside any `*flags` value of the file.
+        for (flabel, tokens) in _ei_config_flag_values(doc, label)
+            append!(out, _ei_flag_linkers(tokens, flabel, env, crate_dir))
         end
     end
+    return out
+end
+
+# Every `*flags` value of a configuration document as `(label, tokens)`: a
+# string is split like an environment value, an array is taken as given.
+function _ei_config_flag_values(doc, label::AbstractString)
+    out = Tuple{String, Vector{String}}[]
+    walk(node, path, inflags) = begin
+        if node isa AbstractDict
+            for k in sort!(collect(String, keys(node)))
+                walk(node[k], isempty(path) ? k : "$(path).$(k)", inflags || endswith(k, "flags"))
+            end
+        elseif inflags && node isa AbstractVector
+            all(v -> v isa AbstractString, node) && push!(out, ("$(label):$(path)", String[String(v) for v in node]))
+        elseif inflags && node isa AbstractString
+            push!(out, ("$(label):$(path)", String[String(t) for t in split(node; keepempty = false)]))
+        end
+    end
+    walk(doc, "", false)
     return out
 end
 
@@ -714,7 +788,8 @@ function extractor_build_identity(crate_dir::AbstractString; cargo::Cmd, env = E
     config_files = _ei_config_files(crate_dir, env)
     env_inputs = _ei_env_inputs(env)
     executables = vcat(_ei_rustc_executables(env, crate_dir),
-                       _ei_config_executables(config_files, env, crate_dir))
+                       _ei_config_executables(config_files, env, crate_dir),
+                       _ei_env_flag_linkers(env_inputs, env, crate_dir))
     _ei_env_replaces_sources(env) && push!(env_inputs, "CARGO_SOURCE_*" => "")
     return _extractor_identity_decide(crate_dir, packages, workspace, config_files, env_inputs, executables)
 end

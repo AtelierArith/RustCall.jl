@@ -210,6 +210,26 @@ end
             # executables and are hashed the same way.
             @test RustCall._ei_rustc_executables(Dict("CARGO_BUILD_RUSTC_WRAPPER" => wrapper), crate) ==
                   ["CARGO_BUILD_RUSTC_WRAPPER" => realpath(wrapper)]
+            # The linker a target names — through its environment variable,
+            # a `[target.<triple>] linker`, or `-C linker=` in a flags value
+            # — is an executable Cargo hands rustc, hashed the same way.
+            @test RustCall._ei_rustc_executables(Dict("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" => wrapper), crate) ==
+                  ["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER" => realpath(wrapper)]
+            for flags in ("-C linker=$(wrapper)", "-Clinker=$(wrapper) -C opt-level=1", "--codegen linker=$(wrapper)")
+                @test RustCall._ei_env_flag_linkers(["RUSTFLAGS" => flags], Dict{String, String}(), crate) ==
+                      ["RUSTFLAGS:linker" => realpath(wrapper)]
+            end
+            @test RustCall._ei_env_flag_linkers(["CARGO_ENCODED_RUSTFLAGS" => "-C\x1flinker=nope"], Dict("PATH" => dir), crate) ==
+                  ["CARGO_ENCODED_RUSTFLAGS:linker" => nothing]
+            @test isempty(RustCall._ei_env_flag_linkers(["RUSTFLAGS" => "-C opt-level=1"], Dict{String, String}(), crate))
+            lk = joinpath(dir, "lk", ".cargo"); mkpath(lk); mkpath(joinpath(dir, "lk", "tools"))
+            stub(joinpath(dir, "lk", "tools", "ld.sh"), "#!/bin/sh\n")
+            write(joinpath(lk, "config.toml"),
+                  "[target.x86_64-unknown-linux-gnu]\nlinker = \"tools/ld.sh\"\nrustflags = [\"-C\", \"linker=$(wrapper)\"]\n")
+            @test RustCall._ei_config_executables(["config:ancestor:1:config.toml" => joinpath(lk, "config.toml")],
+                                                  Dict{String, String}(), crate) ==
+                  ["config:ancestor:1:config.toml:target.x86_64-unknown-linux-gnu.linker" => realpath(joinpath(dir, "lk", "tools", "ld.sh")),
+                   "config:ancestor:1:config.toml:target.x86_64-unknown-linux-gnu.rustflags:linker" => realpath(wrapper)]
             cargo_dir = joinpath(dir, "cfgroot", ".cargo"); mkpath(cargo_dir)
             write(joinpath(cargo_dir, "config.toml"), "[build]\nrustc-wrapper = \"tools/wrap.sh\"\n")
             mkpath(joinpath(dir, "cfgroot", "tools")); stub(joinpath(dir, "cfgroot", "tools", "wrap.sh"), "#!/bin/sh\n")
