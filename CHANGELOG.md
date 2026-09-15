@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-15
+
 ### Added
 - **`RustCall.release_generics(f[, types...]; close = false)` lets a session
   give instantiations back**
@@ -47,6 +49,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-v0.4 extractor reports `13`, which never equals a release string; the
   refusal names the integer scheme, this release and `Pkg.build("RustCall")`.
   See `docs/src/project_guide.md`.
+- **The documented requirements no longer ask for a Rust toolchain on `PATH`**
+  ([#404](https://github.com/AtelierArith/RustCall.jl/issues/404)). RustCall
+  depends on RustToolChain.jl, which uses the `rustc`/`cargo` on `PATH` when
+  there is one and otherwise installs an isolated toolchain through Julia's
+  Artifacts system, so a system Rust installation is optional (Windows still
+  needs the MSVC build tools for linking). This is also why the prebuilt
+  helper library once planned as `RustCallHelpers_jll` is withdrawn: the
+  helpers compile with that toolchain on any machine.
 - **Breaking: the ownership helper crate is `deps/rustcall_helpers`, and its
   library `librustcall_helpers`**
   ([#387](https://github.com/AtelierArith/RustCall.jl/issues/387)). Every Rust
@@ -66,8 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in v0.5. And **nothing builds under the old name any more**:
   `native_product_filename(:rustcall_helpers)` names the new file, there is no
   `:rust_helpers` product, and `deps/build.jl` needed no change of its own
-  because it asks `src/native_layout.jl` (#258). The planned prebuilt package is
-  `RustCallHelpers_jll` (#404), written against this name.
+  because it asks `src/native_layout.jl` (#258). The prebuilt package once
+  planned under this name, `RustCallHelpers_jll` (#404), is withdrawn — see
+  the entry above: RustToolChain.jl already provides the toolchain that builds
+  the helpers.
 
 ### Fixed
 - **A crate module's generation record is published atomically**
@@ -1884,7 +1896,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.7...v0.4.0
 [0.3.7]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.3.4...v0.3.5
